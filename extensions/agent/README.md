@@ -33,7 +33,15 @@ stopping work.
 - The primary registers one channel over the same public transport. That channel
   returns peer messages and answers the host's project-trust prompts.
 - Host retirement requires no clients and no active work. `PI_AGENT_IDLE_MINUTES`
-  controls the idle interval; zero disables retirement.
+  controls the idle interval; zero disables retirement. A finished conversation
+  does not retire a host while a primary still holds its client connection.
+- A process `close` request closes the transport and runtime, releases the writer
+  claim, and ends the runner. Concurrent close paths share one shutdown. This is
+  different from closing a client connection.
+- Local protocol validation rejects only the malformed request and leaves its
+  healthy connection usable. A failed runtime-version attachment disposes its
+  client. Application or protocol errors from a live writer do not authorize a
+  replacement process.
 
 `durable-runner.ts` starts the process, `durable-runtime.ts` assembles its
 capabilities, and `durable-host.ts` uses public Durable operations. Pi Durable
@@ -109,6 +117,12 @@ selection and MCP server configuration follow the current Pi settings.
 | `agent_list` | Page through stored identities and conversation metadata. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results. |
+
+Each `agent_list` call collects one bounded catalog batch before it observes
+hosts, so metadata rewrites during those observations do not invalidate that
+fresh call. Continuations retain both the native page position and the catalog
+revision. If the catalog changes before a supplied continuation resumes,
+including a native continuation inside the final storage, restart discovery.
 
 All agents have independent process lifetimes. There is no separate detach
 operation or detached-run registry.
@@ -242,23 +256,32 @@ versions and a restart message, instead of dispatching across two contracts. An
 open live observation reconnects to a live host only. The observation link
 never relaunches a lost host; it signals its listeners unavailable and leaves
 relaunch to the manager's bounded recovery pool. Separately, when any read
-meets an older idle host, the manager performs the version replacement
-described below. A listener that attaches after a frame arrives receives that
+meets an older host, the manager applies the version check described below. A listener that attaches after a frame arrives receives that
 current frame at once.
 
 Every host advertises a runtime version in its readiness line and answers a
 `runtime-version` request. A host that reports no version predates the
-handshake and reads as version 0. A window that meets an older host closes it
-through the host's own close method and relaunches it with current code when
-the host is idle; while the host works, the window keeps using the methods the
-host supports, marks the storage `Host runtime version N; this Pi runs version
-M. It updates when idle.` in status and the dashboard roster, and replaces the host at
-its next idle change notification. Replacement never interrupts active work and
-shares the three replacements per sixty seconds cap with crash recovery;
-`agent_attach` clears a stopped update. A newer-only method (timers, reset,
-live observation) against an older host returns `This agent's host runs older
-code and does not support <method>; it updates when idle.` instead of a raw
-unknown-method error. A busy older host still serves its supported reads.
+handshake and reads as version 0. Process close requires the current runtime
+version because it must close the transport and runtime, release the writer
+claim, and end the process. Older hosts keep serving their supported reads, but
+their close method does not provide that contract, so their automatic update is
+blocked: status, the dashboard roster, and unsupported-method errors say so and
+name the remedy (close their older Pi clients so the idle host can retire, then
+use `agent_attach`). A host whose Durable runtime already closed does not
+recover through idle retirement.
+
+A host that supports process close is replaced when it is idle. The manager
+first verifies that no native work or delivery remains, requests process close,
+and confirms writer release before it acquires the replacement; a close
+acknowledgment or a disconnected client is not release proof, and a failed
+verification leaves the update pending. While the host works, the window keeps
+using the methods the host supports and marks the storage `Host runtime version
+N; this Pi runs version M. It updates when idle.` Replacement never interrupts
+active work and shares the three replacements per sixty seconds cap with crash
+recovery; `agent_attach` clears a stopped update. A newer-only method (timers,
+reset, live observation) against an older host returns a clear refusal instead
+of a raw unknown-method error. Local validation errors and live-writer
+application errors never authorize another writer.
 
 The host sets a top-level `recoveryDue` marker before it admits work, and when
 opening finds pending native work or pending delivery. Startup recovery reads
@@ -287,8 +310,10 @@ process. Different primary sessions have independent UI state.
 
 The New agent field accepts a task in your own words. Enter starts the agent
 with the primary's current directory and model, selects it, and keeps the
-dashboard open. Esc keeps the unsent task. Configure changes name, model, and
-reasoning afterwards; staged fields change nothing before Apply. Model search
+dashboard open. Its task, model, and reasoning appear immediately with a
+Starting state in the Working group, before the host is ready. The conversation
+then follows the host's live output. Esc keeps the unsent task. Configure
+changes name, model, and reasoning afterwards; staged fields change nothing before Apply. Model search
 uses available model metadata, not a typed model identity. An owner refusal
 returns Configure to its staged fields; Cancel abandons that configuration.
 
@@ -330,10 +355,13 @@ its view is open. A task with several conversations offers a conversation
 picker. Finished tasks leave the graph; their results stay in the conversation.
 No live host means no live task graph, not proof of no retained work.
 
-Observation attaches to an existing host and never starts one. Retained or
-unavailable output stays labeled with its last observation time. A selected
-conversation without a live frame, such as a new agent whose host was still
-starting, attaches again and rereads when its roster row changes. Sending to an
+Observation attaches to an existing host and never starts one. If the same
+manager already owns a host launch, observation joins that pending open and
+attaches as soon as the host is ready, without a roster change. A storage file
+that does not exist yet reads as an empty conversation, not a file error.
+Retained or unavailable output stays labeled with its last observation time.
+A selected conversation whose stopped host restarts through another action
+attaches again and rereads when its roster row changes. Sending to an
 idle agent with a retired host starts that host through the normal send path.
 Reconnect is an explicit action for a host error. Independent dashboard clients
 observe the same owner; closing any dashboard cancels no admitted work.
@@ -356,8 +384,9 @@ extension bootstrap, or Harness resume. The cache tracks database and WAL
 identity plus writer claim state. Changed or unstable source identity refuses
 reuse. Snapshot operations serialize to protect reads and eviction. The public
 SQLite backup path creates source sidecars where needed; an absent WAL becoming
-an empty WAL does not invalidate the snapshot. The snapshot writes no source
-content and never becomes a writer.
+an empty WAL does not invalidate the snapshot. An absent database has an empty
+in-memory observation that is not cached, so a later read sees database creation.
+The snapshot writes no source content and never becomes a writer.
 
 The dashboard does not embed InteractiveMode. The published extension API has
 no complete InteractiveMode view, editor state, dialog, widget, or renderer
@@ -393,7 +422,8 @@ while the dashboard is visible discovers hosts created elsewhere and dead
 claims. Neither path repeatedly reads transcripts. Streaming paints coalesce;
 local input paints immediately. Closing releases observers and UI timers.
 The primary's native agents status retains cumulative cost independently of
-the dashboard. Repeated reads never add the same usage twice.
+the dashboard. Repeated reads never add the same usage twice. Incomplete
+inventory qualifies the retained cost with ≥.
 
 ## Primary restart and continuity
 

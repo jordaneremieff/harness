@@ -21,7 +21,7 @@ export interface DashboardResult {
 }
 export interface DashboardOperations {
 	submit(input: { id: string; text: string; mode: "steer" | "followUp" }): Promise<DashboardResult>;
-	newAgent(input: { prompt: string }): Promise<DashboardResult>;
+	newAgent(input: { prompt: string; onCreated: (row: AgentConversationSummary) => void }): Promise<DashboardResult>;
 	chooseConversation(labels: readonly TaskLabel[], surface: NativeSurface): Promise<string | undefined>;
 	action(name: string, target: AgentConversationSummary, surface: NativeSurface): Promise<DashboardResult | undefined>;
 }
@@ -66,7 +66,6 @@ export class AgentDashboard implements Component, Focusable {
 	private findBefore = { filter: "", selected: undefined as string | undefined };
 	private readonly newComposer: AgentComposer;
 	private tasks?: AgentTasksView;
-	private taskTarget = false;
 	private actionIndex = 0;
 	private helpOffset = 0;
 	private result = "";
@@ -237,6 +236,10 @@ export class AgentDashboard implements Component, Focusable {
 		return pages;
 	}
 	private reconcile(): void {
+		const previousId = this.navigation.target ?? this.state.selected;
+		const frame = previousId ? this.source.frame(previousId) : undefined;
+		if (previousId && frame && this.source.availability(previousId)?.state === "live" && this.page)
+			this.page = { ...this.page, rows: this.page.rows.map((row) => row.id === previousId ? this.observedRow(row, frame) : row) };
 		const filtered = dashboardRecords(
 			this.page
 				? { observedAt: Date.parse(this.page.observedAt), sessions: this.page.rows, coverage: this.page.coverage }
@@ -264,15 +267,15 @@ export class AgentDashboard implements Component, Focusable {
 		}
 	}
 	/**
-	 * A conversation with no live frame (a host that was starting, or a stopped host)
-	 * attaches again and rereads when its roster row changes, so a new or restarted
-	 * agent never keeps an error or a stale cold reading.
+	 * A stopped host restarted by another action attaches again when its roster
+	 * row changes. A host launch already owned by this manager attaches through
+	 * its pending open, without a roster change.
 	 */
 	private rereadIfStale(row: AgentConversationSummary): void {
 		const mark = rosterMark(row);
 		if (mark === this.selectedMark) return;
 		this.selectedMark = mark;
-		if (this.source.availability(row.id)?.state === "live") return;
+		if (this.source.availability(row.id)?.state !== "unavailable") return;
 		const generation = ++this.sourceGeneration;
 		this.source.refresh(row.id);
 		void this.readSelected(row, generation);
@@ -281,7 +284,6 @@ export class AgentDashboard implements Component, Focusable {
 		this.selectedMark = rosterMark(row);
 		this.saveConsole();
 		this.history = new ConversationHistory();
-		this.taskTarget = false;
 		this.console = new AgentConsole(
 			row,
 			agentState(this.state, row.id),
@@ -322,25 +324,34 @@ export class AgentDashboard implements Component, Focusable {
 				!this.snapshot.entries.some((entry) => entry.id === console.state.view.anchor?.id)
 			)
 				void this.readHistory(console.state.view.before);
-			console.status = snapshot.partial ? "RETAINED · partial history" : "RETAINED";
+			console.status = row.state === "starting" ? "STARTING" : snapshot.partial ? "RETAINED · partial history" : "RETAINED";
 			if (snapshot.nextBefore) console.status += " · Earlier messages available";
 			this.redraw();
 		} catch (error) {
-			if (generation === this.sourceGeneration && !this.closed && this.console) {
+			if (generation === this.sourceGeneration && !this.closed && this.console && this.source.availability(row.id)?.state !== "live") {
 				this.console.status = `Conversation unavailable: ${String(error)}`;
 				this.redraw();
 			}
 		}
 	}
-	private updateTaskTarget(console: AgentConsole, frame: ConversationFrame): void {
-		if (!this.taskTarget) return;
-		console.row = {
-			...console.row,
-			state: frame.status.busy ? "working" : "idle",
+	private observedRow(row: AgentConversationSummary, frame: ConversationFrame): AgentConversationSummary {
+		if (row.state === "starting" && !frame.entries.some((entry) => entry.kind === "pi.user")) return row;
+		return {
+			...row,
+			owner: "here",
+			name: frame.status.name ?? row.name,
+			firstMessage: frame.status.firstMessage ?? row.firstMessage,
+			state: frame.status.busy ? "working" : row.state === "starting" || row.state === "working" || row.state === "unavailable" ? "idle" : row.state,
 			model: frame.status.agent.model
 				? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel }
-				: undefined,
+				: row.model,
 		};
+	}
+	private updateObservedRow(console: AgentConsole, frame: ConversationFrame): void {
+		if (this.source.availability(console.row.id)?.state !== "live") return;
+		console.row = this.observedRow(console.row, frame);
+		if (this.page) this.page = { ...this.page, rows: this.page.rows.map((row) => row.id === console.row.id ? console.row : row) };
+		this.rows = this.rows.map((row) => row.id === console.row.id ? console.row : row);
 	}
 	private frameChanged(): void {
 		const console = this.console;
@@ -369,9 +380,8 @@ export class AgentDashboard implements Component, Focusable {
 				availability?.state === "unavailable"
 					? `RETAINED · Last seen ${availability.at}`
 					: `LIVE${frame.nextBefore ? " · Earlier messages available" : ""}`;
-			this.updateTaskTarget(console, frame);
-			if (frame.status.busy) console.row = { ...console.row, state: "working" };
-			else if (console.row.state === "working") console.row = { ...console.row, state: "idle" };
+			this.updateObservedRow(console, frame);
+			if (console.row.state === "starting") console.status = "STARTING";
 		}
 		const wait = Math.max(0, 50 - (Date.now() - this.lastStreamPaint));
 		if (!this.streamTimer)
@@ -453,11 +463,27 @@ export class AgentDashboard implements Component, Focusable {
 	private async startAgent(text: string): Promise<void> {
 		if (this.creating || !text.trim()) return;
 		this.creating = true;
-		const generation = this.navigation.generation;
+		let generation = this.navigation.generation;
 		this.notice = "Starting agent…";
 		this.redraw();
 		try {
-			const result = await Promise.resolve().then(() => this.operations.newAgent({ prompt: text }));
+			const result = await Promise.resolve().then(() => this.operations.newAgent({
+				prompt: text,
+				onCreated: (row) => {
+					if (this.closed || generation !== this.navigation.generation) return;
+					this.state.selected = row.id;
+					this.state.filter = "";
+					this.navigation.roster();
+					generation = this.navigation.generation;
+					if (this.page) this.page = { ...this.page, rows: [...this.page.rows.filter((item) => item.id !== row.id), row] };
+					this.rows = [...this.rows.filter((item) => item.id !== row.id), row];
+					this.select(row);
+					this.snapshot = { entries: [], partial: false, revision: "starting", nextBefore: null };
+					this.setConversation();
+					if (this.console) this.console.status = "STARTING";
+					this.redraw();
+				},
+			}));
 			if (this.state.newTask === text) {
 				this.state.newTask = "";
 				this.newComposer.setText("");
@@ -485,7 +511,7 @@ export class AgentDashboard implements Component, Focusable {
 		const console = this.console;
 		const snapshot = this.snapshot;
 		if (!console || !snapshot) return;
-		const first = firstTaskEntry(snapshot, console.row);
+		const first = firstTaskEntry({ ...snapshot, partial: snapshot.partial || console.row.state === "starting" }, console.row);
 		console.setContent(first ? [first, ...snapshot.entries] : snapshot.entries, this.history.newer() ? [] : live);
 	}
 	private async readHistory(before?: number): Promise<void> {
@@ -554,7 +580,6 @@ export class AgentDashboard implements Component, Focusable {
 		this.navigation.roster();
 		this.navigation.enter("console", id);
 		this.select(row);
-		this.taskTarget = !this.page?.rows.some((item) => item.id === id);
 		this.redraw();
 	}
 	private async chooseTaskConversation(labels: readonly TaskLabel[]): Promise<void> {

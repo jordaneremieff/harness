@@ -9,6 +9,7 @@ import {
 	rmSync,
 	symlinkSync,
 	unlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -33,6 +34,31 @@ function fixture(t: { after(fn: () => void): void }) {
 		},
 	};
 }
+
+it("retains a continuation for each prefetched catalog record", async (t) => {
+	const { catalog, input } = fixture(t);
+	for (let index = 0; index < 12; index++) catalog.create({ ...input, name: `record-${index}` });
+	const page = await catalog.page({ limit: 12 });
+	assert.equal(page.recordCursors.length, 12);
+	const next = await catalog.page({ cursor: page.recordCursors[4] ?? undefined });
+	assert.deepEqual(next.records.map((record) => record.storageId), page.records.slice(5).map((record) => record.storageId));
+	const frozen = page.records.map((record) => record.recoveryDue);
+	catalog.markRecoveryDue(page.records[5].storageId, true);
+	assert.deepEqual(page.records.map((record) => record.recoveryDue), frozen, "a collected batch is independent of subsequent observations");
+});
+
+it("bounds a discovery batch and refuses a genuinely stale user cursor", async (t) => {
+	const { catalog, input } = fixture(t);
+	for (let index = 0; index < 33; index++) catalog.create(input);
+	utimesSync(catalog.root, 1, 1);
+	const page = await catalog.page({ limit: 32 });
+	assert.equal(page.records.length, 32);
+	assert.equal(page.coverage.complete, false);
+	assert.ok(page.nextCursor);
+	catalog.create(input);
+	await assert.rejects(catalog.page({ cursor: page.nextCursor }), /restart discovery/u);
+	await assert.rejects(catalog.page({ limit: 33 }), /Catalog limit/u);
+});
 
 it("deduplicates a spawn request by owner and request identity", (t) => {
 	const { catalog, input } = fixture(t);

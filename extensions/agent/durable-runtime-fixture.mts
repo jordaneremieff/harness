@@ -3,11 +3,12 @@
  *
  * The fixture builds an isolated agent home whose settings load the on-disk
  * `testdata/durable-runtime` extension, the metadata the production runner
- * consumes, and file markers the fixture extension writes. The tests launch
+ * consumes, and a marker socket that is accepting before a host starts. The tests launch
  * the production `durable-runner.ts` through `acquireHost`; no fixture runner
  * and no real provider are used.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,15 +22,19 @@ export interface RuntimeFixture {
 	readonly root: string;
 	readonly cwd: string;
 	readonly agentDir: string;
-	/** Directory for the fixture extension's readiness markers and effect file. */
+	/** Directory for the fixture extension's effect and provider request evidence. */
 	readonly testDir: string;
 	/** Cross-cwd target for the spawn regression. */
 	readonly childCwd: string;
 	readonly storagePath: string;
 	readonly ownerId: string;
 	readonly metadata: HostMetadata;
+	/** Unix socket that is accepting marker names before a host starts. */
+	readonly notifyPath: string;
 	/** Child environment for one fixture mode. */
 	env(mode: "request" | "effect" | "answer" | "spawn"): Record<string, string>;
+	/** Resolve when the host publishes this marker name. The file is not the signal. */
+	marker(name: string): Promise<void>;
 }
 
 /** Build an isolated agent home for one durable runtime test. */
@@ -60,6 +65,7 @@ export function runtimeFixture(t: { after(fn: () => void): void }, options: { wi
 		ownerId,
 	}, "primary");
 	const metadata = hostMetadata(record);
+	const markers = markerFixture(t, testDir);
 	return {
 		root,
 		cwd,
@@ -69,7 +75,101 @@ export function runtimeFixture(t: { after(fn: () => void): void }, options: { wi
 		storagePath: metadata.storagePath,
 		ownerId,
 		metadata,
-		env: (mode) => ({ DURABLE_TEST_DIR: testDir, DURABLE_TEST_CHILD_CWD: childCwd, DURABLE_TEST_MODE: mode, PI_AGENT_IDLE_MINUTES: "0.05" }),
+		notifyPath: markers.notifyPath,
+		env: (mode) => ({
+			DURABLE_TEST_DIR: testDir,
+			DURABLE_TEST_CHILD_CWD: childCwd,
+			DURABLE_TEST_MODE: mode,
+			DURABLE_TEST_NOTIFY: markers.notifyPath,
+			PI_AGENT_IDLE_MINUTES: "0.05",
+		}),
+		marker: markers.marker,
+	};
+}
+
+/** Accept explicit marker frames before the caller starts a child process. */
+export function markerFixture(t: { after(fn: () => void): void }, testDir: string): {
+	readonly notifyPath: string;
+	marker(name: string): Promise<void>;
+	/** Hold the publisher's acknowledgment until the returned release function runs. */
+	hold(name: string): () => void;
+} {
+	const socketDir = mkdtempSync(join(tmpdir(), "pi-n-"));
+	const notifyPath = join(socketDir, "m.sock");
+	if (Buffer.byteLength(notifyPath) > 103) {
+		rmSync(socketDir, { recursive: true, force: true });
+		throw new Error("fixture marker socket path exceeds the Unix path limit");
+	}
+	const seen = new Set<string>();
+	const waiters = new Map<string, Set<(error?: Error) => void>>();
+	const sockets = new Set<Socket>();
+	const held = new Map<string, Set<Socket>>();
+	let failure: Error | undefined;
+	const fail = (error: Error): void => {
+		failure = error;
+		for (const pending of waiters.values()) for (const settle of pending) settle(error);
+	};
+	const server = createServer({ allowHalfOpen: true }, (socket) => {
+		sockets.add(socket);
+		socket.setEncoding("utf8");
+		let buffer = "";
+		socket.on("data", (chunk: string) => {
+			buffer += chunk;
+			const newline = buffer.indexOf("\n");
+			if (newline < 0) return;
+			const name = buffer.slice(0, newline);
+			seen.add(name);
+			const pending = waiters.get(name);
+			if (pending) for (const settle of pending) settle();
+			const gate = held.get(name);
+			if (gate) gate.add(socket);
+			else socket.end();
+		});
+		socket.on("error", fail);
+		socket.on("close", () => sockets.delete(socket));
+	});
+	server.on("error", fail);
+	t.after(() => {
+		fail(new Error("fixture marker server closed"));
+		for (const socket of sockets) socket.destroy();
+		server.close();
+		rmSync(socketDir, { recursive: true, force: true });
+	});
+	// A Unix listen binds synchronously; only the listening event is deferred.
+	server.listen({ path: notifyPath, exclusive: true });
+	if (!server.listening) throw new Error("fixture marker socket did not bind");
+	chmodSync(notifyPath, 0o600);
+	return {
+		notifyPath,
+		hold: (name) => {
+			const gate = new Set<Socket>();
+			held.set(name, gate);
+			return () => {
+				held.delete(name);
+				for (const socket of gate) socket.end();
+				gate.clear();
+			};
+		},
+		marker: (name) => {
+			if (failure) return Promise.reject(failure);
+			if (seen.has(name)) return Promise.resolve();
+			return new Promise<void>((resolve, reject) => {
+				const pending = waiters.get(name) ?? new Set();
+				const settle = (error?: Error): void => {
+					clearTimeout(timer);
+					pending.delete(settle);
+					if (pending.size === 0) waiters.delete(name);
+					if (error) reject(error);
+					else resolve();
+				};
+				// This deadline only bounds a missing publisher. Files never resolve the wait.
+				const timer = setTimeout(() => settle(new Error(
+					`timed out waiting for fixture marker ${name}; file exists=${existsSync(join(testDir, name))}`,
+				)), 30000);
+				pending.add(settle);
+				waiters.set(name, pending);
+			});
+		},
 	};
 }
 
@@ -93,27 +193,6 @@ export function killHost(pid: number): void {
 /** Kill every tracked host when the test ends, even on failure. */
 export function trackHost(t: { after(fn: () => void): void }, pid: number): void {
 	t.after(() => killHost(pid));
-}
-
-/** Resolve when a marker file exists, driven by the directory watch, never by a fixed sleep. */
-export function waitForFile(path: string, timeoutMs = 30000): Promise<void> {
-	return new Promise((resolve, reject) => {
-		let settled = false;
-		function finish(error?: Error): void {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			watcher.close();
-			if (error) reject(error);
-			else resolve();
-		}
-		const watcher = watch(dirname(path), () => {
-			if (existsSync(path)) finish();
-		});
-		const timer = setTimeout(() => finish(new Error(`timed out waiting for ${path}`)), timeoutMs);
-		watcher.on("error", (error) => finish(error));
-		if (existsSync(path)) finish();
-	});
 }
 
 /** Wait for the delivery receipt of one submission; the host waits on commits, not polling. */

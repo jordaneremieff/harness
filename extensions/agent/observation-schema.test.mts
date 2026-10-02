@@ -6,7 +6,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
 import { AgentManager } from "./manager.ts";
-import { ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListOutputSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { AgentConversationSummarySchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListOutputSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { boundCatalogView } from "./catalog-view.ts";
 import { readConversationList, readConversationStatus, readDashboard, readInspection } from "./durable-observation.ts";
@@ -121,6 +121,15 @@ it("validates list rows and the manager list aggregation", async (t) => {
 	assert.deepEqual(unavailable.rows, []);
 	assert.equal(unavailable.coverage.unavailable.length, 1);
 	assert.match(unavailable.coverage.unavailable[0]?.reason ?? "", /unavailable/u);
+});
+
+it("validates the starting roster row and no-target status overview", () => {
+	const row = { id: "new-storage", storageId: "new-storage", cwd: "/work", firstMessage: "New task", model: { provider: "test", modelId: "model", thinkingLevel: "high" }, modifiedAt: 0, owner: "unknown" as const, state: "starting" as const, cost: 0, partial: false };
+	structuredObservation(AgentConversationSummarySchema, row);
+	const overview = buildStatusOverview({ rows: [row], observedAt: new Date(0).toISOString(), coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null } }, [], []);
+	structuredObservation(StatusOutputSchema, overview);
+	assert.equal(overview.sessions[0]?.state, "starting");
+	assert.equal(overview.sessions[0]?.firstMessage, "New task");
 });
 
 it("validates every status variant, including unavailable rows", async (t) => {

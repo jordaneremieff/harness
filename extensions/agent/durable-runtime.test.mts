@@ -10,16 +10,16 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import type { Models } from "@earendil-works/pi-ai";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
-import type { CatalogView } from "./catalog-view.ts";
-import { acquireHost } from "./host-client.ts";
+import { acquireHost, waitForHostRelease } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
 import { observeDurableStorage, sessionKeyedModels } from "./durable-runtime.ts";
-import { childCatalogRecord, killHost, runtimeFixture, trackHost, waitForFile, waitForReceipt } from "./durable-runtime-fixture.mts";
+import { childCatalogRecord, killHost, markerFixture, runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
+import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
 
 interface SubmitResult {
 	readonly submissionId: string | number;
@@ -92,7 +92,7 @@ it("spawns a cross-cwd child in an independent storage and delivers its result t
 	try {
 		const submitted = await primary.request("submit", { message: "SPAWN_CHILD: start the child and report back", requestId: "spawn-owner" }) as SubmitResult;
 		assert.equal(submitted.deduped, false);
-		await waitForFile(join(f.testDir, "delivered"));
+		await f.marker("delivered");
 		const record = await childCatalogRecord(f);
 		assert.notEqual(record.storageId, f.metadata.storageId, "the child lives in an independent storage");
 		assert.equal(record.cwd, realpathSync(f.childCwd), "the child uses the requested working directory");
@@ -120,13 +120,44 @@ it("spawns a cross-cwd child in an independent storage and delivers its result t
 	}
 });
 
+it("receives a fixture marker from the notify socket without a marker file", async (t) => {
+	const f = runtimeFixture(t);
+	const pending = [f.marker("requested"), f.marker("requested")];
+	await Promise.all([...pending, publishFixtureMarker(f.notifyPath, "requested")]);
+	assert.equal(existsSync(join(f.testDir, "requested")), false, "the wait is the socket message, not the marker file");
+	await publishFixtureMarker(f.notifyPath, "early");
+	await f.marker("early");
+});
+
+it("holds a fixture publisher until the test releases its marker", async (t) => {
+	const f = runtimeFixture(t);
+	const markers = markerFixture(t, f.testDir);
+	const release = markers.hold("host-start-gated");
+	let published = false;
+	const publication = publishFixtureMarker(markers.notifyPath, "host-start-gated").then(() => { published = true; });
+	await markers.marker("host-start-gated");
+	assert.equal(published, false, "the child remains at the gate after marker receipt");
+	release();
+	await publication;
+	assert.equal(published, true);
+});
+
+for (const present of [false, true]) it(`reports file exists=${present} when a fixture marker never arrives`, async (t) => {
+	const f = runtimeFixture(t);
+	if (present) writeFileSync(join(f.testDir, "unpublished"), "not a signal");
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const rejected = assert.rejects(f.marker("unpublished"), new RegExp(`fixture marker unpublished; file exists=${present}`, "u"));
+	t.mock.timers.tick(30000);
+	await rejected;
+});
+
 it("resumes an outstanding model request after SIGKILL without a duplicate submission", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const first = await acquireHost(f.metadata, { env: f.env("request") });
 	trackHost(t, first.pid);
 	const submitted = await first.request("submit", { message: "complete the request", requestId: "kill-request", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 	assert.equal(submitted.deduped, false);
-	await waitForFile(join(f.testDir, "requested"));
+	await f.marker("requested");
 	killHost(first.pid);
 	await first.close();
 
@@ -159,10 +190,10 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 	let submitted: SubmitResult;
 	try {
 		submitted = await first.request("submit", { message: "recover the marked work", requestId: "marked-crash", ownerId, origin: "operator" }) as SubmitResult;
-		await waitForFile(join(f.testDir, "requested"));
+		await f.marker("requested");
 		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
 		killHost(first.pid);
-		await waitForExit(first.pid);
+		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 	} finally { await first.close(); }
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "SIGKILL leaves the due marker on disk");
 
@@ -197,7 +228,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 		await within(delivered, 10000, "the recovered submission did not reach its primary");
 		assert.equal(receipt?.status, "done");
 		assert.match(String(receipt?.answer), /durable runtime answer/u);
-		await waitForExit(recoveredPid);
+		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 		assert.equal(controller.signal.aborted, false, "the primary remains registered through host retirement");
 		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false, "completion, delivery acknowledgement, and clean idle retirement clear the marker");
 	} finally {
@@ -233,7 +264,7 @@ for (const steerDuringRun of [false, true]) it(`relaunches a connected host afte
 			send: (_text, details) => { receipts.push(details as Record<string, unknown>); resolveDelivered(); },
 		});
 		const submitted = await manager.control("submit", { sessionId: f.metadata.storageId, message: "recover without restarting the primary", requestId: "connected-crash", origin: "model" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
-		await waitForFile(join(f.testDir, steerDuringRun ? "effect" : "requested"));
+		await f.marker(steerDuringRun ? "effect" : "requested");
 		const expectedIds = [submitted.submissionId];
 		if (steerDuringRun) {
 			const steered = await manager.control("submit", { sessionId: f.metadata.storageId, message: "include the correction", requestId: "crash-steer", whenBusy: "steer", origin: "model" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
@@ -251,7 +282,7 @@ for (const steerDuringRun of [false, true]) it(`relaunches a connected host afte
 		assert.equal(receipt.status, "done");
 		assert.deepEqual((receipt.submissions as { submissionId: number }[]).map((member) => String(member.submissionId)), expectedIds.map(String));
 		assert.match(String(receipt?.answer), /durable runtime answer/u);
-		await waitForExit(pids[1] as number);
+		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 		assert.equal(receipts.length, 1, "the host retires after one notice and acknowledgement of every input");
 		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, false);
 		const history = await manager.control("inspect", { sessionId: f.metadata.storageId, view: "history", source: "user", limit: 10 }, { id: ownerId, cwd: f.cwd }) as HistoryPage;
@@ -265,7 +296,7 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 	trackHost(t, first.pid);
 	const submitted = await first.request("submit", { message: "run the effect", requestId: "kill-effect", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 	assert.equal(submitted.deduped, false);
-	await waitForFile(join(f.testDir, "effect"));
+	await f.marker("effect");
 	killHost(first.pid);
 	await first.close();
 
@@ -288,27 +319,6 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 	}
 });
 
-/** Wait until a host process exits, bounded. */
-async function waitForExit(pid: number, timeoutMs = 10000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		try { process.kill(pid, 0); } catch { return; }
-		if (Date.now() >= deadline) throw new Error("host did not exit before its deadline");
-		await new Promise((resolve) => setTimeout(resolve, 25));
-	}
-}
-
-/** Wait for the coalesced catalog view publication, bounded. */
-async function readViewWhenPublished(catalog: AgentCatalog, storageId: string, timeoutMs = 10000): Promise<CatalogView | undefined> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		const view = catalog.read(storageId).view;
-		if (view !== undefined) return view;
-		if (Date.now() >= deadline) return undefined;
-		await new Promise((resolve) => setTimeout(resolve, 50));
-	}
-}
-
 it("marks recovery due before admission and reports the recovery state", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const catalog = new AgentCatalog(dirname(dirname(f.storagePath)));
@@ -318,16 +328,18 @@ it("marks recovery due before admission and reports the recovery state", { timeo
 		assert.deepEqual(await primary.request("recovery-state", {}), { workPending: false, deliveriesPending: false });
 		const submitted = await primary.request("submit", { message: "RECOVERY_MARK", requestId: "recovery-mark" }) as SubmitResult;
 		assert.ok(submitted.submissionId);
-		await waitForFile(join(f.testDir, "requested"));
+		await f.marker("requested");
 		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "admission marks the record before the request completes");
 		const busy = await primary.request("recovery-state", {}) as { workPending: boolean; deliveriesPending: boolean };
 		assert.equal(busy.workPending, true);
-		const view = await readViewWhenPublished(catalog, f.metadata.storageId);
-		assert.ok(view, "the gated host published a catalog view");
-		assert.ok(view.rows.some((row) => row.storageId === f.metadata.storageId), "the live view carries this storage's row");
 	} finally {
 		await primary.close().catch(() => {});
 	}
+	process.kill(primary.pid, "SIGTERM");
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	const view = catalog.read(f.metadata.storageId).view;
+	assert.ok(view, "the gated host flushed a catalog view before release");
+	assert.ok(view.rows.some((row) => row.storageId === f.metadata.storageId), "the view carries this storage's row");
 });
 
 it("publishes a bounded catalog view and clears recovery due on a clean close", { timeout: 120000 }, async (t) => {
@@ -346,8 +358,8 @@ it("publishes a bounded catalog view and clears recovery due on a clean close", 
 	}
 	// SIGTERM inside the coalescing window: the clean close must flush the last view.
 	process.kill(pid, "SIGTERM");
-	await waitForExit(pid);
-	const view = await readViewWhenPublished(catalog, f.metadata.storageId);
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	const view = catalog.read(f.metadata.storageId).view;
 	assert.ok(view, "the clean close flushed the final catalog view");
 	assert.ok(view.rows.some((row) => row.storageId === f.metadata.storageId), "the view carries this storage's rows");
 	assert.equal(view.coverage.complete, true);

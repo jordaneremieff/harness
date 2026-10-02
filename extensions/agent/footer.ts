@@ -2,10 +2,10 @@
  * Primary statusline for native Durable agents. Cost comes from retained
  * Durable usage; the footer holds no local checkpoint and adds no deltas.
  */
-import type { AgentConversationSummary } from "./dashboard-types.ts";
+import type { AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
 
 /** Spend text: cents normally, four decimals for a positive sub-cent total, and `+?` for incomplete native cost. */
-function price(rows: readonly AgentConversationSummary[]): string {
+function price(rows: readonly AgentConversationSummary[], incompleteCoverage: boolean): string {
 	let cost = 0;
 	let incomplete = false;
 	for (const row of rows) {
@@ -14,10 +14,16 @@ function price(rows: readonly AgentConversationSummary[]): string {
 		incomplete ||= row.partial;
 	}
 	const digits = cost > 0 && cost < 0.01 ? 4 : 2;
-	return `$${cost.toFixed(digits)}${incomplete ? "+?" : ""}`;
+	return `${incompleteCoverage ? "≥" : ""}$${cost.toFixed(digits)}${incomplete ? "+?" : ""}`;
 }
 
 /** Primary statusline: working conversations and their retained native total cost. */
-export function formatDurableFooter(rows: readonly AgentConversationSummary[]): string {
-	return `agents ${rows.filter((row) => row.state === "working").length} · ${price(rows)}`;
+export function formatDurableFooter(
+	rows: readonly AgentConversationSummary[],
+	coverage?: AgentDashboardCoverage,
+): string {
+	const incomplete = Boolean(
+		coverage && (!coverage.complete || coverage.nextCursor || coverage.skipped || coverage.omitted),
+	);
+	return `agents ${rows.filter((row) => row.state === "working").length} · ${price(rows, incomplete)}`;
 }

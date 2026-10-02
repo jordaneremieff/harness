@@ -97,9 +97,17 @@ it("reports method availability by runtime version", () => {
 	assert.equal(hostMethodMinVersion("reset"), 1);
 	assert.equal(hostMethodMinVersion("timer-schedule"), 1);
 	assert.equal(hostMethodMinVersion("observe-open"), 1);
-	const refusal = hostUpdatePendingError("timer-schedule");
+	const refusal = hostUpdatePendingError("timer-schedule", 0);
 	assert.equal(refusal.code, "unavailable");
-	assert.match(refusal.message, /older code and does not support timer-schedule; it updates when idle/u);
+	assert.match(refusal.message, /older code and does not support timer-schedule/u);
+	assert.match(refusal.message, /Automatic update is blocked/u);
+});
+
+it("requires the process shutdown contract for a wire close", () => {
+	assert.equal(HOST_RUNTIME_VERSION, 2);
+	assert.equal(hostMethodMinVersion("close"), 2);
+	assert.match(hostUpdatePendingError("close", 1).message, /cannot close its process safely/u);
+	assert.doesNotMatch(hostUpdatePendingError("close", 1).message, /it updates when idle/u);
 });
 
 it("carries a coded error class", () => {

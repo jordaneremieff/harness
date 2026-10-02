@@ -386,9 +386,9 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			description: "Start a new Durable agent",
 			args: [{ name: "task", rest: true, optional: true }],
 			help: "Describe the task in your own words. The agent uses your current directory and model. Its host survives this primary process; advanced overrides use agent_spawn.",
-			run: async (args, ctx) => {
+			run: async (args, ctx, onCreated) => {
 				const prompt = args.join(" ") || undefined;
-				const created = (await getManager().spawn({ prompt, origin: "operator" }, caller(ctx, pi))) as {
+				const created = (await getManager().spawn({ prompt, origin: "operator" }, caller(ctx, pi), onCreated)) as {
 					sessionId: string;
 					cwd?: string;
 					status?: { name?: string };
@@ -647,7 +647,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			list: (input) => getManager().dashboardPage(input),
 			subscribeRoster: (listener) => getManager().subscribeRoster(listener),
 			snapshot: (id, params) => getManager().snapshot(id, params),
-			observeLive: (id, scope, listener) => getManager().observeLive(id, scope, listener),
+			observeLive: (id, scope, listener, signal) => getManager().observeLive(id, scope, listener, signal),
 		}),
 		{
 			timers: (id, ctx) =>

@@ -33,8 +33,8 @@ function requestStorageId(key: string): string {
 }
 function pageLimit(value: number | undefined): number {
 	const limit = value ?? 20;
-	if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20)
-		throw new Error("Catalog limit must be between 1 and 20");
+	if (!Number.isSafeInteger(limit) || limit < 1 || limit > 32)
+		throw new Error("Catalog limit must be between 1 and 32");
 	return limit;
 }
 function queryBinding(revision: string, options: CatalogQuery): string {
@@ -81,6 +81,8 @@ export function hostMetadata(record: CatalogRecord): HostMetadata {
 }
 export interface CatalogPage {
 	records: CatalogRecord[];
+	/** Continuation after each record, so a prefetched batch may stop before its end. */
+	recordCursors: string[];
 	nextCursor: string | null;
 	coverage: { visited: number; skipped: number; complete: boolean };
 	observedAt: string;
@@ -289,10 +291,12 @@ export class AgentCatalog {
 		const observedAt = new Date().toISOString();
 		const revision = await directoryRevision(this.root);
 		if (revision === undefined)
-			return { records: [], nextCursor: null, coverage: { visited: 0, skipped: 0, complete: true }, observedAt };
+			return { records: [], recordCursors: [], nextCursor: null, coverage: { visited: 0, skipped: 0, complete: true }, observedAt };
 		const binding = queryBinding(revision, options);
 		const start = startOffset(options.cursor, binding);
 		const records: CatalogRecord[] = [];
+		const recordCursors: string[] = [];
+		const cursorAt = (offset: number): string => Buffer.from(JSON.stringify({ binding, offset })).toString("base64url");
 		let index = 0,
 			visited = 0,
 			skipped = 0,
@@ -303,7 +307,10 @@ export class AgentCatalog {
 			visited++;
 			try {
 				const record = entry.isFile() ? this.select(entry.name, options) : undefined;
-				if (record) records.push(record);
+				if (record) {
+					records.push(record);
+					recordCursors.push(cursorAt(index));
+				}
 			} catch {
 				skipped++;
 			}
@@ -312,9 +319,12 @@ export class AgentCatalog {
 				break;
 			}
 		}
+		const nextCursor = complete ? null : cursorAt(index);
+		if (recordCursors.length > 0) recordCursors[recordCursors.length - 1] = cursorAt(index);
 		return {
 			records,
-			nextCursor: complete ? null : Buffer.from(JSON.stringify({ binding, offset: index })).toString("base64url"),
+			recordCursors,
+			nextCursor,
 			coverage: { visited, skipped, complete },
 			observedAt,
 		};

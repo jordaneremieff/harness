@@ -10,6 +10,7 @@ import type { Message } from "@earendil-works/pi-ai";
 
 /** Dashboard lifecycle bucket for one durable conversation. */
 export type AgentConversationState =
+	| "starting"
 	| "working"
 	| "idle"
 	| "done"

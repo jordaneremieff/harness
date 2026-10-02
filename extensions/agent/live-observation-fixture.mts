@@ -13,6 +13,7 @@ import { DurableHost } from "./durable-host.ts";
 import { fixtureProvider, fixtureModelId, fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
+import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
 
 async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>): Promise<HostRuntime> {
 	const durable = await DurableHost.open({
@@ -32,6 +33,9 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>): Pr
 			const input = (params ?? undefined) as Record<string, unknown> | undefined;
 			if (method === "snapshot" && input?.fixtureHold === true && !existsSync(snapshotMarker)) {
 				writeFileSync(snapshotMarker, "held");
+				const notifyPath = process.env.DURABLE_TEST_NOTIFY;
+				if (!notifyPath) throw new Error("DURABLE_TEST_NOTIFY is required for a gated snapshot");
+				await publishFixtureMarker(notifyPath, "snapshot-gated");
 				await new Promise(() => {});
 			}
 			if (method === "observe-open") {
@@ -50,6 +54,8 @@ async function main(): Promise<void> {
 	const raw = process.argv[2];
 	if (!raw) throw new Error("live observation fixture requires metadata JSON as its only argument");
 	const metadata = parseHostMetadata(JSON.parse(raw));
+	const gate = process.env.DURABLE_TEST_HOST_START_GATE;
+	if (gate) await publishFixtureMarker(gate, "host-start-gated");
 	const host = await runHost(() => createRuntime(metadata), { metadata });
 	await host.done;
 }

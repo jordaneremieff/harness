@@ -12,7 +12,7 @@ import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
 import { acquireHost, connectHost, snapshotHost, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, waitUntil, writeFixtureState } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
-import { waitForFile } from "./durable-runtime-fixture.mts";
+import { markerFixture } from "./durable-runtime-fixture.mts";
 
 const fixturePath = fileURLToPath(new URL("./host-fixture.mts", import.meta.url));
 
@@ -98,13 +98,13 @@ it("detects an older host and refuses its new-only methods with the update reaso
 	assert.equal(connection.runtimeVersion, 0, "a host without the version member reads as older");
 	await assert.rejects(
 		connection.request("timer-schedule", {}),
-		(error: unknown) => error instanceof Error && /older code and does not support timer-schedule; it updates when idle/u.test(error.message),
+		(error: unknown) => error instanceof Error && /older code and does not support timer-schedule\. Automatic update is blocked/u.test(error.message),
 	);
 	const observe = connection.observe?.bind(connection);
 	assert.ok(observe, "an attached connection exposes observations");
 	await assert.rejects(
 		observe({ scope: "conversation", sessionId: older.metadata.storageId }),
-		(error: unknown) => error instanceof Error && /older code and does not support observe-open; it updates when idle/u.test(error.message),
+		(error: unknown) => error instanceof Error && /older code and does not support observe-open\. Automatic update is blocked/u.test(error.message),
 	);
 	// An older host still serves the methods all versions share; its own error passes through.
 	await assert.rejects(connection.request("status", {}), /unknown durable host method status/u);
@@ -423,8 +423,9 @@ it("signals unavailable without relaunching after a host kill while observing", 
 
 it("keeps the task-graph observation live across a host recovery", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
+	const markers = markerFixture(t, root);
 	const config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch());
+	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_NOTIFY: markers.notifyPath } }));
 	track(t, connection.pid);
 	t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope: "tasks", sessionId: config.storageId });
@@ -439,7 +440,7 @@ it("keeps the task-graph observation live across a host recovery", { timeout: 60
 		}
 	});
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
-	await waitForFile(join(root, "snapshot-gated"));
+	await markers.marker("snapshot-gated");
 	process.kill(firstPid, "SIGKILL");
 	await pending;
 	track(t, connection.pid);
@@ -460,8 +461,9 @@ it("keeps the task-graph observation live across a host recovery", { timeout: 60
 
 it("marks a failed observation reopen unavailable while the recovered connection stays usable", { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
+	const markers = markerFixture(t, root);
 	const config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "fail" } }));
+	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "fail", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
 	track(t, connection.pid);
 	t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
@@ -477,7 +479,7 @@ it("marks a failed observation reopen unavailable while the recovered connection
 		unavailable();
 	});
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
-	await waitForFile(join(root, "snapshot-gated"));
+	await markers.marker("snapshot-gated");
 	process.kill(firstPid, "SIGKILL");
 	await pending;
 	track(t, connection.pid);

@@ -158,8 +158,14 @@ export function durableIdentity(storageId: string, conversationId: ConversationI
 }
 
 /** Main database bytes plus the WAL, the logical source size a snapshot copies. */
-function snapshotSourceBytes(path: string): number {
-	let total = statSync(path).size;
+function snapshotSourceBytes(path: string): number | undefined {
+	let total: number;
+	try {
+		total = statSync(path).size;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
 	try {
 		total += statSync(`${path}-wal`).size;
 	} catch {
@@ -965,6 +971,11 @@ export function parseConversationSnapshotParams(params: RequestParams | undefine
 	};
 }
 
+/** A storage not yet created has no retained entries and no earlier page. */
+export function emptyConversationSnapshot(): ConversationSnapshotPage {
+	return snapshotPage(selectSnapshotEntries([], SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_BYTE_LIMIT), undefined);
+}
+
 function snapshotPage(selection: SnapshotSelection, before: EntryId | undefined): ConversationSnapshotPage {
 	const entries = selection.entries.map((entry) => snapshotEntry(entry));
 	const first = entries[0];
@@ -1726,6 +1737,7 @@ export const SNAPSHOT_BACKUP_TIMEOUT_MS = 30_000;
 export type DurableSnapshotSource = { readonly backupFrom: string } | { readonly storage: Storage };
 
 interface SnapshotCopy {
+	readonly absent?: boolean;
 	readonly storage: Storage;
 	readonly cleanup: (() => Promise<void>) | undefined;
 }
@@ -1733,6 +1745,7 @@ interface SnapshotCopy {
 /** Copy one SQLite source into a bounded temporary snapshot. Never writes the source. */
 async function copySnapshot(backupFrom: string, maxSourceBytes: number, backupTimeoutMs: number): Promise<SnapshotCopy> {
 	const sourceBytes = snapshotSourceBytes(backupFrom);
+	if (sourceBytes === undefined) return { storage: await openNodeSqliteStorage(":memory:"), cleanup: undefined, absent: true };
 	if (sourceBytes > maxSourceBytes) throw new RangeError(`snapshot source is ${sourceBytes} bytes, above the ${maxSourceBytes} byte bound`);
 	const directory = await mkdtemp(join(tmpdir(), "pi-durable-snapshot-"));
 	const target = join(directory, "snapshot.sqlite");
@@ -1766,10 +1779,12 @@ export class DurableObservation {
 	readonly harness: Harness;
 	readonly storageId: string;
 	private readonly release: () => Promise<void>;
+	private readonly absent: boolean;
 	private readonly classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string };
 
-	private constructor(harness: Harness, storageId: string, release: () => Promise<void>, classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string }) {
+	private constructor(harness: Harness, storageId: string, release: () => Promise<void>, classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string }, absent: boolean) {
 		this.harness = harness;
+		this.absent = absent;
 		this.storageId = storageId;
 		this.release = release;
 		this.classifyOwner = classifyOwner;
@@ -1778,12 +1793,14 @@ export class DurableObservation {
 	static async open(options: DurableObservationOptions & DurableSnapshotSource, context: Context = BACKGROUND_CONTEXT): Promise<DurableObservation> {
 		let storage: Storage;
 		let cleanup: (() => Promise<void>) | undefined;
+		let absent = false;
 		if ("storage" in options) {
 			storage = options.storage;
 		} else {
 			const copy = await copySnapshot(options.backupFrom, options.maxSourceBytes ?? SNAPSHOT_MAX_SOURCE_BYTES, options.backupTimeoutMs ?? SNAPSHOT_BACKUP_TIMEOUT_MS);
 			storage = copy.storage;
 			cleanup = copy.cleanup;
+			absent = copy.absent === true;
 		}
 		let harness: Harness;
 		try {
@@ -1819,6 +1836,7 @@ export class DurableObservation {
 				}
 			},
 			options.classifyOwner ?? (() => ({ owner: "unavailable" })),
+			absent,
 		);
 	}
 
@@ -1852,6 +1870,7 @@ export class DurableObservation {
 	}
 
 	async snapshot(conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<ConversationSnapshotPage> {
+		if (this.absent) return emptyConversationSnapshot();
 		return readConversationSnapshotPage(this.harness, conversationId, {}, context);
 	}
 
@@ -1938,6 +1957,11 @@ export class DurableObservation {
 			case "dashboard":
 				return this.requestDashboard(params, context);
 			case "snapshot": {
+				if (this.absent) {
+					resolveSessionConversationId(this.storageId, requestString(params, "sessionId"), requestPositiveId(params?.conversationId, "conversationId"));
+					parseConversationSnapshotParams(params);
+					return emptyConversationSnapshot();
+				}
 				const conversation = await this.target(params, context);
 				return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context);
 			}

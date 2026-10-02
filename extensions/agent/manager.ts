@@ -7,15 +7,15 @@ import { buildStatusOverview } from "./status-overview.ts";
 import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
-import { acquireHost, connectHost, type HostConnection, type HostObservationListener } from "./host-client.ts";
-import { HOST_RUNTIME_VERSION, hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { acquireHost, connectHost, waitForHostRelease, type HostConnection, type HostObservationListener } from "./host-client.ts";
+import { HOST_RUNTIME_VERSION, hostMethodMinVersion, hostPaths, hostUpdatePendingError, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim, observeClaimAsync } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
-import type { ConversationSnapshotPage } from "./durable-observation.ts";
+import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
-export const MANAGER_PROTOCOL = 10;
+export const MANAGER_PROTOCOL = 11;
 export interface AgentCaller {
 	id: string;
 	cwd: string;
@@ -23,12 +23,23 @@ export interface AgentCaller {
 	thinkingLevel?: string;
 	validateModel?: AgentManagerOptions["validateModel"];
 }
+interface AgentSpawnInput {
+	cwd?: string;
+	model?: string;
+	thinkingLevel?: string;
+	name?: string;
+	prompt?: string;
+	trust?: boolean;
+	requestId?: string;
+	origin?: DeliveryOrigin;
+}
 export interface AgentManagerOptions {
 	root: string;
 	agentDir: string;
 	packageDir: string;
 	acquire?: typeof acquireHost;
 	connect?: typeof connectHost;
+	release?: typeof waitForHostRelease;
 	observe?: (metadata: HostMetadata, method: string, params: Record<string, unknown>) => Promise<unknown>;
 	/** Largest delivered-key memory; the oldest key evicts first. */
 	deliveredLimit?: number;
@@ -40,7 +51,8 @@ export interface AgentManagerOptions {
 interface PrimaryClient { send(text: string, details: unknown): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
-interface ListRecordStep { record?: CatalogRecord; complete: boolean }
+interface ListRecordStep { record: CatalogRecord; catalog?: string }
+interface ListBatch { steps: ListRecordStep[]; nextCursor: string | null; complete: boolean }
 
 const DEFAULT_DELIVERED_LIMIT = 1024;
 const DEFAULT_FAILURE_LIMIT = 256;
@@ -139,6 +151,7 @@ export class AgentManager {
 	private readonly options: AgentManagerOptions;
 	private readonly clients = new Map<string, HostConnection>();
 	private readonly opening = new Map<string, Promise<HostConnection>>();
+	private readonly launchRows = new Map<string, AgentConversationSummary>();
 	private readonly recovering = new Set<string>();
 	private recoveryQueue: Promise<void> = Promise.resolve();
 	private readonly recoveryClients = new Map<string, () => void>();
@@ -188,24 +201,31 @@ export class AgentManager {
 		return open;
 	}
 
+	/** Reuse a writer or a launch already owned by this manager; never acquire one. */
+	private async observationConnection(record: CatalogRecord, primary?: PrimaryClient): Promise<HostConnection | undefined> {
+		const existing = this.clients.get(record.storageId);
+		if (existing && !existing.closed) return existing;
+		const pending = this.opening.get(record.storageId);
+		try {
+			const client = await (pending ?? (this.options.connect ?? connectHost)(hostMetadata(record), MANAGED_LINK));
+			if (this.shuttingDown || primary?.signal.aborted) {
+				if (!pending) await client.close().catch(() => undefined);
+				return undefined;
+			}
+			if (!pending) {
+				this.clients.set(record.storageId, client);
+				await this.subscribe(record.storageId, client);
+				if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.noteHostVersion(record.storageId, client.runtimeVersion);
+			}
+			return client;
+		} catch {
+			return undefined;
+		}
+	}
+
 	private async observe(record: CatalogRecord, method: string, params: Record<string, unknown>, primary?: PrimaryClient): Promise<unknown> {
 		if (this.shuttingDown) throw new Error("Agent manager is closed");
-		let client = this.clients.get(record.storageId);
-		if (!client || client.closed) {
-			try {
-				client = await (this.options.connect ?? connectHost)(hostMetadata(record), MANAGED_LINK);
-				if (this.shuttingDown || primary?.signal.aborted) {
-					await client.close().catch(() => undefined);
-					client = undefined;
-				} else {
-					this.clients.set(record.storageId, client);
-					await this.subscribe(record.storageId, client);
-					if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.noteHostVersion(record.storageId, client.runtimeVersion);
-				}
-			} catch {
-				client = undefined;
-			}
-		}
+		const client = await this.observationConnection(record, primary);
 		if (client) return client.request(method, params);
 		if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
 		if (this.options.observe) return this.options.observe(record, method, params);
@@ -213,7 +233,7 @@ export class AgentManager {
 		return observeDurableStorage(record, method, params);
 	}
 
-	async spawn(input: { cwd?: string; model?: string; thinkingLevel?: string; name?: string; prompt?: string; trust?: boolean; requestId?: string; origin?: DeliveryOrigin }, caller: AgentCaller): Promise<unknown> {
+	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		const cwd = realpathSync(resolve(caller.cwd, input.cwd ?? "."));
 		if (!statSync(cwd).isDirectory()) throw new Error("Agent cwd must be a directory");
 		const separator = input.model?.indexOf("/") ?? -1;
@@ -224,12 +244,35 @@ export class AgentManager {
 		if (!validate) throw new Error("Spawn requires the caller's configured model catalog");
 		await validate(model, thinkingLevel);
 		const { record, created } = this.catalog.createTracked({ cwd, model, thinkingLevel, name: input.name, trust: input.trust, ownerId: caller.id, agentDir: this.options.agentDir, packageDir: this.options.packageDir }, input.requestId);
-		let client: HostConnection;
-		try { client = await this.connection(record); }
-		catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
-		const admission = input.prompt ? await client.request("submit", { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...originParams(input.origin) }) : undefined;
-		const outcome = { sessionId: record.storageId, cwd, admission, lifetime: "independent host process" };
-		return this.mutationSnapshot(client, outcome, record.storageId);
+		const row: AgentConversationSummary = {
+			id: record.storageId, storageId: record.storageId, cwd, name: input.name,
+			firstMessage: input.prompt, model: { ...model, thinkingLevel },
+			modifiedAt: Date.parse(record.createdAt), owner: "unknown", state: "starting",
+			cost: 0, partial: false,
+		};
+		return this.startSpawn(record, created, row, input, caller, onCreated);
+	}
+
+	private async startSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+		this.launchRows.set(record.storageId, row);
+		try {
+			const opening = this.connection(record);
+			onCreated?.(row);
+			this.rosterChanged();
+			let client: HostConnection;
+			try { client = await opening; }
+			catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
+			const admission = input.prompt ? await client.request("submit", { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...originParams(input.origin) }) : undefined;
+			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, lifetime: "independent host process" };
+			const result = await this.mutationSnapshot(client, outcome, record.storageId);
+			this.launchRows.set(record.storageId, { ...row, owner: "here" });
+			this.rosterChanged();
+			return result;
+		} catch (error) {
+			if (this.launchRows.get(record.storageId) === row) this.launchRows.delete(record.storageId);
+			this.rosterChanged();
+			throw error;
+		}
 	}
 
 	async control(method: string, input: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
@@ -310,13 +353,17 @@ export class AgentManager {
 		};
 	}
 
-	private async nextListRecord(cursor: ListCursor, cwd?: string): Promise<ListRecordStep> {
-		if (cursor.storage !== undefined) return { record: this.catalog.read(cursor.storage), complete: false };
-		const page = await this.catalog.page({ cursor: cursor.catalog, limit: 1, cwd });
-		cursor.catalog = page.nextCursor ?? undefined;
-		if (page.records.length === 0) return { complete: page.nextCursor === null };
-		cursor.storage = page.records[0].storageId;
-		return { record: page.records[0], complete: false };
+	/** Freeze one bounded catalog batch before observations publish metadata rewrites. */
+	private async listBatch(cursor: ListCursor, cwd?: string): Promise<ListBatch> {
+		const resumed = cursor.storage !== undefined;
+		if (resumed && cursor.catalog === undefined) throw new Error("List cursor lacks a catalog continuation; restart discovery");
+		const page = await this.catalog.page({ cursor: cursor.catalog, limit: MAX_LIST_VISITS - Number(resumed), cwd });
+		const steps: ListRecordStep[] = [];
+		if (cursor.storage !== undefined) steps.push({ record: this.catalog.read(cursor.storage), catalog: cursor.catalog });
+		for (let index = 0; index < page.records.length; index++) {
+			steps.push({ record: page.records[index], catalog: page.recordCursors[index] ?? undefined });
+		}
+		return { steps, nextCursor: page.nextCursor, complete: page.coverage.complete };
 	}
 
 	private matchesListRow(row: { identity: string; name?: string; firstMessage?: string }, query: string, cwd: string): boolean {
@@ -327,7 +374,7 @@ export class AgentManager {
 
 	private async collectListPage(record: CatalogRecord, cursor: ListCursor, limit: number, rows: unknown[], unavailable: Array<{ storageId: string; reason: string }>): Promise<void> {
 		try {
-			const page = await this.observe(record, "list", { limit, cursor: cursor.native }) as ConversationPage;
+			const page = await this.observe(record, "list", { limit, ...(cursor.native === undefined ? {} : { cursor: cursor.native }) }) as ConversationPage;
 			for (const row of page.items) {
 				if (this.matchesListRow(row, cursor.query, record.cwd)) rows.push({ ...row, sessionId: row.identity, storageId: record.storageId, cwd: record.cwd });
 			}
@@ -344,24 +391,23 @@ export class AgentManager {
 		const cursor = this.listCursor(input);
 		const rows: unknown[] = [];
 		const unavailable: Array<{ storageId: string; reason: string }> = [];
+		const batch = await this.listBatch(cursor, input.cwd);
 		let visits = 0;
-		let complete = false;
-		while (rows.length < limit && visits < MAX_LIST_VISITS) {
-			const step = await this.nextListRecord(cursor, input.cwd);
-			if (step.record === undefined) {
-				complete = step.complete;
-				break;
-			}
+		let index = 0;
+		while (rows.length < limit && visits < MAX_LIST_VISITS && index < batch.steps.length) {
+			const step = batch.steps[index];
+			cursor.storage = step.record.storageId;
+			cursor.catalog = step.catalog;
 			visits += 1;
 			await this.collectListPage(step.record, cursor, limit - rows.length, rows, unavailable);
 			if (cursor.native === undefined) {
 				cursor.storage = undefined;
-				if (!cursor.catalog) {
-					complete = true;
-					break;
-				}
+				index++;
 			}
 		}
+		const exhausted = index === batch.steps.length;
+		if (exhausted) cursor.catalog = batch.nextCursor ?? undefined;
+		const complete = exhausted && batch.complete;
 		return { rows, nextCursor: complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url"), coverage: { complete, storagesVisited: visits, unavailable }, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
 	}
 
@@ -391,7 +437,14 @@ export class AgentManager {
 	}
 
 	private async catalogRows(record: CatalogRecord): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
+		const starting = this.launchRows.get(record.storageId);
 		const view = record.view;
+		if (starting) {
+			const published = view?.rows.find((row) => row.id === record.storageId);
+			if (this.opening.has(record.storageId) || !published || view?.unavailable || (starting.firstMessage && !published.firstMessage))
+				return { rows: [starting], skipped: 0, omitted: 0 };
+			this.launchRows.delete(record.storageId);
+		}
 		if (!view || view.unavailable) {
 			return { skipped: 1, omitted: 0, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: "unknown", state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
 		}
@@ -409,13 +462,14 @@ export class AgentManager {
 	}
 
 	async snapshot(sessionId: string, params: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<ConversationSnapshotPage> {
+		if (this.launchRows.has(storageIdOf(sessionId)) && this.opening.has(storageIdOf(sessionId))) return emptyConversationSnapshot();
 		return this.observe(this.catalog.read(sessionId), "snapshot", { sessionId, ...params }) as Promise<ConversationSnapshotPage>;
 	}
 
 	/**
 	 * Attach-only live observation for one conversation or the storage's task
-	 * graph. A storage with no live writer stays cold and returns undefined, so
-	 * opening a view never launches a host by itself.
+	 * graph. An existing manager-owned launch is shared; without one or a live
+	 * writer, the storage stays cold. Opening a view never launches a host.
 	 */
 	async observeLive(
 		sessionId: string,
@@ -423,25 +477,10 @@ export class AgentManager {
 		listener: HostObservationListener,
 		signal?: AbortSignal,
 	): Promise<(() => void) | undefined> {
-		if (this.shuttingDown) return undefined;
+		if (this.shuttingDown || signal?.aborted) return undefined;
 		const record = this.catalog.read(sessionId);
-		let client = this.clients.get(record.storageId);
-		if (!client || client.closed) {
-			try {
-				client = await (this.options.connect ?? connectHost)(hostMetadata(record), MANAGED_LINK);
-			} catch {
-				// No live writer: the caller keeps its cold reading.
-				return undefined;
-			}
-			if (this.shuttingDown) {
-				await client.close().catch(() => undefined);
-				return undefined;
-			}
-			this.clients.set(record.storageId, client);
-			await this.subscribe(record.storageId, client);
-			if (client.runtimeVersion !== HOST_RUNTIME_VERSION) this.noteHostVersion(record.storageId, client.runtimeVersion);
-		}
-		if (!client.observe) return undefined;
+		const client = await this.observationConnection(record);
+		if (!client?.observe || signal?.aborted) return undefined;
 		const observationScope: HostObservationScope = scope === "tasks" ? { scope: "tasks", sessionId: record.storageId } : { scope: "conversation", sessionId };
 		const observation = await client.observe(observationScope, { ...(signal === undefined ? {} : { signal }) });
 		const off = observation.onFrame(listener);
@@ -648,7 +687,8 @@ export class AgentManager {
 
 	/** One plain status line for an older host. */
 	private updateMessage(version: number): string {
-		return `Host runtime version ${version}; this Pi runs version ${HOST_RUNTIME_VERSION}. It updates when idle.`;
+		const action = version < hostMethodMinVersion("close") ? hostUpdatePendingError("close", version).message : "It updates when idle.";
+		return `Host runtime version ${version}; this Pi runs version ${HOST_RUNTIME_VERSION}. ${action}`;
 	}
 
 	private clearUpdatePending(storageId: string): void {
@@ -657,14 +697,10 @@ export class AgentManager {
 		void this.refreshFooter();
 	}
 
-	/** True when the host reports no active work; undefined when the check itself fails. */
-	private async hostIsIdle(client: HostConnection): Promise<boolean | undefined> {
-		try {
-			const state = await client.request("recovery-state") as { workPending?: boolean };
-			return state.workPending === false;
-		} catch {
-			return undefined;
-		}
+	/** Require explicit proof that neither native work nor delivery remains. */
+	private async hostIsIdle(client: HostConnection): Promise<boolean> {
+		const state = await client.request("recovery-state") as { workPending?: boolean; deliveriesPending?: boolean };
+		return state.workPending === false && state.deliveriesPending === false;
 	}
 
 	/** Count one automatic replacement in the same crash window as a relaunch after an unexpected loss. */
@@ -692,9 +728,30 @@ export class AgentManager {
 		return run;
 	}
 
+	/** A transport disconnect alone is not proof that the writer released its claim. */
+	private async closeHostForUpdate(record: CatalogRecord, client: HostConnection): Promise<void> {
+		const observation = new AbortController();
+		const closed = client.request("close").catch((error: unknown) => {
+			if (!client.closed) throw error;
+		}).then(() => client.close());
+		const released = (this.options.release ?? waitForHostRelease)(hostMetadata(record), {
+			signal: AbortSignal.any([this.lifecycle.signal, observation.signal]),
+			after: closed,
+		});
+		try { await Promise.all([closed, released]); }
+		catch (error) {
+			if (!client.closed) {
+				this.clients.set(record.storageId, client);
+				await this.subscribe(record.storageId, client);
+			}
+			throw error;
+		} finally { observation.abort(); }
+	}
+
 	/** Close one idle older host through its own close method and relaunch it with current code. */
 	private async performHostUpdate(record: CatalogRecord, client: HostConnection, primary?: PrimaryClient): Promise<HostConnection> {
 		if (client.closed || this.clients.get(record.storageId) !== client) return client;
+		if (client.runtimeVersion < hostMethodMinVersion("close")) return client;
 		if ((await this.hostIsIdle(client)) !== true) return client;
 		if (!this.noteReplacement(record.storageId)) return client;
 		// Detach first: the closing host's close notification must not queue an independent recovery.
@@ -705,8 +762,7 @@ export class AgentManager {
 		}
 		this.recoveryClients.get(record.storageId)?.();
 		this.queuedUpdates.delete(record.storageId);
-		try { await client.request("close"); } catch { /* The local close still releases the claim. */ }
-		await client.close().catch(() => undefined);
+		await this.closeHostForUpdate(record, client);
 		if (this.shuttingDown || primary?.signal.aborted) throw new Error("Agent primary released while updating its host");
 		const fresh = await (this.options.acquire ?? acquireHost)(hostMetadata(record), MANAGED_LINK);
 		if (this.shuttingDown) {
@@ -728,7 +784,7 @@ export class AgentManager {
 	private scheduleHostUpdate(storageId: string): void {
 		if (this.shuttingDown || this.queuedUpdates.has(storageId)) return;
 		const client = this.clients.get(storageId);
-		if (!client || client.closed || client.runtimeVersion === HOST_RUNTIME_VERSION) return;
+		if (!client || client.closed || client.runtimeVersion === HOST_RUNTIME_VERSION || client.runtimeVersion < hostMethodMinVersion("close")) return;
 		let record: CatalogRecord;
 		try { record = this.catalog.read(storageId); } catch { return; }
 		this.queuedUpdates.add(storageId);
@@ -756,6 +812,7 @@ export class AgentManager {
 		client.onClose(() => {
 			if (this.clients.get(storageId) !== client) return;
 			this.clients.delete(storageId);
+			this.launchRows.delete(storageId);
 			this.subscriptions.get(storageId)?.();
 			this.subscriptions.delete(storageId);
 			this.hostLost(storageId);
@@ -779,7 +836,7 @@ export class AgentManager {
 			do {
 				this.refreshAgain = false;
 				const page = await this.dashboardPage();
-				const text = formatDurableFooter(page.rows);
+				const text = formatDurableFooter(page.rows, page.coverage);
 				for (const primary of this.primaries.values()) if (!primary.signal.aborted) primary.status?.(text);
 			} while (this.refreshAgain && !this.shuttingDown && this.primaries.size);
 		} catch (error) { this.failures.set("footer", errorText(error)); }
@@ -787,6 +844,7 @@ export class AgentManager {
 	}
 
 	private releaseClients(): void {
+		this.launchRows.clear();
 		for (const close of this.recoveryClients.values()) close();
 		for (const unsubscribe of this.subscriptions.values()) unsubscribe();
 		this.subscriptions.clear();

@@ -1,10 +1,44 @@
 import assert from "node:assert/strict";
-import { existsSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { fixtureMetadata } from "./host-fixture.mts";
+import { DurableHost } from "./durable-host.ts";
+import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fixture.mts";
 import { it } from "node:test";
 import { closeColdObservations, coldObservationMetrics, disposeColdStorage, observeColdStorage, openColdObservationSnapshot, resetColdObservationMetrics, type ColdObservationHooks } from "./cold-observation.ts";
 import { runtimeFixture, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { acquireHost } from "./host-client.ts";
+
+it("rereads an absent storage that appears during its empty observation open", async () => {
+	const root = mkdtempSync(join(tmpdir(), "cold-absent-"));
+	const metadata = fixtureMetadata(root);
+	let host: DurableHost | undefined;
+	try {
+		const first = await observeColdStorage(metadata, "snapshot", { sessionId: metadata.storageId }) as { entries: unknown[] };
+		assert.deepEqual(first.entries, []);
+		assert.equal(existsSync(metadata.storagePath), false);
+		const raced = await observeColdStorage(metadata, "snapshot", { sessionId: metadata.storageId }, {
+			hooks: { open: async (input) => {
+				const empty = await openColdObservationSnapshot(input);
+				host = await DurableHost.open({ ...hostOptions(metadata.storagePath, await fixtureRuntime("answer"), fixtureRegistry()), storageId: metadata.storageId });
+				const admitted = await host.submit({ message: "after storage appeared", requestId: "appeared", origin: "operator" });
+				await host.wait(admitted.submissionId);
+				return empty;
+			} },
+		}) as { entries: unknown[] };
+		assert.deepEqual(raced.entries, [], "source creation during the absent open is not a snapshot error");
+		assert.ok(host);
+		await host.close();
+		host = undefined;
+		const next = await observeColdStorage(metadata, "snapshot", { sessionId: metadata.storageId });
+		assert.match(JSON.stringify(next), /after storage appeared/);
+	} finally {
+		await host?.close();
+		await disposeColdStorage(metadata.storagePath);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 /** Build a real storage with one retained answer through the production runner. */
 async function coldSource(t: { after(fn: () => void): void }) {
@@ -123,14 +157,13 @@ it("leaves the source database and WAL unchanged", async (t) => {
 	await closeColdObservations();
 });
 
-it("rejects a missing or corrupt source without caching it", async (t) => {
+it("rejects a corrupt source without caching it", async (t) => {
 	const { f } = await coldSource(t);
 	resetColdObservationMetrics();
-	await assert.rejects(observeColdStorage({ ...f.metadata, storagePath: join(f.root, "missing.sqlite") }, "status", {}), (error: unknown) => error instanceof Error);
-	assert.equal(coldObservationMetrics().opens, 0, "a failed open is not retained");
 	const corruptPath = join(f.root, "corrupt.sqlite");
 	writeFileSync(corruptPath, "not a sqlite database");
 	await assert.rejects(observeColdStorage({ ...f.metadata, storagePath: corruptPath }, "status", {}), (error: unknown) => error instanceof Error);
+	assert.equal(coldObservationMetrics().opens, 0, "a failed open is not retained");
 	const valid = await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId });
 	assert.ok(valid);
 	await closeColdObservations();

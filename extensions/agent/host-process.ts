@@ -470,6 +470,11 @@ class HostProcessServer implements HostProcess {
 		const requestId = typeof rawRequestId === "string" && rawRequestId !== "" ? rawRequestId : randomUUID();
 		// The runtime contract version is a host-process property; an older host has no branch here and errors below.
 		if (call.member === HOST_RUNTIME_VERSION_MEMBER) return { version: HOST_RUNTIME_VERSION };
+		// Process shutdown owns the transport, runtime, writer claim, and done promise.
+		if (call.member === "close") {
+			await this.shutdown();
+			return {};
+		}
 		try {
 			// Only an observational wait receives the disconnect or cancel signal;
 			// admitted Durable work never sees one.

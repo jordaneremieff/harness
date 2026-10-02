@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -118,6 +118,24 @@ it("does not create state when a snapshot opens an empty storage", async (t) => 
 	}
 });
 
+it("reads absent storage as an empty conversation without creating source files", async (t) => {
+	const storagePath = join(fixtureRoot(t), "absent.sqlite");
+	const observation = await observationFor(storagePath);
+	try {
+		const snapshot = await observation.request("snapshot", { sessionId: fixtureStorageId });
+		assert.deepEqual(snapshot, {
+			entries: [], partial: false, revision: "empty", nextBefore: null,
+			coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false },
+		});
+		assert.deepEqual(await observation.request("list"), { items: [], next: null });
+		await assert.rejects(observation.request("snapshot", { sessionId: "other-storage" }), /does not belong/);
+		await assert.rejects(observation.request("snapshot", { before: -1 }), /positive/);
+		assert.equal(existsSync(storagePath), false);
+		assert.equal(existsSync(`${storagePath}-wal`), false);
+		assert.equal(existsSync(`${storagePath}-shm`), false);
+	} finally { await observation.close(); }
+});
+
 it("bounds the snapshot source before copying", async (t) => {
 	const storagePath = join(fixtureRoot(t), "bounded.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
@@ -126,11 +144,7 @@ it("bounds the snapshot source before copying", async (t) => {
 		DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models: await fixtureRuntime("answer"), registry: fixtureRegistry(), maxSourceBytes: 1 }, BACKGROUND_CONTEXT),
 		/above the 1 byte bound/u,
 	);
-	const missing = join(fixtureRoot(t), "missing.sqlite");
-	await assert.rejects(
-		DurableObservation.open({ backupFrom: missing, storageId: fixtureStorageId, models: await fixtureRuntime("answer"), registry: fixtureRegistry() }, BACKGROUND_CONTEXT),
-		/ENOENT/u,
-	);
+
 	assert.ok(SNAPSHOT_MAX_SOURCE_BYTES >= 1024);
 });
 

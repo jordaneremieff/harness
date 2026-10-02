@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { dashboardText } from "./dashboard-roster.ts";
-import type { HostConnection } from "./host-client.ts";
+import { connectHost, type HostConnection } from "./host-client.ts";
+import { runHost } from "./host-process.ts";
 import { HOST_RUNTIME_VERSION, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { waitUntil } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
@@ -828,80 +829,104 @@ function recordedHost(metadata: HostMetadata, runtimeVersion: number, work: { pe
 	return { connection, requests };
 }
 
-it("replaces an idle older host and moves the caller's request to current code", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const steps: RecordedHost[] = [];
-	let acquired = 0;
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => {
-			acquired += 1;
-			const step = recordedHost(metadata, acquired === 1 ? 0 : HOST_RUNTIME_VERSION, { pending: false });
-			steps.push(step);
-			return step.connection;
-		},
-		connect: noHost,
-	}));
-	const record = createRecord(manager, root);
-	try {
-		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
-		assert.equal(acquired, 2, "one idle replacement");
-		assert.ok(steps[0]?.requests.some((entry) => entry.method === "close"), "the older host closes through its own close method");
-		assert.ok(steps[1]?.requests.some((entry) => entry.method === "submit"), "the caller's request reaches the current host");
-	} finally { manager.close(); }
-});
+for (const version of [0, 1]) {
+	it(`keeps version ${version} readable and blocks its unsafe process close`, async (t) => {
+		const root = fixtureRoot(t);
+		const steps: RecordedHost[] = [];
+		const manager = new AgentManager(managerOptions(root, {
+			acquire: async (metadata) => {
+				const step = recordedHost(metadata, version, { pending: false });
+				steps.push(step);
+				return step.connection;
+			}, connect: noHost,
+		}));
+		const record = createRecord(manager, root);
+		try {
+			await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
+			assert.equal(steps.length, 1, "an unsupported close never triggers acquisition");
+			assert.equal(steps[0].requests.some((entry) => entry.method === "close"), false);
+			const overview = await manager.status() as { failures: Array<{ error: string }> };
+			assert.ok(overview.failures.some((failure) => /Automatic update is blocked/u.test(failure.error)));
+		} finally { manager.close(); }
+	});
+}
 
-it("defers an older host update while it works and replaces it at the next idle notification", { timeout: 15000 }, async (t) => {
+/** Exercise the replacement invariant independently of a version mismatch. */
+function replaceHost(manager: AgentManager, record: CatalogRecord, client: HostConnection): Promise<HostConnection> {
+	return (manager as unknown as { performHostUpdate(record: CatalogRecord, client: HostConnection): Promise<HostConnection> }).performHostUpdate(record, client);
+}
+
+it("replaces an idle host only after its writer claim releases", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const work = { pending: true };
-	const steps: RecordedHost[] = [];
-	let acquired = 0;
+	const connections: HostConnection[] = [];
+	let closing!: () => void;
+	const runtimeClosing = new Promise<void>((resolve) => { closing = resolve; });
+	let release!: () => void;
+	const releaseGate = new Promise<void>((resolve) => { release = resolve; });
 	const manager = new AgentManager(managerOptions(root, {
 		acquire: async (metadata) => {
-			acquired += 1;
-			const step = recordedHost(metadata, acquired === 1 ? 0 : HOST_RUNTIME_VERSION, work);
-			steps.push(step);
-			return step.connection;
-		},
+			if (connections.length > 0) assert.equal(existsSync(hostPaths(metadata).claim), false, "acquisition requires proof of writer release");
+			const client = connections.length === 0 ? await connectHost(metadata, { retryAttempts: 0 }) : recordedHost(metadata, HOST_RUNTIME_VERSION, work).connection;
+			connections.push(client);
+			return client;
+		}, connect: noHost,
+	}));
+	const record = createRecord(manager, root);
+	const host = await runHost(() => ({
+		request: async (method) => method === "recovery-state" ? { workPending: work.pending, deliveriesPending: false } : {},
+		isIdle: () => !work.pending,
+		close: async () => { closing(); await releaseGate; },
+	}), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
+	t.after(async () => { release(); await host.close(); });
+	try {
+		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
+		await replaceHost(manager, record, connections[0]);
+		assert.equal(connections.length, 1, "a busy host is not replaced");
+		work.pending = false;
+		const updated = replaceHost(manager, record, connections[0]);
+		await runtimeClosing;
+		assert.equal(connections.length, 1, "transport closure is not writer-release proof");
+		assert.equal(existsSync(hostPaths(record).claim), true);
+		release();
+		await updated;
+		assert.equal(connections.length, 2);
+		assert.equal(connections[0].closed, true);
+	} finally { release(); manager.close(); }
+});
+
+it("refuses replacement when writer release cannot be confirmed", async (t) => {
+	const root = fixtureRoot(t);
+	const steps: RecordedHost[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => { const step = recordedHost(metadata, HOST_RUNTIME_VERSION, { pending: false }); steps.push(step); return step.connection; },
+		release: async () => { throw new Error("writer claim remains live"); },
 		connect: noHost,
 	}));
 	const record = createRecord(manager, root);
 	try {
 		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
-		assert.equal(acquired, 1, "a busy host is not replaced");
-		assert.equal(steps[0]?.requests.some((entry) => entry.method === "close"), false);
-		work.pending = false;
-		steps[0]?.connection.change();
-		await waitUntil(() => acquired === 2, 10000);
-		assert.ok(steps[0]?.requests.some((entry) => entry.method === "close"), "the idle host closes at its next change notification");
-		assert.equal(steps[0]?.connection.closed, true);
+		await assert.rejects(replaceHost(manager, record, steps[0].connection), /writer claim remains live/u);
+		assert.equal(steps.length, 1);
 	} finally { manager.close(); }
 });
 
-it("stops automatic host replacement at the crash-window cap", { timeout: 15000 }, async (t) => {
+it("stops automatic host replacement at the crash-window cap", async (t) => {
 	const root = fixtureRoot(t);
 	const steps: RecordedHost[] = [];
-	let acquired = 0;
 	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => {
-			acquired += 1;
-			const step = recordedHost(metadata, 0, { pending: false });
-			steps.push(step);
-			return step.connection;
-		},
+		acquire: async (metadata) => { const step = recordedHost(metadata, HOST_RUNTIME_VERSION, { pending: false }); steps.push(step); return step.connection; },
 		connect: noHost,
 	}));
 	const record = createRecord(manager, root);
 	try {
 		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
-		// Each current-but-old host reports idle; change notifications drive the bounded chain.
-		for (let attempt = 0; attempt < 8 && acquired < 4; attempt++) {
-			steps.at(-1)?.connection.change();
-			await new Promise((resolve) => setTimeout(resolve, 40));
+		for (let attempt = 0; attempt < 4; attempt++) {
+			const current = steps.at(-1);
+			assert.ok(current);
+			await replaceHost(manager, record, current.connection);
 		}
-		assert.equal(acquired, 4, "one initial host plus three bounded replacements");
-		steps.at(-1)?.connection.change();
-		await new Promise((resolve) => setTimeout(resolve, 40));
-		assert.equal(acquired, 4, "the cap stops further replacements");
+		assert.equal(steps.length, 4, "one initial host plus three bounded replacements");
 		const status = await manager.status() as { failures: Array<{ error: string }> };
 		assert.ok(status.failures.some((failure) => /update stopped after repeated replacements/u.test(failure.error)));
 	} finally { manager.close(); }

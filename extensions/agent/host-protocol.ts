@@ -23,7 +23,7 @@ export const HOST_SERVICE_ID = "pi.agent.host";
  * reads as version 0, so a current client can recognize it and replace it when
  * it goes idle.
  */
-export const HOST_RUNTIME_VERSION = 1;
+export const HOST_RUNTIME_VERSION = 2;
 /** Method member that reports the runtime version of one live host. */
 export const HOST_RUNTIME_VERSION_MEMBER = "runtime-version";
 /** Chord service identity for the host's coalesced change notifications. */
@@ -226,6 +226,7 @@ export function isRetrySafeHostMethod(method: string): boolean {
  */
 const HOST_METHOD_MIN_VERSION: ReadonlyMap<string, number> = new Map([
 	[HOST_RUNTIME_VERSION_MEMBER, 1],
+	["close", 2],
 	["reset", 1],
 	["timer-schedule", 1],
 	["timer-list", 1],
@@ -241,8 +242,12 @@ export function hostMethodMinVersion(method: string): number {
 }
 
 /** Clear refusal when an older host does not serve a method the caller needs. */
-export function hostUpdatePendingError(method: string): HostError {
-	return new HostError(`This agent's host runs older code and does not support ${method}; it updates when idle.`, "unavailable");
+export function hostUpdatePendingError(method: string, runtimeVersion: number): HostError {
+	const reason = method === "close" ? "cannot close its process safely" : `does not support ${method}`;
+	const action = runtimeVersion < hostMethodMinVersion("close")
+		? "Automatic update is blocked. Close its older Pi clients so an idle host can retire, then use agent_attach."
+		: "It updates when idle.";
+	return new HostError(`This agent's host runs older code and ${reason}. ${action}`, "unavailable");
 }
 
 /**

@@ -8,7 +8,7 @@ import {
 	ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider, Editor, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { createAgentCommand } from "./command.ts";
+import { createAgentCommand, executeAgentAction } from "./command.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import registerAgentExtension from "./index.ts";
 import { defined } from "./test-assertions.mts";
@@ -100,6 +100,20 @@ const rows: AgentConversationSummary[] = [
 		partial: false,
 	},
 ];
+it("passes the dashboard creation callback through the native new action", async () => {
+	const created: string[] = [];
+	const result = await executeAgentAction({
+		name: "new", description: "New agent", args: [{ name: "task", rest: true }],
+		run: async (args, _ctx, onCreated) => {
+			assert.deepEqual(args, ["task"]);
+			onCreated?.(rows[0]);
+			return { text: "Started", sessionId: rows[0].id };
+		},
+	}, ["task"], context().ctx, (row) => created.push(row.id));
+	assert.deepEqual(created, [rows[0].id]);
+	assert.deepEqual(result, { text: "Started", sessionId: rows[0].id });
+});
+
 const page = (items: readonly AgentConversationSummary[]) => ({
 	rows: items,
 	coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null },

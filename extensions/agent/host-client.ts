@@ -10,7 +10,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { JsonValue, ServiceCall, ServiceSubscriptionSnapshot } from "@earendil-works/chord";
 import { Client, ServerError, type ServiceSubscription } from "@earendil-works/pi-client";
@@ -43,6 +43,12 @@ const DEFAULT_RETRY_ATTEMPTS = 1;
 const STDIO_CAPTURE_LIMIT = 64 * 1024;
 const CONNECT_WAIT_LIMIT_MS = 5000;
 const CONNECT_RETRY_INTERVAL_MS = 25;
+const launchedChildren = new Map<number, ChildProcess>();
+
+/** Pi exposes codec failures by Error.name, but does not re-export their class from pi-client. */
+function isProtocolValidationError(error: unknown): error is Error {
+	return error instanceof Error && error.name === "ProtocolValidationError";
+}
 
 export interface HostRequestOptions {
 	/** Durable request ID. Resends reuse it; for `submit` the runtime maps it to the Durable request ID. */
@@ -297,6 +303,11 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions):
 		stdio: ["ignore", "pipe", "pipe"],
 		env: { ...process.env, ...options.env },
 	});
+	if (child.pid !== undefined) {
+		const pid = child.pid;
+		launchedChildren.set(pid, child);
+		child.once("exit", () => { launchedChildren.delete(pid); });
+	}
 	const ready = await waitForReady(child, timeoutMs);
 	detachChild(child);
 	const paths = hostPaths(metadata);
@@ -315,7 +326,14 @@ async function attachLink(metadata: HostMetadata, options: HostLaunchOptions): P
 	const paths = hostPaths(metadata);
 	if (observeClaim(paths.claim, paths.identity).kind !== "live") throw new Error(`no live durable host for ${metadata.storageId}`);
 	const client = await connectWithWait(paths, options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS);
-	return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeVersion: await readRuntimeVersion(client, paths.serverId) };
+	try {
+		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeVersion: await readRuntimeVersion(client, paths.serverId) };
+	} catch (error) {
+		const answered = client.connected;
+		await client.dispose().catch(() => undefined);
+		if (answered) throw new HostError(`Host runtime version unavailable: ${toError(error).message}`, "unavailable", { cause: error });
+		throw error;
+	}
 }
 
 /**
@@ -335,13 +353,47 @@ async function readRuntimeVersion(client: Client, serverId: string): Promise<num
 	}
 }
 
-/** Wait for a dying host's claim to stop reading as live, bounded by the launch timeout. */
-async function waitForClaimRelease(paths: HostPaths, timeoutMs: number): Promise<void> {
-	const deadline = Date.now() + Math.min(timeoutMs, CONNECT_WAIT_LIMIT_MS);
-	while (observeClaim(paths.claim, paths.identity).kind === "live") {
-		if (Date.now() >= deadline) throw new Error("durable host writer claim did not release before its deadline");
-		await new Promise((resolveWait) => setTimeout(resolveWait, CONNECT_RETRY_INTERVAL_MS));
-	}
+/** Observe claim deletion or an owned child exit; the deadline only rejects a stalled shutdown. */
+export function waitForHostRelease(metadata: HostMetadata, options: { signal?: AbortSignal; after?: Promise<unknown> } = {}): Promise<void> {
+	const paths = hostPaths(metadata);
+	const deadline = AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS);
+	const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+	return new Promise<void>((resolveReleased, rejectReleased) => {
+		let watcher: FSWatcher | undefined;
+		const child = launchedChildren.get(claimPid(paths));
+		let settled = false;
+		const finish = (error?: Error): void => {
+			if (settled) return;
+			settled = true;
+			watcher?.close();
+			child?.off("exit", check);
+			signal.removeEventListener("abort", abort);
+			if (error) rejectReleased(error);
+			else resolveReleased();
+		};
+		const check = (): void => {
+			const owner = observeClaim(paths.claim, paths.identity);
+			if (owner.kind === "absent" || owner.kind === "dead") finish();
+			else if (owner.kind === "unknown") finish(new Error(`durable host writer claim cannot be verified: ${owner.error}`));
+		};
+		const abort = (): void => finish(new Error(`durable host writer release was not confirmed before observation ended (claim: ${observeClaim(paths.claim, paths.identity).kind})`, { cause: signal.reason }));
+		if (signal.aborted) { abort(); return; }
+		check();
+		if (settled) return;
+		try {
+			watcher = watch(paths.claim, check);
+			watcher.on("error", (error) => finish(error));
+			child?.once("exit", check);
+			// Recheck at the protocol boundary as well as on persistent filesystem state.
+			void options.after?.then(check, check);
+			signal.addEventListener("abort", abort, { once: true });
+			// Claim state persists, so this read closes the watch-installation gap.
+			check();
+		} catch (error) {
+			check();
+			if (!settled) finish(toError(error));
+		}
+	});
 }
 
 /** Attach to a live host or launch one when the claim is absent, stale, or dead. */
@@ -352,10 +404,11 @@ async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): 
 	if (observation.kind === "live") {
 		try {
 			return await attachLink(metadata, options);
-		} catch {
+		} catch (error) {
+			if (error instanceof HostError || error instanceof ServerError || isProtocolValidationError(error)) throw error;
 			// A killed owner still reads as live until the process is reaped; wait
 			// for the claim to release, then launch the replacement.
-			await waitForClaimRelease(paths, options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS).catch(() => {});
+			await waitForHostRelease(metadata, { signal: AbortSignal.timeout(Math.min(options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS, CONNECT_WAIT_LIMIT_MS)) });
 		}
 	}
 	try {
@@ -457,7 +510,7 @@ class HostConnectionImpl implements HostConnection {
 		if (this.closedValue) return Promise.reject(new Error("durable host connection is closed"));
 		if (!isWellFormedRequestText(method)) return Promise.reject(new HostError("host request method must be 1..128 well-formed characters", "invalid"));
 		if (options.requestId !== undefined && !isWellFormedRequestText(options.requestId)) return Promise.reject(new HostError("host requestId must be 1..128 well-formed characters", "invalid"));
-		if (hostMethodMinVersion(method) > this.runtimeVersionValue) return Promise.reject(hostUpdatePendingError(method));
+		if (hostMethodMinVersion(method) > this.runtimeVersionValue) return Promise.reject(hostUpdatePendingError(method, this.runtimeVersionValue));
 		const signal = options.signal;
 		if (signal?.aborted) return Promise.reject(abortReason(signal));
 		const id = options.requestId ?? randomUUID();
@@ -587,7 +640,7 @@ class HostConnectionImpl implements HostConnection {
 	 */
 	async observe(scope: HostObservationScope, options: { readonly signal?: AbortSignal } = {}): Promise<HostObservation> {
 		if (this.closedValue) throw new Error("durable host connection is closed");
-		if (hostMethodMinVersion("observe-open") > this.runtimeVersionValue) throw hostUpdatePendingError("observe-open");
+		if (hostMethodMinVersion("observe-open") > this.runtimeVersionValue) throw hostUpdatePendingError("observe-open", this.runtimeVersionValue);
 		const signal = options.signal;
 		if (signal?.aborted) throw abortReason(signal);
 		const id = this.nextObservationId;
@@ -756,6 +809,12 @@ class HostConnectionImpl implements HostConnection {
 
 	private handleFailure(call: PendingCall, error: unknown): void {
 		if (!this.pending.has(call.id)) return;
+		// Encoder validation leaves the link connected; a decoder failure closes it.
+		if (isProtocolValidationError(error) && this.client.connected) {
+			this.pending.delete(call.id);
+			call.reject(toError(error));
+			return;
+		}
 		if (error instanceof ServerError) {
 			this.pending.delete(call.id);
 			call.reject(new HostError(error.message, error.code));

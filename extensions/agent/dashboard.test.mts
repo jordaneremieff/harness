@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { fixture, source, row, page, turn } from "./dashboard-test-fixture.mts";
+import { fixture, source, row, page, turn, deferred, conversationFrame } from "./dashboard-test-fixture.mts";
 import { agentState } from "./dashboard-state.ts";
+import type { ConversationFrame } from "./live-frames.ts";
 it("the dashboard opens on the roster and Esc returns without a primary mutation", async () => {
 	const f = fixture();
 	await turn();
@@ -55,6 +56,96 @@ it("a late send receipt keeps a newer draft and never changes focus", async () =
 	assert.equal(agentState(f.state, "one").draft, "newer");
 	f.ui.dispose();
 });
+it("new agent selects its task and starting conversation before host readiness", async () => {
+	const rows = [row("one")];
+	const observed = source(rows);
+	observed.snapshot = async () => ({ entries: [], partial: false, revision: "empty", nextBefore: null });
+	const created = deferred();
+	const release = deferred();
+	const f = fixture(140, 45, observed, {
+		newAgent: async ({ prompt, onCreated }) => {
+			const starting = row("two", { name: undefined, firstMessage: prompt, state: "starting" });
+			rows.push(starting);
+			onCreated(starting);
+			created.resolve();
+			await release.promise;
+			return { text: "Started", sessionId: "two" };
+		},
+	});
+	try {
+		await turn();
+		f.ui.handleInput("n");
+		f.ui.handleInput("Write the startup note");
+		f.ui.handleInput("\r");
+		await created.promise;
+		assert.equal(f.state.selected, "two");
+		assert.equal(f.ui.navigation.screen, "roster");
+		for (const [width, height] of [[140, 45], [80, 24]]) {
+			f.resize(width, height);
+			const screen = f.ui.render(width).join("\n");
+			assert.match(screen, /STARTING/);
+			assert.match(screen, /Starting/);
+			assert.match(screen, /2 working/);
+			assert.match(screen, /Write the startup note/);
+			assert.match(screen, /Message to Write the startup note/);
+			assert.match(screen, /test\/model high.*starting/);
+			assert.doesNotMatch(screen, /Conversation unavailable|Unavailable|Attention|need attention|Message to two|model \?|reasoning \?/);
+		}
+		await turn();
+		assert.match(f.ui.render(140).join("\n"), /STARTING/);
+		assert.doesNotMatch(f.ui.render(140).join("\n"), /Conversation unavailable/);
+	} finally {
+		release.resolve();
+		await turn();
+		f.ui.dispose();
+	}
+});
+
+it("a busy live frame updates the header, roster, and footer together", async () => {
+	const observed = source([row("one", { state: "done" })]);
+	let changed = () => {};
+	observed.subscribe = (listener) => { changed = listener; return () => {}; };
+	let frame: ConversationFrame | undefined;
+	observed.frame = () => frame;
+	observed.availability = () => frame ? { state: "live", at: frame.observedAt } : undefined;
+	const f = fixture(140, 45, observed);
+	try {
+		await turn();
+		frame = conversationFrame();
+		changed();
+		const screen = f.ui.render(140).join("\n");
+		assert.match(screen, /1 working/);
+		assert.match(screen, /Working/);
+		assert.match(screen, /test\/model high.*working/);
+		assert.doesNotMatch(screen, /Done|0 working/);
+		f.ui.handleInput("/");
+		assert.match(f.ui.render(140).join("\n"), /1 working/);
+	} finally { f.ui.dispose(); }
+});
+
+it("a late cold snapshot error never replaces a live conversation", async () => {
+	const observed = source([row("one")]);
+	let fail!: (error: Error) => void;
+	observed.snapshot = () => new Promise((_resolve, reject) => { fail = reject; });
+	let changed = () => {};
+	observed.subscribe = (listener) => { changed = listener; return () => {}; };
+	let frame: ConversationFrame | undefined;
+	observed.frame = () => frame;
+	observed.availability = () => frame ? { state: "live", at: frame.observedAt } : undefined;
+	const f = fixture(140, 45, observed);
+	try {
+		await turn();
+		frame = conversationFrame({ entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Live task", timestamp: 0 }] }] });
+		changed();
+		fail(new Error("ENOENT: source was absent before the host started"));
+		await turn();
+		const screen = f.ui.render(140).join("\n");
+		assert.match(screen, /LIVE/);
+		assert.match(screen, /Live task/);
+		assert.doesNotMatch(screen, /Conversation unavailable|ENOENT/);
+	} finally { f.ui.dispose(); }
+});
+
 it("new agent returns to roster and selects the created identity", async () => {
 	const rows = [row("one")];
 	const observed = source(rows);
@@ -75,9 +166,9 @@ it("new agent returns to roster and selects the created identity", async () => {
 	f.ui.dispose();
 });
 
-it("a conversation that failed to read while its host started rereads when its roster row changes", async (t) => {
+it("a retained conversation reattaches and rereads when a stopped host restarts", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"] });
-	let current = row("new", { state: "working", modifiedAt: 1 });
+	let current = row("new", { state: "stopped", modifiedAt: 1 });
 	const observed = source([current]);
 	let rosterChange = () => {};
 	const refreshed: string[] = [];
@@ -88,11 +179,11 @@ it("a conversation that failed to read while its host started rereads when its r
 	};
 	observed.list = async () => page([current]);
 	observed.refresh = (id) => refreshed.push(id);
+	observed.availability = () => ({ state: "unavailable", at: new Date(0).toISOString() });
 	observed.snapshot = async () => {
 		reads++;
-		if (reads === 1) throw new Error("ENOENT: no such file or directory, stat '/store/durable/new.sqlite'");
 		return {
-			entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Write the note", timestamp: 0 }] }],
+			entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: reads === 1 ? "Stored task" : "Restarted task", timestamp: 0 }] }],
 			partial: false,
 			revision: "2",
 			nextBefore: null,
@@ -101,12 +192,13 @@ it("a conversation that failed to read while its host started rereads when its r
 	const f = fixture(80, 24, observed);
 	await turn();
 	await turn();
-	assert.match(f.ui.render(80).join("\n"), /Conversation unavailable/);
+	assert.match(f.ui.render(80).join("\n"), /RETAINED/);
+	assert.match(f.ui.render(80).join("\n"), /Stored task/);
 	rosterChange();
 	t.mock.timers.tick(250);
 	await turn();
 	assert.deepEqual(refreshed, []);
-	current = row("new", { state: "idle", modifiedAt: 2, cost: 0.43 });
+	current = row("new", { state: "working", modifiedAt: 2, cost: 0.43 });
 	rosterChange();
 	t.mock.timers.tick(250);
 	await turn();
@@ -115,7 +207,7 @@ it("a conversation that failed to read while its host started rereads when its r
 	assert.equal(reads, 2);
 	const screen = f.ui.render(80).join("\n");
 	assert.doesNotMatch(screen, /Conversation unavailable/);
-	assert.match(screen, /Write the note/);
+	assert.match(screen, /Restarted task/);
 	f.ui.dispose();
 });
 

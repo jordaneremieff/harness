@@ -17,7 +17,7 @@ export interface AgentObservationHost {
 export interface AgentObservationSource {
 	list(input?: { cursor?: string }): Promise<AgentConversationPage>;
 	select(id: string | undefined): void;
-	/** Reattach the selected conversation when it has no live frame; a live selection is unchanged. */
+	/** Reattach an unavailable selection; a pending or live attachment is unchanged. */
 	refresh(id: string): void;
 	snapshot(id: string): Promise<AgentConversationSnapshot & { nextBefore?: number | null }>;
 	frame(id: string): ConversationFrame | undefined;
@@ -83,7 +83,13 @@ export function createAgentObservationSource(host: AgentObservationHost): AgentO
 			)
 			.then((release) => {
 				if (token !== generation) release?.();
-				else off = release;
+				else {
+					off = release;
+					if (!release) {
+						availability = { state: "unavailable", at: new Date().toISOString() };
+						notify();
+					}
+				}
 			})
 			.catch(() => {
 				if (token === generation) {
@@ -106,7 +112,7 @@ export function createAgentObservationSource(host: AgentObservationHost): AgentO
 		list: (input) => host.list(input),
 		select,
 		refresh(id) {
-			if (id !== selected || availability?.state === "live") return;
+			if (id !== selected || availability?.state !== "unavailable") return;
 			select(undefined);
 			select(id);
 		},

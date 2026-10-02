@@ -3,6 +3,7 @@ import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
+import { formatCost } from "./agent-footer.ts";
 
 export interface AgentDashboardSnapshot {
 	observedAt: number;
@@ -12,6 +13,7 @@ export interface AgentDashboardSnapshot {
 }
 type StateAppearance = { label: string; glyph: string; color: ThemeColor };
 export const sessionAppearance: Record<AgentConversationSummary["state"], StateAppearance> = {
+	starting: { label: "Starting", glyph: "◌", color: "accent" },
 	working: { label: "Working", glyph: "●", color: "accent" },
 	idle: { label: "Idle", glyph: "○", color: "muted" },
 	done: { label: "Done", glyph: "✓", color: "success" },
@@ -39,7 +41,7 @@ export function elapsed(ms: number): string {
 				: `${Math.floor(seconds / 86400)}d`;
 }
 function costOf(row: AgentConversationSummary): string {
-	return `${row.partial ? "≥" : ""}$${row.cost.toFixed(2)}`;
+	return formatCost(row.cost, row.partial);
 }
 /** Recovery detail for a held storage; an absent report is not a health verdict. */
 function recoveryLines(row: AgentConversationSummary, skipRetry = false): Array<{ color: ThemeColor; text: string }> {
@@ -62,7 +64,12 @@ function recoveryLines(row: AgentConversationSummary, skipRetry = false): Array<
 	return lines;
 }
 function stateLabel(row: AgentConversationSummary): string {
-	const owner = row.owner === "unavailable" ? " · unavailable" : row.owner === "unknown" ? " · stored" : "";
+	const owner =
+		row.owner === "unavailable"
+			? " · unavailable"
+			: row.owner === "unknown" && row.state !== "starting"
+				? " · stored"
+				: "";
 	return `${sessionAppearance[row.state].label}${owner}`;
 }
 /** Attention means the operator must act; a terminal outcome alone is a record. */
@@ -75,7 +82,7 @@ export function needsAttention(row: AgentConversationSummary): boolean {
 }
 export function sectionOf(row: AgentConversationSummary, now: number): string {
 	if (needsAttention(row)) return "Attention";
-	if (row.state === "working") return "Working";
+	if (row.state === "working" || row.state === "starting") return "Working";
 	const today = new Date(now);
 	today.setHours(0, 0, 0, 0);
 	const yesterday = new Date(today);
@@ -118,7 +125,12 @@ export function rosterTotals(snapshot: AgentDashboardSnapshot | undefined): stri
 	const now = snapshot?.observedAt ?? Date.now();
 	const working = rows.filter((row) => sectionOf(row, now) === "Working").length;
 	const attention = rows.filter((row) => sectionOf(row, now) === "Attention").length;
-	return `${working} working${attention ? ` · ${attention} need attention` : ""} · ${rows.some((row) => row.partial) ? "≥" : ""}$${rows.reduce((sum, row) => sum + row.cost, 0).toFixed(2)} retained`;
+	const coverage = snapshot?.coverage;
+	const incomplete =
+		rows.some((row) => row.partial || !Number.isFinite(row.cost)) ||
+		Boolean(coverage && (!coverage.complete || coverage.nextCursor || coverage.skipped || coverage.omitted));
+	const cost = rows.reduce((sum, row) => sum + (Number.isFinite(row.cost) ? row.cost : 0), 0);
+	return `${working} working${attention ? ` · ${attention} need attention` : ""} · ${formatCost(cost, incomplete)} retained`;
 }
 /** Plain-text roster summary for non-TUI reads and status tests. */
 export function dashboardText(snapshot: AgentDashboardSnapshot): string {

@@ -2,6 +2,7 @@ import { initTheme, type KeybindingsManager as AppKeys, type Theme } from "@eare
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TUI } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentConversationPage } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
+import type { ConversationFrame } from "./live-frames.ts";
 import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
 import { createDashboardState } from "./dashboard-state.ts";
 initTheme("dark");
@@ -13,6 +14,20 @@ export const theme = {
 	bold: (text: string) => text,
 } as Theme;
 export const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+export function deferred<T = void>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => { resolve = done; });
+	return { promise, resolve };
+}
+export function conversationFrame(patch: Partial<ConversationFrame> = {}): ConversationFrame {
+	return {
+		scope: "conversation", storageId: "storage", conversationId: 1, revision: 1,
+		observedAt: new Date(0).toISOString(), entries: [], live: [], nextBefore: null,
+		coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false },
+		status: { conversationId: 1 as ConversationFrame["status"]["conversationId"], identity: "one", busy: true, lastText: null, live: {}, inbox: {}, usage: undefined, tasks: [], submissions: [], agent: { model: { provider: "test", modelId: "model" }, thinkingLevel: "high", extensions: [], tools: [] } },
+		...patch,
+	};
+}
 export function row(id = "storage:1", patch: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
 	return {
 		id,
@@ -79,8 +94,9 @@ export function source(rows: readonly AgentConversationSummary[] = [row()]): Age
 export function fixture(width = 80, height = 24, observed = source(), operations?: Partial<DashboardOperations>) {
 	let renders = 0;
 	let closes = 0;
+	const terminal = { rows: height, columns: width };
 	const tui = {
-		terminal: { rows: height, columns: width },
+		terminal,
 		requestRender() {
 			renders++;
 		},
@@ -104,5 +120,5 @@ export function fixture(width = 80, height = 24, observed = source(), operations
 		},
 		{ hide() {}, show() {} },
 	);
-	return { ui, tui, state, counts: () => ({ renders, closes }) };
+	return { ui, tui, state, counts: () => ({ renders, closes }), resize(width: number, height: number) { terminal.columns = width; terminal.rows = height; ui.invalidate(); } };
 }

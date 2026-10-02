@@ -12,7 +12,9 @@
  * One snapshot per storage path is kept while the source identity is unchanged.
  * The identity pins the database and its `-wal` file by device, inode, size,
  * and nanosecond modification time; an absent or unreadable file is part of the
- * key. A changed identity disposes the snapshot and copies again. Results are
+ * key. An absent database uses a transient empty observation, so database
+ * creation never retains an empty cache entry or fails that first empty read.
+ * A changed identity disposes the snapshot and copies again. Results are
  * cached per exact method and serialized parameters under a byte and entry
  * bound. `closeColdObservations()` releases every retained snapshot; eviction
  * and invalidation dispose their own.
@@ -40,8 +42,9 @@ const MAX_STORAGES = 8;
 const MAX_RESULTS_PER_STORAGE = 64;
 const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 
-/** One retained read-only snapshot plus its bounded result cache. */
+/** One read-only snapshot and its bounded result cache; absent sources are transient. */
 interface ColdEntry {
+	readonly transient?: boolean;
 	readonly key: string;
 	readonly handle: ColdObservationHandle;
 	readonly results: Map<string, ColdResult>;
@@ -211,6 +214,10 @@ async function openEntry(storagePath: string, storageId: string, claimPin: strin
 	}
 	const handle = await (hooks?.open ?? openColdObservationSnapshot)({ storagePath, storageId, classifyOwner });
 	const post = sourceState(storagePath);
+	if (pre.db === "absent") {
+		counters.opens += 1;
+		return { key: pre.key, handle, results: new Map(), retainedBytes: 0, transient: true };
+	}
 	if (!stableAfterOpen(pre, post)) {
 		await handle.close().catch(() => undefined);
 		throw new Error(`cold source ${storagePath} changed during the snapshot copy; retry the read`);
@@ -278,8 +285,12 @@ export async function observeColdStorage(metadata: HostMetadata, method: string,
 		const source = claimState(metadata);
 		const classifyOwner = (): ColdOwnerClassification => source.classification;
 		const entry = await acquireEntry(storagePath, metadata.storageId, source.pin, options.hooks, classifyOwner);
-		const value = await readEntry(entry, method, { ...params, cwd: metadata.cwd });
-		return method === "status" ? statusShape(value, metadata) : value;
+		try {
+			const value = await readEntry(entry, method, { ...params, cwd: metadata.cwd });
+			return method === "status" ? statusShape(value, metadata) : value;
+		} finally {
+			if (entry.transient) await entry.handle.close().catch(() => undefined);
+		}
 	});
 }
 

@@ -29,7 +29,7 @@ export interface AgentCommandAction {
 	help?: string;
 	confirm?: string;
 	dialog?(target: DashboardTarget | undefined, ctx: ExtensionContext): Promise<string | AgentActionOutcome | undefined>;
-	run(args: string[], ctx: ExtensionContext): Promise<string | AgentActionOutcome | undefined>;
+	run(args: string[], ctx: ExtensionContext, onCreated?: (row: AgentConversationSummary) => void): Promise<string | AgentActionOutcome | undefined>;
 }
 
 function plain(text: string): string {
@@ -111,8 +111,9 @@ export async function executeAgentAction(
 	action: AgentCommandAction,
 	args: string[],
 	ctx: ExtensionContext,
+	onCreated?: (row: AgentConversationSummary) => void,
 ): Promise<string | AgentActionOutcome | undefined> {
-	return argumentHelp(action, args) ?? (await action.run(args, ctx));
+	return argumentHelp(action, args) ?? (await action.run(args, ctx, onCreated));
 }
 
 /** Human display text for one action result; legacy control JSON is summarized with the agent's display name. */
@@ -207,8 +208,8 @@ export function createAgentCommand(
 						);
 						return { text: actionOutcomeText(result) ?? "Message admitted", sessionId: id };
 					},
-					newAgent: async ({ prompt }) => {
-						const result = await executeAgentAction(requireAction("new"), [prompt], ctx);
+					newAgent: async ({ prompt, onCreated }) => {
+						const result = await executeAgentAction(requireAction("new"), [prompt], ctx, onCreated);
 						return { text: actionOutcomeText(result) ?? "Agent requested", sessionId: outcomeSessionId(result) };
 					},
 					action: async (name, target, surface) => {

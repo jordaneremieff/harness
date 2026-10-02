@@ -186,7 +186,7 @@ const compactionFailure = object({ reason: union([literal("manual"), literal("th
 const autoRetry = object({ attempt: count, maxAttempts: count, delayMs: count, errorMessage: string });
 const dashboardHealth = object({ lastError: Type.Optional(string), compactionFailure: Type.Optional(compactionFailure), autoRetry: Type.Optional(autoRetry) });
 
-/** One dashboard roster row, including an unavailable row with `state: "unavailable"`. */
+/** One dashboard roster row, including host startup and unavailable storage. */
 export const AgentConversationSummarySchema = object({
 	id: string,
 	storageId: string,
@@ -197,7 +197,7 @@ export const AgentConversationSummarySchema = object({
 	modifiedAt: number,
 	owner: union([literal("here"), literal("unavailable"), literal("unknown")]),
 	ownerLabel: Type.Optional(string),
-	state: union([literal("working"), literal("idle"), literal("done"), literal("failed"), literal("stopped"), literal("interrupted"), literal("new"), literal("unavailable")]),
+	state: union([literal("starting"), literal("working"), literal("idle"), literal("done"), literal("failed"), literal("stopped"), literal("interrupted"), literal("new"), literal("unavailable")]),
 	cost: number,
 	partial: boolean,
 	latestReply: Type.Optional(string),

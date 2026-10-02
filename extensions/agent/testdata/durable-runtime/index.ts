@@ -4,7 +4,9 @@
  * process, so it uses only public extension APIs. The test process controls it
  * through the environment:
  *
- * - `DURABLE_TEST_DIR`: directory for readiness markers and the effect file.
+ * - `DURABLE_TEST_DIR`: directory for the effect file and provider request evidence.
+ * - `DURABLE_TEST_NOTIFY`: Unix socket that receives each marker name. The
+ *   test accepts on it before the host starts.
  * - `DURABLE_TEST_MODE`:
  *   - `request`: answer every model request with a pending stream and mark
  *     `requested`. The test kills the host while the request is outstanding.
@@ -20,9 +22,10 @@
  * "unsafe"`, so an interrupted execution is reported as interrupted and never
  * rerun.
  */
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { publishFixtureMarker } from "./signal.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -52,7 +55,11 @@ function controlDir(): string {
 }
 
 function mark(name: string): void {
-	writeFileSync(join(controlDir(), name), `${process.pid}\n`);
+	const socketPath = process.env.DURABLE_TEST_NOTIFY;
+	if (!socketPath) throw new Error("DURABLE_TEST_NOTIFY is required for the durable runtime fixture");
+	void publishFixtureMarker(socketPath, name).catch((error: unknown) => {
+		process.stderr.write(`Fixture marker ${name}: ${String(error)}\n`);
+	});
 }
 
 /** Append one provider request's session options, for the prompt-cache affinity test. */
