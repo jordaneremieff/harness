@@ -72,11 +72,13 @@ export interface PeerTranscriptFactory {
  */
 export interface PeerAgentSource {
 	list(): Promise<AgentConversationPage>;
-	snapshot(id: string): Promise<AgentConversationSnapshot>;
+	snapshot(id: string): Promise<AgentConversationSnapshot & { nextBefore?: number | null }>;
 	/** Newest live conversation frame, or undefined while no live host supplies one. */
 	frame?(id: string): ConversationFrame | undefined;
 	/** Live task graph for the storage that owns one agent identity. */
 	tasks?(id: string): Promise<TasksFrame>;
+	/** One earlier committed page, continued strictly older than `before`; optional. */
+	earlier?(id: string, before: number): Promise<{ entries: readonly AgentConversationEntry[]; nextBefore: number | null }>;
 	subscribe?(listener: () => void): () => void;
 }
 
@@ -129,6 +131,8 @@ export interface PrimaryObserver {
 	attach(ctx: ExtensionContext, pi?: ExtensionAPI): void;
 	/** Forward one public extension event. Unknown event types are ignored. */
 	observe(event: { type: string }): void;
+	/** Re-read the session after an append that emits no extension event. */
+	refresh(): void;
 	snapshot(): PrimarySnapshot;
 	subscribe(listener: () => void): () => void;
 	sendPlain(text: string, mode: PrimarySubmitMode): void;
@@ -174,6 +178,8 @@ export interface PeerWindowState {
 	nativeDraftBefore?: string;
 	/** Short-lived operational message, shown in the strip and cleared by actions. */
 	notice?: string;
+	/** Observation clock reading for `notice`; an old notice stays hidden. */
+	noticeAt?: number;
 }
 
 /** Stable state key for one slot value. */

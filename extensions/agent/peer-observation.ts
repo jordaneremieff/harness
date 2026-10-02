@@ -29,6 +29,7 @@ interface AgentState {
 	frame?: ConversationFrame;
 	snapshot?: AgentConversationSnapshot;
 	subscription?: () => void;
+	attaching?: boolean;
 }
 
 /** A peer source with live frames and host-backed earlier pages. */
@@ -84,14 +85,18 @@ export function createPeerObservationSource(host: PeerObservationHost): PeerObse
 		notify();
 	}
 
-	function ensureAgent(id: string): AgentState {
-		const existing = agents.get(id);
-		if (existing !== undefined) return existing;
-		const state: AgentState = {};
-		agents.set(id, state);
+	/**
+	 * Attach one live conversation observation when none is live. A reopened
+	 * window releases and re-reads: the cached frame must not block a new
+	 * subscription after the previous window closed.
+	 */
+	function attachAgent(id: string, state: AgentState): void {
+		if (state.subscription !== undefined || state.attaching === true) return;
+		state.attaching = true;
 		void host
 			.observeLive(id, "conversation", (frame) => onFrame(id, frame), undefined)
 			.then((off) => {
+				state.attaching = false;
 				if (off === undefined) return;
 				if (!attached || agents.get(id) !== state) {
 					off();
@@ -99,7 +104,20 @@ export function createPeerObservationSource(host: PeerObservationHost): PeerObse
 				}
 				state.subscription = off;
 			})
-			.catch(() => undefined);
+			.catch(() => {
+				state.attaching = false;
+			});
+	}
+
+	function ensureAgent(id: string): AgentState {
+		const existing = agents.get(id);
+		if (existing !== undefined) {
+			attachAgent(id, existing);
+			return existing;
+		}
+		const state: AgentState = {};
+		agents.set(id, state);
+		attachAgent(id, state);
 		return state;
 	}
 
@@ -132,11 +150,10 @@ export function createPeerObservationSource(host: PeerObservationHost): PeerObse
 		for (const state of agents.values()) {
 			state.subscription?.();
 			state.subscription = undefined;
+			state.attaching = false;
 		}
-		for (const [storageId, off] of taskSubscriptions) {
-			off();
-			taskSubscriptions.set(storageId, () => {});
-		}
+		for (const off of taskSubscriptions.values()) off();
+		taskSubscriptions.clear();
 	}
 
 	return {

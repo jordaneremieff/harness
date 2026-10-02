@@ -5,8 +5,9 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { initTheme, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, KeybindingsManager as Keys, setKeybindings, TUI_KEYBINDINGS, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry, AgentConversationPage, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
-import type { ConversationFrame, TaskGraphRow, TasksFrame } from "./live-frames.ts";
+import type { ConversationFrame, ObservationFrame, TaskGraphRow, TasksFrame } from "./live-frames.ts";
 import { createPeerWindowState, type PeerAgentActions, type PeerAgentSource, type PeerWindowState, type PrimaryObserver, type PrimarySnapshot } from "./peer-contract.ts";
+import { createPeerObservationSource, type PeerObservationHost } from "./peer-observation.ts";
 import { PeerWindow } from "./peer-window.ts";
 
 initTheme("dark");
@@ -51,6 +52,8 @@ class FakePrimary implements PrimaryObserver {
 	sent: Array<{ text: string; mode: string }> = [];
 	handed: Array<{ text: string; previous: string }> = [];
 	editor = "";
+	private readonly listeners = new Set<() => void>();
+	private queued: AgentConversationEntry[] = [];
 	constructor(entries: readonly AgentConversationEntry[] = [userEntry("u1", "hello primary")]) {
 		this.value = {
 			descriptor: { id: "primary", kind: "primary", name: "this Pi", cwd: "/work", model: "test/m", thinkingLevel: "high", state: "primary" },
@@ -63,7 +66,13 @@ class FakePrimary implements PrimaryObserver {
 	}
 	attach(): void {}
 	observe(): void {}
-	subscribe(): () => void { return () => {}; }
+	subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+	queueNotice(entry: AgentConversationEntry): void { this.queued.push(entry); }
+	refresh(): void {
+		if (this.queued.length) this.value = { ...this.value, revision: `${this.value.revision}+`, entries: [...this.value.entries, ...this.queued] };
+		this.queued = [];
+		for (const listener of [...this.listeners]) listener();
+	}
 	snapshot(): PrimarySnapshot { return this.value; }
 	sendPlain(text: string, mode: string): void { this.sent.push({ text, mode }); }
 	handoffToNative(text: string): string { const previous = this.editor; this.editor = text; this.handed.push({ text, previous }); return previous; }
@@ -72,13 +81,15 @@ class FakePrimary implements PrimaryObserver {
 
 class FakeSource implements PeerAgentSource {
 	rows: AgentConversationSummary[] = [];
-	snapshots = new Map<string, AgentConversationSnapshot>();
+	snapshots = new Map<string, AgentConversationSnapshot & { nextBefore?: number | null }>();
 	frames = new Map<string, ConversationFrame>();
 	taskFrames = new Map<string, TasksFrame>();
+	earlierCalls: Array<{ id: string; before: number }> = [];
+	earlierImpl?: (id: string, before: number) => Promise<{ entries: AgentConversationEntry[]; nextBefore: number | null }>;
 	async list(): Promise<AgentConversationPage> {
 		return { rows: this.rows, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date(0).toISOString() };
 	}
-	async snapshot(id: string): Promise<AgentConversationSnapshot> {
+	async snapshot(id: string): Promise<AgentConversationSnapshot & { nextBefore?: number | null }> {
 		const snapshot = this.snapshots.get(id);
 		if (!snapshot) throw new Error(`no snapshot for ${id}`);
 		return snapshot;
@@ -90,6 +101,11 @@ class FakeSource implements PeerAgentSource {
 		const frame = this.taskFrames.get(id);
 		if (!frame) throw new Error(`no tasks for ${id}`);
 		return frame;
+	}
+	async earlier(id: string, before: number): Promise<{ entries: AgentConversationEntry[]; nextBefore: number | null }> {
+		this.earlierCalls.push({ id, before });
+		if (!this.earlierImpl) throw new Error(`no earlier page for ${id}`);
+		return this.earlierImpl(id, before);
 	}
 }
 
@@ -113,12 +129,13 @@ function agentState(id = "agent:a"): PeerWindowState {
 	return state;
 }
 
-function harness(options: { rows?: number; columns?: number; primary?: FakePrimary; rowsValue?: AgentConversationSummary[]; snapshots?: Map<string, AgentConversationSnapshot>; configuredState?: PeerWindowState; runActions?: (target: AgentConversationSummary | undefined) => Promise<{ text: string; sessionId?: string } | undefined> } = {}): Harness {
+function harness(options: { rows?: number; columns?: number; primary?: FakePrimary; rowsValue?: AgentConversationSummary[]; snapshots?: Map<string, AgentConversationSnapshot & { nextBefore?: number | null }>; configuredState?: PeerWindowState; runActions?: (target: AgentConversationSummary | undefined) => Promise<{ text: string; sessionId?: string } | undefined>; source?: PeerAgentSource } = {}): Harness {
 	const tui = { terminal: { rows: options.rows ?? 45, columns: options.columns ?? 140 }, requestRender() {} };
 	const primary = options.primary ?? new FakePrimary();
-	const source = new FakeSource();
-	source.rows = options.rowsValue ?? [];
-	source.snapshots = options.snapshots ?? new Map();
+	const fake = new FakeSource();
+	fake.rows = options.rowsValue ?? [];
+	fake.snapshots = options.snapshots ?? new Map();
+	const source = options.source ?? fake;
 	const actions: Array<{ name: string; input: unknown }> = [];
 	const impl: PeerAgentActions = {
 		async submit(input) { actions.push({ name: "submit", input }); return { text: "Sent", sessionId: input.id }; },
@@ -129,7 +146,7 @@ function harness(options: { rows?: number; columns?: number; primary?: FakePrima
 	let doneCount = 0;
 	const state = options.configuredState ?? createPeerWindowState();
 	const window = new PeerWindow(tui as unknown as TUI, theme, keys, () => { doneCount++; }, state, { source, primary, actions: impl, runActions: options.runActions, cwd: "/work", sessionId: "session-1", now: () => 0, refreshMs: 0 });
-	return { window, primary, source, state, actions, done: () => doneCount, tui };
+	return { window, primary, source: fake, state, actions, done: () => doneCount, tui };
 }
 
 function type(window: PeerWindow, text: string): void {
@@ -268,6 +285,24 @@ it("opens the live task graph and selects a conversation peer", async () => {
 	screen = stripVTControlCharacters(h.window.render(140).join("\n"));
 	assert.doesNotMatch(screen, /TASKS {2}2 tasks/, "the tasks view closes on selection");
 	assert.ok([h.state.left, h.state.right].some((slot) => slot?.kind === "agent" && slot.id === "agent:other"), "the task conversation opens as a peer");
+});
+
+it("shows a quiet primary notice in the open window without reopening it", async () => {
+	const primary = new FakePrimary([]);
+	const h = harness({ primary });
+	await h.window.ready();
+	h.window.render(140);
+	primary.queueNotice({
+		id: "quiet-1",
+		kind: "pi.custom_message",
+		model: [{ role: "user", content: "placeholder", timestamp: 5 }],
+		data: { customType: "agent.peer", content: "Agent “reader” finished.\n\nQUIET BODY", details: { label: "reader", status: "done" } },
+	});
+	assert.doesNotMatch(h.window.render(140).join("\n"), /QUIET BODY/, "the cached projection hides the append until the observer re-reads");
+	primary.refresh();
+	const screen = h.window.render(140).join("\n");
+	assert.match(screen, /QUIET BODY/);
+	assert.match(screen, /\[agent\] reader · finished/);
 });
 
 it("pairs the primary with the working agent on first open", async () => {
@@ -461,6 +496,96 @@ it("opens the command-layer action list from the View menu", async () => {
 	assert.equal(targets.length, 1);
 	assert.equal(targets[0]?.id, "agent:a");
 	assert.equal(h.state.notice, "Action outcome");
+});
+
+it("prepends an earlier page without losing the reading position", async () => {
+	const newest = Array.from({ length: 60 }, (_, index) => userEntry(`p2-${index}`, `page two line ${index}`));
+	const h = harness({ rows: 24, columns: 80, rowsValue: [{ ...agentRow(), firstMessage: undefined }], snapshots: new Map([["agent:a", { entries: newest, partial: true, revision: "page-2", nextBefore: 100 }]]), configuredState: agentState() });
+	h.source.earlierImpl = async () => ({ entries: [userEntry("p1-0", "page one line 0"), userEntry("p1-1", "page one line 1")], nextBefore: 50 });
+	await h.window.ready();
+	h.window.handleInput(F3);
+	h.window.render(80);
+	type(h.window, "/scroll top");
+	h.window.handleInput(ENTER);
+	const before = stripVTControlCharacters(h.window.render(80).join("\n")).split("\n");
+	const beforeRow = before.findIndex((line) => line.includes("page two line 0"));
+	assert.ok(beforeRow >= 3);
+	assert.equal(h.state.panes.get("agent:agent:a")?.view.anchor?.id, "p2-0");
+
+	type(h.window, "/scroll top");
+	h.window.handleInput(ENTER);
+	await flush();
+	assert.equal(h.source.earlierCalls.length, 1);
+	const after = stripVTControlCharacters(h.window.render(80).join("\n")).split("\n");
+	assert.equal(after.findIndex((line) => line.includes("page two line 0")), beforeRow, "the anchored block stays on its row after the prepend");
+	assert.equal(h.state.panes.get("agent:agent:a")?.view.anchor?.id, "p2-0");
+});
+
+it("drops the summary first task once the real first entry loads", async () => {
+	const h = harness({ rowsValue: [{ ...agentRow(), firstMessage: "first task line" }], snapshots: new Map([["agent:a", { entries: [userEntry("p2-0", "second message")], partial: true, revision: "page-2", nextBefore: 100 }]]), configuredState: agentState() });
+	h.source.earlierImpl = async () => ({ entries: [userEntry("first", "first task line")], nextBefore: null });
+	await h.window.ready();
+	h.window.handleInput(F3);
+	let screen = stripVTControlCharacters(h.window.render(140).join("\n"));
+	assert.equal(screen.split("first task line").length - 1, 1, "the summary block fills the gap before the page loads");
+
+	type(h.window, "/scroll top");
+	h.window.handleInput(ENTER);
+	await flush();
+	screen = stripVTControlCharacters(h.window.render(140).join("\n"));
+	assert.equal(screen.split("first task line").length - 1, 1, "the real first entry replaces the summary block, not both");
+	assert.match(screen, /Start of conversation · 0 earlier/);
+});
+
+it("does not issue overlapping earlier reads", async () => {
+	const newest = Array.from({ length: 40 }, (_, index) => userEntry(`p2-${index}`, `line ${index}`));
+	const h = harness({ rows: 24, columns: 80, rowsValue: [agentRow()], snapshots: new Map([["agent:a", { entries: newest, partial: true, revision: "r", nextBefore: 100 }]]), configuredState: agentState() });
+	let resolvePage!: (page: { entries: AgentConversationEntry[]; nextBefore: number | null }) => void;
+	h.source.earlierImpl = () => new Promise((resolve) => { resolvePage = resolve; });
+	await h.window.ready();
+	h.window.handleInput(F3);
+	h.window.render(80);
+	type(h.window, "/scroll top");
+	h.window.handleInput(ENTER);
+	h.window.handleInput(PAGE_UP);
+	h.window.handleInput(PAGE_UP);
+	assert.equal(h.source.earlierCalls.length, 1, "a read in flight blocks a second read");
+	resolvePage({ entries: [userEntry("p1-0", "older line")], nextBefore: 50 });
+	await flush();
+	h.window.render(80);
+	type(h.window, "/scroll top");
+	h.window.handleInput(ENTER);
+	await flush();
+	type(h.window, "/scroll top");
+	h.window.handleInput(ENTER);
+	await flush();
+	assert.equal(h.source.earlierCalls.length, 2, "the next page reads once the first settles");
+});
+
+it("re-attaches live observation when the window reopens and shows new entries", async () => {
+	let observeCalls = 0;
+	const listeners = new Set<(frame: ObservationFrame, fresh: boolean) => void>();
+	const host: PeerObservationHost = {
+		async list() { return { rows: [agentRow()], coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: new Date(0).toISOString() }; },
+		async snapshot() { return { entries: [], partial: false, revision: "snapshot", nextBefore: null, coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false } }; },
+		async observeLive(_id, scope, listener) { if (scope !== "conversation") return undefined; observeCalls++; listeners.add(listener); return () => { listeners.delete(listener); }; },
+	};
+	const source = createPeerObservationSource(host);
+	const push = (frame: ConversationFrame): void => { for (const listener of [...listeners]) listener(frame, false); };
+	const state = agentState();
+	const first = harness({ configuredState: state, source });
+	await first.window.ready();
+	push(liveFrame({ revision: 1, entries: [userEntry("u1", "first task")] }));
+	assert.match(stripVTControlCharacters(first.window.render(140).join("\n")), /first task/);
+	first.window.dispose();
+	assert.equal(listeners.size, 0, "the closed window releases its observation");
+
+	const second = harness({ configuredState: state, source });
+	await second.window.ready();
+	assert.equal(observeCalls, 2, "the reopened window re-attaches the observation");
+	push(liveFrame({ revision: 2, entries: [userEntry("u1", "first task"), userEntry("u2", "second task")] }));
+	assert.match(stripVTControlCharacters(second.window.render(140).join("\n")), /second task/);
+	second.window.dispose();
 });
 
 it("keeps a 1,000-block transcript warm at 140 columns inside the frame budget", async (t) => {

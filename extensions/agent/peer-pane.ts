@@ -98,6 +98,8 @@ export class PeerPane {
 	readonly composer: PeerComposer;
 	descriptor?: PeerDescriptor;
 	notice?: string;
+	/** Earlier-page status, shown on the pane status line. */
+	pagination?: string;
 	error?: string;
 	submitting = false;
 	/** True when this pane's peer holds a replaced native editor draft for explicit restore. */
@@ -180,6 +182,16 @@ export class PeerPane {
 		this.captureView();
 	}
 
+	/** True when the reading position is at the first loaded line, before any earlier page. */
+	atTop(): boolean {
+		return this.scroll.viewportHeight > 0 && this.scroll.scrollTop <= 0;
+	}
+
+	/** Re-apply the saved anchor after a prepend, so the reading position stays. */
+	reanchor(): void {
+		if (!this.state.view.follow) this.restored = false;
+	}
+
 	/** Persist the composer draft text into the shared state. */
 	saveDraft(): void {
 		if (!this.submitting) this.state.draft = this.composer.getText();
@@ -226,7 +238,7 @@ export class PeerPane {
 		const suffix = descriptor?.kind === "primary" && descriptor.detail ? `  ${descriptor.detail}` : "";
 		const titleText = `${marker} ${theme.bold(truncateToWidth(`${name}${suffix}`, Math.max(0, width - 2)))}`;
 		const status = descriptor
-			? [basename(descriptor.cwd) || descriptor.cwd, modelText(descriptor), stateText(descriptor.state), this.notice ?? (this.submitting ? "sending…" : undefined)].filter(Boolean).join(" · ")
+			? [basename(descriptor.cwd) || descriptor.cwd, modelText(descriptor), stateText(descriptor.state), this.pagination, this.notice ?? (this.submitting ? "sending…" : undefined)].filter(Boolean).join(" · ")
 			: this.error ?? "loading…";
 		return [fitLine(titleText, width), fitLine(theme.fg(this.error ? "warning" : "muted", truncateToWidth(status, width)), width)];
 	}

@@ -243,6 +243,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			send: (text, details) => {
 				const wake = !(details !== null && typeof details === "object" && (details as { wake?: unknown }).wake === false);
 				pi.sendMessage({ customType: "agent.peer", content: text, details, display: true }, wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false });
+				// The idle quiet path appends without an extension event; the pane re-reads the session directly.
+				if (!wake) primaryObserver.refresh();
 			},
 			status: (text) => ctx.ui.setStatus("agent", text),
 			promptTrust: (cwd) => ctx.hasUI ? promptProjectTrust(cwd, { select: (question, options) => ctx.ui.select(question, [...options]) }) : Promise.resolve(undefined),

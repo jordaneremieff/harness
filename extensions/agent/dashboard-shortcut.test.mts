@@ -40,7 +40,7 @@ const primaryValue: PrimarySnapshot = {
 	busy: false,
 };
 const primary: PrimaryObserver = {
-	attach() {}, observe() {}, subscribe: () => () => {}, snapshot: () => primaryValue, sendPlain() {}, handoffToNative: () => "", nativeDraft: () => "",
+	attach() {}, observe() {}, refresh() {}, subscribe: () => () => {}, snapshot: () => primaryValue, sendPlain() {}, handoffToNative: () => "", nativeDraft: () => "",
 };
 
 interface Capture { window?: PeerWindow; opens: number; close?: () => void }

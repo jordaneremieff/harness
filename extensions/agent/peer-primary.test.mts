@@ -182,6 +182,18 @@ it("derives primary cost from assistant usage and state from run events", () => 
 	assert.equal(observer.snapshot().descriptor.state, "idle");
 });
 
+it("re-reads the session after a quiet append that emits no extension event", () => {
+	const fakeWorld = fake() as Fake & { sessionManager: SessionManager; pi: ExtensionAPI };
+	const observer = createPrimaryObserver();
+	observer.attach(fakeWorld.ctx, fakeWorld.pi);
+	assert.equal(observer.snapshot().entries.length, 0);
+	fakeWorld.sessionManager.appendCustomMessageEntry("agent.peer", "quiet notice", true);
+	assert.equal(observer.snapshot().entries.length, 0, "the cached projection stays until the observer re-reads");
+	observer.refresh();
+	const snapshot = observer.snapshot();
+	assert.equal(snapshot.entries.filter((entry) => textOf(entry).includes("quiet notice")).length, 1);
+});
+
 it("hands a draft to the native editor and returns the replaced draft", () => {
 	const fakeWorld = fake() as Fake & { sessionManager: SessionManager; pi: ExtensionAPI };
 	const observer = createPrimaryObserver();

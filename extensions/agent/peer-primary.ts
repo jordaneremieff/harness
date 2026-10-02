@@ -254,6 +254,16 @@ class PrimaryObserverImpl implements PrimaryObserver {
 		return () => { this.listeners.delete(listener); };
 	}
 
+	/**
+	 * Re-read the session after an append that emits no extension event, such as
+	 * the idle path of a quiet custom message.
+	 */
+	refresh(): void {
+		this.projectionDirty = true;
+		this.liveVersion++;
+		this.emit();
+	}
+
 	sendPlain(text: string, mode: PrimarySubmitMode): void {
 		if (!this.pi) throw new Error("The primary is not attached to this Pi session");
 		const busy = this.ctx ? !this.ctx.isIdle() : false;

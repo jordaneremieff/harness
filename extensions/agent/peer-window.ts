@@ -13,10 +13,13 @@ import { firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
 import { agentDescriptor, createPeerWindowState, paneState, peerKey, type PeerAgentActions, type PeerAgentSource, type PeerActionResult, type PeerSlot, type PeerWindowState, type PrimaryObserver, type PeerTranscriptFactory } from "./peer-contract.ts";
 import { agentConversationTranscripts, PeerPane } from "./peer-pane.ts";
+import type { ConversationFrame } from "./live-frames.ts";
 import { PeerTasksView } from "./peer-tasks.ts";
 import { classifySubmit, committedEntryChoices, placementForNew, setSlot, slotOf, slotValue, type LocalCommand } from "./peer-actions.ts";
 
 const SPACE = " ";
+/** How long a transient strip status stays before it expires. */
+const NOTICE_MS = 8000;
 /** Strip hints in display order; the focus hints lead and the Esc hint ends the line. */
 const STRIP_HINTS = ["F2 primary", "F3 agent", "F4 expand", "F6 All", "F7 new", "F8 tasks", "PgUp/PgDn scroll", "/help", "Esc Pi"];
 /** Narrow terminals drop these first; the focus and Esc hints stay longest. */
@@ -106,9 +109,23 @@ interface DialogState {
 	onAccept?: (value: string) => void;
 }
 
+/** One agent's accumulated earlier pages plus the newest reading. */
+interface EarlierState {
+	/** Older committed pages, oldest first, prepended before the newest page. */
+	entries: AgentConversationEntry[];
+	/** Continuation bound after the oldest loaded entry; null when the first entry is loaded. */
+	nextBefore: number | null;
+	loading: boolean;
+	startReached: boolean;
+	error?: string;
+	/** Entry count already applied to the pane, so a prepend can re-anchor once. */
+	applied: number;
+}
+
 interface AgentCache {
 	summary?: AgentConversationSummary;
-	snapshot?: AgentConversationSnapshot;
+	snapshot?: AgentConversationSnapshot & { nextBefore?: number | null };
+	earlier?: EarlierState;
 	error?: string;
 }
 
@@ -132,6 +149,7 @@ export class PeerWindow implements Component {
 	private actionRunning = false;
 	private refreshTimer?: ReturnType<typeof setInterval>;
 	private unsubscribe?: () => void;
+	private primaryUnsubscribe?: () => void;
 	private renderRequestedAt?: number;
 	private lastBodyHeight = 12;
 	private defaultAgentResolved = false;
@@ -147,6 +165,7 @@ export class PeerWindow implements Component {
 		this.readyPromise = this.refresh();
 		this.scheduleRefresh();
 		this.unsubscribe = host.source.subscribe?.(() => { void this.refresh(); });
+		this.primaryUnsubscribe = host.primary.subscribe(() => this.requestRender());
 	}
 
 	/** Resolves after the first roster read settles; rendering never waits on it. */
@@ -165,6 +184,8 @@ export class PeerWindow implements Component {
 		this.refreshTimer = undefined;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
+		this.primaryUnsubscribe?.();
+		this.primaryUnsubscribe = undefined;
 	}
 
 	private finish(): void {
@@ -194,6 +215,12 @@ export class PeerWindow implements Component {
 		if (this.closed) return;
 		this.renderRequestedAt = this.host.now();
 		this.tui.requestRender();
+	}
+
+	/** Transient strip status; a new action replaces it and it expires after a short time. */
+	private setNotice(text: string): void {
+		this.state.notice = text;
+		this.state.noticeAt = this.host.now();
 	}
 
 	/** Read the bounded roster and the visible agent transcripts again. */
@@ -261,6 +288,50 @@ export class PeerWindow implements Component {
 		}));
 	}
 
+	/** Read the next earlier page for the focused agent pane, when the source pages. */
+	private loadEarlierFocused(): void {
+		const id = this.focusedAgentId();
+		if (id && typeof this.host.source.earlier === "function") void this.loadEarlier(id);
+	}
+
+	/** One earlier committed page; a read in flight blocks a second read for the same agent. */
+	private async loadEarlier(id: string): Promise<void> {
+		const source = this.host.source;
+		const read = source.earlier;
+		if (typeof read !== "function") return;
+		const cache = this.agents.get(id) ?? {};
+		this.agents.set(id, cache);
+		let earlier = cache.earlier;
+		if (earlier === undefined) {
+			earlier = { entries: [], nextBefore: null, loading: false, startReached: false, applied: 0 };
+			cache.earlier = earlier;
+		}
+		if (earlier.loading || earlier.startReached) return;
+		const frame = source.frame?.(id);
+		const bound = earlier.entries.length > 0 ? earlier.nextBefore : (frame ? frame.nextBefore : cache.snapshot?.nextBefore ?? null);
+		if (bound === null || bound === undefined) {
+			earlier.startReached = true;
+			this.requestRender();
+			return;
+		}
+		earlier.loading = true;
+		earlier.error = undefined;
+		earlier.nextBefore = bound;
+		this.requestRender();
+		try {
+			const page = await read.call(source, id, bound);
+			if (this.closed) return;
+			earlier.entries = [...page.entries, ...earlier.entries];
+			earlier.nextBefore = page.nextBefore;
+			earlier.startReached = page.nextBefore === null;
+		} catch (error) {
+			earlier.error = errorText(error);
+		} finally {
+			earlier.loading = false;
+			this.requestRender();
+		}
+	}
+
 	// ----- view sync -----------------------------------------------------------------
 
 	private paneFor(slot: Exclude<PeerSlot, undefined>): PeerPane {
@@ -320,21 +391,59 @@ export class PeerWindow implements Component {
 		const summary = this.rows.find((row) => row.id === id) ?? cache.summary;
 		pane.nativeDraftSaved = false;
 		pane.setDescriptor(summary ? agentDescriptor(summary) : { id, kind: "agent", name: id, cwd: this.host.cwd, state: "new" });
-		const frame = this.host.source.frame?.(id);
-		const snapshot = frame ? { entries: frame.entries, partial: !frame.coverage.complete, revision: `live:${frame.revision}` } : cache.snapshot;
-		const entries = snapshot ? renderableEntries(snapshot.entries) : [];
-		const first = snapshot ? firstTaskEntry(snapshot, summary ?? {}) : undefined;
+		const { frame, snapshot } = this.agentPaneReading(id, cache);
+		const earlier = cache.earlier;
+		const older = earlier?.entries ?? [];
+		const entries = this.agentEntries(older, snapshot);
+		const first = this.summaryFirstTask(snapshot, earlier, summary);
 		const liveEntries = frame ? renderableEntries(frame.live) : [];
+		this.applyEarlier(earlier, older, pane);
 		pane.setContent({
 			entries: first ? [first, ...entries] : entries,
-			revision: snapshot?.revision ?? `loading:${id}`,
+			revision: `${snapshot?.revision ?? `loading:${id}`}|earlier:${older.length}:${earlier?.startReached ? 1 : 0}`,
 			live: liveEntries,
 			liveRevision: frame ? `live-${frame.revision}-${liveEntries.map(entrySignature).join(",")}` : "none",
 			cwd: summary?.cwd ?? this.host.cwd,
 			expanded: state.view.expanded,
 			showThinking: state.view.showThinking,
 		});
+		pane.pagination = this.paginationText(earlier);
 		pane.error = frame ? undefined : cache.error;
+	}
+
+	/** The summary block fills the gap only until the first real entry is loaded. */
+	private summaryFirstTask(snapshot: (AgentConversationSnapshot & { nextBefore?: number | null }) | undefined, earlier: EarlierState | undefined, summary: AgentConversationSummary | undefined): AgentConversationEntry | undefined {
+		if (!snapshot?.partial || (earlier?.startReached ?? false)) return undefined;
+		return firstTaskEntry(snapshot, summary ?? {});
+	}
+
+	/** Re-anchor the viewport once after a prepend, so the reading position stays. */
+	private applyEarlier(earlier: EarlierState | undefined, older: readonly AgentConversationEntry[], pane: PeerPane): void {
+		if (!earlier || earlier.applied === older.length) return;
+		earlier.applied = older.length;
+		pane.reanchor();
+	}
+
+	/** Prefer the live frame; a cold agent falls back to the last read snapshot. */
+	private agentPaneReading(id: string, cache: AgentCache): { frame: ConversationFrame | undefined; snapshot: (AgentConversationSnapshot & { nextBefore?: number | null }) | undefined } {
+		const frame = this.host.source.frame?.(id);
+		if (frame) return { frame, snapshot: { entries: frame.entries, partial: !frame.coverage.complete, revision: `live:${frame.revision}`, nextBefore: frame.nextBefore } };
+		return { frame: undefined, snapshot: cache.snapshot };
+	}
+
+	/** Older pages first, then the newest page, with empty blocks removed. */
+	private agentEntries(older: readonly AgentConversationEntry[], snapshot: { entries: readonly AgentConversationEntry[] } | undefined): AgentConversationEntry[] {
+		return renderableEntries(snapshot ? [...older, ...snapshot.entries] : older);
+	}
+
+	/** Earlier-page status: in-flight reads, the reached start, and the exact continuation bound. */
+	private paginationText(earlier: EarlierState | undefined): string | undefined {
+		if (!earlier) return undefined;
+		if (earlier.loading) return "Loading earlier entries…";
+		if (earlier.error !== undefined) return `Earlier entries unavailable: ${earlier.error}`;
+		if (earlier.startReached) return earlier.entries.length > 0 ? "Start of conversation · 0 earlier entries" : undefined;
+		if (earlier.entries.length > 0 && earlier.nextBefore !== null) return `Earlier entries not loaded · continue before #${earlier.nextBefore}`;
+		return undefined;
 	}
 
 	private ensureFocusSide(): void {
@@ -390,7 +499,8 @@ export class PeerWindow implements Component {
 
 	private stripLine(width: number): string {
 		const hints = [...STRIP_HINTS];
-		let notice = this.state.notice;
+		const age = this.host.now() - (this.state.noticeAt ?? this.host.now());
+		let notice = age < NOTICE_MS ? this.state.notice : undefined;
 		const build = (): string => {
 			const parts = [`All ${this.rows.length}`, ...hints];
 			if (this.rowsError) parts.push("store unavailable");
@@ -477,7 +587,11 @@ export class PeerWindow implements Component {
 		if (this.handleFunctionKey(data)) return true;
 		if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
 			const delta = Math.max(1, this.lastBodyHeight - 3);
-			this.focusedPane()?.scrollLines(matchesKey(data, "pageUp") ? -delta : delta);
+			const pane = this.focusedPane();
+			if (matchesKey(data, "pageUp")) {
+				if (pane?.atTop()) this.loadEarlierFocused();
+				else pane?.scrollLines(-delta);
+			} else pane?.scrollLines(delta);
 			this.requestRender();
 			return true;
 		}
@@ -602,12 +716,12 @@ export class PeerWindow implements Component {
 		const id = this.focusedAgentId();
 		const tasks = this.host.source.tasks;
 		if (!id) {
-			this.state.notice = "Focus an agent pane to see its live tasks";
+			this.setNotice("Focus an agent pane to see its live tasks");
 			this.requestRender();
 			return;
 		}
 		if (typeof tasks !== "function") {
-			this.state.notice = "Live tasks are unavailable for this source";
+			this.setNotice("Live tasks are unavailable for this source");
 			this.requestRender();
 			return;
 		}
@@ -617,7 +731,7 @@ export class PeerWindow implements Component {
 			source,
 			id,
 			onSelectConversation: (identity) => { this.closeDialog(); this.openPeer(`agent:${identity}`); },
-			onNotice: (text) => { this.state.notice = text; this.requestRender(); },
+			onNotice: (text) => { this.setNotice(text); this.requestRender(); },
 		});
 		this.dialog = { kind: "tasks", title: "Tasks · live graph · ↑↓ select · Enter opens · Esc closes", tasks: view };
 		this.requestRender();
@@ -824,7 +938,7 @@ export class PeerWindow implements Component {
 		if (!pane) return;
 		const draft = this.draftForCommand(pane.key, "continue", submitted);
 		if (draft.trim() === "") {
-			this.state.notice = "Type a draft first";
+			this.setNotice("Type a draft first");
 			this.requestRender();
 			return;
 		}
@@ -836,7 +950,10 @@ export class PeerWindow implements Component {
 		const pane = this.focusedPane();
 		if (!pane) return;
 		const step = Math.max(1, this.lastBodyHeight - 3);
-		if (direction === "top") pane.scrollLines(-Number.MAX_SAFE_INTEGER);
+		if (direction === "top") {
+			if (pane.atTop()) this.loadEarlierFocused();
+			else pane.scrollLines(-Number.MAX_SAFE_INTEGER);
+		}
 		else if (direction === "bottom" || direction === "follow") pane.followTail();
 		else pane.scrollLines(direction === "up" ? -step : step);
 		this.requestRender();
@@ -881,7 +998,7 @@ export class PeerWindow implements Component {
 		const allowed = this.allowedModes();
 		const normalized = mode === "followup" ? "followUp" : mode;
 		if (!allowed.includes(normalized)) {
-			this.state.notice = `Mode ${mode} does not apply here · use ${allowed.join(", ")}`;
+			this.setNotice(`Mode ${mode} does not apply here · use ${allowed.join(", ")}`);
 			this.requestRender();
 			return;
 		}
@@ -956,16 +1073,16 @@ export class PeerWindow implements Component {
 	private async createAgent(prompt: string): Promise<void> {
 		if (this.actionRunning) return;
 		this.actionRunning = true;
-		this.state.notice = "Creating agent…";
+		this.setNotice("Creating agent…");
 		this.requestRender();
 		try {
 			const result = await this.host.actions.newAgent({ prompt: prompt.trim() || undefined });
 			if (this.closed) return;
-			this.state.notice = result.text;
+			this.setNotice(result.text);
 			if (result.sessionId) this.placeNew({ kind: "agent", id: result.sessionId });
 			await this.refresh();
 		} catch (error) {
-			if (!this.closed) this.state.notice = `Create failed: ${errorText(error)}`;
+			if (!this.closed) this.setNotice(`Create failed: ${errorText(error)}`);
 		} finally {
 			this.actionRunning = false;
 			this.requestRender();
@@ -975,19 +1092,19 @@ export class PeerWindow implements Component {
 	private pickEntry(action: "fork" | "repair"): void {
 		const id = this.focusedAgentId();
 		if (!id) {
-			this.state.notice = "Focus an agent pane to fork or repair";
+			this.setNotice("Focus an agent pane to fork or repair");
 			this.requestRender();
 			return;
 		}
 		const snapshot = this.agents.get(id)?.snapshot;
 		if (!snapshot) {
-			this.state.notice = "The agent transcript is not loaded";
+			this.setNotice("The agent transcript is not loaded");
 			this.requestRender();
 			return;
 		}
 		const choices = committedEntryChoices(renderableEntries(snapshot.entries));
 		if (!choices.length) {
-			this.state.notice = "No committed decision is available to fork or repair";
+			this.setNotice("No committed decision is available to fork or repair");
 			this.requestRender();
 			return;
 		}
@@ -1009,13 +1126,13 @@ export class PeerWindow implements Component {
 		try {
 			const result = await run(target);
 			if (this.closed || !result) return;
-			this.state.notice = result.text;
+			this.setNotice(result.text);
 			if (result.sessionId && result.sessionId !== id) {
 				this.placeNew({ kind: "agent", id: result.sessionId }, source);
 				await this.refresh();
 			}
 		} catch (error) {
-			if (!this.closed) this.state.notice = `Action failed: ${errorText(error)}`;
+			if (!this.closed) this.setNotice(`Action failed: ${errorText(error)}`);
 		} finally {
 			this.actionRunning = false;
 			this.requestRender();
@@ -1026,16 +1143,16 @@ export class PeerWindow implements Component {
 		if (this.actionRunning) return;
 		this.actionRunning = true;
 		const source = slotOf(this.state, `agent:${id}`) ?? this.state.focus;
-		this.state.notice = "Forking…";
+		this.setNotice("Forking…");
 		this.requestRender();
 		try {
 			const result = await this.host.actions.fork({ id, entryId });
 			if (this.closed) return;
-			this.state.notice = result.text;
+			this.setNotice(result.text);
 			if (result.sessionId) this.placeNew({ kind: "agent", id: result.sessionId }, source);
 			await this.refresh();
 		} catch (error) {
-			if (!this.closed) this.state.notice = `Fork failed: ${errorText(error)}`;
+			if (!this.closed) this.setNotice(`Fork failed: ${errorText(error)}`);
 		} finally {
 			this.actionRunning = false;
 			this.requestRender();
@@ -1046,16 +1163,16 @@ export class PeerWindow implements Component {
 		if (this.actionRunning) return;
 		this.actionRunning = true;
 		const source = slotOf(this.state, `agent:${id}`) ?? this.state.focus;
-		this.state.notice = "Repairing…";
+		this.setNotice("Repairing…");
 		this.requestRender();
 		try {
 			const result = await this.host.actions.repair({ id, entryId, correction });
 			if (this.closed) return;
-			this.state.notice = result.text;
+			this.setNotice(result.text);
 			if (result.sessionId) this.placeNew({ kind: "agent", id: result.sessionId }, source);
 			await this.refresh();
 		} catch (error) {
-			if (!this.closed) this.state.notice = `Repair failed: ${errorText(error)}`;
+			if (!this.closed) this.setNotice(`Repair failed: ${errorText(error)}`);
 		} finally {
 			this.actionRunning = false;
 			this.requestRender();
