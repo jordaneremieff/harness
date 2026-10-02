@@ -241,11 +241,59 @@ describe("composeLine1", () => {
 });
 
 describe("composeLine2", () => {
-	it("drops statuses from the right and keeps the project label", () => {
-		const statuses = ["one", "two", "three"];
-		assert.equal(composeLine2("~/app (main)", statuses, " | ", 200, visibleWidth), "~/app (main) | one | two | three");
-		assert.equal(composeLine2("~/app (main)", statuses, " | ", 31, visibleWidth), "~/app (main) | one | two");
-		assert.equal(composeLine2("~/app (main)", statuses, " | ", 15, visibleWidth), "~/app (main)");
-		assert.equal(composeLine2("~/app (main)", [], " | ", 200, visibleWidth), "~/app (main)");
+	const project = { folder: "~/app", branch: "main" };
+	function line(width: number, statuses = ["one", "two", "three"], label = project) {
+		return composeLine2(label, statuses, " │ ", width, visibleWidth, plain).replace(/\x1b\[[0-9;:]*m/g, "");
+	}
+
+	it("preserves the complete project and statuses when they fit", () => {
+		assert.equal(line(200), "~/app (main) │ one │ two │ three");
+		assert.equal(line(200, []), "~/app (main)");
+		assert.equal(line(200, [], { folder: "~/app", branch: "" }), "~/app ()");
+	});
+
+	it("shortens the folder from the left before shortening the branch", () => {
+		assert.equal(line(31), "…app (main) │ one │ two │ three");
+		assert.equal(line(27), "~/app │ one │ two │ three");
+		assert.equal(line(22), "…p │ one │ two │ three");
+	});
+
+	it("drops only complete statuses and counts every hidden cell", () => {
+		assert.equal(line(15), "…app │ one │ +2");
+		assert.equal(line(8, ["too long", "also too long"]), "…pp │ +2");
+		assert.equal(line(2), "+3");
+		assert.equal(line(0), "");
+		assert.equal(line(8, ["x".repeat(100), "ok"]), "…pp │ +2", "right shedding preserves publication order");
+	});
+
+	it("counts hidden cells exactly, including multi-digit counts", () => {
+		const statuses = Array.from({ length: 12 }, (_, index) => `entry-${index.toString().padStart(2, "0")}`);
+		for (let width = 3; width <= 160; width++) {
+			const text = line(width, statuses);
+			const shown = text.match(/entry-\d\d/g) ?? [];
+			const hidden = Number(/\+(\d+)$/.exec(text)?.[1] ?? 0);
+			assert.equal(shown.length + hidden, statuses.length, `width ${width}`);
+			assert.deepEqual(shown, statuses.slice(0, shown.length));
+			assert.ok(visibleWidth(text) <= width);
+		}
+	});
+
+	it("fits a lone status by shortening a long branch before dropping it", () => {
+		const label = { folder: "~/Workspace/harness.worktrees/sample", branch: "extension/very-long-topic" };
+		assert.equal(line(40, ["workers 3 · $1.23"], label), "…sample (extension…) │ workers 3 · $1.23");
+		assert.match(line(70, ["workers 3 · $1.23"], label), /^….*sample \(extension\/very-long-topic\)/);
+	});
+
+	it("handles no branch, colored labels, wide glyphs, and all narrow widths", () => {
+		const label = { folder: "\x1b[8;41m/work/文件/👩‍💻project", branch: "\x1b[5m主题" };
+		const statuses = ["\x1b[31mready\x1b[0m", "界面", "last"];
+		for (let width = 0; width <= 140; width++) {
+			const rendered = composeLine2(label, statuses, " │ ", width, visibleWidth, plain);
+			assert.ok(visibleWidth(rendered) <= width, `width ${width}`);
+			assert.doesNotMatch(rendered.replace(/\x1b\[[0-9;:]*m/g, ""), /\x1b|\ufffd/);
+			if (width >= 24) assert.ok(rendered.includes(statuses[0]), "status color survives whole");
+		}
+		const noBranch = composeLine2({ folder: "/work/very-long-path/sample" }, ["ready"], " │ ", 16, visibleWidth, plain);
+		assert.equal(noBranch.replace(/\x1b\[[0-9;:]*m/g, ""), "…/sample │ ready");
 	});
 });

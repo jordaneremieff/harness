@@ -219,6 +219,36 @@ describe("registration and mode gating", () => {
 });
 
 describe("footer render", () => {
+	for (const width of [140, 80, 70, 40]) {
+		it(`keeps generic extension statuses visible with a long project label at ${width} columns`, async () => {
+			const { handlers } = makePi();
+			const mocks = makeCtx({
+				cwd: "/work/Workspace/harness.worktrees/sample",
+				gitBranch: "extension/sample",
+				statuses: new Map([["first", "workers 3 · $1.23"], ["second", "checks ready"], ["third", "links online"]]),
+			});
+			await handlers.get("session_start")(sessionStart, mocks.ctx);
+			const footer = installFooter(mocks);
+			try {
+				const [line1, line2] = footer.render(width);
+				const text = line2.replace(/\x1b\[[0-9;:]*m/g, "");
+				assert.ok(visibleWidth(line2) <= width);
+				assert.match(text, /workers 3 · \$1\.23/);
+				if (width === 140) {
+					assert.equal(text, "/work/Workspace/harness.worktrees/sample (extension/sample) │ workers 3 · $1.23 │ checks ready │ links online");
+				} else if (width >= 70) {
+					assert.match(text, /checks ready │ links online$/);
+					assert.match(text, /^….*sample /, "the last path component stays visible before the branch shrinks");
+				} else {
+					assert.match(text, / │ \+2$/);
+					assert.doesNotMatch(text, /checks ready|links online/);
+				}
+				assert.equal(line1, footer.render(width)[0], "line 1 remains independent of project width allocation");
+			} finally {
+				footer.dispose();
+			}
+		});
+	}
 	it("renders two width-bounded lines with the full segment set", async () => {
 		const { handlers } = makePi();
 		const entries = [

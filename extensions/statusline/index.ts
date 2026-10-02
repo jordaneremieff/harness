@@ -100,11 +100,11 @@ function buildLine2(
 	width: number,
 ): string {
 	// --- Line 2: project + git + extension statuses ---
-	let project = `${fg("muted", sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)))}${RESET}`;
 	const branch = footerData.getGitBranch();
-	if (branch) {
-		project += `${fg("dim", ` (${sanitizeDisplay(branch)})`)}${RESET}`;
-	}
+	const project = {
+		folder: sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)),
+		branch: branch ? sanitizeDisplay(branch) : undefined,
+	};
 	// Each status is bracketed by the reset so a kept SGR sequence cannot bleed
 	// its color into the next cell or the rest of the footer.
 	const statuses: string[] = [];
@@ -112,7 +112,7 @@ function buildLine2(
 		const clean = sanitizeDisplay(text);
 		if (clean) statuses.push(`${RESET}${clean}${RESET}`);
 	}
-	const line = composeLine2(project, statuses, sep, width, visibleWidth);
+	const line = composeLine2(project, statuses, sep, width, visibleWidth, fg);
 
 	// truncateToWidth is ANSI-aware and carries whole sequences, so a sanitized
 	// line cannot come back cut in half; it only needs a closing reset when it

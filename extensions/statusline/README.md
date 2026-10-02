@@ -72,9 +72,15 @@ spinners; replacing the footer does not replace or hide those spinners.
 
 Both lines must fit the terminal width. Line 1 sheds its least actionable
 segments in order — cache rate, cache dot, duration, token count, then cost —
-keeping the model and context bar to the end. Line 2 drops extension statuses
-from the right and always keeps the project label.
-`truncateToWidth` is the final guard on both lines.
+keeping the model and context bar to the end. Line 2 first shortens the folder
+from the left with an ellipsis, preserving its last path component, then shortens
+the branch with an ellipsis or omits it. If necessary, it also shortens the last
+path component from the left. Only when complete extension statuses
+still do not fit with a one-character project label does it drop statuses from
+the right. A `+N` cell reports how many statuses are hidden. At extreme widths,
+that count takes priority over the project label and separator; a viewport too
+small for the count shows only its fitting prefix. Both lines remain unchanged
+when all segments fit. `truncateToWidth` is the final guard on both lines.
 
 ## Line 2: project + git + extension statuses
 

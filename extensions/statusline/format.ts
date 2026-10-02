@@ -1,7 +1,9 @@
 /**
- * Pure formatting for the statusline extension. No Pi imports: every function
- * takes plain values (plus a narrow `fg` colorizer) so tests need no harness.
+ * Pure formatting for the statusline extension. Functions take plain values
+ * (plus a narrow `fg` colorizer); ANSI-aware text helpers need no harness.
  */
+
+import { sliceByColumn, truncateToWidth } from "@earendil-works/pi-tui";
 
 /** Narrow theme colorizer so pure segments stay testable without the TUI theme. */
 export type Fg = (color: string, text: string) => string;
@@ -241,21 +243,61 @@ export function composeLine1(
 	}
 }
 
+export interface Line2Project {
+	folder: string;
+	branch?: string;
+}
+
+const RESET = "\x1b[0m";
+
+/** Keep the most specific end of a path, without splitting ANSI or wide glyphs. */
+function shortenFolder(folder: string, width: number, visibleWidth: (s: string) => number): string {
+	const length = visibleWidth(folder);
+	if (length <= width) return folder;
+	const tailWidth = Math.max(0, width - 1);
+	return `…${sliceByColumn(folder, length - tailWidth, tailWidth, true)}`;
+}
+
+/** Preserve the path's last component before shortening the branch, then the component itself. */
+function fitProject(project: Line2Project, width: number, visibleWidth: (s: string) => number, fg: Fg): string {
+	let { folder, branch } = project;
+	const branchWidth = branch !== undefined ? visibleWidth(branch) + 3 : 0;
+	const lastComponent = folder.slice(folder.lastIndexOf("/") + 1);
+	const specificWidth = Math.min(visibleWidth(folder), visibleWidth(lastComponent) + 1);
+	folder = shortenFolder(folder, Math.max(1, specificWidth, width - branchWidth), visibleWidth);
+	if (branch !== undefined && visibleWidth(folder) + branchWidth > width) {
+		const available = width - visibleWidth(folder) - 3;
+		branch = available >= 1 ? truncateToWidth(branch, available, "…") : undefined;
+		if (branch === undefined) folder = shortenFolder(project.folder, Math.max(1, width), visibleWidth);
+	}
+	folder = shortenFolder(folder, Math.max(1, width - (branch !== undefined ? visibleWidth(branch) + 3 : 0)), visibleWidth);
+	return `${fg("muted", folder)}${RESET}${branch !== undefined ? `${fg("dim", ` (${branch})`)}${RESET}` : ""}`;
+}
+
 /**
- * Compose line 2: project label plus extension statuses, dropping statuses
- * from the right until the line fits. The project label is never shed.
+ * Compose line 2 with complete status cells. Shorten project context before
+ * dropping statuses from the right, and reserve a +N cell for hidden statuses.
  */
 export function composeLine2(
-	project: string,
+	project: Line2Project,
 	statuses: string[],
 	sep: string,
 	width: number,
 	visibleWidth: (s: string) => number,
+	fg: Fg,
 ): string {
-	const kept = [...statuses];
-	for (;;) {
-		const line = [project, ...kept].join(sep);
-		if (visibleWidth(line) <= width || kept.length === 0) return line;
-		kept.pop();
+	for (let count = statuses.length; count >= 0; count--) {
+		const hidden = statuses.length - count;
+		const cells = statuses.slice(0, count);
+		if (hidden) cells.push(`${fg("dim", `+${hidden}`)}${RESET}`);
+		const tail = cells.join(sep);
+		const budget = width - visibleWidth(tail) - (cells.length ? visibleWidth(sep) : 0);
+		const label = fitProject(project, budget, visibleWidth, fg);
+		const line = [label, ...cells].join(sep);
+		if (visibleWidth(line) <= width) return line;
+		// At extreme widths the count takes priority over the project and separator.
+		if (count === 0 && hidden) return truncateToWidth(cells[0], Math.max(0, width), "");
+		if (count === 0) return truncateToWidth(label, Math.max(0, width), "…");
 	}
+	return "";
 }
