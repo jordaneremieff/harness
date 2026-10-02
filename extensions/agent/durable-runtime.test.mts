@@ -9,12 +9,14 @@
  * delivery acknowledgement.
  */
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import type { CatalogView } from "./catalog-view.ts";
 import { acquireHost } from "./host-client.ts";
+import { AgentManager } from "./manager.ts";
 import { observeDurableStorage } from "./durable-runtime.ts";
 import { childCatalogRecord, killHost, runtimeFixture, trackHost, waitForFile, waitForReceipt } from "./durable-runtime-fixture.mts";
 
@@ -143,6 +145,62 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 		assert.equal(after.receipts.length, 0, "an acknowledged receipt is not delivered again");
 	} finally {
 		await second.close();
+	}
+});
+
+it("preserves a crash recovery marker through primary startup and clears it after idle retirement", { timeout: 30000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const catalog = new AgentCatalog(f.root);
+	const ownerId = randomUUID();
+	const first = await acquireHost(f.metadata, { env: f.env("request") });
+	trackHost(t, first.pid);
+	let submitted: SubmitResult;
+	try {
+		submitted = await first.request("submit", { message: "recover the marked work", requestId: "marked-crash", ownerId }) as SubmitResult;
+		await waitForFile(join(f.testDir, "requested"));
+		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
+		killHost(first.pid);
+		await waitForExit(first.pid);
+	} finally { await first.close(); }
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "SIGKILL leaves the due marker on disk");
+
+	const acquired: string[] = [];
+	let recoveredPid = 0;
+	const manager = new AgentManager({
+		root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
+		acquire: async (metadata) => {
+			acquired.push(metadata.storageId);
+			const connection = await acquireHost(metadata, { env: f.env("answer") });
+			recoveredPid = connection.pid;
+			trackHost(t, connection.pid);
+			return connection;
+		},
+	});
+	const controller = new AbortController();
+	let receipt: Record<string, unknown> | undefined;
+	let resolveDelivered: () => void = () => {};
+	const delivered = new Promise<void>((resolve) => { resolveDelivered = resolve; });
+	try {
+		await manager.registerPrimary(ownerId, {
+			cwd: f.cwd, signal: controller.signal,
+			send: (_text, details) => {
+				const value = details as Record<string, unknown>;
+				if (value.storageId !== f.metadata.storageId || String(value.submissionId) !== String(submitted.submissionId)) return;
+				receipt = value;
+				resolveDelivered();
+			},
+		});
+		assert.deepEqual(acquired, [f.metadata.storageId], "primary startup recovers the marked storage");
+		assert.notEqual(recoveredPid, first.pid);
+		await within(delivered, 10000, "the recovered submission did not reach its primary");
+		assert.equal(receipt?.status, "done");
+		assert.match(String(receipt?.answer), /durable runtime answer/u);
+		await waitForExit(recoveredPid);
+		assert.equal(controller.signal.aborted, false, "the primary remains registered through host retirement");
+		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false, "completion, delivery acknowledgement, and clean idle retirement clear the marker");
+	} finally {
+		controller.abort();
+		manager.close();
 	}
 });
 
