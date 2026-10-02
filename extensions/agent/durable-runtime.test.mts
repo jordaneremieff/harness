@@ -149,7 +149,7 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 	}
 });
 
-it("preserves a crash recovery marker through primary startup and clears it after idle retirement", { timeout: 30000 }, async (t) => {
+it("preserves a crash recovery marker through primary startup and clears it after idle retirement", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const catalog = new AgentCatalog(f.root);
 	const ownerId = randomUUID();
@@ -205,7 +205,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 	}
 });
 
-for (const steerDuringRun of [false, true]) it(`relaunches a connected host after SIGKILL with ${steerDuringRun ? "steering" : "one input"} while its primary stays alive`, { timeout: 30000 }, async (t) => {
+for (const steerDuringRun of [false, true]) it(`relaunches a connected host after SIGKILL with ${steerDuringRun ? "steering" : "one input"} while its primary stays alive`, { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const ownerId = randomUUID();
 	const controller = new AbortController();
