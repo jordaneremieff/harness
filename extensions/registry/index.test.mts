@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerRegistry, { RegistryParams, readSnapshot } from "./index.ts";
 
@@ -21,9 +22,11 @@ function handlerFor(
 function fixture() {
 	const handlers = new Map<string, (event: Record<string, unknown>) => Promise<void>>();
 	const registeredNames: string[] = [];
+	const emissions: Array<{ channel: string; data: unknown }> = [];
 	let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
 	const pi = {
 		on: (event: string, handler: (event: Record<string, unknown>) => Promise<void>) => { handlers.set(event, handler); },
+		events: { emit: (channel: string, data: unknown) => { emissions.push({ channel, data }); } },
 		registerTool: (value: NonNullable<typeof tool>) => { registeredNames.push(value.name); tool = value; },
 		getAllTools: () => ["one", "two"].map((name) => ({ name, sourceInfo })),
 		getActiveTools: () => ["one"],
@@ -32,10 +35,19 @@ function fixture() {
 	registerRegistry(pi);
 	assert.deepEqual(registeredNames, ["registry"]);
 	assert.ok(tool);
-	return { pi, handlers, tool };
+	return { pi, handlers, tool, emissions };
 }
 
 describe("Pi adapter", () => {
+	it("emits one durable contribution for the entrypoint path", () => {
+		const { emissions } = fixture();
+		assert.equal(emissions.length, 1);
+		assert.equal(emissions[0].channel, "durable:contribution");
+		const contribution = emissions[0].data as { name?: string; source?: string; create?: unknown };
+		assert.equal(contribution.name, "registry");
+		assert.equal(contribution.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
+		assert.equal(typeof contribution.create, "function");
+	});
 	it("registers the tool and executes without a UI or model", async () => {
 		const { tool } = fixture();
 		assert.equal(tool.name, "registry");

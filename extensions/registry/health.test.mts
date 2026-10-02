@@ -193,7 +193,7 @@ describe("offline catalog health", () => {
 	});
 	it("runs through the tool and real registry facade with only synchronous safe getters", async () => {
 		let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
-		registerRegistry({ on: () => () => {}, registerTool: (value: typeof tool) => { tool = value; },
+		registerRegistry({ on: () => () => {}, events: { emit: () => {} }, registerTool: (value: typeof tool) => { tool = value; },
 			getAllTools: () => [], getActiveTools: () => [], getCommands: () => [] } as unknown as ExtensionAPI);
 		assert.ok(tool);
 		assert.equal(RegistryParams.properties.health.type, "boolean");

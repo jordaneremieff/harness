@@ -181,18 +181,48 @@ export const MODEL_SCOPE_BOUNDARY = "No preference data; model scope order is se
 
 const NAMESPACE_INSTRUCTIONS_BOUNDARY = "Namespace instructions are not shown here (instructionsOmitted). Read them with the codemode helper describeNamespace(name), where name is the record's namespace name.";
 
-export function resourceBoundaries(records: ResourceRecord[]): string[] {
+/** Boundary wording a non-Pi entrypoint supplies in place of the ordinary lines. */
+export interface ResourceBoundaryContext {
+	readonly toolSchema?: string;
+	readonly commandDispatch?: string;
+	readonly inventory?: string;
+	/** Appended when the caller reports configured extensions without a native form. */
+	readonly coverage?: string;
+}
+
+/** Contributed resources and configured extensions without a native form. */
+export interface DurableCoverage {
+	readonly contributions: readonly string[];
+	readonly ordinaryOnly: readonly string[];
+}
+
+/** Explicit Durable coverage for the no-argument summary. */
+export function durableCoverageLines(coverage: DurableCoverage): string[] {
+	return [
+		"DURABLE COVERAGE",
+		`- contributions: ${coverage.contributions.length}${
+			coverage.contributions.length === 0 ? "" : ` (${coverage.contributions.map((name) => oneLine(name)).join(", ")})`
+		}`,
+		`- configured extensions without a Durable form: ${coverage.ordinaryOnly.length}`,
+		...coverage.ordinaryOnly.map((path) => `  - ${oneLine(path)}`),
+	];
+}
+
+export function resourceBoundaries(records: ResourceRecord[], context: ResourceBoundaryContext = {}): string[] {
 	const kinds = new Set(records.map((record) => record.kind));
 	return [
 		...BOUNDARY_LINES,
-		INVENTORY_BOUNDARY,
+		context.inventory ?? INVENTORY_BOUNDARY,
 		PROMPT_BOUNDARY,
 		...(kinds.size ? ["Registration origins are not immutable executing bytes."] : []),
-		...(kinds.has("tool") ? ["Configured presence is not active status or activation authority. Active, callable, and model-declared are separate facts. ctx.tools membership is not execution permission; tool-call checks still apply. Model declaration and output schemas are unavailable from getAllTools."] : []),
+		...(kinds.has("tool")
+			? [context.toolSchema ?? "Configured presence is not active status or activation authority. Active, callable, and model-declared are separate facts. ctx.tools membership is not execution permission; tool-call checks still apply. Model declaration and output schemas are unavailable from getAllTools."]
+			: []),
 		...(records.some((record) => record.namespace?.instructionsOmitted === true) ? [NAMESPACE_INSTRUCTIONS_BOUNDARY] : []),
 		...(kinds.has("command") || kinds.has("prompt") || kinds.has("skill")
-			? ["Slash names do not prove dispatch; extension commands can shadow same-name prompts."] : []),
+			? [context.commandDispatch ?? "Slash names do not prove dispatch; extension commands can shadow same-name prompts."] : []),
 		...(kinds.has("skill") ? ["Skill modelInvocable is default skill-list eligibility from the disable flag, not visibility or permission; active tools and later hooks affect visibility."] : []),
+		...(context.coverage === undefined ? [] : [context.coverage]),
 	];
 }
 

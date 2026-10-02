@@ -134,6 +134,8 @@ export interface HostSnapshot {
 		description?: string;
 		source: "extension" | "prompt" | "skill";
 		sourceInfo: SourceInfo;
+		/** Display and match form; `null` omits it, absent uses the Pi slash form `/<name>`. */
+		invocation?: string | null;
 	}>;
 	observation: ObservationSnapshot | null;
 	availability: SurfaceAvailability;
@@ -209,11 +211,11 @@ function buildCommandRecord(
 	const record: ResourceRecord = {
 		kind,
 		name,
-		invocation: `/${command.name}`,
 		sourceInfo: command.sourceInfo,
 		evidence: "registration",
 		at,
 	};
+	if (command.invocation !== null) record.invocation = command.invocation ?? `/${command.name}`;
 	if (command.description !== undefined) record.description = command.description;
 	if (kind !== "skill") return record;
 	const observed = observedSkills.get(skillIdentity(name, command.sourceInfo));

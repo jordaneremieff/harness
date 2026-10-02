@@ -11,7 +11,7 @@ import { RegistryOutputSchema } from "./output.ts";
 it("native codemode receives registry objects and filters records without parsing prose", { timeout: 30000 }, async () => {
 	const definitions = new Map<string, ToolDefinition>();
 	const sourceInfo = { path: "builtin:fixture", source: "builtin", scope: "temporary" as const, origin: "top-level" as const };
-	const pi = { on: () => () => {}, registerTool: (tool: ToolDefinition) => definitions.set(tool.name, tool),
+	const pi = { on: () => () => {}, events: { emit: () => {} }, registerTool: (tool: ToolDefinition) => definitions.set(tool.name, tool),
 		getAllTools: () => [{ name: "sample", description: "read a fixture", parameters: Type.Object({}), exposure: "codemode",
 			namespace: { name: "fixture" }, annotations: { readOnlyHint: true }, sourceInfo }],
 		getActiveTools: () => [], getCommands: () => [], getSettings: () => ({}), appendEntry: () => { throw new Error("No store writes expected"); },

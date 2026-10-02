@@ -12,9 +12,12 @@ import type { ModelSnapshot } from "./models.ts";
 import {
 	type Assembled,
 	BOUNDARY_LINES,
+	type DurableCoverage,
+	durableCoverageLines,
 	INVENTORY_BOUNDARY,
 	PROMPT_BOUNDARY,
 	RESOURCE_LIST_HINT,
+	type ResourceBoundaryContext,
 	fullRecordQuery,
 	resourceBoundaries,
 	type Block,
@@ -48,6 +51,16 @@ import {
 import { buildRecords, type HostSnapshot, type ResourceRecord } from "./records.ts";
 import { resolveScanTarget, SCAN_MAX_BYTES, type ScanResult, scanFile } from "./scan.ts";
 
+/** Native-source wording and coverage a non-Pi entrypoint supplies; absent for the ordinary tool. */
+export interface DurableLookupContext {
+	readonly coverage: DurableCoverage;
+	/** Names the record source in listing headers. */
+	readonly recordSourceLine?: string;
+	/** Names the command-bearing surface in the host summary. */
+	readonly commandSurface?: string;
+	readonly boundaries?: ResourceBoundaryContext;
+}
+
 export interface LookupRequest {
 	params: RawParams;
 	snapshot: HostSnapshot;
@@ -58,6 +71,7 @@ export interface LookupRequest {
 	signal?: AbortSignal;
 	accessors?: HostAccessors;
 	scan?: (path: string, needle: string, signal?: AbortSignal) => Promise<ScanResult>;
+	durable?: DurableLookupContext;
 }
 
 export interface LookupResult extends BoundedResult {
@@ -83,6 +97,10 @@ function baseHeader(outcome: Outcome, at: number, extra: string[]): string[] {
 	return [`registry outcome=${outcome}`, `observed at: ${isoTime(at)}`, ...extra];
 }
 
+function boundariesFor(request: LookupRequest, records: ResourceRecord[]): string[] {
+	return resourceBoundaries(records, request.durable?.boundaries);
+}
+
 function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupResult {
 	const { snapshot } = request;
 	const counts = { tool: 0, command: 0, skill: 0, prompt: 0 };
@@ -98,16 +116,17 @@ function hostSummary(request: LookupRequest, records: ResourceRecord[]): LookupR
 			"SURFACES",
 			`- tool registry: ${snapshot.availability.tools ? `available (${counts.tool} configured)` : "unavailable"}`,
 			`- active tools: ${activeCount === null ? "unavailable" : `available (${activeCount} active)`}`,
-			`- slash-command registry: ${
+			`- ${request.durable?.commandSurface ?? "slash-command registry"}: ${
 				snapshot.availability.commands
 					? `available (${counts.command} commands, ${counts.skill} skills, ${counts.prompt} prompts)`
 					: "unavailable"
 			}`,
 			"",
 			...observationLines(snapshot.observation),
+			...(request.durable ? ["", ...durableCoverageLines(request.durable.coverage)] : []),
 			PROMPT_BOUNDARY,
 			...BOUNDARY_LINES,
-			INVENTORY_BOUNDARY,
+			request.durable?.boundaries?.inventory ?? INVENTORY_BOUNDARY,
 			"No preference data.",
 		],
 		blocks: [],
@@ -146,7 +165,7 @@ function unavailableResult(
 		pageSummary: (kept) => `records: ${kept} shown of ${matched.length} known matches | limit ${query.limit} (inventory incomplete)`,
 		footer: (kept) => [
 			...(fullRecordQuery(query) ? observationLines(request.snapshot.observation) : [RESOURCE_LIST_HINT]),
-			...resourceBoundaries(matched.slice(0, kept)),
+			...boundariesFor(request, matched.slice(0, kept)),
 		],
 		details: { unavailableSurfaces: missingSurfaces, query, total: matched.length, incompleteInventory: true, scanned: false },
 	};
@@ -173,7 +192,7 @@ function missingTargetResult(request: LookupRequest, query: Query): LookupResult
 			"",
 			...observationLines(request.snapshot.observation),
 			"",
-			...resourceBoundaries([]),
+			...boundariesFor(request, []),
 		]),
 		blocks: [],
 		footer: [],
@@ -200,7 +219,7 @@ function ambiguousTargetResult(
 		blocks: page.items.map((record) => recordBlock(record, fullRecordQuery(query))),
 		footer: (kept) => [
 			...(fullRecordQuery(query) ? [] : [RESOURCE_LIST_HINT]),
-			...resourceBoundaries(page.items.slice(0, kept)),
+			...boundariesFor(request, page.items.slice(0, kept)),
 		],
 		details: { query, scanned: false, candidates: candidates.length, offset: page.offset },
 		continuation: (kept) =>
@@ -328,7 +347,7 @@ function completedScanResult(
 	return finish(outcome, {
 		header,
 		blocks: page.items.map(matchBlock),
-		footer: ["", ...resourceBoundaries([record])],
+		footer: ["", ...boundariesFor(request, [record])],
 		details,
 		pageSummary: (kept) =>
 			`matches: ${kept} shown of ${scan.matches.length} found | offset ${page.offset} | limit ${query.limit}`,
@@ -437,7 +456,7 @@ function listingResult(
 	const outcome: Outcome = selected.length === 0 ? "missing" : "ok";
 	const header = baseHeader(outcome, snapshot.at, [
 		`query: ${queryLine(query)}`,
-		"source: Pi registration records (getAllTools, getActiveTools, getCommands)",
+		request.durable?.recordSourceLine ?? "source: Pi registration records (getAllTools, getActiveTools, getCommands)",
 		"Domain: tools/commands/skills/prompts. Use kind model or context_file for other sources.",
 		...(fullRecordQuery(query) ? [] : [RESOURCE_LIST_HINT]),
 		query.search === undefined
@@ -453,7 +472,7 @@ function listingResult(
 	]).filter((line) => line !== "");
 	const footer = (kept: number) => [
 		...(fullRecordQuery(query) ? observationLines(snapshot.observation) : []),
-		...resourceBoundaries(page.items.slice(0, kept)),
+		...boundariesFor(request, page.items.slice(0, kept)),
 	];
 	const details: Record<string, unknown> = {
 		query,

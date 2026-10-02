@@ -356,6 +356,62 @@ No `PI_*` configuration is required. Node built-ins and Pi's existing peer
 packages supply the implementation. Loading this extension registers the tool;
 its source does not edit settings or activate other resources.
 
+## Durable agents
+
+A Pi Durable conversation receives the lookup through the native contribution
+the ordinary factory emits on `durable:contribution`. The contribution installs
+one `registry` tool and one prompt section. The tool declares `replay: "safe"`:
+it only reads host state, so a rerun after process loss repeats no external
+effect and needs no deduplication key.
+
+The native form reads Durable facts instead of a Pi session:
+
+- Installed tools come from the tool task's registry snapshot; the resolved
+  agent's tools are the offered set. A tool record's source is the emitting
+  contribution's entrypoint when the host's contribution inventory names it;
+  otherwise it carries a synthetic `<durable:extension-name>` label.
+- Contributed commands come from the host's contribution inventory. They are
+  invoked through the host's agent controls, not as slash commands, so their
+  records carry no invocation form. A same-name tool from two extensions
+  remains two records; Durable resolves the offered set by agent selection.
+- Skills, prompt templates, and context files come from the host's cwd-bound
+  resource loader. A durable skill record carries `skill:<name>` as a lookup
+  alias and reports model-invocability from the loader's disable flag as an
+  observation at call time. Content queries read the resolved source file the
+  same way as the ordinary tool.
+- Model records come from the host's model runtime: catalog, cached
+  availability snapshot, configured-auth presence, and registered providers.
+  The conversation's selected model and thinking level come from the resolved
+  agent. A Durable conversation has no Pi model scope, so scope fields stay
+  unavailable rather than empty.
+- The no-argument summary reports the host's `cwd` and the Durable coverage:
+  every contribution name and every configured extension without a Durable
+  form, from `host.inventory.ordinaryOnly`. Resource results add one boundary
+  line when ordinary-only extensions exist.
+
+Documented differences from the ordinary tool:
+
+- Context usage is unavailable: Durable exposes no context estimate to a tool,
+  so the summary reports `unavailable` with the resolved model and thinking
+  level.
+- Session facts (`mode`, `hasUI`, `projectTrusted`, `sessionId`,
+  `sessionFile`) are unavailable; the working directory comes from the host.
+- Durable tool records carry no `promptGuidelines`: the Durable tool registry
+  has no such field, so this contribution renders its guidance as a prompt
+  section instead. Search matches registered names and descriptions only.
+- Installed Durable tools expose name, description, and parameters only:
+  `exposure`, `namespace`, `annotations`, and `ctx.tools` callable membership
+  have no Durable tool equivalent, so those record fields stay absent. Pi
+  Durable has no tool renderer surface, so the ordinary terminal call and
+  result cards are not part of the Durable form.
+- `details.structuredContent` carries the same structured object the ordinary
+  tool returns as `structuredContent`. The registration spreads the output
+  schema as an extra property; pi-durable ignores it, and nested-call
+  declarations can read it.
+- Cursors are bound to one host incarnation and one conversation, so a host
+  restart or another conversation cannot resume a stale page; the ordinary tool
+  binds them to one Pi session.
+
 ## Verification
 
 ```bash
@@ -379,6 +435,12 @@ and continuation invalidation after usage guidance changes. Compact-output tests
 check full-record recovery through exact selectors, per-kind caveats, retained
 host facts and uncertainty, and smaller list text with unchanged structured
 records.
+
+`durable.test.mts` runs the contribution through a real pi-durable Harness over
+`MemoryStorage` with pi-ai's faux provider. It drives one model-issued call per
+query kind and checks the declared `replay: "safe"` class, the native-fact
+records, Durable coverage, the structured-content carrier, and that an aborted
+host binds the call to `cancelled` without reading any host fact.
 Schema tests validate every outcome, source kinds, continuation, partial
 coverage, and bounded pages. The native codemode test uses the public factory
 and real QuickJS executor with fixture host accessors and nested dispatch. It

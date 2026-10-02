@@ -37,6 +37,26 @@ export interface ModelSnapshot {
 
 type ModelRegistry = ExtensionContext["modelRegistry"];
 type ModelInfo = ReturnType<ModelRegistry["getAll"]>[number];
+type ScopedModels = ExtensionContext["scopedModels"];
+
+/**
+ * Synchronous model facts a Pi Durable host exposes. `ModelRuntime` satisfies
+ * this shape; `getAvailableSnapshot` is its synchronous availability read.
+ */
+export interface DurableModelReader {
+	getModels(): readonly ModelInfo[];
+	getModel(provider: string, modelId: string): ModelInfo | undefined;
+	getAvailableSnapshot(): readonly ModelInfo[];
+	getError(): string | undefined;
+	getRegisteredProviderIds(): readonly string[];
+	hasConfiguredAuth(providerId: string): boolean;
+}
+
+/** The agent's model choice, independent of the process-wide catalog. */
+export interface DurableAgentModel {
+	readonly model?: { readonly provider: string; readonly modelId: string };
+	readonly thinkingLevel?: string;
+}
 
 interface CatalogRead {
 	models: ModelInfo[];
@@ -84,55 +104,70 @@ function readExtensionProviders(registry: ModelRegistry): Set<string> | null {
 	}
 }
 
-interface ModelBuildContext {
-	registry: ModelRegistry;
+interface ModelBuildInput {
+	/** Every row to project: the catalog plus a selected model outside it. */
+	models: ModelInfo[];
 	catalog: ModelInfo[];
+	catalogAvailable: boolean;
 	available: Set<string>;
 	availableSnapshot: boolean;
+	catalogError: boolean | null;
 	extensionProviders: Set<string> | null;
-	scopedModels: ExtensionContext["scopedModels"];
+	scopedModels: ScopedModels | undefined;
 	scopeConfigured: boolean | null;
-	ctx: ExtensionContext;
+	scopeOrder: string[] | null;
+	selectedRef: { provider: string; modelId: string } | undefined;
+	thinkingLevel: string | undefined;
+	hasConfiguredAuth: (model: ModelInfo) => boolean | null;
 	at: number;
 }
 
-function buildModelRecord(model: ModelInfo, context: ModelBuildContext): ModelRecord {
+function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord {
 	const name = `${model.provider}/${model.id}`;
-	const selected = model.provider === context.ctx.model?.provider && model.id === context.ctx.model.id;
-	let configuredAuth: boolean | null = null;
-	try {
-		configuredAuth = context.registry.hasConfiguredAuth(model);
-	} catch {
-		/* Configuration presence is not remote auth health. */
-	}
+	const selected =
+		input.selectedRef !== undefined && model.provider === input.selectedRef.provider && model.id === input.selectedRef.modelId;
 	const scopeIndex =
-		context.scopedModels?.findIndex(
+		input.scopedModels?.findIndex(
 			(entry) => entry.model.provider === model.provider && entry.model.id === model.id,
 		) ?? -1;
-	const scope = context.scopedModels?.[scopeIndex];
+	const scope = input.scopedModels?.[scopeIndex];
 	return {
 		kind: "model",
 		name,
 		provider: model.provider,
 		id: model.id,
 		displayName: model.name,
-		catalog: context.catalog.includes(model),
+		catalog: input.catalog.includes(model),
 		selected,
 		reasoning: model.reasoning,
 		input: [...model.input],
 		contextWindow: model.contextWindow,
 		maxTokens: model.maxTokens,
 		supportedThinkingLevels: [...getSupportedThinkingLevels(model)],
-		available: context.availableSnapshot ? context.available.has(name) : null,
-		configuredAuth,
-		extensionProvider: context.extensionProviders === null ? null : context.extensionProviders.has(model.provider),
-		inScope: context.scopeConfigured === null ? null : !context.scopeConfigured || scope !== undefined,
+		available: input.availableSnapshot ? input.available.has(name) : null,
+		configuredAuth: input.hasConfiguredAuth(model),
+		extensionProvider: input.extensionProviders === null ? null : input.extensionProviders.has(model.provider),
+		inScope: input.scopeConfigured === null ? null : !input.scopeConfigured || scope !== undefined,
 		...(scopeIndex < 0 ? {} : { scopeIndex }),
 		...(scope?.thinkingLevel === undefined ? {} : { scopeThinkingLevel: scope.thinkingLevel }),
-		...(selected && context.ctx.thinkingLevel !== undefined ? { currentThinkingLevel: context.ctx.thinkingLevel } : {}),
+		...(selected && input.thinkingLevel !== undefined ? { currentThinkingLevel: input.thinkingLevel } : {}),
 		evidence: "registration",
-		at: context.at,
+		at: input.at,
 	};
+}
+
+function buildModelSnapshot(input: ModelBuildInput): ModelSnapshot {
+	const result: ModelSnapshot = {
+		records: [],
+		catalogAvailable: input.catalogAvailable,
+		availableSnapshot: input.availableSnapshot,
+		catalogError: input.catalogError,
+		scopeConfigured: input.scopeConfigured,
+		scopeOrder: input.scopeOrder,
+	};
+	for (const model of input.models) result.records.push(buildModelRecord(model, input));
+	result.records.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	return result;
 }
 
 export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
@@ -141,30 +176,108 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 	const registry = ctx.modelRegistry;
 	const catalogRead = readModelCatalog(registry);
 	const availableRead = readAvailableNames(registry);
-	const result: ModelSnapshot = {
-		records: [],
-		catalogAvailable: catalogRead.available,
-		availableSnapshot: availableRead.snapshot,
-		catalogError: readCatalogError(registry),
-		scopeConfigured,
-		scopeOrder: scopeConfigured ? scopedModels.map(({ model }) => `${model.provider}/${model.id}`) : null,
-	};
-	const all = [...catalogRead.models];
-	if (ctx.model && !all.some((model) => model.provider === ctx.model?.provider && model.id === ctx.model.id)) {
-		all.push(ctx.model);
+	const models = [...catalogRead.models];
+	if (ctx.model && !models.some((model) => model.provider === ctx.model?.provider && model.id === ctx.model.id)) {
+		models.push(ctx.model);
 	}
-	const context: ModelBuildContext = {
-		registry,
+	return buildModelSnapshot({
+		models,
 		catalog: catalogRead.models,
+		catalogAvailable: catalogRead.available,
 		available: availableRead.names,
 		availableSnapshot: availableRead.snapshot,
+		catalogError: readCatalogError(registry),
 		extensionProviders: readExtensionProviders(registry),
 		scopedModels,
 		scopeConfigured,
-		ctx,
+		scopeOrder: scopeConfigured ? scopedModels.map(({ model }) => `${model.provider}/${model.id}`) : null,
+		selectedRef: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
+		thinkingLevel: ctx.thinkingLevel,
+		hasConfiguredAuth: (model) => {
+			try {
+				return registry.hasConfiguredAuth(model);
+			} catch {
+				/* Configuration presence is not remote auth health. */
+				return null;
+			}
+		},
 		at,
-	};
-	for (const model of all) result.records.push(buildModelRecord(model, context));
-	result.records.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-	return result;
+	});
+}
+
+/**
+ * Project the Durable host's model runtime. A Durable conversation stores one
+ * model choice and has no Pi session model scope, so scope stays unavailable
+ * rather than empty.
+ */
+export function readDurableModels(reader: DurableModelReader, agent: DurableAgentModel, at: number): ModelSnapshot {
+	let catalog: ModelInfo[] = [];
+	let catalogAvailable = false;
+	try {
+		const models = reader.getModels();
+		if (Array.isArray(models)) {
+			catalog = [...models];
+			catalogAvailable = true;
+		}
+	} catch {
+		/* An absent catalog is not an empty catalog. */
+	}
+	const available = new Set<string>();
+	let availableSnapshot = false;
+	try {
+		const models = reader.getAvailableSnapshot();
+		if (Array.isArray(models)) {
+			for (const model of models) available.add(`${model.provider}/${model.id}`);
+			availableSnapshot = true;
+		}
+	} catch {
+		/* Availability is independently unavailable. */
+	}
+	let catalogError: boolean | null = null;
+	try {
+		catalogError = reader.getError() !== undefined;
+	} catch {
+		/* Raw errors can contain configuration values and are not returned. */
+	}
+	let extensionProviders: Set<string> | null = null;
+	try {
+		extensionProviders = new Set(reader.getRegisteredProviderIds());
+	} catch {
+		/* Provider registration is independently unavailable. */
+	}
+	let selectedModel: ModelInfo | undefined;
+	if (agent.model) {
+		try {
+			selectedModel = reader.getModel(agent.model.provider, agent.model.modelId);
+		} catch {
+			/* The selected model stays absent from the projected rows. */
+		}
+	}
+	const models = [...catalog];
+	if (selectedModel && !models.some((model) => model.provider === selectedModel.provider && model.id === selectedModel.id)) {
+		models.push(selectedModel);
+	}
+	return buildModelSnapshot({
+		models,
+		catalog,
+		catalogAvailable,
+		available,
+		availableSnapshot,
+		catalogError,
+		extensionProviders,
+		scopedModels: undefined,
+		scopeConfigured: null,
+		scopeOrder: null,
+		selectedRef: agent.model,
+		thinkingLevel: agent.thinkingLevel,
+		hasConfiguredAuth: (model) => {
+			try {
+				return reader.hasConfiguredAuth(model.provider);
+			} catch {
+				/* Configuration presence is not remote auth health. */
+				return null;
+			}
+		},
+		at,
+	});
 }
