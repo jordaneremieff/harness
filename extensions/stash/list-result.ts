@@ -92,6 +92,16 @@ export type RecentRecord = {
 	state: "open" | "active" | "closed" | "unknown";
 };
 
+/** Empty-state prose for a filtered recent list; shared by both entrypoints. */
+export function emptyListText(tag: string | undefined, state: string | undefined): string {
+	const line = (value: string) => sanitizeTerminalText(value).text.replace(/\n/g, "↵");
+	const scopes = [tag ? `tag "${line(tag)}"` : undefined, state ? `state ${state}` : undefined].filter(
+		(value): value is string => Boolean(value),
+	);
+	const scope = scopes.length > 0 ? ` with ${scopes.join(" and ")}` : "";
+	return `No stashes found${scope}.`;
+}
+
 export function recentListResult(
 	entries: StashEntry[],
 	limit: number,

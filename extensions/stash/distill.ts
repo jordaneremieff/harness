@@ -323,6 +323,16 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** One projected model-context contribution; only its messages are read. */
+export interface DistillMessageEntry {
+	readonly messages: readonly ProjectedMessage[];
+}
+
+/** The message contributions a distillation source is captured from. */
+export interface DistillProjection {
+	readonly entries: readonly DistillMessageEntry[];
+}
+
 /**
  * Serialize Pi's persisted-context projection into a flat transcript. The
  * projection applies the latest branch-relative context edits, so omitted
@@ -330,7 +340,7 @@ function errorMessage(error: unknown): string {
  * content. System prompts (including compaction checkpoints), thinking, and
  * non-context state stay out of the handover.
  */
-export function projectionToTranscript(projection: Pick<SessionProjection, "entries">): string {
+export function projectionToTranscript(projection: DistillProjection): string {
 	const parts: string[] = [];
 	for (const projected of projection.entries) {
 		for (const message of projected.messages) {
@@ -389,7 +399,7 @@ function contentText(content: unknown): string {
 }
 
 /** Projected tool-result text: post-omission, with replaced content. */
-function toolResultTexts(projection: Pick<SessionProjection, "entries">): string[] {
+function toolResultTexts(projection: DistillProjection): string[] {
 	const texts: string[] = [];
 	for (const projected of projection.entries) {
 		for (const message of projected.messages) {
@@ -600,7 +610,7 @@ interface DistillReply {
 function classifyDistillReply(
 	response: AssistantMessage,
 	usage: DistillUsage | undefined,
-): DistillOutcome | DistillReply {
+): DistillRequestOutcome | DistillReply {
 	if (response.stopReason === "aborted") return { ok: false, reason: "aborted", usage };
 	if (response.stopReason === "error") {
 		return { ok: false, reason: "failed", message: response.errorMessage || "distillation failed", usage };
@@ -612,10 +622,10 @@ function classifyDistillReply(
 }
 
 async function promptDistiller(
-	options: DistillJobOptions,
+	options: Omit<DistillJobOptions, "projection">,
 	signal: AbortSignal,
 	prompt: string,
-): Promise<DistillOutcome | DistillReply> {
+): Promise<DistillRequestOutcome | DistillReply> {
 	const controller = new AbortController();
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	let timedOut = false;
@@ -700,7 +710,59 @@ async function promptDistiller(
 	}
 }
 
-async function saveDistillReply(reply: DistillReply, options: DistillJobOptions): Promise<DistillOutcome> {
+/** Bounded, redacted distillation input captured from a persisted context. */
+export interface DistillSource {
+	transcript: string;
+	artifacts: string[];
+}
+
+/**
+ * Capture the bounded, redacted transcript and observed references one
+ * distillation sends to the model. Redaction runs BEFORE bounding so a size cut
+ * can never bisect a credential into a surviving fragment, and on the projected
+ * tool-result text BEFORE reference extraction so a lossy extraction cannot
+ * truncate a credential into a surviving fragment (the post-extraction pass then
+ * stays as defense in depth).
+ */
+export function prepareDistillSource(projection: DistillProjection): DistillSource {
+	const transcript = boundTranscript(redactSecrets(projectionToTranscript(projection)));
+	const artifacts = extractArtifacts(toolResultTexts(projection).map(redactSecrets)).map(redactSecrets);
+	return { transcript, artifacts };
+}
+
+/** One distillation request over an already captured source. */
+export type PreparedDistillJobOptions = Omit<DistillJobOptions, "projection"> & DistillSource;
+
+/** The parsed distillation payload, or the reason the request did not produce one. */
+export type DistillRequestOutcome =
+	| { ok: true; payload: DistillPayload; usage?: DistillUsage }
+	| { ok: false; reason: "aborted" | "skip" | "invalid" | "failed"; message?: string; usage?: DistillUsage };
+
+/** A distillation model request over a captured source, without an artifact write. */
+export interface DistillRequestJob {
+	result: Promise<DistillRequestOutcome>;
+	abort(): void;
+}
+
+/** Start the model request for one captured source. It never writes an artifact. */
+export function startPreparedDistill(
+	options: PreparedDistillJobOptions,
+	externalSignal?: AbortSignal,
+): DistillRequestJob {
+	const controller = new AbortController();
+	if (externalSignal !== undefined) {
+		if (externalSignal.aborted) controller.abort();
+		else externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+	}
+	return {
+		result: requestPreparedDistill(options, controller.signal),
+		abort: () => controller.abort(),
+	};
+}
+
+function distillPayload(
+	reply: DistillReply,
+): DistillRequestOutcome {
 	const { usage } = reply;
 	const text = reply.response.content
 		.filter((part) => part.type === "text")
@@ -710,8 +772,31 @@ async function saveDistillReply(reply: DistillReply, options: DistillJobOptions)
 	if (parsed.kind === "skip")
 		return { ok: false, reason: "skip", message: "the distiller found nothing worth stashing", usage };
 	if (parsed.kind === "invalid") return { ok: false, reason: "invalid", message: parsed.error, usage };
+	return { ok: true, payload: redactPayload(parsed.payload), usage };
+}
+
+async function requestPreparedDistill(
+	options: PreparedDistillJobOptions,
+	signal: AbortSignal,
+): Promise<DistillRequestOutcome> {
+	if (signal.aborted) return { ok: false, reason: "aborted" };
 	try {
-		const payload = redactPayload(parsed.payload);
+		const prompt = buildDistillPrompt(options.hint, options.transcript, options.artifacts);
+		const reply = await promptDistiller(options, signal, prompt);
+		if (!("response" in reply)) return reply;
+		if (signal.aborted) return { ok: false, reason: "aborted", usage: reply.usage };
+		return distillPayload(reply);
+	} catch (error) {
+		return { ok: false, reason: "failed", message: errorMessage(error) };
+	}
+}
+
+async function writeDistillPayload(
+	options: Pick<DistillJobOptions, "storeDir" | "project" | "branch" | "sessionId" | "now">,
+	payload: DistillPayload,
+	usage: DistillUsage | undefined,
+): Promise<DistillOutcome> {
+	try {
 		const { record, path } = await writeStash(
 			options.storeDir,
 			{
@@ -734,26 +819,13 @@ async function saveDistillReply(reply: DistillReply, options: DistillJobOptions)
 	}
 }
 
+async function runPreparedDistill(options: PreparedDistillJobOptions, signal: AbortSignal): Promise<DistillOutcome> {
+	const outcome = await requestPreparedDistill(options, signal);
+	if (outcome.ok !== true) return outcome;
+	return await writeDistillPayload(options, outcome.payload, outcome.usage);
+}
+
 async function runDistill(options: DistillJobOptions, signal: AbortSignal): Promise<DistillOutcome> {
 	if (signal.aborted) return { ok: false, reason: "aborted" };
-	try {
-		// Credential-shaped values are removed deterministically before the
-		// distiller sees the transcript or the observed references, and again
-		// before the payload is written, so no secret depends on the model's
-		// discretion. The operator hint is trusted input and is not redacted.
-		// Redaction runs BEFORE bounding so a size cut can never bisect a
-		// credential into a surviving fragment, and on the projected tool-result
-		// text BEFORE reference extraction so a lossy extraction cannot truncate a
-		// credential into a surviving fragment (the post-extraction pass then
-		// stays as defense in depth).
-		const transcript = boundTranscript(redactSecrets(projectionToTranscript(options.projection)));
-		const artifacts = extractArtifacts(toolResultTexts(options.projection).map(redactSecrets)).map(redactSecrets);
-		const prompt = buildDistillPrompt(options.hint, transcript, artifacts);
-		const reply = await promptDistiller(options, signal, prompt);
-		if (!("response" in reply)) return reply;
-		if (signal.aborted) return { ok: false, reason: "aborted", usage: reply.usage };
-		return await saveDistillReply(reply, options);
-	} catch (error) {
-		return { ok: false, reason: "failed", message: errorMessage(error) };
-	}
+	return await runPreparedDistill({ ...options, ...prepareDistillSource(options.projection) }, signal);
 }

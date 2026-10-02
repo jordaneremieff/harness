@@ -32,6 +32,7 @@ function registeredTools(): Map<string, ToolDefinition> {
 		sendUserMessage: () => {},
 		exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false }),
 		appendEntry: () => {},
+		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as Parameters<typeof registerStash>[0]);
 	return tools;
 }

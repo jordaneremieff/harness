@@ -25,7 +25,7 @@ const SAFE_STEM = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 /** Dot-hidden sibling of the store that receives rotated artifacts. */
 export const ROTATED_STORE_NAME = ".trash";
 
-interface StashInput {
+export interface StashInput {
 	title: string;
 	summary: string;
 	decisions?: string[];
@@ -178,11 +178,28 @@ async function cleanTemporary(path: string, published: boolean): Promise<void> {
 	}
 }
 
-/** Write a fully materialized artifact with an atomic, no-clobber link. */
-export async function writeStash(
+/** Whether an existing name already holds exactly this serialized artifact. */
+async function reusePublished(path: string, serialized: string): Promise<boolean> {
+	try {
+		const existing = await readPrefix(path, MAX_STASH_BYTES);
+		return !existing.truncated && existing.text === serialized;
+	} catch (error) {
+		if (!hasCode(error, "ENOENT") && !hasCode(error, "ELOOP")) throw error;
+		return false;
+	}
+}
+
+/**
+ * Publish a fully materialized artifact under the first free deterministic id.
+ * With `reuseExisting`, a name already holding the exact bytes this call would
+ * publish is that call's earlier attempt, so it is returned instead of a
+ * suffixed duplicate; any other collision keeps the ordinary suffix scan.
+ */
+async function publishStash(
 	dir: string,
 	input: StashInput,
-	now: Date = new Date(),
+	now: Date,
+	reuseExisting: boolean,
 ): Promise<{ record: StashRecord; path: string }> {
 	await secureStore(dir, true);
 	const created = utcTimestamp(now);
@@ -199,8 +216,32 @@ export async function writeStash(
 		const path = join(dir, `${id}.md`);
 		const temporary = join(dir, `.${id}.${randomUUID()}.tmp`);
 		if (await publishArtifact(temporary, path, serialized)) return { record, path };
+		if (reuseExisting && (await reusePublished(path, serialized))) return { record, path };
 	}
 	throw new Error(`could not allocate a unique stash id for ${baseId}`);
+}
+
+/** Write a fully materialized artifact with an atomic, no-clobber link. */
+export async function writeStash(
+	dir: string,
+	input: StashInput,
+	now: Date = new Date(),
+): Promise<{ record: StashRecord; path: string }> {
+	return publishStash(dir, input, now, false);
+}
+
+/**
+ * Write like `writeStash`, but reuse a byte-identical artifact already
+ * published under the candidate id. A durable tool rerun after process loss
+ * calls this with the same input and timestamp, so it returns its earlier
+ * artifact instead of allocating a suffixed duplicate.
+ */
+export async function writeReplayableStash(
+	dir: string,
+	input: StashInput,
+	now: Date = new Date(),
+): Promise<{ record: StashRecord; path: string }> {
+	return publishStash(dir, input, now, true);
 }
 
 interface ListOptions {

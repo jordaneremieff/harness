@@ -2,7 +2,7 @@
 
 import { mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { fileURLToPath } from "node:url";
 import {
 	copyToClipboard,
 	type AgentToolResult,
@@ -12,7 +12,6 @@ import {
 	getAgentDir,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import { CAPACITY_STATE, capacityConfig, capacityReset, capacityStatus, capacityTurnEnd } from "./capacity.ts";
 import {
 	type DistillJob,
@@ -23,8 +22,19 @@ import {
 	resolveDistillThinking,
 	startDistillJob,
 } from "./distill.ts";
-import { resumeCommand, STASH_STATES, stateLabel } from "./format.ts";
-import { ListOutputSchema, recentListResult } from "./list-result.ts";
+import { resumeCommand, stateLabel } from "./format.ts";
+import {
+	STASH_COMPLETE_DESCRIPTION,
+	STASH_COMPLETE_GUIDANCE,
+	STASH_LIST_DESCRIPTION,
+	STASH_LIST_GUIDANCE,
+	STASH_READ_DESCRIPTION,
+	STASH_ROTATE_DESCRIPTION,
+	STASH_ROTATE_GUIDANCE,
+	STASH_WRITE_DESCRIPTION,
+	STASH_WRITE_GUIDANCE,
+} from "./guidance.ts";
+import { emptyListText, ListOutputSchema, recentListResult } from "./list-result.ts";
 import { StashPanel, type StashPanelResult } from "./panel.ts";
 import {
 	renderCompleteCall,
@@ -38,6 +48,13 @@ import {
 	renderWriteCall,
 	renderWriteResult,
 } from "./presentation.ts";
+import {
+	CompleteParams,
+	ListParams,
+	ReadParams,
+	RotateParams,
+	WriteParams,
+} from "./params.ts";
 import { buildPickupMessage } from "./pickup.ts";
 import { redactPayload } from "./redact.ts";
 import { searchStashes } from "./search.ts";
@@ -52,12 +69,13 @@ import {
 	writeStash,
 } from "./store.ts";
 import { boundedOutput, formatTokenCount, sanitizeTerminalText } from "./text.ts";
+import { stashDurableContribution } from "./durable.ts";
 
 type StashExecutionApi = Pick<ExtensionAPI, "exec">;
 type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
 type StashExtensionApi = Pick<
 	ExtensionAPI,
-	"exec" | "registerCommand" | "registerShortcut" | "registerTool" | "sendUserMessage" | "on" | "appendEntry"
+	"events" | "exec" | "registerCommand" | "registerShortcut" | "registerTool" | "sendUserMessage" | "on" | "appendEntry"
 >;
 
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
@@ -80,14 +98,6 @@ async function checkpointDirectory(cwd: string): Promise<string> {
 }
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
-
-function emptyListText(tag: string | undefined, state: string | undefined): string {
-	const scopes = [tag ? `tag "${safeLine(tag)}"` : undefined, state ? `state ${state}` : undefined].filter(
-		(value): value is string => Boolean(value),
-	);
-	const scope = scopes.length > 0 ? ` with ${scopes.join(" and ")}` : "";
-	return `No stashes found${scope}.`;
-}
 
 /** Distiller identity in statusline form: model name, thinking bracketed for reasoning models. */
 function distillerLabel(model: { id: string; name?: string; reasoning?: boolean }, level: string): string {
@@ -400,90 +410,6 @@ async function startCreation(
 		);
 	}
 }
-
-const shortText = (description: string) => Type.String({ description, maxLength: 200 });
-const itemList = (description: string) =>
-	Type.Optional(Type.Array(Type.String({ maxLength: 20_000 }), { description, maxItems: 200 }));
-
-const WriteParams = Type.Object({
-	checkpoint: Type.Optional(
-		Type.Boolean({
-			description:
-				"Save a working checkpoint in the configured checkpoint directory instead of a discoverable handover. Returns a file path, not a pickup id.",
-		}),
-	),
-	title: shortText("Short human title for the handover"),
-	summary: Type.String({
-		description: "Distilled state of the effort: what is true now, what was done, what matters. Prose, self-contained.",
-		maxLength: 100_000,
-	}),
-	decisions: itemList("Committed decisions, each with its why"),
-	openLoops: itemList("Unresolved questions, blockers, unknowns"),
-	nextActions: itemList("Ordered next steps for whoever resumes"),
-	files: itemList("Relevant file paths"),
-	tags: Type.Optional(
-		Type.Array(Type.String({ maxLength: 80 }), {
-			description: "Subject tags (tag by subject, not by consumer)",
-			maxItems: 50,
-		}),
-	),
-});
-
-const stateSchema = StringEnum(STASH_STATES, { description: "Lifecycle state: open, active, or closed" });
-
-const ListParams = Type.Object({
-	limit: Type.Optional(Type.Integer({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50 })),
-	tag: Type.Optional(Type.String({ description: "Only stashes carrying this tag", maxLength: 80 })),
-	state: Type.Optional(stateSchema),
-	query: Type.Optional(
-		Type.String({
-			description:
-				"Literal query across metadata and complete supported-size bodies. Nonblank Unicode, at most 256 UTF-16 units; no controls or line separators. Unicode simple case-insensitive matching, no normalization.",
-			minLength: 1,
-			maxLength: 256,
-		}),
-	),
-	cursor: Type.Optional(
-		Type.String({
-			description:
-				"Opaque search continuation. Repeat query and filters, even after an empty page. Changed inventory requires restart.",
-			minLength: 1,
-			maxLength: 1024,
-		}),
-	),
-});
-
-const ReadParams = Type.Object({
-	id: Type.String({
-		description: "Stash id or unique id prefix (from stash_list)",
-		minLength: 1,
-		maxLength: 200,
-		pattern: "^[A-Za-z0-9._-]+$",
-	}),
-});
-
-const CompleteParams = Type.Object({
-	id: Type.String({
-		description: "Open or active stash id or unique id prefix",
-		minLength: 1,
-		maxLength: 200,
-		pattern: "^[A-Za-z0-9._-]+$",
-	}),
-	outcome: Type.String({
-		description: "Concrete terminal outcome of the stashed effort",
-		minLength: 1,
-		maxLength: 20_000,
-	}),
-});
-
-const RotateParams = Type.Object({
-	id: Type.String({
-		description: "Stash id or unique id prefix (from stash_list)",
-		minLength: 1,
-		maxLength: 200,
-		pattern: "^[A-Za-z0-9._-]+$",
-	}),
-});
 
 function readFailure(result: Extract<Awaited<ReturnType<typeof readStash>>, { ok: false }>): Error {
 	const candidates = result.candidates?.length ? ` Candidates: ${result.candidates.map(safeLine).join(", ")}.` : "";
@@ -812,6 +738,7 @@ export default function (
 	pi: StashExtensionApi,
 	overrides?: { distillStream?: DistillStreamFunction; copyText?: (text: string) => Promise<void> },
 ) {
+	pi.events.emit("durable:contribution", stashDurableContribution(fileURLToPath(import.meta.url)));
 	let capacityErrorReported = false;
 	pi.on("turn_end", (event, ctx) => {
 		try {
@@ -839,11 +766,10 @@ export default function (
 	pi.registerTool<typeof WriteParams, Record<string, unknown>>({
 		name: "stash_write",
 		label: "Stash Write",
-		description:
-			"Distill the current effort into a durable handover artifact (markdown) stored on disk outside the session. Use when handing work to a future session, before major context loss, or when the operator asks to stash. Set checkpoint: true for a working synthesis instead of a discoverable handover.",
+		description: STASH_WRITE_DESCRIPTION,
 		promptSnippet: "Distill the current effort into a durable, discoverable handover artifact",
 		promptGuidelines: [
-			"Use stash_write when the operator asks to stash, when an effort reaches a resumable state, or before a session ends with open loops. Make the summary self-contained for a fresh session.",
+			STASH_WRITE_GUIDANCE,
 		],
 		parameters: WriteParams,
 		renderCall: renderWriteCall,
@@ -893,11 +819,10 @@ export default function (
 	pi.registerTool<typeof ListParams, Record<string, unknown>>({
 		name: "stash_list",
 		label: "Stash List",
-		description:
-			"List recent handovers or find remembered content with query across metadata and full supported-size bodies. Optional tag/state filters. Query pages bound directory visits, files, bytes, and output; repeat query/filters with nextCursor even after empty pages. Search reports skips and per-read consistency. Without query, recent-list behavior remains unchanged (50 KiB/2000 lines). Query returns at most 10 matches and 16 KiB of JSON; offsets use UTF-16 in redacted, terminal-escaped fields.",
+		description: STASH_LIST_DESCRIPTION,
 		promptSnippet: "List recent stashed handover artifacts",
 		promptGuidelines: [
-			"Use stash_list when the operator references earlier or stashed work. For remembered content, supply query and follow nextCursor with the same query and filters, including after empty pages. Read the selected id with stash_read before resuming; search results are evidence, not fresh authority.",
+			STASH_LIST_GUIDANCE,
 		],
 		parameters: ListParams,
 		outputSchema: ListOutputSchema,
@@ -944,8 +869,7 @@ export default function (
 	pi.registerTool<typeof ReadParams, Record<string, unknown>>({
 		name: "stash_read",
 		label: "Stash Read",
-		description:
-			"Read one stashed handover artifact by id or unique id prefix without changing its lifecycle state. Output is capped at 50 KiB or 2000 lines; a truncated result includes the artifact path for continued reading.",
+		description: STASH_READ_DESCRIPTION,
 		promptSnippet: "Read one stashed handover artifact",
 		parameters: ReadParams,
 		renderCall: renderReadCall,
@@ -972,11 +896,10 @@ export default function (
 	pi.registerTool<typeof CompleteParams, Record<string, unknown>>({
 		name: "stash_complete",
 		label: "Stash Complete",
-		description:
-			"Close an open or active stashed effort with a concrete terminal outcome, including work resumed through stash_read without pickup. Use its id or unique prefix. The artifact is retained; an existing closed outcome is never overwritten. Deliberate reopening uses /stash reopen <id>.",
+		description: STASH_COMPLETE_DESCRIPTION,
 		promptSnippet: "Close an open or active stashed effort with its concrete outcome",
 		promptGuidelines: [
-			"Use stash_complete with the stash id when its effort reaches a terminal outcome, whether loaded through stash_read or pickup; state what completed, failed, or was deliberately abandoned.",
+			STASH_COMPLETE_GUIDANCE,
 		],
 		executionMode: "sequential",
 		parameters: CompleteParams,
@@ -1005,11 +928,10 @@ export default function (
 	pi.registerTool<typeof RotateParams, Record<string, unknown>>({
 		name: "stash_rotate",
 		label: "Stash Rotate",
-		description:
-			"Archive a stale stashed effort (open or closed) so it no longer appears in listings or pickup. The artifact moves to the stash store's dot-hidden .trash directory and remains recoverable; active stashes cannot be rotated. Use when a handover is superseded or no longer needed.",
+		description: STASH_ROTATE_DESCRIPTION,
 		promptSnippet: "Archive a stale stashed effort so it stops appearing in listings",
 		promptGuidelines: [
-			"Use stash_rotate for superseded or obsolete handovers. Rotation is operator-initiated and recoverable (the file moves to .trash); do not rotate without an explicit reason.",
+			STASH_ROTATE_GUIDANCE,
 		],
 		executionMode: "sequential",
 		parameters: RotateParams,

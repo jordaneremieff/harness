@@ -69,6 +69,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 			sent.push({ content, options });
 		},
 		appendEntry: () => {},
+		events: { emit: () => {}, on: () => () => {} },
 		on: (event, handler) => {
 			if (event !== "session_shutdown") return () => {};
 			const shutdown = handler as (event: SessionShutdownEvent, ctx: ExtensionContext) => Promise<void>;

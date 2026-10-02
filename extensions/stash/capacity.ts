@@ -191,9 +191,14 @@ function requestText(state: CapacityState, checkpoint: boolean, decision: boolea
 		state.usage.kind === "host_estimate"
 			? `Pi estimates context use at ${state.usage.percent.toFixed(1)}% (${Math.round(state.usage.tokens)} tokens). This is not a safe remaining budget.`
 			: `Current context use is unknown. Estimated text intake reached the configured ${config.intakeTokenBudget}-token budget (text characters / 4, not a context percentage).`;
+	return [CAPACITY_NOTICE_HEADER, observation, ...capacityDirectiveLines(checkpoint, decision)].join("\n\n");
+}
+
+export const CAPACITY_NOTICE_HEADER = "Stash capacity notice from the local extension, not a new operator request.";
+
+/** Directive sentences after the observation; shared with the Durable capacity hook. */
+export function capacityDirectiveLines(checkpoint: boolean, decision: boolean): string[] {
 	const instructions = [
-		"Stash capacity notice from the local extension, not a new operator request.",
-		observation,
 		"Follow the governing capacity instructions and preserve the operator's scope and authority.",
 	];
 	if (checkpoint) {
@@ -209,7 +214,7 @@ function requestText(state: CapacityState, checkpoint: boolean, decision: boolea
 	instructions.push(
 		"The notice records a request, not successful preservation. Report a failed or unavailable save. Do not reset the capacity episode merely to repeat this notice.",
 	);
-	return instructions.join("\n\n");
+	return instructions;
 }
 
 function requestLevels(state: CapacityState, config: CapacityConfig, actionable: boolean) {

@@ -486,6 +486,96 @@ a recognized state, is excluded from state-filtered results instead of being rep
 as open. Unrecognized values stay visible in unfiltered listings and read as
 `unknown (<value>)`; every lifecycle action refuses them.
 
+## Durable agents
+
+Agents that run on Pi Durable (`@earendil-works/pi-durable`) receive the same
+stash capability as a primary session. The ordinary factory emits one
+`durable:contribution` event carrying the extension's absolute entrypoint path
+(`source`); the agent session host matches that path to Pi's loaded extensions
+and installs the native extension built by `create(host)`. An ordinary Pi
+session has no listener on the channel, so the emission has no effect there.
+
+The native extension supplies `stash_write`, `stash_list`, `stash_read`,
+`stash_complete`, and `stash_rotate` with the same parameter schemas, tool
+descriptions, and model guidance as the ordinary tools. The external stash
+store and its artifacts remain the single source of truth; no stash state is
+copied into Durable documents. Each tool declares its replay class explicitly:
+
+| Tool | Replay | Why |
+|---|---|---|
+| `stash_write` | `safe` | The call records its creation timestamp in a durable memo before the effect, and writes through the store's replayable publication. A rerun with the same memo and input reuses its byte-identical artifact instead of allocating a suffixed duplicate. |
+| `stash_list` | `safe` | Read-only; a rerun repeats no external effect. |
+| `stash_read` | `safe` | Read-only; a rerun repeats no external effect. |
+| `stash_complete` | `unsafe` | A lifecycle mutation. An interrupted call leaves the model an interrupted result and is never rerun; the store's own identity checks protect the artifact. |
+| `stash_rotate` | `unsafe` | A lifecycle mutation with the same boundary as completion. |
+
+`stash_list` carries the native structured result that the ordinary tool
+returns as `structuredContent` on `details.structuredContent`, and declares the
+same `outputSchema` for nested-call consumers. `stash_complete` and
+`stash_rotate` keep the ordinary sequential execution mode.
+
+### Capacity guidance
+
+The contribution ports the ordinary capacity monitor to two native generation
+hooks. `beforeRequest` observes the request's model context, scans it for
+Durable capacity notices, and, when a threshold crossing is due, records the
+notice in a task memo before the request. `onYield` delivers a recorded notice
+by continuing the run with it as a user message. Because the notice becomes a
+committed user entry, the next generation recognizes it and does not repeat it:
+a crossing produces at most one checkpoint request and one decision request,
+and a replay of the deciding generation reads its own memo instead of
+re-deciding.
+
+The conversation document `stash.capacity` holds one episode counter. Ordinary
+notices carry `[stash-capacity e=<episode> c=<conversation> ...]`; the scan
+matches the current episode and conversation, so a fork never inherits its
+parent's latches. `/stash capacity reset` increments the counter, which re-arms
+both requests while the old notices remain in the context. Compaction removes
+the notices and re-arms the crossing in the ordinary way.
+
+The context observation is an estimate from request text (UTF-16 characters /
+4) against the resolved model's context window, taken from the stored agent
+model or the newest assistant message. It is labeled as an estimate, never as a
+provider count or a safe remaining budget. When the context window is unknown,
+the optional `PI_STASH_INTAKE_TOKEN_BUDGET` trigger applies instead; without a
+budget, unknown use produces no automatic request. Thresholds, the budget, and
+`PI_STASH_CAPACITY` are read from the same environment variables as the
+ordinary hook.
+
+### Command and distillation
+
+The contribution registers one `stash` command for agent controls. `/stash
+new <hint>` creates a background `stash.distill` task owned by the
+conversation; the command returns the task id immediately. The task captures
+the conversation's committed model context as a bounded, redacted transcript
+plus observed references, resolves the model and thinking level (honoring
+`PI_STASH_MODEL` and `PI_STASH_THINKING`), streams one tool-free distillation
+request, and publishes through the replayable writer. Its terminal outcome and
+usage are committed to the `stash.distill` conversation document, which records
+the last attempt's status, artifact id, path, title, message, and token and cost
+totals.
+
+The remaining command verbs operate directly on the external store: `get`
+activates an artifact and queues the pickup message as the next user input,
+`complete`, `release`, `reopen`, and `rotate` run the same lifecycle transitions
+as the ordinary command, `capacity [reset]` reports the observation and
+manages the episode counter, and `help` prints the Durable usage. A pickup
+submission is keyed by the command invocation identity, so a retry of one
+invocation reuses its submission while a distinct invocation is a distinct
+request.
+
+Durable differences from the ordinary entrypoint:
+
+- There is no TUI browser and no `ctrl+alt+s` shortcut. Discovery is
+  `stash_list` and the explicit `get` and lifecycle verbs.
+- `/stash abort` has no equivalent single-task control: the distillation is a
+  background task stopped through the host's task controls.
+- Distillation captures the committed Durable model context rather than Pi's
+  persisted-session projection, and its usage is reported through the
+  `stash.distill` document rather than session status and notifications.
+- Capacity notices are delivered through the generation run's `onYield`
+  continuation and re-armed by compaction or an explicit reset.
+
 ## Storage
 
 Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments. `PI_STASH_MODEL` and `PI_STASH_THINKING` configure `/stash new` distillation (see Background distillation). `PI_SESSION_ID` is read as a fallback when the session manager supplies no session id.
@@ -537,7 +627,10 @@ The component derives its row budget from the host TUI and the overlay's height 
 
 ## Files
 
-- `index.ts`: tool registrations, `/stash` and shortcut host, capacity hook, and the creation slot/status lifecycle.
+- `index.ts`: tool registrations, `/stash` and shortcut host, capacity hook, the creation slot/status lifecycle, and the Durable contribution emission.
+- `durable.ts`: the native Durable extension: contribution, tools, capacity hooks and episode document, distillation task and receipt document, and agent commands.
+- `params.ts`: shared parameter schemas for both entrypoints.
+- `guidance.ts`: shared tool descriptions and model guidance for both entrypoints.
 - `capacity.ts`: bounded session-state restoration, context observations, configuration, and latched continuity requests.
 - `store.ts`: private, collision-safe filesystem store, atomic lifecycle transitions, and the rotation archive.
 - `search.ts`: bounded content discovery, stateless inventory-bound continuation, and transformed-field excerpts.
@@ -549,7 +642,8 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `redact.ts`: deterministic credential redaction for transcript, references, payloads, and lifecycle outcomes.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
 - `test-fixtures.mts`: typed model and transcript fixtures, registration capture, and the partial host context for entrypoint tests.
-- `*.test.mts`: unit and entrypoint drive tests.
+- `durable-fixture.mts`: child-process crash fixture for the Durable replay tests.
+- `*.test.mts`: unit, entrypoint, and Durable Harness drive tests.
 
 ## Verification
 
