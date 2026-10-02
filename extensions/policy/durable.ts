@@ -20,14 +20,18 @@
  * Observation periods are conversation-scoped because Durable turns and
  * replay identity are conversation-scoped; the ordinary runtime keeps one
  * session-wide state. `policy.state` holds the serialized `ObservationState`,
- * retained guidance, the delivered shell card, the last counted turn, and a
- * bounded ring of completed calls with the result effect each decided. Every
- * update recomputes inside one in-process tail and commits the state and the
- * dedupe entry together, so a replay after process loss returns the recorded
- * decision instead of deciding again. A hook decision that survives process
- * loss by itself uses `api.memo()` on the tool task. The rule store stays
- * external and revision-checked; only decisions and evidence live in the
- * document.
+ * retained guidance, the delivered shell card, the counted turn, a bounded
+ * ring of completed calls with the result effect each decided, one message
+ * effect per generation task, the revision identity, and observation
+ * counters. Every update recomputes inside one in-process tail and commits the
+ * state and its task or call key together, so a replay after process loss
+ * returns the recorded decision instead of deciding again. Hooks use only the
+ * public `HookApi`: durable writes go through `host.harness.commit()` keyed by
+ * the task or call identity, and the resolved agent comes from
+ * `host.harness.conversation(id).agent()`. A hook decision that survives
+ * process loss by itself uses `api.memo()` on the tool task. The rule store
+ * stays external and revision-checked; only decisions and evidence live in
+ * the document.
  *
  * `notice` mode has no terminal surface in a Durable agent. It records the
  * same metadata as the other modes and adds no notice; guidance and
@@ -35,6 +39,7 @@
  * at-most-once: a newly applied completion writes one record after its state
  * commit.
  */
+import { randomUUID } from "node:crypto";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -87,7 +92,6 @@ import {
 	type CallOutcome,
 	type ContentLike,
 	finishCall,
-	MAX_PENDING,
 	type PendingCall,
 	type PolicyRecord,
 	startCall,
@@ -131,6 +135,7 @@ import {
 const MAX_CATALOG_TOOLS = 1024;
 const MAX_MEMO_INPUT_BYTES = 16 * 1024;
 const COMPLETED_CALLS = 512;
+const REQUEST_EFFECTS = 64;
 const PROJECTION_MODES: readonly PolicyMode[] = ["annotate", "enforce"];
 
 /** One Durable contribution emitted by the ordinary factory. */
@@ -150,14 +155,18 @@ export interface PolicyDurableInventory {
 	readonly ordinaryOnly: readonly string[];
 }
 
-/** The agent session host supplies these values; this slice reads only `durable` and `agentDir`. */
+/** The agent session host supplies these values; this slice reads only `durable`, `harness`, and `agentDir`. */
 export interface PolicyDurableHost {
 	readonly durable: typeof Durable;
 	readonly services: AgentSessionServices;
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly storageId: string;
+	/** The host's open Harness. Hook state writes go through it, keyed by task or call identity. */
+	readonly harness: Durable.Harness;
 	readonly signal: AbortSignal;
+	/** Register final work; the host runs registered functions in reverse order at shutdown. */
+	readonly onClose: (dispose: () => void | Promise<void>) => void;
 	readonly inventory: PolicyDurableInventory;
 }
 
@@ -169,12 +178,18 @@ type StoredRetainedGuidance = {
 	generation: number;
 	evaluation: JsonValue;
 };
+/** Message effect of one generation task, recorded so a replayed request sends the same messages. */
+type StoredRequestEffect = { taskId: string; card?: string; guidance?: string };
 type PolicyStateValue = Durable.JsonObject & {
+	identity: string;
 	generation: number;
 	turn: number;
 	observation: JsonValue;
 	retainedGuidance: JsonValue[];
 	completedCalls: JsonValue[];
+	requestEffects: JsonValue[];
+	incomplete: number;
+	stale: number;
 	shellCardDelivered: boolean;
 };
 
@@ -238,7 +253,6 @@ interface ObservedCall {
 
 /** The read, agent, and commit surface shared by tool executions and task hooks. */
 interface PolicySurface {
-	readonly registry: Durable.RegistrySnapshot;
 	readonly conversationId: Durable.ConversationId;
 	agent(context: Context): Promise<Durable.Agent>;
 	snapshot<T extends Durable.JsonObject>(
@@ -247,15 +261,6 @@ interface PolicySurface {
 		context: Context,
 	): Promise<Readonly<T> | undefined>;
 	commit<T>(change: (tx: Durable.Tx) => T | Promise<T>, context: Context): Promise<T>;
-}
-
-/** Adds the task facilities the harness passes to hooks beyond the declared `HookApi`. */
-interface PolicyTaskSurface extends PolicySurface {
-	readonly signal: AbortSignal;
-	now(): number;
-	context(conversationId: Durable.ConversationId, context: Context): Promise<Durable.ContextView>;
-	memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
-	memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
 }
 
 const toolScope = (scope: RuleMatchContext, model: Durable.Agent["model"]): PolicyToolScope => ({
@@ -293,6 +298,7 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 	const runtime = new DurablePolicyRuntime({
 		dir,
 		registry,
+		harness: host.harness,
 		storageId: host.storageId,
 		cwd: host.cwd,
 		mode: resolved.mode,
@@ -309,12 +315,10 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 			execute: (args, api, context) => runtime.executeRules(args, api, context),
 		}),
 		outputSchema: Type.Object({
-			structuredContent: Type.Object({
-				rules: Type.Number(),
-				pending: Type.Number(),
-				ruleStoreDegraded: Type.Boolean(),
-				ruleStorePath: Type.String(),
-			}),
+			rules: Type.Number(),
+			pending: Type.Number(),
+			ruleStoreDegraded: Type.Boolean(),
+			ruleStorePath: Type.String(),
 		}),
 	};
 	const proposeTool = {
@@ -326,13 +330,11 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 			execute: (args, api, context) => runtime.executePropose(args, api, context),
 		}),
 		outputSchema: Type.Object({
-			structuredContent: Type.Object({
-				proposalId: Type.String(),
-				proposalRevision: Type.String(),
-				state: Type.Literal("pending"),
-				operation: Type.String(),
-				ruleId: Type.String(),
-			}),
+			proposalId: Type.String(),
+			proposalRevision: Type.String(),
+			state: Type.Literal("pending"),
+			operation: Type.String(),
+			ruleId: Type.String(),
 		}),
 	};
 	const approveTool = {
@@ -344,22 +346,20 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 			execute: (args, api, context) => runtime.executeApprove(args, api, context),
 		}),
 		outputSchema: Type.Object({
-			structuredContent: Type.Object({
-				proposalId: Type.String(),
-				proposalRevision: Type.String(),
-				decision: Type.Literal("approved"),
-				operation: Type.String(),
-				ruleId: Type.String(),
-				ruleRevision: Type.String(),
-				state: Type.String(),
-				effect: Type.String(),
-				matcherAvailable: Type.Boolean(),
-				staleOverride: Type.Boolean(),
-				scope: Type.String(),
-				mode: Type.String(),
-				registryHealth: Type.String(),
-				boundary: Type.String(),
-			}),
+			proposalId: Type.String(),
+			proposalRevision: Type.String(),
+			decision: Type.Literal("approved"),
+			operation: Type.String(),
+			ruleId: Type.String(),
+			ruleRevision: Type.String(),
+			state: Type.String(),
+			effect: Type.String(),
+			matcherAvailable: Type.Boolean(),
+			staleOverride: Type.Boolean(),
+			scope: Type.String(),
+			mode: Type.String(),
+			registryHealth: Type.String(),
+			boundary: Type.String(),
 		}),
 	};
 	const controlTool = {
@@ -370,7 +370,7 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 			replay: "unsafe",
 			execute: (args, api, context) => runtime.executeControl(args, api, context),
 		}),
-		outputSchema: Type.Object({ structuredContent: Type.Record(Type.String(), Type.Unknown()) }),
+		outputSchema: Type.Record(Type.String(), Type.Unknown()),
 	};
 
 	return defineExtension({
@@ -441,11 +441,15 @@ function initialObservationValue(): JsonValue {
 
 function initialPolicyStateValue(): PolicyStateValue {
 	return {
+		identity: randomUUID(),
 		generation: 0,
 		turn: 0,
 		observation: initialObservationValue(),
 		retainedGuidance: [],
 		completedCalls: [],
+		requestEffects: [],
+		incomplete: 0,
+		stale: 0,
 		shellCardDelivered: false,
 	};
 }
@@ -466,10 +470,21 @@ function isStoredCompleted(value: JsonValue): value is StoredCompletedCall {
 	return entry !== undefined && typeof entry.id === "string";
 }
 
+function isStoredRequestEffect(value: JsonValue): value is StoredRequestEffect {
+	const entry = objectValue(value);
+	return (
+		entry !== undefined &&
+		typeof entry.taskId === "string" &&
+		(entry.card === undefined || typeof entry.card === "string") &&
+		(entry.guidance === undefined || typeof entry.guidance === "string")
+	);
+}
+
 function normalizePolicyState(raw: Readonly<PolicyStateValue> | undefined): PolicyStateValue {
 	if (!raw) return initialPolicyStateValue();
 	const value = raw as Partial<PolicyStateValue>;
 	return {
+		identity: typeof value.identity === "string" && value.identity.length > 0 ? value.identity : randomUUID(),
 		generation: safeInteger(value.generation) ?? 0,
 		turn: safeInteger(value.turn) ?? 0,
 		observation: value.observation ?? initialObservationValue(),
@@ -477,13 +492,35 @@ function normalizePolicyState(raw: Readonly<PolicyStateValue> | undefined): Poli
 		completedCalls: Array.isArray(value.completedCalls)
 			? value.completedCalls.filter(isStoredCompleted).slice(-COMPLETED_CALLS)
 			: [],
+		requestEffects: Array.isArray(value.requestEffects)
+			? value.requestEffects.filter(isStoredRequestEffect).slice(-REQUEST_EFFECTS)
+			: [],
+		incomplete: safeInteger(value.incomplete) ?? 0,
+		stale: safeInteger(value.stale) ?? 0,
 		shellCardDelivered: value.shellCardDelivered === true,
 	};
+}
+
+/** Repair one state draft in place so one corrupt field cannot poison an update. */
+function repairState(state: PolicyStateValue): PolicyStateValue {
+	const normalized = normalizePolicyState(state);
+	state.identity = normalized.identity;
+	state.generation = normalized.generation;
+	state.turn = normalized.turn;
+	state.observation = normalized.observation;
+	state.retainedGuidance = normalized.retainedGuidance;
+	state.completedCalls = normalized.completedCalls;
+	state.requestEffects = normalized.requestEffects;
+	state.incomplete = normalized.incomplete;
+	state.stale = normalized.stale;
+	state.shellCardDelivered = normalized.shellCardDelivered;
+	return state;
 }
 
 interface DurablePolicyRuntimeOptions {
 	dir: string;
 	registry: RuleRegistry;
+	harness: Durable.Harness;
 	storageId: string;
 	cwd: string;
 	mode: PolicyMode;
@@ -494,21 +531,19 @@ interface DurablePolicyRuntimeOptions {
 class DurablePolicyRuntime {
 	private readonly dir: string;
 	private readonly registry: RuleRegistry;
+	private readonly harness: Durable.Harness;
 	private readonly storageId: string;
 	private readonly cwd: string;
 	private readonly mode: PolicyMode;
 	private readonly modeValid: boolean;
 	private readonly stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
-	private readonly resetIdentity = crypto.randomUUID();
-	private readonly pendingCalls = new Map<string, true>();
 	private stateTail: Promise<unknown> = Promise.resolve();
-	private incomplete = 0;
-	private stale = 0;
 	private telemetryFailure?: string;
 
 	constructor(options: DurablePolicyRuntimeOptions) {
 		this.dir = options.dir;
 		this.registry = options.registry;
+		this.harness = options.harness;
 		this.storageId = options.storageId;
 		this.cwd = options.cwd;
 		this.mode = options.mode;
@@ -559,7 +594,7 @@ class DurablePolicyRuntime {
 			let result!: T;
 			await surface.commit(async (tx) => {
 				const draft = await tx.doc(this.stateDoc, surface.conversationId);
-				result = await work(draft as unknown as PolicyStateValue);
+				result = await work(repairState(draft));
 			}, context);
 			return result;
 		});
@@ -582,6 +617,52 @@ class DurablePolicyRuntime {
 		return Array.isArray(state.completedCalls) ? state.completedCalls.filter(isStoredCompleted) : [];
 	}
 
+	private requestEffectsOf(state: PolicyStateValue): StoredRequestEffect[] {
+		return Array.isArray(state.requestEffects) ? state.requestEffects.filter(isStoredRequestEffect) : [];
+	}
+
+	/** Public-surface adapter for hooks: reads and memos from HookApi, writes and agent from the host Harness. */
+	private hookSurface(api: Durable.HookApi): PolicySurface {
+		return {
+			conversationId: api.conversationId,
+			agent: (context) => this.resolvedAgent(api.conversationId, context),
+			snapshot: (token, conversationId, context) => api.snapshot(token, conversationId, context),
+			commit: (change, context) => this.harness.commit(change, context),
+		};
+	}
+
+	/** Public-surface adapter for tool executions: every member is declared on ToolExecutionApi. */
+	private toolSurface(api: Durable.ToolExecutionApi): PolicySurface {
+		return {
+			conversationId: api.conversationId,
+			agent: (context) => api.agent(context),
+			snapshot: (token, conversationId, context) => api.snapshot(token, conversationId, context),
+			commit: (change, context) => api.commit(change, context),
+		};
+	}
+
+	private async resolvedAgent(conversationId: Durable.ConversationId, context: Context): Promise<Durable.Agent> {
+		const conversation = await this.harness.conversation(conversationId, context);
+		if (!conversation) throw new Error(`Policy cannot resolve conversation ${conversationId}`);
+		return conversation.agent(context);
+	}
+
+	private async conversationView(
+		conversationId: Durable.ConversationId,
+		context: Context,
+	): Promise<Durable.ContextView> {
+		const conversation = await this.harness.conversation(conversationId, context);
+		if (!conversation) throw new Error(`Policy cannot resolve conversation ${conversationId}`);
+		return conversation.context(context);
+	}
+
+	private async pendingCount(conversationId: Durable.ConversationId, context: Context): Promise<number> {
+		const inspection = await this.harness.inspect(context);
+		return inspection.tasks.filter(
+			(task) => task.record.kind === "pi.tool" && task.record.conversationId === conversationId,
+		).length;
+	}
+
 	private statesOf(state: ObservationState, now: number, turn: number): Record<string, StateView> {
 		return Object.fromEntries(state.snapshot(now, turn).map((view) => [view.id, view] as const));
 	}
@@ -592,7 +673,9 @@ class DurablePolicyRuntime {
 	): Promise<{ snapshot: RuleSnapshot; agent: Durable.Agent; scope: RuleMatchContext; rules: ProgramRule[]; installed: string[] }> {
 		const snapshot = await this.snapshot();
 		const agent = await surface.agent(context);
-		const installed = [...new Set(surface.registry.tools().map((entry) => entry.tool.name))];
+		const installed = [
+			...new Set(agent.extensions.flatMap((extension) => extension.tools?.map((tool) => tool.name) ?? [])),
+		];
 		const model = agent.model;
 		const scope: RuleMatchContext = {
 			provider: model?.provider,
@@ -930,18 +1013,6 @@ class DurablePolicyRuntime {
 		return text;
 	}
 
-	private trackPending(callId: string): void {
-		if (this.pendingCalls.has(callId) || this.pendingCalls.size >= MAX_PENDING) {
-			this.incomplete += 1;
-			return;
-		}
-		this.pendingCalls.set(callId, true);
-	}
-
-	private endPending(callId: string): void {
-		this.pendingCalls.delete(callId);
-	}
-
 	/** The result-phase decision for one call: assert-error correction and eligible guidance. */
 	private resultEffects(
 		call: ObservedCall,
@@ -1022,7 +1093,8 @@ class DurablePolicyRuntime {
 		mode: PolicyMode,
 		rules: ProgramRule[],
 		truncated: boolean | undefined,
-		surface: PolicyTaskSurface,
+		incompleteObservation: boolean,
+		surface: PolicySurface,
 		context: Context,
 		now: number,
 	): Promise<{ guidance?: string; correction: boolean; record?: PolicyRecord }> {
@@ -1032,7 +1104,8 @@ class DurablePolicyRuntime {
 			const existing = this.completedCallsOf(state).find((entry) => entry.id === call.callId);
 			if (existing) return { guidance: existing.guidance, correction: existing.correction === true };
 			const current = call.generation === state.generation ? this.currentRulesOf(call, observation) : [];
-			this.stale += call.rules.length - current.length;
+			state.stale += call.rules.length - current.length;
+			if (incompleteObservation) state.incomplete += 1;
 			const effects = this.resultEffects(call, observation, current, mode, result, now);
 			if (effects.guidance) call.effects.annotationBytes = Buffer.byteLength(effects.guidance, "utf8");
 			const completion = this.completionEffects(
@@ -1044,7 +1117,7 @@ class DurablePolicyRuntime {
 				now,
 				state,
 			);
-			this.stale += completion.stale;
+			state.stale += completion.stale;
 			const record = this.telemetryRecord(
 				call,
 				result,
@@ -1066,7 +1139,6 @@ class DurablePolicyRuntime {
 				},
 			].slice(-COMPLETED_CALLS);
 			state.observation = observation.toJSON() as unknown as JsonValue;
-			this.endPending(call.callId);
 			return { guidance: effects.guidance, correction: effects.correction, record };
 		});
 	}
@@ -1177,11 +1249,10 @@ class DurablePolicyRuntime {
 		context: Context,
 	): Promise<{ block?: string; arguments?: Durable.JsonObject } | undefined> {
 		if (!this.modeValid) return undefined;
-		const surface = api as unknown as PolicyTaskSurface;
-		const now = surface.now();
-		this.trackPending(call.id);
+		const now = Date.now();
+		const surface = this.hookSurface(api);
 		const { snapshot, agent, scope, rules, installed } = await this.activeRules(surface, context);
-		const turn = await this.turnOf(surface, context);
+		const turn = await this.turnOf(api.conversationId, context);
 		const base = await this.readState(surface, context, (state) => {
 			const observation = this.observationOf(state);
 			observation.sync(rules, now);
@@ -1198,7 +1269,7 @@ class DurablePolicyRuntime {
 			base.observation,
 			turn,
 			now,
-			surface.conversationId,
+			api.conversationId,
 			installed,
 		);
 		observed.generation = base.state.generation;
@@ -1212,7 +1283,9 @@ class DurablePolicyRuntime {
 				markUnavailable(current),
 			);
 			observed.evaluations.push(...unavailable);
-			observed.classes = [...new Set([...observed.classes, ...unavailable.filter((entry) => entry.truth === true).map((entry) => entry.id)])];
+			observed.classes = [
+				...new Set([...observed.classes, ...unavailable.filter((entry) => entry.truth === true).map((entry) => entry.id)]),
+			];
 			if (mode === "enforce" && unavailable.some((entry) => entry.deny))
 				reason = "[policy] An approved input check refused unavailable input.";
 		}
@@ -1222,10 +1295,21 @@ class DurablePolicyRuntime {
 				this.refusalText(observed, plan, snapshot) ?? "[policy] The approved input checks refused this call.";
 			reason = observed.decision;
 		}
-		await surface.memo("policy.call", this.memoFor(observed, plan), context);
+		await api.memo("policy.call", this.memoFor(observed, plan), context);
 		if (reason !== undefined) {
 			observed.resultSeen = false;
-			const update = await this.completeCall(observed, { isError: true }, "denied", mode, rules, undefined, surface, context, now);
+			const update = await this.completeCall(
+				observed,
+				{ isError: true },
+				"denied",
+				mode,
+				rules,
+				undefined,
+				false,
+				surface,
+				context,
+				now,
+			);
 			await this.writeTelemetry(update.record);
 			return { block: update.guidance ? `${reason}\n${update.guidance}` : reason };
 		}
@@ -1243,11 +1327,11 @@ class DurablePolicyRuntime {
 		context: Context,
 	): Promise<Durable.ToolExecutionResult | undefined> {
 		if (!this.modeValid) return undefined;
-		const surface = api as unknown as PolicyTaskSurface;
-		const now = surface.now();
-		const memo = await surface.memo<PolicyCallMemo>("policy.call", context);
+		const now = Date.now();
+		const surface = this.hookSurface(api);
+		const memo = await api.memo<PolicyCallMemo>("policy.call", context);
 		const { snapshot, agent, scope, rules, installed } = await this.activeRules(surface, context);
-		const turn = await this.turnOf(surface, context);
+		const turn = await this.turnOf(api.conversationId, context);
 		const reading = await this.readState(surface, context, (state) => {
 			const observation = this.observationOf(state);
 			observation.sync(rules, now);
@@ -1263,12 +1347,12 @@ class DurablePolicyRuntime {
 			reading.observation,
 			turn,
 			now,
-			surface.conversationId,
+			api.conversationId,
 			installed,
 		);
 		observed.generation = reading.state.generation;
 		observed.resultSeen = true;
-		observed.abortRequested = surface.signal.aborted;
+		observed.abortRequested = context.abortSignal?.aborted === true;
 		observed.preGuidanceBytes = textContentBytes(result.content);
 		observed.outputBytes = observed.preGuidanceBytes;
 		const details = objectValue(result.details);
@@ -1280,6 +1364,7 @@ class DurablePolicyRuntime {
 			this.effectiveMode(snapshot),
 			rules,
 			truncation?.truncated === true,
+			memo === undefined,
 			surface,
 			context,
 			now,
@@ -1302,67 +1387,119 @@ class DurablePolicyRuntime {
 		context: Context,
 	): Promise<{ messages: readonly Message[] } | undefined> {
 		if (!this.modeValid) return undefined;
-		const surface = api as unknown as PolicyTaskSurface;
-		const now = surface.now();
+		const now = Date.now();
+		const surface = this.hookSurface(api);
+		const taskId = String(api.taskId);
 		const { snapshot, agent, scope, rules, installed } = await this.activeRules(surface, context);
-		const view = await surface.context(surface.conversationId, context);
+		const view = await this.conversationView(api.conversationId, context);
 		const turn = view.messages.filter((message) => message.role === "assistant").length + 1;
 		const mode = this.effectiveMode(snapshot);
-		const update = await this.withState(surface, context, (state) => {
-			const observation = this.observationOf(state);
-			observation.sync(rules, now);
-			state.turn = Math.max(state.turn, turn);
-			let text: string | undefined;
-			let card: string | undefined;
-			if (PROJECTION_MODES.includes(mode)) {
-				const retained = this.retainedGuidanceOf(state).filter((entry) => {
-					const rule = rules.find((candidate) => candidate.id === entry.id);
-					return (
-						rule !== undefined &&
-						rule.revision === entry.revision &&
-						samePin({ id: entry.id, revision: entry.revision, generation: entry.generation }, observation.pin(entry.id))
-					);
-				});
-				state.retainedGuidance = retained;
-				const contextPrograms = evaluatePrograms(rules, "context", {
-					tool: "",
-					facts: { context: this.publicContext(snapshot, agent, turn, installed) },
-					states: this.statesOf(observation, now, turn),
-					data: snapshotData([...snapshot.data.values()], now),
-					now,
-					mode,
-					scope,
-				});
-				const projected = new Set<string>();
-				text = this.selectGuidance(
-					observation,
-					[...retained.map((entry) => entry.evaluation as unknown as ProgramEvaluation), ...contextPrograms],
-					mode,
-					now,
-					turn,
-					(id) => projected.add(id),
-				);
-				state.retainedGuidance = this.retainedGuidanceOf(state).filter((entry) => !projected.has(entry.id));
-				if (!state.shellCardDelivered && agent.tools.some((tool) => tool.name === "bash")) {
-					card = shellContractCard(
-						snapshot.records.values(),
-						scope,
-						this.publicContext(snapshot, agent, turn, installed),
-					);
-					if (card) state.shellCardDelivered = true;
-				}
-			}
-			state.observation = observation.toJSON() as unknown as JsonValue;
-			return { text, card };
-		});
+		const effect = await this.withState(surface, context, (state) =>
+			this.requestEffect(state, taskId, { snapshot, agent, scope, rules, installed, mode, turn, now }),
+		);
 		const messages = [...request.messages];
-		if (update.card) messages.push(userMessage(update.card, now));
-		if (update.text) messages.push(userMessage(update.text, now));
+		if (effect.card) messages.push(userMessage(effect.card, now));
+		if (effect.guidance) messages.push(userMessage(effect.guidance, now));
 		return messages.length === request.messages.length ? undefined : { messages };
 	}
 
-	private async turnOf(surface: PolicyTaskSurface, context: Context): Promise<number> {
-		const view = await surface.context(surface.conversationId, context);
+	/** One generation task's request effect; a recorded taskId replays the same messages. */
+	private requestEffect(
+		state: PolicyStateValue,
+		taskId: string,
+		input: {
+			snapshot: RuleSnapshot;
+			agent: Durable.Agent;
+			scope: RuleMatchContext;
+			rules: ProgramRule[];
+			installed: readonly string[];
+			mode: PolicyMode;
+			turn: number;
+			now: number;
+		},
+	): StoredRequestEffect {
+		const recorded = this.requestEffectsOf(state).find((entry) => entry.taskId === taskId);
+		if (recorded) return recorded;
+		const { rules, mode, turn, now } = input;
+		const observation = this.observationOf(state);
+		observation.sync(rules, now);
+		state.turn = Math.max(state.turn, turn);
+		const effect: StoredRequestEffect = { taskId };
+		if (PROJECTION_MODES.includes(mode)) this.projectRequest(state, observation, effect, input);
+		state.observation = observation.toJSON() as unknown as JsonValue;
+		state.requestEffects = [...this.requestEffectsOf(state), effect].slice(-REQUEST_EFFECTS);
+		return effect;
+	}
+
+	/** Context rules, retained guidance, and the one-time shell card for one request. */
+	private projectRequest(
+		state: PolicyStateValue,
+		observation: ObservationState,
+		effect: StoredRequestEffect,
+		input: {
+			snapshot: RuleSnapshot;
+			agent: Durable.Agent;
+			scope: RuleMatchContext;
+			rules: ProgramRule[];
+			installed: readonly string[];
+			mode: PolicyMode;
+			turn: number;
+			now: number;
+		},
+	): void {
+		const { snapshot, agent, scope, rules, installed, mode, turn, now } = input;
+		const retained = this.validRetained(state, observation, rules);
+		state.retainedGuidance = retained;
+		const contextPrograms = evaluatePrograms(rules, "context", {
+			tool: "",
+			facts: { context: this.publicContext(snapshot, agent, turn, installed) },
+			states: this.statesOf(observation, now, turn),
+			data: snapshotData([...snapshot.data.values()], now),
+			now,
+			mode,
+			scope,
+		});
+		const projected = new Set<string>();
+		const guidance = this.selectGuidance(
+			observation,
+			[...retained.map((entry) => entry.evaluation as unknown as ProgramEvaluation), ...contextPrograms],
+			mode,
+			now,
+			turn,
+			(id) => projected.add(id),
+		);
+		if (guidance) effect.guidance = guidance;
+		state.retainedGuidance = this.retainedGuidanceOf(state).filter((entry) => !projected.has(entry.id));
+		if (!state.shellCardDelivered && agent.tools.some((tool) => tool.name === "bash")) {
+			const card = shellContractCard(
+				snapshot.records.values(),
+				scope,
+				this.publicContext(snapshot, agent, turn, installed),
+			);
+			if (card) {
+				effect.card = card;
+				state.shellCardDelivered = true;
+			}
+		}
+	}
+
+	private validRetained(
+		state: PolicyStateValue,
+		observation: ObservationState,
+		rules: readonly ProgramRule[],
+	): StoredRetainedGuidance[] {
+		return this.retainedGuidanceOf(state).filter((entry) => {
+			const rule = rules.find((candidate) => candidate.id === entry.id);
+			if (rule === undefined || rule.revision !== entry.revision) return false;
+			return samePin(
+				{ id: entry.id, revision: entry.revision, generation: entry.generation },
+				observation.pin(entry.id),
+			);
+		});
+	}
+
+	private async turnOf(conversationId: Durable.ConversationId, context: Context): Promise<number> {
+		const view = await this.conversationView(conversationId, context);
 		return view.messages.filter((message) => message.role === "assistant").length;
 	}
 
@@ -1375,21 +1512,20 @@ class DurablePolicyRuntime {
 	): Promise<Durable.ToolExecutionResult> {
 		context.abortSignal?.throwIfAborted();
 		validateInspectionParams(params);
-		const surface = api as unknown as PolicySurface;
+		const surface = this.toolSurface(api);
 		const snapshot = await this.snapshot();
 		const { agent, scope } = await this.activeRules(surface, context);
 		const view = params.view ?? "rules";
 		const output = await this.rulesOutput(params, view, snapshot, agent, scope, surface, context);
+		const detail = {
+			rules: snapshot.records.size,
+			pending: snapshot.pending.length,
+			ruleStoreDegraded: snapshot.health.status === "degraded",
+			ruleStorePath: snapshot.health.path,
+		};
 		return {
 			content: [{ type: "text", text: output }],
-			details: {
-				structuredContent: {
-					rules: snapshot.records.size,
-					pending: snapshot.pending.length,
-					ruleStoreDegraded: snapshot.health.status === "degraded",
-					ruleStorePath: snapshot.health.path,
-				},
-			},
+			details: { ...detail, structuredContent: detail },
 		};
 	}
 
@@ -1439,13 +1575,20 @@ class DurablePolicyRuntime {
 	): Promise<Durable.ToolExecutionResult> {
 		context.abortSignal?.throwIfAborted();
 		validateProposal(params);
-		const surface = api as unknown as PolicySurface;
+		const surface = this.toolSurface(api);
 		await this.snapshot();
 		const { agent } = await this.activeRules(surface, context);
 		const auditValue: AgentRuleAudit = makeRuleAudit(this.auditContext(surface.conversationId, agent), "agent-tool");
 		const event = await submitProposal(this.registry, params, auditValue);
 		await this.snapshot();
 		const revision = proposalRevision(event);
+		const detail = {
+			proposalId: event.id,
+			proposalRevision: revision,
+			state: "pending" as const,
+			operation: event.operation,
+			ruleId: event.ruleId,
+		};
 		return {
 			content: [
 				{
@@ -1453,15 +1596,7 @@ class DurablePolicyRuntime {
 					text: `Pending proposal ${event.id}: ${event.operation} ${event.ruleId}. Revision: ${revision}. It is inert until operator approval. After clear contextual approval, use policy_approve with this proposal ID, revision, and authorized effect. The operator need not type identifiers or a command.`,
 				},
 			],
-			details: {
-				structuredContent: {
-					proposalId: event.id,
-					proposalRevision: revision,
-					state: "pending",
-					operation: event.operation,
-					ruleId: event.ruleId,
-				},
-			},
+			details: { ...detail, structuredContent: detail },
 		};
 	}
 
@@ -1475,7 +1610,7 @@ class DurablePolicyRuntime {
 			throw new Error(
 				"policy_approve requires proposalId, proposalRevision, effect (steer, block, or exact), and a nonblank authorization explanation only",
 			);
-		const surface = api as unknown as PolicySurface;
+		const surface = this.toolSurface(api);
 		const before = await this.snapshot();
 		const proposal = before.pending.find((entry) => entry.id === params.proposalId);
 		if (!proposal)
@@ -1511,7 +1646,7 @@ class DurablePolicyRuntime {
 		);
 		return {
 			content: [{ type: "text", text: boundedInspection(result) }],
-			details: { structuredContent: result },
+			details: { ...result, structuredContent: result },
 		};
 	}
 
@@ -1522,7 +1657,7 @@ class DurablePolicyRuntime {
 	): Promise<Durable.ToolExecutionResult> {
 		context.abortSignal?.throwIfAborted();
 		validateControl(params);
-		const surface = api as unknown as PolicySurface;
+		const surface = this.toolSurface(api);
 		if (params.operation !== "mode" && params.operation !== "telemetry") await this.snapshot();
 		const { agent, scope } = await this.activeRules(surface, context);
 		const deps = this.deps(surface, context);
@@ -1539,7 +1674,14 @@ class DurablePolicyRuntime {
 			value,
 			params.operation === "inspect" ? MAX_RULE_EVENT_BYTES * 6 + 4096 : 48 * 1024,
 		);
-		return { ...result, details: { structuredContent: result.details as JsonValue } };
+		const detail = objectValue(result.details);
+		return {
+			...result,
+			details: {
+				...(detail ?? {}),
+				structuredContent: result.details as JsonValue,
+			} as unknown as Durable.JsonObject,
+		};
 	}
 
 	private deps(surface: PolicySurface, context: Context): ToolDeps {
@@ -1566,11 +1708,10 @@ class DurablePolicyRuntime {
 
 	private async resetRevision(id: string, surface: PolicySurface, context: Context): Promise<string> {
 		const now = Date.now();
-		const { rules, scope } = await this.activeRules(surface, context);
+		const { rules } = await this.activeRules(surface, context);
 		return this.readState(surface, context, (state) => {
 			const observation = this.observationOf(state);
 			observation.sync(rules, now);
-			void scope;
 			const periods = observation
 				.snapshot(now, state.turn)
 				.filter((period) => id === "--all" || period.id === id)
@@ -1578,7 +1719,7 @@ class DurablePolicyRuntime {
 				.sort((left, right) => left.id.localeCompare(right.id));
 			if (id !== "--all" && !periods.length) throw new Error(`No active rule named ${id}`);
 			return contentRevision({
-				instance: this.resetIdentity,
+				instance: state.identity,
 				selector: id,
 				generation: state.generation,
 				periods,
@@ -1610,7 +1751,7 @@ class DurablePolicyRuntime {
 				.sort((left, right) => left.id.localeCompare(right.id));
 			if (id !== "--all" && !periods.length) throw new Error(`No active rule named ${id}`);
 			const current = contentRevision({
-				instance: this.resetIdentity,
+				instance: state.identity,
 				selector: id,
 				generation: state.generation,
 				periods,
@@ -1649,8 +1790,8 @@ class DurablePolicyRuntime {
 			return {
 				observationPeriods: publicState(reading.observation.snapshot(now, reading.state.turn)),
 				turn: reading.state.turn,
-				incomplete: this.incomplete,
-				staleCompletions: this.stale,
+				incomplete: reading.state.incomplete,
+				staleCompletions: reading.state.stale,
 				retainedGuidance: this.retainedGuidanceOf(reading.state).map((entry) => ({
 					id: entry.id,
 					revision: entry.revision,
@@ -1663,8 +1804,8 @@ class DurablePolicyRuntime {
 				authority: snapshot.health,
 				telemetry: this.telemetryFailure ? { status: "failed", reason: this.telemetryFailure } : { status: "ready" },
 				observations: {
-					incomplete: this.incomplete,
-					pending: this.pendingCalls.size,
+					incomplete: reading.state.incomplete,
+					pending: await this.pendingCount(surface.conversationId, context),
 					recentCompletedIds: this.completedCallsOf(reading.state).length,
 				},
 			};

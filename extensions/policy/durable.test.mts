@@ -51,14 +51,21 @@ function reopenableStorage(): DurableModule.Storage {
 	});
 }
 
-function hostFor(directory: string): PolicyDurableHost {
+/** Surface hook failures; the Harness default reporter is silent. */
+function reportHarnessError(error: unknown): void {
+	console.error("[policy-durable-test] harness report:", error);
+}
+
+function hostFor(directory: string, harness: DurableModule.Harness): PolicyDurableHost {
 	return {
 		durable: DurableModule,
 		services: {} as PolicyDurableHost["services"],
 		cwd: directory,
 		agentDir: directory,
 		storageId: "durable-test-storage",
+		harness,
 		signal: new AbortController().signal,
+		onClose: () => {},
 		inventory: {
 			contributions: [
 				{
@@ -176,15 +183,27 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 	if (options.mode === undefined) delete process.env.PI_POLICY_MODE;
 	else process.env.PI_POLICY_MODE = options.mode;
 	try {
-		let contribution = createPolicyDurableExtension(hostFor(directory));
-		if (options.block) contribution = blockOnce(contribution, options.block.name, options.block.started);
 		const faux = fauxProvider();
 		const models = createModels();
 		models.setProvider(faux.provider);
 		const registry = DurableModule.createRegistry();
+		const reports: unknown[] = [];
+		const harness = await DurableModule.Harness.open(
+			new DurableModule.MemoryStorage(),
+			{
+				models,
+				registry,
+				onReport: (error: unknown) => {
+					reports.push(error);
+					reportHarnessError(error);
+				},
+			},
+			context,
+		);
+		let contribution = createPolicyDurableExtension(hostFor(directory, harness));
+		if (options.block) contribution = blockOnce(contribution, options.block.name, options.block.started);
 		registry.install(contribution);
 		if (options.extension) registry.install(options.extension);
-		const harness = await DurableModule.Harness.open(new DurableModule.MemoryStorage(), { models, registry }, context);
 		const root = await harness.root(context, { agent: { model: MODEL } });
 		return {
 			harness,
@@ -196,6 +215,11 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 			policy: new RuleRegistry(storeDir),
 			close: async () => {
 				await harness.close(context);
+				assert.equal(
+					reports.length,
+					0,
+					`harness reports: ${reports.map((error) => String(error)).join("; ")}`,
+				);
 				await rm(directory, { recursive: true, force: true });
 				if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
 				else process.env.PI_POLICY_DIR = priorDir;
@@ -257,6 +281,9 @@ test("every policy tool answers a model-issued call", async () => {
 		const rules = await toolResults(fixture.root, "policy_rules");
 		assert.match(textOf(rules.at(-1)), /RULES/);
 		assert.equal(structuredOf(rules.at(-1))?.rules !== undefined, true);
+		const rulesDetails = rules.at(-1)?.details as Record<string, unknown> | undefined;
+		assert.equal(typeof rulesDetails?.rules, "number");
+		assert.equal(typeof rulesDetails?.structuredContent, "object");
 
 		await submit(
 			fixture,
@@ -269,6 +296,9 @@ test("every policy tool answers a model-issued call", async () => {
 		assert.equal(proposal?.ruleId, "durable-tool-test");
 		assert.equal(typeof proposal?.proposalId, "string");
 		assert.equal(typeof proposal?.proposalRevision, "string");
+		const proposalDetails = proposals.at(-1)?.details as Record<string, unknown> | undefined;
+		assert.equal(typeof proposalDetails?.proposalId, "string");
+		assert.equal(typeof proposalDetails?.structuredContent, "object");
 
 		await submit(
 			fixture,
@@ -317,6 +347,19 @@ test("every tool declares its replay class explicitly", async () => {
 		assert.equal(registered.get("policy_propose"), "unsafe");
 		assert.equal(registered.get("policy_approve"), "unsafe");
 		assert.equal(registered.get("policy_control"), "unsafe");
+		const schemas = new Map(
+			fixture.registry
+				.snapshot()
+				.tools()
+				.map((entry) => [
+					entry.tool.name,
+					(entry.tool as unknown as { outputSchema?: { properties?: Record<string, unknown> } }).outputSchema,
+				]),
+		);
+		const rulesSchema = schemas.get("policy_rules")?.properties;
+		assert.ok(rulesSchema);
+		assert.equal(rulesSchema.structuredContent, undefined);
+		assert.ok(rulesSchema.rules);
 	} finally {
 		await fixture.close();
 	}
@@ -334,18 +377,21 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 		const models = createModels();
 		models.setProvider(faux.provider);
 		const registry = DurableModule.createRegistry();
-		registry.install(blockOnce(createPolicyDurableExtension(hostFor(directory)), "policy_propose", started.resolve));
 		faux.setResponses([
 			fauxAssistantMessage(fauxToolCall("policy_propose", proposeArgs), { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		]);
-		const first = await DurableModule.Harness.open(storage, { models, registry }, context);
+		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		registry.install(
+			blockOnce(createPolicyDurableExtension(hostFor(directory, first)), "policy_propose", started.resolve),
+		);
 		const root = await first.root(context, { agent: { model: MODEL } });
 		const submission = await root.submit({ type: "input", content: "propose" }, context);
 		await started.promise;
 		await first.close(context);
 
-		const second = await DurableModule.Harness.open(storage, { models, registry }, context);
+		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		registry.install(createPolicyDurableExtension(hostFor(directory, second)));
 		second.resume();
 		const reacquired = await second.submission(submission.id, context);
 		assert.ok(reacquired);
@@ -378,18 +424,19 @@ test("an interrupted safe tool reruns and answers after reopen", async () => {
 		const models = createModels();
 		models.setProvider(faux.provider);
 		const registry = DurableModule.createRegistry();
-		registry.install(blockOnce(createPolicyDurableExtension(hostFor(fixtureDirectory)), "policy_rules", started.resolve));
 		faux.setResponses([
 			fauxAssistantMessage(fauxToolCall("policy_rules", { view: "rules" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		]);
-		const first = await DurableModule.Harness.open(storage, { models, registry }, context);
+		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		registry.install(blockOnce(createPolicyDurableExtension(hostFor(fixtureDirectory, first)), "policy_rules", started.resolve));
 		const root = await first.root(context, { agent: { model: MODEL } });
 		const submission = await root.submit({ type: "input", content: "list" }, context);
 		await started.promise;
 		await first.close(context);
 
-		const second = await DurableModule.Harness.open(storage, { models, registry }, context);
+		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		registry.install(createPolicyDurableExtension(hostFor(fixtureDirectory, second)));
 		second.resume();
 		const reacquired = await second.submission(submission.id, context);
 		assert.ok(reacquired);
@@ -471,6 +518,42 @@ test("annotate mode appends guide text and records the observation period", asyn
 		const stateText = textOf(stateResults.at(-1));
 		assert.match(stateText, /durable-observe-probe/);
 		assert.match(stateText, /"count": 1/);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("context-phase guidance reaches one model request per period", async () => {
+	const fixture = await openFixture({ mode: "annotate" });
+	try {
+		await addRule(fixture.policy, "durable-context-guide", {
+			phase: "context",
+			when: { op: "exists", path: ["context"] },
+			action: { kind: "guide", text: "Context-phase guidance." },
+			onUnavailable: "skip",
+			state: { observe: { op: "exists", path: ["context"] }, once: "period" },
+		});
+		const seen: string[] = [];
+		fixture.faux.setResponses([
+			(context) => {
+				seen.push(JSON.stringify(context));
+				return fauxAssistantMessage("first");
+			},
+		]);
+		const first = await fixture.root.submit({ type: "input", content: "first" }, context);
+		await first.wait(context);
+		assert.match(seen[0] ?? "", /Context-phase guidance\./);
+
+		fixture.faux.appendResponses([
+			(context) => {
+				seen.push(JSON.stringify(context));
+				return fauxAssistantMessage("second");
+			},
+		]);
+		const second = await fixture.root.submit({ type: "input", content: "second" }, context);
+		await second.wait(context);
+		assert.ok(seen[1]);
+		assert.ok(!seen[1].includes("Context-phase guidance."));
 	} finally {
 		await fixture.close();
 	}
@@ -558,6 +641,57 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 	}
 });
 
+test("a reset revision survives process loss", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "policy-durable-reset-"));
+	const storeDir = join(directory, "policy");
+	const priorDir = process.env.PI_POLICY_DIR;
+	process.env.PI_POLICY_DIR = storeDir;
+	try {
+		const storage = reopenableStorage();
+		const faux = fauxProvider();
+		const models = createModels();
+		models.setProvider(faux.provider);
+		const registry = DurableModule.createRegistry();
+		const first = await DurableModule.Harness.open(
+			storage,
+			{ models, registry, onReport: reportHarnessError },
+			context,
+		);
+		registry.install(createPolicyDurableExtension(hostFor(directory, first)));
+		const firstRoot = await first.root(context, { agent: { model: MODEL } });
+		faux.appendResponses([
+			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "reset-preview", id: "--all" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("ok"),
+		]);
+		const firstSubmission = await firstRoot.submit({ type: "input", content: "preview reset" }, context);
+		await firstSubmission.wait(context);
+		const firstRevision = structuredOf((await toolResults(firstRoot, "policy_control")).at(-1))?.revision;
+		assert.equal(typeof firstRevision, "string");
+		await first.close(context);
+
+		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		registry.install(createPolicyDurableExtension(hostFor(directory, second)));
+		const secondRoot = await second.root(context);
+		faux.appendResponses([
+			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "reset-preview", id: "--all" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("ok"),
+		]);
+		const secondSubmission = await secondRoot.submit({ type: "input", content: "preview reset again" }, context);
+		await secondSubmission.wait(context);
+		const secondRevision = structuredOf((await toolResults(secondRoot, "policy_control")).at(-1))?.revision;
+		assert.equal(secondRevision, firstRevision);
+		await second.close(context);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+		if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
+		else process.env.PI_POLICY_DIR = priorDir;
+	}
+});
+
 test("a malformed state document is contained without failing the read", async () => {
 	const fixture = await openFixture();
 	try {
@@ -585,7 +719,9 @@ test("a malformed state document is contained without failing the read", async (
 		const results = await toolResults(fixture.root, "policy_rules");
 		const stateText = textOf(results.at(-1));
 		assert.match(stateText, /observationPeriods/);
-		assert.match(stateText, /"turn": [01]/);
+		assert.match(stateText, /"turn": 1/);
+		assert.match(stateText, /"incomplete": 0/);
+		assert.match(stateText, /"staleCompletions": 0/);
 	} finally {
 		await fixture.close();
 	}

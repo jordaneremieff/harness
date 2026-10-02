@@ -29,11 +29,18 @@ section, and native task hooks:
   messages to that request only.
 
 The approved rule store stays external and revision-checked. Observation
-periods, retained guidance, the delivered shell card, the counted turn, and a
-bounded ring of completed calls live in the per-conversation `policy.state`
-document, so a replay after process loss returns the recorded decision instead
-of deciding again. Pending evidence for one call is stored with `api.memo()`.
-Every state update recomputes and commits inside one in-process tail.
+periods, retained guidance, the delivered shell card, the counted turn, the
+revision identity, observation counters, and a bounded ring of completed calls
+live in the per-conversation `policy.state` document, so a replay after process
+loss returns the recorded decision instead of deciding again. Pending evidence
+for one call is stored with `api.memo()`. Hook writes go through the host's
+Harness by call or task identity, and the resolved agent comes from the host's
+conversation handle. Every state update recomputes and commits inside one
+in-process tail.
+
+Durable tool results carry the ordinary `details` fields and add
+`structuredContent` beside them. Each registration declares an `outputSchema`
+that describes that structured object.
 
 Replay classes: `policy_rules` is `safe` because it only reads. The three
 mutating tools are `unsafe`, so an interrupted execution produces an
