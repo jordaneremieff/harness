@@ -54,8 +54,14 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 	await command.handler("send target-session keep going", ctx);
 	await command.handler("steer target-session change course", ctx);
 	assert.deepEqual(calls, [
-		{ method: "submit", input: { sessionId: "target-session", message: "keep going", whenBusy: "followUp", origin: "operator" } },
-		{ method: "submit", input: { sessionId: "target-session", message: "change course", whenBusy: "steer", origin: "operator" } },
+		{
+			method: "submit",
+			input: { sessionId: "target-session", message: "keep going", whenBusy: "followUp", origin: "operator" },
+		},
+		{
+			method: "submit",
+			input: { sessionId: "target-session", message: "change course", whenBusy: "steer", origin: "operator" },
+		},
 	]);
 	assert.equal(notices.length, 2);
 });

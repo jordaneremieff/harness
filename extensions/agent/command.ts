@@ -2,10 +2,11 @@ import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { showPeerWindow } from "./peer-window.ts";
-import type { PeerAgentActions, PrimaryObserver } from "./peer-contract.ts";
+import { dashboardSessionState } from "./dashboard-state.ts";
+import { showAgentDashboard } from "./dashboard.ts";
+import type { AgentObservationSource } from "./agent-observation.ts";
+import { hideAround, runActionDialog, type ActionDialogExtras } from "./action-dialogs.ts";
 import type { AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
-import { selectDashboardAction } from "./dashboard-actions.ts";
 import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
 
 interface CommandArgument {
@@ -32,7 +33,10 @@ export interface AgentCommandAction {
 }
 
 function plain(text: string): string {
-	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
+	return stripVTControlCharacters(text)
+		.replace(/[\p{Cc}\p{Cf}]/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
 }
 
 function usage(action: AgentCommandAction): string {
@@ -56,10 +60,17 @@ function sessionState(row: AgentConversationSummary): string {
 	return "Open session";
 }
 
-function sessionChoice(row: AgentConversationSummary, sessions: readonly AgentConversationSummary[], before: string, suffix: string): SearchChoice {
+function sessionChoice(
+	row: AgentConversationSummary,
+	sessions: readonly AgentConversationSummary[],
+	before: string,
+	suffix: string,
+): SearchChoice {
 	const title = sessionLabel(row);
 	const duplicates = sessions.filter((other) => sessionLabel(other) === title);
-	const id = duplicates.some((other) => other.id !== row.id && other.id.slice(0, 8) === row.id.slice(0, 8)) ? row.id : row.id.slice(0, 8);
+	const id = duplicates.some((other) => other.id !== row.id && other.id.slice(0, 8) === row.id.slice(0, 8))
+		? row.id
+		: row.id.slice(0, 8);
 	return {
 		value: `${before}${row.id}${suffix}`,
 		label: duplicates.length > 1 || !row.name ? `${title} (${id})` : title,
@@ -68,89 +79,47 @@ function sessionChoice(row: AgentConversationSummary, sessions: readonly AgentCo
 	};
 }
 
-async function metadataChoices(sources: AgentObservationSources, action: AgentCommandAction, rest: string, before: string): Promise<SearchChoice[] | null> {
+async function metadataChoices(
+	sources: AgentObservationSources,
+	action: AgentCommandAction,
+	rest: string,
+	before: string,
+): Promise<SearchChoice[] | null> {
 	const firstWord = rest.split(/\s+/, 1)[0];
 	const afterId = /\s/.test(rest);
 	const suffix = action.args.length > 1 ? " " : "";
 	const sessions = (await sources.list()).rows;
 	// An exact ID ends selection. Later words belong to the message or correction.
 	if (afterId && sessions.some((row) => row.id === firstWord)) return null;
-	return sessions.slice().reverse().map((row) => sessionChoice(row, sessions, before, suffix));
+	return sessions
+		.slice()
+		.reverse()
+		.map((row) => sessionChoice(row, sessions, before, suffix));
 }
 
 function argumentHelp(action: AgentCommandAction, args: string[]): string | undefined {
 	if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) return actionHelp(action);
 	const required = action.args.filter((arg) => !arg.optional).length;
 	if (args.length < required) return `Missing ${action.args[args.length].name}.\n${actionHelp(action)}`;
-	if (!action.args.some((arg) => arg.rest) && args.length > action.args.length) return `Too many arguments.\n${actionHelp(action)}`;
+	if (!action.args.some((arg) => arg.rest) && args.length > action.args.length)
+		return `Too many arguments.\n${actionHelp(action)}`;
 	return undefined;
 }
 
 /** Both native entry points share argument validation and the original action closure. */
-export async function executeAgentAction(action: AgentCommandAction, args: string[], ctx: ExtensionContext): Promise<string | AgentActionOutcome | undefined> {
-	return argumentHelp(action, args) ?? await action.run(args, ctx);
-}
-
-function targetArgument(argument: CommandArgument, target?: DashboardTarget): string | undefined {
-	if (!target) return undefined;
-	if (argument.complete === "session" || argument.complete === "session-control") return target.id;
-	return undefined;
-}
-
-/** Hides the peer window while a native dialog owns the screen. */
-interface PromptSurface { hide(): void; show(): void }
-async function hideAround<T>(surface: PromptSurface | undefined, action: () => Promise<T>): Promise<T> {
-	if (surface === undefined) return action();
-	surface.hide();
-	try { return await action(); } finally { surface.show(); }
-}
-
-async function askDashboardArgument(action: AgentCommandAction, argument: CommandArgument, ctx: ExtensionContext, agent?: string, surface?: PromptSurface): Promise<string[] | undefined> {
-	const value = await hideAround(surface, () => ctx.ui.input(`${usage(action)} · ${argument.name}${agent ? ` · ${agent}` : ""}${argument.optional ? " (optional; blank to omit)" : ""}`, argument.rest ? "Free text" : argument.name));
-	if (value === undefined) return undefined;
-	return value.trim() ? value.trim().split(/\s+/) : [];
-}
-
-async function dashboardArguments(action: AgentCommandAction, target: DashboardTarget | undefined, ctx: ExtensionContext, agent?: string, surface?: PromptSurface): Promise<string[] | string | undefined> {
-	const args: string[] = [];
-	for (const [index, argument] of action.args.entries()) {
-		const preset = index === 0 ? targetArgument(argument, target) : undefined;
-		if (preset !== undefined) { args.push(preset); continue; }
-		const words = await askDashboardArgument(action, argument, ctx, agent, surface);
-		if (words === undefined) return undefined;
-		if (!words.length && argument.optional) break;
-		const error = dashboardArgumentError(argument, words);
-		if (error) return `${error}\n${actionHelp(action)}`;
-		args.push(...words);
-	}
-	return args;
-}
-
-function dashboardArgumentError(argument: CommandArgument, words: string[]): string | undefined {
-	if (!words.length || (!argument.rest && words.length !== 1)) return `${argument.name} requires ${argument.rest ? "text" : "one word"}.`;
-	return undefined;
-}
-
-export async function chooseDashboardAction(actions: AgentCommandAction[], target: DashboardTarget | undefined, ctx: ExtensionContext, surface?: PromptSurface): Promise<string | AgentActionOutcome | undefined> {
-	const agent = target === undefined ? undefined : agentDisplayName(target);
-	const choice = await selectDashboardAction(actions, ctx, agent);
-	if (choice === undefined) return undefined;
-	const action = actions.find((item) => item.name === choice);
-	if (!action) return undefined;
-	if (action.dialog) {
-		const dialog = action.dialog;
-		return await hideAround(surface, () => dialog(target, ctx));
-	}
-	const args = await dashboardArguments(action, target, ctx, agent, surface);
-	if (!Array.isArray(args)) return args;
-	const help = argumentHelp(action, args);
-	if (help) return help;
-	if (action.confirm && !await hideAround(surface, () => ctx.ui.confirm(`Confirm /agent ${action.name}`, `${action.confirm}\n\n${usage(action)}\nArguments: ${args.join(" ")}`))) return undefined;
-	return await executeAgentAction(action, args, ctx) ?? "Action returned no text. This is not proof of task completion.";
+export async function executeAgentAction(
+	action: AgentCommandAction,
+	args: string[],
+	ctx: ExtensionContext,
+): Promise<string | AgentActionOutcome | undefined> {
+	return argumentHelp(action, args) ?? (await action.run(args, ctx));
 }
 
 /** Human display text for one action result; legacy control JSON is summarized with the agent's display name. */
-async function displayResult(result: string | AgentActionOutcome | undefined, sources: AgentObservationSources): Promise<string | undefined> {
+async function displayResult(
+	result: string | AgentActionOutcome | undefined,
+	sources: AgentObservationSources,
+): Promise<string | undefined> {
 	if (result === undefined) return undefined;
 	if (typeof result === "object") return result.text;
 	const sessionId = outcomeSessionId(result);
@@ -158,7 +127,10 @@ async function displayResult(result: string | AgentActionOutcome | undefined, so
 	if (sessionId !== undefined) {
 		try {
 			const rows = (await sources.list()).rows;
-			nameFor = (id) => { const row = rows.find((item) => item.id === id); return row === undefined ? undefined : agentDisplayName(row); };
+			nameFor = (id) => {
+				const row = rows.find((item) => item.id === id);
+				return row === undefined ? undefined : agentDisplayName(row);
+			};
 		} catch {
 			// A failed roster read leaves the short identity in the summary.
 		}
@@ -166,82 +138,95 @@ async function displayResult(result: string | AgentActionOutcome | undefined, so
 	return actionOutcomeText(result, nameFor);
 }
 
-/** Dependencies the command needs to open the peer window. */
-export interface AgentCommandPeerOptions {
-	primary: PrimaryObserver;
-}
-
 /** The same actions own execution, argument validation, help, and native completion. */
-export function createAgentCommand(actions: AgentCommandAction[], sources: AgentObservationSources, options: AgentCommandPeerOptions): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
+export function createAgentCommand(
+	actions: AgentCommandAction[],
+	sources: AgentObservationSource,
+	options: ActionDialogExtras,
+): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
-	const unknown = (name: string) => `Unknown action "${plain(name).slice(0, 80)}". Use /agent help, or type /agent and a space to choose an action.`;
-	const overview = () => [
-		"/agent manages durable sessions. Choose an action below.",
-		"For separate work: /agent new Check the error handling",
-		"Actions:",
-		...commands.map((action) => `  ${action.name}: ${action.description}`),
-		"Use /agent help <action> for syntax and details. Tab completes a choice without running it.",
-	].join("\n");
-	const commands: AgentCommandAction[] = [...actions, {
-		name: "help", description: "Show actions or help for one action", args: [{ name: "action", optional: true, complete: "command" }],
-		run: async (args) => {
-			if (!args[0]) return overview();
-			const action = find(args[0]);
-			return action ? actionHelp(action) : unknown(args[0]);
+	const unknown = (name: string) =>
+		`Unknown action "${plain(name).slice(0, 80)}". Use /agent help, or type /agent and a space to choose an action.`;
+	const overview = () =>
+		[
+			"/agent manages durable sessions. Choose an action below.",
+			"For separate work: /agent new Check the error handling",
+			"Actions:",
+			...commands.map((action) => `  ${action.name}: ${action.description}`),
+			"Use /agent help <action> for syntax and details. Tab completes a choice without running it.",
+		].join("\n");
+	const commands: AgentCommandAction[] = [
+		...actions,
+		{
+			name: "help",
+			description: "Show actions or help for one action",
+			args: [{ name: "action", optional: true, complete: "command" }],
+			run: async (args) => {
+				if (!args[0]) return overview();
+				const action = find(args[0]);
+				return action ? actionHelp(action) : unknown(args[0]);
+			},
 		},
-	}];
-	const actionItems = (query: string, before = ""): AutocompleteItem[] => fuzzyFilter(commands, query, (action) => `${action.name} ${action.description}`).map((action) => ({
-		value: `${before}${action.name}${!before && action.args.length ? " " : ""}`,
-		label: action.name,
-		description: action.description,
-	}));
+	];
+	const actionItems = (query: string, before = ""): AutocompleteItem[] =>
+		fuzzyFilter(commands, query, (action) => `${action.name} ${action.description}`).map((action) => ({
+			value: `${before}${action.name}${!before && action.args.length ? " " : ""}`,
+			label: action.name,
+			description: action.description,
+		}));
 
-	let peerOpen = false;
+	let dashboardOpen = false;
 	const requireAction = (name: string): AgentCommandAction => {
 		const action = find(name);
 		if (!action) throw new Error(`Agent action unavailable: ${name}`);
 		return action;
 	};
-	/** Operator-origin peer actions; the window only presents and routes them. */
-	const peerActions = (ctx: ExtensionContext): PeerAgentActions => ({
-		submit: async ({ id, text, mode }) => {
-			const result = await executeAgentAction(requireAction(mode === "steer" ? "steer" : "send"), [id, text], ctx);
-			return { text: actionOutcomeText(result) ?? (mode === "steer" ? "Queued a correction" : "Sent a task"), sessionId: outcomeSessionId(result) ?? id };
-		},
-		newAgent: async ({ prompt }) => {
-			const result = await executeAgentAction(requireAction("new"), prompt ? [prompt] : [], ctx);
-			return { text: actionOutcomeText(result) ?? "Requested a new agent", sessionId: outcomeSessionId(result) };
-		},
-		fork: async ({ id, entryId }) => {
-			const result = await executeAgentAction(requireAction("fork"), entryId ? [id, entryId] : [id], ctx);
-			return { text: actionOutcomeText(result) ?? "Requested a branch", sessionId: outcomeSessionId(result) ?? id };
-		},
-		repair: async ({ id, entryId, correction }) => {
-			const result = await executeAgentAction(requireAction("rewind"), [id, entryId, correction], ctx);
-			return { text: actionOutcomeText(result) ?? "Requested a corrected branch", sessionId: outcomeSessionId(result) ?? id };
-		},
-	});
 	const openDashboard = async (ctx: ExtensionContext): Promise<void> => {
-		if (!ctx.hasUI || peerOpen) return;
-		peerOpen = true;
+		if (!ctx.hasUI || dashboardOpen) return;
+		dashboardOpen = true;
+		const state = dashboardSessionState(ctx.sessionManager.getSessionId());
 		try {
-			await showPeerWindow({
+			await showAgentDashboard({
 				ctx,
+				state,
 				source: sources,
-				primary: options.primary,
-				actions: peerActions(ctx),
-				runActions: async (target, surface) => {
-					const result = await chooseDashboardAction(commands, target, ctx, surface);
-					const text = await displayResult(result, sources);
-					return text === undefined ? undefined : { text, sessionId: outcomeSessionId(result) };
+				operations: {
+					chooseConversation: async (labels, surface) =>
+						hideAround(surface, async () => {
+							const choices = labels.map(
+								(label) => `${label.name || label.firstMessage || "Conversation"} · ${label.identity}`,
+							);
+							const choice = await ctx.ui.select("Choose a conversation", choices);
+							return labels[choices.indexOf(choice ?? "")]?.identity;
+						}),
+					submit: async ({ id, text, mode }) => {
+						const result = await executeAgentAction(
+							requireAction(mode === "steer" ? "steer" : "send"),
+							[id, text],
+							ctx,
+						);
+						return { text: actionOutcomeText(result) ?? "Message admitted", sessionId: id };
+					},
+					newAgent: async ({ prompt }) => {
+						const result = await executeAgentAction(requireAction("new"), [prompt], ctx);
+						return { text: actionOutcomeText(result) ?? "Agent requested", sessionId: outcomeSessionId(result) };
+					},
+					action: async (name, target, surface) => {
+						const result = await hideAround(surface, () =>
+							runActionDialog(name, target, ctx, commands, sources, options, state),
+						);
+						const text = await displayResult(result, sources);
+						return text === undefined ? undefined : { text, sessionId: outcomeSessionId(result) };
+					},
 				},
 			});
+		} finally {
+			dashboardOpen = false;
 		}
-		finally { peerOpen = false; }
 	};
 	return {
 		openDashboard,
-		description: "Manage durable sessions; add a space to choose an action",
+		description: "Open the agent dashboard; add a space for a control action",
 		async getArgumentCompletions(prefix) {
 			const text = prefix.trimStart();
 			const split = /^(\S+)\s+([\s\S]*)$/.exec(text);

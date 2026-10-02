@@ -12,7 +12,11 @@ it("preserves optional command inputs and resolves directory commands at the pri
 	const root = mkdtempSync(join(tmpdir(), "agent-command-contract-"));
 	const beforeRoot = process.env.PI_AGENT_SESSIONS_DIR;
 	process.env.PI_AGENT_SESSIONS_DIR = root;
-	const methods = { control: AgentManager.prototype.control, place: AgentManager.prototype.place, unbind: PlaceBook.prototype.unbind };
+	const methods = {
+		control: AgentManager.prototype.control,
+		place: AgentManager.prototype.place,
+		unbind: PlaceBook.prototype.unbind,
+	};
 	t.after(() => {
 		Object.assign(AgentManager.prototype, { control: methods.control, place: methods.place });
 		PlaceBook.prototype.unbind = methods.unbind;
@@ -21,20 +25,45 @@ it("preserves optional command inputs and resolves directory commands at the pri
 		rmSync(root, { recursive: true, force: true });
 	});
 	const calls: Array<{ method: string; input: unknown }> = [];
-	AgentManager.prototype.control = async (method, input) => { calls.push({ method, input }); return {}; };
-	AgentManager.prototype.place = async (input) => { calls.push({ method: "place", input }); return {}; };
-	PlaceBook.prototype.unbind = (area) => { calls.push({ method: "unbind", input: area }); return undefined; };
+	AgentManager.prototype.control = async (method, input) => {
+		calls.push({ method, input });
+		return {};
+	};
+	AgentManager.prototype.place = async (input) => {
+		calls.push({ method: "place", input });
+		return {};
+	};
+	PlaceBook.prototype.unbind = (area) => {
+		calls.push({ method: "unbind", input: area });
+		return undefined;
+	};
 	const commands = new Map<string, Omit<RegisteredCommand, "name" | "sourceInfo">>();
 	register({
-		events: { emit() {} }, on: () => () => {}, registerTool() {},
-		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => commands.set(name, command),
-		registerShortcut() {}, registerMessageRenderer() {}, getThinkingLevel: () => "off",
+		events: { emit() {} },
+		on: () => () => {},
+		registerTool() {},
+		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) =>
+			commands.set(name, command),
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
 	const notices: string[] = [];
-	const ctx = { cwd: join(root, "work"), sessionManager: { getSessionId: () => "primary" }, ui: { notify: (text: string) => notices.push(text) } } as unknown as ExtensionCommandContext;
+	const ctx = {
+		cwd: join(root, "work"),
+		sessionManager: { getSessionId: () => "primary" },
+		ui: { notify: (text: string) => notices.push(text) },
+	} as unknown as ExtensionCommandContext;
 	const command = commands.get("agent");
 	assert.ok(command);
-	for (const input of ["compact target preserve exact source links", "attach target fixture/model", "fork target 7", "place ../project next task", "unbind ./bound"]) await command.handler(input, ctx);
+	for (const input of [
+		"compact target preserve exact source links",
+		"attach target fixture/model",
+		"fork target 7",
+		"place ../project next task",
+		"unbind ./bound",
+	])
+		await command.handler(input, ctx);
 	assert.deepEqual(calls, [
 		{ method: "compact", input: { sessionId: "target", instructions: "preserve exact source links" } },
 		{ method: "attach", input: { sessionId: "target", model: "fixture/model" } },

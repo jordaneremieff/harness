@@ -1,129 +1,216 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { KeybindingsManager as Keys, setKeybindings, TUI_KEYBINDINGS, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import type { AgentConversationSummary } from "./dashboard-types.ts";
-import { AgentRoster, coverageText, dashboardRecords, dashboardText, elapsed, sessionAppearance } from "./dashboard.ts";
-
-setKeybindings(new Keys(TUI_KEYBINDINGS));
-const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
-const DOWN = "\x1b[B";
-const ENTER = "\r";
-const ESCAPE = "\x1b";
-const page = (sessions: readonly AgentConversationSummary[]) => ({ sessions, coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null }, observedAt: 0 });
-
-function row(overrides: Partial<AgentConversationSummary> & { id: string }): AgentConversationSummary {
-	return { storageId: "storage", cwd: "/work", owner: "here", state: "idle", cost: 0.5, partial: false, modifiedAt: 10, ...overrides };
-}
-
-function roster(rows: readonly AgentConversationSummary[], events: { selected: string[]; cancelled: number }, primary = true) {
-	const instance = new AgentRoster({
-		tui: { terminal: { rows: 24 }, requestRender() {} } as unknown as Pick<TUI, "requestRender" | "terminal">,
-		theme,
-		onSelect: (key) => events.selected.push(key),
-		onCancel: () => { events.cancelled++; },
-		...(primary ? { primary: { label: "Primary · this Pi", detail: "work · test/model" } } : {}),
+import { fixture, source, row, page, turn } from "./dashboard-test-fixture.mts";
+import { agentState } from "./dashboard-state.ts";
+it("the dashboard opens on the roster and Esc returns without a primary mutation", async () => {
+	const f = fixture();
+	await turn();
+	assert.equal(f.ui.navigation.screen, "roster");
+	assert.match(f.ui.render(80).join("\n"), /storage:1/);
+	f.ui.handleInput("x");
+	assert.match(f.ui.render(80).join("\n"), /Tab to write/);
+	f.ui.handleInput("\x1b");
+	assert.equal(f.counts().closes, 1);
+});
+it("find has a separate text destination and Esc clears the committed filter before close", async () => {
+	const f = fixture(80, 24, source([row("one"), row("two")]));
+	await turn();
+	f.ui.handleInput("/");
+	f.ui.handleInput("two");
+	f.ui.handleInput("\r");
+	assert.equal(f.state.filter, "two");
+	assert.equal(f.state.selected, "two");
+	f.ui.handleInput("\x1b");
+	assert.equal(f.state.filter, "");
+	assert.equal(f.counts().closes, 0);
+	f.ui.handleInput("\x1b");
+	assert.equal(f.counts().closes, 1);
+});
+it("a late send receipt keeps a newer draft and never changes focus", async () => {
+	let finish!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		finish = resolve;
 	});
-	instance.setSnapshot(page(rows));
-	instance.focused = true;
-	return instance;
-}
-
-it("filters and sorts records by title, directory, state, and section order", () => {
-	const rows = [
-		row({ id: "b", name: "Parser audit", state: "idle", modifiedAt: 5 }),
-		row({ id: "a", name: "Review parser", state: "working", modifiedAt: 1 }),
-		row({ id: "c", name: "Old job", state: "done", modifiedAt: 1 }),
-	];
-	const snapshot = page(rows);
-	assert.deepEqual(dashboardRecords(snapshot, "").map((item) => item.id), ["a", "b", "c"]);
-	assert.deepEqual(dashboardRecords(snapshot, "parser").map((item) => item.id), ["a", "b"]);
-	assert.deepEqual(dashboardRecords(snapshot, "/work").map((item) => item.id), ["a", "b", "c"]);
-	assert.deepEqual(dashboardRecords(snapshot, "working").map((item) => item.id), ["a"]);
-	assert.deepEqual(dashboardRecords(snapshot, "zzz"), []);
-	assert.equal(elapsed(3_600_000 + 120_000), "1h2m");
-	assert.equal(sessionAppearance.working.glyph, "●");
-});
-
-it("renders the pinned primary row and selects it with Enter", () => {
-	const events = { selected: [] as string[], cancelled: 0 };
-	const view = roster([row({ id: "a", name: "Alpha" })], events);
-	const lines = view.render(80, 10);
-	const screen = lines.join("\n");
-	assert.match(screen, /Primary · this Pi/);
-	assert.match(screen, /work · test\/model/);
-	assert.match(screen, /Alpha/);
-	assert.ok(lines.every((line) => visibleWidth(line) <= 80));
-	view.handleInput(ENTER);
-	assert.deepEqual(events.selected, ["primary"]);
-});
-
-it("moves through sections with the arrow keys and selects an agent", () => {
-	const events = { selected: [] as string[], cancelled: 0 };
-	const view = roster([row({ id: "agent:one", name: "One", state: "working" }), row({ id: "agent:two", name: "Two" })], events);
-	view.render(80, 12);
-	view.handleInput(DOWN);
-	view.handleInput(ENTER);
-	assert.deepEqual(events.selected, ["agent:one"]);
-	view.handleInput(DOWN);
-	view.handleInput(ENTER);
-	assert.deepEqual(events.selected, ["agent:one", "agent:two"]);
-});
-
-it("filters while typing and clears the filter before it cancels", () => {
-	const events = { selected: [] as string[], cancelled: 0 };
-	const view = roster([row({ id: "agent:one", name: "Parser audit" }), row({ id: "agent:two", name: "Other" })], events);
-	view.handleInput("p");
-	view.handleInput("a");
-	view.handleInput("r");
-	const screen = view.render(80, 10).join("\n");
-	assert.match(screen, /1 of 2 · par/);
-	assert.match(screen, /Parser audit/);
-	assert.doesNotMatch(screen, /Other/);
-	view.handleInput(ESCAPE);
-	assert.equal(events.cancelled, 0, "the first escape clears the filter");
-	assert.match(view.render(80, 10).join("\n"), /Other/);
-	view.handleInput(ESCAPE);
-	assert.equal(events.cancelled, 1);
-});
-
-it("adds ID suffixes for duplicate titles and shows coverage", () => {
-	const events = { selected: [] as string[], cancelled: 0 };
-	const first = row({ id: "sameprefix-one", name: "Review parser" });
-	const second = row({ id: "sameprefix-two", name: "Review parser" });
-	const view = new AgentRoster({
-		tui: { terminal: { rows: 24 }, requestRender() {} } as unknown as Pick<TUI, "requestRender" | "terminal">,
-		theme,
-		onSelect: (key) => events.selected.push(key),
-		onCancel: () => { events.cancelled++; },
+	const sent: string[] = [];
+	const f = fixture(80, 24, source([row("one"), row("two")]), {
+		submit: async (input) => {
+			sent.push(input.id);
+			await gate;
+			return { text: "admitted" };
+		},
 	});
-	view.setSnapshot({ ...page([first, second]), coverage: { complete: false, storagesVisited: 2, skipped: 1, omitted: 2, nextCursor: null } });
-	const screen = view.render(120, 10).join("\n");
-	assert.match(screen, /Review parser ix-one/);
-	assert.match(screen, /Review parser ix-two/);
-	assert.match(screen, /1 store skipped \(unknown, not absent\)/);
-	assert.match(screen, /2 rows not loaded/);
-	assert.match(screen, /coverage incomplete/);
-	assert.equal(coverageText(undefined), "");
+	await turn();
+	f.ui.handleInput("\t");
+	f.ui.handleInput("first");
+	f.ui.handleInput("\r");
+	f.ui.handleInput("\x1b");
+	f.ui.handleInput("\x1b[B");
+	assert.equal(f.state.selected, "two");
+	agentState(f.state, "one").draft = "newer";
+	finish();
+	await turn();
+	assert.deepEqual(sent, ["one"]);
+	assert.equal(f.state.selected, "two");
+	assert.equal(f.ui.navigation.screen, "roster");
+	assert.equal(agentState(f.state, "one").draft, "newer");
+	f.ui.dispose();
+});
+it("new agent returns to roster and selects the created identity", async () => {
+	const rows = [row("one")];
+	const observed = source(rows);
+	const f = fixture(80, 24, observed, {
+		newAgent: async () => {
+			rows.push(row("two"));
+			return { text: "Started", sessionId: "two" };
+		},
+	});
+	await turn();
+	f.ui.handleInput("n");
+	f.ui.handleInput("task");
+	f.ui.handleInput("\r");
+	await turn();
+	assert.equal(f.state.selected, "two");
+	assert.equal(f.ui.navigation.screen, "roster");
+	assert.equal(f.state.newTask, "");
+	f.ui.dispose();
 });
 
-it("keeps the selected row across snapshots and renders safely at narrow widths", () => {
-	const events = { selected: [] as string[], cancelled: 0 };
-	const view = roster([row({ id: "agent:one", name: "One" }), row({ id: "agent:two", name: "Two" })], events);
-	view.handleInput(DOWN);
-	view.setSnapshot({ ...page([row({ id: "agent:two", name: "Two" })]), observedAt: 5 });
-	view.handleInput(ENTER);
-	assert.deepEqual(events.selected, ["agent:two"]);
-	for (const width of [80, 40, 24]) {
-		assert.ok(view.render(width, 12).every((line) => visibleWidth(line) <= width), `width ${width}`);
-	}
+it("a conversation that failed to read while its host started rereads when its roster row changes", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"] });
+	let current = row("new", { state: "working", modifiedAt: 1 });
+	const observed = source([current]);
+	let rosterChange = () => {};
+	const refreshed: string[] = [];
+	let reads = 0;
+	observed.subscribeRoster = (listener) => {
+		rosterChange = listener;
+		return () => {};
+	};
+	observed.list = async () => page([current]);
+	observed.refresh = (id) => refreshed.push(id);
+	observed.snapshot = async () => {
+		reads++;
+		if (reads === 1) throw new Error("ENOENT: no such file or directory, stat '/store/durable/new.sqlite'");
+		return {
+			entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Write the note", timestamp: 0 }] }],
+			partial: false,
+			revision: "2",
+			nextBefore: null,
+		};
+	};
+	const f = fixture(80, 24, observed);
+	await turn();
+	await turn();
+	assert.match(f.ui.render(80).join("\n"), /Conversation unavailable/);
+	rosterChange();
+	t.mock.timers.tick(250);
+	await turn();
+	assert.deepEqual(refreshed, []);
+	current = row("new", { state: "idle", modifiedAt: 2, cost: 0.43 });
+	rosterChange();
+	t.mock.timers.tick(250);
+	await turn();
+	await turn();
+	assert.deepEqual(refreshed, ["new"]);
+	assert.equal(reads, 2);
+	const screen = f.ui.render(80).join("\n");
+	assert.doesNotMatch(screen, /Conversation unavailable/);
+	assert.match(screen, /Write the note/);
+	f.ui.dispose();
 });
 
-it("renders a bounded plain-text summary for status reads", () => {
-	const snapshot = page([row({ id: "a", name: "Alpha", state: "working", cost: 1.25, partial: true })]);
-	const text = dashboardText(snapshot);
-	assert.match(text, /Alpha/);
-	assert.match(text, /≥\$1.25/);
-	assert.match(text, /● Working/);
-	assert.match(text, /1 working/);
+it("Load more is selected before admission and loaded coverage survives reconciliation", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"] });
+	const observed = source();
+	let rosterChange = () => {};
+	const calls: Array<string | undefined> = [];
+	observed.subscribeRoster = (listener) => {
+		rosterChange = listener;
+		return () => {};
+	};
+	observed.list = async (input) => {
+		calls.push(input?.cursor);
+		return input?.cursor
+			? {
+					...page([row("c")]),
+					coverage: { complete: true, storagesVisited: 1, skipped: 2, omitted: 0, nextCursor: null },
+				}
+			: {
+					...page([row("a"), row("b")]),
+					coverage: { complete: false, storagesVisited: 1, skipped: 1, omitted: 0, nextCursor: "more" },
+				};
+	};
+	const f = fixture(80, 24, observed);
+	await turn();
+	f.ui.handleInput("\x1b[B");
+	f.ui.handleInput("\x1b[B");
+	assert.deepEqual(calls, [undefined]);
+	assert.match(f.ui.render(80).join("\n"), /› Load more agents/);
+	f.ui.handleInput("\r");
+	await turn();
+	assert.deepEqual(calls, [undefined, "more"]);
+	assert.match(f.ui.render(80).join("\n"), /3 agents/);
+	rosterChange();
+	t.mock.timers.tick(250);
+	await turn();
+	assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
+	assert.match(f.ui.render(80).join("\n"), /3 stores skipped/);
+	f.ui.dispose();
+});
+
+it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc returns to roster", async () => {
+	const observed = source([row("storage")]);
+	let active = false;
+	let releases = 0;
+	const selected: Array<string | undefined> = [];
+	observed.select = (id) => selected.push(id);
+	observed.releaseTasks = () => {
+		if (active) releases++;
+		active = false;
+	};
+	observed.tasks = async () => {
+		active = true;
+		return {
+			scope: "tasks",
+			storageId: "storage",
+			revision: 1,
+			observedAt: new Date(0).toISOString(),
+			coverage: { complete: true, live: true },
+			labels: [{ conversationId: 2, identity: "storage:2", name: "Child" }],
+			tasks: [
+				{
+					id: 1,
+					kind: "turn",
+					conversationId: 2,
+					background: false,
+					abortRequested: false,
+					status: "running",
+					phase: "model",
+					waitsOn: [],
+					conversations: [2],
+				},
+			],
+		};
+	};
+	const f = fixture(80, 24, observed);
+	await turn();
+	f.ui.handleInput("a");
+	f.ui.handleInput("\x1b[B");
+	f.ui.handleInput("\x1b[B");
+	f.ui.handleInput("\r");
+	await turn();
+	assert.equal(f.ui.navigation.screen, "tasks");
+	f.ui.handleInput("\r");
+	await turn();
+	assert.equal(f.ui.navigation.screen, "console");
+	assert.equal(f.state.selected, "storage:2");
+	assert.ok(selected.includes("storage:2"));
+	assert.equal(active, false);
+	assert.equal(releases, 1);
+	const screen = f.ui.render(80).join("\n");
+	assert.match(screen, /Child/);
+	assert.match(screen, /\$\?/);
+	f.ui.handleInput("\x1b");
+	assert.equal(f.ui.navigation.screen, "roster");
+	f.ui.dispose();
 });

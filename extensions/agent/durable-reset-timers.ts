@@ -5,10 +5,10 @@
  * `registerResetTimerTools` adds the model-facing reset control to the
  * ordinary primary session. `createResetTimerActions` adds the operator
  * `/agent` actions, and the exported action functions are the small hooks the
- * peer window calls for Reset context, Schedule input, List timers, and Cancel
+ * dashboard calls for Reset context, Schedule input, List timers, and Cancel
  * timer. Pending timers appear in `agent_status`, and `agent_abort` with a
  * `timerId` cancels one scheduled input. Every surface sends the same host
- * controls, so a primary action, a peer action, and a native Durable tool
+ * controls, so a primary action, a dashboard action, and a native Durable tool
  * share one behavior.
  *
  * Operator surfaces record `origin: "operator"`, so a fired timer's answer
@@ -101,6 +101,12 @@ function timerLine(row: TimerListRow): string {
 	const state = row.live && row.status === "pending" ? "pending" : row.status;
 	const settled = row.status === "fired" && row.firedAt !== null ? `, fired ${localTime(row.firedAt)}${row.overdueMs !== null && row.overdueMs > 0 ? `, overdue ${Math.round(row.overdueMs / 1000)}s` : ""}` : "";
 	return `#${row.timerId} ${state} ${localTime(row.deadline)} (${row.mode}, ${row.origin}) → ${row.identity}${settled}: ${row.messagePreview}`;
+}
+
+/** Structured rows for selected-message pickers; display strings are not a protocol. */
+export async function readAgentTimerRows(deps: ResetTimerDeps, sessionId: string): Promise<TimerListRow[]> {
+ const result = await deps.control("timer-list", { sessionId }) as { timers: TimerListRow[] };
+ return result.timers;
 }
 
 export async function listAgentTimers(deps: ResetTimerDeps, input: { readonly sessionId: string }): Promise<ResetTimerOutcome> {

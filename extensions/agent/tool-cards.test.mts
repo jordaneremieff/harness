@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { CustomMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, TUI_KEYBINDINGS, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	createAgentToolCards,
@@ -30,6 +31,8 @@ import {
 
 initTheme("dark", false);
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+// Native key hints read the TUI instance resolved by the coding-agent package.
+const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
 const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 100) => component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
 const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext => ({ args: {}, expanded: false, argsComplete: true, isError: false, ...overrides });
@@ -332,13 +335,13 @@ describe("agent result cards", () => {
 	});
 });
 
-describe("agent peer message card", () => {
+describe("agent result notice card", () => {
 	it("renders a receipt heading, Markdown body, and expanded source details", () => {
 		const collapsed = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "**Review:** fix the token.\n\nKeep the identifier.", details: { submissionId: 9, identity: "storage-a", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(collapsed);
 		const text = screen(collapsed);
 		assert.match(text, /\[agent\] storage-a · finished/);
-		assert.match(text, /Open: \/agent or Ctrl\+Alt\+G/);
+		assert.doesNotMatch(text, /Open:|Source details:|\/agent opens|to expand/);
 		assert.match(text, /Review: fix the token\./);
 		assert.match(text, /Keep the identifier\./);
 		assert.doesNotMatch(text, /\*\*|submissionId:/);
@@ -372,7 +375,7 @@ describe("agent peer message card", () => {
 		assert.match(unanswered, /aborted/);
 	});
 
-	it("shows source name, model, reasoning, warnings, exact IDs, and a bounded escaped body", () => {
+	it("shows source name, model, reasoning, warnings, exact IDs, and the full escaped body", () => {
 		const hostile = `[2J‮${"long line\n".repeat(4000)}END`;
 		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: hostile, details: { submissionId: 9, entryId: 4, answerEntryId: 5, requestId: "req-1", identity: "storage-a", status: "done", name: "Message reviewer", provider: "SelectedProvider", modelId: "MixedCase-Model", thinkingLevel: "high", liveOwner: false, saved: false } }, { expanded: true, outputPad: 1 }, theme);
 		assert.ok(card);
@@ -386,7 +389,8 @@ describe("agent peer message card", () => {
 		assert.match(text, /entryId: 4/);
 		assert.match(text, /answerEntryId: 5/);
 		assert.match(text, /requestId: req-1/);
-		assert.match(text, /Display limit: \d+ more UTF-16 code units/);
+		assert.match(text, /END/);
+		assert.doesNotMatch(text, /Display limit/);
 		assert.doesNotMatch(text, /[‮]/u);
 		for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 	});
@@ -398,7 +402,7 @@ describe("agent peer message card", () => {
 		const text = screen(card);
 		assert.match(text, /\[agent\] reader · finished/);
 		assert.match(text, /SECOND READY/);
-		assert.match(text, /Open: \/agent or Ctrl\+Alt\+G/);
+		assert.doesNotMatch(text, /Open:|Source details:|\/agent opens|to expand/);
 		assert.doesNotMatch(text, /Results do not establish/);
 		assert.doesNotMatch(text, /agent_inspect/);
 		assert.doesNotMatch(text, /Agent “reader” finished\./);
@@ -413,7 +417,69 @@ describe("agent peer message card", () => {
 		assert.match(stored, /Results do not establish/, "the stored model content is unchanged");
 	});
 
-	it("builds the same card from stored entry data for the peer pane", () => {
+	it("keeps the label, outcome, model and reasoning on one line without extra spacing", () => {
+		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 1, content: "A short answer.\n\n", details: { label: "A very long task label ".repeat(8), provider: "provider", modelId: "model", thinkingLevel: "high", status: "done" } };
+		const before = structuredClone(message);
+		const card = renderAgentPeerMessage(message, { expanded: false, outputPad: 1 }, theme);
+		assert.ok(card);
+		for (const width of [80, 140]) {
+			const lines: string[] = card.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
+			assert.equal(lines.length, 2);
+			assert.match(lines[0] ?? "", /\[agent\] A very long.* · finished · provider\/model high/);
+			assert.equal(lines[1]?.trim(), "A short answer.");
+			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+			assert.doesNotMatch(lines.join("\n"), /Open:|Source details|to expand|opens the dashboard/);
+		}
+		assert.deepEqual(message, before);
+	});
+
+	it("bounds Markdown by visual lines and reveals the full body and source only when expanded", (t) => {
+		const previousKeys = nativeTui.getKeybindings();
+		nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
+		t.after(() => nativeTui.setKeybindings(previousKeys));
+		const content = `${Array.from({ length: 12 }, (_, index) => `- Result ${index + 1}: ${"word ".repeat(20)}`).join("\n")}\n\nFINAL_RESULT`;
+		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 1, content, details: { label: "reader", provider: "provider", modelId: "model", thinkingLevel: "high", status: "done", submissionId: 7 } };
+		const collapsed = renderAgentPeerMessage(message, { expanded: false, outputPad: 1 }, theme);
+		const expanded = renderAgentPeerMessage(message, { expanded: true, outputPad: 1 }, theme);
+		assert.ok(collapsed && expanded);
+		for (const width of [80, 140]) {
+			const preview: string[] = collapsed.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
+			assert.equal(preview.length, 10, "one headline, eight body lines and one truncation hint");
+			const full: string[] = expanded.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
+			const source = full.findIndex((line) => line.trim() === "Source details");
+			const bodyLines = source - 2;
+			assert.match(preview[9] ?? "", new RegExp(`… \\(${bodyLines - 8} more lines, ctrl\\+o to expand\\)`));
+			assert.doesNotMatch(preview.join("\n"), /FINAL_RESULT|Source details|Open:|opens the dashboard/);
+			assert.match(full.join("\n"), /FINAL_RESULT/);
+			assert.match(full.join("\n"), /submissionId: 7/);
+			assert.equal(full.at(-1)?.trim(), "/agent opens the dashboard");
+			assert.doesNotMatch(full.join("\n"), /more lines,|Source details:/);
+			assert.ok(collapsed.render(width).every((line) => visibleWidth(line) <= width));
+			assert.ok(expanded.render(width).every((line) => visibleWidth(line) <= width));
+			collapsed.invalidate();
+			assert.deepEqual(collapsed.render(width).map((line) => stripVTControlCharacters(line).trimEnd()), preview);
+		}
+		assert.equal(message.content, content);
+	});
+
+	it("uses only Pi's normal separator between adjacent short notices", () => {
+		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 1, content: "Short answer.", details: { label: "reader", provider: "provider", modelId: "model", thinkingLevel: "high", status: "done" } };
+		for (const width of [80, 140]) {
+			const components = Array.from({ length: 4 }, () => new CustomMessageComponent(message, renderAgentPeerMessage));
+			const lines = components.flatMap((component) => component.render(width)).map((line) => stripVTControlCharacters(line).trimEnd());
+			assert.equal(lines.length, 12, "four native separators, four headlines, four answer lines");
+			assert.equal(lines.filter((line) => line.trim() === "").length, 4);
+			assert.equal(lines.at(-1)?.trim(), "Short answer.");
+			const first = components[0];
+			assert.ok(first);
+			first.setExpanded(true);
+			const full = screen(first, width);
+			assert.match(full, /Source details/);
+			assert.match(full, /\/agent opens the dashboard/);
+		}
+	});
+
+	it("builds the same card from stored entry data for an agent conversation", () => {
 		const card = renderPeerNoticeCard({ content: "Body text", details: { label: "reader", status: "done" } }, theme, false);
 		assert.ok(card);
 		assert.match(screen(card), /\[agent\] reader · finished/);

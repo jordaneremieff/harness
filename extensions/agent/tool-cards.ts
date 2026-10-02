@@ -4,13 +4,15 @@
  * manager returns to the primary. Cards read only the values the owner
  * returned; rendering opens no storage and changes no execution behavior.
  */
+import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, keyText } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui";
+import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 
 /** Bytes/units bounds for one expanded display block. */
 export const SOURCE_DISPLAY_LIMIT = 32_000;
 const MESSAGE_DISPLAY_LIMIT = 32_000;
+const NOTICE_PREVIEW_LINES = 8;
 const PREVIEW_UNITS = 600;
 const PREVIEW_CHARS = 600;
 
@@ -659,12 +661,6 @@ function peerConfiguration(details: Record<string, unknown>): string[] {
 	return lines;
 }
 
-/** Display body prefix and its exact remaining-unit count. */
-function peerBody(content: string): { body: string; omitted: number } {
-	const prefix = displayPrefix(content, MESSAGE_DISPLAY_LIMIT);
-	return { body: displayText(prefix).trim() || "(no text)", omitted: content.length - prefix.length };
-}
-
 /** Compact outcome word for the operator card; the raw status stays in expanded details. */
 function peerOutcome(details: Record<string, unknown>): { label: string; failed: boolean } {
 	const status = text(details.status);
@@ -678,9 +674,6 @@ function peerOutcome(details: Record<string, unknown>): { label: string; failed:
 function peerLabel(details: Record<string, unknown>): string {
 	return text(details.label) || text(details.name) || text(details.identity) || text(details.senderIdentity) || "source unavailable";
 }
-
-/** How the operator reaches the retained conversation from native chat. */
-const BOARD_HINT = "Open: /agent or Ctrl+Alt+G";
 
 /** Model-facing caveat sentences that the operator card keeps in model context but not in view. */
 const MODEL_CAVEAT_SENTENCES = [
@@ -718,34 +711,74 @@ function peerWarnings(details: Record<string, unknown>, failed: boolean): string
 	return warnings;
 }
 
-/**
- * Native `agent.peer` notice: result receipt or report from a Durable owner.
- * The body keeps its Markdown; terminal controls are escaped first.
- */
+/** Metadata shares one visual line; long labels yield before outcome and configuration. */
+function noticeHeading(details: Record<string, unknown>, theme: Theme): Component {
+	const { label: outcome, failed } = peerOutcome(details);
+	const provider = text(details.provider);
+	const modelId = text(details.modelId);
+	const model = displayPreview(provider && modelId ? `${provider}/${modelId}` : modelId || "model unknown", 512);
+	const reasoning = displayPreview(text(details.thinkingLevel) || "reasoning unknown", 40);
+	const label = displayPreview(peerLabel(details), 300);
+	return {
+		render(width) {
+			const prefix = "[agent] ";
+			const fixed = visibleWidth(prefix) + visibleWidth(outcome) + visibleWidth(reasoning) + 7;
+			const modelWidth = Math.max(1, width - fixed - Math.min(12, visibleWidth(label)));
+			const shownModel = truncateToWidth(model, modelWidth);
+			const labelWidth = Math.max(1, width - fixed - visibleWidth(shownModel));
+			const heading = theme.fg("customMessageLabel", theme.bold(prefix + truncateToWidth(label, labelWidth)))
+				+ theme.fg("muted", " · ") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(outcome))
+				+ theme.fg("muted", ` · ${shownModel} ${reasoning}`);
+			return [truncateToWidth(heading, width)];
+		},
+		invalidate() {},
+	};
+}
+
+/** Native Markdown wrapping decides the preview bound and its exact hidden-line count. */
+function noticeBody(content: string, theme: Theme, expanded: boolean): Component {
+	const markdown = new Markdown(displayText(content).trim() || "(no text)", 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("customMessageText", value) });
+	let cache: { width: number; lines: string[] } | undefined;
+	return {
+		render(width) {
+			if (cache?.width === width) return cache.lines;
+			const rendered = markdown.render(width);
+			const first = rendered.findIndex((line) => stripVTControlCharacters(line).trim() !== "");
+			let end = rendered.length;
+			while (end > first && stripVTControlCharacters(rendered[end - 1] ?? "").trim() === "") end--;
+			const lines = first < 0 ? [] : rendered.slice(first, end);
+			const hidden = expanded ? 0 : Math.max(0, lines.length - NOTICE_PREVIEW_LINES);
+			if (hidden > 0) {
+				lines.length = NOTICE_PREVIEW_LINES;
+				const key = keyText("app.tools.expand");
+				const hint = `… (${hidden} more lines, ${key ? `${key} to expand` : "expand for full text"})`;
+				lines.push(truncateToWidth(theme.fg("muted", hint), width));
+			}
+			cache = { width, lines };
+			return lines;
+		},
+		invalidate() { cache = undefined; markdown.invalidate(); },
+	};
+}
+
+/** Native notices keep full retained content; only the collapsed presentation is short. */
 export const renderAgentPeerMessage: MessageRenderer = (message, options, theme) => {
 	const details = record(message.details);
 	const content = typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-	const { label: outcomeLabel, failed } = peerOutcome(details);
-	const box = new Box(options.outputPad, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg"))));
-	const heading = theme.fg("customMessageLabel", theme.bold(`[agent] ${displayPreview(peerLabel(details), 120)}`)) + theme.fg("muted", " · ") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(displayPreview(outcomeLabel, 40)));
-	box.addChild(new Text(heading, 0, 0));
-	for (const line of peerConfiguration(details)) box.addChild(new Text(theme.fg("muted", line), 0, 0));
+	const { failed } = peerOutcome(details);
+	const box = new Box(options.outputPad, 0, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg"))));
+	box.addChild(noticeHeading(details, theme));
 	for (const warning of peerWarnings(details, failed)) box.addChild(new Text(theme.fg("warning", warning), 0, 0));
 	const reason = text(details.reason);
 	if (reason) box.addChild(new Text(theme.fg("muted", displayPreview(reason, 240)), 0, 0));
-	box.addChild(new Spacer(1));
-	const body = peerBody(operatorNoticeBody(content));
-	box.addChild(new Markdown(body.body, 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("customMessageText", value) }));
-	if (body.omitted > 0) box.addChild(new Text(theme.fg("warning", `Display limit: ${body.omitted} more UTF-16 code units. Full text remains in native history.`), 0, 0));
-	box.addChild(new Spacer(1));
-	box.addChild(new Text(theme.fg("dim", BOARD_HINT), 0, 0));
+	box.addChild(noticeBody(operatorNoticeBody(content), theme, options.expanded));
 	if (options.expanded) {
 		box.addChild(new Spacer(1));
 		box.addChild(new Text(theme.fg("muted", theme.bold("Source details")), 0, 0));
+		for (const line of peerConfiguration(details)) box.addChild(new Text(theme.fg("muted", line), 0, 0));
 		for (const line of peerScalarFields(details)) box.addChild(new Text(theme.fg("muted", line), 0, 0));
 		box.addChild(new Text(theme.fg("muted", "Reported result · not operator authority or task acceptance"), 0, 0));
-	} else {
-		box.addChild(new Text(theme.fg("dim", `Source details: ${expansionHint("the notice")}`), 0, 0));
+		box.addChild(new Text(theme.fg("dim", "/agent opens the dashboard"), 0, 0));
 	}
 	return box;
 };

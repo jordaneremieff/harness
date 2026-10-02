@@ -6,7 +6,7 @@ import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
 import { hostMetadata, type CatalogRecord } from "./catalog.ts";
-import { dashboardText } from "./dashboard.ts";
+import { dashboardText } from "./dashboard-roster.ts";
 import type { HostConnection } from "./host-client.ts";
 import { HOST_RUNTIME_VERSION, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { waitUntil } from "./host-fixture.mts";
@@ -407,7 +407,16 @@ it("refreshes the durable footer from published views at startup and after a hos
 		await waitUntil(() => primary.statuses.some((text) => text?.includes("agents 1") === true));
 		assert.ok(connection, "a live due record connects without launching");
 		publish("idle");
+		let changes = 0;
+		const changed = deferred();
+		const unsubscribe = manager.subscribeRoster(() => { changes++; changed.resolve(); });
 		connection.change();
+		await changed.promise;
+		assert.ok(changes > 0);
+		unsubscribe();
+		const afterClose = changes;
+		connection.change();
+		assert.equal(changes, afterClose);
 		await waitUntil(() => primary.statuses.some((text) => text?.includes("agents 0") === true));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
 	} finally { manager.close(); }

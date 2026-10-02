@@ -5,12 +5,13 @@ host process and one SQLite database. Quitting the primary Pi process closes
 its client connection, not the agent's work. Reopening the primary reconnects
 to its agents and recovers unfinished work when their hosts died.
 
-The ordinary primary still owns its terminal, `/restart`, and primary
-self-compaction. `/agent` and `ctrl+alt+g` open the peer window: the real
-primary conversation and a Durable agent side by side, each with its own
-transcript, editor, and footer. The primary pane is a projection of the actual
-ordinary session, not a second session; its native InteractiveMode stays
-underneath and Escape returns to it.
+The ordinary primary owns its terminal, editor, transcript, `/restart`, and
+self-compaction. `/agent` opens an agent dashboard over that workspace. The
+existing `ctrl+alt+g` shortcut also opens it without changing your native draft.
+The dashboard lists agents beside the selected live conversation on wide
+terminals and above it on narrow terminals. Enter opens an agent console for
+full-window conversation. Esc steps back to the untouched primary without
+stopping work.
 
 ## Runtime and identity
 
@@ -116,7 +117,17 @@ operation or detached-run registry.
 `fork`, `compact`, `inspect`, `rewind`, `configure`, `command`, `place`, `places`,
 `unbind`, `reset`, `schedule`, `timers`, and `timer-cancel`. `help` shows action
 syntax. Tab completes actions and session identities without executing them.
-Without an action, `/agent` opens the peer window.
+Without an action, `/agent` opens the dashboard. In the roster, Up/Down selects,
+Enter opens the agent console, Tab or m focuses its message field, n starts an
+agent, a opens contextual actions, / finds loaded agents, and ? shows help.
+PageUp/PageDown reads the selected conversation. Ctrl+O expands tool output;
+Ctrl+T toggles thinking. Esc clears a committed filter before closing the dashboard.
+
+In a message field or agent console, letters are message text. Enter starts an
+idle turn or steers working agents at the next step. Tab changes the current
+draft to Follow-up after answer while the agent works. The field label names the
+disposition. Ctrl+J adds a newline. Esc keeps the draft and returns to the roster.
+There are no F-key controls, Alt controls, or typed dashboard commands.
 
 `/agent unbind <area>` removes only the directory binding. It does not delete
 storage or abort work.
@@ -186,7 +197,7 @@ the full source. A delivery receipt never proves task acceptance or that an
 agent acted on a correction.
 
 Each admission records its origin before the submission: `operator` for the
-peer-window composers and `/agent` actions, `model` for agent tools. The delivery
+dashboard and agent-console composers and `/agent` actions, `model` for agent tools. The delivery
 intent requires that origin, so it survives a host crash and relaunch. An
 operator-only answer group displays and retains its notice with no primary turn
 and no steering. Wake follows the recipient's own admissions in the answer
@@ -195,11 +206,14 @@ whose submissions were operator-only. A fallback broadcast never wakes a
 recipient's model. A receipt whose stored origin is missing or malformed is
 reported and held pending; the watcher never defaults it to a model admission.
 The notice
-names the agent by stored name, first-task excerpt, or short identity; full
-identities and submission rows stay in the details. The notice card shows the
-agent label, the outcome (finished, failed, or stopped), the answer body, and
-how to open the peer window; the model-facing caveats stay in the message
-content, not the card. Catalog follow-ups between Durable hosts keep their
+names the agent by stored name, first-task excerpt, or short identity. Its
+single-line headline shows that label, the outcome, model, and reasoning level.
+The collapsed answer uses a short visual-line preview, with Pi's expansion hint
+only when text is hidden. It adds no navigation instructions or trailing blank
+rows beyond native message spacing. Expanding the notice shows the full
+received answer, source details including full identities and submission rows,
+and `/agent opens the dashboard`. Model-facing caveats stay in the stored
+message content rather than the answer preview. Catalog follow-ups between Durable hosts keep their
 existing form.
 
 A scheduled input is a native `agent.timer` background task in the target's
@@ -238,7 +252,7 @@ handshake and reads as version 0. A window that meets an older host closes it
 through the host's own close method and relaunches it with current code when
 the host is idle; while the host works, the window keeps using the methods the
 host supports, marks the storage `Host runtime version N; this Pi runs version
-M. It updates when idle.` in status and the All view, and replaces the host at
+M. It updates when idle.` in status and the dashboard roster, and replaces the host at
 its next idle change notification. Replacement never interrupts active work and
 shares the three replacements per sixty seconds cap with crash recovery;
 `agent_attach` clears a stopped update. A newer-only method (timers, reset,
@@ -260,148 +274,123 @@ that marker and queues recovery through the same bounded pool. The manager owns
 these relaunches; managed connections do not independently relaunch on request
 retries. Three automatic replacements are permitted per storage within sixty
 seconds. Further losses stop automatic recovery and put a host error in the
-All view's Attention group. Inspect the error, then use `agent_attach` to clear the
+dashboard roster's Attention group. Inspect the error, then use `agent_attach` to clear the
 stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 
-## Observation and the peer window
+## Dashboard and agent console
+
+The dashboard is one full-screen overlay. It observes agents only: it projects
+no primary conversation, reads no primary draft, and writes no primary editor
+text. Selection, drafts, successful-message history, reading positions, and
+Steer/Follow-up disposition survive closing and reopening in the same primary
+process. Different primary sessions have independent UI state.
+
+The New agent field accepts a task in your own words. Enter starts the agent
+with the primary's current directory and model, selects it, and keeps the
+dashboard open. Esc keeps the unsent task. Configure changes name, model, and
+reasoning afterwards; staged fields change nothing before Apply. Model search
+uses available model metadata, not a typed model identity. An owner refusal
+returns Configure to its staged fields; Cancel abandons that configuration.
+
+Actions apply only to the selected agent. They expose Stop current work,
+Configure, Tasks, Fork, Rewind, Reset context, Schedule message, Scheduled
+messages, Compact, Reconnect, Run agent command, and Details. Disabled actions
+state their reason. Stop, Reset, Rewind, and Compact confirm with Cancel selected.
+Native dialogs temporarily hide the dashboard and restore it afterwards. Entry,
+conversation, and timer pickers supply identities internally. Schedule accepts
+HH:MM local or a relative time such as +30m, then confirms the exact deadline
+and busy disposition. Completed schedule fields stay with their target after
+Cancel or host refusal. Reopening prefills the message; a blank deadline keeps
+the saved exact deadline. Native Cancel discards edits in the current unsubmitted
+field. The storage host must run at the deadline.
+
+The agent console uses the same conversation and message components as the
+selected dashboard view. Its editor has focus; PageUp/PageDown reads without
+changing the text destination. Reaching the transcript tail resumes follow.
+Esc returns directly to the dashboard. Actions, Tasks, and help are on that
+screen, not additional console modes. Slash and bang text are literal messages.
+Native agent commands use Actions > Run agent command. Text paste works;
+Pi's file and image attachment interface is not embedded.
+
+## Live conversation and history
 
 Observation uses public Durable entries, documents, submissions, task outcomes,
-and views. The roster needs no storage read; a deep read of an inactive storage
-uses a cached public snapshot and never `resume()`s the Harness. The copy is
-disposable and inspected only through public reads; it never decodes private SQL
-or becomes a source writer.
+and views. The selected conversation renders Pi's published chat components,
+built-in tool cards, arguments, thinking, and tool results paired with their
+calls. Live partial text and running output update before the turn ends.
+Committed output replaces its partial. Hidden native messages stay hidden.
+Display limits remain explicit; missing content is not a fabricated answer.
 
-History, exact entries, branch reads, searches, and results have explicit bounds
-and continuation fields. Continue an incomplete page even when it has no
-matches. An activity digest, including live metadata and coverage, is at most
-16,000 UTF-8 bytes. Error rows take priority. Coverage reports dropped rows,
-truncated metadata, scan limits, and the exact serialized size. Its cursor
-continues an unfinished scan, not rows dropped by the digest bound. A no-target status is byte-bounded: it reports the measured byte figure
-and separate omitted counts for sessions, primaries, and failures, then points
-to `agent_list` for paged discovery. Provider signatures, image payloads, and
-redacted thinking are omitted with markers and counts. Task outcomes are
-execution evidence, not acceptance. Hidden native kinds such as `pi.system`
-never consume the transcript bound, and a snapshot page continues to earlier
-entries through its `before` anchor. A status carries the author role of its
-newest text, so the card says `Latest reply` or `Latest input`.
+One dashboard observes one selected conversation. Selection changes release the
+previous watch. Tasks acquires a separate storage task-graph watch only while
+its view is open. A task with several conversations offers a conversation
+picker. Finished tasks leave the graph; their results stay in the conversation.
+No live host means no live task graph, not proof of no retained work.
 
-### Peer window
+Observation attaches to an existing host and never starts one. Retained or
+unavailable output stays labeled with its last observation time. A selected
+conversation without a live frame, such as a new agent whose host was still
+starting, attaches again and rereads when its roster row changes. Sending to an
+idle agent with a retired host starts that host through the normal send path.
+Reconnect is an explicit action for a host error. Independent dashboard clients
+observe the same owner; closing any dashboard cancels no admitted work.
 
-The window is one full-screen overlay: a strip with the All count and key hints,
-then two equal panes. The left pane is the real primary; the right pane is the
-selected Durable agent. Each pane has a transcript viewport, its own editor and
-draft, and a footer with model, reasoning level, retained cost, and state. The
-editor and footer sit on the pane's bottom rows. F2 and F3 focus the primary
-and agent panes, F4 expands or restores the focused pane, F5 closes it without
-aborting work, F6 opens All, F7 starts a new agent, F8 opens Tasks, and
-PageUp/PageDown scroll. The editors also accept window commands whose names Pi
-does not define: `/all`, `/view`, `/focus`, `/expand`, `/restore`, `/close`,
-`/tasks`, `/repair`, `/scroll`, `/mode`, `/steer`, `/send`, `/followup`,
-`/auto`, `/refresh`, `/pi`, `/continue`, and `/help`. New and Fork live on F7
-and the View menu, because `/new` and `/fork` belong to Pi. Any other slash
-text, typed in any pane, moves to the native editor and returns to Pi; the
-window never submits it to a peer. Escape returns to native Pi without aborting
-either peer. A native prompt or dialog started from the window hides the window
-while it runs, and the window returns afterward. Drafts, reading positions, and follow state
-survive focus changes, Expand, Close, and reopening within the Pi process.
+PageUp at the first loaded line reads one earlier bounded page and preserves
+the reading anchor. The selected display-input cache retains at most 800 entries
+and approximately 4 MiB. Distant pages lose their input but keep cursors for
+reload. Only a contiguous loaded range appears; newer gaps load before the live
+tail joins that range. Offscreen blocks retain height and anchor measurements,
+not every rendered line. A partial transcript also shows its first task from the
+published summary. Blank runs between chat blocks reduce to one blank line.
+History, exact entries, branch reads, searches, and results have explicit
+bounds and continuation fields. Continue incomplete pages even without matches.
+Activity and status coverage names omitted content and unavailable reads.
+Provider signatures, image payloads, and redacted thinking are omitted with
+markers. Observation and task outcomes grant no control or acceptance authority.
 
-The primary pane projects the actual ordinary session from
-`ctx.sessionManager` and public message, tool, and run events. Plain text goes
-to that session through `pi.sendUserMessage`, as steering or a follow-up while
-it is busy. Any other slash text moves to the native editor through
-`ctx.ui.setEditorText` and returns focus to Pi, so Pi owns command expansion,
-completion, attachments, and submission; the window never submits slash text.
-An existing native draft is kept for restore. The primary's fork and tree
-navigation stay native Pi actions. Custom messages stored with `display: false`
-stay hidden, as in native Pi.
+A stopped agent uses a cached public snapshot without services, model runtime,
+extension bootstrap, or Harness resume. The cache tracks database and WAL
+identity plus writer claim state. Changed or unstable source identity refuses
+reuse. Snapshot operations serialize to protect reads and eviction. The public
+SQLite backup path creates source sidecars where needed; an absent WAL becoming
+an empty WAL does not invalidate the snapshot. The snapshot writes no source
+content and never becomes a writer.
 
-The agent pane renders Pi's published chat components: user inputs, assistant
-text, thinking collapsed as the primary chat shows it, tool calls with their
-stored arguments and the built-in presentation when one exists, and each
-result attached to its call. A contributed tool without a built-in
-presentation shows its name and arguments as readable text. The host publishes
-live frames from Durable views over the same transport: committed partial
-assistant text, thinking, and running tool output arrive before the turn
-ends, and the committed entry replaces its partial. Frames carry a revision
-and coverage, one watch serves every observer of a scope, and the last close
-stops it. Observation attaches to a running host; it never launches one.
-Two Pi windows on one store follow and steer the same agent through its single
-host; closing one window aborts nothing. The agent composer works like Pi's
-own editor: Enter starts work on an idle agent and steers a busy one at its
-next boundary; `/followup` switches the pane to queue input after the current
-answer, and `/steer` switches back. The pane footer names the active mode. When
-observation becomes unavailable, the pane says so with the time of its last
-frame instead of showing a stale state. Fork and Repair act on a committed entry and
-place the new conversation beside its source; files do not roll back.
+The dashboard does not embed InteractiveMode. The published extension API has
+no complete InteractiveMode view, editor state, dialog, widget, or renderer
+registry to mount. The experimental coding-agent client and services remain
+source-only. The dashboard composes public chat, editor, and scrolling primitives
+instead.
 
-Tasks shows the selected storage's live task graph from Durable's
-`watchTaskGraph`: kind, state, phase, background boundary, abort request, and
-owned conversations. Selecting a conversation opens it. Terminal tasks leave
-the graph; their results stay in the transcript. A storage without a running
-host reports `no live host`, because Durable publishes no cold task-graph read.
+## Roster and coverage
 
-The window does not embed InteractiveMode. The published extension API exposes
-no live InteractiveMode view, editor state, dialog, widget, or renderer
-registry to mount in a pane, and `getAllTools()` returns tool metadata without
-renderers. Those layers, and upstream's experimental coding-agent client and
-services (`packages/coding-agent/src/experimental`), are source-only.
+The roster reads bounded host-published metadata through `dashboard-types.ts`.
+It parses no ordinary JSONL, opens no conversation database, and starts no host.
+Rows show state, retained cost, and relative age. Names shorten before those
+fields; duplicate names receive unique identity suffixes. The footer keeps the
+selected model, reasoning, cost, and state separate from the single hint line.
+Unknown cost stays unknown and partial cost stays a lower bound.
 
-### All view
+Working and Attention precede retained date groups. Attention names unavailable
+or conflicted storage, a host error, failed compaction, failed work with an
+error, or exhausted retries. Done and deliberately stopped work do not require
+attention by themselves. Selection follows identity, not roster index. Text
+entry locks its recipient even while published metadata changes.
 
-The All view receives host-published conversation metadata through
-`dashboard-types.ts`. It does not parse ordinary JSONL. Each Durable host
-publishes one bounded view beside its catalog record: rows, `updatedAt`,
-`coverage.complete`, `coverage.omitted`, and an optional `unavailable` reason.
-The All view reads only those views. It does not bootstrap services, copy a
-database, or launch a host for the roster. Missing or unavailable metadata is an
-explicit `unavailable` row, not proof of absence.
+Coverage carries `complete`, `storagesVisited`, `skipped`, `omitted`, and
+`nextCursor`. Load more agents continues that cursor. Find searches loaded
+name, task, path, model, state, and identity, not transcript text. An empty page
+or missing view is not proof of absence. A dead or absent writer claim marks
+previously working retained metadata Interrupted. Claim errors remain explicit.
+Host health belongs to the publication time; later publications clear it.
+The manager adds current recovery errors without rewriting published views.
 
-Its roster is one bounded page: rows plus coverage (`complete`,
-`storagesVisited`, `skipped`, `omitted`, `nextCursor`). Coverage names skipped
-stores and rows not loaded; a continuation cursor means more inventory to
-inspect and may end at an empty page, so a bounded or empty page is not proof of
-absence. A row whose writer claim is absent or dead is metadata from a stopped
-host: owner `unknown`, and a previously `working` state shows as `interrupted`.
-`ownerLabel` names the host metadata timestamp and any unreadable-claim error.
-Host health fields are retained at the view's publication time, not a fresh
-check; a later view can clear them. The manager adds its current recovery errors,
-including crash-loop stops, without changing the host's published view.
-
-A transcript page can omit the oldest entries. The agent pane then shows the
-first task from the session summary above the retained entries and labels the
-transcript partial; scrolling above the first loaded entry reads the earlier
-page through its `before` anchor. Blank-line runs between blocks are reduced to
-one line.
-
-View → Agent actions opens the native action list for the agent in the pane.
-A native prompt or dialog takes the screen while it is open, and the window
-returns afterward. A result shows its display text and names the affected
-agent; a result that carries a new agent identity opens that agent. Prompts
-name an agent by its stored name, else a first-task excerpt, else a short
-identity. An active All filter stays visible with its match count; Escape
-clears the filter before a later Escape closes All.
-
-Attention means a row needs operator action: an unavailable or claim-conflicted
-storage, a host's last error or failed compaction, a failed run that carries an
-error, or a provider retry whose attempts are exhausted. A stopped session and
-an interrupted turn keep their state glyph in their date group; a terminal
-outcome without an error is a record, not a request.
-
-Opening a stopped agent uses a deep read. The cold path opens a cached public
-snapshot of the storage database; the cache key includes the database and WAL
-identity by device, inode, size, and nanosecond modification time, plus writer
-claim state. An unchanged identity reuses the snapshot and its bounded per-method
-result cache without services, model runtime, or extension bootstrap. A changed
-identity requires another copy; a missing or unstable source refuses the read.
-The snapshot writes no source content and resumes no Harness. The public SQLite
-backup path can create source sidecars; an absent WAL becoming an empty WAL does
-not invalidate that snapshot. Other identity changes during the copy refuse
-caching. Cache operations serialize to protect snapshots during reads and
-eviction. The footer formats
-active conversations and retained native cost from the same published rows and
-refreshes on host change notifications, not a receipt poll. `+?` marks
-incomplete or unreadable cost. Repeated observations do not accumulate the same
-usage twice.
+Host notifications coalesce roster refreshes. A bounded metadata reconciliation
+while the dashboard is visible discovers hosts created elsewhere and dead
+claims. Neither path repeatedly reads transcripts. Streaming paints coalesce;
+local input paints immediately. Closing releases observers and UI timers.
+The primary's native agents status retains cumulative cost independently of
+the dashboard. Repeated reads never add the same usage twice.
 
 ## Primary restart and continuity
 

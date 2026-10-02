@@ -1,21 +1,42 @@
+import { createDashboardState } from "./dashboard-state.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { chooseDashboardAction, type AgentCommandAction } from "./command.ts";
-import { configurationDialog } from "./configuration-dialog.ts";
+import type { AgentCommandAction } from "./command.ts";
+import { runActionDialog } from "./action-dialogs.ts";
+import type { AgentObservationSource } from "./agent-observation.ts";
+import { configurationDialog, configurationWithApply } from "./configuration-dialog.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 
 function summary(overrides: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
-	return { id: "storage-1:7", storageId: "storage-1", name: "Parser review", cwd: "/work/parser", owner: "here", modifiedAt: 1, state: "idle", cost: 0, partial: false, model: { provider: "test", modelId: "test-model", thinkingLevel: "high" }, ...overrides };
+	return {
+		id: "storage-1:7",
+		storageId: "storage-1",
+		name: "Parser review",
+		cwd: "/work/parser",
+		owner: "here",
+		modifiedAt: 1,
+		state: "idle",
+		cost: 0,
+		partial: false,
+		model: { provider: "test", modelId: "test-model", thinkingLevel: "high" },
+		...overrides,
+	};
 }
 function dialogs(selections: Array<string | undefined>, inputs: Array<string | undefined> = []) {
 	const notices: string[] = [];
 	const titles: string[] = [];
-	const ctx = { ui: {
-		select: async (title: string) => { titles.push(title); return selections.shift(); },
-		input: async () => inputs.shift(),
-		notify: (text: string) => notices.push(text),
-	} } as unknown as ExtensionCommandContext;
+	const ctx = {
+		modelRegistry: { getAvailable: () => [{ provider: "test", id: "test-model" }] },
+		ui: {
+			select: async (title: string) => {
+				titles.push(title);
+				return selections.shift();
+			},
+			input: async () => inputs.shift(),
+			notify: (text: string) => notices.push(text),
+		},
+	} as unknown as ExtensionCommandContext;
 	return { ctx, notices, titles };
 }
 
@@ -30,7 +51,7 @@ test("native configuration dialogs keep drafts local, validate fields, and prese
 	assert.deepEqual(snapshot, before);
 	assert.equal(d.notices.length, 2);
 	assert.match(d.notices[0], /requires at least one/);
-	assert.match(d.notices[1], /exact provider\/model identity/);
+	assert.match(d.notices[1], /No available model matches/);
 	assert.match(d.titles[0], /Configure “Parser review”/);
 	assert.match(d.titles[0], /Name: Parser review · Model: test\/test-model · Reasoning: high/);
 	assert.doesNotMatch(d.titles[0], /Snapshot or draft/);
@@ -57,11 +78,13 @@ test("configuration dialogs name an unnamed agent by its first task excerpt", as
 
 test("the dashboard configure entry reaches the same dialog and returns its patch", async () => {
 	const snapshot = summary();
-	const selections = ["configure: Change an idle session's name, model, or reasoning", "Name", "Apply"];
+	const selections = ["Name", "Apply"];
 	const inputs = ["Renamed"];
 	const d = dialogs(selections, inputs);
 	const action: AgentCommandAction = {
-		name: "configure", description: "Change an idle session's name, model, or reasoning", args: [{ name: "session", complete: "session" }],
+		name: "configure",
+		description: "Change an idle session's name, model, or reasoning",
+		args: [{ name: "session", complete: "session" }],
 		dialog: async (target, ctx) => {
 			assert.ok(target);
 			const patch = await configurationDialog(target, ctx);
@@ -69,6 +92,41 @@ test("the dashboard configure entry reaches the same dialog and returns its patc
 		},
 		run: async () => undefined,
 	};
-	const result = await chooseDashboardAction([action], snapshot, d.ctx);
+	const result = await runActionDialog(
+		"configure",
+		snapshot,
+		d.ctx,
+		[action],
+		{} as AgentObservationSource,
+		{
+			timers: async () => [],
+			schedule: async () => ({ text: "scheduled" }),
+		},
+		createDashboardState(),
+	);
 	assert.equal(result, JSON.stringify({ name: "Renamed" }));
+});
+
+test("model search stages an available exact identity without changing settings", async () => {
+	const snapshot = summary({ model: { provider: "old", modelId: "old-model", thinkingLevel: "high" } });
+	const d = dialogs(["Model", "test/test-model", "Apply"], ["TEST model"]);
+	assert.deepEqual(await configurationDialog(snapshot, d.ctx), { model: "test/test-model" });
+	assert.equal(snapshot.model?.provider, "old");
+	assert.match(d.titles[1], /exact provider\/model/);
+	assert.match(d.titles[2], /test\/test-model/);
+	assert.deepEqual(d.notices, []);
+});
+
+test("a refused Apply preserves the exact staged configuration", async () => {
+	const d = dialogs(["Model", "test/test-model", "Apply", "Apply"], ["test"]);
+	const patches: unknown[] = [];
+	const result = await configurationWithApply(summary(), d.ctx, async (patch) => {
+		patches.push({ ...patch });
+		if (patches.length === 1) throw new Error("Stop current work first");
+		return "updated";
+	});
+	assert.equal(result, "updated");
+	assert.deepEqual(patches, [{ model: "test/test-model" }, { model: "test/test-model" }]);
+	assert.deepEqual(d.notices, ["Stop current work first"]);
+	assert.match(d.titles.at(-1) ?? "", /test\/test-model/);
 });

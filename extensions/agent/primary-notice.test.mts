@@ -41,7 +41,7 @@ interface NoticeFixture {
 	armGate(): void;
 	release(): void;
 	deliver(sourceId: string, text: string, wake: boolean): Promise<void>;
-	customEntries(): Array<{ customType?: string; content?: unknown }>;
+	customEntries(): Array<{ customType?: string; content?: unknown; details?: unknown }>;
 }
 
 function assistantMessage(text: string): AssistantMessage {
@@ -128,7 +128,7 @@ async function noticeFixture(t: { after(fn: () => void): void }): Promise<Notice
 	const deliver = async (sourceId: string, text: string, wake: boolean): Promise<void> => {
 		const connection = await connectPrimaryChannel({ id, sessionsRoot });
 		try {
-			await connection.deliver({ sourceId, text, details: { sourceId, wake, identity: "storage-a", label: "poem task", status: "done" } });
+			await connection.deliver({ sourceId, text, details: { sourceId, wake, identity: "storage-a", label: "poem task", status: "done", provider: "test-provider", modelId: "test-model", thinkingLevel: "high" } });
 		} finally {
 			await connection.close().catch(() => undefined);
 		}
@@ -154,14 +154,16 @@ async function noticeFixture(t: { after(fn: () => void): void }): Promise<Notice
 	};
 }
 
-it("shows a wake-false notice without a primary model turn when idle", { timeout: 30000 }, async (t) => {
+it("retains a full wake-false notice and its source details without a primary model turn", { timeout: 30000 }, async (t) => {
 	const fixture = await noticeFixture(t);
-	await fixture.deliver("operator:1", "operator notice body", false);
+	const body = `operator notice body\n${"Retained result line.\n".repeat(1800)}FINAL_RESULT`;
+	await fixture.deliver("operator:1", body, false);
 	await fixture.session.waitForIdle();
 	const entries = fixture.customEntries();
 	assert.equal(entries.length, 1, "the notice is retained in the session");
 	assert.equal(entries[0]?.customType, "agent.peer");
-	assert.equal(entries[0]?.content, "operator notice body");
+	assert.equal(entries[0]?.content, body);
+	assert.deepEqual(entries[0]?.details, { sourceId: "operator:1", wake: false, identity: "storage-a", label: "poem task", status: "done", provider: "test-provider", modelId: "test-model", thinkingLevel: "high" });
 	assert.equal(fixture.requests.length, 0, "a wake-false notice starts no provider request");
 });
 

@@ -36,6 +36,12 @@ it("returns a partial dashboard page with a cursor at the storage bound instead 
 	assert.equal(page.coverage.complete, false, "the catalog scan did not reach its end");
 	assert.ok(page.coverage.nextCursor !== null, "the unscanned remainder returns a cursor");
 	assert.equal(page.coverage.storagesVisited, 320, "the page bound visits sixteen pages of twenty storages");
+	const continuation = await manager.dashboardPage({ cursor: page.coverage.nextCursor ?? undefined });
+	assert.equal(continuation.rows.length, 1);
+	assert.equal(continuation.coverage.complete, true);
+	assert.equal(continuation.coverage.nextCursor, null);
+	assert.equal(continuation.rows.some((row) => page.rows.some((previous) => previous.id === row.id)), false);
+	assert.equal(observes, 0);
 	const overview = structuredObservation(StatusOutputSchema, buildStatusOverview(page, [], [])) as { coverage: { byteLimitReached: boolean; complete: boolean } };
 	assert.equal(overview.coverage.byteLimitReached, true, "unavailable metadata rows reach the status byte bound");
 	assert.equal(overview.coverage.complete, false);

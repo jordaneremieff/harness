@@ -356,7 +356,7 @@ events) already ship in pi-tui 1.0.0 (`dist/index.d.ts`), and installed
 InteractiveMode mounts a constrained chat viewport in fullscreen mode. An
 extension overlay is not a constrained layout root: `compositeOverlays` in
 `pi-tui/dist/tui.js` renders the component at full width and slices rows, so the
-agent peer window clips its own viewports.
+agent dashboard clips its own viewports.
 
 ## Pi Durable 1.0.0
 
@@ -485,11 +485,10 @@ host's close callbacks run after its abort signal and before storage closes.
 
 The published coding-agent package excludes the experimental peer client and
 service distribution, and the extension API exposes no live InteractiveMode
-view to mount in a pane. The agent peer window therefore projects the real
-ordinary primary from its session manager and public events beside Durable
-agent panes, submits plain text to that same session, and hands slash text and
-native editor work back to InteractiveMode. It does not host the primary as a
-Durable conversation.
+view to mount. The agent dashboard therefore composes public chat components,
+a native editor, and bounded scrolling for selected Durable agents. The primary
+stays on its native screen beneath the temporary overlay. The dashboard neither
+projects nor edits it; slash text is literal agent input.
 
 ## Released ordinary-session changes
 
@@ -748,11 +747,11 @@ task and changes no global model defaults.
 ## Footer retention boundary
 
 The agent footer reads cumulative native usage per Durable conversation from the
-same bounded roster page as the peer window's All view. It refreshes on host change
+same bounded published metadata as the dashboard roster. It refreshes on host change
 notifications, not on a receipt poll, and it writes no ordinary footer
 checkpoints. Repeated observations do not add another local delta. Missing or
 invalid cost remains marked incomplete.
-The All view and footer share native observation records; neither parses
+The dashboard roster and footer share native observation records; neither parses
 ordinary JSONL. A page reports `complete`, `storagesVisited`, `skipped`,
 `omitted`, and `nextCursor`; a continuation cursor means more inventory to
 inspect and may end at an empty page, so a bounded or empty page is not proof of
@@ -903,7 +902,7 @@ scheduler or transcript. The ordinary SDK remains the primary terminal host.
 | Nested tools | Native call tasks, selected ToolTask hook chain, argument validation, committed intent, replay policy, and structured results |
 | Observation | Public native entries, documents, submissions, and task views; bounded status and dashboard pages with explicit coverage; cold inspection uses a bounded SQLite snapshot without resume |
 | Owner delivery | Host durable-delivery owns retained intents, receipts, and reports; catalog follow-up or registered primary channel; labeled broadcast fallback only for an absent or dead owner, acknowledged only over complete discovery and deliveries; no exactly-once cross-host promise |
-| UI | Peer window: the projected real primary beside Durable agent panes, live frames from host-owned Durable view and task-graph watches, and one bounded All roster with explicit coverage; an embeddable InteractiveMode view and the experimental peer client remain unpublished |
+| UI | Dashboard over an untouched native primary; roster and selected live conversation, full-window agent console, contextual actions, and explicit coverage. Host-owned Durable view and task-graph watches supply live frames. An embeddable InteractiveMode view and the experimental coding-agent client remain unpublished |
 | Handover and doctrine | Native transport and retention carry content; its meaning and authority remain application concerns |
 
 ## Refresh

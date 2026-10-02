@@ -1,9 +1,9 @@
 /**
- * agent/peer-tasks: the Tasks view for one storage's live task graph.
+ * agent/agent-tasks: the Tasks view for one storage's live task graph.
  *
  * The view renders only the live graph the host publishes: task kind, state and
  * phase, background boundary, abort request, and owned conversations with their
- * labels. Selecting a row names the conversation's peer, so the window can open
+ * labels. Selecting a row names the conversation, so the dashboard can open
  * its transcript. Terminal tasks are absent by construction; their results stay
  * in the conversation history.
  */
@@ -11,20 +11,21 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TaskGraphRow, TaskLabel, TasksFrame } from "./live-frames.ts";
 
-/** Live task source the view consumes; frames arrive from the peer observation source. */
-export interface PeerTasksSource {
+/** Live task source the view consumes; frames arrive from the agent observation source. */
+export interface AgentTasksSource {
 	tasks(id: string): Promise<TasksFrame>;
 	subscribe?(listener: () => void): () => void;
 }
 
-export interface PeerTasksOptions {
+export interface AgentTasksOptions {
 	theme: Theme;
-	source: PeerTasksSource;
+	source: AgentTasksSource;
 	/** Agent identity whose storage graph is read and re-read on subscription changes. */
 	id: string;
-	/** Open the peer named by one selected conversation identity. */
-	onSelectConversation?: (identity: string, conversationId: number) => void;
+	/** Open the agent named by one selected conversation identity. */
+	onSelectConversation?: (identity: string, label: TaskLabel) => void;
 	onNotice?: (text: string) => void;
+	onChooseConversations?: (labels: readonly TaskLabel[]) => void;
 }
 
 interface OrderedRow {
@@ -64,42 +65,50 @@ function labelText(label: TaskLabel | undefined, id: number): string {
 
 function stateText(row: TaskGraphRow): string {
 	const parts: string[] = [row.status];
-	if (row.status === "waiting" && row.waitsOn.length > 0) parts.push(`waiting on ${row.waitsOn.map((id) => `#${id}`).join(", ")}`);
+	if (row.status === "waiting" && row.waitsOn.length > 0)
+		parts.push(`waiting on ${row.waitsOn.map((id) => `#${id}`).join(", ")}`);
 	else if (row.status === "completing" && row.outcome !== undefined) parts.push(row.outcome);
 	else if (row.phase !== "" && row.phase !== row.status) parts.push(row.phase);
 	return parts.join(" ");
 }
 
 /**
- * Live task-graph view for one selected agent's storage. The window owns focus
+ * Live task-graph view for one selected agent's storage. The dashboard owns focus
  * and layout; this class owns row order, selection, and text.
  */
-export class PeerTasksView {
+export class AgentTasksView {
 	private readonly theme: Theme;
-	private readonly source: PeerTasksSource;
+	private readonly source: AgentTasksSource;
 	private readonly id: string;
-	private readonly onSelectConversation: PeerTasksOptions["onSelectConversation"];
-	private readonly onNotice: PeerTasksOptions["onNotice"];
+	private readonly onSelectConversation: AgentTasksOptions["onSelectConversation"];
+	private readonly onNotice: AgentTasksOptions["onNotice"];
 	private frame: TasksFrame | undefined;
 	private ordered: OrderedRow[] = [];
 	private selectedIndex = 0;
 	private unsubscribe: (() => void) | undefined;
 	private pending: Promise<void> | undefined;
 	private error: string | undefined;
+	private closed = false;
+	private viewportRows = 1;
+	private readonly onChooseConversations: AgentTasksOptions["onChooseConversations"];
 
-	constructor(options: PeerTasksOptions) {
+	constructor(options: AgentTasksOptions) {
 		this.theme = options.theme;
 		this.source = options.source;
 		this.id = options.id;
 		this.onSelectConversation = options.onSelectConversation;
 		this.onNotice = options.onNotice;
-		void this.refresh();
+		this.onChooseConversations = options.onChooseConversations;
+		queueMicrotask(() => {
+			if (!this.closed) void this.refresh();
+		});
 		this.unsubscribe = this.source.subscribe?.(() => {
 			void this.refresh();
 		});
 	}
 
 	dispose(): void {
+		this.closed = true;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 	}
@@ -110,6 +119,7 @@ export class PeerTasksView {
 		const run = (async () => {
 			try {
 				const frame = await this.source.tasks(this.id);
+				if (this.closed) return;
 				this.frame = frame;
 				this.ordered = orderTaskRows(frame.tasks);
 				this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.ordered.length - 1));
@@ -130,39 +140,64 @@ export class PeerTasksView {
 
 	/** Select a conversation or move the row cursor; returns true when the key was used. */
 	handleInput(data: string): boolean {
-		if (matchesKey(data, "up") || data === "k") {
+		if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
+			this.move((matchesKey(data, "pageUp") ? -1 : 1) * this.viewportRows);
+			return true;
+		}
+		if (matchesKey(data, "home")) {
+			this.move(-this.ordered.length);
+			return true;
+		}
+		if (matchesKey(data, "end")) {
+			this.move(this.ordered.length);
+			return true;
+		}
+		if (matchesKey(data, "up")) {
 			this.move(-1);
 			return true;
 		}
-		if (matchesKey(data, "down") || data === "j") {
+		if (matchesKey(data, "down")) {
 			this.move(1);
 			return true;
 		}
 		if (matchesKey(data, "enter") || matchesKey(data, "return")) {
-			const selected = this.selected();
-			if (selected === undefined) {
-				this.onNotice?.("No live task is selected");
-				return true;
-			}
-			this.select(selected.row.conversationId);
+			this.selectCurrent();
 			return true;
 		}
 		return false;
 	}
 
+	private selectCurrent(): void {
+		const selected = this.selected();
+		if (selected === undefined) {
+			this.onNotice?.("No live task is selected");
+			return;
+		}
+		const ids = [...new Set([selected.row.conversationId, ...selected.row.conversations])];
+		const labels = this.frame?.labels.filter((label) => ids.includes(label.conversationId)) ?? [];
+		if (labels.length > 1) this.onChooseConversations?.(labels);
+		else this.select(labels[0]?.conversationId ?? selected.row.conversationId);
+	}
 	private move(delta: number): void {
 		if (this.ordered.length === 0) return;
 		this.selectedIndex = Math.min(this.ordered.length - 1, Math.max(0, this.selectedIndex + delta));
 	}
 
-	/** Open the peer that owns one conversation; the window names it in its strip. */
+	/** Open the agent that owns one conversation; the dashboard names it in its strip. */
 	private select(conversationId: number): void {
 		const label = this.frame?.labels.find((candidate) => candidate.conversationId === conversationId);
-		this.onSelectConversation?.(label?.identity ?? String(conversationId), conversationId);
+		if (!label?.identity) {
+			this.onNotice?.("This task has no resolved conversation identity");
+			return;
+		}
+		this.onSelectConversation?.(label.identity, label);
 	}
 
 	private labelFor(id: number): string {
-		return labelText(this.frame?.labels.find((candidate) => candidate.conversationId === id), id);
+		return labelText(
+			this.frame?.labels.find((candidate) => candidate.conversationId === id),
+			id,
+		);
 	}
 
 	private fitLine(text: string, width: number): string {
@@ -175,14 +210,22 @@ export class PeerTasksView {
 		const frame = this.frame;
 		const count = frame?.tasks.length ?? 0;
 		const coverage = frame === undefined ? "unread" : frame.coverage.live ? "live" : "no live host";
-		return this.fitLine(`${this.theme.fg("accent", this.theme.bold("TASKS"))}  ${count} ${count === 1 ? "task" : "tasks"} · ${coverage}`, width);
+		return this.fitLine(
+			`${this.theme.fg("accent", this.theme.bold("TASKS"))}  ${count} ${count === 1 ? "task" : "tasks"} · ${coverage}`,
+			width,
+		);
 	}
 
 	private emptyLine(width: number): string {
 		if (this.error !== undefined) return this.fitLine(this.theme.fg("error", this.error), width);
 		const frame = this.frame;
 		if (frame !== undefined && frame.tasks.length > 0) return "".padEnd(width);
-		const text = frame === undefined ? "Reading the live task graph…" : frame.coverage.live ? "No live tasks · unfinished work only; completed results stay in the conversation" : "No live host · stored agents stay cold until a host owns their storage";
+		const text =
+			frame === undefined
+				? "Reading the live task graph…"
+				: frame.coverage.live
+					? "No live tasks · unfinished work only; completed results stay in the conversation"
+					: "No live host · stored agents stay cold until a host owns their storage";
 		return this.fitLine(this.theme.fg("muted", text), width);
 	}
 
@@ -191,8 +234,14 @@ export class PeerTasksView {
 		const indent = "  ".repeat(ordered.depth);
 		const background = ordered.row.background ? " · background" : "";
 		const abort = ordered.row.abortRequested ? " · abort requested" : "";
-		const owned = ordered.row.conversations.length === 0 ? "" : ` · owns ${ordered.row.conversations.map((id) => this.labelFor(id)).join(", ")}`;
-		return this.fitLine(`${marker} ${indent}${ordered.row.kind} · ${stateText(ordered.row)}${background}${abort}${owned}`, width);
+		const owned =
+			ordered.row.conversations.length === 0
+				? ""
+				: ` · owns ${ordered.row.conversations.map((id) => this.labelFor(id)).join(", ")}`;
+		return this.fitLine(
+			`${marker} ${indent}${ordered.row.kind} · ${stateText(ordered.row)}${background}${abort}${owned}`,
+			width,
+		);
 	}
 
 	/** Render the view at one width and height; every line fits the width. */
@@ -205,7 +254,12 @@ export class PeerTasksView {
 		if (this.error !== undefined || count === 0) {
 			lines.push(this.emptyLine(width));
 		} else {
-			for (let index = 0; index < this.ordered.length && lines.length < height; index++) {
+			this.viewportRows = Math.max(1, height - 1);
+			const start = Math.max(
+				0,
+				Math.min(this.ordered.length - this.viewportRows, this.selectedIndex - Math.floor(this.viewportRows / 2)),
+			);
+			for (let index = start; index < this.ordered.length && lines.length < height; index++) {
 				const ordered = this.ordered[index];
 				if (ordered !== undefined) lines.push(this.rowLine(ordered, index, width));
 			}

@@ -9,7 +9,15 @@
 import type { Message } from "@earendil-works/pi-ai";
 
 /** Dashboard lifecycle bucket for one durable conversation. */
-export type AgentConversationState = "working" | "idle" | "done" | "failed" | "stopped" | "interrupted" | "new" | "unavailable";
+export type AgentConversationState =
+	| "working"
+	| "idle"
+	| "done"
+	| "failed"
+	| "stopped"
+	| "interrupted"
+	| "new"
+	| "unavailable";
 
 /**
  * Source ownership for one row. `here` holds the writer claim; `unknown` is

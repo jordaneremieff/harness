@@ -9,7 +9,7 @@ import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, type HostConnection, type HostObservationListener } from "./host-client.ts";
 import { HOST_RUNTIME_VERSION, hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { observeClaim } from "./claims.ts";
+import { observeClaim, observeClaimAsync } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
 import type { ConversationSnapshotPage } from "./durable-observation.ts";
@@ -131,6 +131,9 @@ class BoundedMap<V> {
 /** A primary owns client connections, never a Durable scheduler or storage writer. */
 export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
+	private readonly rosterListeners = new Set<() => void>();
+	subscribeRoster(listener: () => void): () => void { this.rosterListeners.add(listener); return () => { this.rosterListeners.delete(listener); }; }
+	private rosterChanged(): void { for (const listener of this.rosterListeners) listener(); }
 	readonly catalog: AgentCatalog;
 	readonly places: PlaceBook;
 	private readonly options: AgentManagerOptions;
@@ -362,17 +365,17 @@ export class AgentManager {
 		return { rows, nextCursor: complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url"), coverage: { complete, storagesVisited: visits, unavailable }, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
 	}
 
-	async dashboardPage(): Promise<AgentConversationPage> {
+	async dashboardPage(input: { cursor?: string } = {}): Promise<AgentConversationPage> {
 		const rows: AgentConversationSummary[] = [];
 		const coverage = { complete: false, storagesVisited: 0, skipped: 0, omitted: 0, nextCursor: null as string | null };
 		const observedAt = new Date().toISOString();
-		let cursor: string | undefined;
+		let cursor: string | undefined = input.cursor;
 		for (let pageIndex = 0; pageIndex < MAX_INVENTORY_PAGES; pageIndex++) {
 			const page = await this.catalog.page({ cursor, limit: 20 });
 			coverage.skipped += page.coverage.skipped;
 			for (const record of page.records) {
 				coverage.storagesVisited++;
-				const projection = this.catalogRows(record);
+				const projection = await this.catalogRows(record);
 				coverage.skipped += projection.skipped;
 				coverage.omitted += projection.omitted;
 				const recoveryError = this.recoveryErrors.get(record.storageId);
@@ -387,13 +390,13 @@ export class AgentManager {
 		return { rows, coverage, observedAt };
 	}
 
-	private catalogRows(record: CatalogRecord): { rows: AgentConversationSummary[]; skipped: number; omitted: number } {
+	private async catalogRows(record: CatalogRecord): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
 		const view = record.view;
 		if (!view || view.unavailable) {
 			return { skipped: 1, omitted: 0, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: "unknown", state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
 		}
 		const paths = hostPaths(record);
-		const claim = observeClaim(paths.claim, paths.identity);
+		const claim = await observeClaimAsync(paths.claim, paths.identity);
 		const rows = view.rows.map((source) => {
 			const row = { ...source } as AgentConversationSummary;
 			row.owner = claim.kind === "unknown" ? "unavailable" : claim.kind === "live" ? "here" : "unknown";
@@ -768,6 +771,7 @@ export class AgentManager {
 	}
 
 	private async refreshFooter(): Promise<void> {
+		this.rosterChanged();
 		if (this.shuttingDown || !this.primaries.size) return;
 		if (this.refreshing) { this.refreshAgain = true; return; }
 		this.refreshing = true;
