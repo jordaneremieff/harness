@@ -11,7 +11,7 @@ export interface AgentComposerOptions {
 	tui: TUI;
 	theme: Theme;
 	keys: KeybindingsManager;
-	/** Receives the submitted text; the native editor clears its own buffer first. */
+	/** Receives expanded text; the draft stays until the owner confirms admission. */
 	onSubmit(text: string): void;
 	/** Receives every text change; the console uses it to retain a recoverable draft. */
 	onChange?(text: string): void;

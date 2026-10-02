@@ -183,7 +183,7 @@ export class AgentTasksView {
 		this.selectedIndex = Math.min(this.ordered.length - 1, Math.max(0, this.selectedIndex + delta));
 	}
 
-	/** Open the agent that owns one conversation; the dashboard names it in its strip. */
+	/** Open the console for the selected task's conversation. */
 	private select(conversationId: number): void {
 		const label = this.frame?.labels.find((candidate) => candidate.conversationId === conversationId);
 		if (!label?.identity) {
