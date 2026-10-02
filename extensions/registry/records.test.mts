@@ -12,7 +12,7 @@ const info = (over: Record<string, unknown> = {}) => ({
 
 function snapshot(over: Partial<HostSnapshot> = {}): HostSnapshot {
 	return {
-		tools: [{ name: "read", description: "Read files", sourceInfo: info({ path: "<builtin:read>", source: "builtin" }) }],
+		tools: [{ name: "read", description: "Read files", sourceInfo: info({ path: "builtin:read", source: "builtin" }) }],
 		activeTools: ["read"],
 		commands: [
 			{ name: "stash", description: "Stash", source: "extension", sourceInfo: info({ path: "/ext/stash/index.ts" }) },

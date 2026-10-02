@@ -34,8 +34,10 @@ export interface FrontmatterEvidence {
 }
 
 /**
- * A synthetic source is a registration marker such as `<builtin:read>`, not a
- * file. Rejecting it here keeps the scan from turning a marker into a path.
+ * A synthetic source is a registration marker such as `builtin:read`, not a
+ * file. The absolute-path test rejects that marker, and the angle-bracket test
+ * rejects an `<inline:name>` marker. Rejecting both keeps the scan from turning
+ * a marker into a path.
  */
 export function isRealFilePath(path: string): boolean {
 	if (typeof path !== "string" || path.length === 0) return false;

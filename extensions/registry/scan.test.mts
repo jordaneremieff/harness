@@ -49,7 +49,7 @@ describe("target resolution", () => {
 	});
 
 	it("rejects a synthetic or relative source rather than opening it as a path", () => {
-		assert.equal(resolveScanTarget([record({ sourceInfo: info("<builtin:read>") })]).kind, "unavailable");
+		assert.equal(resolveScanTarget([record({ sourceInfo: info("builtin:read") })]).kind, "unavailable");
 		assert.equal(resolveScanTarget([record({ sourceInfo: info("relative/SKILL.md") })]).kind, "unavailable");
 		assert.equal(isRealFilePath("<sdk>"), false);
 		assert.equal(isRealFilePath(""), false);
@@ -197,7 +197,7 @@ describe("bounded file scan", () => {
 	});
 
 	it("refuses a non-absolute or synthetic path without opening anything", async () => {
-		const result = await scanFile("<builtin:read>", "x");
+		const result = await scanFile("builtin:read", "x");
 		assert.equal(result.outcome, "io_error");
 		assert.match(result.error ?? "", /absolute file path/);
 	});
