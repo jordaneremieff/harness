@@ -104,7 +104,7 @@ it("reports method availability by runtime version", () => {
 });
 
 it("requires the process shutdown contract for a wire close", () => {
-	assert.equal(HOST_RUNTIME_VERSION, 3);
+	assert.equal(HOST_RUNTIME_VERSION, 4);
 	assert.equal(hostMethodMinVersion("close"), 3);
 	assert.match(hostUpdatePendingError("close", 1).message, /cannot close its process safely/u);
 	assert.doesNotMatch(hostUpdatePendingError("close", 1).message, /it updates when idle/u);

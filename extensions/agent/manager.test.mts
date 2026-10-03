@@ -892,6 +892,26 @@ for (const version of [0, 1, 2]) {
 	});
 }
 
+it("updates an idle version-3 host through process close before adopting version 4", async (t) => {
+	const root = fixtureRoot(t);
+	const steps: RecordedHost[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => {
+			const step = recordedHost(metadata, steps.length === 0 ? 3 : HOST_RUNTIME_VERSION, { pending: false });
+			steps.push(step);
+			return step.connection;
+		}, connect: noHost,
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root });
+	assert.equal(HOST_RUNTIME_VERSION, 4);
+	assert.equal(steps.length, 2);
+	assert.ok(steps[0].requests.some((entry) => entry.method === "close"));
+	assert.equal(steps[0].connection.closed, true);
+	assert.equal(steps[1].connection.runtimeVersion, 4);
+});
+
 /** Exercise the replacement invariant independently of a version mismatch. */
 function replaceHost(manager: AgentManager, record: CatalogRecord, client: HostConnection): Promise<HostConnection> {
 	return (manager as unknown as { replaceIdleHost(record: CatalogRecord, client: HostConnection): Promise<HostConnection> }).replaceIdleHost(record, client);
@@ -1051,7 +1071,7 @@ it("releases a blocked older host only after all concurrent reads finish", async
 	assert.equal(clients[0].closed, true, "the manager does not veto idle retirement after its reads");
 });
 
-it("releases an older host's real transport and permits idle retirement", { timeout: 15000 }, async (t) => {
+it("releases a blocked-version client's real transport and permits idle retirement", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	let attached: HostConnection | undefined;
 	let read = false;
@@ -1078,7 +1098,7 @@ it("releases an older host's real transport and permits idle retirement", { time
 	assert.equal(existsSync(hostPaths(record).claim), false);
 });
 
-it("retains native work until all other clients leave and the old host becomes idle", { timeout: 15000 }, async (t) => {
+it("retains native work but ignores another window's passive client after a blocked-version read", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const checks = eventLog<() => void>();
 	let idle = false;
@@ -1097,15 +1117,17 @@ it("retains native work until all other clients leave and the old host becomes i
 	await manager.status(record.storageId);
 	assert.deepEqual(manager.connectedStorageIds(), []);
 	await otherWindow.request("status");
-	assert.equal(checks.length, 0, "the other window still prevents retirement");
-	await otherWindow.close();
-	await checks.waitForCount(1);
-	checks[0]();
+	assert.ok(checks.length > 0, "the other window does not prevent idle checks");
+	const count = checks.length;
+	checks[checks.length - 1]();
 	assert.equal(existsSync(hostPaths(record).claim), true, "pending native work survives client release");
-	await checks.waitForCount(2);
+	await checks.waitForCount(count + 1);
 	idle = true;
-	checks[1]();
+	const lost = new Promise<void>((resolve) => otherWindow.onClose(resolve));
+	checks[checks.length - 1]();
 	await host.done;
+	await lost;
+	assert.equal(otherWindow.closed, true);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root });
 	assert.equal(acquired, 1);
 	assert.equal((await manager.status() as { failures: unknown[] }).failures.length, 0, "the obsolete version notice clears");

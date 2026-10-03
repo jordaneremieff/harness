@@ -463,6 +463,45 @@ writer claim before `durable-runtime.ts` assembles services and opens
 `DurableHost`. Native submission IDs, entries, documents, and task outcomes
 remain authoritative. Old ordinary agent files stay untouched and unread.
 
+### Storage host retirement
+
+Verified 2026-10-03 against the local host/runtime sources and installed Durable
+1.0.0 `dist/harness/harness.js`. Public `inspect()` includes queued and placed
+submissions; `taskGraph()` includes all live tasks. Native waiting tasks,
+including check-ins and scheduled inputs, therefore remain host work rather than
+passive connections.
+
+The agent host's version-4 lifetime contract ignores passive primary and peer
+connections and footer subscriptions. Retirement waits for the configured idle
+interval with no native work, pending delivery row or in-flight delivery effect,
+request, local control, or open
+conversation/task observation. Observation tokens cover the open-to-subscribe
+gap and release on close, abort, setup failure, and disconnect. Token operations
+serialize native watch ownership, and failed setup releases only its own reference.
+A failed live frame reports unavailable and releases its token without closing the
+shared client. Reload refuses before teardown while native observation tokens
+remain; the same guard applies to native local commands. Native commits
+and local control completion reset the idle interval independently of coalesced
+catalog notifications. A generation check rejects stale asynchronous idle
+snapshots; a synchronous seal closes process, local, and delivery admission before
+shutdown begins. A delivery effect remains work even if another caller already
+acknowledged its row. Completion of that effect starts a new idle interval.
+
+Final catalog publication precedes recovery-marker clearance, runtime cleanup,
+writer release, and transport close. Publication or marker failure rejects the
+clean close and retains the claim until process death. Clean retirement preserves
+catalog costs and causes no recovery acquisition or crash-budget charge. Cold
+reads stay writer-free; later controls acquire a fresh host.
+
+Managers replace an idle version-3 host through its supported close contract,
+after native work and delivery settle and writer release is proved. Older Pi
+windows and already-running hosts retain their loaded policy until restart or
+replacement. Versions below 3 still lack safe process close and require all
+clients to release for their own natural retirement. A closed native runtime is
+not repaired by this policy, and an open live observation intentionally keeps
+its host alive. This extension-owned lifetime change does not change Pi Durable's
+storage or replay guarantees.
+
 ### Native extension integration boundary
 
 The host collects native contributions from the configured extension factories

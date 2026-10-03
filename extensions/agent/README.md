@@ -32,12 +32,31 @@ stopping work.
   cancel admitted work.
 - The primary registers one channel over the same public transport. That channel
   returns peer messages and answers the host's project-trust prompts.
-- Host retirement requires no clients and no active work. `PI_AGENT_IDLE_MINUTES`
-  controls the idle interval; zero disables retirement. A finished conversation
-  does not retire a host while a primary still holds its client connection.
+- Host retirement ignores passive clients and footer change subscriptions.
+  `PI_AGENT_IDLE_MINUTES` controls the idle interval; zero disables retirement.
+  Retirement requires no native live task or unsettled submission, no pending
+  delivery row or in-flight delivery effect, no active request or host-local
+  control, and no open conversation or
+  task observation. Native check-in and timer tasks keep the host alive while
+  they wait. Actual storage changes and completed requests start a new idle
+  interval; passive connections and change subscriptions do not reset it.
+  Closing the last observation starts a new interval. The open-to-subscribe
+  gap counts as an observation, and close, abort, failed setup, and disconnect
+  release its token. Concurrent token operations share one ownership line;
+  failed initial frame construction rolls back only its new reference. A later
+  frame failure reports the observation unavailable and releases its token,
+  without closing the shared client.
 - A process `close` request differs from a client disconnect. Idle shutdown
   finishes runtime cleanup, unpublishes the owned endpoint, releases the writer
-  claim, then closes transport. Busy shutdown retains the recovery marker,
+  claim, then closes transport. Retirement rechecks native work and delivery
+  against the admission generation, then seals both process and local controls
+  without another asynchronous gap. The seal also stops new delivery effects.
+  Delivery-pass completion starts a new idle interval, even if another caller
+  acknowledged the row while its effect was in flight. Late controls receive a shutdown refusal;
+  the manager does not retry mutations after transport loss. Final catalog
+  publication precedes recovery-marker clearance. A failed final publication
+  or marker write rejects shutdown and retains the writer claim until process
+  death, rather than announce a clean retirement. Busy shutdown retains the recovery marker,
   attempts final catalog publication, seals native admission, and exits through
   the runner. It keeps the live claim until process death; the next host
   replaces the dead claim and resumes retained native work. Concurrent close
@@ -45,6 +64,10 @@ stopping work.
   host returns the reload error and takes the same process shutdown path. It
   retains the recovery marker and writer claim until process death; the next
   acquisition starts a fresh host.
+- Reload requires an idle storage and no live observation tokens. The runtime
+  refuses reload before teardown while any observer remains, including native
+  local command dispatch. Release the observers before reload; an attempted
+  reload does not destroy an existing observation.
 - Local protocol validation rejects only the malformed request and leaves its
   healthy connection usable. A failed runtime-version attachment disposes its
   client. Application or protocol errors from a live writer do not authorize a
@@ -311,6 +334,8 @@ meets a host of another version, the manager applies the version check
 described below. A listener that attaches after a frame arrives receives that
 current frame at once.
 
+The current host runtime contract is version 4. Version 4 permits retirement
+with passive connections; version 3 still requires every client to disconnect.
 Every host advertises a runtime version in its readiness line and answers a
 `runtime-version` request. A host that reports no version predates the
 handshake and reads as version 0. Process close requires runtime version 3. A
@@ -325,8 +350,8 @@ automatic update is blocked. This manager disconnects from such a host after
 the last concurrent bounded operation and refuses persistent observation of it.
 Other Pi windows and live observations still prevent its idle retirement:
 close every client, allow configured retirement after native work ends, then
-use `agent_attach`. A completed conversation does not release its Pi manager. A
-host whose Durable runtime already closed does not recover through idle
+use `agent_attach`. A manager loaded before the version-4 contract still retains
+its ordinary clients after completion. A host whose Durable runtime already closed does not recover through idle
 retirement.
 
 An older host with a supported close contract is replaced when it is idle. The
@@ -353,7 +378,10 @@ status-probe every storage. Recovery acquisitions run at most two at a time. A
 transient recovery link closes when the internal `recovery-state` check reports
 no pending native work and no unsettled or unacknowledged delivery; host change
 notifications trigger that check, not polling. The marker clears only on a clean
-close with nothing pending.
+close with nothing pending, after final catalog publication. Clean retirement
+closes cached manager and peer delivery links without a recovery acquisition or
+crash-budget charge. Footer totals remain in the catalog; later reads use cold
+storage without a writer, and later controls acquire a fresh host.
 
 While a primary remains registered, an unexpected host connection loss rereads
 that marker and queues recovery through the same bounded pool. The manager owns
@@ -521,7 +549,7 @@ SessionManager.
 |---|---|
 | `PI_AGENT_DIR` | Pi configuration directory, otherwise public `getAgentDir()`. |
 | `PI_AGENT_SESSIONS_DIR` | Agent store root, otherwise `<agentDir>/agent-sessions`. |
-| `PI_AGENT_IDLE_MINUTES` | Idle host retirement interval. Default 5; zero disables; finite range 0 through 35791. |
+| `PI_AGENT_IDLE_MINUTES` | Idle host retirement interval. Default 5; zero disables; finite range 0 through 35791 minutes, including fractions. Passive clients do not extend the interval. |
 | `PI_AGENT_CHECK_IN_MINUTES` | Default automatic owner check-in interval for model `agent_spawn` and `agent_place` prompts and `agent_send` tasks. Default 30; zero disables; finite range 0 through 35791 minutes, including fractions. Blank and invalid values are rejected with the variable name and range. Per-call `checkInMinutes` overrides it. Operator admissions have no default. |
 
 Current storage lives under `<store>/durable/`: a bounded discovery metadata

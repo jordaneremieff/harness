@@ -3,8 +3,8 @@
  *
  * One process owns the storage writer. This service keeps at most one watch per
  * observed conversation and one task-graph watch, advances a monotonic revision
- * from published Durable view publications, and builds bounded JSON frames on
- * demand. A watch exists only while at least one observation token references
+ * from native view publications and committed status/label changes, and builds
+ * bounded JSON frames on demand. A watch exists only while at least one observation token references
  * it. Reading never resumes the Harness, schedules work, or opens storage.
  */
 import type { Context } from "@earendil-works/chord";
@@ -55,6 +55,14 @@ export class LiveObservationService {
 	private readonly conversations = new Map<ConversationId, ConversationWatchState>();
 	private readonly tokens = new Map<string, TokenState>();
 	private taskGraph: TaskGraphWatchState | undefined;
+	private operations: Promise<void> = Promise.resolve();
+
+	/** Token and watch ownership change on one line, including asynchronous first-frame setup. */
+	private serialize<T>(operation: () => Promise<T>): Promise<T> {
+		const result = this.operations.then(operation);
+		this.operations = result.then(() => {}, () => {});
+		return result;
+	}
 
 	constructor(harness: Harness, options: LiveObservationOptions, context: Context) {
 		this.harness = harness;
@@ -63,32 +71,36 @@ export class LiveObservationService {
 	}
 
 	/** Open or reuse one token. Repeated calls with the same token return the current frame. */
-	async open(token: string, scope: ObservationScope): Promise<ObservationFrame> {
+	open(token: string, scope: ObservationScope): Promise<ObservationFrame> {
+		return this.serialize(() => this.openToken(token, scope));
+	}
+
+	private async openToken(token: string, scope: ObservationScope): Promise<ObservationFrame> {
 		const existing = this.tokens.get(token);
 		if (existing) {
-			const frame = await this.frame(token);
+			const frame = await this.tokenFrame(token);
 			if (frame === undefined) throw new Error(`observation token ${token} has no frame`);
 			return frame;
 		}
 		const key = scope.scope === "conversation" ? `conversation:${scope.conversationId}` : "tasks";
-		let frame: ObservationFrame;
-		if (scope.scope === "conversation") {
-			const conversation = await this.harness.conversation(scope.conversationId, this.context);
-			if (!conversation) throw new Error(`observed conversation ${scope.conversationId} does not exist`);
-			const state = await this.acquireConversation(scope.conversationId);
-			state.references += 1;
-			frame = await this.conversationFrame(state);
-		} else {
-			const state = await this.acquireTaskGraph();
-			state.references += 1;
-			frame = await this.taskFrame(state);
+		const state = scope.scope === "conversation" ? await this.acquireConversation(scope.conversationId) : await this.acquireTaskGraph();
+		state.references += 1;
+		try {
+			const frame = "conversationId" in state ? await this.conversationFrame(state) : await this.taskFrame(state);
+			this.tokens.set(token, { scope, key });
+			return frame;
+		} catch (error) {
+			await this.releaseKey(key);
+			throw error;
 		}
-		this.tokens.set(token, { scope, key });
-		return frame;
 	}
 
 	/** The current frame for one token, rebuilt only after an observed publication. */
-	async frame(token: string): Promise<ObservationFrame | undefined> {
+	frame(token: string): Promise<ObservationFrame | undefined> {
+		return this.serialize(() => this.tokenFrame(token));
+	}
+
+	private async tokenFrame(token: string): Promise<ObservationFrame | undefined> {
 		const tokenState = this.tokens.get(token);
 		if (!tokenState) return undefined;
 		try {
@@ -102,14 +114,18 @@ export class LiveObservationService {
 			return await this.taskFrame(state);
 		} catch (error) {
 			// A watch that lost its source closes rather than returning a stale frame.
-			this.releaseKey(tokenState.key);
+			await this.releaseKey(tokenState.key);
 			this.tokens.delete(token);
 			throw error;
 		}
 	}
 
 	/** Release one token; the last release stops the watch it referenced. */
-	async close(token: string): Promise<boolean> {
+	close(token: string): Promise<boolean> {
+		return this.serialize(() => this.closeToken(token));
+	}
+
+	private async closeToken(token: string): Promise<boolean> {
 		const tokenState = this.tokens.get(token);
 		if (!tokenState) return false;
 		this.tokens.delete(token);
@@ -118,7 +134,11 @@ export class LiveObservationService {
 	}
 
 	/** Stop every watch. Called when the host process shuts down. */
-	async closeAll(): Promise<void> {
+	closeAll(): Promise<void> {
+		return this.serialize(() => this.stopAll());
+	}
+
+	private async stopAll(): Promise<void> {
 		this.tokens.clear();
 		const stops: Promise<unknown>[] = [];
 		for (const state of this.conversations.values()) {
@@ -132,6 +152,18 @@ export class LiveObservationService {
 			this.taskGraph = undefined;
 		}
 		await Promise.all(stops);
+	}
+
+	/** Status and labels read documents outside the native view mounts. */
+	invalidate(): void {
+		for (const state of this.conversations.values()) this.invalidateState(state);
+		if (this.taskGraph) this.invalidateState(this.taskGraph);
+	}
+
+	private invalidateState(state: ConversationWatchState | TaskGraphWatchState): void {
+		state.revision += 1;
+		state.dirty = true;
+		state.frame = undefined;
 	}
 
 	/** Number of open tokens; test and diagnostics surface. */
@@ -204,6 +236,7 @@ export class LiveObservationService {
 
 	private async conversationFrame(state: ConversationWatchState): Promise<ConversationFrame> {
 		if (state.frame !== undefined && !state.dirty) return state.frame;
+		const revision = state.revision;
 		const value = state.handle.value;
 		const selection = selectSnapshotEntries([...value.entries].reverse(), SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_BYTE_LIMIT);
 		const entries = selection.entries.map((entry) => snapshotEntry(entry));
@@ -213,7 +246,7 @@ export class LiveObservationService {
 			scope: "conversation",
 			storageId: this.options.storageId,
 			conversationId: state.conversationId,
-			revision: state.revision,
+			revision,
 			observedAt: new Date(this.options.now?.() ?? Date.now()).toISOString(),
 			entries,
 			nextBefore: selection.nextBefore,
@@ -221,25 +254,24 @@ export class LiveObservationService {
 			status,
 			coverage: selection.coverage,
 		});
-		state.frame = frame;
-		state.dirty = false;
+		if (state.revision === revision) { state.frame = frame; state.dirty = false; }
 		return frame;
 	}
 
 	private async taskFrame(state: TaskGraphWatchState): Promise<TasksFrame> {
 		if (state.frame !== undefined && !state.dirty) return state.frame;
+		const revision = state.revision;
 		const rows = taskGraphRows(state.handle.value);
 		const frame: TasksFrame = jsonSafeFrame({
 			scope: "tasks",
 			storageId: this.options.storageId,
-			revision: state.revision,
+			revision,
 			observedAt: new Date(this.options.now?.() ?? Date.now()).toISOString(),
 			tasks: rows,
 			labels: await this.labelsFor(rows),
 			coverage: { complete: true, live: true },
 		});
-		state.frame = frame;
-		state.dirty = false;
+		if (state.revision === revision) { state.frame = frame; state.dirty = false; }
 		return frame;
 	}
 

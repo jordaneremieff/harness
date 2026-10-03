@@ -99,6 +99,105 @@ async function streamingRuntime(makeStream: () => AssistantMessageEventStream): 
 	return runtime;
 }
 
+for (const scope of ["conversation", "tasks"] as const) for (const sameToken of [false, true]) it(`shares concurrent ${scope} opens with same token=${sameToken}`, { timeout: 15000 }, async (t) => {
+	const host = await DurableHost.open(hostOptions(join(fixtureRoot(t), "concurrent.sqlite"), await scriptedRuntime([]), fixtureRegistry()));
+	t.after(() => host.close());
+	let created = 0;
+	let stopped = 0;
+	const wrap = <T,>(handle: WatchHandle<T>): WatchHandle<T> => {
+		created++;
+		return { get value() { return handle.value; }, closed: handle.closed, start: (listener) => handle.start(listener), stop: async () => { stopped++; return handle.stop(); } };
+	};
+	const conversation = host.harness.conversation.bind(host.harness);
+	t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof conversation>) => {
+		const value = await conversation(...args);
+		if (value) { const watch = value.watch.bind(value); t.mock.method(value, "watch", async (...watchArgs: Parameters<typeof watch>) => wrap(await watch(...watchArgs))); }
+		return value;
+	});
+	const tasks = host.harness.watchTaskGraph.bind(host.harness);
+	t.mock.method(host.harness, "watchTaskGraph", async (...args: Parameters<typeof tasks>) => wrap(await tasks(...args)));
+	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+	const selected = scope === "conversation" ? { scope, conversationId: ROOT } : { scope };
+	await Promise.all([service.open("first", selected), service.open(sameToken ? "first" : "second", selected)]);
+	assert.equal(created, 1, "the native watch has one owner across concurrent opens");
+	assert.equal(service.size, sameToken ? 1 : 2);
+	await service.close("first");
+	if (!sameToken) {
+		assert.ok(await service.frame("second"), "the other token keeps its own reference");
+		assert.equal(stopped, 0);
+		await service.close("second");
+	}
+	assert.equal(stopped, 1);
+	assert.equal(service.watches, 0);
+});
+
+it("preserves a new task token when its open overlaps the last token close", { timeout: 15000 }, async (t) => {
+	const host = await DurableHost.open(hostOptions(join(fixtureRoot(t), "open-close.sqlite"), await scriptedRuntime([]), fixtureRegistry()));
+	t.after(() => host.close());
+	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+	await service.open("old", { scope: "tasks" });
+	await Promise.all([service.open("new", { scope: "tasks" }), service.close("old")]);
+	assert.ok(await service.frame("new"));
+	assert.equal(service.size, 1);
+	assert.equal(service.watches, 1);
+	await service.close("new");
+	assert.equal(service.watches, 0);
+});
+
+for (const scope of ["conversation", "tasks"] as const) it(`releases a ${scope} watch whose first frame fails`, { timeout: 15000 }, async (t) => {
+	const host = await DurableHost.open(hostOptions(join(fixtureRoot(t), "failed-frame.sqlite"), await scriptedRuntime([]), fixtureRegistry()));
+	t.after(() => host.close());
+	let fail = true;
+	let stopped = 0;
+	const wrap = <T,>(handle: WatchHandle<T>): WatchHandle<T> => ({
+		get value() { if (fail) { fail = false; throw new Error("initial frame unavailable"); } return handle.value; },
+		closed: handle.closed, start: (listener) => handle.start(listener), stop: async () => { stopped++; return handle.stop(); },
+	});
+	const conversation = host.harness.conversation.bind(host.harness);
+	t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof conversation>) => {
+		const value = await conversation(...args);
+		if (value) { const watch = value.watch.bind(value); t.mock.method(value, "watch", async (...watchArgs: Parameters<typeof watch>) => wrap(await watch(...watchArgs))); }
+		return value;
+	});
+	const tasks = host.harness.watchTaskGraph.bind(host.harness);
+	t.mock.method(host.harness, "watchTaskGraph", async (...args: Parameters<typeof tasks>) => wrap(await tasks(...args)));
+	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+	const selected = scope === "conversation" ? { scope, conversationId: ROOT } : { scope };
+	await assert.rejects(service.open("failed", selected), /initial frame unavailable/u);
+	assert.equal(service.size, 0);
+	assert.equal(service.watches, 0);
+	assert.equal(stopped, 1);
+	await service.open("failed", selected);
+	await service.close("failed");
+	assert.equal(stopped, 2);
+});
+
+it("rolls back a failed second open without releasing the surviving task token", { timeout: 15000 }, async (t) => {
+	const host = await DurableHost.open(hostOptions(join(fixtureRoot(t), "failed-second.sqlite"), await scriptedRuntime([]), fixtureRegistry()));
+	t.after(() => host.close());
+	let fail = false;
+	let stopped = 0;
+	let publish = async (): Promise<void> => {};
+	const watch = host.harness.watchTaskGraph.bind(host.harness);
+	t.mock.method(host.harness, "watchTaskGraph", async (...args: Parameters<typeof watch>) => {
+		const handle = await watch(...args);
+		return { get value() { if (fail) { fail = false; throw new Error("second frame unavailable"); } return handle.value; }, closed: handle.closed,
+			start: (listener: Parameters<typeof handle.start>[0]) => { publish = () => listener(handle.value, [], BACKGROUND_CONTEXT); handle.start(listener); },
+			stop: async () => { stopped++; return handle.stop(); } };
+	});
+	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+	await service.open("survivor", { scope: "tasks" });
+	await publish();
+	fail = true;
+	await assert.rejects(service.open("failed", { scope: "tasks" }), /second frame unavailable/u);
+	assert.equal(service.size, 1);
+	assert.equal(stopped, 0);
+	assert.ok(await service.frame("survivor"));
+	await service.close("survivor");
+	assert.equal(service.watches, 0);
+	assert.equal(stopped, 1);
+});
+
 it("advances the conversation frame after a commit and serves committed entries", { timeout: 30000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "conversation.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);

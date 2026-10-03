@@ -23,7 +23,7 @@ export const HOST_SERVICE_ID = "pi.agent.host";
  * reads as version 0. A replacement requires an older host with the current
  * process-close contract; blocked hosts retire only after all clients release.
  */
-export const HOST_RUNTIME_VERSION = 3;
+export const HOST_RUNTIME_VERSION = 4;
 /** Method member that reports the runtime version of one live host. */
 export const HOST_RUNTIME_VERSION_MEMBER = "runtime-version";
 /** Chord service identity for the host's coalesced change notifications. */

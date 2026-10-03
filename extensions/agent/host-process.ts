@@ -32,6 +32,8 @@ export interface HostRuntime {
 	/** Pending native work or a failed runtime requires process death rather than an unbounded task join. */
 	close(): Promise<void> | Promise<"process-exit" | undefined>;
 	isIdle(): boolean;
+	/** Revalidate native work, delivery, and local controls, then synchronously seal both admission boundaries. */
+	tryRetire?(seal: () => boolean): Promise<boolean>;
 	/** A failed runtime requires process shutdown after the current response. */
 	readonly shutdownRequired?: boolean;
 	/**
@@ -41,6 +43,8 @@ export interface HostRuntime {
 	 * serves the initial snapshot and publishes no changes.
 	 */
 	onChange?(listener: () => void): () => void;
+	/** Native commits and host-local control completion reset the idle interval without publishing a footer change. */
+	onActivity?(listener: () => void): () => void;
 }
 
 /** Called once the claim is held; the runtime opens storage only after this point. */
@@ -116,6 +120,7 @@ interface AttachmentState {
 	readonly observations: Map<string, ObservationSubscription>;
 	/** Observation tokens this attachment opened; only these may subscribe. */
 	readonly tokens: Set<string>;
+	released: boolean;
 }
 
 const IDLE_MINUTES_MAX = 35791;
@@ -230,7 +235,10 @@ class HostProcessServer implements HostProcess {
 	private socketIdentity: { dev: number; ino: number } | undefined;
 	private cancelIdleCheck: (() => void) | undefined;
 	private readonly scheduleIdleCheck: NonNullable<RunHostOptions["scheduleIdleCheck"]>;
-	private connectionCount = 0;
+	private activeRequests = 0;
+	private activityGeneration = 0;
+	private readonly attachments = new Set<AttachmentState>();
+	private retirementChecking = false;
 	private closing = false;
 	private readonly cancelableRequests = new AbortController();
 	private closePromise: Promise<void> | undefined;
@@ -242,6 +250,7 @@ class HostProcessServer implements HostProcess {
 	private observationPumping = false;
 	private observationAgain = false;
 	private unsubscribeObservation: (() => void) | undefined;
+	private unsubscribeActivity: (() => void) | undefined;
 
 	private readonly exit: (() => never) | undefined;
 
@@ -269,7 +278,6 @@ class HostProcessServer implements HostProcess {
 		const server = createUnixServer(this.host(), {
 			serverId: this.paths.serverId,
 			path: this.paths.socket,
-			onConnectionCountChanged: (count) => this.onConnectionCountChanged(count),
 		});
 		this.server = server;
 		try {
@@ -282,6 +290,13 @@ class HostProcessServer implements HostProcess {
 		}
 		// The runtime commit source wakes frame publication for every open observation.
 		this.unsubscribeObservation = this.runtime.onChange?.(() => this.scheduleObservationPump());
+		const subscribeActivity = this.runtime.onActivity ?? this.runtime.onChange;
+		this.unsubscribeActivity = subscribeActivity?.call(this.runtime, () => {
+			this.activityGeneration++;
+			this.cancelIdleCheck?.();
+			this.cancelIdleCheck = undefined;
+			this.scheduleRetirement();
+		});
 		announce({ pid: this.pid, socketPath: this.paths.socket, runtimeVersion: HOST_RUNTIME_VERSION });
 		this.scheduleRetirement();
 	}
@@ -299,15 +314,18 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private attachment(): RoutedServerServiceAttachment {
-		const state: AttachmentState = { subscriptions: new Map(), observations: new Map(), tokens: new Set() };
+		const state: AttachmentState = { subscriptions: new Map(), observations: new Map(), tokens: new Set(), released: false };
+		this.attachments.add(state);
 		return {
 			invokeService: (call, publish, context) => this.invokeService(call, publish, context, state),
 			release: () => {
+				state.released = true;
+				this.attachments.delete(state);
 				for (const entry of state.subscriptions.values()) entry.unsubscribe();
 				state.subscriptions.clear();
 				for (const entry of state.observations.values()) entry.close();
 				state.observations.clear();
-				for (const token of state.tokens) this.closeObservationToken(token);
+				for (const token of [...state.tokens]) this.closeObservationToken(token, state);
 				state.tokens.clear();
 			},
 		};
@@ -320,6 +338,16 @@ class HostProcessServer implements HostProcess {
 		context: Context,
 		state: AttachmentState,
 	): Promise<JsonValue | undefined> {
+		const control = decodeServiceControlCall(call);
+		const passive = call.member === HOST_RUNTIME_VERSION_MEMBER || control?.type === "subscribe" && control.serviceId === HOST_CHANGE_SERVICE_ID
+			|| control?.type === "unsubscribe" && !state.observations.has(control.subscriptionId);
+		if (this.closing) throw new ServerError("service_invalid_value", "The durable host process is shutting down");
+		if (!passive && call.member !== "close") this.beginActivity();
+		try { return await this.routeService(call, publish, context, state); }
+		finally { if (!passive && call.member !== "close") this.endActivity(); }
+	}
+
+	private async routeService(call: ServiceCall, publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>, context: Context, state: AttachmentState): Promise<JsonValue | undefined> {
 		const control = decodeServiceControlCall(call);
 		if (control?.type === "subscribe") {
 			if (control.serviceId === HOST_CHANGE_SERVICE_ID) return this.subscribeChanges(control.subscriptionId, publish, context, state) as unknown as JsonValue;
@@ -383,7 +411,11 @@ class HostProcessServer implements HostProcess {
 		state: AttachmentState,
 	): Promise<ServiceSubscriptionSnapshot> {
 		if (!state.tokens.has(token)) throw new ServerError("service_not_found", `unknown observation token ${token}`);
-		const baseline = await this.runtime.request("observe-frame", { token }, randomUUID());
+		let baseline: unknown;
+		try {
+			baseline = await this.runtime.request("observe-frame", { token }, randomUUID());
+			if (!isObservationFrame(baseline) || state.released || !state.tokens.has(token)) throw new ServerError("service_invalid_value", `observation token ${token} returned no frame`);
+		} catch (error) { this.closeObservationToken(token, state); throw error; }
 		if (!isObservationFrame(baseline)) throw new ServerError("service_invalid_value", `observation token ${token} returned no frame`);
 		const entry: ObservationSubscription = {
 			subscriptionId,
@@ -395,7 +427,7 @@ class HostProcessServer implements HostProcess {
 			closed: false,
 			close: () => {},
 		};
-		entry.close = () => this.closeObservationSubscription(entry);
+		entry.close = () => this.closeObservationSubscription(entry, state);
 		state.observations.set(subscriptionId, entry);
 		this.observations.add(entry);
 		// Close the open/subscribe gap: a commit between the baseline and
@@ -408,16 +440,19 @@ class HostProcessServer implements HostProcess {
 		};
 	}
 
-	private closeObservationSubscription(entry: ObservationSubscription): void {
+	private closeObservationSubscription(entry: ObservationSubscription, state: AttachmentState): void {
 		if (entry.closed) return;
 		entry.closed = true;
 		this.observations.delete(entry);
-		this.closeObservationToken(entry.token);
+		state.observations.delete(entry.subscriptionId);
+		this.closeObservationToken(entry.token, state);
 	}
 
 	/** Release one runtime token; the runtime stops the watch when the last token closes. */
-	private closeObservationToken(token: string): void {
-		void this.runtime.request("observe-close", { token }, randomUUID()).catch(() => undefined);
+	private closeObservationToken(token: string, state: AttachmentState): void {
+		if (!state.tokens.delete(token)) return;
+		this.beginActivity();
+		void this.runtime.request("observe-close", { token }, randomUUID()).catch(() => undefined).finally(() => this.endActivity());
 	}
 
 	/** Coalesce runtime write notifications into one frame check per turn. */
@@ -460,13 +495,23 @@ class HostProcessServer implements HostProcess {
 		try {
 			frame = await this.runtime.request("observe-frame", { token: entry.token }, randomUUID());
 		} catch {
+			await this.failObservation(entry);
 			return;
 		}
-		if (entry.closed || !isObservationFrame(frame) || frame.revision === entry.revision) return;
+		if (entry.closed) return;
+		if (!isObservationFrame(frame)) { await this.failObservation(entry); return; }
+		if (frame.revision === entry.revision) return;
 		entry.revision = frame.revision;
 		entry.sequence += 1;
 		const update: ServiceProviderUpdate = { type: "state", member: HOST_OBSERVE_MEMBER, sequence: entry.sequence, ops: [["r", frame as unknown as JsonValue]] };
 		await Promise.resolve(entry.publish(entry.subscriptionId, update, entry.context)).catch(() => undefined);
+	}
+
+	/** A lost native watch is unavailable, not a live token retaining an old frame. */
+	private async failObservation(entry: ObservationSubscription): Promise<void> {
+		if (entry.closed) return;
+		await Promise.resolve(entry.publish(entry.subscriptionId, { type: "unavailable" }, entry.context)).catch(() => undefined);
+		entry.close();
 	}
 
 	/**
@@ -493,16 +538,28 @@ class HostProcessServer implements HostProcess {
 			// admitted Durable work never sees one.
 			const signal = isCancelableHostWait(call.member, params) ? this.waitSignal(context.abortSignal) : undefined;
 			const result = await this.runtime.request(call.member, params, requestId, signal);
-			if (call.member === "observe-open") {
-				const token = (result as { token?: unknown } | undefined)?.token;
-				if (typeof token === "string") state.tokens.add(token);
-			}
+			this.trackObservationResult(call.member, params, result, state);
 			return result as JsonValue | undefined;
 		} catch (error) {
 			// The public protocol carries bounded structural codes; the runtime
 			// message is preserved so consumers keep actionable errors.
 			throw new ServerError("service_invalid_value", error instanceof Error ? error.message : String(error));
 		} finally { this.shutdownIfRequired(); }
+	}
+
+	private trackObservationResult(method: string, params: unknown, result: unknown, state: AttachmentState): void {
+		if (method === "observe-open") {
+			const token = (result as { token?: unknown } | undefined)?.token;
+			if (typeof token !== "string") return;
+			state.tokens.add(token);
+			if (state.released) this.closeObservationToken(token, state);
+		}
+		if (method === "observe-close") {
+			const token = (params as { token?: unknown } | undefined)?.token;
+			if (typeof token !== "string") return;
+			state.tokens.delete(token);
+			for (const entry of [...state.observations.values()]) if (entry.token === token) entry.close();
+		}
 	}
 
 	private shutdownIfRequired(): void {
@@ -516,31 +573,43 @@ class HostProcessServer implements HostProcess {
 		return caller ? AbortSignal.any([caller, this.cancelableRequests.signal]) : this.cancelableRequests.signal;
 	}
 
-	private onConnectionCountChanged(count: number): void {
-		this.connectionCount = count;
-		if (this.closing) return;
-		if (count > 0) {
-			this.cancelIdleCheck?.();
-			this.cancelIdleCheck = undefined;
-			return;
-		}
+	private beginActivity(): void {
+		this.activeRequests++;
+		this.activityGeneration++;
+		this.cancelIdleCheck?.();
+		this.cancelIdleCheck = undefined;
+	}
+
+	private endActivity(): void {
+		this.activeRequests--;
 		this.scheduleRetirement();
 	}
 
-	private scheduleRetirement(): void {
-		if (this.closing || this.idleMs === 0 || this.connectionCount > 0) return;
-		this.cancelIdleCheck?.();
-		this.cancelIdleCheck = this.scheduleIdleCheck(() => this.onIdleCheck(), Math.max(1, this.idleMs));
+	private hasObservations(): boolean {
+		return [...this.attachments].some((state) => state.tokens.size > 0);
 	}
 
-	private onIdleCheck(): void {
+	private scheduleRetirement(): void {
+		if (this.closing || this.idleMs === 0 || this.activeRequests > 0 || this.hasObservations()) return;
+		this.cancelIdleCheck?.();
+		this.cancelIdleCheck = this.scheduleIdleCheck(() => { void this.onIdleCheck(); }, Math.max(1, this.idleMs));
+	}
+
+	private async onIdleCheck(): Promise<void> {
 		this.cancelIdleCheck = undefined;
-		if (this.closing || this.connectionCount > 0) return;
-		if (!this.runtime.isIdle()) {
-			this.scheduleRetirement();
-			return;
-		}
-		void this.shutdown().catch(() => {});
+		if (this.closing || this.retirementChecking || this.activeRequests > 0 || this.hasObservations()) return;
+		this.retirementChecking = true;
+		const generation = this.activityGeneration;
+		const seal = (): boolean => {
+			if (this.closing || generation !== this.activityGeneration || this.activeRequests > 0 || this.hasObservations()) return false;
+			this.closing = true;
+			return true;
+		};
+		try {
+			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : this.runtime.isIdle() && seal();
+			if (retired) await this.shutdown();
+		} catch { /* A failed check is not proof that storage is idle. */ }
+		finally { this.retirementChecking = false; this.scheduleRetirement(); }
 	}
 
 	close(): Promise<void> {
@@ -569,6 +638,8 @@ class HostProcessServer implements HostProcess {
 		this.closing = true;
 		this.unsubscribeObservation?.();
 		this.unsubscribeObservation = undefined;
+		this.unsubscribeActivity?.();
+		this.unsubscribeActivity = undefined;
 		this.cancelableRequests.abort(new Error("The durable host process is shutting down"));
 		try {
 			await closeRuntime(this.runtime, this.exit);

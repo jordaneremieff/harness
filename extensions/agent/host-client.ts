@@ -673,23 +673,22 @@ class HostConnectionImpl implements HostConnection {
 		this.nextObservationId += 1;
 		const entry: ObservationEntry = { id, scope, listeners: new Set(), token: undefined, subscription: undefined, frame: undefined, disposed: false, removeAbort: () => {} };
 		this.observationEntries.set(id, entry);
+		if (signal) {
+			const onAbort = () => { void this.releaseObservation(id); };
+			signal.addEventListener("abort", onAbort, { once: true });
+			entry.removeAbort = () => signal.removeEventListener("abort", onAbort);
+		}
 		try {
 			await this.bindObservation(entry);
+			if (signal?.aborted) throw abortReason(signal);
 		} catch (error) {
-			this.observationEntries.delete(id);
+			await this.releaseObservation(id);
 			throw toError(error);
 		}
 		const frame = entry.frame;
 		if (frame === undefined) {
 			await this.releaseObservation(id);
 			throw new Error("durable host observation produced no frame");
-		}
-		if (signal) {
-			const onAbort = () => {
-				void this.releaseObservation(id);
-			};
-			signal.addEventListener("abort", onAbort, { once: true });
-			entry.removeAbort = () => signal.removeEventListener("abort", onAbort);
 		}
 		return {
 			scope,
@@ -734,6 +733,7 @@ class HostConnectionImpl implements HostConnection {
 			return;
 		}
 		const subscription = await this.client.subscribeService({ serverId: this.serverId }, observationServiceId(token), "singleton", (update) => {
+			if (update.type === "unavailable") { this.failObservation(entry); return; }
 			if (update.type !== "state") return;
 			const frame = frameFromOps(update.ops as unknown as readonly unknown[]);
 			if (frame !== undefined) this.deliverObservation(entry, frame, false);

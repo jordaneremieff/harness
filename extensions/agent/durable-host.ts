@@ -214,7 +214,8 @@ export class DurableHost {
 		this.contributionHost = contributionHost;
 		this.defaultCwd = cwd;
 		// A commit may add or remove work; the cached idle result is stale until the refresh settles.
-		harness.subscribeCommits(() => {
+		harness.subscribeCommits((publication) => {
+			if (publication.changes.length > 0) liveObservations.get(harness)?.invalidate();
 			this.commitGeneration += 1;
 			this.idleDirty = true;
 			queueMicrotask(() => {
@@ -694,6 +695,9 @@ export class DurableHost {
 	}
 
 	// ----- live observation -----------------------------------------------------------------
+
+	/** Live tokens cannot survive replacement of the Harness that owns their watches. */
+	get observationCount(): number { return liveObservations.get(this.harness)?.size ?? 0; }
 
 	/** Lazily created per open Harness; watches stop when the host lifecycle aborts. */
 	private liveObservation(): LiveObservationService {

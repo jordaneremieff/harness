@@ -98,7 +98,11 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	let reloading = false;
 	let reloadFailed = false;
 	let activeRequests = 0;
+	let activityGeneration = 0;
+	let retirementSealed = false;
 	const changeListeners = new Set<() => void>();
+	const activityListeners = new Set<() => void>();
+	function notifyActivity(): void { for (const listener of activityListeners) listener(); }
 	let unsubscribeChanges: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
 	let publishTimer: ReturnType<typeof setTimeout> | undefined;
@@ -107,7 +111,19 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	let flushingView = false;
 	let publishAgain = false;
 
-	function runtimeUnavailable(): boolean { return closed || reloadFailed; }
+	function runtimeUnavailable(): boolean { return closed || reloadFailed || retirementSealed; }
+
+	/** Check committed work and delivery under one unchanged admission generation. */
+	async function tryRetire(seal: () => boolean): Promise<boolean> {
+		if (runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy) return false;
+		const generation = activityGeneration;
+		const state = await recoveryState();
+		if (state.workPending || state.deliveriesPending || !host.isIdle() || generation !== activityGeneration
+			|| runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy || !seal()) return false;
+		deliveries.sealAdmission();
+		retirementSealed = true;
+		return true;
+	}
 
 	/** Write the recovery marker; a failed write blocks the admitting request. */
 	function markRecoveryDue(due: boolean): void {
@@ -131,12 +147,8 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 
 	/** Clear the marker only when the storage closes with no work and no pending delivery. */
 	async function settleRecoveryMarker(): Promise<void> {
-		try {
-			const state = await recoveryState();
-			if (!state.workPending && !state.deliveriesPending) markRecoveryDue(false);
-		} catch (error) {
-			process.stderr.write(`Recovery marker: ${String(error)}\n`);
-		}
+		const state = await recoveryState();
+		if (!state.workPending && !state.deliveriesPending) markRecoveryDue(false);
 	}
 
 	/** Build and publish one bounded catalog view; `force` publishes during shutdown. */
@@ -150,6 +162,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 				catalog.updateView(metadata.storageId, view);
 				for (const listener of changeListeners) listener();
 			} catch (error) {
+				if (force) throw error;
 				process.stderr.write(`Catalog view: ${String(error)}\n`);
 			}
 		})();
@@ -231,8 +244,9 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		if (storageIdOf(sessionId) !== metadata.storageId) {
 			if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
 			activeRequests++;
+			activityGeneration++;
 			try { return await foreignControl(method, params, sessionId); }
-			finally { activeRequests--; }
+			finally { activeRequests--; notifyActivity(); }
 		}
 		return request(method, params, typeof params.requestId === "string" ? params.requestId : randomUUID());
 	};
@@ -268,7 +282,8 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 			host = opened;
 			unsubscribeChanges?.();
 			unsubscribeChanges = opened.harness.subscribeCommits((publication) => {
-				if (publication.changes.length) scheduleCatalogView();
+				activityGeneration++;
+				if (publication.changes.length) { notifyActivity(); scheduleCatalogView(); }
 			});
 			await markPendingRecovery();
 			opened.harness.resume();
@@ -283,7 +298,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	};
 	try { host = await openHost(); }
 	catch (error) { restoreDispatch(); controller.abort(); await services.close().catch(() => {}); throw error; }
-	const delivery = () => startDurableDelivery({ host, metadata, catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), signal: controller.signal, onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); } });
+	const delivery = () => startDurableDelivery({ host, metadata, catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), signal: controller.signal, onIdle: notifyActivity, onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); } });
 	let deliveries = delivery();
 
 	function configure(params: Record<string, unknown>): void {
@@ -296,6 +311,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		}
 		if (params.name !== "reload") return host.request("command", params);
 		if (!host.isIdle()) throw new Error("Reload requires an idle storage; it cannot replace another conversation's active tasks");
+		if (host.observationCount > 0) throw new Error("Reload requires closed live observations; release every observer before reload");
 		await services.services.resourceLoader.reload();
 		try {
 			await deliveries.close();
@@ -320,10 +336,11 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		const reload = method === "command" && (input as { name?: unknown } | undefined)?.name === "reload";
 		if (reload && activeRequests > 0) throw new Error("Reload requires all other controls to settle");
 		const counted = method !== "receipts";
+		activityGeneration++;
 		if (counted) activeRequests++;
 		reloading = reload;
 		try { return await executeRequest(method, input, requestId, signal); }
-		finally { if (counted) activeRequests--; if (reload) reloading = false; }
+		finally { if (counted) activeRequests--; if (reload) reloading = false; notifyActivity(); }
 	}
 	async function spawn(params: Record<string, unknown>, requestId: string, method: "spawn" | "place" = "spawn"): Promise<unknown> {
 		if (typeof params.senderIdentity !== "string") throw new Error("A native spawn requires its sender identity");
@@ -365,23 +382,32 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		}
 		return host.request(method, params);
 	}
+	async function closeIdleRuntime(): Promise<void> {
+		try {
+			await flushCatalogView();
+			await settleRecoveryMarker();
+		} finally {
+			changeListeners.clear();
+			try { await deliveries.close(); } finally { try { await services.close(); } finally { await host.close(); } }
+		}
+	}
 	const closeHost = async (): Promise<"process-exit" | undefined> => {
 		if (closed) return;
 		closed = true;
 		// A failed reload no longer provides a reliable native work or delivery snapshot.
 		const processExit = reloadFailed || !(await host.refreshIdle());
 		restoreDispatch();
+		activityListeners.clear();
 		controller.abort();
 		if (publishTimer !== undefined) {
 			clearTimeout(publishTimer);
 			publishTimer = undefined;
 		}
 		unsubscribeChanges?.();
-		if (processExit) markRecoveryDue(true);
-		else await settleRecoveryMarker();
-		await flushCatalogView();
-		changeListeners.clear();
 		if (processExit) {
+			markRecoveryDue(true);
+			try { await flushCatalogView(); } catch (error) { process.stderr.write(`Catalog view: ${String(error)}\n`); }
+			changeListeners.clear();
 			// Native close seals admission synchronously, but joins even noncooperative task code.
 			// Process death ends those invocations without manufacturing a durable task outcome.
 			void host.close().catch((error: unknown) => process.stderr.write(`Native close: ${String(error)}\n`));
@@ -389,10 +415,10 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 			catch (error) { process.stderr.write(`Service close: ${String(error)}\n`); }
 			return "process-exit";
 		}
-		try { await deliveries.close(); } finally { try { await services.close(); } finally { await host.close(); } }
+		await closeIdleRuntime();
 		return undefined;
 	};
-	return { request, get shutdownRequired() { return reloadFailed; }, isIdle: () => host.isIdle(), onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, close: closeHost };
+	return { request, get shutdownRequired() { return reloadFailed; }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, close: closeHost };
 }
 
 /** Cold inspection writes a bounded disposable SQLite snapshot; it never writes source content. */

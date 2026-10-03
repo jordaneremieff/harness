@@ -51,6 +51,26 @@ function sourceMetadata(root: string, storageId: string, storagePath: string): H
 	});
 }
 
+it("does not restart a delivery pass from its own empty commit", { timeout: 3000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const storageId = randomUUID();
+	const storagePath = join(root, "empty-commit.sqlite");
+	const native = await openHost(storagePath, storageId, root);
+	t.after(() => native.close());
+	await settleDeliveries(native.harness, BACKGROUND_CONTEXT);
+	const commits = t.mock.method(native.harness, "commit");
+	const completed = eventLog<void>();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const delivery = startDurableDelivery({ host: native, metadata: sourceMetadata(root, storageId, storagePath), catalog: new AgentCatalog(root), signal: new AbortController().signal, onIdle: () => completed.push(undefined) });
+	try {
+		t.mock.timers.tick(0);
+		await completed.waitForCount(1);
+		const count = commits.mock.callCount();
+		t.mock.timers.tick(0);
+		assert.equal(commits.mock.callCount(), count, "an empty settlement does not schedule another pass or reset host idle");
+	} finally { await delivery.close(); }
+});
+
 interface SubmitRecord {
 	params: Record<string, unknown>;
 	requestId?: string;

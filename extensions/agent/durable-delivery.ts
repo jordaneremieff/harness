@@ -93,6 +93,8 @@ export interface DurableDeliveryOptions {
 	/** Aborted when the host shuts down; ends retries and closes target links. */
 	readonly signal: AbortSignal;
 	readonly onError?: (error: Error) => void;
+	/** Completion of all effects in one delivery pass; permits a new host idle interval. */
+	readonly onIdle?: () => void;
 	/** Target host acquisition; defaults to `acquireHost`. Tests inject a fake backed by a real Harness. */
 	readonly acquire?: typeof acquireHost;
 	/** Base delay after a transient failure; doubles to 30 s. Defaults to 500 ms. */
@@ -104,6 +106,9 @@ export interface DurableDeliveryOptions {
 }
 
 export interface DurableDelivery {
+	readonly busy: boolean;
+	/** Stop new delivery effects synchronously; close still owns link and in-flight cleanup. */
+	sealAdmission(): void;
 	close(): Promise<void>;
 }
 
@@ -796,19 +801,24 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				timer = undefined;
 				inFlight = run().finally(() => {
 					inFlight = undefined;
+					if (!closed) options.onIdle?.();
 				});
 			},
 			Math.max(0, delayMs),
 		);
 	}
 
-	const close = (): Promise<void> => {
-		if (closePromise) return closePromise;
+	const sealAdmission = (): void => {
 		closed = true;
 		if (timer) {
 			clearTimeout(timer);
 			timer = undefined;
 		}
+	};
+
+	const close = (): Promise<void> => {
+		if (closePromise) return closePromise;
+		sealAdmission();
 		signal.removeEventListener("abort", onAbort);
 		unsubscribe?.();
 		closePromise = (async () => {
@@ -831,5 +841,5 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	signal.addEventListener("abort", onAbort, { once: true });
 	unsubscribe = host.harness.subscribeCommits(() => schedule(0));
 	if (!signal.aborted) schedule(0);
-	return { close };
+	return { get busy() { return running || inFlight !== undefined; }, sealAdmission, close };
 }

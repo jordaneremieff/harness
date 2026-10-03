@@ -5,6 +5,7 @@
  * through the environment:
  *
  * - `DURABLE_TEST_DIR`: directory for the effect file and provider request evidence.
+ * - `DURABLE_TEST_ANSWER`: optional final answer text for bounded catalog coverage tests.
  * - `DURABLE_TEST_NOTIFY`: Unix socket that receives each marker name. The
  *   test accepts on it before the host starts.
  * - `DURABLE_TEST_MODE`:
@@ -33,7 +34,7 @@ import { Type } from "typebox";
 
 const providerId = "durable-runtime-fixture";
 const modelId = "fixture-model";
-const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.0625, output: 0.0625, cacheRead: 0, cacheWrite: 0, total: 0.125 } };
 
 const fixtureModel: Model<"openai-completions"> = {
 	provider: providerId,
@@ -80,17 +81,24 @@ function completed(content: AssistantMessage["content"], stopReason: "stop" | "t
 	return events;
 }
 
-/** A request that never completes; the test kills the host while it is in flight. */
-function pending() {
+/** A pending request that ends only on caller cancellation or process death. */
+function pending(signal?: AbortSignal) {
 	mark("requested");
 	const events = createAssistantMessageEventStream();
 	events.push({ type: "start", partial: message([], "stop") });
+	const abort = (): void => {
+		const error = { ...message([], "aborted"), errorMessage: "Fixture request aborted" };
+		events.push({ type: "error", reason: "aborted", error });
+		events.end(error);
+	};
+	if (signal?.aborted) abort();
+	else signal?.addEventListener("abort", abort, { once: true });
 	return events;
 }
 
 function answer(): ReturnType<typeof completed> {
 	mark("answered");
-	return completed([{ type: "text", text: "durable runtime answer" }], "stop");
+	return completed([{ type: "text", text: process.env.DURABLE_TEST_ANSWER ?? "durable runtime answer" }], "stop");
 }
 
 /** Plain user text of one request context. */
@@ -117,10 +125,10 @@ function spawn(context: TranscriptContext) {
 	return completed([{ type: "text", text: "PRIMARY_DONE" }], "stop");
 }
 
-function stream(_model: unknown, context: TranscriptContext, options?: { readonly sessionId?: string; readonly transport?: string }) {
+function stream(_model: unknown, context: TranscriptContext, options?: { readonly sessionId?: string; readonly transport?: string; readonly signal?: AbortSignal }) {
 	recordSessionOptions(options);
 	const mode = process.env.DURABLE_TEST_MODE ?? "answer";
-	if (mode === "request") return pending();
+	if (mode === "request") return pending(options?.signal);
 	if (mode === "spawn") return spawn(context);
 	if (mode === "effect" && !context.messages.some((item) => item.role === "toolResult")) {
 		mark("tool-called");
