@@ -14,8 +14,8 @@
  * writer claim.
  */
 import { randomUUID } from "node:crypto";
-import { initializeProfile, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
-import { richSubmitConversation } from "./durable-controls.ts";
+import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
+import { richSubmitConversation, reconcileDeliveryContexts } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -300,7 +300,8 @@ export class DurableHost {
 					await initializeProfile(tx, conversationId, options.storageId, options.profileSeed);
 				},
 			});
-			await root.commit((tx) => initializeProfile(tx, root.id, options.storageId), context);
+			await reconcileProfiles(harness, options.storageId, context);
+			await reconcileDeliveryContexts(harness, context);
 			if (options.resume !== false) harness.resume();
 			if (options.resume !== false) await reconcileDeliveries(harness, context);
 			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
@@ -452,6 +453,7 @@ export class DurableHost {
 
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
+		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
 		const submitted = await submitConversation(
 			conversation,
 			{

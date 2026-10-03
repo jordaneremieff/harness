@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { configure, defineDoc, type ConversationId, type Harness, type Tx } from "@earendil-works/pi-durable";
+import { configure, defineDoc, type ConversationId, type Cursor, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import { canonicalIdentity, handleSlug } from "./identity.ts";
 import { readRequestContexts } from "./request-context.ts";
@@ -59,6 +59,18 @@ export async function initializeProfile(tx: Tx, conversationId: ConversationId, 
 	}
 	await refreshManagedInstructions(tx, conversationId);
 }
+/** Refresh every retained conversation before the scheduler resumes its work. */
+export async function reconcileProfiles(harness: Harness, storageId: string, context: Context): Promise<void> {
+	let cursor: Cursor | undefined;
+	do {
+		cursor = await harness.commit(async (tx) => {
+			const page = await tx.scanConversations({}, 64, cursor);
+			for (const record of page.items) await initializeProfile(tx, record.id, storageId);
+			return page.next ?? undefined;
+		}, context);
+	} while (cursor !== undefined);
+}
+
 export async function readProfile(harness: Harness, storageId: string, conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT, live = false): Promise<AgentProfile> {
 	const conversation = await harness.conversation(conversationId, context);
 	if (!conversation) throw new Error("Profile conversation does not exist");

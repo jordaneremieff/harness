@@ -278,7 +278,7 @@ export class AgentManager {
 
 	async resolveTarget(selector: string): Promise<string> {
 		if (!selector.startsWith("@")) return selector;
-		const id = handleStorageId(selector.slice(1));
+		const id = handleStorageId(selector.slice(1), this.catalog.root);
 		const record = this.catalog.read(id);
 		if (record.view?.profileSeed?.handle === selector.slice(1) || record.view?.profiles?.rows.some((row) => row.identity === id && row.handle === selector)) return id;
 		const profile = await this.observe(record, "profile-read", { sessionId: id }) as AgentProfile;
@@ -287,7 +287,7 @@ export class AgentManager {
 	}
 
 	private async handledRecord(input: AgentSpawnInput, caller: AgentCaller, handle: string): Promise<{ record: CatalogRecord; created: boolean }> {
-		try { return { record: this.catalog.read(handleStorageId(handle)), created: false }; }
+		try { return { record: this.catalog.read(handleStorageId(handle, this.catalog.root)), created: false }; }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		return this.catalog.createHandled(await this.creationMetadata(input, caller), handle, input.role ?? "");
 	}
@@ -302,8 +302,8 @@ export class AgentManager {
 
 	private async spawnHandled(input: AgentSpawnInput & { handle: string }, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		const handle = handleSlug(input.handle);
-		const id = handleStorageId(handle);
 		const { record: retained, created } = await this.handledRecord(input, caller, handle);
+		const id = retained.storageId;
 		if (input.cwd !== undefined && retained.cwd !== realpathSync(resolve(caller.cwd, input.cwd))) throw new Error("The retained handle has a different cwd; creation defaults cannot change it");
 		const row: AgentConversationSummary = { id, storageId: id, cwd: retained.cwd, name: retained.name, model: { ...retained.model, thinkingLevel: retained.thinkingLevel }, modifiedAt: Date.parse(retained.createdAt), owner: "unknown", state: "starting", cost: 0, partial: false };
 		onCreated?.(row);

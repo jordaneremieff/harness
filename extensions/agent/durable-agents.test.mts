@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AssistantMessage, Message, Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, type AssistantMessage, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
 	type FauxResponseStep,
@@ -27,6 +27,8 @@ import { Type } from "typebox";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution } from "./durable-agents.ts";
 import { CheckInTask } from "./durable-checkins.ts";
 import { readProfile } from "./profile.ts";
+import { requestContextSection } from "./request-context.ts";
+import { handleStorageId } from "./identity.ts";
 import { AgentMetaDoc } from "./durable-controls.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -343,7 +345,7 @@ const siblingExtension = Durable.defineExtension({
 	],
 });
 
-function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true, sourceStorageId = storageId): { registry: Durable.Registry; extension: Durable.Extension } {
+function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true, sourceStorageId = storageId, catalogRoot?: string): { registry: Durable.Registry; extension: Durable.Extension } {
 	const registry = Durable.createRegistry();
 	if (checkIns) registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask] }));
 	const contribution = createAgentContribution({
@@ -353,6 +355,7 @@ function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true, sourceS
 	const extension: Durable.Extension = contribution.create({
 		durable: Durable,
 		storageId: sourceStorageId,
+		catalogRoot,
 		cwd: testCwd,
 		services: testServices,
 	});
@@ -500,7 +503,7 @@ it("spawns an anchor-owned child and reports its answer once", async (t) => {
 	assert.equal(record?.owner?.taskId, child.anchorTaskId, "the anchor task owns the child");
 	const rootAgent = await root.agent(context);
 	const childAgent = await harness.snapshot(Durable.AgentDoc, child.conversationId, context);
-	assert.equal((await harness.snapshot(AgentMetaDoc, child.conversationId, context))?.firstMessage, "CONTRACT: reply ALPHA", "the historical first input excludes the routing envelope");
+	assert.equal((await harness.snapshot(AgentMetaDoc, child.conversationId, context))?.firstMessage, "CONTRACT: reply ALPHA", "the historical first input contains only task text");
 	assert.deepEqual(childAgent?.model, rootAgent.model, "the child stores the resolved model");
 	assert.equal(childAgent?.thinkingLevel, rootAgent.thinkingLevel, "the child stores the resolved thinking level");
 	const anchor = await harness.getTask(child.anchorTaskId, context);
@@ -597,6 +600,42 @@ it("resumes a child answer and reports once across a second harness open", async
 	assert.ok(deliverySubmission, "the delivery request ID is retained");
 	const reportSubmission = await storage.submissionByRequest(second.root.id, `agent-report:${reporter}`, context);
 	assert.ok(reportSubmission, "the report request ID is retained");
+});
+
+it("reconciles an existing local child before Reporter admission", { timeout: 10000 }, async (t) => {
+	const route = createRoute();
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	registry.install({ name: "request-routes", sections: [requestContextSection(harness)] });
+	const child = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, instructions: "OLD CHILD INSTRUCTIONS" } }, context);
+	await child.commit(async (tx) => { const meta = await tx.doc(AgentMetaDoc, child.id); meta.name = "Retained child"; meta.owner = "original-founder"; }, context);
+	route.script.push({ tool: "agent_send", args: { sessionId: `${storageId}:${child.id}`, message: "CONTRACT: reply RETAINED", checkInMinutes: 0 } });
+	await say(root, "Contact the retained child");
+	await settle(harness, root.id);
+	const messages = route.requests.find((messages) => messages.some((message) => message.role === "user" && messageText(message) === "CONTRACT: reply RETAINED"));
+	assert.ok(messages);
+	const prompt = getCurrentSystemPrompt(messages);
+	assert.doesNotMatch(prompt, /OLD CHILD INSTRUCTIONS/u);
+	assert.ok(prompt.includes(`${storageId}:${child.id}`));
+	assert.ok(prompt.includes("Retained child"));
+	assert.ok(prompt.includes(`"requester":"${storageId}"`));
+	assert.ok(prompt.includes(`"replyTo":"${storageId}"`));
+	assert.match(prompt, /mode: report/u);
+	assert.equal((await readProfile(harness, storageId, child.id, context)).creator, "original-founder");
+});
+
+it("resolves a namespaced native handle before applying self-control restrictions", async (t) => {
+	const route = createRoute();
+	const id = handleStorageId("native", testCwd);
+	const { registry } = buildRegistry(undefined, true, id, testCwd);
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_abort", args: { sessionId: "@native" } });
+	await say(root, "Try self abort");
+	const outcome = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_abort");
+	assert.equal(outcome?.isError, true);
+	assert.match(outcome?.text ?? "", /self|calling|itself/iu);
 });
 
 it("drives one model-issued call per control tool", async (t) => {

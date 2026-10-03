@@ -78,14 +78,14 @@ it("keeps plain native submissions usable without invented requester evidence", 
 it("replays a rich delivery intent after an admission gap with its original requester and recipient", { timeout: 10000 }, async (t) => {
 	const { harness, conversation } = await fixture(t);
 	await harness.commit((tx) => recordDeliveryIntent(tx, conversation.id, { message: "Recovered task", requestId: "recover", ownerId: "recipient-c", origin: "model", requestContext: { requestId: "recover", requester: "requester-b", replyTo: "recipient-c", origin: "model" } }), context);
-	assert.equal((await readRequestContexts(harness, conversation.id, context))[0]?.status, "admitting");
+	assert.deepEqual((await readRequestContexts(harness, conversation.id, context))[0], { requestId: "recover", requester: "requester-b", replyTo: "recipient-c", origin: "model", status: "admitting" });
 	await reconcileDeliveries(harness, context);
 	const submission = await harness.commit((tx) => tx.submissionByRequest(conversation.id, "recover"), context);
 	assert.ok(submission);
 	await readOutcome(harness, submission.id, context);
 	await settleDeliveries(harness, context);
 	const state = await harness.snapshot(AgentDeliveryDoc, context);
-	assert.match(String(state?.intents[0]?.message), /requester-b.*recipient-c/u);
+	assert.equal(state?.intents[0]?.message, "Recovered task");
 	assert.equal(state?.receipts[String(submission.id)]?.ownerId, "recipient-c");
 });
 
@@ -148,6 +148,5 @@ it("preserves scheduled requester metadata until native deadline admission", { t
 	await settleDeliveries(harness, context);
 	const state = await harness.snapshot(AgentDeliveryDoc, context);
 	assert.equal(state?.receipts[String(submitted.id)]?.ownerId, "recipient-c");
-	assert.match(String(state?.intents[0]?.message), /requester-b.*recipient-c/u);
-	assert.equal((String(state?.intents[0]?.message).match(/Host request context:/gu) ?? []).length, 1);
+	assert.equal(state?.intents[0]?.message, "Later task");
 });

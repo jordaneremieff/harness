@@ -128,7 +128,7 @@ export class AgentCatalog {
 		handleSlug(handle);
 		profileText(role, "role");
 		mkdirSync(this.root, { recursive: true, mode: 0o700 });
-		const storageId = handleStorageId(handle);
+		const storageId = handleStorageId(handle, this.root);
 		const metadata = parseHostMetadata({ ...input, storageId, storagePath: join(this.root, `${storageId}.sqlite`) });
 		if (!isThinkingLevel(metadata.thinkingLevel)) throw new Error("Unknown reasoning level");
 		const createdAt = new Date().toISOString();

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { Client } from "@earendil-works/pi-client";
@@ -15,6 +16,21 @@ import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { BASE_OPERATIONS } from "./profile-base-contract-fixture.mts";
 import { guarded, instructions, lastTool, profileFixture, type ProviderRequest, type Requester } from "./profile-process-fixture.mts";
+
+it("uses the OS temporary directory by default and preserves the scratch-root override", async (t) => {
+	const saved = process.env.PROFILE_TEST_ROOT;
+	try {
+		delete process.env.PROFILE_TEST_ROOT;
+		const portable = await profileFixture(t);
+		assert.equal(dirname(portable.root), tmpdir());
+		process.env.PROFILE_TEST_ROOT = join(portable.root, "custom-scratch");
+		const configured = await profileFixture(t);
+		assert.equal(dirname(configured.root), process.env.PROFILE_TEST_ROOT);
+	} finally {
+		if (saved === undefined) delete process.env.PROFILE_TEST_ROOT;
+		else process.env.PROFILE_TEST_ROOT = saved;
+	}
+});
 
 type Updated = { outcome: "applied" | "conflict"; deduped: boolean; profile: AgentProfile };
 type Spawned = { sessionId: string; created: boolean; handle: string; profile: AgentProfile | null; availability?: string; creation?: { name: string; role: string } };
@@ -53,6 +69,7 @@ it("retains a standing profile across native boundaries and routes reused work b
 	const first = await send(a, "@archive-guide", "first-question");
 	let request = await f.next();
 	assert.equal(request.sessionId, identity);
+	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Question first-question"), "native task content remains the caller's words");
 	const self = instructions(request);
 	for (const value of [identity, "@archive-guide", "Archive guide", "Explain archive evidence with sources.", "agent_profile"]) assert.ok(self.includes(value), value);
 	assert.ok(JSON.stringify(request.context).includes(a.identity), "host-authored request names its requester");
@@ -77,7 +94,7 @@ it("retains a standing profile across native boundaries and routes reused work b
 	assert.equal(duplicate.deduped, true);
 	assert.equal(duplicate.submissionId, first.submissionId);
 
-	const compacting = a.raw(identity, "compact", { instructions: "Keep only: archive task complete. Omit the original task envelope and archive claim.", wait: true });
+	const compacting = a.raw(identity, "compact", { instructions: "Keep only: archive task complete. Omit the original task text and archive claim.", wait: true });
 	request = await f.next();
 	request.answer("Archive task complete. Read the saved profile before the next archive question.");
 	const compacted = await compacting;
@@ -90,8 +107,8 @@ it("retains a standing profile across native boundaries and routes reused work b
 	await send(a, identity, "source-correction");
 	request = await f.next();
 	assert.ok(instructions(request).includes(identity));
-	assert.ok(!request.context.messages.some((item) => item.role === "user" && JSON.stringify(item).includes("Question first-question")), "compaction removes the earlier task envelope");
-	request.tool("agent_compact", { instructions: "Retain only: check current archive evidence. Omit the original task envelope." });
+	assert.ok(!request.context.messages.some((item) => item.role === "user" && JSON.stringify(item).includes("Question first-question")), "compaction removes the earlier task text");
+	request.tool("agent_compact", { instructions: "Retain only: check current archive evidence. Omit the original task text." });
 	request = await f.next();
 	request.answer("Check current archive evidence and retrieve the saved profile.");
 	request = await f.next();
@@ -245,8 +262,14 @@ it("keeps base operations usable across a feature-capability process boundary", 
 	assert.equal(status.conversation.identity, expert.sessionId);
 	await base("submit", { message: "Base task", requestId: "base-admission", ownerId: a.identity, origin: "operator" });
 	let request = await f.next();
+	assert.ok(instructions(request).includes(`"requester":"${a.identity}"`));
+	assert.ok(instructions(request).includes(`"replyTo":"${a.identity}"`));
+	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Base task"));
+	request.tool("agent_send", { sessionId: a.identity, message: "BASE_PROGRESS", mode: "report" });
+	request = await f.next();
+	assert.equal(lastTool(request, "agent_send").isError, false);
 	request.answer("BASE_RESULT");
-	await notice(a, "BASE_RESULT");
+	await Promise.all([notice(a, "BASE_RESULT"), notice(a, "BASE_PROGRESS")]);
 	await base("configure", { name: "Renamed contract expert" });
 	await base("reset", { requestId: "base-reset" });
 	await base("list");

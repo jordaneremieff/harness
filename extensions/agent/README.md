@@ -92,9 +92,11 @@ entrypoint. No private upstream implementation is imported or copied.
 
 `agent_spawn({handle, name, role, model?, thinkingLevel?, prompt?})` resolves or
 creates one independent root in the selected store. Supply the lowercase slug
-without `@` when creating it; subsequent controls use `@slug`. A deterministic
-storage address and exclusive atomic catalog publication prevent concurrent
-creators from claiming different agents. The result states `created`. Reuse
+without `@` when creating it; subsequent controls use `@slug`. The storage address
+includes the canonical catalog directory and handle. Separate stores with the
+same handle, cwd, and agent directory therefore select separate hosts. Exclusive
+atomic catalog publication prevents concurrent creators in one store from
+claiming different agents. The result states `created`. Reuse
 never applies creation defaults to name, role, model, or reasoning. An explicit
 conflicting cwd refuses instead of changing the retained directory.
 
@@ -322,10 +324,16 @@ An admitted input has a stable Durable request ID. Reconnecting or retrying the
 same admission reuses that identity. A pending delivery intent precedes input
 admission, so a crash between those operations does not lose the reply route.
 
-Rich task admission adds a host-authored envelope containing requester, reply
-recipient, request ID, and origin. Native request-context documents preserve
-those routes through compaction and match actual active inputs, not the last
-arriving caller. Several requests can share one run; reports therefore require
+Task admission preserves the caller's original text and images in native user
+messages. Host-authored request-context documents hold requester, reply recipient,
+request ID, and origin separately. A native prompt section projects active routes
+with bounded task previews, including after compaction, rather than treating the
+last arriving caller as the requester. The dashboard shows the original task;
+Profile exposes all unfinished routes on demand. Base submissions with an owner
+use that owner as the default requester and reply recipient without new wire
+fields. Reopen reconciles managed instructions for every retained conversation
+before scheduling; base, rich, and local task admission refresh them again.
+Several requests can share one run; reports therefore require
 an explicit recipient. `replyTo` changes the answer recipient without changing
 the requester or creator. Report mode does not accept `replyTo`, scheduling, or
 check-in controls. Scheduled tasks use their caller as requester and recipient.
@@ -869,5 +877,6 @@ report disposition, concurrent handle creation, replay, and operation-scoped
 old/new process compatibility. Their stale-source correction is a scripted
 mechanical path, not evidence of autonomous model judgment. Test-only
 `PROFILE_TEST_ROOT` selects the isolated fixture directory; its default is
-`~/Workspace/dump/agent-profile-tests`. The fixtures set their own
-`PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR` beneath that root.
+the OS temporary directory. Each fixture creates and removes its own temporary
+subdirectory. The fixtures set their own `PI_AGENT_DIR` and
+`PI_AGENT_SESSIONS_DIR` beneath that root.

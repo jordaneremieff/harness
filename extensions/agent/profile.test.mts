@@ -11,7 +11,7 @@ const context = BACKGROUND_CONTEXT;
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
 	const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry: createRegistry() }, context);
 	t.after(() => harness.close(context));
-	const storageId = handleStorageId("history");
+	const storageId = handleStorageId("history", process.cwd());
 	const root = await harness.root(context, { init: async (tx, id) => {
 		const meta = await tx.doc(AgentMetaDoc, id);
 		meta.name = "History"; meta.owner = "requester-a";
@@ -21,8 +21,8 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
 }
 
 it("uses a deterministic concern address independent of mutable display fields", () => {
-	assert.equal(handleStorageId("history"), handleStorageId("history"));
-	assert.notEqual(handleStorageId("history"), handleStorageId("architecture"));
+	assert.equal(handleStorageId("history", process.cwd()), handleStorageId("history", process.cwd()));
+	assert.notEqual(handleStorageId("history", process.cwd()), handleStorageId("architecture", process.cwd()));
 	for (const bad of ["", "History", "@history", "a--b", "a-", "-a", "a/b", "a b", "a".repeat(65)]) assert.throws(() => handleSlug(bad));
 });
 it("updates native profile and identity instructions atomically without a model turn", async (t) => {

@@ -22,7 +22,7 @@
 import type { Context } from "@earendil-works/chord";
 import { defineDoc, defineTask, type ConversationId, type Harness, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { linkDeliveryIntent, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
-import { requestEnvelope, type RequestContext } from "./request-context.ts";
+import { validateRequestContext, type RequestContext } from "./request-context.ts";
 
 /** Registered task kind of one scheduled input. */
 export const TIMER_TASK_NAME = "agent.timer";
@@ -198,7 +198,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				return undefined;
 			}, context);
 			const submission = await conversation.submit(
-				{ type: "input", content: task.input.requestContext === undefined ? task.input.message : requestEnvelope(task.input.message, task.input.requestContext), requestId: task.input.requestId, whenBusy: task.input.mode },
+				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: task.input.mode },
 				context,
 			);
 			const firedAt = runtime.now();
@@ -249,7 +249,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					return undefined;
 				}, context);
 				const submission = await conversation.submit(
-					{ type: "input", content: input.requestContext === undefined ? input.message : requestEnvelope(input.message, input.requestContext), requestId: input.requestId, whenBusy: input.mode },
+					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: input.mode },
 					context,
 				);
 				const result: TimerResult = {
@@ -322,7 +322,7 @@ export async function scheduleTimer(harness: Harness, params: ScheduleTimerParam
 	if (params.requestContext !== undefined) {
 		if (params.requestContext.requestId !== params.requestId || params.requestContext.replyTo !== params.ownerId || params.requestContext.origin !== params.origin)
 			throw new Error("The request context does not match its scheduled delivery");
-		requestEnvelope(params.message, params.requestContext);
+		validateRequestContext(params.requestContext);
 	}
 	return harness.commit(async (tx) => {
 		const state = await tx.doc(AgentTimerDoc);

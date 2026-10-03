@@ -22,7 +22,7 @@ import { realpathSync } from "node:fs";
 import { initializeProfile } from "./profile.ts";
 import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
-import { recordRequestContext, requestEnvelope, cleanupRequestContexts } from "./request-context.ts";
+import { recordRequestContext, cleanupRequestContexts } from "./request-context.ts";
 import { targetIdentity } from "./identity.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration.ts";
@@ -143,6 +143,8 @@ export interface AgentContributionHost {
 	readonly durable: typeof Durable;
 	/** Durable storage identity used in `sessionId` values. */
 	readonly storageId: string;
+	/** Catalog directory for store-local handle resolution. */
+	readonly catalogRoot?: string;
 	/** Working directory this storage serves. One storage serves one cwd. */
 	readonly cwd: string;
 	/** Pi's model runtime, read-only; used to clamp a requested thinking level. */
@@ -555,7 +557,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		| { kind: "local"; conversationId: Durable.ConversationId }
 		| { kind: "foreign" } => {
 		if (sessionId === undefined) return { kind: "self" };
-		sessionId = targetIdentity(sessionId);
+		sessionId = targetIdentity(sessionId, host.catalogRoot);
 		if (sessionId === host.storageId) return { kind: "root" };
 		if (sessionId.startsWith(`${host.storageId}:`)) {
 			return { kind: "local", conversationId: conversationIdOf(sessionId.slice(host.storageId.length + 1)) };
@@ -732,17 +734,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					return;
 				}
 				const request = { requestId: `agent-deliver:${reporter.id}`, requester: identity(runtime.conversationId), replyTo: identity(reporter.input.reportTo ?? runtime.conversationId), origin: "model" as const };
-				if (reporter.state.checkpoint.armed !== true) {
-					await runtime.commit(async (tx) => {
-						await recordRequestContext(tx, conversationId, request);
-						await recordAdmissionMeta(tx, conversationId, message);
-						await createCheckIn(tx, { conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(conversationId), message: requestEnvelope(message, request), whenBusy, origin: "model", admittedAt: runtime.now() }, runtime.registry.task(CheckInTask.definition.name) === undefined ? 0 : reporter.input.checkInMinutes ?? 0);
-						return { status: "running", checkpoint: { phase: "deliver", armed: true } };
-					}, context);
-				}
-				await runtime.commit(async (tx) => { await recordRequestContext(tx, conversationId, request); return undefined; }, context);
+				await runtime.commit(async (tx) => {
+					await initializeProfile(tx, conversationId, host.storageId);
+					await recordRequestContext(tx, conversationId, request);
+					if (reporter.state.checkpoint.armed === true) return undefined;
+					await recordAdmissionMeta(tx, conversationId, message);
+					await createCheckIn(tx, { conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(conversationId), message, whenBusy, origin: "model", admittedAt: runtime.now() }, runtime.registry.task(CheckInTask.definition.name) === undefined ? 0 : reporter.input.checkInMinutes ?? 0);
+					return { status: "running", checkpoint: { phase: "deliver", armed: true } };
+				}, context);
 				const submission = await child.submit(
-					{ type: "input", content: requestEnvelope(message, request), whenBusy, requestId: request.requestId },
+					{ type: "input", content: message, whenBusy, requestId: request.requestId },
 					context,
 				);
 				const settled = await submission.wait(context);

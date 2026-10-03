@@ -91,6 +91,8 @@ export interface DurableContributionHost {
 	readonly services: AgentSessionServices;
 	readonly cwd: string;
 	readonly agentDir: string;
+	/** Catalog directory for store-local handle resolution. */
+	readonly catalogRoot?: string;
 	/** The agent storage: one root conversation plus its forks and child agents. */
 	readonly storageId: string;
 	/**
@@ -128,6 +130,7 @@ export interface DurableInventory {
 export interface CreateDurableServicesOptions {
 	readonly cwd: string;
 	readonly agentDir?: string;
+	readonly catalogRoot?: string;
 	/** The agent storage identity passed to contributions. */
 	readonly storageId: string;
 	/** Aborted when the owning host shuts down; also aborts the bootstrap signal. */
@@ -622,6 +625,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			cwd: services.cwd,
 			agentDir: services.agentDir,
 			storageId: options.storageId,
+			catalogRoot: options.catalogRoot,
 			get harness() {
 				if (harnessValue === undefined) throw new Error("the durable contribution host has no open Harness yet");
 				return harnessValue;

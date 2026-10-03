@@ -3,10 +3,10 @@ import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { CompactionEntry, Harness, LiveDoc, MemoryStorage, UserEntry, createRegistry, defineExtension, type ConversationId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { answerMessage, completed, fixtureRegistry, fixtureRuntime, gateTool, toolCallMessage } from "./durable-host-fixture.mts";
-import { AgentDeliveryDoc, recordDeliveryIntent, settleDeliveries } from "./durable-controls.ts";
+import { AgentDeliveryDoc, recordDeliveryIntent, reconcileDeliveryContexts, settleDeliveries } from "./durable-controls.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { CheckInTask } from "./durable-checkins.ts";
-import { cleanupRequestContexts, projectRequestContexts, readRequestContexts, recordRequestContext, requestContextSection, requestEnvelope, RequestContextDoc, REQUEST_CONTEXT_LIMIT, REQUEST_CONTEXT_PROJECTION_LIMIT, type RequestContext } from "./request-context.ts";
+import { cleanupRequestContexts, projectRequestContexts, readRequestContexts, recordRequestContext, requestContextSection, validateRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT, REQUEST_CONTEXT_PROJECTION_LIMIT, type RequestContext } from "./request-context.ts";
 
 const route = (requestId = "task-a"): RequestContext => ({ requestId, requester: "requester-b", replyTo: "recipient-c", origin: "model" });
 async function fixture(t: TestContext) {
@@ -15,21 +15,15 @@ async function fixture(t: TestContext) {
 	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
 	return { harness, conversation };
 }
-async function placed(tx: Tx, conversationId: ConversationId, request: RequestContext): Promise<SubmissionId> {
-	const entry = await tx.appendEntry(UserEntry, conversationId, { model: [{ role: "user", content: requestEnvelope("Task", request), timestamp: 1 }] });
+async function placed(tx: Tx, conversationId: ConversationId, request: RequestContext, text = "Task"): Promise<SubmissionId> {
+	const entry = await tx.appendEntry(UserEntry, conversationId, { model: [{ role: "user", content: text, timestamp: 1 }] });
 	return (await tx.createSubmission({ conversationId, requestId: request.requestId, type: "input", status: "placed", entry: entry.id })).id;
 }
 
-it("prepends host routing evidence and preserves task images", () => {
-	const request = route();
-	const image = { type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" };
-	const input = [{ type: "text" as const, text: "Task" }, image];
-	const wrapped = requestEnvelope(input, request);
-	assert.ok(Array.isArray(wrapped));
-	assert.equal(wrapped[2], image);
-	assert.deepEqual(wrapped.slice(1), input);
-	assert.match(JSON.stringify(wrapped[0]), /requester-b.*recipient-c/u);
-	assert.match(requestEnvelope("Task", request) as string, /Task content:\nTask$/u);
+it("validates structured routes without parsing task text", () => {
+	assert.doesNotThrow(() => validateRequestContext(route()));
+	assert.throws(() => validateRequestContext({ ...route(), requester: "" }), /requester/u);
+	assert.throws(() => validateRequestContext({ ...route(), replyTo: "bad\nroute" }), /replyTo/u);
 });
 
 it("projects native run inputs, excludes queued arrivals, and prunes native terminal routes", async (t) => {
@@ -53,6 +47,41 @@ it("projects native run inputs, excludes queued arrivals, and prunes native term
 	}, context);
 	await harness.commit((tx) => cleanupRequestContexts(tx, conversation.id), context);
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), [{ ...b, status: "queued" }]);
+});
+
+it("restores default routes for already placed base submissions but not settled inputs", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const request = { requestId: "base-retained", requester: "old-owner", replyTo: "old-owner", origin: "operator" as const };
+	const id = await harness.commit(async (tx) => {
+		const submissionId = await placed(tx, conversation.id, request);
+		(await tx.doc(AgentDeliveryDoc)).intents.push({ requestId: request.requestId, ownerId: request.replyTo, origin: request.origin, conversationId: conversation.id, message: "Task", whenBusy: null, operationId: null, submissionId });
+		return submissionId;
+	}, context);
+	await reconcileDeliveryContexts(harness, context);
+	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), [{ ...request, status: "placed" }]);
+	await harness.commit((tx) => tx.settleSubmission(id, { status: "unanswered", reason: "aborted" }), context);
+	await harness.commit((tx) => cleanupRequestContexts(tx, conversation.id), context);
+	await reconcileDeliveryContexts(harness, context);
+	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), []);
+});
+
+it("associates each prompt route with its bounded original task in native input order", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const a = route("a"), b = { ...route("b"), requester: "requester-d" };
+	await harness.commit(async (tx) => {
+		await recordRequestContext(tx, conversation.id, a);
+		await recordRequestContext(tx, conversation.id, b);
+		const first = await placed(tx, conversation.id, a, "First task");
+		const second = await placed(tx, conversation.id, b, "😀".repeat(513));
+		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [second, first] };
+	}, context);
+	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
+	assert.ok(rendered);
+	const lines = rendered.split("\n").slice(1).map((line) => JSON.parse(line));
+	assert.deepEqual(lines.map((line) => line.requestId), ["b", "a"]);
+	assert.equal(lines[0].requester, "requester-d");
+	assert.deepEqual(lines[0].task, { preview: "😀".repeat(512), truncated: true });
+	assert.deepEqual(lines[1].task, { preview: "First task", truncated: false });
 });
 
 it("keeps request routes independent of compaction and fork history", async (t) => {
@@ -125,7 +154,7 @@ it("renders the first provider request before the delivery link exists and resto
 	await harness.commit((tx) => recordDeliveryIntent(tx, conversation.id, { message: "Do work", requestId: request.requestId, ownerId: request.replyTo, origin: request.origin, requestContext: request, checkInMinutes: 1 }), context);
 	harness.resume();
 	await began;
-	const submitted = await conversation.submit({ type: "input", content: requestEnvelope("Do work", request), requestId: request.requestId }, context);
+	const submitted = await conversation.submit({ type: "input", content: "Do work", requestId: request.requestId }, context);
 	await began;
 	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents[0]?.submissionId, null, "the provider observes routes before linkDeliveryIntent");
 	assert.match(requests[0], /agent-request-context/u);
@@ -138,7 +167,11 @@ it("renders the first provider request before the delivery link exists and resto
 	await submitted.wait(context);
 	assert.ok(requests.length >= 3, "the provider handles generation, compaction, then continued generation");
 	assert.match(requests.at(-1) ?? "", /agent-request-context.*requester-b/u, "the post-compaction provider request retains routing");
-	assert.doesNotMatch(requests.at(-1) ?? "", /Do work/u, "the compacted input envelope is no longer in active context");
+	const finalRequest = requests.at(-1);
+	assert.ok(finalRequest);
+	const final = JSON.parse(finalRequest);
+	assert.ok(!final.messages.some((message: { role: string; content: unknown }) => message.role === "user" && JSON.stringify(message.content).includes("Do work")), "compaction removes the original user input");
+	assert.match(requests.at(-1) ?? "", /preview.*Do work/u, "the route retains a bounded association with its original task");
 	await settleDeliveries(harness, context);
 	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, []);
 });

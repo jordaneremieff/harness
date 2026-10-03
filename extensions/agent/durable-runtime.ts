@@ -34,7 +34,7 @@ const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-
 const PUBLISH_COALESCE_MS = 250;
 
 async function bootstrap(metadata: HostMetadata, controller: AbortController, execution: boolean, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<DurableServices> {
-	return createDurableServices({ ...options, cwd: metadata.cwd, agentDir: metadata.agentDir, storageId: metadata.storageId,
+	return createDurableServices({ ...options, cwd: metadata.cwd, agentDir: metadata.agentDir, storageId: metadata.storageId, catalogRoot: dirname(metadata.storagePath),
 		packageDir: metadata.packageDir, trusted: metadata.trust, signal: controller.signal,
 		askPrimary: async (cwd) => {
 			const root = dirname(dirname(metadata.storagePath));

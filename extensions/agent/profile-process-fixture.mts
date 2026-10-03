@@ -3,7 +3,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestContext } from "node:test";
@@ -92,7 +92,7 @@ export async function profileFixture(t: TestContext): Promise<{
 	root: string; cwd: string; agentDir: string; source: string;
 	requests: EventLog<ProviderRequest>; requester(identity?: string): Promise<Requester>; next(): Promise<ProviderRequest>;
 }> {
-	const scratch = process.env.PROFILE_TEST_ROOT ?? join(homedir(), "Workspace", "dump", "agent-profile-tests");
+	const scratch = process.env.PROFILE_TEST_ROOT ?? tmpdir();
 	mkdirSync(scratch, { recursive: true });
 	const root = mkdtempSync(join(scratch, "profile-process-"));
 	const cwd = join(root, "work");
