@@ -467,6 +467,13 @@ closes cached manager and peer delivery links without a recovery acquisition or
 crash-budget charge. Footer totals remain in the catalog; later reads use cold
 storage without a writer, and later controls acquire a fresh host.
 
+Cold `agent_status` returns retained conversation data with `live: false` and
+`storageId`. It omits `pid` and `inventory`: the reader loads no host, so its
+process identity and loaded capabilities are unknown, not empty. Live host status still
+includes its process identity and actual loaded inventory. Cold inspect views,
+transcript snapshots, and dashboard rows read the same retained storage without
+starting a host or a model turn.
+
 While a primary remains registered, an unexpected host connection loss rereads
 that marker and queues recovery through the same bounded pool. The manager owns
 these relaunches; managed connections do not independently relaunch on request

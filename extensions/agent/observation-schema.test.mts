@@ -159,7 +159,8 @@ it("validates every status variant, including unavailable rows", async (t) => {
 		assert.doesNotMatch(error.message, /required properties sessions/u);
 		return true;
 	});
-	structuredObservation(StatusOutputSchema, { conversation: status, inventory, live: false, storageId: fixtureStorageId });
+	structuredObservation(StatusOutputSchema, { conversation: status, live: false, storageId: fixtureStorageId });
+	structuredObservation(StatusOutputSchema, { conversations: [status], live: false, storageId: fixtureStorageId });
 	structuredObservation(StatusOutputSchema, { conversations: [status], inventory, pid: 4242, storageId: fixtureStorageId });
 	// The failure member appears only when an extension failed; both shapes are valid.
 	structuredObservation(StatusOutputSchema, { conversation: status, inventory: { ...inventory, failed: [{ path: "/ext/broken.ts", error: "boom" }] }, pid: 4242, storageId: fixtureStorageId });
@@ -173,7 +174,7 @@ it("validates every status variant, including unavailable rows", async (t) => {
 		packageDir: join(root, "package"),
 		observe: async (_metadata, method) => {
 			if (method === "dashboard") return await readDashboard(host.harness, fixtureStorageId, {}, { owner: "here", cwd: "/work" }, BACKGROUND_CONTEXT);
-			if (method === "status") return { conversation: status, inventory, live: false, storageId: fixtureStorageId };
+			if (method === "status") return { conversation: status, live: false, storageId: fixtureStorageId };
 			throw new Error("observation unavailable");
 		},
 	});

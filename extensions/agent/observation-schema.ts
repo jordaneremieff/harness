@@ -249,7 +249,8 @@ export type ListOutput = Static<typeof ListOutputSchema>;
  * `agent_status` union:
  * - compact manager overview: priority rows, bounded samples, summary counts, and explicit coverage;
  * - live host status with inventory: `{conversation|conversations, inventory, pid, storageId}`;
- * - cold primary status: the same without `pid` and with `live: false`;
+ * - cold storage status: retained conversations with `live: false` and `storageId`;
+ *   loaded inventory and process identity are unknown and absent;
  * - a bare `{conversation}` from the native attach path.
  * A host status carries `deliveryError` while a retained delivery cannot reach
  * its owner, with the reason and the restart that clears it.
@@ -279,9 +280,9 @@ export const StatusOutputSchema = union([
 		discovery: string,
 	}),
 	object({ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: Type.Optional(string) }),
-	object({ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, live: literal(false), storageId: string, deliveryError: Type.Optional(string) }),
+	object({ conversation: ConversationStatusSchema, live: literal(false), storageId: string, deliveryError: Type.Optional(string) }),
 	object({ conversations: Type.Array(ConversationStatusSchema), inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: Type.Optional(string) }),
-	object({ conversations: Type.Array(ConversationStatusSchema), inventory: DurableInventorySchema, live: literal(false), storageId: string, deliveryError: Type.Optional(string) }),
+	object({ conversations: Type.Array(ConversationStatusSchema), live: literal(false), storageId: string, deliveryError: Type.Optional(string) }),
 	object({ conversation: ConversationStatusSchema }),
 ]);
 export type StatusOutput = Static<typeof StatusOutputSchema>;

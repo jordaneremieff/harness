@@ -13,6 +13,22 @@ import { it } from "node:test";
 import { closeColdObservations, coldObservationMetrics, disposeColdStorage, observeColdStorage, openColdObservationSnapshot, resetColdObservationMetrics, type ColdObservationHooks } from "./cold-observation.ts";
 import { runtimeFixture, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { acquireHost, connectHost } from "./host-client.ts";
+import { Type } from "typebox";
+import { hostPaths } from "./host-protocol.ts";
+import { AgentConversationSummarySchema, ConversationStatusSchema, DurableInventorySchema, InspectOutputSchema, JsonValueSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+
+/** Snapshot envelope consumed by the dashboard; native messages remain opaque JSON. */
+const SnapshotPageSchema = Type.Object({
+	entries: Type.Array(Type.Object({
+		id: Type.String(), kind: Type.String(), head: Type.Optional(Type.String()),
+		model: Type.Optional(Type.Array(JsonValueSchema)), data: Type.Optional(JsonValueSchema),
+	}, { additionalProperties: false })),
+	partial: Type.Boolean(), revision: Type.String(), nextBefore: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+	coverage: Type.Object({
+		complete: Type.Boolean(), entries: Type.Integer({ minimum: 0 }), bytes: Type.Integer({ minimum: 0 }),
+		hiddenExcluded: Type.Integer({ minimum: 0 }), entryLimitReached: Type.Boolean(), byteLimitReached: Type.Boolean(),
+	}, { additionalProperties: false }),
+}, { additionalProperties: false });
 
 it("rereads an absent storage that appears during its empty observation open", async () => {
 	const root = mkdtempSync(join(tmpdir(), "cold-absent-"));
@@ -21,6 +37,10 @@ it("rereads an absent storage that appears during its empty observation open", a
 	try {
 		const first = await observeColdStorage(metadata, "snapshot", { sessionId: metadata.storageId }) as { entries: unknown[] };
 		assert.deepEqual(first.entries, []);
+		assert.equal(existsSync(metadata.storagePath), false);
+		const emptyStatus = structuredObservation(StatusOutputSchema, await observeColdStorage(metadata, "status", {})) as { conversations: unknown[] };
+		assert.deepEqual(emptyStatus.conversations, []);
+		assert.equal(Object.hasOwn(emptyStatus, "inventory"), false);
 		assert.equal(existsSync(metadata.storagePath), false);
 		const raced = await observeColdStorage(metadata, "snapshot", { sessionId: metadata.storageId }, {
 			hooks: { open: async (input) => {
@@ -294,8 +314,14 @@ it("serializes parallel cold reads beyond the cache bound and rejects a changed 
 	assert.equal(retained, 0);
 });
 
-it("preserves the cold inspection and snapshot schemas", async (t) => {
-	const { f, submissionId } = await coldSource(t);
+it("validates real retired storage status, every inspect view, snapshot and dashboard", async (t) => {
+	const { f, submissionId, exited } = await coldSource(t);
+	await exited;
+	const paths = hostPaths(f.metadata);
+	assert.equal(existsSync(paths.claim), false);
+	assert.equal(existsSync(paths.socket), false);
+	const before = statSync(f.storagePath, { bigint: true });
+	t.after(() => closeColdObservations());
 	const sessionId = f.metadata.storageId;
 	const history = await observeColdStorage(f.metadata, "inspect", { view: "history", sessionId, limit: 10 }) as { view: string; entries: Array<{ id: string }> };
 	assert.equal(history.view, "history");
@@ -311,13 +337,34 @@ it("preserves the cold inspection and snapshot schemas", async (t) => {
 	assert.equal(exact.view, "exact");
 	const result = await observeColdStorage(f.metadata, "inspect", { view: "result", sessionId, submissionId }) as { view: string };
 	assert.equal(result.view, "result");
+	for (const value of [history, branch, search, activity, exact, result]) structuredObservation(InspectOutputSchema, value);
 	const listed = await observeColdStorage(f.metadata, "list", {}) as { items: unknown[] };
 	assert.ok(Array.isArray(listed.items));
+	for (const row of listed.items) structuredObservation(Type.Omit(ListRowSchema, ["sessionId", "storageId", "cwd"]), row);
 	const status = await observeColdStorage(f.metadata, "status", { sessionId }) as { conversation?: unknown; live?: boolean; storageId?: string };
+	structuredObservation(StatusOutputSchema, status);
 	assert.equal(status.live, false);
 	assert.equal(status.storageId, f.metadata.storageId);
 	assert.ok(status.conversation);
-	const snapshot = await observeColdStorage(f.metadata, "snapshot", { sessionId }) as { conversationId?: unknown };
-	assert.ok(snapshot);
+	assert.equal(Object.hasOwn(status, "inventory"), false, "a retired host has no loaded inventory to report");
+	assert.equal(Object.hasOwn(status, "pid"), false);
+	structuredObservation(ConversationStatusSchema, status.conversation);
+	const aggregate = await observeColdStorage(f.metadata, "status", {}) as { conversations: unknown[] };
+	structuredObservation(StatusOutputSchema, aggregate);
+	assert.equal(aggregate.conversations.length, 1);
+	assert.equal(Object.hasOwn(aggregate, "inventory"), false);
+	const inventory = structuredObservation(DurableInventorySchema, { contributions: [], ordinaryOnly: [] });
+	assert.throws(() => structuredObservation(StatusOutputSchema, { ...status, inventory }), /does not match its schema/u, "cold status must not fabricate an empty loaded inventory");
+	assert.throws(() => structuredObservation(StatusOutputSchema, { ...status, live: undefined, pid: process.pid }), /does not match its schema/u, "live host status still requires inventory");
+	const snapshot = await observeColdStorage(f.metadata, "snapshot", { sessionId });
+	structuredObservation(SnapshotPageSchema, snapshot);
+	const dashboard = await observeColdStorage(f.metadata, "dashboard", {});
+	structuredObservation(Type.Array(AgentConversationSummarySchema), dashboard);
+	const after = statSync(f.storagePath, { bigint: true });
+	assert.equal(after.ino, before.ino);
+	assert.equal(after.size, before.size);
+	assert.equal(after.mtimeNs, before.mtimeNs);
+	assert.equal(existsSync(paths.claim), false, "cold reads never claim a writer");
+	assert.equal(existsSync(paths.socket), false, "cold reads never launch a host");
 	await closeColdObservations();
 });
