@@ -325,14 +325,24 @@ same admission reuses that identity. A pending delivery intent precedes input
 admission, so a crash between those operations does not lose the reply route.
 
 Task admission preserves the caller's original text and images in native user
-messages. Host-authored request-context documents hold requester, reply recipient,
+messages. Host-authored routing evidence holds requester, reply recipient,
 request ID, and origin separately. A native prompt section projects active routes
 with bounded task previews, including after compaction, rather than treating the
-last arriving caller as the requester. The dashboard shows the original task;
-Profile exposes all unfinished routes on demand. Base submissions with an owner
-use that owner as the default requester and reply recipient without new wire
-fields. Reopen reconciles managed instructions for every retained conversation
-before scheduling; base, rich, and local task admission refresh them again.
+last arriving caller as the requester. The dashboard shows the original task.
+Profile shows a bounded view of unfinished routes on demand, with
+`requestsOmitted` when further routes are retained. Routes outside the projection's
+field limits are counted as omitted, never shortened. Prompt and Profile bounds
+restrict presentation, not the accepted queue.
+
+Base routes derive from retained delivery intents and native submission state.
+An owner is the default requester and reply recipient without new wire fields or
+route-recovery writes. New explicit-route admissions have a capacity bound;
+retained inputs, Reporter tasks, and scheduled tasks recover outside that bound.
+Recovery never truncates accepted work to fit a route projection. Reopen attempts
+managed-instruction reconciliation for each retained conversation before
+scheduling. Base, rich, local, and scheduled admissions refresh instructions too.
+An optional profile repair failure is reported without blocking retained work
+or other conversations' repairs.
 Several requests can share one run; reports therefore require
 an explicit recipient. `replyTo` changes the answer recipient without changing
 the requester or creator. Report mode does not accept `replyTo`, scheduling, or
@@ -880,3 +890,12 @@ mechanical path, not evidence of autonomous model judgment. Test-only
 the OS temporary directory. Each fixture creates and removes its own temporary
 subdirectory. The fixtures set their own `PI_AGENT_DIR` and
 `PI_AGENT_SESSIONS_DIR` beneath that root.
+
+The queue-recovery regression extracts the pre-profile revision named in
+`queue-recovery.test.mts` through `git archive`; that Git object and `tar` must be
+available. It runs the archived host source in an isolated process, admits a base
+queue larger than the explicit-route limit, kills the process, and reopens the
+same store with current source. A controlled provider verifies every retained
+input and its completed receipt. The test also checks bounded route omissions
+and a live profile mutation before the queue drains. The source archive is
+removed with the fixture; no archived implementation ships in the repository.

@@ -3,10 +3,10 @@ import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { CompactionEntry, Harness, LiveDoc, MemoryStorage, UserEntry, createRegistry, defineExtension, type ConversationId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { answerMessage, completed, fixtureRegistry, fixtureRuntime, gateTool, toolCallMessage } from "./durable-host-fixture.mts";
-import { AgentDeliveryDoc, recordDeliveryIntent, reconcileDeliveryContexts, settleDeliveries } from "./durable-controls.ts";
+import { AgentDeliveryDoc, recordDeliveryIntent, settleDeliveries } from "./durable-controls.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { CheckInTask } from "./durable-checkins.ts";
-import { cleanupRequestContexts, projectRequestContexts, readRequestContexts, recordRequestContext, requestContextSection, validateRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT, REQUEST_CONTEXT_PROJECTION_LIMIT, type RequestContext } from "./request-context.ts";
+import { cleanupRequestContexts, projectRequestContexts, readRequestContexts, readRequestContextPage, recordRequestContext, requestContextSection, validateRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT, REQUEST_CONTEXT_PROJECTION_LIMIT, type RequestContext } from "./request-context.ts";
 
 const route = (requestId = "task-a"): RequestContext => ({ requestId, requester: "requester-b", replyTo: "recipient-c", origin: "model" });
 async function fixture(t: TestContext) {
@@ -49,7 +49,7 @@ it("projects native run inputs, excludes queued arrivals, and prunes native term
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), [{ ...b, status: "queued" }]);
 });
 
-it("restores default routes for already placed base submissions but not settled inputs", async (t) => {
+it("derives default routes for already placed base submissions but not settled inputs", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const request = { requestId: "base-retained", requester: "old-owner", replyTo: "old-owner", origin: "operator" as const };
 	const id = await harness.commit(async (tx) => {
@@ -57,11 +57,10 @@ it("restores default routes for already placed base submissions but not settled 
 		(await tx.doc(AgentDeliveryDoc)).intents.push({ requestId: request.requestId, ownerId: request.replyTo, origin: request.origin, conversationId: conversation.id, message: "Task", whenBusy: null, operationId: null, submissionId });
 		return submissionId;
 	}, context);
-	await reconcileDeliveryContexts(harness, context);
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), [{ ...request, status: "placed" }]);
+	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, []);
 	await harness.commit((tx) => tx.settleSubmission(id, { status: "unanswered", reason: "aborted" }), context);
 	await harness.commit((tx) => cleanupRequestContexts(tx, conversation.id), context);
-	await reconcileDeliveryContexts(harness, context);
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), []);
 });
 
@@ -101,7 +100,7 @@ it("keeps request routes independent of compaction and fork history", async (t) 
 	assert.deepEqual(await readRequestContexts(harness, fork.id, context), []);
 });
 
-it("refuses route changes and bounds retained admissions and prompt projection without silent loss", async (t) => {
+it("refuses route changes and bounds new admissions and prompt projection without silent loss", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	await harness.commit((tx) => recordRequestContext(tx, conversation.id, route()), context);
 	await assert.rejects(harness.commit((tx) => recordRequestContext(tx, conversation.id, { ...route(), replyTo: "other" }), context), /different request route/u);
@@ -117,6 +116,64 @@ it("refuses route changes and bounds retained admissions and prompt projection w
 	assert.equal(projection.omitted, 1);
 	assert.equal(projection.unknown, 1);
 	assert.equal((await readRequestContexts(harness, conversation.id, context)).length, REQUEST_CONTEXT_LIMIT);
+});
+
+it("derives oversized base queues without route writes and projects active inputs beyond the profile page", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const count = REQUEST_CONTEXT_LIMIT + 1;
+	await harness.commit(async (tx) => {
+		const delivery = await tx.doc(AgentDeliveryDoc);
+		for (let index = 0; index < count; index++) {
+			const request = { requestId: `base-${index}`, requester: "owner", replyTo: "owner", origin: "operator" as const };
+			const submissionId = await placed(tx, conversation.id, request);
+			delivery.intents.push({ requestId: request.requestId, conversationId: conversation.id, ownerId: request.requester, origin: request.origin, message: "Retained", whenBusy: "followUp", operationId: null, submissionId });
+			if (index === count - 1) (await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [submissionId] };
+		}
+	}, context);
+	const page = await readRequestContextPage(harness, conversation.id, context);
+	assert.equal(page.requests.length, REQUEST_CONTEXT_LIMIT);
+	assert.equal(page.omitted, 1);
+	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, [], "base evidence is not materialized into admission-limited metadata");
+	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents.length, count);
+	const projection = await harness.commit((tx) => projectRequestContexts(tx, conversation.id), context);
+	assert.deepEqual(projection, { requests: [{ requestId: `base-${count - 1}`, requester: "owner", replyTo: "owner", origin: "operator", status: "placed" }], omitted: 0, unknown: 0 });
+});
+
+it("omits oversized retained route fields from projections without changing native evidence", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const request = { requestId: "r".repeat(1025), requester: "owner", replyTo: "owner", origin: "operator" as const };
+	await harness.commit(async (tx) => {
+		const delivery = await tx.doc(AgentDeliveryDoc);
+		const live = await tx.doc(LiveDoc, conversation.id);
+		const submissionId = await placed(tx, conversation.id, request);
+		delivery.intents.push({ requestId: request.requestId, conversationId: conversation.id, ownerId: request.requester, origin: request.origin, message: "Retained", whenBusy: "followUp", operationId: null, submissionId });
+		live.run = { taskId: 123 as TaskId, inputs: [submissionId] };
+	}, context);
+	assert.deepEqual(await readRequestContextPage(harness, conversation.id, context), { requests: [], omitted: 1 });
+	assert.deepEqual(await harness.commit((tx) => projectRequestContexts(tx, conversation.id), context), { requests: [], omitted: 1, unknown: 0 });
+	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
+	assert.match(rendered ?? "", /1 further routes omitted/u);
+	assert.doesNotMatch(rendered ?? "", /rrrrr/u);
+	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents[0]?.requestId, request.requestId);
+	assert.equal((await readRequestContexts(harness, conversation.id, context))[0]?.requestId, request.requestId);
+});
+
+it("preserves accepted task and native submission routes beyond the new-admission bound", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	await harness.commit(async (tx) => {
+		for (let index = 0; index < REQUEST_CONTEXT_LIMIT; index++) await recordRequestContext(tx, conversation.id, route(`existing-${index}`));
+	}, context);
+	await assert.rejects(harness.commit((tx) => recordRequestContext(tx, conversation.id, route("not-accepted")), context), /unfinished request routes/u);
+	await harness.commit(async (tx) => {
+		await recordRequestContext(tx, conversation.id, route("accepted-task"), "retained");
+		await placed(tx, conversation.id, route("accepted-input"));
+	}, context);
+	await harness.commit((tx) => recordRequestContext(tx, conversation.id, route("accepted-input")), context);
+	const routes = await readRequestContexts(harness, conversation.id, context);
+	assert.equal(routes.length, REQUEST_CONTEXT_LIMIT + 2);
+	assert.equal(routes.at(-2)?.requestId, "accepted-task");
+	assert.equal(routes.at(-1)?.requestId, "accepted-input");
+	assert.equal((await readRequestContextPage(harness, conversation.id, context)).omitted, 2);
 });
 
 it("replaces stale prompt routes with an unavailable notice if native lookup fails", async (t) => {

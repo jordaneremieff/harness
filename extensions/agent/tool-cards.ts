@@ -583,6 +583,13 @@ function listSummary(details: Record<string, unknown>, theme: Theme): string[] |
 	return lines;
 }
 
+function profileRouteLines(profile: Record<string, unknown>, theme: Theme): string[] {
+	const omitted = count(profile.requestsOmitted) ?? 0;
+	return [
+		muted(theme, `Expertise: ${text(profile.expertise) ? "saved; expand to read" : "empty"} · ${array(profile.requests).length} ${omitted > 0 ? "shown" : "active"} request routes`),
+		...(omitted > 0 ? [theme.fg("warning", `Request routes omitted: ${omitted}`)] : []),
+	];
+}
 function profileLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
 	const profile = typeof details.outcome === "string" ? record(details.profile) : details;
 	if (typeof profile.revision !== "string" || typeof profile.role !== "string") return undefined;
@@ -592,7 +599,7 @@ function profileLines(details: Record<string, unknown>, theme: Theme): string[] 
 		muted(theme, `Role: ${displayPreview(text(profile.role), 240) || "(empty)"}`),
 		muted(theme, `Model: ${text(model.provider) && text(model.modelId) ? displayPreview(`${text(model.provider)}/${text(model.modelId)}`, 180) : "unknown"} · reasoning ${displayPreview(text(profile.thinkingLevel), 40) || "unknown"}`),
 		muted(theme, `Revision: ${displayPreview(text(profile.revision), 80)} · ${profile.live === true ? "live host" : "retained"}`),
-		muted(theme, `Expertise: ${text(profile.expertise) ? "saved; expand to read" : "empty"} · ${array(profile.requests).length} active request routes`),
+		...profileRouteLines(profile, theme),
 	];
 }
 function resolveProfileLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {

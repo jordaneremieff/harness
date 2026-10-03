@@ -1,11 +1,9 @@
 /**
  * durable-agents tests: the native agent contribution in a real Harness.
  *
- * The tests open a Harness over MemoryStorage with pi-ai's faux provider,
- * install the contribution, and let the model issue the tool calls. One test
- * abandons a Harness while a child answer is in flight and opens a second
- * Harness over the same storage, then checks that the child, its delivery, and
- * its report did not duplicate.
+ * Pi-ai's faux provider drives native calls over MemoryStorage and retained
+ * tasks over isolated SQLite. Reopen checks verify that accepted child work,
+ * delivery, and reports do not duplicate.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -23,11 +21,12 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution } from "./durable-agents.ts";
 import { CheckInTask } from "./durable-checkins.ts";
-import { readProfile } from "./profile.ts";
-import { requestContextSection } from "./request-context.ts";
+import { ProfileDoc, readProfile } from "./profile.ts";
+import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
 import { AgentMetaDoc } from "./durable-controls.ts";
 
@@ -623,6 +622,66 @@ it("reconciles an existing local child before Reporter admission", { timeout: 10
 	assert.ok(prompt.includes(`"replyTo":"${storageId}"`));
 	assert.match(prompt, /mode: report/u);
 	assert.equal((await readProfile(harness, storageId, child.id, context)).creator, "original-founder");
+});
+
+for (const conflictingProfile of [false, true]) it(`resumes an accepted Reporter beyond explicit-route capacity with profile conflict=${conflictingProfile}`, { timeout: 10000 }, async (t) => {
+	assert.equal(REQUEST_CONTEXT_LIMIT, 128);
+	const directory = mkdtempSync(join(tmpdir(), "retained-reporter-"));
+	const storagePath = join(directory, "agent.sqlite");
+	const { registry, extension } = buildRegistry(undefined, false);
+	const reporter = extension.tasks?.find((task) => task.definition.name === "agent.reporter");
+	assert.ok(reporter, "use the native contribution's actual Reporter task");
+	let resumed: Durable.Harness | undefined;
+	let childId: Durable.ConversationId;
+	let observedRoutes: ActiveRequestContext[] = [];
+	const warnings: unknown[] = [];
+	const taskText = "Retained Reporter task";
+	const models = createTestModels(async (request) => {
+		const text = messageText(request.messages.findLast((message) => message.role === "user"));
+		if (text === taskText) {
+			assert.ok(resumed);
+			observedRoutes = await readRequestContexts(resumed, childId, context);
+			return fauxAssistantMessage("RETAINED-REPORTER-ANSWER");
+		}
+		return fauxAssistantMessage("NOTED");
+	});
+	const first = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry }, context);
+	t.after(async () => { await resumed?.close(context); await first.close(context); rmSync(directory, { recursive: true, force: true }); });
+	const owner = await first.root(context, { agent: { model } });
+	const child = await first.createConversation({ ownership: { kind: "ownerless" }, agent: { model, instructions: "Retained child instructions" } }, context);
+	childId = child.id;
+	const recipient = await first.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
+	const taskId = await owner.commit((tx) => tx.createTask(reporter as Durable.Task<Durable.JsonObject, { phase: string }, null, object>, { name: "Retained child", conversationId: child.id, message: taskText, whenBusy: "followUp", reportTo: recipient.id, checkInMinutes: 0 }, { ownership: { kind: "conversation" }, conversationId: owner.id, background: true }), context);
+	await child.commit(async (tx) => {
+		const meta = await tx.doc(AgentMetaDoc, child.id);
+		meta.name = "Retained child";
+		meta.owner = "retained-founder";
+		if (conflictingProfile) (await tx.doc(ProfileDoc, child.id)).identity = "different-storage";
+		for (let index = 0; index < REQUEST_CONTEXT_LIMIT; index++) await recordRequestContext(tx, child.id, { requestId: `occupied-${index}`, requester: "queued-requester", replyTo: "queued-recipient", origin: "model" });
+	}, context);
+	assert.equal((await readRequestContexts(first, child.id, context)).length, REQUEST_CONTEXT_LIMIT);
+	await first.close(context);
+
+	resumed = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, onReport: (error) => warnings.push(error) }, context);
+	registry.install({ name: "retained-request-routes", sections: [requestContextSection(resumed)] });
+	const settled = await resumed.waitForTask(taskId, context);
+	assert.equal(settled.state.outcome.status, "completed");
+	const reopenedRecipient = await resumed.conversation(recipient.id, context);
+	await reopenedRecipient?.waitForIdle(context);
+	const requestId = `agent-deliver:${taskId}`;
+	assert.equal(observedRoutes.length, REQUEST_CONTEXT_LIMIT + 1, "accepted Reporter retains its route without evicting the occupied slots");
+	assert.deepEqual(observedRoutes.find((route) => route.requestId === requestId), { requestId, requester: storageId, replyTo: `${storageId}:${recipient.id}`, origin: "model", status: "placed" });
+	assert.equal((await userTexts(resumed, child.id)).filter((text) => text === taskText).length, 1);
+	assert.equal((await userTexts(resumed, recipient.id)).filter((text) => text.includes("RETAINED-REPORTER-ANSWER")).length, 1);
+	assert.equal((await userTexts(resumed, owner.id)).length, 0, "an explicit reply recipient does not become the requester");
+	const delivery = await resumed.commit((tx) => tx.submissionByRequest(child.id, requestId), context);
+	const report = await resumed.commit((tx) => tx.submissionByRequest(recipient.id, `agent-report:${taskId}`), context);
+	assert.equal(delivery?.status, "done");
+	assert.equal(report?.status, "done");
+	assert.equal((await readRequestContexts(resumed, child.id, context)).length, REQUEST_CONTEXT_LIMIT);
+	await assert.rejects(resumed.commit((tx) => recordRequestContext(tx, child.id, { requestId: "new-over-capacity", requester: "new-requester", replyTo: "new-recipient", origin: "model" }), context), /unfinished request routes/u);
+	if (conflictingProfile) assert.ok(warnings.some((warning) => String(warning).includes("Profile identity differs")), "optional profile repair reports its failure without failing the retained task");
+	else assert.deepEqual(warnings, []);
 });
 
 it("resolves a namespaced native handle before applying self-control restrictions", async (t) => {

@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { configure, defineDoc, type ConversationId, type Cursor, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import { canonicalIdentity, handleSlug } from "./identity.ts";
-import { readRequestContexts } from "./request-context.ts";
+import { readRequestContextPage } from "./request-context.ts";
 import type { AgentProfile, ProfileHints } from "./profile-schema.ts";
 export type { AgentProfile, ProfileHint, ProfileHints } from "./profile-schema.ts";
 
@@ -59,26 +59,43 @@ export async function initializeProfile(tx: Tx, conversationId: ConversationId, 
 	}
 	await refreshManagedInstructions(tx, conversationId);
 }
-/** Refresh every retained conversation before the scheduler resumes its work. */
-export async function reconcileProfiles(harness: Harness, storageId: string, context: Context): Promise<void> {
-	let cursor: Cursor | undefined;
-	do {
-		cursor = await harness.commit(async (tx) => {
-			const page = await tx.scanConversations({}, 64, cursor);
-			for (const record of page.items) await initializeProfile(tx, record.id, storageId);
-			return page.next ?? undefined;
+/** Optional managed metadata cannot veto work that the native harness already accepted. */
+export async function reconcileProfile(source: { commit(apply: (tx: Tx) => Promise<undefined>, context: Context): Promise<unknown> }, conversationId: ConversationId, context: Context, report: (error: unknown) => void, storageId?: string): Promise<void> {
+	try {
+		await source.commit(async (tx) => {
+			if (storageId === undefined) await refreshManagedInstructions(tx, conversationId);
+			else await initializeProfile(tx, conversationId, storageId);
+			return undefined;
 		}, context);
-	} while (cursor !== undefined);
+	} catch (error) {
+		if (context.abortSignal?.aborted) throw error;
+		report(error);
+	}
+}
+
+/** Refresh retained conversations independently; one profile error does not hold the queue. */
+export async function reconcileProfiles(harness: Harness, storageId: string, context: Context, report: (error: unknown) => void = (error) => console.error("Profile reconciliation:", error)): Promise<void> {
+	let cursor: Cursor | undefined;
+	try {
+		do {
+			const page = await harness.commit((tx) => tx.scanConversations({}, 64, cursor), context);
+			for (const record of page.items) await reconcileProfile(harness, record.id, context, report, storageId);
+			cursor = page.next ?? undefined;
+		} while (cursor !== undefined);
+	} catch (error) {
+		if (context.abortSignal?.aborted) throw error;
+		report(error);
+	}
 }
 
 export async function readProfile(harness: Harness, storageId: string, conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT, live = false): Promise<AgentProfile> {
 	const conversation = await harness.conversation(conversationId, context);
 	if (!conversation) throw new Error("Profile conversation does not exist");
 	const [stored, meta, agent, requests] = await Promise.all([
-		harness.snapshot(ProfileDoc, conversationId, context), harness.snapshot(AgentMetaDoc, conversationId, context), conversation.agent(context), readRequestContexts(harness, conversationId, context),
+		harness.snapshot(ProfileDoc, conversationId, context), harness.snapshot(AgentMetaDoc, conversationId, context), conversation.agent(context), readRequestContextPage(harness, conversationId, context),
 	]);
 	const profile = stored ?? emptyProfile();
-	return { identity: canonicalIdentity(storageId, conversationId), handle: profile.handle === null ? null : `@${profile.handle}`, name: meta?.name ?? null, role: profile.role, expertise: profile.expertise, revision: profileRevision(profile), updatedAt: profile.updatedAt, updatedBy: profile.updatedBy, creator: meta?.owner ?? null, model: agent.model ?? null, thinkingLevel: agent.thinkingLevel ?? null, cwd: agent.cwd ?? null, requests, live };
+	return { identity: canonicalIdentity(storageId, conversationId), handle: profile.handle === null ? null : `@${profile.handle}`, name: meta?.name ?? null, role: profile.role, expertise: profile.expertise, revision: profileRevision(profile), updatedAt: profile.updatedAt, updatedBy: profile.updatedBy, creator: meta?.owner ?? null, model: agent.model ?? null, thinkingLevel: agent.thinkingLevel ?? null, cwd: agent.cwd ?? null, requests: requests.requests, ...(requests.omitted ? { requestsOmitted: requests.omitted } : {}), live };
 }
 export interface ProfileUpdate {
 	expectedRevision: string;

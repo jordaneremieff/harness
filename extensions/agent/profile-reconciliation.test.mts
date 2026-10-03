@@ -8,12 +8,42 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, type TranscriptContext } from "@earendil-works/pi-ai";
 import { Harness, type SubmissionId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { AgentMetaDoc, AgentDeliveryDoc, readOutcome } from "./durable-controls.ts";
+import { AgentMetaDoc, AgentDeliveryDoc, readOutcome, type DeliveryReceipt } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { ProfileDoc } from "./profile.ts";
 import { readRequestContexts, requestContextSection } from "./request-context.ts";
 import { testModel } from "./test-runtime.mts";
+
+it("resumes retained work despite an independent profile reconciliation failure", { timeout: 10000 }, async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "profile-failure-"));
+	const storagePath = join(directory, "agent.sqlite");
+	const storageId = randomUUID();
+	const runtime = await fixtureRuntime("answer");
+	const original = await Harness.open(await openNodeSqliteStorage(storagePath), { models: runtime, registry: fixtureRegistry() }, context);
+	let host: DurableHost | undefined;
+	t.after(async () => { await original.close(context); await host?.close(); rmSync(directory, { recursive: true, force: true }); });
+	const agent = { model: { provider: testModel.provider, modelId: testModel.id }, instructions: "Retained instructions" };
+	const root = await original.root(context, { agent });
+	const child = await original.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
+	await original.commit(async (tx) => {
+		(await tx.doc(ProfileDoc, root.id)).identity = "conflicting-profile-identity";
+		const delivery = await tx.doc(AgentDeliveryDoc);
+		for (const id of [root.id, child.id]) delivery.intents.push({ requestId: `accepted-${id}`, conversationId: id, ownerId: "requester", origin: "operator", message: `Accepted task ${id}`, whenBusy: "followUp", operationId: null, submissionId: null });
+	}, context);
+	await original.close(context);
+	const errors: unknown[] = [];
+	host = await DurableHost.open({ storagePath, storageId, models: runtime, registry: fixtureRegistry(), onReport: (error) => errors.push(error) }, context);
+	await host.harness.waitForIdle(context);
+	const result = await host.request("receipts", { ownerId: "requester", wait: false }, context) as { receipts: DeliveryReceipt[]; pending: number };
+	assert.equal(result.pending, 0);
+	assert.equal(result.receipts.length, 2);
+	assert.ok(result.receipts.every((receipt) => receipt.status === "done" && receipt.answer === "durable answer"));
+	assert.equal(errors.length, 1);
+	assert.match(String(errors[0]), /Profile identity differs/u);
+	assert.equal((await host.harness.snapshot(ProfileDoc, root.id, context))?.identity, "conflicting-profile-identity", "failed repair stays atomic");
+	assert.equal((await host.harness.snapshot(ProfileDoc, child.id, context))?.identity, `${storageId}:${child.id}`, "one failure does not suppress other repairs");
+});
 
 it("reconciles retained children before resume and supplies routes for base-only callers", { timeout: 30000 }, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "profile-reopen-"));

@@ -16,7 +16,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { createCheckIn } from "./durable-checkins.ts";
-import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
+import { cleanupRequestContexts, recordRequestContext, type RequestContext } from "./request-context.ts";
 import { refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
@@ -252,7 +252,6 @@ export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId
 	const meta = await tx.doc(AgentMetaDoc, conversationId);
 	writeFirstMessage(meta, message);
 	(meta as { updatedAt: number | null }).updatedAt = Date.now();
-	await refreshManagedInstructions(tx, conversationId);
 }
 
 /**
@@ -261,14 +260,12 @@ export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId
  * The timer task uses this through its own task commit, so a fired input and
  * its answer keep the same origin rule as any other admission.
  */
-export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now()): Promise<DeliveryIntentState> {
+export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now(), admissionKind: "new" | "retained" = "new"): Promise<DeliveryIntentState> {
 	const state = await tx.doc(AgentDeliveryDoc);
 	if (admission.requestContext !== undefined) {
-		if (admission.requestContext.requestId !== admission.requestId || admission.requestContext.replyTo !== admission.ownerId || admission.requestContext.origin !== admission.origin)
+		if (admissionKind === "new" && (admission.requestContext.requestId !== admission.requestId || admission.requestContext.replyTo !== admission.ownerId || admission.requestContext.origin !== admission.origin))
 			throw new Error("The request context does not match its delivery admission");
-		await recordRequestContext(tx, conversationId, admission.requestContext);
-	} else {
-		await recordDefaultRequestContext(tx, conversationId, admission);
+		await recordRequestContext(tx, conversationId, admission.requestContext, admissionKind);
 	}
 	await recordAdmissionMeta(tx, conversationId, admission.message);
 	const index = intentIndex(state, conversationId, admission.requestId);
@@ -348,6 +345,7 @@ export async function submitConversation(
 	now: () => number = Date.now,
 ): Promise<DurableSubmitResult> {
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
+	await conversation.commit((tx) => refreshManagedInstructions(tx, conversation.id), context);
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
 	if (ownerId !== undefined) {
 		// An owned admission requires an explicit origin before its delivery intent is recorded.
@@ -976,27 +974,12 @@ export async function receiptsByOperation(harness: Harness, operationId: string,
 	return Object.values(state.receipts).filter((receipt) => receipt.operationId === operationId);
 }
 
-async function recordDefaultRequestContext(tx: Tx, conversationId: ConversationId, input: Pick<DeliveryAdmission, "requestId" | "ownerId" | "origin">): Promise<void> {
-	const state = await tx.doc(RequestContextDoc, conversationId);
-	if (state.requests.some((request) => request.requestId === input.requestId)) return;
-	await recordRequestContext(tx, conversationId, { requestId: input.requestId, requester: input.ownerId, replyTo: input.ownerId, origin: input.origin });
-}
-
-/** Restore known base-operation routes before any retained work resumes. */
-export async function reconcileDeliveryContexts(harness: Harness, context: Context): Promise<void> {
-	await harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
-		for (const intent of state.intents) await recordDefaultRequestContext(tx, intent.conversationId, intent);
-	}, context);
-}
-
 /**
  * Resolve delivery intents that have no submission yet: look up the request ID
  * through Durable's deduplication first, and admit the stored message only when
  * no submission exists. Runs once per open before control traffic.
  */
 export async function reconcileDeliveries(harness: Harness, context: Context): Promise<void> {
-	await reconcileDeliveryContexts(harness, context);
 	const state = await harness.snapshot(AgentDeliveryDoc, context);
 	if (!state) return;
 	for (const intent of state.intents) {

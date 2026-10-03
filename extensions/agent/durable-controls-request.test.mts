@@ -5,14 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { AgentDoc, Harness, MemoryStorage, createRegistry, defineExtension, type CommitPublication, type SubmissionId } from "@earendil-works/pi-durable";
+import { AgentDoc, Harness, MemoryStorage, createRegistry, defineExtension, type CommitPublication, type SubmissionId, type TaskId } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { AgentDeliveryDoc, AgentMetaDoc, forkConversation, rewindConversation, readOutcome, recordDeliveryIntent, recordReport, reconcileDeliveries, richSubmitConversation, settleDeliveries, submitConversation, writeConversationName } from "./durable-controls.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { DurableHost } from "./durable-host.ts";
 import { initializeProfile, ProfileDoc } from "./profile.ts";
-import { readRequestContexts } from "./request-context.ts";
+import { readRequestContexts, recordRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT } from "./request-context.ts";
 import { CheckInTask } from "./durable-checkins.ts";
-import { scheduleTimer, TimerTask } from "./durable-timers.ts";
+import { AgentTimerDoc, scheduleTimer, TimerTask, type TimerResult } from "./durable-timers.ts";
 import { testModel } from "./test-runtime.mts";
 
 async function fixture(t: TestContext, timers = false) {
@@ -131,6 +132,51 @@ it("refreshes fork and rewind instructions after their final name and owner meta
 	const rewindAgent = await rewind.conversation.agent(context);
 	assert.match(rewindAgent.instructions ?? "", /Rewind name/u);
 	assert.match(rewindAgent.instructions ?? "", /rewind-owner/u);
+});
+
+it("resumes an accepted native timer beyond the new explicit-route admission limit", { timeout: 10000 }, async (t) => {
+	assert.equal(REQUEST_CONTEXT_LIMIT, 128);
+	const directory = mkdtempSync(join(tmpdir(), "retained-timer-"));
+	const storagePath = join(directory, "agent.sqlite");
+	let resumed: Harness | undefined;
+	const registry = createRegistry();
+	registry.install(defineExtension({ name: "retained-timer", tasks: [TimerTask, CheckInTask] }));
+	const models = await fixtureRuntime("answer");
+	const storageId = randomUUID();
+	const first = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, now: () => 800 }, context);
+	t.after(async () => { await resumed?.close(context); await first.close(context); rmSync(directory, { recursive: true, force: true }); });
+	const conversation = await first.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } }, init: (tx, id) => initializeProfile(tx, id, storageId) });
+	const request = { requestId: "retained-scheduled", requester: "requester-b", replyTo: "recipient-c", origin: "model" as const };
+	const timer = await scheduleTimer(first, { conversationId: conversation.id, identity: storageId, message: "Retained scheduled task", scheduleId: "accepted-schedule", deadline: 900, createdAt: 800, mode: "followUp", ownerId: request.replyTo, origin: request.origin, requestId: request.requestId, requestContext: request, checkInMinutes: 0 }, context);
+	await first.commit(async (tx) => {
+		for (let index = 0; index < REQUEST_CONTEXT_LIMIT; index++) await recordRequestContext(tx, conversation.id, { requestId: `occupied-${index}`, requester: "queued-requester", replyTo: "queued-recipient", origin: "model" });
+	}, context);
+	assert.equal((await readRequestContexts(first, conversation.id, context)).length, REQUEST_CONTEXT_LIMIT);
+	assert.equal((await first.snapshot(AgentTimerDoc, context))?.timers[0]?.status, "pending");
+	await first.close(context);
+
+	resumed = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, now: () => 1000 }, context);
+	const taskId = timer.timerId as TaskId<TimerResult>;
+	const settled = await resumed.waitForTask(taskId, context);
+	assert.equal(settled.state.outcome.status, "completed");
+	if (settled.state.outcome.status !== "completed") throw new Error("Retained timer did not complete");
+	assert.equal(settled.state.outcome.result.deadline, 900);
+	assert.equal(settled.state.outcome.result.overdueMs, 100);
+	const retainedRoutes = await resumed.snapshot(RequestContextDoc, conversation.id, context);
+	assert.equal(retainedRoutes?.requests.length, REQUEST_CONTEXT_LIMIT + 1);
+	assert.deepEqual(retainedRoutes?.requests.find((route) => route.requestId === request.requestId), request, "the retained timer keeps its explicit requester and distinct reply recipient");
+	const submitted = await resumed.commit((tx) => tx.submissionByRequest(conversation.id, request.requestId), context);
+	assert.ok(submitted);
+	assert.equal(Number(submitted.id), settled.state.outcome.result.submissionId);
+	assert.equal((await readOutcome(resumed, submitted.id, context)).status, "done");
+	await settleDeliveries(resumed, context);
+	const delivery = await resumed.snapshot(AgentDeliveryDoc, context);
+	assert.equal(delivery?.intents.filter((intent) => intent.requestId === request.requestId).length, 1);
+	assert.equal(delivery?.receipts[String(submitted.id)]?.ownerId, request.replyTo);
+	assert.equal(delivery?.receipts[String(submitted.id)]?.origin, request.origin);
+	assert.equal((await resumed.snapshot(AgentTimerDoc, context))?.timers[0]?.status, "fired");
+	assert.equal((await readRequestContexts(resumed, conversation.id, context)).length, REQUEST_CONTEXT_LIMIT);
+	await assert.rejects(resumed.commit((tx) => recordRequestContext(tx, conversation.id, { requestId: "new-over-capacity", requester: "new-requester", replyTo: "new-recipient", origin: "model" }), context), /unfinished request routes/u);
 });
 
 it("preserves scheduled requester metadata until native deadline admission", { timeout: 10000 }, async (t) => {

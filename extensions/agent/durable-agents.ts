@@ -19,7 +19,7 @@
  */
 
 import { realpathSync } from "node:fs";
-import { initializeProfile } from "./profile.ts";
+import { initializeProfile, reconcileProfile } from "./profile.ts";
 import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { recordRequestContext, cleanupRequestContexts } from "./request-context.ts";
@@ -734,9 +734,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					return;
 				}
 				const request = { requestId: `agent-deliver:${reporter.id}`, requester: identity(runtime.conversationId), replyTo: identity(reporter.input.reportTo ?? runtime.conversationId), origin: "model" as const };
+				await reconcileProfile(runtime, conversationId, context, (error) => runtime.report(error), host.storageId);
 				await runtime.commit(async (tx) => {
-					await initializeProfile(tx, conversationId, host.storageId);
-					await recordRequestContext(tx, conversationId, request);
+					await recordRequestContext(tx, conversationId, request, "retained");
 					if (reporter.state.checkpoint.armed === true) return undefined;
 					await recordAdmissionMeta(tx, conversationId, message);
 					await createCheckIn(tx, { conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(conversationId), message, whenBusy, origin: "model", admittedAt: runtime.now() }, runtime.registry.task(CheckInTask.definition.name) === undefined ? 0 : reporter.input.checkInMinutes ?? 0);

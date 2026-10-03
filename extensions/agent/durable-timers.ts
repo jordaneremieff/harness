@@ -22,6 +22,7 @@
 import type { Context } from "@earendil-works/chord";
 import { defineDoc, defineTask, type ConversationId, type Harness, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { linkDeliveryIntent, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
+import { reconcileProfile } from "./profile.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
 
 /** Registered task kind of one scheduled input. */
@@ -178,6 +179,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 			const conversationId = task.input.conversationId as ConversationId;
 			const conversation = await runtime.conversation(conversationId, context);
 			if (conversation === undefined) throw new Error(`scheduled input target ${task.input.identity} is not retained`);
+			await reconcileProfile(runtime, conversation.id, context, (error) => runtime.report(error));
 			let retained: SubmissionRecord | undefined;
 			await runtime.commit(async (tx) => {
 				retained = await tx.submissionByRequest(conversationId, task.input.requestId);
@@ -194,7 +196,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					checkInMinutes: task.input.checkInMinutes ?? 0,
 					senderIdentity: task.input.identity,
 					...(task.input.requestContext === undefined ? {} : { requestContext: task.input.requestContext }),
-				}, runtime.now());
+				}, runtime.now(), "retained");
 				return undefined;
 			}, context);
 			const submission = await conversation.submit(
@@ -239,13 +241,14 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 		if (task.state.checkpoint.firing === true) {
 			const conversation = await runtime.conversation(conversationId, context);
 			if (conversation !== undefined) {
+				await reconcileProfile(runtime, conversation.id, context, (error) => runtime.report(error));
 				let retained: SubmissionRecord | undefined;
 				await runtime.commit(async (tx) => {
 					retained = await tx.submissionByRequest(conversationId, input.requestId);
 					return undefined;
 				}, context);
 				await runtime.commit(async (tx) => {
-					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: input.mode, origin: input.origin, checkInMinutes: input.checkInMinutes ?? 0, senderIdentity: input.identity, ...(input.requestContext === undefined ? {} : { requestContext: input.requestContext }) }, runtime.now());
+					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: input.mode, origin: input.origin, checkInMinutes: input.checkInMinutes ?? 0, senderIdentity: input.identity, ...(input.requestContext === undefined ? {} : { requestContext: input.requestContext }) }, runtime.now(), "retained");
 					return undefined;
 				}, context);
 				const submission = await conversation.submit(

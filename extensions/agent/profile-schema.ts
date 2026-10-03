@@ -24,6 +24,7 @@ export const AgentProfileSchema = Type.Object({
 	updatedAt: nullableTime, updatedBy: nullableText, creator: nullableText,
 	model: Type.Union([Type.Object({ provider: Type.String(), modelId: Type.String() }, { additionalProperties: false }), Type.Null()]),
 	thinkingLevel: nullableText, cwd: nullableText, live: Type.Boolean(),
+	requestsOmitted: Type.Optional(Type.Integer({ minimum: 0 })),
 	requests: Type.Array(Type.Object({ requestId: Type.String(), requester: Type.String(), replyTo: Type.String(), origin: Type.Union([Type.Literal("operator"), Type.Literal("model")]), status: Type.Union([Type.Literal("admitting"), Type.Literal("queued"), Type.Literal("placed")]) }, { additionalProperties: false })),
 }, { additionalProperties: false });
 export type AgentProfile = Static<typeof AgentProfileSchema>;

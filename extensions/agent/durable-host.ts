@@ -15,7 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
-import { richSubmitConversation, reconcileDeliveryContexts } from "./durable-controls.ts";
+import { richSubmitConversation } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -300,8 +300,7 @@ export class DurableHost {
 					await initializeProfile(tx, conversationId, options.storageId, options.profileSeed);
 				},
 			});
-			await reconcileProfiles(harness, options.storageId, context);
-			await reconcileDeliveryContexts(harness, context);
+			await reconcileProfiles(harness, options.storageId, context, options.onReport);
 			if (options.resume !== false) harness.resume();
 			if (options.resume !== false) await reconcileDeliveries(harness, context);
 			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
