@@ -755,12 +755,13 @@ export class AgentDashboard implements Component, Focusable {
 		if (matchesKey(data, "end")) this.helpOffset = Number.MAX_SAFE_INTEGER;
 	}
 	private actionsInput(data: string): void {
+		const last = this.console ? dashboardActions(this.console.row).length - 1 : 0;
 		const size = Math.max(1, Math.floor(this.bodyHeight / 2));
 		const changes: Record<string, number> = { up: -1, down: 1, pageUp: -size, pageDown: size };
 		for (const [key, delta] of Object.entries(changes))
-			if (matchesKey(data, key as "up")) this.actionIndex = Math.max(0, Math.min(11, this.actionIndex + delta));
+			if (matchesKey(data, key as "up")) this.actionIndex = Math.max(0, Math.min(last, this.actionIndex + delta));
 		if (matchesKey(data, "home")) this.actionIndex = 0;
-		if (matchesKey(data, "end")) this.actionIndex = 11;
+		if (matchesKey(data, "end")) this.actionIndex = last;
 		if (matchesKey(data, "enter")) void this.runAction();
 	}
 	private findInput(data: string): void {

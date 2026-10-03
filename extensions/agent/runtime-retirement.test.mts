@@ -129,7 +129,7 @@ it("keeps a host-local foreign control alive across retirement", { timeout: 1500
 		if (args[0] === "report") { entered.resolve(); await release.promise; }
 		return request(...args);
 	});
-	const report = resolveAgentControlDispatch()("submit", { sessionId: f.ownerId, message: "foreign control", senderIdentity: f.metadata.storageId, requestId: "foreign-report" });
+	const report = resolveAgentControlDispatch()("report", { sessionId: f.ownerId, message: "foreign control", senderIdentity: f.metadata.storageId, requestId: "foreign-report" });
 	await entered.promise;
 	assert.equal(f.runtime.isIdle(), false);
 	assert.equal(await eligible(f.runtime), false);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { fixture, source, row, page, turn, deferred, conversationFrame } from "./dashboard-test-fixture.mts";
 import { agentState } from "./dashboard-state.ts";
+import { dashboardActions } from "./dashboard-actions.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -29,10 +30,10 @@ for (const [width, height] of [
 		try {
 			await turn();
 			f.ui.handleInput("a");
-			for (let index = 0; index < 12; index++) {
+			for (let index = 0; index < dashboardActions(row()).length; index++) {
 				const screen = f.ui.render(width).join("\n");
 				assert.match(screen, /› /);
-				if (width === 80) assert.match(screen, /\+3 more/);
+				if (width === 80) assert.match(screen, /\+4 more/);
 				else assert.match(screen, /Reconnect[\s\S]*Run agent command[\s\S]*Details/);
 				f.ui.handleInput("\x1b[B");
 			}
@@ -212,8 +213,9 @@ for (const [width, height] of [
 			}
 		});
 	}
-	for (const index of [3, 4]) {
-		it(`branch action opens the created console without losing source state at ${width} (${index})`, async () => {
+	for (const action of ["fork", "rewind"]) {
+		const index = dashboardActions(row()).findIndex((choice) => choice.name === action);
+		it(`branch action opens the created console without losing source state at ${width} (${action})`, async () => {
 			const rows = [row("one")];
 			const f = fixture(width, height, source(rows), {
 				action: async () => {
@@ -327,7 +329,7 @@ it("a created branch outside the published roster never retains the source as it
 	try {
 		await turn();
 		f.ui.handleInput("a");
-		for (let index = 0; index < 3; index++) f.ui.handleInput("\x1b[B");
+		for (let index = 0; index < dashboardActions(row()).findIndex((choice) => choice.name === "fork"); index++) f.ui.handleInput("\x1b[B");
 		f.ui.handleInput("\r");
 		await turn();
 		assert.equal(f.ui.navigation.screen, "console");
@@ -356,7 +358,7 @@ it("late branch completion does not take focus after Escape", async () => {
 	try {
 		await turn();
 		f.ui.handleInput("a");
-		for (let step = 0; step < 3; step++) f.ui.handleInput("\x1b[B");
+		for (let step = 0; step < dashboardActions(row()).findIndex((choice) => choice.name === "fork"); step++) f.ui.handleInput("\x1b[B");
 		f.ui.handleInput("\r");
 		await entered.promise;
 		f.ui.handleInput("\x1b");

@@ -89,7 +89,7 @@ it("bounds a connection to a silent endpoint", async (t) => {
 	const root = testRoot(t);
 	const id = uuidV7();
 	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
-	const socketPath = join(root, ".primaries", "silent.sock");
+	const socketPath = join(root, "silent.sock");
 	const accepted = new Set<Socket>();
 	const silent = createServer((socket) => { accepted.add(socket); socket.on("close", () => accepted.delete(socket)); });
 	await new Promise<void>((resolve) => silent.listen(socketPath, resolve));
@@ -272,7 +272,7 @@ it("refuses a channel whose handshake serverId does not match", async (t) => {
 	const root = testRoot(t);
 	const id = uuidV7();
 	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
-	const socketPath = join(root, ".primaries", "foreign.sock");
+	const socketPath = join(root, "foreign.sock");
 	const host: ServerHost = {
 		serverServices: { attachClient: () => ({ invokeService: async () => { throw new ServerError("service_not_found", "no service"); }, release: () => {} }) },
 		resolveSession: async () => { throw new ServerError("session_not_found", "none"); },

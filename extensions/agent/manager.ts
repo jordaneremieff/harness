@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { handleSlug, handleStorageId } from "./identity.ts";
+import type { AgentProfile } from "./profile-schema.ts";
+import { composeListRow, matchesListRow, enrichDashboardRow } from "./profile-discovery.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -30,6 +33,8 @@ export interface AgentCaller {
 	validateModel?: AgentManagerOptions["validateModel"];
 }
 interface AgentSpawnInput {
+	handle?: string;
+	role?: string;
 	cwd?: string;
 	model?: string;
 	thinkingLevel?: string;
@@ -271,7 +276,47 @@ export class AgentManager {
 		})();
 	}
 
-	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+	async resolveTarget(selector: string): Promise<string> {
+		if (!selector.startsWith("@")) return selector;
+		const id = handleStorageId(selector.slice(1));
+		const record = this.catalog.read(id);
+		if (record.view?.profileSeed?.handle === selector.slice(1) || record.view?.profiles?.rows.some((row) => row.identity === id && row.handle === selector)) return id;
+		const profile = await this.observe(record, "profile-read", { sessionId: id }) as AgentProfile;
+		if (profile.handle !== selector) throw new Error("Handle address belongs to a different retained agent");
+		return id;
+	}
+
+	private async handledRecord(input: AgentSpawnInput, caller: AgentCaller, handle: string): Promise<{ record: CatalogRecord; created: boolean }> {
+		try { return { record: this.catalog.read(handleStorageId(handle)), created: false }; }
+		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		return this.catalog.createHandled(await this.creationMetadata(input, caller), handle, input.role ?? "");
+	}
+
+	private async retainedHandle(record: CatalogRecord, handle: string): Promise<unknown> {
+		const base = { sessionId: record.storageId, cwd: record.cwd, handle: `@${handle}`, created: false };
+		if (record.view?.profileSeed) return { ...base, profile: null, availability: "initializing", creation: { ...record.view.profileSeed, name: record.name ?? null, model: record.model, thinkingLevel: record.thinkingLevel, cwd: record.cwd } };
+		const profile = await this.observe(record, "profile-read", { sessionId: record.storageId }) as AgentProfile;
+		if (profile.handle !== base.handle) throw new Error("Handle address belongs to a different retained agent");
+		return { ...base, profile, availability: profile.live ? "live" : "retained" };
+	}
+
+	private async spawnHandled(input: AgentSpawnInput & { handle: string }, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+		const handle = handleSlug(input.handle);
+		const id = handleStorageId(handle);
+		const { record: retained, created } = await this.handledRecord(input, caller, handle);
+		if (input.cwd !== undefined && retained.cwd !== realpathSync(resolve(caller.cwd, input.cwd))) throw new Error("The retained handle has a different cwd; creation defaults cannot change it");
+		const row: AgentConversationSummary = { id, storageId: id, cwd: retained.cwd, name: retained.name, model: { ...retained.model, thinkingLevel: retained.thinkingLevel }, modifiedAt: Date.parse(retained.createdAt), owner: "unknown", state: "starting", cost: 0, partial: false };
+		onCreated?.(row);
+		if (!created && input.prompt === undefined) return this.retainedHandle(retained, handle);
+		const client = await this.connection(retained);
+		const profile = await client.request("profile-read", { sessionId: id }) as AgentProfile;
+		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
+		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId: input.requestId ?? randomUUID(), requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
+		this.rosterChanged();
+		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, ...(admission === undefined ? {} : { admission }) };
+	}
+
+	private async creationMetadata(input: AgentSpawnInput, caller: AgentCaller): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
 		const cwd = realpathSync(resolve(caller.cwd, input.cwd ?? "."));
 		if (!statSync(cwd).isDirectory()) throw new Error("Agent cwd must be a directory");
 		const separator = input.model?.indexOf("/") ?? -1;
@@ -281,7 +326,15 @@ export class AgentManager {
 		const validate = caller.validateModel ?? this.options.validateModel;
 		if (!validate) throw new Error("Spawn requires the caller's configured model catalog");
 		await validate(model, thinkingLevel);
-		const { record, created } = this.catalog.createTracked({ cwd, model, thinkingLevel, name: input.name, trust: input.trust, ownerId: caller.id, agentDir: this.options.agentDir, packageDir: this.options.packageDir }, input.requestId);
+		return { cwd, model, thinkingLevel, name: input.name, trust: input.trust, ownerId: caller.id, agentDir: this.options.agentDir, packageDir: this.options.packageDir };
+	}
+
+	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
+		if (input.role !== undefined) throw new Error("A creation role requires a handle; use agent_profile to configure another agent");
+		const metadata = await this.creationMetadata(input, caller);
+		const { cwd, model, thinkingLevel } = metadata;
+		const { record, created } = this.catalog.createTracked(metadata, input.requestId);
 		const row: AgentConversationSummary = {
 			id: record.storageId, storageId: record.storageId, cwd, name: input.name,
 			firstMessage: input.prompt, model: { ...model, thinkingLevel },
@@ -304,9 +357,10 @@ export class AgentManager {
 			let client: HostConnection;
 			try { client = await opening; }
 			catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
-			const versionError = input.prompt ? hostRequestVersionError("submit", client.runtimeContract) : undefined;
+			const submitMethod = client.runtimeContract.operations["task-submit"] ? "task-submit" : "submit";
+			const versionError = input.prompt ? hostRequestVersionError(submitMethod, client.runtimeContract) : undefined;
 			if (versionError) throw versionError;
-			const admission = input.prompt ? await client.request("submit", { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...originParams(input.origin), checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") }) : undefined;
+			const admission = input.prompt ? await client.request(submitMethod, { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...(submitMethod === "task-submit" ? { requester: caller.id, origin: input.origin ?? "operator" } : originParams(input.origin)), checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") }) : undefined;
 			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, lifetime: "independent host process" };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
@@ -320,7 +374,9 @@ export class AgentManager {
 	}
 
 	async control(method: string, input: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
-		const sessionId = String(input.sessionId ?? "");
+		const selector = String(input.sessionId ?? "");
+		const sessionId = await this.resolveTarget(selector);
+		if (typeof input.replyTo === "string") input = { ...input, replyTo: await this.resolveTarget(input.replyTo) };
 		if (sessionId === caller.id && ["abort", "fork", "rewind", "compact", "configure", "command"].includes(method)) throw new Error("This control cannot target the calling primary session");
 		let record: CatalogRecord;
 		try { record = this.catalog.read(sessionId); }
@@ -329,22 +385,36 @@ export class AgentManager {
 			return this.primaryMessage(method, input, sessionId, caller);
 		}
 		const params: Record<string, unknown> = { ...input, sessionId, ownerId: caller.id };
-		if (method === "inspect" || method === "status" || method === "snapshot" || method === "dashboard") return this.observe(record, method, params);
+		if (method === "task-submit") { params.requester = caller.id; params.origin ??= "operator"; params.requestId ??= randomUUID(); }
+		if (method === "profile-update") { params.senderIdentity = caller.id; params.requestId ??= randomUUID(); }
+		if (method === "inspect" || method === "status" || method === "snapshot" || method === "dashboard" || method === "profile-read") return this.observe(record, method, params);
 		if (method === "attach") {
 			this.crashes.delete(record.storageId);
 			this.recoveryErrors.delete(record.storageId);
 			this.failures.delete(record.storageId);
 		}
-		return (async () => {
-			const client = await this.connection(record);
-			const requested = method === "attach" ? input.model === undefined ? "status" : "configure" : method;
-			const versionError = hostRequestVersionError(requested, client.runtimeContract);
-			if (versionError) throw versionError;
-			if (method === "attach") return this.attachClient(client, sessionId, input.model);
-			if ((method === "submit" || method === "rewind" || method === "fork") && params.requestId === undefined) Object.assign(params, { requestId: randomUUID() });
-			const outcome = await client.request(method, params);
-			return ["fork", "rewind", "configure"].includes(method) ? this.mutationSnapshot(client, outcome, sessionId) : outcome;
-		})();
+		return this.controlClient(await this.connection(record), method, params, caller);
+	}
+
+	private requestedOperation(method: string, params: Record<string, unknown>, client: HostConnection): string {
+		if (method === "submit" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return "task-submit";
+		if (method === "report") return "submit";
+		if (method === "attach") return params.model === undefined ? "status" : "configure";
+		return method;
+	}
+
+	private async controlClient(client: HostConnection, method: string, params: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
+		const sessionId = String(params.sessionId);
+		const requested = this.requestedOperation(method, params, client);
+		const versionError = hostRequestVersionError(requested, client.runtimeContract);
+		if (versionError) throw versionError;
+		if (method === "attach") return this.attachClient(client, sessionId, params.model);
+		if (method === "report") return client.request("submit", { sessionId, message: `Report from ${caller.id}:\n${String(params.message ?? "")}`, requestId: params.requestId ?? randomUUID(), whenBusy: "followUp" });
+		if (["submit", "rewind", "fork"].includes(method)) params.requestId ??= randomUUID();
+		const outcome = requested === "task-submit"
+			? await client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" })
+			: await client.request(method, params);
+		return ["fork", "rewind", "configure"].includes(method) ? this.mutationSnapshot(client, outcome, sessionId) : outcome;
 	}
 
 	private async attachClient(client: HostConnection, sessionId: string, model: unknown): Promise<unknown> {
@@ -358,7 +428,7 @@ export class AgentManager {
 	private async primaryMessage(method: string, input: Record<string, unknown>, sessionId: string, caller: AgentCaller): Promise<unknown> {
 		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });
 		try {
-			if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
+			if (method !== "submit" && method !== "report") throw new Error("A registered primary accepts messages, not Durable session controls");
 			const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
 			const origin: DeliveryOrigin = input.origin === "operator" ? "operator" : "model";
 			await channel.deliver({ sourceId, text: String(input.message ?? ""), details: { senderIdentity: caller.id, source: sourceId, liveOwner: true, saved: false, origin, wake: origin !== "operator", provider: caller.model?.provider ?? null, modelId: caller.model?.modelId ?? null, thinkingLevel: caller.thinkingLevel ?? null }, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) });
@@ -415,17 +485,12 @@ export class AgentManager {
 		return { steps, nextCursor: page.nextCursor, complete: page.coverage.complete };
 	}
 
-	private matchesListRow(row: { identity: string; name?: string; firstMessage?: string }, query: string, cwd: string): boolean {
-		if (query === "") return true;
-		const text = query.toLocaleLowerCase();
-		return [row.identity, row.name ?? "", row.firstMessage ?? "", cwd].some((value) => value.toLocaleLowerCase().includes(text));
-	}
-
 	private async collectListPage(record: CatalogRecord, cursor: ListCursor, limit: number, rows: unknown[], unavailable: Array<{ storageId: string; reason: string }>): Promise<void> {
 		try {
 			const page = await this.observe(record, "list", { limit, ...(cursor.native === undefined ? {} : { cursor: cursor.native }) }) as ConversationPage;
 			for (const row of page.items) {
-				if (this.matchesListRow(row, cursor.query, record.cwd)) rows.push({ ...row, sessionId: row.identity, storageId: record.storageId, cwd: record.cwd });
+				const composite = composeListRow(row, record.view?.profiles, record.cwd, record.storageId);
+				if (matchesListRow(composite, cursor.query)) rows.push(composite);
 			}
 			cursor.native = page.next ?? undefined;
 		} catch (error) {
@@ -442,12 +507,16 @@ export class AgentManager {
 		const unavailable: Array<{ storageId: string; reason: string }> = [];
 		const batch = await this.listBatch(cursor, input.cwd);
 		let visits = 0;
+		const profileHints = { complete: true, unknownStorages: 0, omitted: 0 };
 		let index = 0;
 		while (rows.length < limit && visits < MAX_LIST_VISITS && index < batch.steps.length) {
 			const step = batch.steps[index];
 			cursor.storage = step.record.storageId;
 			cursor.catalog = step.catalog;
 			visits += 1;
+			const hints = step.record.view?.profiles;
+			if (!hints) { profileHints.complete = false; profileHints.unknownStorages++; }
+			else { profileHints.complete &&= hints.coverage.complete; profileHints.omitted += hints.coverage.omitted; }
 			await this.collectListPage(step.record, cursor, limit - rows.length, rows, unavailable);
 			if (cursor.native === undefined) {
 				cursor.storage = undefined;
@@ -457,7 +526,7 @@ export class AgentManager {
 		const exhausted = index === batch.steps.length;
 		if (exhausted) cursor.catalog = batch.nextCursor ?? undefined;
 		const complete = exhausted && batch.complete;
-		return { rows, nextCursor: complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url"), coverage: { complete, storagesVisited: visits, unavailable }, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
+		return { rows, nextCursor: complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url"), coverage: { complete, storagesVisited: visits, unavailable, profileHints }, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
 	}
 
 	async dashboardPage(input: { cursor?: string } = {}): Promise<AgentConversationPage> {
@@ -504,12 +573,13 @@ export class AgentManager {
 			row.ownerLabel = `Host metadata at ${view.updatedAt}${claim.kind === "unknown" ? `; ${claim.error}` : ""}`;
 			if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";
 			if (claim.kind !== "live") row.currentTool = undefined;
-			return row;
+			return enrichDashboardRow(row, view.profiles);
 		});
 		return { rows, skipped: view.coverage.complete ? 0 : 1, omitted: view.coverage.omitted };
 	}
 
 	async snapshot(sessionId: string, params: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<ConversationSnapshotPage> {
+		sessionId = await this.resolveTarget(sessionId);
 		if (this.launchRows.has(storageIdOf(sessionId)) && this.opening.has(storageIdOf(sessionId))) return emptyConversationSnapshot();
 		return this.observe(this.catalog.read(sessionId), "snapshot", { sessionId, ...params }) as Promise<ConversationSnapshotPage>;
 	}
@@ -526,6 +596,7 @@ export class AgentManager {
 		signal?: AbortSignal,
 	): Promise<(() => void) | undefined> {
 		if (this.shuttingDown || signal?.aborted) return undefined;
+		sessionId = await this.resolveTarget(sessionId);
 		const record = this.catalog.read(sessionId);
 		return (async () => {
 			const client = await this.observationConnection(record);
@@ -539,8 +610,16 @@ export class AgentManager {
 		})();
 	}
 
+	private async collaborationTargets(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const params = { ...input };
+		for (const key of ["sessionId", "integrator"]) if (typeof params[key] === "string") params[key] = await this.resolveTarget(params[key] as string);
+		if (Array.isArray(params.notify)) params.notify = await Promise.all(params.notify.map((id) => this.resolveTarget(String(id))));
+		return params;
+	}
+
 	/** Discovery uses published hints; scoped reads never acquire a storage writer. */
 	async collaborate(input: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
+		input = await this.collaborationTargets(input);
 		const action = String(input.action ?? "");
 		const threadId = typeof input.threadId === "string" ? input.threadId : undefined;
 		const sessionId = typeof input.sessionId === "string" ? input.sessionId : threadId ? collaborationStorage(threadId) : undefined;
@@ -551,12 +630,12 @@ export class AgentManager {
 	}
 
 	async status(sessionId?: string): Promise<unknown> {
-		if (sessionId) return this.observe(this.catalog.read(sessionId), "status", { sessionId });
+		if (sessionId) { sessionId = await this.resolveTarget(sessionId); return this.observe(this.catalog.read(sessionId), "status", { sessionId }); }
 		const page = await this.dashboardPage();
 		const failures = [
 			[...this.failures.entries].map(([storageId, error]) => ({ storageId, error })),
 		].flat();
-		return buildStatusOverview(page, [...this.primaries].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd ?? "", name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel })), failures);
+		return buildStatusOverview({ ...page, rows: page.rows.map(({ profile: _profile, ...row }) => row) }, [...this.primaries].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd ?? "", name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel })), failures);
 	}
 
 	async registerPrimary(ownerId: string, primary: PrimaryClient): Promise<void> {

@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { VERSION as CODING_AGENT_VERSION } from "@earendil-works/pi-coding-agent";
 import { AgentConversationSummarySchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema } from "./observation-schema.ts";
+import { AgentProfileSchema, ProfileUpdateSchema } from "./profile-schema.ts";
+import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 
 const require = createRequire(import.meta.url);
 const durableVersion: unknown = JSON.parse(readFileSync(require.resolve("@earendil-works/pi-durable/package.json"), "utf8")).version;
@@ -32,6 +34,10 @@ const operations: Record<string, OperationContract> = {};
 for (const method of ["close", "recovery-state", "submit", "passive-submit", "spawn", "place", "attach", "receipts", "report", "acknowledge", "inspect", "status", "list", "fork", "rewind", "abort", "compact", "configure", "command", "reset", "timer-schedule", "timer-list", "timer-cancel", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "changes", "collaboration-list", "collaboration-read", "collaboration-mutate"]) {
 	operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 }
+for (const method of ["profile-read", "profile-update", "profile-list", "resolve-agent", "task-submit"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
+operations["profile-list"] = { ...operations["profile-list"], response: schemaId(ProfiledListOutputSchema) };
+operations["profile-read"] = { ...operations["profile-read"], response: schemaId(AgentProfileSchema) };
+operations["profile-update"] = { ...operations["profile-update"], response: schemaId(ProfileUpdateSchema) };
 operations.status = { ...operations.status, response: schemaId(StatusOutputSchema), durable: durableVersion };
 operations.inspect = { ...operations.inspect, response: schemaId(InspectOutputSchema), durable: durableVersion };
 operations.list = { ...operations.list, response: schemaId(ListRowSchema) };
@@ -48,7 +54,7 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 });
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
-export const MANAGER_CONTRACT = "manager/1.0.0";
+export const MANAGER_CONTRACT = "manager/1.1.0";
 export const CONTROL_BINDING_CONTRACT = `native-controls/1.0.0;durable=${durableVersion}`;
 export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.0.0";
 

@@ -19,6 +19,7 @@ const CURRENT_TOOLS = [
 	"agent_inspect",
 	"agent_list",
 	"agent_place",
+	"agent_profile",
 	"agent_reset",
 	"agent_rewind",
 	"agent_send",
@@ -73,9 +74,12 @@ it("describes retained delivery and automatic unfinished-task check-ins", () => 
 	assert.doesNotMatch(all, /session-ownership section/u);
 	assert.match(
 		AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "",
-		/child's answer reports to the recorded owner conversation/u,
+		/task's answer reports to its request's reply recipient/u,
 	);
-	assert.match(AGENT_CONTROL_GUIDANCE.agent_send.guidelines?.[0] ?? "", /owner identity in its instructions/u);
+	assert.match(AGENT_CONTROL_GUIDANCE.agent_send.guidelines?.[0] ?? "", /mode: report to the current request's reply recipient/u);
+	assert.match(all, /creating owner is provenance/u);
+	assert.match(all, /expectedRevision/u);
+	assert.match(all, /before relying on past findings/u);
 	assert.match(all, /automatic owner check-ins/u);
 	assert.match(all, /Check-ins wake a model owner, not an operator owner/u);
 	assert.match(all, /0 disables/u);

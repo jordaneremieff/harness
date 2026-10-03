@@ -26,6 +26,8 @@ import * as Durable from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution } from "./durable-agents.ts";
 import { CheckInTask } from "./durable-checkins.ts";
+import { readProfile } from "./profile.ts";
+import { AgentMetaDoc } from "./durable-controls.ts";
 
 const context = BACKGROUND_CONTEXT;
 const storageId = "test-storage";
@@ -66,6 +68,7 @@ const CONTROL_TOOLS = [
 	"agent_inspect",
 	"agent_list",
 	"agent_place",
+	"agent_profile",
 	"agent_reset",
 	"agent_rewind",
 	"agent_send",
@@ -82,6 +85,7 @@ const REPLAY_CLASSIFICATION: Record<string, string> = {
 	agent_fork: "safe",
 	agent_rewind: "safe",
 	agent_place: "safe",
+	agent_profile: "safe",
 	agent_inspect: "safe",
 	agent_status: "safe",
 	agent_list: "safe",
@@ -250,7 +254,7 @@ function listObservation(): Record<string, unknown> {
 	return {
 		rows: [],
 		nextCursor: null,
-		coverage: { complete: true, storagesVisited: 0, unavailable: [] },
+		coverage: { complete: true, storagesVisited: 0, unavailable: [], profileHints: { complete: true, unknownStorages: 0, omitted: 0 } },
 		observedAt: OBSERVED_AT,
 		authority: "native catalog scan",
 	};
@@ -277,8 +281,13 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 		switch (method) {
 			case "status":
 				return statusObservation(params);
-			case "list":
+			case "profile-list":
 				return listObservation();
+			case "profile-read": {
+				const conversation = await testConversation(holder, params.sessionId);
+				assert.ok(holder.harness);
+				return readProfile(holder.harness, storageId, conversation.id, context, true);
+			}
 			case "collaboration-list": return { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
 			case "inspect":
 				return inspectObservation(holder);
@@ -491,6 +500,7 @@ it("spawns an anchor-owned child and reports its answer once", async (t) => {
 	assert.equal(record?.owner?.taskId, child.anchorTaskId, "the anchor task owns the child");
 	const rootAgent = await root.agent(context);
 	const childAgent = await harness.snapshot(Durable.AgentDoc, child.conversationId, context);
+	assert.equal((await harness.snapshot(AgentMetaDoc, child.conversationId, context))?.firstMessage, "CONTRACT: reply ALPHA", "the historical first input excludes the routing envelope");
 	assert.deepEqual(childAgent?.model, rootAgent.model, "the child stores the resolved model");
 	assert.equal(childAgent?.thinkingLevel, rootAgent.thinkingLevel, "the child stores the resolved thinking level");
 	const anchor = await harness.getTask(child.anchorTaskId, context);
@@ -629,6 +639,7 @@ it("drives one model-issued call per control tool", async (t) => {
 	await run("agent_place", { area: `${testCwd}/.`, topic: "area-x", prompt: "CONTRACT: reply PLACE" });
 	await settle(harness, root.id);
 	await run("agent_status", { sessionId: childSessionId });
+	await run("agent_profile", { action: "read", sessionId: childSessionId });
 	await run("agent_list", {});
 	await run("agent_collaborate", { action: "list" });
 	await run("agent_inspect", { sessionId: childSessionId, view: "history" });
@@ -684,14 +695,14 @@ it("drives one model-issued call per control tool", async (t) => {
 		"status used the host observation",
 	);
 	assert.ok(
-		calls.some((call) => call.method === "list"),
+		calls.some((call) => call.method === "profile-list"),
 		"list used the host observation",
 	);
 	assert.ok(
 		calls.some((call) => call.method === "inspect"),
 		"inspect used the host observation",
 	);
-	const listed = calls.find((call) => call.method === "list");
+	const listed = calls.find((call) => call.method === "profile-list");
 	assert.equal(listed?.params.global, true, "list requests the global catalog");
 	const configured = calls.find((call) => call.method === "configure");
 	assert.ok(configured, "configure used the host dispatch");

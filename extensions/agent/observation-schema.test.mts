@@ -1,3 +1,4 @@
+import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
 import { AgentManager } from "./manager.ts";
-import { AgentConversationSummarySchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListOutputSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { AgentConversationSummarySchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { boundCatalogView } from "./catalog-view.ts";
 import { readConversationList, readConversationStatus, readDashboard, readInspection } from "./durable-observation.ts";
@@ -104,7 +105,7 @@ it("validates list rows and the manager list aggregation", async (t) => {
 	});
 	t.after(() => manager.close());
 	manager.catalog.create({ cwd: "/work", agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "test", modelId: "model" }, thinkingLevel: "off", ownerId: "owner-1" });
-	const listed = structuredObservation(ListOutputSchema, await manager.list({}));
+	const listed = structuredObservation(ProfiledListOutputSchema, await manager.list({}));
 	assert.equal(listed.rows.length, 1);
 	assert.equal(listed.rows[0]?.sessionId, fixtureStorageId);
 	assert.equal(listed.rows[0]?.conversationId, 1);
@@ -124,7 +125,7 @@ it("validates list rows and the manager list aggregation", async (t) => {
 	});
 	t.after(() => failing.close());
 	failing.catalog.create({ cwd: "/work", agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "test", modelId: "model" }, thinkingLevel: "off", ownerId: "owner-1" });
-	const unavailable = structuredObservation(ListOutputSchema, await failing.list({}));
+	const unavailable = structuredObservation(ProfiledListOutputSchema, await failing.list({}));
 	assert.deepEqual(unavailable.rows, []);
 	assert.equal(unavailable.coverage.unavailable.length, 1);
 	assert.match(unavailable.coverage.unavailable[0]?.reason ?? "", /unavailable/u);

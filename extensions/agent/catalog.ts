@@ -11,6 +11,7 @@ import {
 	renameSync,
 	unlinkSync,
 	writeFileSync,
+	linkSync,
 } from "node:fs";
 import { opendir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -19,6 +20,9 @@ import { parseCollaborationProjection, type CollaborationProjection } from "./co
 import { observeClaim } from "./claims.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { type HostMetadata, hostPaths, parseHostMetadata } from "./host-protocol.ts";
+
+import { handleSlug, handleStorageId } from "./identity.ts";
+import { profileText } from "./profile.ts";
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
 const MAX_RECORD_BYTES = 32_768;
@@ -117,6 +121,29 @@ export class AgentCatalog {
 	}
 	create(input: Omit<HostMetadata, "storageId" | "storagePath">, requestId?: string): CatalogRecord {
 		return this.createTracked(input, requestId).record;
+	}
+
+	/** Publish one complete handle claim without replacing a concurrent creator's record. */
+	createHandled(input: Omit<HostMetadata, "storageId" | "storagePath">, handle: string, role: string): CatalogCreateResult {
+		handleSlug(handle);
+		profileText(role, "role");
+		mkdirSync(this.root, { recursive: true, mode: 0o700 });
+		const storageId = handleStorageId(handle);
+		const metadata = parseHostMetadata({ ...input, storageId, storagePath: join(this.root, `${storageId}.sqlite`) });
+		if (!isThinkingLevel(metadata.thinkingLevel)) throw new Error("Unknown reasoning level");
+		const createdAt = new Date().toISOString();
+		const record: CatalogRecord = { ...metadata, createdAt, view: { updatedAt: createdAt, storageId, rows: [], coverage: { complete: false, omitted: 1 }, profileSeed: { handle, role } } };
+		const prepared = join(this.root, `.${storageId}.${randomUUID()}.claim`);
+		writeFileSync(prepared, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
+		try {
+			try { linkSync(prepared, this.path(storageId)); }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				return { record: this.read(storageId), created: false };
+			}
+		} finally { unlinkSync(prepared); }
+		publishCatalogChange(this.root);
+		return { record, created: true };
 	}
 
 	/**

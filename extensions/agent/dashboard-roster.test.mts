@@ -133,3 +133,16 @@ it("duplicate titles receive distinct shortest suffixes and coverage remains exp
 		/skipped.*not loaded.*more inventory/,
 	);
 });
+it("roster identifies handles and roles separately from the historical first input", () => {
+	const expert = row("expert", { name: "History", firstMessage: "One old task", profile: { identity: "expert", handle: "@history", role: "Review operator decisions", revision: "one", hasExpertise: true, updatedAt: 0 } });
+	for (const [width, height, compact] of [[38, 18, false], [80, 4, true], [120, 24, false]] as const) {
+		const lines = rosterLines([expert], expert.id, width, height, 0, theme, compact);
+		assert.match(lines.join("\n"), /@history/);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		if (!compact) assert.match(lines.join("\n"), /Role: Review operator decisions/);
+		assert.doesNotMatch(lines.join("\n"), /One old task/);
+	}
+	for (const query of ["@history", "operator decisions", "History", "old task"]) assert.equal(dashboardRecords({ observedAt: 0, sessions: [expert] }, query).length, 1);
+	const historical = row("plain", { name: undefined, firstMessage: "Original request" });
+	assert.match(dashboardText({ observedAt: 0, sessions: [historical] }), /Historical: Original request/);
+});

@@ -35,6 +35,21 @@ function fixture(t: { after(fn: () => void): void }) {
 	};
 }
 
+it("publishes one complete handle seed without replacing creation defaults", (t) => {
+	const { catalog, input } = fixture(t);
+	const role = "😀".repeat(2000);
+	const first = catalog.createHandled({ ...input, name: "Archive" }, "archive", role);
+	const reused = catalog.createHandled({ ...input, name: "Changed", ownerId: "another" }, "archive", "new role");
+	assert.equal(first.created, true);
+	assert.equal(reused.created, false);
+	assert.equal(reused.record.storageId, first.record.storageId);
+	assert.equal(reused.record.name, "Archive");
+	assert.equal(catalog.read(first.record.storageId).view?.profileSeed?.role, role);
+	assert.equal(reused.record.ownerId, input.ownerId);
+	assert.equal("view" in hostMetadata(reused.record), false);
+	assert.equal(readdirSync(catalog.root).filter((name) => name.endsWith(".claim")).length, 0);
+});
+
 it("retains a continuation for each prefetched catalog record", async (t) => {
 	const { catalog, input } = fixture(t);
 	for (let index = 0; index < 12; index++) catalog.create({ ...input, name: `record-${index}` });

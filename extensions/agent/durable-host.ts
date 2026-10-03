@@ -14,6 +14,8 @@
  * writer claim.
  */
 import { randomUUID } from "node:crypto";
+import { initializeProfile, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
+import { richSubmitConversation } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -60,6 +62,7 @@ export interface DurableHostOptions {
 	readonly agent?: AgentChange;
 	/** Root conversation metadata, applied when the root is created. */
 	readonly meta?: { readonly name?: string; readonly owner?: string };
+	readonly profileSeed?: ProfileSeed;
 	/** Commands contributed to Durable agents, invoked by the `command` request. */
 	readonly commands?: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>;
 	/** The services bootstrap's contribution host, passed to each command's fourth argument. */
@@ -274,6 +277,7 @@ export class DurableHost {
 					...(options.settings === undefined ? {} : { settings: options.settings }),
 					...(options.env === undefined ? {} : { env: options.env }),
 					now,
+					conversationCreated: (tx, record) => initializeProfile(tx, record.id, options.storageId),
 					...(options.onReport === undefined ? {} : { onReport: options.onReport }),
 				},
 				context,
@@ -287,19 +291,17 @@ export class DurableHost {
 			throw error;
 		}
 		try {
-			if (options.resume !== false) harness.resume();
 			const root = await harness.root(context, {
 				...(options.agent === undefined ? {} : { agent: options.agent }),
-				...(options.meta === undefined
-					? {}
-					: {
-							init: async (tx, conversationId) => {
-								const meta = await tx.doc(AgentMetaDoc, conversationId);
-								if (options.meta?.name !== undefined) (meta as { name: string | null }).name = options.meta.name;
-								if (options.meta?.owner !== undefined) (meta as { owner: string | null }).owner = options.meta.owner;
-							},
-						}),
+				init: async (tx, conversationId) => {
+					const meta = await tx.doc(AgentMetaDoc, conversationId);
+					if (options.meta?.name !== undefined) meta.name = options.meta.name;
+					if (options.meta?.owner !== undefined) meta.owner = options.meta.owner;
+					await initializeProfile(tx, conversationId, options.storageId, options.profileSeed);
+				},
 			});
+			await root.commit((tx) => initializeProfile(tx, root.id, options.storageId), context);
+			if (options.resume !== false) harness.resume();
 			if (options.resume !== false) await reconcileDeliveries(harness, context);
 			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
 			// A fresh host has no commit to trigger the subscriber; establish the idle cache now.
@@ -359,6 +361,29 @@ export class DurableHost {
 				if (Buffer.byteLength(message) > 16 * 1024) throw new Error("Passive thread notice exceeds its byte bound");
 				const submission = await conversation.submit({ type: "write", requestId: requestRequiredString(params, "requestId"), entry: { kind: "agent.thread-notice", model: [{ role: "user", content: message, timestamp: Date.now() }] } }, requestContext);
 				return { submissionId: submission.id, conversationId: conversation.id, passive: true };
+			}
+			case "profile-read": {
+				const conversation = await this.target(params, requestContext);
+				return readProfile(this.harness, this.storageId, conversation.id, requestContext, true);
+			}
+			case "profile-update": {
+				const conversation = await this.target(params, requestContext);
+				return updateProfile(this.harness, this.storageId, conversation.id, {
+					expectedRevision: requestRequiredString(params, "expectedRevision"), requestId: requestRequiredString(params, "requestId"), senderIdentity: requestRequiredString(params, "senderIdentity"),
+					...optionalParam("role", requestString(params, "role")), ...optionalParam("expertise", requestString(params, "expertise")),
+				}, requestContext);
+			}
+			case "task-submit": {
+				const origin = this.originParam(params);
+				if (origin === undefined) throw new TypeError("task-submit requires an explicit origin");
+				const conversation = await this.target(params, requestContext);
+				await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), requestContext);
+				const submitted = await richSubmitConversation(conversation, {
+					message: messageFrom(params?.message), requestId: requestRequiredString(params, "requestId"), requester: requestRequiredString(params, "requester"),
+					origin, ...optionalParam("replyTo", requestString(params, "replyTo")), ...optionalParam("whenBusy", this.busyMode(params)), ...optionalParam("operationId", requestString(params, "operationId")),
+					...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }), senderIdentity: this.identity(conversation.id),
+				}, requestContext);
+				return { ...submitted, identity: this.identity(conversation.id) };
 			}
 			case "submit":
 				return this.submitRequest(params, requestContext);
@@ -684,7 +709,7 @@ export class DurableHost {
 		const requestId = requestString(params, "requestId") ?? `timer-delivery:${randomUUID()}`;
 		return await scheduleTimer(
 			this.harness,
-			{ scheduleId, deadline, conversationId: conversation.id, identity: this.identity(conversation.id), message, mode, origin, ownerId, requestId, createdAt: Date.now(), ...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }) },
+			{ scheduleId, deadline, conversationId: conversation.id, identity: this.identity(conversation.id), message, mode, origin, ownerId, requestId, requestContext: { requestId, requester: ownerId, replyTo: ownerId, origin }, createdAt: Date.now(), ...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }) },
 			context,
 		);
 	}

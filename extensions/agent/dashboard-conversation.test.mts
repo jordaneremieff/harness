@@ -135,7 +135,7 @@ it("recovers the first task from the session summary when the bounded transcript
 	const synthetic = firstTaskEntry({ entries: late, partial: true }, { firstMessage: "Run the checks" });
 	assert.ok(synthetic);
 	const message = synthetic.model?.[0] as { content?: unknown } | undefined;
-	assert.equal(message?.content, "Run the checks");
+	assert.equal(message?.content, "Historical first input:\nRun the checks");
 	assert.equal(firstTaskEntry({ entries: late, partial: true }, undefined), undefined);
 	assert.equal(firstTaskEntry({ entries: late, partial: false }, { firstMessage: "Run the checks" }), undefined);
 	assert.equal(

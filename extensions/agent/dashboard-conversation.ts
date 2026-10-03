@@ -109,9 +109,8 @@ export function renderableEntries(entries: readonly AgentConversationEntry[]): A
 }
 
 /**
- * First user task recovered from the session summary when the bounded
- * transcript dropped the oldest entries. The summary carries the first input
- * independently of the transcript bound, so the task stays visible.
+ * Historical first input recovered from the session summary when the bounded
+ * transcript dropped the oldest entries. It is not the current task or role.
  */
 export function firstTaskEntry(
 	snapshot: { readonly entries: readonly AgentConversationEntry[]; readonly partial: boolean },
@@ -128,7 +127,7 @@ export function firstTaskEntry(
 	return {
 		id: "first-task",
 		kind: "pi.user",
-		model: [{ role: "user", content: row?.firstMessage ?? first, timestamp: 0 }],
+		model: [{ role: "user", content: `Historical first input:\n${row?.firstMessage ?? first}`, timestamp: 0 }],
 	};
 }
 

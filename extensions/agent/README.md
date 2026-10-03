@@ -15,13 +15,16 @@ stopping work.
 
 ## Runtime and identity
 
-- A root agent's external ID is its storage ID. A fork or child has the ID
-  `<storageId>:<conversationId>`.
+- A root agent's immutable external ID is its storage ID. A fork or child has
+  the ID `<storageId>:<conversationId>`. An optional creation-time `@handle`
+  addresses a standing concern separately from its mutable, nonunique display name.
+  Controls accept canonical identities or `@handle`, never a bare display name.
 - A native fork stays in its source storage. A child at the same cwd is a
   conversation owned by a background task in that storage. A child at a
   different cwd gets new storage and its own cwd-bound services and host.
-  Native documents retain the owner association; results return as deduplicated
-  follow-up submissions to the parent's host. A separate root gets new storage.
+  Native documents retain the creating owner as provenance. Each task's results
+  return to its own reply recipient as deduplicated follow-ups. A separate root
+  gets new storage; a handle always selects an independent root, even at the same cwd.
 - Each storage has one writer claim. The process takes it before it opens
   SQLite or resumes the Durable scheduler. A live or unverified claim refuses
   a second writer. A dead local owner permits a replacement.
@@ -85,6 +88,40 @@ The package declares Pi Durable, Codemode, MCP, and Chord as runtime dependencie
 Core coding-agent services come from the primary's selected public Pi package
 entrypoint. No private upstream implementation is imported or copied.
 
+## Standing agents and expertise
+
+`agent_spawn({handle, name, role, model?, thinkingLevel?, prompt?})` resolves or
+creates one independent root in the selected store. Supply the lowercase slug
+without `@` when creating it; subsequent controls use `@slug`. A deterministic
+storage address and exclusive atomic catalog publication prevent concurrent
+creators from claiming different agents. The result states `created`. Reuse
+never applies creation defaults to name, role, model, or reasoning. An explicit
+conflicting cwd refuses instead of changing the retained directory.
+
+Resolve without a prompt to inspect the agent before assigning work. Reuse reads
+its retained profile without starting a host. During another caller's initial
+creation it returns `availability: "initializing"`, `profile: null`, and the
+creation defaults, not an invented native revision. An interrupted creation
+remains addressable; `agent_attach` opens its retained seed. A prompt requires
+successful host admission and uses follow-up disposition for handle reuse.
+
+The native `agent.profile` document holds the role and bounded sourced expertise.
+The role permits 2,000 Unicode characters; expertise permits 16,384 UTF-8 bytes.
+`agent_profile` reads the profile or updates role/expertise with `expectedRevision`
+from a current read. Conflicts return the current profile without writing.
+Retried successful updates keep their request identity. Profile updates work at
+busy tool boundaries and start no model turn. Name/model configuration remains
+an idle-only operation. Native callers default the profile target to themselves;
+ordinary primary callers supply an agent target.
+
+One native instruction builder supplies exact identity, current display name,
+handle, role, creator provenance, request-routing rules, and a pointer to saved
+expertise. It does not load the expertise body into every prompt. Role and name
+changes refresh these instructions in the same native commit. The profile
+survives compaction, reset, and host retirement. Forks start with their own
+identity and an empty profile, not an inherited handle or borrowed expertise.
+Saved expertise remains evidence; fresh sources and task restrictions outrank it.
+
 ## Capabilities and project resources
 
 The host calls public `createAgentSessionServices()` at the selected cwd with
@@ -133,19 +170,20 @@ selection and MCP server configuration follow the current Pi settings.
 
 | Tool | Effect |
 |---|---|
-| `agent_spawn` | Create a root storage. Inside a Durable agent, the same cwd uses a native child; a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
-| `agent_send` | Admit a task, report, or correction. Busy recipients receive Durable steering by default; `mode: "followUp"` queues after the current answer. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native child and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
+| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive Durable steering by default; `mode: "followUp"` queues after the current answer. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change an idle conversation's name, exact model, or reasoning level. |
+| `agent_profile` | Read a complete bounded profile, or update role and expertise with `expectedRevision`. Reads start no host. A conflict returns the current profile without a change. |
 | `agent_fork` | Create an idle native fork at an entry or current leaf. |
 | `agent_rewind` | Fork before a mistaken entry and submit a correction. Files remain current. |
 | `agent_compact` | Abort another conversation's active work, then run native compaction. Self-compaction uses its completed tool boundary. |
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths; optional `checkInMinutes` overrides it and 0 disables it. |
-| `agent_list` | Page through stored identities and conversation metadata. |
+| `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results. |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. |
@@ -160,9 +198,10 @@ All agents have independent process lifetimes. There is no separate detach
 operation or detached-run registry.
 
 `/agent` exposes `new`, `list`, `status`, `send`, `steer`, `abort`, `attach`,
-`fork`, `compact`, `inspect`, `rewind`, `configure`, `command`, `place`, `places`,
+`fork`, `compact`, `inspect`, `rewind`, `configure`, `profile`, `command`, `place`, `places`,
 `unbind`, `reset`, `schedule`, `timers`, and `timer-cancel`. `help` shows action
-syntax. Tab completes actions and session identities without executing them.
+syntax. Tab completes actions, canonical identities, and retained `@handle`
+addresses without executing them. Completion searches retained role hints too.
 Without an action, `/agent` opens the dashboard. In the roster, Up/Down selects,
 Enter opens the agent console, Tab or m focuses its message field, n starts an
 agent, a opens contextual actions, / finds loaded agents, and ? shows help.
@@ -189,7 +228,7 @@ successful receipt stays.
 
 The `/agent` control actions return short human text and, when an action creates
 or selects an agent, that agent's identity. Observation actions (`list`,
-`status`, `inspect`, `places`) keep their retained evidence. `/agent send`
+`status`, `inspect`, `profile`, `places`) keep their retained evidence. `/agent send`
 admits a follow-up when the target is busy; `/agent steer` admits steering. The
 model-facing `agent_send` tool keeps its documented steering disposition. The
 status card labels its newest text by role and state: `Latest reply` or
@@ -281,7 +320,18 @@ old mouse positions until the new rows render.
 
 An admitted input has a stable Durable request ID. Reconnecting or retrying the
 same admission reuses that identity. A pending delivery intent precedes input
-admission, so a crash between those operations does not lose the owner link.
+admission, so a crash between those operations does not lose the reply route.
+
+Rich task admission adds a host-authored envelope containing requester, reply
+recipient, request ID, and origin. Native request-context documents preserve
+those routes through compaction and match actual active inputs, not the last
+arriving caller. Several requests can share one run; reports therefore require
+an explicit recipient. `replyTo` changes the answer recipient without changing
+the requester or creator. Report mode does not accept `replyTo`, scheduling, or
+check-in controls. Scheduled tasks use their caller as requester and recipient.
+Rich host admission requires explicit origin; high-level callers default to
+operator origin unless the tool supplies model origin. Base-only calls preserve
+an absent origin and refuse an explicit alternate recipient rather than ignore it.
 
 Model requests resume from native checkpoints after process loss. Unsafe tools
 that started but did not commit a result are not executed again automatically;
@@ -426,6 +476,12 @@ contract. Client and host compare those identities before dispatch; a mismatch
 refuses that operation before a mutation or response decoding. Unchanged
 operations remain usable across independently restarted Pi windows and hosts,
 including mutations. Release ordering never grants or denies an operation.
+Profile reads, revision-checked updates, enriched discovery, handle resolution,
+and rich task admission have separate feature-scoped operations. Base wire rows
+and top-level host metadata remain unchanged. Optional profile hints live inside
+catalog `view`, outside those base schemas. An older host refuses only unsupported
+features; ordinary base operations remain available in both process directions.
+
 An unavailable change feed leaves compatible reads and controls usable;
 `agent_status` reports the live-update failure.
 
@@ -558,8 +614,8 @@ Configure to its staged fields; Cancel abandons that configuration.
 
 Actions apply only to the selected agent. They expose Stop current work,
 Configure, Tasks, Fork, Rewind, Reset context, Schedule message, Scheduled
-messages, Compact, Reconnect, Run agent command, and Details. Disabled actions
-state their reason. Stop, Reset, Rewind, and Compact confirm with Cancel selected.
+messages, Compact, Reconnect, Run agent command, Profile, and Details. Disabled
+actions state their reason. Profile remains available while an agent works. Stop, Reset, Rewind, and Compact confirm with Cancel selected.
 A refusal appears on the restored Actions screen at once. Fork and Rewind open
 the created branch's console while their action still has focus. Details and
 command results wrap to the available width and keep all returned text.
@@ -573,6 +629,25 @@ and busy disposition. Completed schedule fields stay with their target after
 Cancel or host refusal. Reopening prefills the message; a blank deadline keeps
 the saved exact deadline. Native Cancel discards edits in the current unsubmitted
 field. The storage host must run at the deadline.
+
+Profile shows the canonical identity, optional immutable handle, display name,
+role, actual model and reasoning, creator as provenance, directory, revision,
+update evidence, and retained current request routes. Requester and reply
+recipient remain separate. Cold profiles are labeled retained and reads start
+no host. Saved expertise opens on demand with `v`; it is evidence, not fresh
+authority. Arrows, PageUp/PageDown, Home/End, and the mouse wheel read the full
+text at the available width. Click an action row to invoke it.
+
+Use `r` to edit the role or `e` to edit expertise in Pi's native editor. A blank
+submitted field clears it. `s` saves the staged draft; `u` reads the current
+profile; `d` discards the draft; Esc returns to Actions. Native editor Cancel
+leaves the completed draft unchanged. Save checks the revision from the read.
+A conflict keeps the draft and requires a fresh read, followed by explicit
+selection of the displayed current revision before another Save. Closing and
+reopening Profile keeps staged fields within the current primary session and
+process. These fields neither replace the message draft nor alter the primary
+editor. `/agent profile <identity-or-@handle>` opens the same view and edits;
+outside the interactive terminal it returns the full profile as text.
 
 The agent console uses the same conversation and message components as the
 selected dashboard view. Its editor has focus; PageUp/PageDown reads without
@@ -613,8 +688,9 @@ the reading anchor. The selected display-input cache retains at most 800 entries
 and approximately 4 MiB. Distant pages lose their input but keep cursors for
 reload. Only a contiguous loaded range appears; newer gaps load before the live
 tail joins that range. Offscreen blocks retain height and anchor measurements,
-not every rendered line. A partial transcript also shows its first task from the
-published summary. Blank runs between chat blocks reduce to one blank line.
+not every rendered line. A partial transcript also shows its first input from
+the published summary, explicitly labeled historical rather than the current
+role or task. Blank runs between chat blocks reduce to one blank line.
 The primary's no-target `agent_status` is a compact fleet overview. Working
 and starting rows without an attention reason come first, then attention rows,
 then recent quiet rows. Independent host, recovery, or availability faults make
@@ -693,10 +769,13 @@ recorded change, not its work duration. The local date and clock time stay
 fixed until that recorded change advances, for active and inactive agents.
 Press `i` in the roster or a thread, or click a timestamp in fullscreen mode,
 to switch between local time and exact UTC timestamps with milliseconds.
-The same choice applies to thread event times. Names shorten before these
-fields; duplicate names receive unique identity suffixes. The footer keeps the
-selected model, reasoning, cost, and state separate from the single hint line.
-Unknown cost stays unknown and partial cost stays a lower bound.
+The same choice applies to thread event times. A retained `@handle` leads the
+label, followed by the display name when it fits. The wide roster adds one short
+role line when available. Model and reasoning stay separate. A historical first
+input is a labeled fallback, never a standing role. Names shorten before state,
+cost, and update fields; duplicate labels receive unique identity suffixes.
+The footer keeps the selected model, reasoning, cost, and state separate from
+the single hint line. Unknown cost stays unknown and partial cost stays a lower bound.
 
 Working and Attention precede retained date groups. Attention names unavailable
 or conflicted storage, a host error, failed compaction, failed work with an
@@ -708,7 +787,8 @@ published metadata changes.
 
 Coverage carries `complete`, `storagesVisited`, `skipped`, `omitted`, and
 `nextCursor`. Load more agents continues that cursor. Find searches loaded
-name, task, path, model, state, and identity, not transcript text. Find
+handle, role hint, name, historical first input, path, model, state, and identity,
+not transcript text. Find
 previews the selected match before the filter is committed; Esc restores the
 previous filter and selection. A filter with no match is not an empty store:
 Enter does nothing and Esc clears the filter. An empty page or missing view is
@@ -716,6 +796,14 @@ not proof of absence. A dead or absent writer claim marks
 previously working retained metadata Interrupted. Claim errors remain explicit.
 Host health belongs to the publication time; later publications clear it.
 The manager adds current recovery errors without rewriting published views.
+
+Profile hints are a separate retained catalog projection joined by canonical
+identity, not added fields in base host observation rows. Missing hints mean
+unknown profile coverage, not an empty role. `agent_list` reports
+`coverage.profileHints` even on an empty match page: omitted hints and storages
+with unknown hints qualify the search. Hints contain no expertise bodies and
+may shorten a role. Use Profile for the complete bounded role and expertise.
+Exact handle resolution does not depend on roster or list completeness.
 
 Host notifications coalesce roster refreshes. A bounded metadata reconciliation
 while the dashboard is visible discovers hosts created elsewhere and dead
@@ -773,3 +861,13 @@ Native tests exercise real Harness instances and faux providers. Process tests
 use SIGKILL during a model request and after an unsafe effect through the
 production runner, then reopen and inspect retained admission and results.
 Those tests cover their checkpoints, not arbitrary power failure or all models.
+
+The standing-profile process tests use independent requester processes and the
+production host runner with a socket-controlled faux provider. They exercise
+profile tool use, compaction/reset/retirement continuity, alternate recipients,
+report disposition, concurrent handle creation, replay, and operation-scoped
+old/new process compatibility. Their stale-source correction is a scripted
+mechanical path, not evidence of autonomous model judgment. Test-only
+`PROFILE_TEST_ROOT` selects the isolated fixture directory; its default is
+`~/Workspace/dump/agent-profile-tests`. The fixtures set their own
+`PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR` beneath that root.

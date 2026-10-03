@@ -3,8 +3,8 @@
  *
  * The ordinary agent registration and the native Durable contribution render the
  * same guidance. This module owns the text; each consumer maps it onto its own
- * tool registration or prompt section. Native answers report to the recorded
- * owner conversation; its identity lives in the conversation instructions.
+ * tool registration or prompt section. Native answers follow each request's
+ * reply route, independent of the creating owner.
  */
 
 /** Control names in prompt order. */
@@ -17,6 +17,7 @@ export const AGENT_CONTROL_TOOL_NAMES = [
 	"agent_rewind",
 	"agent_reset",
 	"agent_configure",
+	"agent_profile",
 	"agent_compact",
 	"agent_command",
 	"agent_status",
@@ -41,15 +42,16 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	agent_spawn: {
 		snippet: "Spawn a background full agent session",
 		guidelines: [
+			"Before creating an agent for a recurring concern, look for an existing @handle whose role covers it. Reuse it with a short task; use a fresh agent for unrelated or independent work. Spawn with handle resolves or creates one independent root and never reapplies creation defaults on reuse. Display names may repeat; targets accept @handle or canonical identity, not bare names.",
 			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. Apply the universal AGENTS.md "Intent authority" section to assignments, corrections, and relayed decisions; preserve operator restrictions and distinguish them from agent choices.',
 			"Model tool tasks get automatic check-ins while unanswered, separate from voluntary worker reports. checkInMinutes overrides PI_AGENT_CHECK_IN_MINUTES (default 30); 0 disables. A check-in is not a finished result. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. Steering waits for the tool boundary.",
-			"Agent work runs in the background. The child's answer reports to the recorded owner conversation automatically. Settlement is execution evidence, not task acceptance. Integrate needed results and resolve live work before a final conclusion: continue useful work, redirect changed work, or abort superseded work.",
+			"Agent work runs in the background. Each task's answer reports to its request's reply recipient automatically. Settlement is execution evidence, not task acceptance. Integrate needed results and resolve live work before a final conclusion: continue useful work, redirect changed work, or abort superseded work.",
 		],
 	},
 	agent_send: {
 		snippet: "Send a task to an agent session",
 		guidelines: [
-			"A child conversation sends interim reports, blocking questions, and corrections with agent_send to the owner identity in its instructions. Do not replace the terminal result with an interim report. Reuse an existing session when its retained context and ownership serve the task; do not duplicate its work.",
+			"Send interim reports, blocking questions, and corrections with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. Do not replace the terminal result with an interim report. Use followUp for unrelated new work on a reused expert.",
 			"Unanswered model tool tasks get automatic owner check-ins. checkInMinutes overrides the default and 0 disables. Check-ins wake a model owner, not an operator owner; delivered reports and check-ins do not start another check-in task. Assess the unfinished task rather than treat the notice as an answer.",
 			"With deliverAt, the input is scheduled at that absolute time instead of being admitted now; the storage host must run at the deadline.",
 		],
@@ -74,6 +76,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		],
 	},
 	agent_configure: { snippet: "Configure an idle session without starting work" },
+	agent_profile: { snippet: "Read or update a durable agent profile", guidelines: ["Read saved expertise after context loss and before relying on past findings. Update role or a bounded sourced synthesis with expectedRevision from a current read. Profile edits work at a busy tool boundary; model/name changes remain agent_configure. Current evidence and task restrictions outrank stale expertise."] },
 	agent_compact: { snippet: "Compact an agent while preserving its continuity" },
 	agent_command: { snippet: "Run a command through an agent's owner" },
 	agent_status: {

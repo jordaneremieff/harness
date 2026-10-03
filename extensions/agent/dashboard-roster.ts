@@ -26,7 +26,9 @@ export const sessionAppearance: Record<AgentConversationSummary["state"], StateA
 };
 const oneLine = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
 export const titleOf = (row: AgentConversationSummary) =>
-	oneLine(row.name || row.firstMessage || basename(row.cwd) || row.id);
+	oneLine(row.profile?.handle
+		? `${row.profile.handle}${row.name ? ` · ${row.name}` : ""}`
+		: row.name || (row.firstMessage ? `Historical: ${row.firstMessage}` : basename(row.cwd) || row.id));
 const pad = (text: string, width: number) => {
 	const clipped = truncateToWidth(text, Math.max(0, width));
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
@@ -111,7 +113,7 @@ export function dashboardRecords(
 	return (snapshot?.sessions ?? [])
 		.filter((row) => {
 			const text =
-				`${titleOf(row)} ${row.firstMessage ?? ""} ${row.cwd} ${row.id} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
+				`${titleOf(row)} ${row.profile?.role ?? ""} ${row.firstMessage ?? ""} ${row.cwd} ${row.id} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
 			return terms.every((term) => text.includes(term));
 		})
 		.sort(
@@ -158,6 +160,7 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 				`${sessionAppearance[row.state].glyph} ${stateLabel(row)} · ${titleOf(row)} · ${basename(row.cwd)} · ${row.model?.modelId ?? "unknown model"} · ${costOf(row)}`,
 			),
 			`  ${oneLine(row.id)} · ${oneLine(row.cwd)}`,
+			...(row.profile?.role ? [`  Role: ${oneLine(row.profile.role)}`] : []),
 			...recoveryLines(row).map((line) => `  ${oneLine(line.text)}`),
 			...(row.latestReply ? [`  ${oneLine(row.latestReply).slice(0, 300)}`] : []),
 		]),
@@ -203,6 +206,7 @@ function rosterRow(
 	if (!compact) {
 		lines.push(theme.fg(appearance.color, truncateToWidth(`  ${appearance.label}  ${costOf(row)}`, width)));
 		lines.push(theme.fg("muted", truncateToWidth(`  ${updated}`, width)));
+		if (row.profile?.role) lines.push(theme.fg("muted", truncateToWidth(`  Role: ${oneLine(row.profile.role)}`, width)));
 	}
 	const timeX = compact ? 5 + titleWidth + visibleWidth(`${appearance.label}  ${costOf(row)}  `) : 2;
 	return {
@@ -223,7 +227,8 @@ function rosterWindow(
 		0,
 		rows.findIndex((row) => row.id === selected),
 	);
-	const capacity = compact ? 3 : Math.max(1, Math.floor((height - 2) / 4));
+	const rowHeight = rows.some((row) => row.profile?.role) ? 5 : 4;
+	const capacity = compact ? 3 : Math.max(1, Math.floor((height - 2) / rowHeight));
 	const maxStart = Math.max(0, rows.length - capacity);
 	return { capacity, maxStart, start: Math.min(maxStart, Math.max(0, requested ?? index - Math.floor(capacity / 2))) };
 }

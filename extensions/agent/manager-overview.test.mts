@@ -1,10 +1,11 @@
+import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { AgentManager } from "./manager.ts";
-import { ListOutputSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
@@ -61,11 +62,11 @@ it("matches a list query against the first message", async (t) => {
 	t.after(() => manager.close());
 	const record = manager.catalog.create(catalogInput(root));
 	identity = `${record.storageId}:1`;
-	const found = structuredObservation(ListOutputSchema, await manager.list({ query: "WHALE" }));
+	const found = structuredObservation(ProfiledListOutputSchema, await manager.list({ query: "WHALE" }));
 	assert.equal(found.rows.length, 1, "the query matched the retained first message case-insensitively");
 	assert.equal(found.rows[0]?.firstMessage, "find the whale");
 	assert.equal(found.rows[0]?.sessionId, identity);
-	const missing = structuredObservation(ListOutputSchema, await manager.list({ query: "unicorn" }));
+	const missing = structuredObservation(ProfiledListOutputSchema, await manager.list({ query: "unicorn" }));
 	assert.equal(missing.rows.length, 0);
 });
 

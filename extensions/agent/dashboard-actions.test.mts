@@ -18,11 +18,13 @@ it("actions contain only ordered selected-agent controls with reasons", () => {
 			"Compact",
 			"Reconnect",
 			"Run agent command",
+			"Profile",
 			"Details",
 		],
 	);
 	assert.equal(choices[1].disabled, "Stop current work first");
 	assert.ok(choices.every((choice) => choice.description));
 	assert.equal(dashboardActions(row("one", { state: "idle" }))[0].disabled, "No current work");
-	assert.equal(dashboardActions(row("one", { state: "unavailable" }))[9].disabled, undefined);
+	assert.equal(dashboardActions(row("one", { state: "unavailable" })).find((choice) => choice.name === "attach")?.disabled, undefined);
+	assert.equal(choices.find((choice) => choice.name === "profile")?.disabled, undefined, "busy agents retain profile access");
 });

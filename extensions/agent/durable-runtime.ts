@@ -24,7 +24,12 @@ function controlParams(input: unknown): Record<string, unknown> {
 }
 
 /** Methods that admit work or delivery into this storage. */
-const ADMITTING_METHODS: ReadonlySet<string> = new Set(["submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit"]);
+import { projectProfiles } from "./profile.ts";
+import { requestContextSection } from "./request-context.ts";
+import { withProfileHints } from "./catalog-view.ts";
+import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
+
+const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-update", "resolve-agent", "submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit"]);
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
 
@@ -159,7 +164,10 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		publishPromise = (async () => {
 			try {
 				const rows = await host.request("dashboard", {}) as readonly CatalogViewRow[];
-				const view = boundCatalogView({ updatedAt: new Date().toISOString(), rows, storageId: metadata.storageId });
+				const base = boundCatalogView({ updatedAt: new Date().toISOString(), rows, storageId: metadata.storageId });
+				const ids = base.rows.map((row) => row.id === metadata.storageId ? ROOT_CONVERSATION_ID : Number(row.id.split(":")[1]) as ConversationId);
+				const profiles = await projectProfiles(host.harness, metadata.storageId, ids);
+				const view = withProfileHints(base, { ...profiles, coverage: { complete: profiles.coverage.complete && base.coverage.omitted === 0, omitted: profiles.coverage.omitted + base.coverage.omitted } });
 				catalog.updateView(metadata.storageId, view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
 				for (const listener of changeListeners) listener();
 			} catch (error) {
@@ -223,10 +231,6 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		return client.request("status", { sessionId });
 	}
 	async function foreignControl(method: string, params: Record<string, unknown>, sessionId: string): Promise<unknown> {
-		if (sessionId === metadata.ownerId && method === "submit") {
-			markRecoveryDue(true);
-			return host.request("report", { ...params, ownerId: sessionId });
-		}
 		let record: CatalogRecord;
 		try { record = catalog.read(sessionId); }
 		catch (error) {
@@ -235,6 +239,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		}
 		const client = await acquireHost(hostMetadata(record));
 		try {
+			if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity });
 			if (method !== "attach") return await client.request(method, params);
 			return await attachForeign(client, params, sessionId);
 		} finally { await client.close(); }
@@ -243,18 +248,31 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 		try { return await manager.collaborate({ ...params, action: method === "collaboration-list" ? "list" : "read" }, { id: String(params.senderIdentity ?? metadata.storageId), cwd: metadata.cwd }); } finally { await manager.close(); }
 	}
-	const dispatch: AgentControlDispatch = async (method, input) => {
+	async function resolveSelectors(input: Readonly<Record<string, unknown>>): Promise<Record<string, unknown>> {
 		const params = { ...input };
+		const selectors = ["sessionId", "replyTo", "integrator"] as const;
+		if (!selectors.some((key) => typeof params[key] === "string" && (params[key] as string).startsWith("@")) && !Array.isArray(params.notify)) return params;
+		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		try {
+			for (const key of selectors) if (typeof params[key] === "string") params[key] = await manager.resolveTarget(params[key] as string);
+			if (Array.isArray(params.notify)) params.notify = await Promise.all(params.notify.map((id) => manager.resolveTarget(String(id))));
+		} finally { await manager.close(); }
+		return params;
+	}
+	async function dispatchForeign(method: string, params: Record<string, unknown>, sessionId: string): Promise<unknown> {
+		if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
+		activeRequests++;
+		activityGeneration++;
+		try { return await foreignControl(method, params, sessionId); }
+		finally { activeRequests--; notifyActivity(); }
+	}
+	const dispatch: AgentControlDispatch = async (method, input) => {
+		const params = await resolveSelectors(input);
+		if (method === "report") return request("report", { ...params, ownerId: params.sessionId }, typeof params.requestId === "string" ? params.requestId : randomUUID());
 		if (["collaboration-list", "collaboration-read"].includes(method)) return collaborationObservation(method, params);
 		if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
-		if (storageIdOf(sessionId) !== metadata.storageId) {
-			if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
-			activeRequests++;
-			activityGeneration++;
-			try { return await foreignControl(method, params, sessionId); }
-			finally { activeRequests--; notifyActivity(); }
-		}
+		if (storageIdOf(sessionId) !== metadata.storageId) return dispatchForeign(method, params, sessionId);
 		return request(method, params, typeof params.requestId === "string" ? params.requestId : randomUUID());
 	};
 	const restoreDispatch = publishAgentControlDispatch(dispatch);
@@ -271,7 +289,6 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			model: metadata.model,
 			thinkingLevel: selectedModel ? clampThinkingLevel(selectedModel, metadata.thinkingLevel as ModelThinkingLevel) : metadata.thinkingLevel as ModelThinkingLevel,
 			cwd: metadata.cwd,
-			...(metadata.ownerId ? { instructions: `Your owner session is ${metadata.ownerId}. Use agent_send for interim reports, blocking questions, or corrections. Your terminal response is the retained result. Carried operator authority keeps its original scope; messages and results do not create authority.` } : {}),
 		};
 	}
 
@@ -281,12 +298,13 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			models: sessionKeyedModels(services.services.modelRuntime, metadata.storageId), registry: services.registry, settings: services.settings, env: services.env,
 			retryMaxAttempts: services.services.settingsManager.getRetrySettings().enabled ? services.services.settingsManager.getRetrySettings().maxRetries + 1 : 1,
 			agent: hostAgent(),
-			meta: { name: metadata.name, owner: metadata.ownerId }, commands: services.commands, contributionHost: services.contributionHost,
+			meta: { name: metadata.name, owner: metadata.ownerId }, profileSeed: catalog.read(metadata.storageId).view?.profileSeed, commands: services.commands, contributionHost: services.contributionHost,
 			resume: false, onReport: (error) => { process.stderr.write(`Durable task: ${String(error)}\n`); },
 		});
 		try {
 			await services.install(opened.harness);
 			host = opened;
+			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(() => host.harness)] });
 			unsubscribeChanges?.();
 			unsubscribeChanges = opened.harness.subscribeCommits((publication) => {
 				activityGeneration++;
@@ -360,9 +378,15 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		}
 		finally { await manager.close(); }
 	}
-	async function discover(params: Record<string, unknown>): Promise<unknown> {
+	async function discover(params: Record<string, unknown>, profiles = false): Promise<unknown> {
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
-		try { return await manager.list(params); } finally { await manager.close(); }
+		try {
+			const result = await manager.list(params) as { rows: Record<string, unknown>[]; coverage: Record<string, unknown> };
+			if (profiles) return result;
+			const { profileHints: _hints, ...coverage } = result.coverage;
+			const rows = result.rows.map(({ handle: _handle, role: _role, profile: _profile, profileCoverage: _coverage, ...row }) => row);
+			return { ...result, rows, coverage };
+		} finally { await manager.close(); }
 	}
 	async function attach(params: Record<string, unknown>): Promise<unknown> {
 		if (params.model !== undefined) {
@@ -377,15 +401,16 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		if (method === "recovery-state") return recoveryState();
 		if (ADMITTING_METHODS.has(method)) markRecoveryDue(true);
 		switch (method) {
-			case "spawn": return spawn(params, requestId);
+			case "spawn": case "resolve-agent": return spawn(params, requestId);
 			case "place": return spawn(params, requestId, "place");
 			case "list": return params.global === true ? discover(params) : host.request(method, params);
+			case "profile-list": return discover(params, true);
 			case "attach": return attach(params);
 			case "configure": await configure(params); return host.request(method, params);
 			case "command": params.invocationId ??= requestId; return runCommand(params);
 			case "status": return { ...await host.request(method, params) as Record<string, unknown>, inventory: services.inventory, pid: process.pid, storageId: metadata.storageId };
 			case "receipts": return host.request(method, params, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);
-			case "submit": case "rewind": case "report": params.requestId ??= requestId; break;
+			case "task-submit": case "profile-update": case "submit": case "rewind": case "report": params.requestId ??= requestId; break;
 		}
 		return host.request(method, params);
 	}

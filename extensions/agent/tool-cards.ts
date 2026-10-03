@@ -119,7 +119,7 @@ function resultPreview(value: string, limit = PREVIEW_UNITS): string {
 
 // --- Call cards ------------------------------------------------------------------
 
-const SUBJECT_KEYS = ["name", "topic", "area", "prompt", "correction", "sessionId"] as const;
+const SUBJECT_KEYS = ["handle", "name", "topic", "area", "prompt", "correction", "sessionId"] as const;
 const MODEL_CALLS = new Set(["agent_spawn", "agent_attach", "agent_place", "agent_fork", "agent_rewind", "agent_configure"]);
 const RETAINED_MODEL_CALLS = new Set(["agent_attach", "agent_fork", "agent_rewind", "agent_configure"]);
 
@@ -374,7 +374,8 @@ function statusOverviewLines(details: Record<string, unknown>, theme: Theme): st
 }
 
 function summarizeGeneric(details: Record<string, unknown>, theme: Theme): string[] | undefined {
-	return statusOverviewLines(details, theme)
+	return resolveProfileLines(details, theme)
+		?? statusOverviewLines(details, theme)
 		?? rewindLines(details, theme)
 		?? forkLines(details, theme)
 		?? receiptLines(details, theme)
@@ -556,6 +557,17 @@ export function renderCompactResult(result: AgentToolResult<unknown>, options: T
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
+function listedProfiles(rows: unknown[], theme: Theme): string[] {
+	const lines = rows.slice(0, 4).flatMap((value) => {
+		const row = record(value);
+		return [
+			theme.fg("accent", displayPreview([text(row.handle), text(row.name)].filter(Boolean).join(" · ") || text(row.identity), 160)),
+			muted(theme, typeof row.role === "string" ? `Role: ${displayPreview(row.role, 180) || "(empty)"}` : "Role: unknown profile coverage"),
+		];
+	});
+	if (rows.length > 4) lines.push(muted(theme, `${rows.length - 4} more rows; expand for identities and roles`));
+	return lines;
+}
 function listSummary(details: Record<string, unknown>, theme: Theme): string[] | undefined {
 	const rows = details.rows;
 	if (!Array.isArray(rows)) return undefined;
@@ -563,9 +575,33 @@ function listSummary(details: Record<string, unknown>, theme: Theme): string[] |
 	const visited = count(coverage.storagesVisited);
 	const unavailable = array(coverage.unavailable).length;
 	const lines = [theme.fg("toolOutput", `${rows.length} conversation${rows.length === 1 ? "" : "s"} on this page · ${visited ?? "?"} storage${visited === 1 ? "" : "s"} scanned${unavailable ? ` · ${unavailable} storage${unavailable === 1 ? "" : "s"} unavailable (unknown, not absent)` : ""}`)];
+	const profiles = record(coverage.profileHints);
+	if (profiles.complete === false) lines.push(theme.fg("warning", `Profile search incomplete · ${count(profiles.unknownStorages) ?? "?"} stores with unknown hints · ${count(profiles.omitted) ?? "?"} omitted hints`));
+	lines.push(...listedProfiles(rows, theme));
 	const next = details.nextCursor;
 	lines.push(muted(theme, typeof next === "string" && next ? "Next page available; repeat with nextCursor, including after an empty page" : coverage.complete === false ? "Inventory may be incomplete; continue discovery" : "Inventory covered; no further page"));
 	return lines;
+}
+
+function profileLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+	const profile = typeof details.outcome === "string" ? record(details.profile) : details;
+	if (typeof profile.revision !== "string" || typeof profile.role !== "string") return undefined;
+	const model = record(profile.model);
+	return [
+		theme.fg(details.outcome === "conflict" ? "warning" : "accent", `${details.outcome === "conflict" ? "Profile conflict; no change" : details.outcome === "applied" ? "Profile saved" : "Profile"} · ${displayPreview(text(profile.handle) || text(profile.name) || text(profile.identity), 160)}`),
+		muted(theme, `Role: ${displayPreview(text(profile.role), 240) || "(empty)"}`),
+		muted(theme, `Model: ${text(model.provider) && text(model.modelId) ? displayPreview(`${text(model.provider)}/${text(model.modelId)}`, 180) : "unknown"} · reasoning ${displayPreview(text(profile.thinkingLevel), 40) || "unknown"}`),
+		muted(theme, `Revision: ${displayPreview(text(profile.revision), 80)} · ${profile.live === true ? "live host" : "retained"}`),
+		muted(theme, `Expertise: ${text(profile.expertise) ? "saved; expand to read" : "empty"} · ${array(profile.requests).length} active request routes`),
+	];
+}
+function resolveProfileLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+	if (typeof details.created !== "boolean") return undefined;
+	const lines = profileLines(record(details.profile), theme) ?? profileLines(details, theme);
+	return lines ? [theme.fg("toolOutput", details.created ? "Agent created" : "Existing agent reused; creation defaults unchanged"), ...lines] : undefined;
+}
+export function renderProfileResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
+	return outcomeCard(result, options, theme, context, { error: "Profile error", partial: "Profile pending" }, profileLines);
 }
 
 export function renderListResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
@@ -829,6 +865,7 @@ export function createAgentToolCards(): Readonly<Record<string, AgentToolCard>> 
 		agent_fork: { renderCall: bindCall("agent_fork"), renderResult: renderAgentResult },
 		agent_rewind: { renderCall: bindCall("agent_rewind"), renderResult: renderAgentResult },
 		agent_configure: { renderCall: bindCall("agent_configure"), renderResult: renderAgentResult },
+		agent_profile: { renderCall: bindCall("agent_profile"), renderResult: renderProfileResult },
 		agent_abort: { renderCall: renderAbortCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Abort error", partial: "Abort pending" }, abortLines) },
 		agent_list: { renderCall: renderListCall, renderResult: renderListResult },
 		agent_send: { renderCall: renderSendCall, renderResult: renderSendResult },

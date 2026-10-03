@@ -1,5 +1,8 @@
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { mkdirSync, realpathSync } from "node:fs";
+import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
+import { ProfiledListOutputSchema } from "./profile-discovery.ts";
+import { profileCommand } from "./profile-dialog.ts";
 import { join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -25,7 +28,6 @@ import {
 } from "./durable-reset-timers.ts";
 import { AGENT_CONTROL_GUIDANCE, type AgentControlToolName } from "./control-guidance.ts";
 import {
-	ListOutputSchema,
 	StatusOutputSchema,
 	InspectOutputSchema,
 	structuredObservation,
@@ -82,13 +84,15 @@ const send = Type.Object(
 				description: "Absolute ISO 8601 date-time; schedule the input instead of sending it now.",
 			}),
 		),
-		mode: Type.Optional(StringEnum(["followUp", "steer"])),
+		mode: Type.Optional(StringEnum(["followUp", "steer", "report"])),
 		checkInMinutes: checkIn,
 	},
 	{ additionalProperties: false },
 );
 const spawn = Type.Object(
 	{
+		handle: Type.Optional(HandleSchema),
+		role: Type.Optional(Type.String({ maxLength: 2000 })),
 		cwd: Type.Optional(Type.String()),
 		name: Type.Optional(Type.String({ maxLength: 256 })),
 		prompt: Type.Optional(Type.String()),
@@ -145,7 +149,8 @@ const result = (value: unknown, schema?: TSchema): AgentToolResult<unknown> => (
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
 const observationSchemas: Partial<Record<AgentControlToolName, TSchema>> = {
-	agent_list: ListOutputSchema,
+	agent_list: ProfiledListOutputSchema,
+	agent_profile: ProfileOutputSchema,
 	agent_status: StatusOutputSchema,
 	agent_inspect: InspectOutputSchema,
 };
@@ -220,11 +225,15 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		CollaborationParams,
 		(input, ctx, callId) => getManager().collaborate({ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi)),
 	);
+	register("agent_profile", "Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.", ProfileParams, (input, ctx, callId) => {
+		if (typeof input.sessionId !== "string") throw new Error("A primary profile control requires an agent sessionId");
+		return control(input.action === "read" ? "profile-read" : "profile-update", { ...input, requestId: `profile:${ctx.sessionManager.getSessionId()}:${callId}` }, ctx);
+	});
 	register(
 		"agent_spawn",
 		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Unanswered tasks send automatic owner check-ins, separate from voluntary reports. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		spawn,
-		(input, ctx) => getManager().spawn({ ...input, origin: "model" }, caller(ctx, pi)),
+		(input, ctx, callId) => getManager().spawn({ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi)),
 	);
 	register(
 		"agent_list",
@@ -257,6 +266,10 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		"Admit a task, report, or correction. Idle agents start; busy agents receive durable steering. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
 		send,
 		(input, ctx, callId) => {
+			if (input.mode === "report") {
+				if (input.deliverAt !== undefined || input.replyTo !== undefined || input.checkInMinutes !== undefined) throw new Error("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
+				return control("report", { ...input, requestId: `report:${ctx.sessionManager.getSessionId()}:${callId}`, origin: "model" }, ctx);
+			}
 			if (input.deliverAt === undefined)
 				return control("submit", { ...input, checkInMinutes: checkInMinutes(input.checkInMinutes), whenBusy: input.mode ?? "steer", origin: "model" }, ctx);
 			if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
@@ -394,6 +407,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		}
 	};
 	const actions: AgentCommandAction[] = [
+
 		{
 			name: "new",
 			description: "Start a new Durable agent",
@@ -581,6 +595,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 				});
 			},
 		},
+		profileCommand((method, input, ctx) => control(method, input, ctx)),
 		{
 			name: "command",
 			description: "Run a native contribution command",

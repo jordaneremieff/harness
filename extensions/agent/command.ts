@@ -54,7 +54,9 @@ function actionHelp(action: AgentCommandAction): string {
 type SearchChoice = AutocompleteItem & { search: string };
 
 function sessionLabel(row: AgentConversationSummary): string {
-	return plain(row.name ?? "") || `Session in ${plain(basename(row.cwd)) || "/"}`;
+	return row.profile?.handle
+		? plain(`${row.profile.handle}${row.name ? ` · ${row.name}` : ""}`)
+		: plain(row.name ?? "") || `Session in ${plain(basename(row.cwd)) || "/"}`;
 }
 
 function sessionState(row: AgentConversationSummary): string {
@@ -76,10 +78,10 @@ function sessionChoice(
 		? row.id
 		: row.id.slice(0, 8);
 	return {
-		value: `${before}${row.id}${suffix}`,
+		value: `${before}${row.profile?.handle ?? row.id}${suffix}`,
 		label: duplicates.length > 1 || !row.name ? `${title} (${id})` : title,
-		description: `${sessionState(row)}${row.ownerLabel ? ` · ${plain(row.ownerLabel)}` : ""} · ${plain(row.cwd)} · ${new Date(row.modifiedAt).toISOString()}`,
-		search: `${row.id} ${title} ${plain(row.cwd)}`,
+		description: `${row.profile?.role ? `${plain(row.profile.role)} · ` : ""}${sessionState(row)}${row.ownerLabel ? ` · ${plain(row.ownerLabel)}` : ""} · ${plain(row.cwd)} · ${new Date(row.modifiedAt).toISOString()}`,
+		search: `${row.id} ${title} ${plain(row.profile?.role ?? "")} ${plain(row.cwd)}`,
 	};
 }
 
@@ -93,12 +95,17 @@ async function metadataChoices(
 	const afterId = /\s/.test(rest);
 	const suffix = action.args.length > 1 ? " " : "";
 	const sessions = (await sources.list()).rows;
-	// An exact ID ends selection. Later words belong to the message or correction.
-	if (afterId && sessions.some((row) => row.id === firstWord)) return null;
+	// An exact address ends selection. Later words belong to the message or correction.
+	if (afterId && sessions.some((row) => row.id === firstWord || row.profile?.handle === firstWord)) return null;
 	return sessions
 		.slice()
 		.reverse()
-		.map((row) => sessionChoice(row, sessions, before, suffix));
+		.flatMap((row) => {
+			const choice = sessionChoice(row, sessions, before, suffix);
+			return row.profile?.handle
+				? [choice, { ...choice, value: `${before}${row.id}${suffix}`, label: `${choice.label} (${row.id})` }]
+				: [choice];
+		});
 }
 
 function argumentHelp(action: AgentCommandAction, args: string[]): string | undefined {

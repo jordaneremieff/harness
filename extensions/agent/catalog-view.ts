@@ -11,6 +11,9 @@
 
 import { Value } from "typebox/value";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
+import { ProfileHintsSchema, type ProfileHints } from "./profile-schema.ts";
+import type { ProfileSeed } from "./profile.ts";
+import { handleSlug } from "./identity.ts";
 
 /** Bytes available to one serialized view inside the catalog record bound. */
 export const CATALOG_VIEW_BUDGET_BYTES = 24 * 1024;
@@ -42,6 +45,10 @@ export interface CatalogViewRow {
 
 /** Bounded projection of one host's conversations. */
 export interface CatalogView {
+	/** Bounded optional hints; base wire rows remain unchanged. */
+	readonly profiles?: ProfileHints;
+	/** Retained creation defaults, consumed only in the root's creation commit. */
+	readonly profileSeed?: ProfileSeed;
 	/** ISO timestamp of this publication. */
 	readonly updatedAt: string;
 	/** Rows within the view budget; the root row is first when it fits. */
@@ -145,6 +152,13 @@ function validateRows(rows: readonly CatalogViewRow[], storageId: string | undef
 	}
 }
 
+function validateProfiles(candidate: Partial<CatalogView>): void {
+	if (candidate.profiles !== undefined && !Value.Check(ProfileHintsSchema, candidate.profiles)) throw new Error("Invalid profile hints");
+	if (candidate.profileSeed === undefined) return;
+	handleSlug(candidate.profileSeed.handle);
+	if (typeof candidate.profileSeed.role !== "string" || [...candidate.profileSeed.role].length > 2000) throw new Error("Invalid profile creation seed");
+}
+
 /** Validate one stored view. Oversized or malformed views are refused. */
 export function parseCatalogView(value: unknown): CatalogView {
 	if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -166,10 +180,25 @@ export function parseCatalogView(value: unknown): CatalogView {
 	if (candidate.unavailable !== undefined && typeof candidate.unavailable !== "string")
 		throw new Error("Agent view has an invalid unavailable reason");
 	validateRows(candidate.rows, candidate.storageId);
+	validateProfiles(candidate);
 	const view = candidate as CatalogView;
 	if (byteLength(view) > CATALOG_VIEW_BUDGET_BYTES) throw new Error("Agent view exceeds its byte budget");
 	if (!Number.isFinite(Date.parse(view.updatedAt)) || new Date(view.updatedAt).toISOString() !== view.updatedAt) throw new Error("Agent view has an invalid updatedAt");
 	return view;
+}
+
+/** Add optional hints without evicting base operational rows from their budget. */
+export function withProfileHints(view: CatalogView, profiles: ProfileHints): CatalogView {
+	const rows: ProfileHints["rows"] = [];
+	let omitted = profiles.coverage.omitted;
+	for (const hint of profiles.rows) {
+		const next = { ...view, profiles: { rows: [...rows, hint], coverage: { complete: false, omitted } } };
+		if (byteLength(next) > CATALOG_VIEW_BUDGET_BYTES - 32) omitted++;
+		else rows.push(hint);
+	}
+	const result = { ...view, profiles: { rows, coverage: { complete: profiles.coverage.complete && omitted === 0, omitted } } };
+	if (byteLength(result) > CATALOG_VIEW_BUDGET_BYTES) return view;
+	return parseCatalogView(result);
 }
 
 /** True when the value is a valid bounded view. */

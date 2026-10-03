@@ -34,6 +34,7 @@ export function dashboardActions(row: AgentConversationSummary): DashboardAction
 			disabled: needsAttention(row) ? undefined : "No host error",
 		},
 		{ name: "command", label: "Run agent command", description: "Run a command with this agent's authority." },
+		{ name: "profile", label: "Profile", description: "Read identity, role, request routes, and saved expertise; edit role or expertise." },
 		{ name: "status", label: "Details", description: "Read full identity, path, model, and host state." },
 	];
 }

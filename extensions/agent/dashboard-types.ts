@@ -7,6 +7,7 @@
  * no storage, worker, or activity module.
  */
 import type { Message } from "@earendil-works/pi-ai";
+import type { ProfileHint } from "./profile-schema.ts";
 
 /** Dashboard lifecycle bucket for one durable conversation. */
 export type AgentConversationState =
@@ -62,7 +63,9 @@ export interface AgentConversationSummary {
 	storageId: string;
 	/** Stored conversation name when one exists. */
 	name?: string;
-	/** First user input; the title fallback. */
+	/** Retained profile hint, joined outside the base observation wire contract. Absent means unknown coverage. */
+	profile?: ProfileHint;
+	/** Historical first user input; not the agent's current role or task. */
 	firstMessage?: string;
 	/** Working directory recorded for the conversation; the storage directory when the agent sets none. */
 	cwd: string;

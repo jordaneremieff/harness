@@ -2059,6 +2059,11 @@ export class DurableObservation {
 	 * parsing are identical to `DurableHost.request`; write methods reject.
 	 */
 	async request(method: string, params?: RequestParams, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
+			if (method === "profile-read") {
+				const { readProfile } = await import("./profile.ts");
+				const conversation = await this.target(params, context);
+				return readProfile(this.harness, this.storageId, conversation.id, context, false);
+			}
 			if (method === "collaboration-read" || method === "collaboration-list") {
 				const { readCollaboration, listCollaboration } = await import("./collaboration.ts");
 				return method === "collaboration-read" ? readCollaboration(this.harness, params ?? {}, context) : listCollaboration(this.harness, params ?? {}, context);

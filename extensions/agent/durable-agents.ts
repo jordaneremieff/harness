@@ -19,6 +19,12 @@
  */
 
 import { realpathSync } from "node:fs";
+import { initializeProfile } from "./profile.ts";
+import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
+import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
+import { recordRequestContext, requestEnvelope, cleanupRequestContexts } from "./request-context.ts";
+import { targetIdentity } from "./identity.ts";
+import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { resolve } from "node:path";
 import type { Context, JsonValue } from "@earendil-works/chord";
@@ -33,7 +39,6 @@ import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.t
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
 	InspectOutputSchema,
-	ListOutputSchema,
 	StatusOutputSchema,
 	structuredObservation,
 } from "./observation-schema.ts";
@@ -42,6 +47,7 @@ import {
 
 /** Runtime request methods the agent-session host serves for this contribution. */
 export type AgentControlMethod =
+	| "profile-read" | "profile-update" | "profile-list" | "resolve-agent" | "task-submit" | "report"
 	| "submit"
 	| "spawn"
 	| "place"
@@ -286,6 +292,8 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as 
 
 const SpawnParams = Type.Object(
 	{
+		handle: Type.Optional(HandleSchema),
+		role: Type.Optional(Type.String({ maxLength: 2000 })),
 		prompt: Type.Optional(
 			Type.String({ description: "Initial assignment for the child. Without one the child stays idle." }),
 		),
@@ -322,7 +330,7 @@ const SendParams = Type.Object(
 			}),
 		),
 		mode: Type.Optional(
-			StringEnum(["followUp", "steer"]),
+			StringEnum(["followUp", "steer", "report"]),
 		),
 		checkInMinutes: CheckInParams,
 	},
@@ -516,7 +524,7 @@ type ResetInput = Static<typeof ResetParams>;
 
 const SECTION_PREAMBLE = [
 	"Every conversation has an external identity: the bare storage id for the root, storageId:conversationId otherwise. Use the identity from agent_status or agent_list as sessionId for agent_send, agent_steer, agent_abort, agent_configure, agent_compact, agent_rewind, and agent_command.",
-	"A child's answer arrives as a report in its owner conversation, prefixed [agent <name> ...].",
+	"Final answers route to each request's reply recipient. Use agent_send mode: report for interim notices; the creating owner is provenance, not every request's recipient.",
 ];
 
 /**
@@ -547,6 +555,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		| { kind: "local"; conversationId: Durable.ConversationId }
 		| { kind: "foreign" } => {
 		if (sessionId === undefined) return { kind: "self" };
+		sessionId = targetIdentity(sessionId);
 		if (sessionId === host.storageId) return { kind: "root" };
 		if (sessionId.startsWith(`${host.storageId}:`)) {
 			return { kind: "local", conversationId: conversationIdOf(sessionId.slice(host.storageId.length + 1)) };
@@ -722,17 +731,22 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					await runtime.commit(() => ({ status: "running", checkpoint }), context);
 					return;
 				}
+				const request = { requestId: `agent-deliver:${reporter.id}`, requester: identity(runtime.conversationId), replyTo: identity(reporter.input.reportTo ?? runtime.conversationId), origin: "model" as const };
 				if (reporter.state.checkpoint.armed !== true) {
 					await runtime.commit(async (tx) => {
-						await createCheckIn(tx, { conversationId, requestId: `agent-deliver:${reporter.id}`, ownerId: identity(reporter.input.reportTo ?? runtime.conversationId), senderIdentity: identity(conversationId), message, whenBusy, origin: "model", admittedAt: runtime.now() }, runtime.registry.task(CheckInTask.definition.name) === undefined ? 0 : reporter.input.checkInMinutes ?? 0);
+						await recordRequestContext(tx, conversationId, request);
+						await recordAdmissionMeta(tx, conversationId, message);
+						await createCheckIn(tx, { conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(conversationId), message: requestEnvelope(message, request), whenBusy, origin: "model", admittedAt: runtime.now() }, runtime.registry.task(CheckInTask.definition.name) === undefined ? 0 : reporter.input.checkInMinutes ?? 0);
 						return { status: "running", checkpoint: { phase: "deliver", armed: true } };
 					}, context);
 				}
+				await runtime.commit(async (tx) => { await recordRequestContext(tx, conversationId, request); return undefined; }, context);
 				const submission = await child.submit(
-					{ type: "input", content: message, whenBusy, requestId: `agent-deliver:${reporter.id}` },
+					{ type: "input", content: requestEnvelope(message, request), whenBusy, requestId: request.requestId },
 					context,
 				);
 				const settled = await submission.wait(context);
+				await runtime.commit(async (tx) => { await cleanupRequestContexts(tx, conversationId); return undefined; }, context);
 				await runtime.commit(
 					async (tx) => ({
 						status: "running",
@@ -827,9 +841,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			model: parent.model,
 			thinkingLevel: parent.thinkingLevel,
 			...(cwd === undefined ? {} : { cwd }),
-			instructions: `You are the child agent${args.name === undefined ? "" : ` "${args.name}"`} of owner ${host.storageId}:${api.conversationId}. Answer the owner's requests. Your answers are reported to the owner.`,
 		};
 		const child = await createChild(tx, api.conversationId, args.name ?? "child", api.taskId, change);
+		const meta = await tx.doc(AgentMetaDoc, child.conversationId);
+		meta.name = args.name ?? "child";
+		meta.owner = identity(api.conversationId);
+		await initializeProfile(tx, child.conversationId, host.storageId);
 		registry.children.push(child);
 		if (args.prompt !== undefined) {
 			const reporter = await tx.createTask(
@@ -931,6 +948,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: SpawnParams,
 		replay: "safe",
 		execute: async (args: SpawnInput, api, context) => {
+			if (args.handle !== undefined) return dispatchControl("resolve-agent", { ...args, origin: "model", senderIdentity: identity(api.conversationId), requestId: `resolve:${host.storageId}:${api.taskId}` }, "Handle resolution failed");
+			if (args.role !== undefined) return errorResult("A creation role requires a handle; use agent_profile for another agent");
 			const hostCwd = resolve(host.cwd);
 			const requestedCwd = args.cwd === undefined ? undefined : resolve(host.cwd, args.cwd);
 			return requestedCwd !== undefined && requestedCwd !== hostCwd
@@ -976,7 +995,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		replyTo?: string,
 		minutes = 0,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
-		const senderIdentity = `${host.storageId}:${api.conversationId}`;
+		const senderIdentity = identity(api.conversationId);
 		return dispatchControl(
 			"submit",
 			{
@@ -1007,8 +1026,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (conversationId === undefined) return errorResult(`Cannot resolve session ${sessionId}.`);
 		let reportTo: Durable.ConversationId | undefined;
 		if (replyTo !== undefined) {
-			if (target(replyTo).kind === "foreign")
-				return errorResult(`Cannot report to foreign session ${replyTo} from this storage.`);
+			if (target(replyTo).kind === "foreign") return dispatchControl("task-submit", { sessionId, message, requester: identity(api.conversationId), replyTo, whenBusy, origin: "model", checkInMinutes: minutes, requestId: `agent-deliver:${host.storageId}:${api.taskId}` }, "Task delivery failed");
 			reportTo = localConversation(replyTo, api.conversationId);
 			if (reportTo === undefined) return errorResult(`Cannot resolve reply target ${replyTo}.`);
 		}
@@ -1047,6 +1065,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		} catch (error) {
 			return errorResult(error instanceof Error ? error.message : String(error));
 		}
+		if (args.mode === "report") return errorResult("Reports cannot be scheduled");
 		const mode: TimerMode = args.mode ?? "followUp";
 		const scheduleId = `timer:${host.storageId}:${api.taskId}`;
 		return dispatchControl(
@@ -1072,10 +1091,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			"Send a message to an agent conversation. A busy conversation receives steering at its next boundary; mode followUp waits for its current answer. The answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		parameters: SendParams,
 		replay: "safe",
-		execute: async (args: SendInput, api, context) =>
-			args.deliverAt === undefined
-				? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "steer", args.replyTo, checkInMinutes(args.checkInMinutes))
-				: scheduleSend(api, args),
+		execute: async (args: SendInput, api, context) => {
+			if (args.mode === "report") {
+				if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined) return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
+				return dispatchControl("report", { sessionId: args.sessionId, senderIdentity: identity(api.conversationId), message: args.message, requestId: `report:${host.storageId}:${api.taskId}` }, "Report delivery failed");
+			}
+			return args.deliverAt === undefined ? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "steer", args.replyTo, checkInMinutes(args.checkInMinutes)) : scheduleSend(api, args);
+		},
 	});
 
 	const steerTool = durable.defineTool({
@@ -1125,7 +1147,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		source: Durable.ConversationId,
 		at: Durable.EntryId,
 		name: string,
-		instructions: string,
 		prompt: string | undefined,
 		parent: ChildAgentValues,
 	): Promise<{ kind: "child"; child: LocalChild; deduped: boolean } | { kind: "error"; message: string }> => {
@@ -1149,8 +1170,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		await durable.configure(tx, forked.id, {
 			model: parent.model,
 			thinkingLevel: parent.thinkingLevel,
-			instructions,
 		});
+		const meta = await tx.doc(AgentMetaDoc, forked.id);
+		meta.name = name;
+		meta.owner = identity(api.conversationId);
+		await initializeProfile(tx, forked.id, host.storageId);
 		const child: LocalChild = {
 			name,
 			conversationId: forked.id,
@@ -1190,7 +1214,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			}
 			const source = localConversation(args.sessionId, api.conversationId);
 			if (source === undefined) return errorResult(`Cannot resolve session ${args.sessionId}.`);
-			const instructions = `You are the child agent${args.name === undefined ? "" : ` "${args.name}"`} of owner ${host.storageId}:${api.conversationId}. Continue from this fork's history. Your answers are reported to the owner.`;
 			const parent = await resolveChildAgent(api, context);
 			if (parent.kind === "error") return errorResult(parent.message);
 			const result = await api.commit(async (tx) => {
@@ -1200,7 +1223,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 						: entryIdOf(args.entryId);
 				if (at === undefined)
 					return { kind: "error", message: `Conversation ${source} has no visible entry to fork.` } as const;
-				return forkInCommit(tx, api, source, at, args.name ?? "fork", instructions, args.prompt, parent.values);
+				return forkInCommit(tx, api, source, at, args.name ?? "fork", args.prompt, parent.values);
 			}, context);
 			if (result.kind === "error") return errorResult(result.message);
 			return textResult(`Forked ${args.sessionId} into ${result.child.name} (${result.child.conversationId}).`, {
@@ -1233,7 +1256,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const source = localConversation(args.sessionId, api.conversationId);
 			if (source === undefined) return errorResult(`Cannot resolve session ${args.sessionId}.`);
 			const entry = entryIdOf(args.entryId);
-			const instructions = `You are the child agent${args.name === undefined ? "" : ` "${args.name}"`} of owner ${host.storageId}:${api.conversationId}. The entry ${entry} and its descendants were dropped; continue under the correction. Your answers are reported to the owner.`;
 			const parent = await resolveChildAgent(api, context);
 			if (parent.kind === "error") return errorResult(parent.message);
 			const result = await api.commit(async (tx) => {
@@ -1252,7 +1274,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					source,
 					predecessor.id,
 					args.name ?? "rewind",
-					instructions,
 					args.correction,
 					parent.values,
 				);
@@ -1389,13 +1410,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			replay: "safe",
 			execute: async (args: ListInput) =>
 				hostObservation(
-					"list",
+					"profile-list",
 					{ global: true, ...defined(args, ["query", "cwd", "limit", "cursor"]) },
 					"List of retained conversations failed",
-					ListOutputSchema,
+					ProfiledListOutputSchema,
 				),
 		}),
-		outputSchema: ListOutputSchema,
+		outputSchema: ProfiledListOutputSchema,
 	};
 
 	const inspectTool = {
@@ -1510,6 +1531,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			),
 	});
 
+	const profileTool = { ...durable.defineTool({
+		name: "agent_profile",
+		description: "Read or revision-check an agent's durable role and sourced expertise. Default target: yourself. Profile edits work at a busy tool boundary and start no model turn. Saved expertise is evidence, not fresh authority.",
+		parameters: ProfileParams,
+		replay: "safe",
+		execute: async (args, api) => hostObservation(args.action === "read" ? "profile-read" : "profile-update", { ...args, sessionId: args.sessionId ?? identity(api.conversationId), senderIdentity: identity(api.conversationId), requestId: `profile:${host.storageId}:${api.taskId}` }, "Profile operation failed", ProfileOutputSchema),
+	}), outputSchema: ProfileOutputSchema };
+
 	const collaborateTool = durable.defineTool({
 		name: "agent_collaborate",
 		description: "Discover, form and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator. Join or leave freely; post contribution or sourced carried-authority. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read returns the frame, members and paged exchange. No automatic replies or check-ins.",
@@ -1534,6 +1563,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		tasks: [Anchor, Reporter, TimerTask],
 		tools: [
 			spawnTool,
+			profileTool,
 			sendTool,
 			steerTool,
 			abortTool,

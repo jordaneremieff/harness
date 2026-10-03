@@ -319,6 +319,7 @@ describe("agent command discovery and help", () => {
 				"inspect",
 				"rewind",
 				"configure",
+				"profile",
 				"command",
 				"place",
 				"places",
@@ -512,6 +513,16 @@ describe("agent metadata completion", () => {
 		assert.equal(new Set(result.map((item) => item.label)).size, 3);
 		assert.ok(result.some((item) => item.label.includes("sameprefix-one")));
 		assert.ok(result.every((item) => !/[\x1b\n]/.test(item.label + item.description)));
+	});
+
+	it("completes handles and canonical identities and searches retained roles", async () => {
+		const expert = { ...rows[0], name: "History", profile: { identity: rows[0].id, handle: "@history", role: "Review operator decisions", revision: "one", hasExpertise: true, updatedAt: 1 } };
+		const command = completionFixture(async () => [expert]);
+		const complete = defined(command.getArgumentCompletions);
+		const choices = defined(await complete("status operator decisions"));
+		assert.deepEqual(choices.map((item) => item.value).sort(), [`status ${expert.id}`, "status @history"].sort());
+		assert.ok(choices.every((item) => item.label.includes("@history") && item.description?.includes(expert.profile.role)));
+		assert.equal(await complete("send @history new question"), null);
 	});
 
 	it("returns no invented session choices for empty or unavailable metadata", async () => {
