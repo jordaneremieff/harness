@@ -302,6 +302,7 @@ for (const direction of [undefined, "Improve ordinary document tasks; do not pub
 				"conditional history expertise",
 				/When orientation needs session history, use the standing session-history expert through the delivery workflow/,
 			],
+			["addressed history work", /Resolve and task @session-history as that workflow directs/],
 			[
 				"reuse before repeated briefing",
 				/Reuse relevant expertise instead of repeating a corpus brief; create the expert only when none exists/,
@@ -409,10 +410,12 @@ test("history orientation uses retained expertise without making history a manda
 	assertContracts(deliveryWorkflow, [
 		["conditional expert", /When a bounded history question informs orientation, use the standing/],
 		["corpus contract reference", /\[session-history expert\]\(session-history\.md\)/],
-		["role and operation checked", /role covers the question, check its current operation/],
+		["handle resolution", /Resolve it with `agent_spawn` and `handle: "session-history"`, without a prompt/],
+		["role and operation checked", /stored role covers the question.*current operation permits the work/],
+		["addressed admission", /task `@session-history` with `agent_send` and `mode: "followUp"`/],
 		["short task", /question, source window, and task-specific restrictions instead of another corpus brief/],
-		["creation role", /creation supplies a short role and a reachable corpus-reference pointer, not a fixed team/],
-		["model checked", /Check its stored role and selected model before sending work/],
+		["creation role", /Creation supplies a short role and a reachable corpus-reference pointer, not a fixed team/],
+		["model checked", /selected model meets the request/],
 		["no mandatory history phase", /not a mandatory phase of every run/],
 		["coordinator judgment", /coordinator retains judgment and integration ownership/],
 	]);
@@ -442,6 +445,25 @@ test("the session-history reference separates source authority, expertise, and c
 		["no new grant", /prior task or grant is not silently restored as standing authority/],
 		["bounded output", /Do not impose a fixed number of quotes, a ranked list, or a report file/],
 		["no continuous miner", /standing expert means retained identity and knowledge, not continuous execution/],
+	]);
+});
+
+test("read-only history subjects do not prohibit expert tasks and sourced profile updates", () => {
+	assertContracts(deliveryWorkflow, [
+		["researcher versus subject", /expert does the current research; historical subjects supply its evidence/],
+		["read-only source scope", /read-only source task does not by itself forbid tasking the expert/],
+		["explicit restrictions preserved", /Preserve any explicit restriction on those acts/],
+	]);
+	assertContracts(sessionHistory, [
+		["known handle resolution", /agent_spawn\(\{handle: "session-history", \.\.\.\}\)/],
+		["previews are not history", /Do not mine discovery previews as historical evidence/],
+		["protected subjects", /historical subject is an agent whose past work is being mined as evidence/],
+		["researcher is distinct", /not the session-history expert doing the current research/],
+		["different requester", /subsequent questions from a different requester/],
+		["source-window scope", /Historical source windows limit evidence, not the expert's lifetime or its current task/],
+		["derived knowledge", /retained findings remain leads to eligible originals, not new historical authority/],
+		["profile updates expected", /expert is expected to update its own sourced expertise during read-only source research/],
+		["explicit profile restriction", /explicit restriction on profile changes still binds/],
 	]);
 });
 

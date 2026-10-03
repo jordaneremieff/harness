@@ -24,16 +24,24 @@ active, provisional, and merely proposed capabilities; a source file or resource
 listing does not establish usable behavior.
 
 When a bounded history question informs orientation, use the standing
-[session-history expert](session-history.md). Discover a retained expert whose
-role covers the question, check its current operation, and give it the question,
-source window, and task-specific restrictions instead of another corpus brief.
-Resolve or create the expert through the public agent controls; creation supplies
-a short role and a reachable corpus-reference pointer, not a fixed team. Check
-its stored role and selected model before sending work. An existing handle does
-not establish suitability, availability, or compliance with a requested model.
-The reference owns corpus access, provenance, durable expertise, and correction
-handling. History is a source for the current purpose, not a mandatory phase of
-every run. The coordinator retains judgment and integration ownership.
+[session-history expert](session-history.md). Resolve it with `agent_spawn` and
+`handle: "session-history"`, without a prompt. Check that its stored role covers
+the question, its selected model meets the request, and its current operation
+permits the work. Then task `@session-history` with `agent_send` and
+`mode: "followUp"`. Supply the question, source window, and task-specific
+restrictions instead of another corpus brief. Creation supplies a short role
+and a reachable corpus-reference pointer, not a fixed team. An existing handle
+does not establish suitability, availability, or compliance with a requested
+model. Follow the reference for creation defaults and any required independent
+work, not a fresh-miner default.
+
+The expert does the current research; historical subjects supply its evidence.
+The reference owns that distinction, public source access, expected profile
+updates, and corrections. A read-only source task does not by itself forbid
+tasking the expert or retaining its sourced expertise. Preserve any explicit
+restriction on those acts. History is a source for the current purpose, not a
+mandatory phase of every run. The coordinator retains judgment and integration
+ownership.
 
 Read only enough to form a useful purpose and identify the uncertainty that
 decides the next act. Broaden a read for a named gap, not an exhaustive inventory.

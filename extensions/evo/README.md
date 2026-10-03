@@ -136,8 +136,11 @@ supplies the current question and restrictions instead of repeating the corpus
 brief. Relevant expertise supports reuse; unrelated work, independent judgment,
 or conflicting ownership can require a fresh session.
 
-The expert keeps a concern name and stable handle, with its model shown
-separately. Its native profile holds a short role and bounded sourced expertise;
+The coordinator resolves `@session-history` and tasks that expert through public
+controls. Agents whose history supplies evidence remain read-only subjects;
+that boundary does not prohibit work by the expert. Its native profile holds
+a short role and bounded sourced expertise, updated by the expert even when
+source records stay read-only. Explicit task restrictions still bind, and
 current evidence still outranks retained knowledge. The current request owns the
 reply route, not the agent's creator. The agent extension owns these mechanisms.
 

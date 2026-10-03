@@ -9,14 +9,16 @@ owns the expert's charter and corpus method, not a separate runtime or store.
 
 ## Resolve the expert
 
-Use a concern name such as **Session history**, with a stable address such as
-`@session-history`. Keep the provider/model and thinking level separate from the
-name. A display name is not a unique address or proof of expertise.
+Use the concern name **Session history** and stable address `@session-history`.
+Keep the provider/model and thinking level separate from the name. A display
+name is not a unique address or proof of expertise.
 
-Discover retained agents through `agent_list` and inspect their roles. For the
-recurring concern, `agent_spawn` with `handle: "session-history"` resolves or
-creates one root. Supply creation defaults for its display name, role, and any
-requested model. Reuse leaves those defaults unapplied. Resolve without a prompt,
+Resolve the recurring concern with `agent_spawn({handle: "session-history", ...})`;
+it resolves or creates one root. Supply creation defaults for its display name,
+role, and any requested model. Reuse leaves those defaults unapplied.
+Use `agent_list` when discovery is needed, not as a substitute for resolving the
+known handle. Do not mine discovery previews as historical evidence.
+Resolve without a prompt,
 then check the returned identity, stored role, selected model, and current
 operation before sending the task. Use the canonical identity or `@handle`, not
 a bare display name, as the target.
@@ -28,8 +30,10 @@ resolved under the current harness package root:
 > `<package-root>/docs/session-history.md` for the corpus contract. Keep sourced findings and
 > actual coverage in your expertise, not a task journal. Distinguish operator
 > wording, adopted or carried decisions, agent contributions, and uncertainty.
-> Recheck current evidence when it affects the answer. Inspect historical agents
-> through public readers only. Report to the current request's reply recipient.
+> Recheck current evidence when it affects the answer. Read agents whose history
+> supplies evidence through public readers only; do not control those subjects.
+> Update your own sourced expertise through agent_profile. Report to the current
+> request's reply recipient.
 
 Replace `<package-root>` with the reachable package root in the stored role.
 The initial task supplies any source-location facts not available there. Subsequent questions
@@ -40,8 +44,9 @@ judgment or conflicting concurrent work can justify a fresh session instead.
 Do not silently overwrite a role, change a requested model, or create a duplicate
 standing expert to avoid an unavailable capability.
 
-Send new work with `agent_send` and `mode: "followUp"`. The request context names
-the requester and reply recipient; the creator is provenance, not the permanent
+Send new work to `@session-history` with `agent_send` and `mode: "followUp"`.
+The request context names the requester and reply recipient; the creator is
+provenance, not the permanent
 recipient for every task. Use `mode: "report"` for a necessary interim report,
 not an answer-bearing task that creates a reply or check-in loop. Final answers
 use the ordinary retained result path. A new requester does not need to rewrite
@@ -106,10 +111,17 @@ Use `agent_list` for discovery, `agent_inspect` for retained evidence, and
 relevant continuation pages and read exact entries when compact excerpts omit
 load-bearing content. Preserve truncation and unavailable boundaries.
 
-Never send to, steer, attach, configure, reset, or start a historical subject just
-to inspect it. Do not read private SQLite files or reproduce private schemas,
-even read-only. If a public reader fails or its source changes, use another
-applicable public read, restart bounded discovery, or narrow the claim. There is
+A historical subject is an agent whose past work is being mined as evidence,
+not the session-history expert doing the current research. Never send to, steer,
+attach, configure, reset, or start a historical subject just to inspect it.
+Resolve and task the expert through the public controls above, including on
+subsequent questions from a different requester. Historical source windows
+limit evidence, not the expert's lifetime or its current task. Its retained
+findings remain leads to eligible originals, not new historical authority.
+
+Do not read private SQLite files or reproduce private schemas, even read-only.
+If a public reader fails or its source changes, use another applicable public
+read, restart bounded discovery, or narrow the claim. There is
 no private-store fallback.
 
 Keep conversations, submissions, model turns, tool calls, results, and accepted
@@ -137,6 +149,10 @@ institutional memory merely to make retrieval convenient.
 ## Retain useful expertise
 
 Read the current profile with `agent_profile` before relying on its expertise.
+The expert is expected to update its own sourced expertise during read-only
+source research; this leaves historical records unchanged. Do not forbid profile
+writes merely because the source task is read-only. An explicit restriction on
+profile changes still binds.
 Update it through the same public control with `expectedRevision` after a useful
 finding or correction. A revision conflict requires a fresh read and deliberate
 merge, not an unconditional overwrite. The role is a short charter; expertise is
