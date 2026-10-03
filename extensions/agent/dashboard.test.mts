@@ -162,7 +162,7 @@ for (const [width, height] of [
 				f.ui.handleInput("Build");
 				const lines = f.ui.render(width);
 				assert.equal(lines.length, height);
-				assert.match(lines.join("\n"), /› Build/);
+				assert.match(lines.join("\n"), /› ● Build/);
 				assert.match(lines.join("\n"), /FIRST-CONVERSATION-LINE/);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			} finally {

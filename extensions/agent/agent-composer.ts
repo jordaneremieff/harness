@@ -15,6 +15,20 @@ import {
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 
+import { dashboardHeading } from "./dashboard-layout.ts";
+
+class ComposerEditor extends CustomEditor {
+	topHidden = 0;
+	bottomHidden = 0;
+	protected override renderTopBorder(_width: number, hidden: number): string {
+		this.topHidden = hidden;
+		return "";
+	}
+	protected override renderBottomBorder(_width: number, hidden: number): string {
+		this.bottomHidden = hidden;
+		return "";
+	}
+}
 export interface AgentComposerOptions {
 	tui: TUI;
 	theme: Theme;
@@ -28,7 +42,7 @@ export interface AgentComposerOptions {
 }
 
 export class AgentComposer implements Component, Focusable {
-	private readonly editor: CustomEditor;
+	private readonly editor: ComposerEditor;
 	private readonly options: AgentComposerOptions;
 
 	constructor(options: AgentComposerOptions) {
@@ -45,7 +59,7 @@ export class AgentComposer implements Component, Focusable {
 				return typeof value === "function" ? value.bind(target) : value;
 			},
 		});
-		this.editor = new CustomEditor(
+		this.editor = new ComposerEditor(
 			tui,
 			{
 				borderColor: (text) => options.theme.fg("borderMuted", text),
@@ -104,11 +118,28 @@ export class AgentComposer implements Component, Focusable {
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		return this.editor.handleMouse(event);
+		if (event.x < 1 || event.x >= event.width - 1) return;
+		return this.editor.handleMouse({ ...event, x: event.x - 1, width: event.width - 2 });
 	}
 
-	render(width: number): string[] {
-		return this.editor.render(width);
+	render(width: number, caption = "Message"): string[] {
+		const lines = this.editor.render(Math.max(1, width - 2));
+		const theme = this.options.theme;
+		const border = (text: string) => theme.fg(this.focused ? "accent" : "borderMuted", text);
+		return lines.map((line, index) => {
+			if (index === 0)
+				return dashboardHeading(caption, this.editor.topHidden ? `↑ ${this.editor.topHidden} lines` : "", width, theme);
+			// Native text and autocomplete rows are padded; only our border hooks emit empty rows.
+			if (line === "")
+				return dashboardHeading(
+					"",
+					this.editor.bottomHidden ? `↓ ${this.editor.bottomHidden} lines` : "",
+					width,
+					theme,
+					true,
+				);
+			return border("│") + line + border("│");
+		});
 	}
 
 	invalidate(): void {

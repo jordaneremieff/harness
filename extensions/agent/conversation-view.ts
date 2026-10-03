@@ -166,6 +166,7 @@ export class ConversationView {
 	private readonly scroll: ScrollView;
 	private restored = false;
 	private contentHeight = 0;
+	private estimatedHeight = false;
 	private optionsKey = "";
 	private readonly tui: TUI;
 	readonly state: AgentReadingState;
@@ -200,6 +201,7 @@ export class ConversationView {
 		);
 		this.document = { lines: [], anchors: window.anchors };
 		this.contentHeight = window.height;
+		this.estimatedHeight = window.estimated;
 		this.scroll.updateLayout(window.height, height, () => this.tui.requestRender());
 		this.restored = true;
 		this.scroll.scrollTo(window.top, { disableFollow: !this.state.follow });
@@ -210,6 +212,18 @@ export class ConversationView {
 		this.scroll.scrollBy(delta);
 		if (delta > 0 && this.atBottom()) this.scroll.scrollToEnd();
 		this.save();
+	}
+	position(): { first: number; last: number; total: number; end: boolean; estimated: boolean } {
+		return {
+			first:
+				this.contentHeight && this.scroll.viewportHeight ? Math.min(this.contentHeight, this.scroll.scrollTop + 1) : 0,
+			last: this.scroll.viewportHeight
+				? Math.min(this.contentHeight, this.scroll.scrollTop + this.scroll.viewportHeight)
+				: 0,
+			total: this.contentHeight,
+			end: this.atBottom(),
+			estimated: this.estimatedHeight,
+		};
 	}
 	atTop(): boolean {
 		return this.scroll.scrollTop === 0;

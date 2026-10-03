@@ -507,6 +507,22 @@ admission clears only the submitted draft revision, including after the
 dashboard reopens; newer text stays. Every truncated dashboard list keeps the
 focused entry and its neighbors visible and states the hidden count.
 
+Each view has a framed heading and one tinted hint bar at the bottom. Keys use
+an accent color; action words and metadata use a quieter color. Roster, thread,
+and action selections share a visible marker and highlight. Roster names also
+show the agent state glyph; the written state remains visible. Full update
+times keep their own row in the wide roster rather than displacing the names.
+Heading counters describe the loaded selection or the current thread page,
+not an unknown global total. A `+` marks incomplete loaded coverage. Conversation
+content uses Pi's native renderer. A blank row and a loaded-line position rule
+separate output from input. `End of loaded view` refers only to the loaded
+history, not the complete conversation. The position says `Approx. lines` while
+native message blocks outside the viewport still have estimated heights.
+Observation and coverage, model and
+reasoning, state and cost, and any receipt share one adjacent status block.
+The native editor has a captioned frame with the recipient and message mode.
+The frame preserves native keyboard input, text selection, and caret placement.
+
 In Pi fullscreen mode, click a roster or task row to select it, then click the
 `Enter` hint to open it. In Threads, click a row to select it; click the selected
 row or the `Enter` hint to open it. Click action rows to select, then the `Enter`

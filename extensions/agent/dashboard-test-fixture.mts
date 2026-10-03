@@ -123,6 +123,7 @@ export function fixture(
 	observed = source(),
 	operations?: Partial<DashboardOperations>,
 	retained?: DashboardState,
+	paint: Theme = theme,
 ) {
 	let renders = 0;
 	let closes = 0;
@@ -136,7 +137,7 @@ export function fixture(
 	const state = retained ?? createDashboardState();
 	const ui = new AgentDashboard(
 		tui,
-		theme,
+		paint,
 		keys,
 		() => {
 			closes++;

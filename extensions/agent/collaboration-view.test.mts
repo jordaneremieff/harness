@@ -129,6 +129,10 @@ for (const [width, height] of [
 			assert.match(shown, /Source: Source brief/);
 			assert.match(shown, /Notification intents pending: 1/);
 			assert.equal(f.ui.render(width).length, height);
+			assert.match(f.ui.render(width)[0] ?? "", /^╭─ Agents > Threads/);
+			assert.match(f.ui.render(width)[0] ?? "", /Frame 2 ╮$/);
+			assert.match(text(f, width), /Lines \d+–\d+ of \d+ loaded/);
+			assert.match(f.ui.render(width).at(-1) ?? "", /p post.*Esc back/);
 			assert.ok(f.ui.render(width).every((line) => visibleWidth(line) <= width));
 		} finally {
 			f.ui.dispose();

@@ -391,7 +391,7 @@ export class AgentConversation {
 		height: number,
 		follow: boolean,
 		anchor?: { id: string; offset: number },
-	): { lines: string[]; anchors: ConversationDocument["anchors"]; height: number; top: number } {
+	): { lines: string[]; anchors: ConversationDocument["anchors"]; height: number; top: number; estimated: boolean } {
 		let layout = this.layout(width);
 		let top = requested;
 		for (let pass = 0; pass <= this.blocks.length; pass++) {
@@ -423,7 +423,8 @@ export class AgentConversation {
 			const end = layout.anchors[index + 1]?.line ?? Number.MAX_SAFE_INTEGER;
 			if (end < top - 2 * height || line > top + 3 * height) this.rendered.delete(component);
 		});
-		return { lines, ...layout, top };
+		const estimated = this.blocks.some(({ component }) => this.heights.get(component)?.width !== width);
+		return { lines, ...layout, top, estimated };
 	}
 	render(width: number): ConversationDocument {
 		if (this.cache?.width === width) return this.cache.document;

@@ -12,7 +12,7 @@ for (const [width, height, compact] of [
 		for (const selected of [0, 50, 99]) {
 			const lines = rosterLines(rows, String(selected), width, height, 0, theme, compact);
 			const text = lines.join("\n");
-			assert.match(text, new RegExp(`› Agent${selected}`));
+			assert.match(text, new RegExp(`› ● Agent${selected}`));
 			assert.match(text, /\+\d+ more/);
 			if (selected > 0) assert.match(text, new RegExp(`Agent${selected - 1}`));
 			if (selected < 99) assert.match(text, new RegExp(`Agent${selected + 1}`));
@@ -108,7 +108,7 @@ it("wide roster budgets every group header and timestamp before it clips the sel
 		row("earlier", { state: "done", modifiedAt: 0 }),
 	];
 	const lines = rosterLines(rows, "earlier", 38, 18, now, theme, false);
-	assert.match(lines.join("\n"), /› earlier/);
+	assert.match(lines.join("\n"), /› ✓ earlier/);
 	assert.match(lines.join("\n"), /yesterday/);
 	assert.match(lines.join("\n"), /\+1 more/);
 	assert.equal(lines.filter((line) => line.includes("Updated ")).length, 4);

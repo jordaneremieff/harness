@@ -190,16 +190,21 @@ function rosterRow(
 	const appearance = sessionAppearance[row.state];
 	const updated = `Updated ${dashboardTime(row.modifiedAt, exactTime)}`;
 	const detail = `${appearance.label}  ${costOf(row)}  ${updated}`;
-	const titleWidth = compact ? Math.max(1, width - 3 - visibleWidth(detail)) : width - 3;
-	let text = (row.id === selected ? "› " : "  ") + pad(uniqueTitle(row, rows, titleWidth), titleWidth);
-	if (compact) text += ` ${theme.fg(appearance.color, detail)}`;
+	const titleWidth = compact ? Math.max(1, width - 5 - visibleWidth(detail)) : width - 5;
+	const title = pad(uniqueTitle(row, rows, titleWidth), titleWidth);
+	let text =
+		(row.id === selected ? theme.fg("accent", "› ") : "  ") +
+		theme.fg(appearance.color, `${appearance.glyph} `) +
+		(row.id === selected ? theme.bold(theme.fg("accent", title)) : title);
+	if (compact)
+		text += ` ${theme.fg(appearance.color, appearance.label)}  ${theme.fg("muted", `${costOf(row)}  ${updated}`)}`;
 	text = pad(text, width);
 	const lines = [row.id === selected ? theme.bg("selectedBg", text) : text];
 	if (!compact) {
 		lines.push(theme.fg(appearance.color, truncateToWidth(`  ${appearance.label}  ${costOf(row)}`, width)));
 		lines.push(theme.fg("muted", truncateToWidth(`  ${updated}`, width)));
 	}
-	const timeX = compact ? 3 + titleWidth + visibleWidth(`${appearance.label}  ${costOf(row)}  `) : 2;
+	const timeX = compact ? 5 + titleWidth + visibleWidth(`${appearance.label}  ${costOf(row)}  `) : 2;
 	return {
 		lines: lines.map((line) => truncateToWidth(line, width)),
 		timeX,
@@ -255,7 +260,7 @@ export function rosterLines(
 ): string[] {
 	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, viewport?.start);
 	viewport?.range?.(start, maxStart);
-	const lines: string[] = compact ? [] : ["Roster"];
+	const lines: string[] = compact ? [] : [theme.fg("muted", "Roster")];
 	let section = "";
 	for (const row of rows.slice(start, start + capacity)) {
 		const group = sectionOf(row, now);

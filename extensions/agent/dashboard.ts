@@ -16,7 +16,7 @@ import { AgentConsole } from "./agent-console.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
-import { dashboardGeometry, fitLine } from "./dashboard-layout.ts";
+import { dashboardGeometry, dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
 import { dashboardRecords, rosterLines, coverageText, rosterTotals, attentionReason } from "./dashboard-roster.ts";
 import {
 	agentState,
@@ -980,6 +980,16 @@ export class AgentDashboard implements Component, Focusable {
 			return `Agents > ${this.console ? agentDisplayName(this.console.row) : "Agent"}${screen === "actions" ? " > Actions" : ""}`;
 		return `Agents · ${this.page?.rows.length ?? 0} ${this.page?.coverage.complete ? "agents" : "loaded agents"} · ${rosterTotals(this.page ? { sessions: this.page.rows, observedAt: Date.parse(this.page.observedAt), coverage: this.page.coverage } : undefined)}`;
 	}
+	private heading(width: number): string {
+		let position = "";
+		if (this.navigation.screen === "actions" && this.console)
+			position = `${this.actionIndex + 1}/${dashboardActions(this.console.row).length} actions`;
+		else if (["roster", "find", "message", "console"].includes(this.navigation.screen)) {
+			const index = this.rows.findIndex((row) => row.id === this.state.selected);
+			position = `${index + 1}/${this.rows.length}${this.page?.coverage.complete ? "" : "+"}`;
+		}
+		return dashboardHeading(this.title(), position, width, this.theme);
+	}
 	private actionLines(): string[] {
 		if (!this.console) return [];
 		const choices = dashboardActions(this.console.row);
@@ -997,8 +1007,13 @@ export class AgentDashboard implements Component, Focusable {
 				},
 			});
 		const lines = visible.flatMap((choice, index) => [
-			`${start + index === this.actionIndex ? "›" : " "} ${choice.label}${choice.disabled ? ` · ${choice.disabled}` : ""}`,
-			`  ${choice.description}`,
+			dashboardSelection(
+				`${start + index === this.actionIndex ? "›" : " "} ${choice.label}${choice.disabled ? ` · ${choice.disabled}` : ""}`,
+				this.tui.terminal.columns,
+				start + index === this.actionIndex,
+				this.theme,
+			),
+			this.theme.fg("muted", `  ${choice.description}`),
 		]);
 		if (visible.length < choices.length)
 			lines.push(`${this.actionIndex + 1}/${choices.length} actions · +${choices.length - visible.length} more`);
@@ -1006,7 +1021,14 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	private readerLines(width: number): string[] {
 		const source = this.navigation.screen === "help" ? HELP : this.result.split("\n");
-		const content = source.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
+		const content = source.flatMap((line) =>
+			wrapTextWithAnsi(
+				this.navigation.screen === "help" && ["Dashboard", "Messages", "Read", "Return"].includes(line)
+					? this.theme.bold(this.theme.fg("accent", line))
+					: line,
+				Math.max(1, width),
+			),
+		);
 		this.helpOffset = Math.max(0, Math.min(this.helpOffset, Math.max(0, content.length - this.bodyHeight)));
 		return content.slice(this.helpOffset, this.helpOffset + this.bodyHeight);
 	}
@@ -1043,10 +1065,10 @@ export class AgentDashboard implements Component, Focusable {
 				? ["↑↓ scroll", "PgUp/PgDn read"]
 				: ["↑↓ select", "Enter choose", "PgUp/PgDn read"];
 		return [
-			this.title(),
+			this.heading(width),
 			...Array.from({ length: this.bodyHeight }, (_, index) => body[index] ?? ""),
 			(screen === "actions" ? this.console?.state.receipt : undefined) ?? this.notice ?? "",
-			mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data)),
+			mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), this.theme),
 		];
 	}
 	private messageLabel(width: number, focused: boolean): string {
@@ -1095,7 +1117,15 @@ export class AgentDashboard implements Component, Focusable {
 				? [["Enter new agent", "n new", "t threads", "/ find", "? help"], "Esc close"]
 				: [["n new", "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
 		const [items, back] = hints[screen] ?? normal;
-		return mouseHints(this.mouse, this.tui.terminal.rows - 1, items, back, width, (data) => this.handleInput(data));
+		return mouseHints(
+			this.mouse,
+			this.tui.terminal.rows - 1,
+			items,
+			back,
+			width,
+			(data) => this.handleInput(data),
+			this.theme,
+		);
 	}
 	private rosterViewport(width: number, height: number, compact: boolean, y: number): string[] {
 		const lines = rosterLines(
@@ -1159,44 +1189,73 @@ export class AgentDashboard implements Component, Focusable {
 		width: number,
 		geometry: ReturnType<typeof dashboardGeometry>,
 		conversation: string[],
+		bodyY: number,
 	): string[] {
 		if (geometry.wide) {
-			const roster = this.rosterViewport(38, geometry.bodyHeight, false, this.navigation.screen === "find" ? 3 : 2);
+			const rosterHeight = Math.max(0, geometry.bodyHeight - (this.page?.coverage.nextCursor ? 1 : 0));
+			const roster = this.rosterViewport(38, rosterHeight, false, bodyY);
 			if (this.page?.coverage.nextCursor && roster.length < geometry.bodyHeight)
-				roster.push(this.loadMoreLine(38, (this.navigation.screen === "find" ? 3 : 2) + roster.length));
+				roster.push(this.loadMoreLine(38, bodyY + roster.length));
 			return conversation.map(
-				(line, index) => `${fitLine(roster[index] ?? "", 38)}│${fitLine(line, geometry.conversationWidth)}`,
+				(line, index) =>
+					`${fitLine(roster[index] ?? "", 38)}${this.theme.fg("borderMuted", "│")}${fitLine(line, geometry.conversationWidth)}`,
 			);
 		}
 		if (this.navigation.screen === "console") return conversation;
-		const roster = this.rosterViewport(width, 4, true, this.navigation.screen === "find" ? 3 : 2);
-		return [...roster, this.loadMoreLine(width, this.navigation.screen === "find" ? 7 : 6), ...conversation];
+		const roster = this.rosterViewport(width, 4, true, bodyY);
+		return [...roster, this.loadMoreLine(width, bodyY + 4), ...conversation];
+	}
+	private selectedStatus(width: number): string[] {
+		const isNew = this.navigation.screen === "new";
+		const lines = isNew
+			? ["New agent · primary model and directory"]
+			: [this.statusText(), ...(this.console ? [this.console.footer(width)] : [])];
+		const receipt = this.notice ?? (isNew ? undefined : this.console?.state.receipt);
+		if (receipt) lines.push(receipt);
+		return lines.map((line) => this.theme.bg("customMessageBg", fitLine(this.theme.fg("muted", line), width)));
+	}
+	private conversationBoundary(width: number): string {
+		const position = this.console?.conversation.position();
+		let label = "Conversation · No loaded messages";
+		if (position?.total)
+			label = position.first
+				? `${position.estimated ? "Approx. lines" : "Lines"} ${position.first}–${position.last} of ${position.total} loaded${position.end ? " · End of loaded view" : ""}`
+				: `${position.total} loaded lines · Expand the terminal to read`;
+		return dashboardRule(label, width, this.theme);
 	}
 	private renderDashboard(width: number, height: number): string[] {
 		const screen = this.navigation.screen;
 		const focused = screen === "message" || screen === "console";
-		const editor =
-			screen === "new" ? this.newComposer.render(width) : (this.console?.composer.render(width) ?? ["", "", ""]);
-		const geometry = dashboardGeometry(width, height, editor.length, screen === "console", screen === "find" ? 1 : 0);
+		const composer = screen === "new" ? this.newComposer : this.console?.composer;
+		const editor = composer?.render(width, this.messageLabel(width - 6, focused)) ?? [];
+		const status = this.selectedStatus(width);
+		const geometry = dashboardGeometry(
+			width,
+			height,
+			editor.length,
+			screen === "console",
+			screen === "find" ? 1 : 0,
+			status.length,
+		);
 		this.bodyHeight = geometry.bodyHeight;
-		const status = this.statusText();
 		const conversation =
 			this.console?.conversation.render(geometry.conversationWidth, geometry.bodyHeight) ??
 			Array.from({ length: geometry.bodyHeight }, (_, index) =>
-				index === Math.floor(geometry.bodyHeight / 2) ? status : "",
+				index === Math.floor(geometry.bodyHeight / 2) ? this.statusText() : "",
 			);
-		const body = this.dashboardBody(width, geometry, conversation);
+		const bodyY = screen === "find" ? 2 : 1;
+		const body = this.dashboardBody(width, geometry, conversation, bodyY);
 		if (screen === "find") {
 			body.unshift(this.find.render(width)[0] ?? "");
 			this.mouse.add({
 				x: 0,
-				y: 2,
+				y: 1,
 				width,
 				height: 1,
 				click: (event) => this.find.handleMouse({ ...event, type: "press" }),
 			});
 		}
-		const conversationY = 2 + (screen === "find" ? 1 : 0) + geometry.rosterHeight;
+		const conversationY = bodyY + geometry.rosterHeight;
 		this.mouse.add({
 			x: geometry.wide ? 39 : 0,
 			y: conversationY,
@@ -1208,29 +1267,29 @@ export class AgentDashboard implements Component, Focusable {
 			},
 			wheel: (delta) => this.wheelConversation(delta),
 		});
-		const composerY = 3 + body.length;
+		this.mouse.add({ x: 0, y: 1 + body.length, width, height: 2, wheel: (delta) => this.wheelConversation(delta) });
+		const composerY = 3 + body.length + status.length;
 		this.mouse.add({
 			x: 0,
-			y: composerY - 1,
+			y: composerY,
 			width,
-			height: editor.length + 1,
+			height: editor.length,
 			click: (event) => {
 				const composer = screen === "new" ? this.newComposer : this.console?.composer;
 				if (!composer) return false;
 				if (screen !== "new" && screen !== "console" && screen !== "message" && this.console)
 					this.navigation.enter("message", this.console.row.id);
 				composer.focused = true;
-				return composer.handleMouse({ ...event, y: event.y - 1, height: editor.length });
+				return composer.handleMouse(event);
 			},
 		});
 		return [
-			this.title(),
-			this.console ? status : "",
+			this.heading(width),
 			...body,
-			this.messageLabel(width, focused),
+			"",
+			this.conversationBoundary(width),
+			...status,
 			...editor,
-			this.console?.footer(width) ?? "",
-			this.notice ?? this.console?.state.receipt ?? "",
 			this.hintLine(width),
 		];
 	}

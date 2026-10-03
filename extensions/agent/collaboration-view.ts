@@ -13,7 +13,7 @@ import { stripVTControlCharacters } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { CollaborationList, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
 import { AgentComposer } from "./agent-composer.ts";
-import { fitLine } from "./dashboard-layout.ts";
+import { dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
 
 export type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;
 type Discovery = CollaborationList & { sources?: Array<{ sessionId: string; omitted: number; unavailable: boolean }> };
@@ -124,6 +124,7 @@ export class CollaborationView {
 	private readonly mouse = new DashboardMouse();
 	private mouseScreen?: string;
 	private timeLines = new Set<number>();
+	private bodyLineCount = 0;
 	private list?: Discovery;
 	private page?: CollaborationPage;
 	private screen: "list" | "thread" | "compose" | "notify" = "list";
@@ -459,39 +460,50 @@ export class CollaborationView {
 	private eventTime(at: number): string {
 		return dashboardTime(at, this.options.exactTime()) + (this.options.exactTime() ? "" : " (local)");
 	}
+	private field(label: string, value: string): string {
+		return this.options.theme.fg("muted", `${label}: `) + plain(value);
+	}
 	private threadLines(): string[] {
 		const page = this.page;
 		if (!page) return ["Read thread…"];
 		const t = page.thread;
 		const lines = [
-			plain(t.title),
-			`${t.closed ? "Closed" : "Open"} · Frame revision ${t.revision}`,
-			`Purpose: ${plain(t.purpose)}`,
-			`Carried authority (claim): ${plain(t.authority)}`,
-			`Authority source: ${plain(t.source)}`,
-			`Restrictions: ${plain(t.restrictions)}`,
-			`Acceptance: ${plain(t.acceptance)}`,
-			`Integrator: ${this.nameFor(t.integrator)}`,
+			this.options.theme.bold(this.options.theme.fg("accent", plain(t.title))),
+			this.options.theme.fg("muted", `${t.closed ? "Closed" : "Open"} · Frame revision ${t.revision}`),
+			this.field("Purpose", t.purpose),
+			this.field("Carried authority (claim)", t.authority),
+			this.field("Authority source", t.source),
+			this.field("Restrictions", t.restrictions),
+			this.field("Acceptance", t.acceptance),
+			this.field("Integrator", this.nameFor(t.integrator)),
 			"",
-			"Peers",
+			this.options.theme.bold(this.options.theme.fg("accent", "Peers")),
 			...t.members.map(
 				(member) =>
 					`${this.nameFor(member.identity)} [${member.identity}] · ${plain(member.contribution) || "No current contribution"}`,
 			),
 			"",
-			"Exchange (chronological)",
+			this.options.theme.bold(this.options.theme.fg("accent", "Exchange (chronological)")),
 			...(this.before ? ["Earlier page. r reads latest."] : []),
 		];
 		this.timeLines.clear();
 		for (const event of page.events) {
 			lines.push(
-				`#${event.sequence} · ${this.nameFor(event.sender)} [${event.sender}] · ${event.origin} · ${plain(event.kind)} · frame ${event.revision}`,
+				this.options.theme.fg(
+					"muted",
+					`#${event.sequence} · ${this.nameFor(event.sender)} [${event.sender}] · ${event.origin} · ${plain(event.kind)} · frame ${event.revision}`,
+				),
 			);
 			this.timeLines.add(lines.length);
-			lines.push(`Time: ${this.eventTime(event.at)}${event.replyTo ? ` · Reply to #${event.replyTo}` : ""}`);
-			if (event.source) lines.push(`Source: ${plain(event.source)}`);
+			lines.push(
+				this.options.theme.fg(
+					"muted",
+					`Time: ${this.eventTime(event.at)}${event.replyTo ? ` · Reply to #${event.replyTo}` : ""}`,
+				),
+			);
+			if (event.source) lines.push(this.field("Source", event.source));
 			lines.push(plain(event.message));
-			if (event.notify.length) lines.push(`Notify: ${event.notify.map((id) => this.nameFor(id)).join(", ")}`);
+			if (event.notify.length) lines.push(this.field("Notify", event.notify.map((id) => this.nameFor(id)).join(", ")));
 			lines.push("");
 		}
 		lines.push(
@@ -506,7 +518,11 @@ export class CollaborationView {
 				this.pending ? "Read thread discovery…" : "No threads in this page. Coverage below does not prove absence.",
 			];
 		const blocks = choices.map((choice, index) =>
-			wrapTextWithAnsi(`${index === this.index ? "›" : " "} ${choice.label}`, width),
+			wrapTextWithAnsi(`${index === this.index ? "›" : " "} ${choice.label}`, width).map((line, row) =>
+				row === 0
+					? dashboardSelection(line, width, index === this.index, this.options.theme)
+					: this.options.theme.fg("muted", line),
+			),
 		);
 		const selectedLine = blocks.slice(0, this.index).reduce((total, block) => total + block.length, 0);
 		const start = Math.max(0, selectedLine - Math.floor(height / 3));
@@ -532,9 +548,13 @@ export class CollaborationView {
 	}
 	private notifyLines(height: number): string[] {
 		const members = this.page?.thread.members ?? [];
-		const lines = members.map(
-			(member, index) =>
+		const lines = members.map((member, index) =>
+			dashboardSelection(
 				`${index === this.memberIndex ? "›" : " "} [${this.draft()?.notify.includes(member.identity) ? "x" : " "}] ${this.nameFor(member.identity)} [${member.identity}]`,
+				this.options.tui.terminal.columns,
+				index === this.memberIndex,
+				this.options.theme,
+			),
 		);
 		const start = Math.max(0, this.memberIndex - height + 3);
 		for (let index = start; index < members.length && index - start + 1 < height; index++)
@@ -571,6 +591,7 @@ export class CollaborationView {
 			line += wrapped.length;
 			return wrapped;
 		});
+		this.bodyLineCount = lines.length;
 		this.offset = this.follow
 			? Math.max(0, lines.length - height)
 			: Math.max(0, Math.min(this.offset, Math.max(0, lines.length - height)));
@@ -608,20 +629,44 @@ export class CollaborationView {
 		};
 		return hints[this.screen];
 	}
+	private heading(width: number): string {
+		let position = "";
+		if (this.screen === "list") {
+			const count = this.choices().length;
+			position = `${count ? this.index + 1 : 0}/${count}${this.list?.coverage.complete ? "" : "+"}`;
+		} else if (this.screen === "notify") {
+			const count = this.page?.thread.members.length ?? 0;
+			position = `${count ? this.memberIndex + 1 : 0}/${count} peers`;
+		} else if (this.page) position = `Frame ${this.page.thread.revision}`;
+		const title =
+			this.screen === "list" || !this.page ? "Agents > Threads" : `Agents > Threads > ${plain(this.page.thread.title)}`;
+		return dashboardHeading(title, position, width, this.options.theme);
+	}
+	private boundary(width: number, height: number): string {
+		const last = Math.min(this.bodyLineCount, this.offset + height);
+		const label = this.page
+			? `Lines ${Math.min(this.offset + 1, this.bodyLineCount)}–${last} of ${this.bodyLineCount} loaded${last === this.bodyLineCount ? " · End of loaded page" : ""}`
+			: "Thread page not loaded";
+		return dashboardRule(label, width, this.options.theme);
+	}
 	render(width: number, height: number): string[] {
 		if (this.screen === "compose" && this.composer.getText() !== this.draft()?.text)
 			this.composer.setText(this.draft()?.text ?? "");
 		this.composer.focused = this.screen === "compose";
-		const editor = this.screen === "compose" ? this.composer.render(width) : [];
+		const editor =
+			this.screen === "compose"
+				? this.composer.render(width, `Post to ${plain(this.page?.thread.title ?? "thread")} · Enter posts`)
+				: [];
+		const reading = this.screen === "thread" || this.screen === "compose";
 		this.mouse.reset(width, height);
 		this.mouseScreen = this.screen;
-		const bodyHeight = Math.max(1, height - 5 - editor.length);
+		const bodyHeight = Math.max(1, height - (reading ? 6 : 5) - editor.length);
 		const lines = this.bodyLines(width, bodyHeight);
 		this.mouse.add({
 			x: 0,
 			y: 2,
 			width,
-			height: bodyHeight,
+			height: bodyHeight + (reading ? 2 : 0),
 			wheel: (delta) => {
 				if (this.screen === "thread" || this.screen === "compose") {
 					this.follow = false;
@@ -638,19 +683,28 @@ export class CollaborationView {
 		if (this.screen === "compose")
 			this.mouse.add({
 				x: 0,
-				y: 2 + bodyHeight,
+				y: 4 + bodyHeight,
 				width,
 				height: editor.length,
 				click: (event) => this.composer.handleMouse(event),
 			});
 		return [
-			"Agents > Threads",
-			this.status(),
+			this.heading(width),
+			this.options.theme.fg("muted", this.status()),
 			...Array.from({ length: bodyHeight }, (_, i) => lines[i] ?? ""),
+			...(reading ? ["", this.boundary(width, bodyHeight)] : []),
 			...editor,
 			this.notice,
-			mouseHints(this.mouse, height - 2, this.hints(), "Esc back", width, (data) => this.handleInput(data)),
-			"",
+			...(!reading ? [""] : []),
+			mouseHints(
+				this.mouse,
+				height - 1,
+				this.hints(),
+				"Esc back",
+				width,
+				(data) => this.handleInput(data),
+				this.options.theme,
+			),
 		].map((line) => fitLine(line, width));
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {

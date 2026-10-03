@@ -1,5 +1,6 @@
 import type { TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { fitHints } from "./dashboard-layout.ts";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 
 interface Region {
 	x: number;
@@ -172,6 +173,7 @@ export function mouseHints(
 	back: string,
 	width: number,
 	input: (data: string) => void,
+	theme?: Theme,
 ): string {
-	return fitHints(items, back, width, (hint, x, visible) => addHint(mouse, y, hint, x, visible, input));
+	return fitHints(items, back, width, (hint, x, visible) => addHint(mouse, y, hint, x, visible, input), theme);
 }

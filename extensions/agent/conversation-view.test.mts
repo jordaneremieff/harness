@@ -50,6 +50,34 @@ it("an earlier prepend keeps the current entry anchor", () => {
 	assert.deepEqual(view.render(80, 5), before);
 	assert.deepEqual(state.anchor, anchor);
 });
+it("loaded-line positions track the visible range, tail and an empty viewport", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	view.setContent(
+		Array.from({ length: 10 }, (_, index) => user(index)),
+		[],
+		"/work",
+	);
+	view.render(80, 5);
+	const tail = view.position();
+	assert.equal(tail.end, true);
+	assert.equal(tail.last, tail.total);
+	assert.equal(tail.last - tail.first, 4);
+	view.page(-3);
+	view.render(80, 5);
+	const earlier = view.position();
+	assert.equal(earlier.end, false);
+	assert.ok(earlier.last < tail.last);
+	assert.equal(earlier.last - earlier.first, 4);
+	assert.equal(tail.estimated, true);
+	assert.equal(earlier.estimated, false);
+	view.render(80, 0);
+	assert.equal(view.position().first, 0);
+	assert.equal(view.position().last, 0);
+	view.setContent([], [], "/work");
+	view.render(80, 5);
+	assert.deepEqual(view.position(), { first: 0, last: 0, total: 0, end: true, estimated: false });
+});
 it("ten thousand retained entries are bounded before renderer construction", () => {
 	const entries = Array.from({ length: 10000 }, (_, index) => user(index));
 	const bounded = boundedEntries(entries);
