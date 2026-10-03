@@ -28,6 +28,8 @@ export interface ScheduleFixtureOptions {
 	readonly agentExtension?: boolean;
 	/** Hold the first model request open until `releaseAnswer()` runs. */
 	readonly deferFirstAnswer?: boolean;
+	/** Keep model requests open across host reopens until released. */
+	readonly deferAnswers?: boolean;
 	readonly answer?: string;
 	/** Native clock shared across reopen. */
 	readonly now?: () => number;
@@ -35,6 +37,7 @@ export interface ScheduleFixtureOptions {
 	readonly resume?: boolean;
 	/** Existing storage paths for a subprocess reopen. */
 	readonly metadata?: HostMetadata;
+	readonly storageId?: string;
 }
 
 export interface ScheduleFixture {
@@ -90,18 +93,30 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 	const runtime = await createTestRuntime();
 	const answerText = options.answer ?? FIXTURE_ANSWER;
 	const requested = gate();
-	const firstGate: Gate | undefined = options.deferFirstAnswer === true ? gate() : undefined;
+	const firstGate: Gate | undefined = options.deferFirstAnswer === true || options.deferAnswers === true ? gate() : undefined;
 	let held = firstGate !== undefined;
 	let requests = 0;
-	const stream = (_model: unknown, _context: TranscriptContext) => {
+	const stream = (_model: unknown, _context: TranscriptContext, requestOptions?: { signal?: AbortSignal }) => {
 		requests += 1;
 		requested.release();
 		const message: AssistantMessage = { role: "assistant", content: [{ type: "text", text: answerText }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "stop", timestamp: Date.now() };
 		const events = createAssistantMessageEventStream();
-		if (held && firstGate !== undefined) {
+		if ((held || options.deferAnswers === true) && firstGate !== undefined) {
 			held = false;
 			events.push({ type: "start", partial: message });
+			let ended = false;
+			const abort = () => {
+				if (ended) return;
+				ended = true;
+				const aborted: AssistantMessage = { ...message, content: [], stopReason: "aborted" };
+				events.push({ type: "error", reason: "aborted", error: aborted });
+				events.end(aborted);
+			};
+			requestOptions?.signal?.addEventListener("abort", abort, { once: true });
 			void firstGate.promise.then(() => {
+				if (ended) return;
+				ended = true;
+				requestOptions?.signal?.removeEventListener("abort", abort);
 				events.push({ type: "done", reason: "stop", message });
 				events.end(message);
 			});
@@ -120,7 +135,7 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 		stream,
 		streamSimple: stream,
 	});
-	const storageId = options.metadata?.storageId ?? "durable-schedule-fixture";
+	const storageId = options.metadata?.storageId ?? options.storageId ?? "durable-schedule-fixture";
 	const ownerId = "schedule-fixture-owner";
 	const errors: unknown[] = [];
 

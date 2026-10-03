@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type TSchema } from "typebox";
+import { checkInMinutes } from "./durable-checkins.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { configurationWithApply } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, parseConfigurationArguments } from "./configuration.ts";
@@ -68,6 +69,7 @@ const message = Type.Object(
 	{ sessionId: id, message: Type.String({ minLength: 1 }), replyTo: Type.Optional(id) },
 	{ additionalProperties: false },
 );
+const checkIn = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval in minutes while unanswered; 0 disables. Default: PI_AGENT_CHECK_IN_MINUTES or 30." }));
 const send = Type.Object(
 	{
 		sessionId: id,
@@ -80,6 +82,7 @@ const send = Type.Object(
 			}),
 		),
 		mode: Type.Optional(StringEnum(["followUp", "steer"])),
+		checkInMinutes: checkIn,
 	},
 	{ additionalProperties: false },
 );
@@ -91,6 +94,7 @@ const spawn = Type.Object(
 		model: Type.Optional(Type.String()),
 		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
 		trust: maybeTrust,
+		checkInMinutes: checkIn,
 	},
 	{ additionalProperties: false },
 );
@@ -211,7 +215,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	};
 	register(
 		"agent_spawn",
-		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. The host survives this Pi process.",
+		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Unanswered tasks send automatic owner check-ins, separate from voluntary reports. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		spawn,
 		(input, ctx) => getManager().spawn({ ...input, origin: "model" }, caller(ctx, pi)),
 	);
@@ -243,11 +247,11 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_send",
-		"Admit a task, report, or correction. Idle agents start; busy agents receive durable steering. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
+		"Admit a task, report, or correction. Idle agents start; busy agents receive durable steering. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
 		send,
 		(input, ctx, callId) => {
 			if (input.deliverAt === undefined)
-				return control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx);
+				return control("submit", { ...input, checkInMinutes: checkInMinutes(input.checkInMinutes), whenBusy: "steer", origin: "model" }, ctx);
 			if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
 			return control(
 				"timer-schedule",
@@ -256,6 +260,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 					message: input.message,
 					deliverAt: input.deliverAt,
 					mode: input.mode ?? "followUp",
+					checkInMinutes: checkInMinutes(input.checkInMinutes),
 					origin: "model",
 					scheduleId: `timer:send:${ctx.sessionManager.getSessionId()}:${callId}`,
 					requestId: `timer-delivery:send:${ctx.sessionManager.getSessionId()}:${callId}`,
@@ -320,12 +325,13 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_place",
-		"Use the agent bound to a directory, or create it. Longest bound directory wins. An optional prompt starts work.",
+		"Use the agent bound to a directory, or create it. Longest bound directory wins. An optional prompt starts work with automatic owner check-ins. checkInMinutes sets the interval; 0 disables.",
 		Type.Object(
 			{
 				area: Type.Optional(Type.String()),
 				topic: Type.Optional(Type.String()),
 				prompt: Type.Optional(Type.String()),
+				checkInMinutes: checkIn,
 				trust: maybeTrust,
 			},
 			{ additionalProperties: false },

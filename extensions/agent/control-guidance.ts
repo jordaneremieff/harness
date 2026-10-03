@@ -41,6 +41,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		snippet: "Spawn a background full agent session",
 		guidelines: [
 			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. Apply the universal AGENTS.md "Intent authority" section to assignments, corrections, and relayed decisions; preserve operator restrictions and distinguish them from agent choices.',
+			"Model tool tasks get automatic check-ins while unanswered, separate from voluntary worker reports. checkInMinutes overrides PI_AGENT_CHECK_IN_MINUTES (default 30); 0 disables. A check-in is not a finished result. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. Steering waits for the tool boundary.",
 			"Agent work runs in the background. The child's answer reports to the recorded owner conversation automatically. Settlement is execution evidence, not task acceptance. Integrate needed results and resolve live work before a final conclusion: continue useful work, redirect changed work, or abort superseded work.",
 		],
 	},
@@ -48,6 +49,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		snippet: "Send a task to an agent session",
 		guidelines: [
 			"A child conversation sends interim reports, blocking questions, and corrections with agent_send to the owner identity in its instructions. Do not replace the terminal result with an interim report. Reuse an existing session when its retained context and ownership serve the task; do not duplicate its work.",
+			"Unanswered model tool tasks get automatic owner check-ins. checkInMinutes overrides the default and 0 disables. Check-ins wake a model owner, not an operator owner; delivered reports and check-ins do not start another check-in task. Assess the unfinished task rather than treat the notice as an answer.",
 			"With deliverAt, the input is scheduled at that absolute time instead of being admitted now; the storage host must run at the deadline.",
 		],
 	},

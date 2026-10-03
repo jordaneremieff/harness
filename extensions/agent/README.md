@@ -109,8 +109,8 @@ selection and MCP server configuration follow the current Pi settings.
 
 | Tool | Effect |
 |---|---|
-| `agent_spawn` | Create a root storage. Inside a Durable agent, the same cwd uses a native child; a different cwd uses a new storage host. An optional prompt starts work. |
-| `agent_send` | Admit a task, report, or correction. Busy recipients receive Durable steering. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_spawn` | Create a root storage. Inside a Durable agent, the same cwd uses a native child; a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
+| `agent_send` | Admit a task, report, or correction. Busy recipients receive Durable steering. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -120,7 +120,7 @@ selection and MCP server configuration follow the current Pi settings.
 | `agent_rewind` | Fork before a mistaken entry and submit a correction. Files remain current. |
 | `agent_compact` | Abort another conversation's active work, then run native compaction. Self-compaction uses its completed tool boundary. |
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
-| `agent_place` | Resolve the longest directory binding, or create one, with optional work. |
+| `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths; optional `checkInMinutes` overrides it and 0 disables it. |
 | `agent_list` | Page through stored identities and conversation metadata. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results. |
@@ -236,6 +236,50 @@ received answer, source details including full identities and submission rows,
 and `/agent opens the dashboard`. Model-facing caveats stay in the stored
 message content rather than the answer preview. Catalog follow-ups between Durable hosts keep their
 existing form.
+
+Automatic owner check-ins do not depend on voluntary worker reports. Model
+`agent_spawn` and `agent_place` prompts and `agent_send` tasks use `PI_AGENT_CHECK_IN_MINUTES`
+(default 30); per-call `checkInMinutes` overrides it, including 0 to disable.
+Operator admissions get no default. Native foreign admissions and local
+Reporter admissions use the same interval and delivery contract. Scheduled
+sends retain the selected interval before their deadline and start check-ins
+when the input is admitted. Delivered reports, results, and check-ins never
+arm another default check-in.
+
+The host's `pi.host` built-in registers the check-in task independently of the
+configured native agent contribution. Native Reporters arm check-ins only when
+the host registry supplies that task. The runtime therefore owns availability.
+A check-in is a native `agent.check-in` background task, armed atomically with
+the delivery intent, or with the local Reporter's retained arming checkpoint.
+The public admission API owns a separate commit. The task reacquires the input
+by submitting its same request ID, then races its settlement wait against a
+Durable deadline. Admission time and interval remain in the task input. The host supplies the
+same configured Harness clock to intent admission and deadlines; native
+Reporters and timers use their runtime clock. Production defaults to `Date.now`. A
+notice row and the next interval checkpoint commit together. Stable source IDs
+identify each watched request and interval. Reopening preserves that identity;
+missed intervals collapse into one current notice, then the original cadence
+continues. A newer notice replaces an older undelivered notice for that task
+and owner. The report stores its digest only in `message`. Settlement ends the
+deadline task promptly and removes all check-in rows for that request across
+all owners, including acknowledged rows and fallback markers. Reset also ends them when its native boundary settles the input
+unanswered; an idle background deadline never waits out its remaining interval.
+
+Check-ins use the report owner route, version checks, deduplication, and
+acknowledgement. A model-origin check-in wakes its live primary owner; an
+explicit operator-origin interval stays quiet. An absent or dead owner gets at
+most one quiet fallback broadcast per watched task and owner, recorded only
+after every required receiver accepts it. Repeated intervals never broadcast
+again for that owner. A failed or incomplete fallback stays pending.
+
+The headline names the agent and says it is still working, not finished, with
+elapsed time and retained conversation-total cost. The bounded body shows a
+lower bound of recent tool calls, current tools, their call age (not exact
+execution time), last tool lines, and a reply excerpt labeled as unfinished.
+Conversation cost includes earlier tasks and excludes unreported in-flight
+usage. The coordinator assesses a check-in and decides whether to report
+progress, let work continue, steer a wrap-up, or abort a hung tool. Steering
+waits for a tool boundary and does not interrupt a running tool.
 
 A scheduled input is a native `agent.timer` background task in the target's
 storage. Its input persists the absolute deadline, target conversation,
@@ -478,6 +522,7 @@ SessionManager.
 | `PI_AGENT_DIR` | Pi configuration directory, otherwise public `getAgentDir()`. |
 | `PI_AGENT_SESSIONS_DIR` | Agent store root, otherwise `<agentDir>/agent-sessions`. |
 | `PI_AGENT_IDLE_MINUTES` | Idle host retirement interval. Default 5; zero disables; finite range 0 through 35791. |
+| `PI_AGENT_CHECK_IN_MINUTES` | Default automatic owner check-in interval for model `agent_spawn` and `agent_place` prompts and `agent_send` tasks. Default 30; zero disables; finite range 0 through 35791 minutes, including fractions. Blank and invalid values are rejected with the variable name and range. Per-call `checkInMinutes` overrides it. Operator admissions have no default. |
 
 Current storage lives under `<store>/durable/`: a bounded discovery metadata
 record and a SQLite file for each storage, plus directory bindings. Metadata

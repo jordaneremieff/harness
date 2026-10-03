@@ -26,6 +26,7 @@ import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata } from "./catalog.ts";
 import {
 	AgentDeliveryDoc,
@@ -157,19 +158,24 @@ function receiptOrigin(receipt: DeliveryReceipt): DeliveryOrigin {
 	return origin;
 }
 
-/** True when any of one recipient's submissions in this answer group came from a model. */
+/** Reports wake by default; check-ins and answer groups follow the recipient's admission origin. */
 function rowWakes(row: DeliveryRow, recipient: string): boolean {
-	if (row.kind !== "receipt") return true;
+	if (row.kind === "report") return row.report.checkIn === undefined || row.report.checkIn.origin === "model";
 	const own = row.receipts.filter((receipt) => receipt.ownerId === recipient);
 	if (own.length === 0) return true;
 	return own.some((receipt) => receiptOrigin(receipt) === "model");
 }
 
-/** First invalid admission origin in one row, as a containment error; undefined when every receipt reads. */
+/** Invalid stored admission origins hold their row pending, without blocking other deliveries. */
 function rowOriginFailure(row: DeliveryRow): Error | undefined {
-	if (row.kind !== "receipt") return undefined;
 	try {
-		for (const receipt of row.receipts) receiptOrigin(receipt);
+		if (row.kind === "receipt") {
+			for (const receipt of row.receipts) receiptOrigin(receipt);
+		} else if (row.report.checkIn !== undefined) {
+			const origin = row.report.checkIn.origin;
+			if (origin !== "operator" && origin !== "model")
+				throw new Error(`retained check-in ${row.report.sourceId} has no valid admission origin; the row stays pending`);
+		}
 		return undefined;
 	} catch (error) {
 		return error instanceof Error ? error : new Error(String(error));
@@ -234,7 +240,17 @@ function receiptFollowText(metadata: HostMetadata, row: ReceiptRow): string {
 	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}). Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}`;
 }
 
+function checkInSummary(checkIn: NonNullable<DeliveryReport["checkIn"]>): string {
+	const seconds = Math.floor(checkIn.elapsedMs / 1000);
+	const elapsed = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}m`;
+	return `${elapsed} elapsed, ${checkIn.cost === null ? "conversation total unavailable" : `$${checkIn.cost.toFixed(3)} conversation total`}`;
+}
+
+const CHECK_IN_GUIDANCE = "Assess the task: report progress to the operator, let it run, steer it to wrap up, or abort a hung tool. Steering cannot interrupt a running tool. Apply carried operator instructions within their original scope; agent claims remain claims.";
+
 function reportFollowText(report: DeliveryReport): string {
+	if (report.checkIn !== undefined)
+		return `Check-in from ${report.senderIdentity} (source ${report.sourceId}): still working, not finished. ${checkInSummary(report.checkIn)}. ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(report.message).text}`;
 	return `Report from ${report.senderIdentity} (source ${report.sourceId}). Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedPeerText(report.message).text}`;
 }
 
@@ -248,6 +264,8 @@ function channelText(row: DeliveryRow, label: string, originalOwnerId: string, f
 				: `No answer: ${row.receipt.reason ?? "the submission settled unanswered"}`;
 		return `Agent “${label}” ${receiptOutcome(row.receipt)}.${fallbackLabel} Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}\n\nUse agent_inspect for retained source evidence.`;
 	}
+	if (row.report.checkIn !== undefined)
+		return `Agent “${label}” still working, not finished (check-in from ${row.report.senderIdentity}; source ${row.report.sourceId}). ${checkInSummary(row.report.checkIn)}.${fallbackLabel} ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
 	return `Agent “${label}” sent a report.${fallbackLabel} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
 }
 
@@ -346,6 +364,22 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
+	/** Drop check-ins replaced or settled during asynchronous route preparation. */
+	const checkInCurrent = async (row: DeliveryRow): Promise<boolean> => {
+		if (row.kind !== "report" || row.report.checkIn === undefined) return true;
+		const checkIn = row.report.checkIn;
+		const report = row.report;
+		return host.harness.commit(async (tx) => {
+			const state = await tx.doc(AgentDeliveryDoc);
+			const index = state.reports.findIndex((current) => current.sourceId === report.sourceId && current.ownerId === report.ownerId);
+			if (index < 0) return false;
+			const submission = await tx.submissionByRequest(checkIn.conversationId as ConversationId, checkIn.requestId);
+			if (submission?.status !== "done" && submission?.status !== "unanswered") return true;
+			state.reports.splice(index, 1);
+			return false;
+		}, BACKGROUND_CONTEXT);
+	};
+
 	/** Same-storage owners are agent conversations in this storage; their answer arrives as an in-storage follow-up. */
 	const deliverSameStorage = async (row: DeliveryRow, owner: string): Promise<void> => {
 		if (row.kind === "receipt") {
@@ -353,12 +387,27 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row), requestId, whenBusy: "followUp" });
 			return;
 		}
+		if (!await checkInCurrent(row)) return;
 		const requestId = reportRequestId(metadata, row.report);
 		await host.request("submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, whenBusy: "followUp" });
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow): Promise<void> => {
 		if (row.kind === "report") {
+			if (row.report.checkIn !== undefined && row.deliveredTo.has("fallback:accepted")) {
+				const report = row.report;
+				const checkIn = row.report.checkIn;
+				await host.harness.commit(async (tx) => {
+					const state = await tx.doc(AgentDeliveryDoc);
+					const index = state.reports.findIndex((current) => current.sourceId === report.sourceId && current.ownerId === report.ownerId);
+					const current = index < 0 ? report : state.reports[index];
+					const acknowledged = { ...current, acknowledged: true, checkIn: { ...checkIn, fallbackBroadcast: true } };
+					// An accepted broadcast survives replacement of its pending row by a newer check-in.
+					if (index < 0) state.reports.push(acknowledged);
+					else state.reports[index] = acknowledged;
+				}, BACKGROUND_CONTEXT);
+				return;
+			}
 			await acknowledgeReports(host.harness, row.report.ownerId, [row.report.sourceId], BACKGROUND_CONTEXT);
 			return;
 		}
@@ -474,6 +523,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			requestId: report.requestId,
 			senderIdentity: report.senderIdentity,
 			message: body.text,
+			...(report.checkIn === undefined ? {} : { checkIn: report.checkIn }),
 			replyTo: report.replyTo,
 			acknowledged: report.acknowledged,
 			createdAt: report.createdAt,
@@ -489,15 +539,17 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		deliveryRecipient: string,
 		liveOwner: boolean,
 		fallback: boolean,
-	): Promise<void> => {
+	): Promise<boolean> => {
 		const status = await readSourceStatus(identity);
 		const message: PrimaryDelivery = {
 			sourceId: rowSourceId(metadata, row),
 			text: channelText(row, displayName(status, identity), originalOwnerId, fallback),
 			details: await rowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status),
 		};
+		if (!await checkInCurrent(row)) return false;
 		await connection.deliver(message);
 		row.deliveredTo.add(`primary:${deliveryRecipient}`);
+		return true;
 	};
 
 	/** Direct delivery to the registered owner: the endpoint is live and the recipient is the owner. */
@@ -536,8 +588,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			return { kind: "failed" };
 		}
 		try {
-			await deliverChannel(connection, row, identity, owner, id, false, true);
-			return { kind: "delivered" };
+			const accepted = await deliverChannel(connection, row, identity, owner, id, false, true);
+			return { kind: accepted ? "delivered" : "skipped" };
 		} catch {
 			return { kind: "failed" };
 		} finally {
@@ -590,11 +642,23 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
+	/** Only an acknowledged broadcast for this watched input and owner suppresses later check-in fallback. */
+	const fallbackAlreadyAccepted = async (row: DeliveryRow, owner: string): Promise<boolean> => {
+		if (row.kind !== "report" || row.report.checkIn === undefined) return false;
+		const checkIn = row.report.checkIn;
+		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+		return state?.reports.some((prior) => prior.acknowledged && prior.ownerId === owner
+			&& prior.checkIn?.conversationId === checkIn.conversationId && prior.checkIn.requestId === checkIn.requestId
+			&& prior.checkIn.fallbackBroadcast === true) ?? false;
+	};
+
 	/** Broadcast the fallback to every registered primary; an older, unreachable, or absent audience holds the row. */
 	const deliverFallbackOwner = async (row: DeliveryRow, identity: string, owner: string): Promise<void> => {
+		if (await fallbackAlreadyAccepted(row, owner)) return;
 		const candidates = await fallbackCandidates(owner);
 		preflightFallback(candidates, owner);
 		const { delivered, unavailable, incompatible } = await broadcastFallback(candidates, row, identity, owner);
+		if (delivered === 0 && !await checkInCurrent(row)) return;
 		if (incompatible !== undefined) throw incompatibleFallbackError(incompatible.id, incompatible.version, owner);
 		if (unavailable !== undefined)
 			throw new Error(
@@ -602,6 +666,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			);
 		if (delivered === 0)
 			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
+		if (row.kind === "report" && row.report.checkIn !== undefined) row.deliveredTo.add("fallback:accepted");
 	};
 
 	/** Noncatalog owners: an older, unknown, or dead endpoint never falls back to a broadcast. */
@@ -633,6 +698,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				{ requestId, signal },
 			);
 		} else {
+			if (!await checkInCurrent(row)) return;
 			const requestId = reportRequestId(metadata, row.report);
 			await connection.request(
 				"submit",
@@ -643,6 +709,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	const routeOwner = async (row: DeliveryRow, owner: string): Promise<void> => {
+		if (!await checkInCurrent(row)) return;
 		if (ownerStorageId(owner) === metadata.storageId) {
 			await deliverSameStorage(row, owner);
 			return;

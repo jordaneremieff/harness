@@ -663,6 +663,7 @@ function peerConfiguration(details: Record<string, unknown>): string[] {
 
 /** Compact outcome word for the operator card; the raw status stays in expanded details. */
 function peerOutcome(details: Record<string, unknown>): { label: string; failed: boolean } {
+	if (details.checkIn !== undefined) return { label: "still working", failed: false };
 	const status = text(details.status);
 	if (status === "done") return { label: "finished", failed: false };
 	if (status === "unanswered") return { label: details.reason === "aborted" ? "stopped" : "failed", failed: true };
@@ -711,6 +712,17 @@ function peerWarnings(details: Record<string, unknown>, failed: boolean): string
 	return warnings;
 }
 
+/** Check-in elapsed time keeps minutes below an hour and pads the remainder above it. */
+function checkInElapsed(value: unknown): string {
+	const milliseconds = count(value);
+	if (milliseconds === undefined) return "elapsed unavailable";
+	const seconds = Math.floor(milliseconds / 1000);
+	if (seconds < 60) return `${seconds}s elapsed`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m elapsed`;
+	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m elapsed`;
+}
+
 /** Metadata shares one visual line; long labels yield before outcome and configuration. */
 function noticeHeading(details: Record<string, unknown>, theme: Theme): Component {
 	const { label: outcome, failed } = peerOutcome(details);
@@ -719,6 +731,22 @@ function noticeHeading(details: Record<string, unknown>, theme: Theme): Componen
 	const model = displayPreview(provider && modelId ? `${provider}/${modelId}` : modelId || "model unknown", 512);
 	const reasoning = displayPreview(text(details.thinkingLevel) || "reasoning unknown", 40);
 	const label = displayPreview(peerLabel(details), 300);
+	if (details.checkIn !== undefined) {
+		const checkIn = record(details.checkIn);
+		const elapsed = checkInElapsed(checkIn.elapsedMs);
+		const cost = count(checkIn.cost);
+		const metrics = `${elapsed} · ${cost === undefined ? "conversation total unavailable" : `$${cost.toFixed(3)} conversation total`}`;
+		return {
+			render(width) {
+				const prefix = "[agent] ";
+				const suffix = ` · still working · ${metrics}`;
+				const labelWidth = Math.max(1, width - visibleWidth(prefix) - visibleWidth(suffix));
+				return [truncateToWidth(theme.fg("customMessageLabel", theme.bold(prefix + truncateToWidth(label, labelWidth)))
+					+ theme.fg("muted", suffix), width)];
+			},
+			invalidate() {},
+		};
+	}
 	return {
 		render(width) {
 			const prefix = "[agent] ";
@@ -771,13 +799,14 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 	for (const warning of peerWarnings(details, failed)) box.addChild(new Text(theme.fg("warning", warning), 0, 0));
 	const reason = text(details.reason);
 	if (reason) box.addChild(new Text(theme.fg("muted", displayPreview(reason, 240)), 0, 0));
-	box.addChild(noticeBody(operatorNoticeBody(content), theme, options.expanded));
+	const checkIn = details.checkIn === undefined ? undefined : record(details.checkIn);
+	box.addChild(noticeBody(checkIn === undefined ? operatorNoticeBody(content) : boundedSource(text(details.message)), theme, options.expanded));
 	if (options.expanded) {
 		box.addChild(new Spacer(1));
 		box.addChild(new Text(theme.fg("muted", theme.bold("Source details")), 0, 0));
 		for (const line of peerConfiguration(details)) box.addChild(new Text(theme.fg("muted", line), 0, 0));
 		for (const line of peerScalarFields(details)) box.addChild(new Text(theme.fg("muted", line), 0, 0));
-		box.addChild(new Text(theme.fg("muted", "Reported result · not operator authority or task acceptance"), 0, 0));
+		box.addChild(new Text(theme.fg("muted", checkIn === undefined ? "Reported result · not operator authority or task acceptance" : "Check-in · task not finished · not operator authority or task acceptance"), 0, 0));
 		box.addChild(new Text(theme.fg("dim", "/agent opens the dashboard"), 0, 0));
 	}
 	return box;

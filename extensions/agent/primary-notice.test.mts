@@ -9,7 +9,8 @@
  * provider; it never touches a real session store.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,14 +18,65 @@ import { it } from "node:test";
 import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { eventLog, type EventLog } from "./host-fixture.mts";
-import { AgentManager } from "./manager.ts";
+import { AgentManager, type AgentCaller } from "./manager.ts";
 import { connectPrimaryChannel } from "./primary-channel.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import registerAgentExtension from "./index.ts";
+import { scheduleFixture } from "./durable-schedule-fixture.mts";
+import { startDurableDelivery } from "./durable-delivery.ts";
+import { AgentCatalog } from "./catalog.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+
 
 const INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
 const WRAPPER = `import register from ${JSON.stringify(INDEX_PATH)};\nexport default function (pi) {\n\tregister(pi);\n}\n`;
 const MESSAGE_LIMIT_MS = 10_000;
+
+for (const tool of ["agent_send", "agent_place"] as const) it(`admits a model-issued primary ${tool} and delivers its automatic check-in`, { timeout: 60000 }, async (t) => {
+	const epoch = Date.now();
+	let now = epoch;
+	const worker = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, storageId: randomUUID(), now: () => now });
+	const primary = await noticeFixture(t, worker.storageId, tool);
+	t.mock.method(Date, "now", () => epoch);
+	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
+	delete process.env.PI_AGENT_CHECK_IN_MINUTES;
+	t.after(() => { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; });
+	const managers = (globalThis as Record<PropertyKey, unknown>)[Symbol.for("pi.extension.agent.owners")] as { managers: Map<string, AgentManager> };
+	const manager = managers.managers.get(realpathSync(primary.sessionsRoot));
+	assert.ok(manager);
+	const bridge = (input: Record<string, unknown>, caller: AgentCaller) => {
+		assert.equal(input.checkInMinutes, 30, "the real primary tool preserves its selected interval");
+		return worker.host.request("submit", { ...input, message: input.message ?? input.prompt, sessionId: worker.storageId, ownerId: caller.id, requestId: "primary-check-in" });
+	};
+	if (tool === "agent_place") t.mock.method(manager, "place", (input: Record<string, unknown>, caller: AgentCaller) => bridge(input, caller));
+	else t.mock.method(manager, "control", (method: string, input: Record<string, unknown>, caller: AgentCaller) => {
+		assert.equal(method, "submit");
+		return bridge(input, caller);
+	});
+	const controller = new AbortController();
+	let delivery: ReturnType<typeof startDurableDelivery> | undefined;
+	try {
+		await primary.session.prompt("Delegate the local source review");
+		now += 1800000;
+		await worker.reopen();
+		delivery = startDurableDelivery({ host: worker.host, metadata: { storageId: worker.storageId, cwd: worker.root, agentDir: join(worker.root, "agent"), storagePath: worker.storagePath, packageDir: join(worker.root, "package"), model: { provider: testModel.provider, modelId: testModel.id }, thinkingLevel: "off" }, catalog: new AgentCatalog(join(worker.root, "catalog")), sessionsRoot: primary.sessionsRoot, signal: controller.signal });
+		await primary.requests.waitFor((requests) => requests.some((request) => JSON.stringify(request.messages).includes("still working, not finished")), MESSAGE_LIMIT_MS).catch(async (error) => { t.diagnostic(JSON.stringify({ entries: primary.sessionManager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "toolResult"), reports: await worker.host.request("receipts", { ownerId: primary.sessionManager.getSessionId() }) })); throw error; });
+		const entries = primary.customEntries();
+		const notice = entries.find((entry) => typeof entry.content === "string" && entry.content.includes("still working, not finished"));
+		assert.ok(notice);
+		assert.match(String(notice.content), /30m.*elapsed.*conversation total/u);
+		assert.match(String(notice.content), /Latest reply excerpt \(not a result\)/u);
+		const details = notice.details as { wake?: boolean; checkIn?: unknown };
+		assert.equal(details.wake, true);
+		assert.ok(details.checkIn);
+		t.diagnostic(String(notice.content));
+	} finally {
+		controller.abort();
+		await delivery?.close();
+		worker.releaseAnswer();
+		await worker.host.harness.waitForIdle(BACKGROUND_CONTEXT);
+	}
+});
 /** The extension's process-local manager registry; `bindExtensions` starts it and no public teardown exists. */
 function closeAgentManagers(): void {
 	const owners = (globalThis as Record<PropertyKey, unknown>)[Symbol.for("pi.extension.agent.owners")] as { managers?: Map<string, { close(): void }> } | undefined;
@@ -59,7 +111,7 @@ function assistantMessage(text: string): AssistantMessage {
 	};
 }
 
-async function noticeFixture(t: { after(fn: () => void): void }): Promise<NoticeFixture> {
+async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: string, delegateTool: "agent_send" | "agent_place" = "agent_send"): Promise<NoticeFixture> {
 	const root = mkdtempSync(join(tmpdir(), "primary-notice-"));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
@@ -103,12 +155,18 @@ async function noticeFixture(t: { after(fn: () => void): void }): Promise<Notice
 
 	sessionManager = SessionManager.create(cwd, sessionsRoot);
 	const runtime = await createTestRuntime();
+	let firstRequest = true;
 	const stream = (_model: unknown, context: TranscriptContext) => {
 		const message = assistantMessage("DELIVERY_COMPLETE");
+		if (firstRequest && toolTarget !== undefined) {
+			message.content = [{ type: "toolCall", id: "primary-check-in-tool", name: delegateTool, arguments: delegateTool === "agent_place" ? { area: ".", prompt: "Review the local source", checkInMinutes: 30 } : { sessionId: toolTarget, message: "Review the local source" } }];
+			message.stopReason = "toolUse";
+		}
+		firstRequest = false;
 		const events = createAssistantMessageEventStream();
 		const emit = () => {
 			events.push({ type: "start", partial: message });
-			events.push({ type: "done", reason: "stop", message });
+			events.push({ type: "done", reason: message.stopReason === "toolUse" ? "toolUse" : "stop", message });
 			events.end(message);
 		};
 		const begin = () => {

@@ -15,6 +15,7 @@
  * defining a second copy.
  */
 import { randomUUID } from "node:crypto";
+import { createCheckIn } from "./durable-checkins.ts";
 import { existsSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -127,6 +128,7 @@ export type DeliveryReport = {
 	readonly replyTo: string | null;
 	readonly acknowledged: boolean;
 	readonly createdAt: number;
+	readonly checkIn?: { readonly origin: DeliveryOrigin; readonly elapsedMs: number; readonly cost: number | null; readonly conversationId: number; readonly requestId: string; readonly fallbackBroadcast?: boolean };
 };
 
 export type AgentDeliveryState = {
@@ -176,6 +178,8 @@ export interface DurableSubmitParams {
 	readonly whenBusy?: "steer" | "followUp" | "reject";
 	readonly operationId?: string;
 	readonly origin?: DeliveryOrigin;
+	readonly checkInMinutes?: number;
+	readonly senderIdentity?: string;
 }
 
 export interface DurableSubmitResult {
@@ -197,6 +201,8 @@ export interface DeliveryAdmission {
 	readonly whenBusy?: "steer" | "followUp" | "reject";
 	readonly operationId?: string;
 	readonly origin: DeliveryOrigin;
+	readonly checkInMinutes?: number;
+	readonly senderIdentity?: string;
 }
 
 /** What the admission intent lookup found: no record, an unlinked record, or a retained submission. */
@@ -218,7 +224,7 @@ export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId
  * The timer task uses this through its own task commit, so a fired input and
  * its answer keep the same origin rule as any other admission.
  */
-export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission): Promise<DeliveryIntentState> {
+export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now()): Promise<DeliveryIntentState> {
 	const state = await tx.doc(AgentDeliveryDoc);
 	await recordAdmissionMeta(tx, conversationId, admission.message);
 	const index = intentIndex(state, conversationId, admission.requestId);
@@ -227,6 +233,11 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 		if (prior !== undefined && prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
 		return { kind: "unlinked" };
 	}
+	await createCheckIn(tx, {
+		conversationId, requestId: admission.requestId, ownerId: admission.ownerId,
+		senderIdentity: admission.senderIdentity ?? String(conversationId), message: storedMessage(admission.message),
+		whenBusy: admission.whenBusy ?? "steer", origin: admission.origin, admittedAt,
+	}, admission.checkInMinutes ?? 0);
 	state.intents.push({
 		requestId: admission.requestId,
 		ownerId: admission.ownerId,
@@ -289,6 +300,7 @@ export async function submitConversation(
 	conversation: Conversation,
 	params: DurableSubmitParams,
 	context: Context,
+	now: () => number = Date.now,
 ): Promise<DurableSubmitResult> {
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
@@ -296,7 +308,7 @@ export async function submitConversation(
 		// An owned admission requires an explicit origin before its delivery intent is recorded.
 		if (origin === undefined) throw new Error("This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.");
 		const state = await conversation.commit(
-			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin }),
+			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin, ...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }), ...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }) }, now()),
 			context,
 		);
 		if (state.kind === "linked") deduped = true;
@@ -855,6 +867,12 @@ export async function settleDeliveries(harness: Harness, context: Context): Prom
 	await harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
 		for (const [index, intent] of state.intents.entries()) await finalizeReceipt(tx, state, intent, index);
+		for (let index = state.reports.length - 1; index >= 0; index -= 1) {
+			const report = state.reports[index];
+			if (report?.checkIn === undefined) continue;
+			const watched = await tx.submissionByRequest(report.checkIn.conversationId as ConversationId, report.checkIn.requestId);
+			if (watched?.status === "done" || watched?.status === "unanswered") state.reports.splice(index, 1);
+		}
 	}, context);
 }
 

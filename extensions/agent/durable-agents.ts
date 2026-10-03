@@ -27,6 +27,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
 import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
+import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
 	InspectOutputSchema,
@@ -275,6 +276,7 @@ function modelOf(value: string): Durable.ModelRef {
 
 const StringEnum = <T extends readonly string[]>(values: T) => Type.Union(values.map((value) => Type.Literal(value)));
 
+const CheckInParams = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval while unanswered, in minutes. Default PI_AGENT_CHECK_IN_MINUTES or 30; 0 disables." }));
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 const SpawnParams = Type.Object(
@@ -290,6 +292,7 @@ const SpawnParams = Type.Object(
 			Type.String({ minLength: 3, description: 'Exact provider/model, for example "anthropic/claude-sonnet".' }),
 		),
 		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
+		checkInMinutes: CheckInParams,
 	},
 	{ additionalProperties: false },
 );
@@ -316,6 +319,7 @@ const SendParams = Type.Object(
 		mode: Type.Optional(
 			StringEnum(["followUp", "steer"]),
 		),
+		checkInMinutes: CheckInParams,
 	},
 	{ additionalProperties: false },
 );
@@ -469,6 +473,7 @@ const PlaceParams = Type.Object(
 		),
 		topic: Type.Optional(Type.String({ description: "What the owner is for; stored as its name." })),
 		prompt: Type.Optional(Type.String({ description: "Work to deliver to the owner." })),
+		checkInMinutes: CheckInParams,
 	},
 	{ additionalProperties: false },
 );
@@ -650,10 +655,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		conversationId: Durable.ConversationId;
 		message: string;
 		whenBusy: "steer" | "followUp";
+		checkInMinutes?: number;
 		/** Conversation that receives the answer; absent: the reporter's conversation. */
 		reportTo?: Durable.ConversationId;
 	};
-	type ReporterState = { phase: "deliver" } | { phase: "report"; report?: string };
+	type ReporterState = { phase: "deliver"; armed?: boolean } | { phase: "report"; report?: string };
 
 	const reporterInput = (
 		name: string,
@@ -661,11 +667,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		message: string,
 		whenBusy: "steer" | "followUp",
 		reportTo?: Durable.ConversationId,
+		minutes = 0,
 	): ReporterInput => ({
 		name,
 		conversationId,
 		message,
 		whenBusy,
+		checkInMinutes: minutes,
 		...(reportTo === undefined ? {} : { reportTo }),
 	});
 
@@ -708,6 +716,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					};
 					await runtime.commit(() => ({ status: "running", checkpoint }), context);
 					return;
+				}
+				if (reporter.state.checkpoint.armed !== true) {
+					await runtime.commit(async (tx) => {
+						await createCheckIn(tx, { conversationId, requestId: `agent-deliver:${reporter.id}`, ownerId: identity(reporter.input.reportTo ?? runtime.conversationId), senderIdentity: identity(conversationId), message, whenBusy, origin: "model", admittedAt: runtime.now() }, runtime.registry.task(CheckInTask.definition.name) === undefined ? 0 : reporter.input.checkInMinutes ?? 0);
+						return { status: "running", checkpoint: { phase: "deliver", armed: true } };
+					}, context);
 				}
 				const submission = await child.submit(
 					{ type: "input", content: message, whenBusy, requestId: `agent-deliver:${reporter.id}` },
@@ -815,7 +829,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (args.prompt !== undefined) {
 			const reporter = await tx.createTask(
 				Reporter,
-				reporterInput(child.name, child.conversationId, args.prompt, "steer"),
+				reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(args.checkInMinutes)),
 				{ ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true },
 			);
 			registry.reporters[String(api.taskId)] = reporter;
@@ -908,7 +922,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const spawnTool = durable.defineTool({
 		name: "agent_spawn",
 		description:
-			"Create a child agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts a child in a new storage owned by you. Answers report back to you. Names may repeat.",
+			"Create a child agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts a child in a new storage owned by you. Answers report back to you. Unanswered tasks also send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. Names may repeat.",
 		parameters: SpawnParams,
 		replay: "safe",
 		execute: async (args: SpawnInput, api, context) => {
@@ -928,13 +942,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		message: string,
 		whenBusy: "steer" | "followUp",
 		reportTo?: Durable.ConversationId,
+		minutes = 0,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		const result = await api.commit(async (tx) => {
 			const registry = await tx.doc(Children, api.conversationId);
 			const key = String(api.taskId);
 			const existing = registry.reporters[key];
 			if (existing !== undefined) return { reporterTaskId: existing };
-			const reporter = await tx.createTask(Reporter, reporterInput(name, conversationId, message, whenBusy, reportTo), {
+			const reporter = await tx.createTask(Reporter, reporterInput(name, conversationId, message, whenBusy, reportTo, minutes), {
 				ownership: { kind: "conversation" },
 				conversationId: api.conversationId,
 				background: true,
@@ -954,6 +969,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		message: string,
 		whenBusy: "steer" | "followUp",
 		replyTo?: string,
+		minutes = 0,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		const senderIdentity = `${host.storageId}:${api.conversationId}`;
 		return dispatchControl(
@@ -965,6 +981,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				ownerId: senderIdentity,
 				senderIdentity,
 				origin: "model",
+				checkInMinutes: minutes,
 				...(replyTo === undefined ? {} : { replyTo }),
 				whenBusy,
 			},
@@ -979,6 +996,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		message: string,
 		whenBusy: "steer" | "followUp",
 		replyTo?: string,
+		minutes = 0,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		const conversationId = localConversation(sessionId, api.conversationId);
 		if (conversationId === undefined) return errorResult(`Cannot resolve session ${sessionId}.`);
@@ -990,7 +1008,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			if (reportTo === undefined) return errorResult(`Cannot resolve reply target ${replyTo}.`);
 		}
 		const name = sessionId === host.storageId ? "root" : `conversation ${conversationId}`;
-		return sendReporter(api, context, conversationId, name, message, whenBusy, reportTo);
+		return sendReporter(api, context, conversationId, name, message, whenBusy, reportTo, minutes);
 	};
 
 	const sendTarget = async (
@@ -1000,10 +1018,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		message: string,
 		whenBusy: "steer" | "followUp",
 		replyTo?: string,
+		minutes = 0,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> =>
 		target(sessionId).kind === "foreign"
-			? sendForeign(api, sessionId, message, whenBusy, replyTo)
-			: sendLocal(api, context, sessionId, message, whenBusy, replyTo);
+			? sendForeign(api, sessionId, message, whenBusy, replyTo, minutes)
+			: sendLocal(api, context, sessionId, message, whenBusy, replyTo, minutes);
 
 	/**
 	 * Schedule one delivery through the host control. The host creates a timer
@@ -1032,6 +1051,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				message: args.message,
 				deliverAt: deadline,
 				mode,
+				checkInMinutes: checkInMinutes(args.checkInMinutes),
 				origin: "model",
 				ownerId: identity(api.conversationId),
 				scheduleId,
@@ -1044,12 +1064,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const sendTool = durable.defineTool({
 		name: "agent_send",
 		description:
-			"Send a message to an agent conversation. A busy conversation receives it after its current answer; the answer reports back to you. With deliverAt, schedule the input instead of admitting it now.",
+			"Send a message to an agent conversation. A busy conversation receives it after its current answer; the answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) =>
 			args.deliverAt === undefined
-				? sendTarget(api, context, args.sessionId, args.message, "followUp", args.replyTo)
+				? sendTarget(api, context, args.sessionId, args.message, "followUp", args.replyTo, checkInMinutes(args.checkInMinutes))
 				: scheduleSend(api, args),
 	});
 
@@ -1431,7 +1451,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			result = await dispatch("place", {
 				area,
 				...(args.topic === undefined ? {} : { topic: args.topic }),
-				...(args.prompt === undefined ? {} : { prompt: args.prompt }),
+				...(args.prompt === undefined ? {} : { prompt: args.prompt, checkInMinutes: checkInMinutes(args.checkInMinutes) }),
 				origin: "model",
 				senderIdentity: identity(api.conversationId),
 				requestId: `place:${host.storageId}:${api.taskId}`,
@@ -1451,7 +1471,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const placeTool = durable.defineTool({
 		name: "agent_place",
 		description:
-			"Resolve the durable owner of a directory through the session host's shared place registry. Create it on first use; reuse it when its retained context and ownership serve the task.",
+			"Resolve the durable owner of a directory through the session host's shared place registry. Create it on first use; reuse it when its retained context and ownership serve the task. A prompt starts work with automatic owner check-ins. checkInMinutes sets the interval; 0 disables.",
 		parameters: PlaceParams,
 		replay: "safe",
 		execute: async (args: PlaceInput, api, context) => {

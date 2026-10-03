@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { checkInMinutes } from "./durable-checkins.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
@@ -32,6 +33,7 @@ interface AgentSpawnInput {
 	trust?: boolean;
 	requestId?: string;
 	origin?: DeliveryOrigin;
+	checkInMinutes?: number;
 }
 export interface AgentManagerOptions {
 	root: string;
@@ -302,7 +304,7 @@ export class AgentManager {
 			catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
 			const versionError = input.prompt ? hostRequestVersionError("submit", client.runtimeVersion) : undefined;
 			if (versionError) throw versionError;
-			const admission = input.prompt ? await client.request("submit", { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...originParams(input.origin) }) : undefined;
+			const admission = input.prompt ? await client.request("submit", { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...originParams(input.origin), checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") }) : undefined;
 			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, lifetime: "independent host process" };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
@@ -370,14 +372,14 @@ export class AgentManager {
 		catch (error) { return { ...values, snapshotError: errorText(error) }; }
 	}
 
-	async place(input: { area?: string; topic?: string; prompt?: string; trust?: boolean; requestId?: string; origin?: DeliveryOrigin }, caller: AgentCaller): Promise<unknown> {
+	async place(input: { area?: string; topic?: string; prompt?: string; trust?: boolean; requestId?: string; origin?: DeliveryOrigin; checkInMinutes?: number }, caller: AgentCaller): Promise<unknown> {
 		const area = realpathSync(resolve(caller.cwd, input.area ?? "."));
 		const result = await this.places.withArea(area, async (existing) => {
 			if (existing) {
-				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
+				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator"), ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
 				return { value: { ...response as object, sessionId: existing.sessionId }, sessionId: existing.sessionId, topic: existing.topic };
 			}
-			const created = await this.spawn({ cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) as { sessionId: string };
+			const created = await this.spawn({ cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, checkInMinutes: input.checkInMinutes, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) as { sessionId: string };
 			return { value: created, sessionId: created.sessionId, topic: input.topic };
 		});
 		return result.value;

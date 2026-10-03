@@ -65,16 +65,20 @@ it("keeps the contract, reporting, polling, live-work, and authority guidance", 
 	assert.match(all, /Settlement notices arrive automatically/u);
 });
 
-it("changes only the durable delivery semantics", () => {
+it("describes retained delivery and automatic unfinished-task check-ins", () => {
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);
 	assert.doesNotMatch(all, /ordinary terminal response/u);
 	assert.doesNotMatch(all, /in-process settlement/u);
 	assert.doesNotMatch(all, /session-ownership section/u);
 	assert.match(
-		AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.[1] ?? "",
+		AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "",
 		/child's answer reports to the recorded owner conversation/u,
 	);
 	assert.match(AGENT_CONTROL_GUIDANCE.agent_send.guidelines?.[0] ?? "", /owner identity in its instructions/u);
+	assert.match(all, /automatic owner check-ins/u);
+	assert.match(all, /Check-ins wake a model owner, not an operator owner/u);
+	assert.match(all, /0 disables/u);
+	assert.match(all, /not a finished result/u);
 });
 
 it("renders only the selected controls in control order", () => {

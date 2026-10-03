@@ -14,6 +14,7 @@
  * writer claim.
  */
 import { randomUUID } from "node:crypto";
+import { checkInMinutes } from "./durable-checkins.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
@@ -194,9 +195,10 @@ export class DurableHost {
 	private readonly defaultCwd: string | undefined;
 	private readonly registry: HarnessOptions["registry"];
 	private readonly retryMaxAttempts: number | undefined;
+	private readonly now: () => number;
 	private deliveryError: string | undefined;
 
-	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined) {
+	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, now: () => number) {
 		this.harness = harness;
 		this.storageId = storageId;
 		this.rootConversation = root;
@@ -204,6 +206,7 @@ export class DurableHost {
 		this.storagePath = storagePath;
 		this.registry = registry;
 		this.retryMaxAttempts = retryMaxAttempts;
+		this.now = now;
 		const commandMap = new Map<string, DurableHostCommand>();
 		if (Array.isArray(commands)) for (const command of commands as readonly DurableHostCommand[]) commandMap.set(command.name, command);
 		else for (const [name, command] of commands as ReadonlyMap<string, DurableHostCommand>) commandMap.set(name, command);
@@ -258,6 +261,7 @@ export class DurableHost {
 
 	static async open(options: DurableHostOptions, context: Context = BACKGROUND_CONTEXT): Promise<DurableHost> {
 		const storage = await openNodeSqliteStorage(options.storagePath);
+		const now = options.now ?? Date.now;
 		let harness: Harness;
 		try {
 			harness = await Harness.open(
@@ -267,7 +271,7 @@ export class DurableHost {
 					registry: options.registry,
 					...(options.settings === undefined ? {} : { settings: options.settings }),
 					...(options.env === undefined ? {} : { env: options.env }),
-					...(options.now === undefined ? {} : { now: options.now }),
+					now,
 					...(options.onReport === undefined ? {} : { onReport: options.onReport }),
 				},
 				context,
@@ -295,7 +299,7 @@ export class DurableHost {
 						}),
 			});
 			if (options.resume !== false) await reconcileDeliveries(harness, context);
-			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts);
+			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
 			// A fresh host has no commit to trigger the subscriber; establish the idle cache now.
 			await host.refreshIdle(context);
 			return host;
@@ -420,8 +424,11 @@ export class DurableHost {
 				...optionalParam("whenBusy", this.busyMode(params)),
 				...optionalParam("operationId", requestString(params, "operationId")),
 				...optionalParam("origin", this.originParam(params)),
+				...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }),
+				senderIdentity: this.identity(conversation.id),
 			},
 			context,
+			this.now,
 		);
 		return { ...submitted, identity: this.identity(conversation.id) };
 	}
@@ -665,7 +672,7 @@ export class DurableHost {
 		const requestId = requestString(params, "requestId") ?? `timer-delivery:${randomUUID()}`;
 		return await scheduleTimer(
 			this.harness,
-			{ scheduleId, deadline, conversationId: conversation.id, identity: this.identity(conversation.id), message, mode, origin, ownerId, requestId, createdAt: Date.now() },
+			{ scheduleId, deadline, conversationId: conversation.id, identity: this.identity(conversation.id), message, mode, origin, ownerId, requestId, createdAt: Date.now(), ...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }) },
 			context,
 		);
 	}

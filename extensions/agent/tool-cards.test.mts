@@ -361,6 +361,45 @@ describe("agent result notice card", () => {
 		assert.doesNotMatch(text, /6de48f73/);
 	});
 
+	for (const cost of [0.125, 0, null]) it(`renders a check-in with elapsed time and cost ${cost}`, () => {
+		const checkIn = { conversationId: 1, requestId: "task", origin: "model", elapsedMs: 1_800_000, cost };
+		const digest = "Tool calls: 4. Current tool: bash, 8 minutes since tool-call entry. Latest reply: tests in progress.";
+		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 1,
+			content: "Agent “reader” still working, not finished. Assess the task.\n\nUnrelated report body.",
+			details: { label: "reader", senderIdentity: "storage-b", sourceId: "checkin:1:1", message: digest, checkIn } };
+		const before = structuredClone(message);
+		for (const expanded of [false, true]) {
+			const card = renderAgentPeerMessage(message, { expanded, outputPad: 1 }, theme);
+			assert.ok(card);
+			const text = screen(card, 180);
+			assert.match(text, /\[agent\] reader · still working · 30m/u);
+			assert.match(text, cost === null ? /conversation total unavailable/u : new RegExp(`\\$${cost.toFixed(3).replace(".", "\\.")} conversation total`, "u"));
+			assert.match(text, /Tool calls: 4/u);
+			assert.doesNotMatch(text, /Unrelated report body|· report|· finished|Reported result/u);
+			for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+		}
+		assert.deepEqual(message, before);
+	});
+
+	it("bounds a check-in digest in the expanded notice", () => {
+		const card = renderPeerNoticeCard({ content: "not a finished answer", details: { label: "reader", message: `${"x".repeat(32_000)}OMITTED`,
+			checkIn: { conversationId: 1, requestId: "task", origin: "model", elapsedMs: 60_000, cost: null } } }, theme, true);
+		assert.ok(card);
+		const text = screen(card, 180);
+		assert.match(text, /Display limit/u);
+		assert.doesNotMatch(text, /OMITTED|not a finished answer/u);
+	});
+
+	it("renders hours and reads the check-in body from report.message", () => {
+		const card = renderPeerNoticeCard({ content: "channel text", details: { label: "reader", message: "Current tool: bash.",
+			checkIn: { conversationId: 1, requestId: "task", origin: "model", elapsedMs: 11_100_000, cost: 0 } } }, theme, false);
+		assert.ok(card);
+		const text = screen(card, 180);
+		assert.match(text, /still working · 3h05m elapsed/u);
+		assert.match(text, /Current tool: bash/u);
+		assert.doesNotMatch(text, /185m/u);
+	});
+
 	it("labels a report and an unanswered receipt without claiming acceptance", () => {
 		const reportCard = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "Progress report", details: { senderIdentity: "storage-b", sourceId: "report:1", acknowledged: false } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(reportCard);

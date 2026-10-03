@@ -776,6 +776,48 @@ It reloads cwd-bound resources and native registrations, then reopens the same
 storage. A protocol change in a retained ordinary primary manager requires a Pi
 restart. The host never reads old ordinary agent sessions as Durable records.
 
+## Automatic owner check-ins
+
+Verified 2026-10-03 against installed Pi Durable 1.0.0
+`dist/{types.d.ts,harness/types.d.ts,harness/live.d.ts,harness/usage.d.ts}`,
+`dist/harness/{harness.js,scheduler.js}`, and the agent extension's real Harness and ordinary-primary faux-provider tests.
+
+The agent host's `pi.host` built-in supplies the check-in definition independently
+of configured native agent tools. It arms unanswered-task check-ins in the
+delivery-intent commit; local native Reporter admissions arm through a retained
+checkpoint only when the host registry supplies that task. Public
+`Conversation.submit()` owns a separate commit, so the deadline task reacquires
+its submission by the same request ID rather than create a raw submission.
+`TaskRuntime` exposes an invocation-bound conversation handle but no submission
+lookup; the reacquired submission supplies `wait(context)`. Each deadline races
+that wait, releases both waiters, and writes its report with the next checkpoint
+atomically. Settlement retires the deadline task promptly. Restart collapses
+missed intervals into one notice and retains the original cadence and source IDs.
+Model prompts through `agent_spawn` and either `agent_place` branch, plus
+`agent_send` tasks, use the same environment default and per-call override.
+
+Neither `Tx` nor the public Harness handle exposes `now()`. The host passes
+its resolved `HarnessOptions.now` callback to intent admission; native Reporters
+and fired timers use `TaskRuntime.now()`. The installed Harness supplies that
+same clock to its scheduler and deadline waits. Without an override it is
+`Date.now`, so production clocks agree; injected-clock tests also agree without
+a wall-clock mock.
+
+Check-ins use the existing report route, version checks, acknowledgement, and
+fallback contract. Pending rows coalesce per watched task and owner, and
+settlement suppresses stale rows before dispatch and removes every corresponding
+check-in row across owners, including acknowledgements and fallback markers.
+The digest exists only in `report.message`. A live model owner wakes;
+operator notices and fallback broadcasts stay quiet. One accepted fallback
+broadcast per task and owner prevents repeat broadcast noise. Reports and
+check-ins delivered into native owners arm no recursive check-ins.
+
+The native tool slots and task records expose no exact tool-start timestamp.
+The digest labels the tool-call age instead. Native usage is cumulative per
+conversation, so the notice labels cost as retained conversation total rather
+than task cost. Bounded recent tool-call counts remain lower bounds. Primary
+presentation says still working, not finished; check-ins are not final results.
+
 ## Current-session evidence retrieval
 
 Bounded access, discovery, read-only capture, and context projection verified
@@ -901,7 +943,7 @@ scheduler or transcript. The ordinary SDK remains the primary terminal host.
 | Process ownership | Agent host writer claim before storage open; same-user Unix control socket over the public `pi-server`/`pi-client` transport (private 0700 directory, owner-only 0600 socket, exact `serverId` handshake) and automatic dead-owner recovery |
 | Nested tools | Native call tasks, selected ToolTask hook chain, argument validation, committed intent, replay policy, and structured results |
 | Observation | Public native entries, documents, submissions, and task views; bounded status and dashboard pages with explicit coverage; cold inspection uses a bounded SQLite snapshot without resume |
-| Owner delivery | Host durable-delivery owns retained intents, receipts, and reports; catalog follow-up or registered primary channel; labeled broadcast fallback only for an absent or dead owner, acknowledged only over complete discovery and deliveries; no exactly-once cross-host promise |
+| Owner delivery | Host durable-delivery owns retained intents, receipts, reports, and automatic unanswered-task check-ins; catalog follow-up or registered primary channel; labeled broadcast fallback only for an absent or dead owner, acknowledged only over complete discovery and deliveries; no exactly-once cross-host promise |
 | UI | Dashboard over an untouched native primary; roster and selected live conversation, full-window agent console, contextual actions, and explicit coverage. Host-owned Durable view and task-graph watches supply live frames. An embeddable InteractiveMode view and the experimental coding-agent client remain unpublished |
 | Handover and doctrine | Native transport and retention carry content; its meaning and authority remain application concerns |
 

@@ -53,6 +53,7 @@ export type TimerInput = {
 	/** Submission request ID used at fire time. */
 	readonly requestId: string;
 	readonly createdAt: number;
+	readonly checkInMinutes?: number;
 };
 
 /** Checkpoint of the timer task. The deadline lives in the input, never in the checkpoint. */
@@ -188,7 +189,9 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					message: task.input.message,
 					whenBusy: task.input.mode,
 					origin: task.input.origin,
-				});
+					checkInMinutes: task.input.checkInMinutes ?? 0,
+					senderIdentity: task.input.identity,
+				}, runtime.now());
 				return undefined;
 			}, context);
 			const submission = await conversation.submit(
@@ -239,7 +242,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					return undefined;
 				}, context);
 				await runtime.commit(async (tx) => {
-					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: input.mode, origin: input.origin });
+					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: input.mode, origin: input.origin, checkInMinutes: input.checkInMinutes ?? 0, senderIdentity: input.identity }, runtime.now());
 					return undefined;
 				}, context);
 				const submission = await conversation.submit(
@@ -291,6 +294,7 @@ export interface ScheduleTimerParams {
 	/** Submission request ID used at fire time. */
 	readonly requestId: string;
 	readonly createdAt: number;
+	readonly checkInMinutes?: number;
 }
 
 export interface ScheduleTimerResult {
@@ -337,6 +341,7 @@ export async function scheduleTimer(harness: Harness, params: ScheduleTimerParam
 			ownerId: params.ownerId,
 			requestId: params.requestId,
 			createdAt: params.createdAt,
+			checkInMinutes: params.checkInMinutes ?? 0,
 		};
 		const timerId = await tx.createTask(TimerTask, input, {
 			ownership: { kind: "conversation" },

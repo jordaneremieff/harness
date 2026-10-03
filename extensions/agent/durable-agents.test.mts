@@ -25,6 +25,7 @@ import {
 import * as Durable from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution } from "./durable-agents.ts";
+import { CheckInTask } from "./durable-checkins.ts";
 
 const context = BACKGROUND_CONTEXT;
 const storageId = "test-storage";
@@ -329,8 +330,9 @@ const siblingExtension = Durable.defineExtension({
 	],
 });
 
-function buildRegistry(dispatch?: AgentControlDispatch): { registry: Durable.Registry; extension: Durable.Extension } {
+function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true): { registry: Durable.Registry; extension: Durable.Extension } {
 	const registry = Durable.createRegistry();
+	if (checkIns) registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask] }));
 	const contribution = createAgentContribution({
 		source: "/abs/extensions/agent/index.ts",
 		...(dispatch === undefined ? {} : { dispatch }),
@@ -540,7 +542,7 @@ it("resumes a child answer and reports once across a second harness open", async
 	route.hold.children = true;
 	const first = await openHarness(storage, registry, models);
 	holder.harness = first.harness;
-	route.script.push({ tool: "agent_spawn", args: { name: "crash", prompt: "CONTRACT: reply CRASH" } });
+	route.script.push({ tool: "agent_spawn", args: { name: "crash", prompt: "CONTRACT: reply CRASH", checkInMinutes: 0 } });
 	await say(first.root, "SPAWN");
 	const before = await first.harness.snapshot(TestChildren, first.root.id, context);
 	assert.equal(before?.children.length, 1, "the child is committed before the crash");
@@ -849,7 +851,10 @@ it("sends stable request IDs for foreign fork and rewind", async (t) => {
 	assert.equal(rewind.params.correction, "fix");
 });
 
-it("dispatches place with the resolved area and a stable request ID", async (t) => {
+for (const minutes of [undefined, 0, 2.5]) it(`dispatches place with interval ${minutes}, resolved area, and stable request ID`, async (t) => {
+	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
+	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
+	t.after(() => { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; });
 	const route = createRoute();
 	const holder: DispatchHolder = {};
 	const calls: DispatchCalls = [];
@@ -864,7 +869,7 @@ it("dispatches place with the resolved area and a stable request ID", async (t) 
 	});
 	route.script.push({
 		tool: "agent_place",
-		args: { area: `${area}/.`, topic: "far", prompt: "CONTRACT: reply FAR" },
+		args: { area: `${area}/.`, topic: "far", prompt: "CONTRACT: reply FAR", ...(minutes === undefined ? {} : { checkInMinutes: minutes }) },
 	});
 	await say(root, "PLACE");
 
@@ -872,6 +877,7 @@ it("dispatches place with the resolved area and a stable request ID", async (t) 
 	assert.ok(place, "agent_place used the host dispatch");
 	assert.equal(place.params.area, area, "the dispatched area is resolved");
 	assert.equal(place.params.topic, "far");
+	assert.equal(place.params.checkInMinutes, minutes ?? 7);
 	assert.match(String(place.params.requestId), /^place:test-storage:\d+$/u);
 	assert.equal(place.params.senderIdentity, storageId);
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_place");
@@ -1010,6 +1016,53 @@ it("returns the host configure outcome and refuses self configuration", async (t
 	assert.equal(selfOutcome?.isError, true, "self configuration is refused");
 	assert.match(selfOutcome?.text ?? "", /calling conversation/u);
 	assert.equal(calls.filter((call) => call.method === "configure").length, 1, "the self guard runs before dispatch");
+});
+
+it("arms native Reporter check-ins with the model default and releases them on settlement", async (t) => {
+	const route = createRoute();
+	let releaseAnswer: (message: AssistantMessage) => void = () => {};
+	const answer = new Promise<AssistantMessage>((resolve) => { releaseAnswer = resolve; });
+	const models = createTestModels((request, options, state, model) => {
+		const last = request.messages.findLast((message) => message.role === "user");
+		if (messageText(last).includes("CONTRACT: reply CHECKIN")) return answer;
+		return typeof route.route === "function" ? route.route(request, options, state, model) : route.route;
+	});
+	const holder: DispatchHolder = {};
+	const { registry } = buildRegistry(createDispatch(holder, []));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
+	holder.harness = harness;
+	const previous = process.env.PI_AGENT_CHECK_IN_MINUTES;
+	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
+	t.after(async () => {
+		releaseAnswer(fauxAssistantMessage("ANSWER-CHECKIN"));
+		await harness.close(context);
+		if (previous === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
+		else process.env.PI_AGENT_CHECK_IN_MINUTES = previous;
+	});
+	route.script.push({ tool: "agent_spawn", args: { name: "native-check", prompt: "CONTRACT: reply CHECKIN" } });
+	await say(root, "SPAWN");
+	await waitForChildGeneration(harness, root.id);
+	const task = (await harness.inspect(context)).tasks.find((row) => row.record.kind === "agent.check-in");
+	assert.ok(task);
+	const input = task.record.input as { intervalMs: number; ownerId: string; senderIdentity: string };
+	assert.equal(input.intervalMs, 420000);
+	assert.equal(input.ownerId, storageId);
+	assert.notEqual(input.senderIdentity, input.ownerId);
+	releaseAnswer(fauxAssistantMessage("ANSWER-CHECKIN"));
+	await harness.waitForTask(task.record.id, context);
+	await settle(harness, root.id);
+	assert.equal((await harness.inspect(context)).tasks.some((row) => row.record.kind === "agent.check-in"), false);
+});
+
+it("leaves native check-ins absent when the host registry supplies no deadline task", async (t) => {
+	const route = createRoute();
+	const storage = new Durable.MemoryStorage();
+	const { registry } = buildRegistry(undefined, false);
+	const { harness, root } = await openHarness(storage, registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	await spawnChild(harness, root, route, "plain-host", "HOST");
+	const tasks = await storage.scanTasks({ kind: "agent.check-in" }, 10, undefined, context);
+	assert.equal(tasks.items.length, 0, "the native contribution never supplies or faults a host-owned deadline task");
 });
 
 it("keeps the fake model helpers honest", () => {

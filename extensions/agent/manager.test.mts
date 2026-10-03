@@ -130,6 +130,27 @@ function deferred() {
 	return { promise, resolve };
 }
 
+for (const minutes of [undefined, 0, 2.5]) it(`applies the place model interval ${minutes} on both create and reuse`, async (t) => {
+	const root = fixtureRoot(t);
+	const submits: Array<Record<string, unknown>> = [];
+	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+		if (method === "submit") submits.push(params as Record<string, unknown>);
+		return { busy: false };
+	}) }));
+	t.after(() => manager.close());
+	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
+	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
+	t.after(() => { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; });
+	const caller = { id: "owner-1", cwd: root, model: { provider: "fixture", modelId: "model-1" }, thinkingLevel: "off" };
+	const input = { area: root, prompt: "Task", origin: "model" as const, checkInMinutes: minutes };
+	await manager.place(input, caller);
+	await manager.place(input, caller);
+	assert.equal(submits.length, 2);
+	assert.deepEqual(submits.map((params) => params.checkInMinutes), [minutes ?? 7, minutes ?? 7]);
+	await manager.place({ area: root, prompt: "Operator task", origin: "operator" }, caller);
+	assert.equal(submits[2]?.checkInMinutes, 0);
+});
+
 interface CapturedPrimaryChannel {
 	readonly closedEvent: Promise<void>;
 	readonly options: PrimaryChannelOptions;
@@ -763,17 +784,30 @@ it("forwards admission origins and keeps absent origins absent", async (t) => {
 	}));
 	const record = createRecord(manager, root);
 	const caller = { id: "caller", cwd: root, model: { provider: "fixture", modelId: "model-1" } };
+	const previous = process.env.PI_AGENT_CHECK_IN_MINUTES;
+	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
 	try {
 		await manager.control("submit", { sessionId: record.storageId, message: "operator task", origin: "operator" }, caller);
 		await manager.control("submit", { sessionId: record.storageId, message: "model task", origin: "model" }, caller);
 		await manager.control("submit", { sessionId: record.storageId, message: "absent origin" }, caller);
 		await manager.spawn({ prompt: "board task", origin: "operator" }, caller);
+		await manager.spawn({ prompt: "model task", origin: "model" }, caller);
+		await manager.spawn({ prompt: "opt out", origin: "model", checkInMinutes: 0 }, caller);
+		await manager.spawn({ origin: "model" }, caller);
 		const submits = seen.filter((entry) => entry.method === "submit");
 		assert.equal(submits[0]?.params.origin, "operator");
 		assert.equal(submits[1]?.params.origin, "model");
 		assert.equal(submits[2]?.params.origin, undefined);
 		assert.equal(submits[3]?.params.origin, "operator");
-	} finally { manager.close(); }
+		assert.equal(submits[3]?.params.checkInMinutes, 0);
+		assert.equal(submits[4]?.params.checkInMinutes, 7);
+		assert.equal(submits[5]?.params.checkInMinutes, 0);
+		assert.equal(submits.length, 6, "a promptless spawn arms no task");
+	} finally {
+		manager.close();
+		if (previous === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
+		else process.env.PI_AGENT_CHECK_IN_MINUTES = previous;
+	}
 });
 
 it("returns a compact status snapshot from a mutation instead of the full status", async (t) => {

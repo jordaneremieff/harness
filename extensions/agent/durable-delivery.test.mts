@@ -262,6 +262,300 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	assert.deepEqual(errors, []);
 });
 
+for (const route of ["operator", "model", "fallback"] as const) it(`delivers a ${route} check-in through the report primary route`, { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const primary = randomUUID();
+	const owner = route === "fallback" ? randomUUID() : primary;
+	const received = eventLog<PrimaryDelivery>();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const channel = await createPrimaryChannel({ id: primary, cwd: root, sessionsRoot,
+		deliver: async (message) => { received.push(message); await gate; }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(() => source.close());
+	const checkIn = { conversationId: 1, requestId: "task", origin: route === "operator" ? "operator" as const : "model" as const, elapsedMs: 11_100_000, cost: 0.125 };
+	const digest = "Tool calls: 4. Current tool: bash, 8 minutes since tool-call entry. Latest reply: tests in progress.";
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const report = { sourceId: "checkin:task:1", requestId: "task", ownerId: owner, senderIdentity: source.storageId,
+			message: digest, replyTo: null, acknowledged: false, createdAt: 1, checkIn };
+		state.reports.push(report);
+	}, BACKGROUND_CONTEXT);
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
+	t.after(() => watcher.close());
+	t.after(() => release());
+	await received.waitForCount(1);
+	assert.equal((await deliveryState(source))?.reports[0]?.acknowledged, false, "admission precedes acknowledgement");
+	assert.equal((await deliveryState(source))?.reports[0]?.checkIn?.fallbackBroadcast, undefined, "an unaccepted broadcast records no flag");
+	release();
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
+	const message = received[0];
+	assert.equal(message.sourceId, "source-storage:checkin:task:1");
+	const details = message.details as Record<string, unknown>;
+	assert.equal(details.kind, "report");
+	assert.equal(details.reportSourceId, "checkin:task:1");
+	assert.equal(details.wake, route === "model");
+	assert.deepEqual(details.checkIn, checkIn);
+	assert.equal(details.originalOwnerId, owner);
+	assert.equal(details.fallback, route === "fallback" ? true : undefined);
+	const retained = (await deliveryState(source))?.reports[0];
+	assert.equal(retained?.checkIn?.fallbackBroadcast, route === "fallback" ? true : undefined);
+	assert.match(message.text, /still working.*not finished/u);
+	assert.match(message.text, /3h05m.*\$0\.125 conversation total/u);
+	assert.match(message.text, /\(check-in from source-storage; source checkin:task:1\)/u);
+	assert.match(message.text, /Assess.*report progress.*let.*run.*steer.*abort/u);
+	assert.match(message.text, /Steering cannot interrupt a running tool/u);
+	assert.match(message.text, /Tool calls: 4/u);
+	assert.doesNotMatch(message.text, /sent a report| finished\./u);
+});
+
+it("retains one accepted check-in fallback broadcast per watched task and owner", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const primary = randomUUID();
+	const owner = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	let releaseFirst!: () => void;
+	const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+	const channel = await createPrimaryChannel({ id: primary, cwd: root, sessionsRoot,
+		deliver: async (message) => { received.push(message); if (received.length === 1) await firstGate; }, promptTrust: async () => undefined });
+	t.after(async () => { releaseFirst(); await channel.close(); });
+	const sourcePath = join(root, "source.sqlite");
+	let source = await openHost(sourcePath, "source-storage", root);
+	let watcher: ReturnType<typeof startDurableDelivery> | undefined;
+	t.after(async () => { await watcher?.close(); await source.close(); });
+	const add = async (sourceId: string, requestId = "task", conversationId = 1, ownerId = owner): Promise<void> => {
+		await source.harness.commit(async (tx) => {
+			const state = await tx.doc(AgentDeliveryDoc);
+			const checkIn = { conversationId, requestId, origin: "model" as const, elapsedMs: 1_800_000, cost: null };
+			state.reports.push({ sourceId, requestId: sourceId, ownerId, senderIdentity: source.storageId,
+				message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn });
+		}, BACKGROUND_CONTEXT);
+	};
+	const start = () => startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
+	await add("checkin:task:1");
+	watcher = start();
+	await received.waitForCount(1);
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		state.reports.splice(0, 1);
+	}, BACKGROUND_CONTEXT);
+	await add("checkin:task:coalesced");
+	releaseFirst();
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:coalesced")?.acknowledged === true);
+	const accepted = (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:1");
+	assert.equal(accepted?.acknowledged, true);
+	assert.equal(accepted?.checkIn?.fallbackBroadcast, true, "accepted delivery survives replacement of its pending row");
+	assert.equal(received.length, 1, "the coalesced row uses the accepted broadcast instead of another notice");
+	await watcher.close();
+	await source.close();
+	source = await openHost(sourcePath, "source-storage", root);
+	await add("checkin:task:2");
+	watcher = start();
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:2")?.acknowledged === true);
+	assert.equal(received.length, 1, "a retained acknowledged broadcast suppresses the next fallback after reopen");
+	for (const [sourceId, requestId, conversationId, ownerId] of [
+		["checkin:other-task:1", "other-task", 1, owner],
+		["checkin:other-conversation:1", "task", 2, owner],
+		["checkin:other-owner:1", "task", 1, randomUUID()],
+	] as const) {
+		await add(sourceId, requestId, conversationId, ownerId);
+		await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === sourceId)?.acknowledged === true);
+	}
+	assert.equal(received.length, 4, "different watched tasks, conversations and owners each retain their own fallback");
+	const direct = eventLog<PrimaryDelivery>();
+	const ownerChannel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot,
+		deliver: (message) => { direct.push(message); }, promptTrust: async () => undefined });
+	t.after(() => ownerChannel.close());
+	await add("checkin:task:3");
+	await direct.waitForCount(1);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:3")?.acknowledged === true);
+	assert.equal((direct[0].details as { wake?: boolean }).wake, true, "the restored owning primary still receives live check-ins");
+	assert.equal(received.length, 4, "the restored owner does not use fallback");
+});
+
+for (const route of ["catalog", "primary", "fallback"] as const) it(`drops a check-in that settles during ${route} route preparation`, { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const catalog = new AgentCatalog(root);
+	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
+		model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off", ownerId: "owner" });
+	const primary = randomUUID();
+	const owner = route === "catalog" ? `${record.storageId}:1` : route === "fallback" ? randomUUID() : primary;
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({ id: primary, cwd: root, sessionsRoot,
+		deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	let releaseTool!: () => void;
+	const toolGate = new Promise<void>((resolve) => { releaseTool = resolve; });
+	const started = eventLog<void>();
+	const sourcePath = join(root, "source.sqlite");
+	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "source-storage", cwd: root,
+		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage()]),
+		registry: fixtureRegistry([gateTool(toolGate, () => started.push(undefined))]),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	const target = await openHost(record.storagePath, record.storageId, root);
+	t.after(async () => { releaseTool(); await source.close(); await target.close(); });
+	const admitted = await source.request("submit", { sessionId: source.storageId, message: "task", requestId: "watched-task" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
+	await started.waitForCount(1);
+	const checkIn = { conversationId: 1, requestId: "watched-task", origin: "model" as const, elapsedMs: 1_800_000, cost: 0.125 };
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const report = { sourceId: "checkin:watched-task:1", requestId: "checkin:watched-task:1", ownerId: owner,
+			senderIdentity: source.storageId, message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn };
+		state.reports.push(report);
+	}, BACKGROUND_CONTEXT);
+	const preparing = eventLog<void>();
+	let releaseRoute!: () => void;
+	const routeGate = new Promise<void>((resolve) => { releaseRoute = resolve; });
+	const request = source.request.bind(source);
+	if (route === "primary") source.request = async (method, params, context) => {
+		if (method === "status") { preparing.push(undefined); await routeGate; }
+		return request(method, params, context);
+	};
+	const calls = eventLog<SubmitRecord>();
+	const passes = eventLog<Error | undefined>();
+	const reportError = source.reportDeliveryError.bind(source);
+	source.reportDeliveryError = (error) => { reportError(error); passes.push(error); };
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog, sessionsRoot,
+		signal: new AbortController().signal,
+		acquire: async () => { preparing.push(undefined); await routeGate; return fakeTarget(target, calls); },
+		listPrimaryChannels: async () => { preparing.push(undefined); await routeGate; return { ids: [primary], complete: true, visited: 1 }; } });
+	t.after(async () => { releaseRoute(); await watcher.close(); });
+	await preparing.waitForCount(1);
+	releaseTool();
+	await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+	releaseRoute();
+	await waitForDelivery(source, async () => !(await deliveryState(source))?.reports.some((report) => report.sourceId === "checkin:watched-task:1"));
+	assert.equal(calls.length, 0, "a settled check-in never admits a target follow-up");
+	assert.equal(received.length, 0, "a settled check-in never reaches a primary");
+	await passes.waitForCount(1);
+	assert.equal(passes[0], undefined, "suppression ends the route without a delivery error");
+	assert.equal((await deliveryState(source))?.reports.some((report) => report.sourceId === "checkin:watched-task:1"), false, "suppression never recreates an undelivered row as an accepted fallback");
+	await watcher.close();
+});
+
+for (const origin of [undefined, "unknown"]) it(`holds a check-in with invalid stored origin ${origin} while other reports move`, { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot,
+		deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(() => source.close());
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const checkIn = { conversationId: 1, requestId: "task", elapsedMs: 1_800_000, cost: null,
+			...(origin === undefined ? {} : { origin }) };
+		state.reports.push({ sourceId: "checkin:task:1", requestId: "task", ownerId: owner, senderIdentity: source.storageId,
+			message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn } as unknown as AgentDeliveryState["reports"][number]);
+		state.reports.push({ sourceId: "report:valid", requestId: "valid", ownerId: owner, senderIdentity: source.storageId,
+			message: "Valid report.", replyTo: null, acknowledged: false, createdAt: 1 });
+	}, BACKGROUND_CONTEXT);
+	const errors = eventLog<Error>();
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onError: (error) => errors.push(error) });
+	t.after(() => watcher.close());
+	await received.waitForCount(1);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "report:valid")?.acknowledged === true);
+	await watcher.close();
+	assert.equal(received.length, 1, "a malformed check-in neither delivers nor chooses a wake default");
+	assert.equal(received[0].sourceId, "source-storage:report:valid");
+	assert.equal((received[0].details as { wake?: boolean }).wake, true, "ordinary reports remain unaffected");
+	assert.equal((await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:1")?.acknowledged, false);
+	assert.ok(errors.length > 0);
+	assert.ok(errors.every((error) => /checkin:task:1.*no valid admission origin.*stays pending/u.test(error.message)));
+});
+
+it("bounds a check-in digest while retaining the full source", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot,
+		deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(() => source.close());
+	const digest = `${"x".repeat(15_999)}😀OMITTED`;
+	const checkIn = { conversationId: 1, requestId: "task", origin: "model" as const, elapsedMs: 1_800_000, cost: null };
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const report = { sourceId: "checkin:task:1", requestId: "task", ownerId: owner, senderIdentity: source.storageId,
+			message: digest, replyTo: null, acknowledged: false, createdAt: 1, checkIn };
+		state.reports.push(report);
+	}, BACKGROUND_CONTEXT);
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
+		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
+	t.after(() => watcher.close());
+	await received.waitForCount(1);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
+	const message = received[0];
+	const details = message.details as { textTruncated?: boolean; message: string; checkIn: Record<string, unknown> };
+	assert.equal(details.textTruncated, true);
+	assert.equal(Object.hasOwn(details.checkIn, "digest"), false);
+	assert.ok(details.message.length < 16_100);
+	for (const text of [message.text, details.message]) {
+		assert.match(text, /text truncated/u);
+		assert.doesNotMatch(text, /OMITTED|[\uD800-\uDFFF]/u);
+	}
+	assert.equal((await deliveryState(source))?.reports[0]?.message, digest);
+});
+
+for (const route of ["catalog", "same-storage"] as const) it(`routes a check-in as a report to a ${route} owner`, { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const catalog = new AgentCatalog(root);
+	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
+		model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off", ownerId: "owner" });
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	const target = route === "same-storage" ? source : await openHost(record.storagePath, record.storageId, root);
+	const owner = route === "same-storage" ? source.storageId : `${record.storageId}:1`;
+	t.after(async () => { await source.close(); if (target !== source) await target.close(); });
+	const checkIn = { conversationId: 1, requestId: "task", origin: "model" as const, elapsedMs: 1_800_000, cost: null };
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const report = { sourceId: "checkin:task:2", requestId: "task", ownerId: owner, senderIdentity: source.storageId,
+			message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn };
+		state.reports.push(report);
+	}, BACKGROUND_CONTEXT);
+	const calls = eventLog<SubmitRecord>();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const request = source.request.bind(source);
+	if (route === "same-storage") source.request = async (method, params, context) => {
+		if (method === "submit") { calls.push({ params: params as Record<string, unknown>, result: undefined }); await gate; }
+		return request(method, params, context);
+	};
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog,
+		signal: new AbortController().signal, acquire: async () => fakeTarget(target, calls, gate),
+		listPrimaryChannels: async () => { assert.fail("a report owner in a storage never uses fallback"); } });
+	t.after(() => watcher.close());
+	t.after(() => release());
+	await calls.waitForCount(1);
+	assert.equal((await deliveryState(source))?.reports[0]?.acknowledged, false);
+	release();
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
+	const call = calls[0];
+	assert.equal(call.params.sessionId, owner);
+	assert.equal(call.params.whenBusy, "followUp");
+	assert.equal(call.params.ownerId, undefined);
+	assert.equal(call.params.requestId, `deliver:source-storage:report:${createHash("sha256").update("checkin:task:2").digest("hex").slice(0, 32)}`);
+	assert.match(String(call.params.message), /Check-in from source-storage.*source checkin:task:2/u);
+	assert.match(String(call.params.message), /still working.*not finished.*30m.*conversation total unavailable/u);
+	assert.match(String(call.params.message), /Task is active/u);
+	assert.match(String(call.params.message), /Assess.*report progress.*let.*run.*steer.*abort/u);
+});
+
 it("routes a receipt and a report only after the target admits them", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const catalog = new AgentCatalog(root);
@@ -1411,6 +1705,8 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 	assert.ok(String(receiptDetails.answer).length <= 16_000 + 200);
 	const reportDetails = reportMessage.details as Record<string, unknown>;
 	assert.equal(reportDetails.reportSourceId, "report:long-report");
+	assert.equal(reportDetails.wake, true, "ordinary reports keep their primary wake behavior");
+	assert.equal(reportDetails.checkIn, undefined, "ordinary reports keep their detail shape");
 	assert.ok(String(reportDetails.message).length <= 16_000 + 200);
 	const retained = await deliveryState(source);
 	assert.equal(retained?.receipts[String(submissionId)]?.answer, longAnswer, "the retained answer stays full");
