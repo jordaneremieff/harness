@@ -48,6 +48,7 @@ const HELP = [
 	"a opens actions. / finds loaded agents. t opens Threads. ? opens help.",
 	"Threads shows the frame, peers, and exchange. p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
+	"i switches Threads event times between local time and exact UTC timestamps.",
 	"Published omissions have storage rows. Enter reads their full thread directory.",
 	"",
 	"Messages",

@@ -135,6 +135,87 @@ for (const [width, height] of [
 		}
 	});
 }
+it("Threads shows local calendar dates and readable clock times without seconds or milliseconds", async () => {
+	for (const [width, height] of [
+		[80, 24],
+		[140, 45],
+	]) {
+		const current = page();
+		const [first, second] = current.events;
+		assert.ok(first && second);
+		first.at = new Date(2026, 9, 3, 0, 4, 19, 951).getTime();
+		second.at = new Date(2026, 9, 4, 13, 24, 19, 951).getTime();
+		const f = setup(width, height, async (input) => (input.action === "list" ? list() : current));
+		try {
+			await open(f);
+			f.ui.handleInput("e");
+			const shown = text(f, width);
+			assert.match(shown, /Time: Oct 3, 2026, 12:04 AM \(local\)/);
+			assert.match(shown, /Time: Oct 4, 2026, 1:24 PM \(local\) · Reply to #2/);
+			assert.doesNotMatch(shown, /Time: \d{4}-\d{2}-\d{2}T/);
+			assert.doesNotMatch(shown, /:19|\.951Z/);
+			assert.ok(f.ui.render(width).every((line) => visibleWidth(line) <= width));
+		} finally {
+			f.ui.dispose();
+		}
+	}
+});
+it("i toggles exact UTC times without a read and retains the choice across dashboard reopen", async () => {
+	const f = setup();
+	try {
+		await open(f);
+		f.ui.handleInput("e");
+		assert.match(text(f), /\(local\)/);
+		assert.match(text(f), /i exact UTC/);
+		const reads = f.calls.length;
+		f.ui.handleInput("i");
+		assert.match(text(f), /Time: 1970-01-01T00:00:00\.002Z/);
+		assert.match(text(f), /Time: 1970-01-01T00:00:00\.003Z · Reply to #2/);
+		assert.match(text(f), /i local time/);
+		f.ui.handleInput("i");
+		assert.match(text(f), /\(local\)/);
+		assert.doesNotMatch(text(f), /Time: \d{4}-\d{2}-\d{2}T/);
+		assert.equal(f.calls.length, reads);
+		f.ui.handleInput("p");
+		f.ui.handleInput("i");
+		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "i");
+		assert.equal(f.state.threads?.exactTime, false);
+		f.ui.handleInput("\x1b");
+		f.ui.handleInput("i");
+		f.ui.dispose();
+		const reopened = fixture(
+			100,
+			30,
+			source(),
+			{ collaborate: async (input) => (input.action === "list" ? list() : page()) },
+			f.state,
+		);
+		try {
+			await turn();
+			reopened.ui.handleInput("t");
+			await turn();
+			reopened.ui.handleInput("\r");
+			await turn();
+			reopened.ui.handleInput("e");
+			const shown = stripVTControlCharacters(reopened.ui.render(100).join("\n"));
+			assert.match(shown, /Time: 1970-01-01T00:00:00\.002Z/);
+			assert.equal(f.state.threads?.exactTime, true);
+		} finally {
+			reopened.ui.dispose();
+		}
+		const fresh = setup();
+		try {
+			await open(fresh);
+			fresh.ui.handleInput("e");
+			assert.match(text(fresh), /\(local\)/);
+			assert.equal(fresh.state.threads?.exactTime, false);
+		} finally {
+			fresh.ui.dispose();
+		}
+	} finally {
+		f.ui.dispose();
+	}
+});
 it("p posts silently and n explicitly selects peers, without an agent message submission", async () => {
 	const f = setup();
 	try {
@@ -477,6 +558,7 @@ it("dashboard help distinguishes a silent post from passive notification deliver
 		await turn();
 		f.ui.handleInput("?");
 		assert.match(text(f, 120), /p posts without a model wake\./);
+		assert.match(text(f, 120), /i switches Threads event times between local time and exact UTC timestamps\./);
 		assert.doesNotMatch(text(f, 120), /p posts without notification\./);
 	} finally {
 		f.ui.dispose();

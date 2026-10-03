@@ -10,13 +10,14 @@ export type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;
 type Discovery = CollaborationList & { sources?: Array<{ sessionId: string; omitted: number; unavailable: boolean }> };
 export interface CollaborationViewState {
 	selected?: string;
+	exactTime: boolean;
 	drafts: Map<
 		string,
 		{ text: string; revision: number; notify: string[]; pending: boolean; request?: { id: string; content: string } }
 	>;
 }
 export function createCollaborationViewState(): CollaborationViewState {
-	return { drafts: new Map() };
+	return { drafts: new Map(), exactTime: false };
 }
 const listeners = new WeakMap<CollaborationViewState, Set<() => void>>();
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object";
@@ -391,6 +392,9 @@ export class CollaborationView {
 			n: () => this.beginPost(true),
 			r: () => this.latest(),
 			b: () => this.earlier(),
+			i: () => {
+				this.options.state.exactTime = !this.options.state.exactTime;
+			},
 			f: () => {
 				this.offset = 0;
 				this.follow = false;
@@ -437,6 +441,19 @@ export class CollaborationView {
 		};
 		routes[this.screen]();
 	}
+	private eventTime(at: number): string {
+		const date = new Date(at);
+		return this.options.state.exactTime
+			? date.toISOString()
+			: `${date.toLocaleString("en-US", {
+					year: "numeric",
+					month: "short",
+					day: "numeric",
+					hour: "numeric",
+					minute: "2-digit",
+					hour12: true,
+				})} (local)`;
+	}
 	private threadLines(): string[] {
 		const page = this.page;
 		if (!page) return ["Read thread…"];
@@ -461,7 +478,7 @@ export class CollaborationView {
 			...(this.before ? ["Earlier page. r reads latest."] : []),
 			...page.events.flatMap((event) => [
 				`#${event.sequence} · ${this.nameFor(event.sender)} [${event.sender}] · ${event.origin} · ${plain(event.kind)} · frame ${event.revision}`,
-				`Time: ${new Date(event.at).toISOString()}${event.replyTo ? ` · Reply to #${event.replyTo}` : ""}`,
+				`Time: ${this.eventTime(event.at)}${event.replyTo ? ` · Reply to #${event.replyTo}` : ""}`,
 				...(event.source ? [`Source: ${plain(event.source)}`] : []),
 				plain(event.message),
 				...(event.notify.length ? [`Notify: ${event.notify.map((id) => this.nameFor(id)).join(", ")}`] : []),
@@ -517,7 +534,16 @@ export class CollaborationView {
 			list: ["↑↓ select", "Enter read", "s selected storage", "r refresh"],
 			notify: ["↑↓ select", "Space/Enter toggle", "Tab write"],
 			compose: ["Enter post", "Tab notify", "Ctrl+J newline"],
-			thread: ["p post", "n notify", "PgUp/PgDn read", "f frame", "e exchange", "b earlier", "r latest"],
+			thread: [
+				"p post",
+				"n notify",
+				this.options.state.exactTime ? "i local time" : "i exact UTC",
+				"PgUp/PgDn read",
+				"f frame",
+				"e exchange",
+				"b earlier",
+				"r latest",
+			],
 		};
 		return hints[this.screen];
 	}

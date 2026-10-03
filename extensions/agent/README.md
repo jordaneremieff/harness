@@ -266,7 +266,12 @@ for the exchange tail. At the exchange tail, new events stay visible. Frame
 and earlier-page reads keep their position. Esc returns through Threads to the roster and native
 primary. Drafts, agent selection, and focus stay intact. The view shows frame,
 contributions, attributed chronological exchange, revisions, and coverage.
-Catalog changes refresh it without polling or waking models.
+Event times default to the local date and clock time with an AM/PM suffix,
+without seconds or milliseconds. Press `i` in a thread to switch to exact UTC
+ISO timestamps with milliseconds or back to local time. The choice applies to
+all Threads views and survives close and reopen in the same Pi session and
+process; it is not saved to disk. Catalog changes refresh the view without
+polling or waking models.
 
 ## Recovery and delivery
 
