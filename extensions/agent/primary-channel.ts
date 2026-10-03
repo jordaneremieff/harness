@@ -30,17 +30,13 @@ import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import type { ByteTransport, ByteTransportFactory } from "@earendil-works/pi-client";
 import { ServerError, type RoutedServerServiceAttachment, type ServerHost } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
+import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 
 /** Service id all primary channel calls use. */
 export const PRIMARY_CHANNEL_SERVICE_ID = "pi.agent.primary";
-/**
- * Endpoint record contract. Version 2 means the registered primary understands
- * delivery details, including a quiet notice with `wake: false`. A host that
- * meets an older endpoint holds that delivery and reports the restart, because
- * an older primary ignores the quiet flag and wakes its model.
- */
-export const PRIMARY_ENDPOINT_VERSION = 2;
+/** Current notice contract includes explicit quiet-delivery semantics. */
+export const PRIMARY_ENDPOINT_VERSION = PRIMARY_DELIVERY_CONTRACT;
 const ENDPOINT_BYTES = 16 * 1024;
 const LIST_LIMIT = 20;
 const VISIT_LIMIT = 256;
@@ -75,7 +71,7 @@ export interface PrimaryInfo {
 }
 
 interface PrimaryEndpoint extends PrimaryInfo {
-	readonly version: number;
+	readonly version: string;
 	/** Independent canonical UUIDv4 announced by the public Unix server. */
 	readonly serverId: string;
 }
@@ -86,7 +82,7 @@ export type PrimaryEndpointOwnerState = "absent" | "dead" | "live" | "unknown" |
 /** Owner classification plus the observed endpoint version when the record is readable. */
 export interface PrimaryEndpointStatus {
 	readonly state: PrimaryEndpointOwnerState;
-	readonly version?: number;
+	readonly version?: string;
 }
 
 export class PrimaryChannelUnavailableError extends Error {
@@ -221,7 +217,7 @@ function parseEndpoint(value: unknown): PrimaryEndpoint {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PrimaryChannelUnavailableError("primary endpoint is not an object");
 	const record = value as Record<string, unknown>;
 	const version = record.version;
-	if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0) throw new PrimaryChannelUnavailableError("primary endpoint version is invalid");
+	if (typeof version !== "string" || version.length === 0 || version.length > 256) throw new PrimaryChannelUnavailableError("The primary endpoint does not advertise a usable current contract. Restart that Pi process before delivery.");
 	const identity = endpointIdentity(record);
 	const name = optionalString(record, "name");
 	const model = endpointModel(record);
@@ -241,7 +237,7 @@ function parseEndpoint(value: unknown): PrimaryEndpoint {
  * delivery for this owner and names the restart, instead of treating the owner
  * as dead or unknown.
  */
-export function primaryEndpointIncompatibleError(id: string, version: number): PrimaryChannelUnavailableError {
+export function primaryEndpointIncompatibleError(id: string, version: string): PrimaryChannelUnavailableError {
 	return new PrimaryChannelUnavailableError(
 		`primary owner ${id} runs an agent extension with endpoint version ${version}; this host requires version ${PRIMARY_ENDPOINT_VERSION}. Restart that Pi process to load the current extension.`,
 	);

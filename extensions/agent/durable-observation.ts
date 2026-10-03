@@ -622,6 +622,18 @@ export interface DurableStatusOptions {
 	readonly cwd?: string;
 }
 
+/** Provider parsing buffers are not part of the public AssistantMessage contract. */
+export function publicLiveState(live: LiveState | undefined): LiveState | null {
+	const generation = live?.generation;
+	const message = generation?.message;
+	if (!message || !generation) return live ?? null;
+	return { ...live, generation: { ...generation, message: { ...message, content: message.content.map((part) => {
+		if (part.type !== "toolCall") return part;
+		const { partialJson: _partialJson, customInput: _customInput, ...publicPart } = part as typeof part & { partialJson?: unknown; customInput?: unknown };
+		return publicPart;
+	}) } } };
+}
+
 export async function readConversationStatus(
 	harness: Harness,
 	storageId: string,
@@ -649,7 +661,7 @@ export async function readConversationStatus(
 		cwd: agent.cwd ?? options.cwd,
 		lastText: messageTextOf(newest.items[0]),
 		...(textRoleOf(newest.items[0]) === undefined ? {} : { lastTextRole: textRoleOf(newest.items[0]) }),
-		live: live ?? null,
+		live: publicLiveState(live),
 		inbox: inbox ?? null,
 		usage,
 		agent: {
@@ -2047,6 +2059,10 @@ export class DurableObservation {
 	 * parsing are identical to `DurableHost.request`; write methods reject.
 	 */
 	async request(method: string, params?: RequestParams, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
+			if (method === "collaboration-read" || method === "collaboration-list") {
+				const { readCollaboration, listCollaboration } = await import("./collaboration.ts");
+				return method === "collaboration-read" ? readCollaboration(this.harness, params ?? {}, context) : listCollaboration(this.harness, params ?? {}, context);
+			}
 			switch (method) {
 				case "inspect": {
 					const conversation = await this.target(params, context);

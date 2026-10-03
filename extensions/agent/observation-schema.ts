@@ -427,12 +427,37 @@ export function observationSchema(method: "list" | "status" | "inspect"): TSchem
  * against its schema. A mismatch throws with the failing paths instead of
  * shipping a shape the declared schema rejects.
  */
+/** Select the structurally relevant union member for an actionable error path. */
+type DiagnosticBranch = TSchema & { anyOf?: TSchema[]; properties?: Record<string, TSchema>; required?: string[] };
+
+function diagnosticSchema(schema: TSchema, value: unknown): TSchema {
+	const branch = schema as DiagnosticBranch;
+	if (!Array.isArray(branch.anyOf) || value === null || typeof value !== "object" || Array.isArray(value)) return schema;
+	const record = value as Record<string, unknown>;
+	const candidates = (branch.anyOf as DiagnosticBranch[]).filter((candidate) => candidate.properties);
+	candidates.sort((left, right) => diagnosticScore(right, record) - diagnosticScore(left, record));
+	return candidates[0] ?? schema;
+}
+
+function diagnosticScore(schema: DiagnosticBranch, record: Record<string, unknown>): number {
+	let score = 0;
+	for (const key of schema.required ?? []) score += Object.hasOwn(record, key) ? 2 : -2;
+	for (const [key, property] of Object.entries(schema.properties as Record<string, TSchema>)) {
+		if (!Object.hasOwn(record, key)) continue;
+		score += Object.hasOwn(property, "const") ? record[key] === (property as TSchema & { const?: unknown }).const ? 100 : -100 : 1;
+	}
+	return score;
+}
+
 export function structuredObservation<T extends TSchema>(schema: T, value: unknown): Static<T> {
 	const parsed: unknown = JSON.parse(JSON.stringify(value ?? null));
-	const errors = [...Value.Errors(schema, parsed)];
-	if (errors.length > 0) {
-		const detail = errors.slice(0, 5).map((error) => `${error.instancePath === "" ? "/" : error.instancePath} ${error.message}`).join("; ");
-		throw new Error(`Observation output does not match its schema: ${detail}`);
+	if (!Value.Check(schema, parsed)) {
+		const detail: string[] = [];
+		for (const error of Value.Errors(diagnosticSchema(schema, parsed), parsed)) {
+			detail.push(`${error.instancePath === "" ? "/" : error.instancePath} ${error.message}`);
+			if (detail.length === 5) break;
+		}
+		throw new Error(`Observation output does not match its schema: ${detail.join("; ")}`);
 	}
 	return parsed as Static<T>;
 }

@@ -1,4 +1,5 @@
 import type { AgentConversationSummary } from "./dashboard-types.ts";
+import type { CollaborationViewState } from "./collaboration-view.ts";
 
 export type DashboardScreen =
 	| "roster"
@@ -9,7 +10,8 @@ export type DashboardScreen =
 	| "actions"
 	| "help"
 	| "tasks"
-	| "result";
+	| "result"
+	| "threads";
 export interface AgentReadingState {
 	follow: boolean;
 	scroll: number;
@@ -39,6 +41,7 @@ export interface DashboardState {
 	filter: string;
 	newTask: string;
 	agents: Map<string, AgentDraftState>;
+	threads?: CollaborationViewState;
 }
 export function createDashboardState(): DashboardState {
 	return { filter: "", newTask: "", agents: new Map() };

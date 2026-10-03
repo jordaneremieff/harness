@@ -14,6 +14,7 @@ import {
 import { opendir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { type CatalogView, parseCatalogView } from "./catalog-view.ts";
+import { parseCollaborationProjection, type CollaborationProjection } from "./collaboration.ts";
 import { observeClaim } from "./claims.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { type HostMetadata, hostPaths, parseHostMetadata } from "./host-protocol.ts";
@@ -72,11 +73,13 @@ export interface CatalogRecord extends HostMetadata {
 	createdAt: string;
 	/** Optional bounded conversation projection; absent means the projection is unknown. */
 	view?: CatalogView;
+	/** Bounded discovery hints; native documents retain the full thread. */
+	threads?: CollaborationProjection;
 	/** Host-local marker: true before admission or resume, false only on a clean idle host with no deliveries. */
 	recoveryDue?: boolean;
 }
 export function hostMetadata(record: CatalogRecord): HostMetadata {
-	const { createdAt: _createdAt, view: _view, recoveryDue: _recoveryDue, ...metadata } = record;
+	const { createdAt: _createdAt, view: _view, threads: _threads, recoveryDue: _recoveryDue, ...metadata } = record;
 	return metadata;
 }
 export interface CatalogPage {
@@ -194,7 +197,7 @@ export class AgentCatalog {
 				throw new Error("Agent metadata is invalid");
 			parseHostMetadata(hostMetadata(record));
 			if (!isThinkingLevel(record.thinkingLevel)) throw new Error("Agent metadata has an unknown reasoning level");
-			if (record.view !== undefined) record.view = this.observedView(storageId, record.view);
+			this.parseProjections(record);
 			if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
 				throw new Error("Agent metadata has an invalid recovery marker");
 			return record;
@@ -208,11 +211,16 @@ export class AgentCatalog {
 	 * the stored record. The caller owns the storage writer claim; a symlink,
 	 * corrupt record, missing record, or wrong stored identity is refused.
 	 */
-	updateView(identity: string, view: CatalogView): CatalogRecord {
+	updateView(identity: string, view: CatalogView, threads?: CollaborationProjection): CatalogRecord {
 		const record = this.read(identity);
 		const parsed = parseCatalogView(view);
 		this.checkViewIdentity(record.storageId, parsed);
-		return this.rewrite({ ...record, view: parsed });
+		return this.rewrite({ ...record, view: parsed, ...(threads === undefined ? {} : { threads: parseCollaborationProjection(threads, record.storageId) }) });
+	}
+
+	private parseProjections(record: CatalogRecord): void {
+		if (record.view !== undefined) record.view = this.observedView(record.storageId, record.view);
+		if (record.threads !== undefined) record.threads = parseCollaborationProjection(record.threads, record.storageId);
 	}
 
 	/** Unknown cached values are unavailable observations, not alternate native state shapes. */

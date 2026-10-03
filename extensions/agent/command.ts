@@ -148,6 +148,7 @@ export function createAgentCommand(
 	actions: AgentCommandAction[],
 	sources: AgentObservationSource,
 	options: ActionDialogExtras,
+	collaborate?: (input: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>,
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
@@ -196,6 +197,7 @@ export function createAgentCommand(
 				state,
 				source: sources,
 				operations: {
+					collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
 					chooseConversation: async (labels, surface) =>
 						hideAround(surface, async () => {
 							const choices = labels.map(

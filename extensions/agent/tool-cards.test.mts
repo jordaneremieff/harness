@@ -529,7 +529,7 @@ describe("agent result notice card", () => {
 describe("agent tool card factory", () => {
 	it("binds call and result renderers for every native tool", () => {
 		const cards = createAgentToolCards();
-		assert.deepEqual(Object.keys(cards).sort(), ["agent_abort", "agent_attach", "agent_command", "agent_compact", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_rewind", "agent_send", "agent_spawn", "agent_status", "agent_steer"]);
+		assert.deepEqual(Object.keys(cards).sort(), ["agent_abort", "agent_attach", "agent_collaborate", "agent_command", "agent_compact", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_rewind", "agent_send", "agent_spawn", "agent_status", "agent_steer"]);
 		for (const [name, card] of Object.entries(cards)) {
 			assert.equal(typeof card.renderCall, "function", `${name} renderCall`);
 			assert.equal(typeof card.renderResult, "function", `${name} renderResult`);

@@ -58,6 +58,7 @@ const TestChildren = Durable.defineDoc<ChildrenState>({
 const CONTROL_TOOLS = [
 	"agent_abort",
 	"agent_attach",
+	"agent_collaborate",
 	"agent_command",
 	"agent_compact",
 	"agent_configure",
@@ -74,6 +75,7 @@ const CONTROL_TOOLS = [
 ];
 
 const REPLAY_CLASSIFICATION: Record<string, string> = {
+	agent_collaborate: "safe",
 	agent_spawn: "safe",
 	agent_send: "safe",
 	agent_steer: "safe",
@@ -277,6 +279,7 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 				return statusObservation(params);
 			case "list":
 				return listObservation();
+			case "collaboration-list": return { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
 			case "inspect":
 				return inspectObservation(holder);
 			case "compact":
@@ -331,7 +334,7 @@ const siblingExtension = Durable.defineExtension({
 	],
 });
 
-function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true): { registry: Durable.Registry; extension: Durable.Extension } {
+function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true, sourceStorageId = storageId): { registry: Durable.Registry; extension: Durable.Extension } {
 	const registry = Durable.createRegistry();
 	if (checkIns) registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask] }));
 	const contribution = createAgentContribution({
@@ -340,7 +343,7 @@ function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true): { regi
 	});
 	const extension: Durable.Extension = contribution.create({
 		durable: Durable,
-		storageId,
+		storageId: sourceStorageId,
 		cwd: testCwd,
 		services: testServices,
 	});
@@ -627,6 +630,7 @@ it("drives one model-issued call per control tool", async (t) => {
 	await settle(harness, root.id);
 	await run("agent_status", { sessionId: childSessionId });
 	await run("agent_list", {});
+	await run("agent_collaborate", { action: "list" });
 	await run("agent_inspect", { sessionId: childSessionId, view: "history" });
 	await run("agent_compact", {});
 	await run("agent_command", { sessionId: storageId, name: "echo", args: "hi" });
@@ -1066,6 +1070,57 @@ it("leaves native check-ins absent when the host registry supplies no deadline t
 	await spawnChild(harness, root, route, "plain-host", "HOST");
 	const tasks = await storage.scanTasks({ kind: "agent.check-in" }, 10, undefined, context);
 	assert.equal(tasks.items.length, 0, "the native contribution never supplies or faults a host-owned deadline task");
+});
+
+it("namespaces foreign admissions by source storage even when task IDs coincide", async (t) => {
+	const keys: string[] = [];
+	const receiver = new Set<string>();
+	for (const source of ["left-storage", "right-storage"]) {
+		const route = createRoute();
+		const { registry } = buildRegistry(async (method, params) => {
+			assert.equal(method, "submit");
+			const key = String(params.requestId);
+			keys.push(key);
+			const deduped = receiver.has(key);
+			receiver.add(key);
+			return { submissionId: receiver.size, deduped };
+		}, true, source);
+		const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+		t.after(() => harness.close(context));
+		route.script.push({ tool: "agent_send", args: { sessionId: "remote-storage", message: "Independent contribution", checkInMinutes: 0 } });
+		await say(root, "SEND");
+	}
+	assert.equal(keys.length, 2);
+	assert.equal(keys[0].split(":").at(-1), keys[1].split(":").at(-1), "the independent storages reused the same tool task number");
+	assert.notEqual(keys[0], keys[1]);
+	assert.equal(receiver.size, 2);
+});
+
+for (const mode of [undefined, "steer", "followUp"]) it(`honors immediate send disposition ${mode ?? "default steering"}`, async (t) => {
+	const route = createRoute();
+	const calls: DispatchCalls = [];
+	const { registry } = buildRegistry(async (method, params) => { calls.push({ method, params }); return { submissionId: 1, deduped: false }; });
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_send", args: { sessionId: "remote-storage", message: "A time-sensitive correction", checkInMinutes: 0, ...(mode === undefined ? {} : { mode }) } });
+	await say(root, "SEND");
+	assert.equal(calls[0].method, "submit");
+	assert.equal(calls[0].params.whenBusy, mode ?? "steer");
+	assert.match(String(calls[0].params.requestId), /^agent-deliver:test-storage:\d+$/u);
+});
+
+it("dispatches collaboration with actual caller identity and a source-qualified replay key", async (t) => {
+	const route = createRoute();
+	const calls: DispatchCalls = [];
+	const { registry } = buildRegistry(async (method, params) => { calls.push({ method, params }); return { threadId: "thread", sequence: 1, deduped: false }; });
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_collaborate", args: { action: "post", threadId: "thread", message: "A supported finding", notify: [] } });
+	await say(root, "COLLABORATE");
+	assert.equal(calls[0].method, "collaboration-mutate");
+	assert.equal(calls[0].params.senderIdentity, storageId);
+	assert.equal(calls[0].params.origin, "model");
+	assert.match(String(calls[0].params.requestId), /^collaboration:test-storage:\d+$/u);
 });
 
 it("keeps the fake model helpers honest", () => {

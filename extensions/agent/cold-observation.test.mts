@@ -127,7 +127,7 @@ it("keeps a fixture receipt pending until its release protocol request", async (
 	const receipt = runtime.request("receipts", {}, "held").then(() => { released = true; });
 	await state;
 	assert.equal(released, false);
-	await runtime.request("release-waits", {}, "release");
+	await runtime.request("timer-cancel", {}, "release");
 	await receipt;
 	assert.equal(released, true);
 	await runtime.close();

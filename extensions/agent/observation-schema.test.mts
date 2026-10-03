@@ -152,6 +152,13 @@ it("validates every status variant, including unavailable rows", async (t) => {
 	assert.ok(status.live === null || typeof status.live === "object");
 	const inventory = { contributions: [], ordinaryOnly: [] as string[] };
 	structuredObservation(StatusOutputSchema, { conversation: status, inventory, pid: 4242, storageId: fixtureStorageId });
+	const malformed = { conversation: { ...status, tasks: [{ id: 1, kind: "fixture", status: "invalid-state", background: false, abortRequested: false }] }, inventory, pid: 4242, storageId: fixtureStorageId };
+	assert.throws(() => structuredObservation(StatusOutputSchema, malformed), (error: unknown) => {
+		assert.ok(error instanceof Error);
+		assert.match(error.message, /\/conversation\/tasks\/0\/status/u);
+		assert.doesNotMatch(error.message, /required properties sessions/u);
+		return true;
+	});
 	structuredObservation(StatusOutputSchema, { conversation: status, inventory, live: false, storageId: fixtureStorageId });
 	structuredObservation(StatusOutputSchema, { conversations: [status], inventory, pid: 4242, storageId: fixtureStorageId });
 	// The failure member appears only when an extension failed; both shapes are valid.

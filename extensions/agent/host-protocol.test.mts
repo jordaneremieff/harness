@@ -3,18 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import {
-	HOST_RUNTIME_VERSION,
 	HOST_SOCKET_PATH_LIMIT_BYTES,
 	HostError,
 	formatHostReady,
-	hostMethodMinVersion,
 	hostPaths,
-	hostUpdatePendingError,
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
 	parseHostMetadata,
 	parseHostReadyLine,
 } from "./host-protocol.ts";
+
+import { HOST_CONTRACT } from "./version-contract.ts";
 
 const storageId = "2f1c9c1e-8f6b-4d2a-9a3e-1b2c3d4e5f60";
 const metadata = {
@@ -80,34 +79,14 @@ it("classifies retry-safe methods and cancelable waits", () => {
 	assert.equal(isCancelableHostWait("receipts", undefined), false);
 });
 
-it("parses the readiness line", () => {
-	const ready = formatHostReady({ pid: 7, socketPath: "/tmp/host.sock", runtimeVersion: HOST_RUNTIME_VERSION });
-	assert.equal(ready.endsWith("\n"), true);
-	assert.deepEqual(parseHostReadyLine(ready.trimEnd()), { pid: 7, socketPath: "/tmp/host.sock", runtimeVersion: HOST_RUNTIME_VERSION });
-	assert.equal(parseHostReadyLine("other output"), undefined);
-	assert.throws(() => parseHostReadyLine("PI_AGENT_HOST_READY {not json}"));
-	assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":0,"socketPath":"/tmp/x"}'));
-	// A line without the version is an older host by definition; a malformed present value is refused.
-	assert.deepEqual(parseHostReadyLine('PI_AGENT_HOST_READY {"pid":7,"socketPath":"/tmp/host.sock"}'), { pid: 7, socketPath: "/tmp/host.sock", runtimeVersion: 0 });
-	assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":7,"socketPath":"/tmp/host.sock","runtimeVersion":"1"}'));
-});
-
-it("reports method availability by runtime version", () => {
-	assert.equal(hostMethodMinVersion("status"), 0);
-	assert.equal(hostMethodMinVersion("reset"), 1);
-	assert.equal(hostMethodMinVersion("timer-schedule"), 1);
-	assert.equal(hostMethodMinVersion("observe-open"), 1);
-	const refusal = hostUpdatePendingError("timer-schedule", 0);
-	assert.equal(refusal.code, "unavailable");
-	assert.match(refusal.message, /older code and does not support timer-schedule/u);
-	assert.match(refusal.message, /Automatic update is blocked/u);
-});
-
-it("requires the process shutdown contract for a wire close", () => {
-	assert.equal(HOST_RUNTIME_VERSION, 4);
-	assert.equal(hostMethodMinVersion("close"), 3);
-	assert.match(hostUpdatePendingError("close", 1).message, /cannot close its process safely/u);
-	assert.doesNotMatch(hostUpdatePendingError("close", 1).message, /it updates when idle/u);
+it("parses readiness only with a usable current operation contract", () => {
+ const ready = formatHostReady({ pid: 7, socketPath: "/tmp/host.sock", contract: HOST_CONTRACT });
+ assert.equal(ready.endsWith("\n"), true);
+ assert.deepEqual(parseHostReadyLine(ready.trimEnd()), { pid: 7, socketPath: "/tmp/host.sock", contract: HOST_CONTRACT });
+ assert.equal(parseHostReadyLine("other output"), undefined);
+ assert.throws(() => parseHostReadyLine("PI_AGENT_HOST_READY {not json}"));
+ assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":0,"socketPath":"/tmp/x"}'));
+ assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":7,"socketPath":"/tmp/x"}'), /contract.*Restart/u);
 });
 
 it("carries a coded error class", () => {

@@ -19,12 +19,14 @@
  */
 
 import { realpathSync } from "node:fs";
+import { CollaborationParams } from "./collaboration.ts";
 import { resolve } from "node:path";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
+import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
 import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
 import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
@@ -58,7 +60,10 @@ export type AgentControlMethod =
 	| "reset"
 	| "timer-schedule"
 	| "timer-list"
-	| "timer-cancel";
+	| "timer-cancel"
+	| "collaboration-list"
+	| "collaboration-read"
+	| "collaboration-mutate";
 
 /** One host control call. The host returns a structured result the tool formats for the model. */
 export type AgentControlDispatch = (
@@ -67,14 +72,14 @@ export type AgentControlDispatch = (
 ) => Promise<unknown>;
 
 /** Version of the in-process control binding between one host runtime and the contributions it installs. */
-export const AGENT_CONTROL_BINDING_VERSION = 1;
+export const AGENT_CONTROL_BINDING_VERSION = CONTROL_BINDING_CONTRACT;
 
 /** Process-global key shared by a host runtime and every contribution it installs. */
 export const AGENT_CONTROL_BINDING_KEY = Symbol.for("pi.agent.durable.controls");
 
 /** One versioned runtime dispatch bound for the lifetime of an installed contribution. */
 export interface AgentControlBinding {
-	readonly version: number;
+	readonly version: string;
 	readonly dispatch: AgentControlDispatch;
 }
 
@@ -109,7 +114,7 @@ export function resolveAgentControlDispatch(): AgentControlDispatch {
 	if (raw === undefined) throw new Error("Native Durable host controls are unavailable in this process");
 	if (typeof raw !== "object" || raw === null) throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
 	const version = (raw as { readonly version?: unknown }).version;
-	if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0)
+	if (typeof version !== "string" || version.length === 0 || version.length > 256)
 		throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
 	if (version !== AGENT_CONTROL_BINDING_VERSION)
 		throw new Error(
@@ -977,7 +982,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			{
 				sessionId,
 				message,
-				requestId: `agent-deliver:${api.taskId}`,
+				requestId: `agent-deliver:${host.storageId}:${api.taskId}`,
 				ownerId: senderIdentity,
 				senderIdentity,
 				origin: "model",
@@ -1064,12 +1069,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const sendTool = durable.defineTool({
 		name: "agent_send",
 		description:
-			"Send a message to an agent conversation. A busy conversation receives it after its current answer; the answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
+			"Send a message to an agent conversation. A busy conversation receives steering at its next boundary; mode followUp waits for its current answer. The answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) =>
 			args.deliverAt === undefined
-				? sendTarget(api, context, args.sessionId, args.message, "followUp", args.replyTo, checkInMinutes(args.checkInMinutes))
+				? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "steer", args.replyTo, checkInMinutes(args.checkInMinutes))
 				: scheduleSend(api, args),
 	});
 
@@ -1505,6 +1510,18 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			),
 	});
 
+	const collaborateTool = durable.defineTool({
+		name: "agent_collaborate",
+		description: "Discover, form and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator. Join or leave freely; post contribution or sourced carried-authority. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read returns the frame, members and paged exchange. No automatic replies or check-ins.",
+		parameters: CollaborationParams,
+		replay: "safe",
+		execute: async (args, api) => dispatchControl(
+			args.action === "list" ? "collaboration-list" : args.action === "read" ? "collaboration-read" : "collaboration-mutate",
+			{ ...args, senderIdentity: identity(api.conversationId), origin: "model", requestId: `collaboration:${host.storageId}:${api.taskId}` },
+			"Collaboration request failed",
+		),
+	});
+
 	const guidance = durable.section("agent-controls", (input) => {
 		const selected = input.agent.tools.map((tool) => tool.name);
 		const anyControl = selected.some((name) => (AGENT_CONTROL_TOOL_NAMES as readonly string[]).includes(name));
@@ -1531,6 +1548,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			attachTool,
 			placeTool,
 			resetTool,
+			collaborateTool,
 		],
 		sections: [guidance],
 	});

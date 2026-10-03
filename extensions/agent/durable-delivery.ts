@@ -163,9 +163,11 @@ function receiptOrigin(receipt: DeliveryReceipt): DeliveryOrigin {
 	return origin;
 }
 
-/** Reports wake by default; check-ins and answer groups follow the recipient's admission origin. */
+function directReport(row: DeliveryRow): boolean { return row.kind === "report" && row.report.direct === true; }
+function deliverySender(row: DeliveryRow, host: DurableHost): string { return row.kind === "receipt" ? host.identity(row.receipt.conversationId) : row.report.senderIdentity; }
+
 function rowWakes(row: DeliveryRow, recipient: string): boolean {
-	if (row.kind === "report") return row.report.checkIn === undefined || row.report.checkIn.origin === "model";
+	if (row.kind === "report") return row.report.passive !== true && (row.report.checkIn === undefined || row.report.checkIn.origin === "model");
 	const own = row.receipts.filter((receipt) => receipt.ownerId === recipient);
 	if (own.length === 0) return true;
 	return own.some((receipt) => receiptOrigin(receipt) === "model");
@@ -394,7 +396,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 		if (!await checkInCurrent(row)) return;
 		const requestId = reportRequestId(metadata, row.report);
-		await host.request("submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, whenBusy: "followUp" });
+		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, whenBusy: row.report.steer ? "steer" : "followUp" });
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow): Promise<void> => {
@@ -572,7 +574,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		| { readonly kind: "delivered" }
 		| { readonly kind: "skipped" }
 		| { readonly kind: "failed" }
-		| { readonly kind: "incompatible"; readonly version: number };
+		| { readonly kind: "incompatible"; readonly version: string };
 
 	/** Deliver one fallback candidate; absent or proven dead endpoints are skipped, incompatible ones refuse. */
 	const deliverFallbackCandidate = async (
@@ -584,7 +586,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (row.deliveredTo.has(`primary:${id}`)) return { kind: "delivered" };
 		const status = primaryEndpointStatus(sessionsRoot, id);
 		if (status.state === "absent" || status.state === "dead") return { kind: "skipped" };
-		if (status.state === "incompatible") return { kind: "incompatible", version: status.version ?? 0 };
+		if (status.state === "incompatible") return { kind: "incompatible", version: status.version ?? "unadvertised" };
 		let connection: PrimaryChannelConnection;
 		try {
 			connection = await connectPrimaryChannel({ id, sessionsRoot });
@@ -621,10 +623,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		row: DeliveryRow,
 		identity: string,
 		owner: string,
-	): Promise<{ delivered: number; unavailable: string | undefined; incompatible: { id: string; version: number } | undefined }> => {
+	): Promise<{ delivered: number; unavailable: string | undefined; incompatible: { id: string; version: string } | undefined }> => {
 		let delivered = 0;
 		let unavailable: string | undefined;
-		let incompatible: { id: string; version: number } | undefined;
+		let incompatible: { id: string; version: string } | undefined;
 		for (const id of candidates) {
 			if (closed || signal.aborted) return { delivered, unavailable, incompatible };
 			const outcome = await deliverFallbackCandidate(id, row, identity, owner);
@@ -635,7 +637,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return { delivered, unavailable, incompatible };
 	};
 
-	const incompatibleFallbackError = (id: string, version: number, owner: string): Error =>
+	const incompatibleFallbackError = (id: string, version: string, owner: string): Error =>
 		new Error(`${primaryEndpointIncompatibleError(id, version).message} The fallback for ${owner} stays unacknowledged.`);
 
 	/** Check every candidate before one delivery, so an older registered primary never sees a quiet notice. */
@@ -643,7 +645,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		for (const id of candidates) {
 			if (closed || signal.aborted) return;
 			const status = primaryEndpointStatus(sessionsRoot, id);
-			if (status.state === "incompatible") throw incompatibleFallbackError(id, status.version ?? 0, owner);
+			if (status.state === "incompatible") throw incompatibleFallbackError(id, status.version ?? "unadvertised", owner);
 		}
 	};
 
@@ -679,11 +681,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (row.deliveredTo.has(`primary:${owner}`)) return;
 		if (!PRIMARY_ID.test(owner))
 			throw new Error(`delivery owner ${owner} is not a canonical primary id; refusing fallback`);
-		const identity = row.kind === "receipt" ? host.identity(row.receipt.conversationId) : row.report.senderIdentity;
+		const identity = deliverySender(row, host);
 		const status = primaryEndpointStatus(sessionsRoot, owner);
 		if (status.state === "live") await deliverLiveOwner(row, identity, owner);
-		else if (status.state === "incompatible") throw primaryEndpointIncompatibleError(owner, status.version ?? 0);
+		else if (status.state === "incompatible") throw primaryEndpointIncompatibleError(owner, status.version ?? "unadvertised");
 		else if (status.state === "unknown") throw new Error(`primary owner ${owner} has an unknown endpoint; refusing fallback`);
+		else if (directReport(row)) throw new Error(`Thread recipient ${owner} has no live endpoint; its notification stays pending without broadcast`);
 		else await deliverFallbackOwner(row, identity, owner);
 	};
 
@@ -706,8 +709,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			if (!await checkInCurrent(row)) return;
 			const requestId = reportRequestId(metadata, row.report);
 			await connection.request(
-				"submit",
-				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, whenBusy: "followUp" },
+				row.report.passive ? "passive-submit" : "submit",
+				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, whenBusy: row.report.steer ? "steer" : "followUp" },
 				{ requestId, signal },
 			);
 		}

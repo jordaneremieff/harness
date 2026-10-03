@@ -12,6 +12,7 @@ import {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type TSchema } from "typebox";
 import { checkInMinutes } from "./durable-checkins.ts";
+import { CollaborationParams } from "./collaboration.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { configurationWithApply } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, parseConfigurationArguments } from "./configuration.ts";
@@ -48,7 +49,7 @@ export function agentRestartHosts(): RestartHosts {
 		if (manager.managerProtocol !== MANAGER_PROTOCOL)
 			return {
 				identity: "",
-				refusal: "A retained agent manager uses another protocol. Quit Pi and resume the saved session.",
+				refusal: `The retained agent manager uses ${manager.managerProtocol}; this code requires ${MANAGER_PROTOCOL}. Quit Pi and resume the saved session.`,
 			};
 	return {
 		identity: JSON.stringify([...owners.managers].map(([root, manager]) => [root, manager.connectedStorageIds()])),
@@ -179,7 +180,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		const existing = owners.managers.get(root);
 		if (existing) {
 			if (existing.managerProtocol !== MANAGER_PROTOCOL)
-				throw new Error("The agent manager protocol changed. Restart Pi before agent controls.");
+				throw new Error(`The retained agent manager uses ${existing.managerProtocol}; this code requires ${MANAGER_PROTOCOL}. Restart Pi before agent controls.`);
 			return existing;
 		}
 		const manager = new AgentManager({ root, agentDir, packageDir: getPackageDir() });
@@ -213,6 +214,12 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			renderResult: cards[name].renderResult,
 		});
 	};
+	register(
+		"agent_collaborate",
+		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Join, leave and exchange sourced contributions. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read the frame and paged exchange without starting a host.",
+		CollaborationParams,
+		(input, ctx, callId) => getManager().collaborate({ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi)),
+	);
 	register(
 		"agent_spawn",
 		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Unanswered tasks send automatic owner check-ins, separate from voluntary reports. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
@@ -251,7 +258,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		send,
 		(input, ctx, callId) => {
 			if (input.deliverAt === undefined)
-				return control("submit", { ...input, checkInMinutes: checkInMinutes(input.checkInMinutes), whenBusy: "steer", origin: "model" }, ctx);
+				return control("submit", { ...input, checkInMinutes: checkInMinutes(input.checkInMinutes), whenBusy: input.mode ?? "steer", origin: "model" }, ctx);
 			if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
 			return control(
 				"timer-schedule",
@@ -661,6 +668,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			schedule: async (input, ctx) =>
 				scheduleAgentInput({ control: (method, params) => control(method, params, ctx), label: agentLabel }, input),
 		},
+		(input, ctx) => getManager().collaborate({ ...input, origin: "operator" }, caller(ctx, pi)),
 	);
 	pi.registerCommand("agent", command);
 	pi.registerShortcut("ctrl+alt+g", {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
@@ -9,7 +9,8 @@ import { hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { dashboardText } from "./dashboard-roster.ts";
 import { connectHost, type HostConnection } from "./host-client.ts";
 import { runHost } from "./host-process.ts";
-import { HOST_RUNTIME_VERSION, hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
@@ -60,7 +61,7 @@ interface FakeConnection extends HostConnection {
 	change(): void;
 }
 
-function fakeConnection(metadata: HostMetadata, handler: (method: string, params: unknown) => Promise<unknown>, runtimeVersion: number = HOST_RUNTIME_VERSION): FakeConnection {
+function fakeConnection(metadata: HostMetadata, handler: (method: string, params: unknown) => Promise<unknown>, runtimeContract: RuntimeContract = HOST_CONTRACT): FakeConnection {
 	let closed = false;
 	const listeners = new Set<() => void>();
 	const changes = new Set<() => void>();
@@ -69,7 +70,7 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 		socketPath: "/tmp/fake-host.sock",
 		storageId: metadata.storageId,
 		metadata,
-		runtimeVersion,
+		runtimeContract,
 		get closed() {
 			return closed;
 		},
@@ -854,285 +855,6 @@ it("returns a compact status snapshot from a mutation instead of the full status
 	} finally { manager.close(); }
 });
 
-interface RecordedHost {
-	readonly connection: FakeConnection;
-	readonly requests: Array<{ method: string; params: Record<string, unknown> }>;
-}
-
-/** One fake host that records its calls and answers recovery-state with a caller-controlled value. */
-function recordedHost(metadata: HostMetadata, runtimeVersion: number, work: { pending: boolean }): RecordedHost {
-	const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
-	const connection = fakeConnection(metadata, async (method, params) => {
-		requests.push({ method, params: (params ?? {}) as Record<string, unknown> });
-		if (method === "recovery-state") return { workPending: work.pending, deliveriesPending: false };
-		return {};
-	}, runtimeVersion);
-	return { connection, requests };
-}
-
-for (const version of [0, 1, 2]) {
-	it(`keeps version ${version} readable and blocks its unsafe process close`, async (t) => {
-		const root = fixtureRoot(t);
-		const steps: RecordedHost[] = [];
-		const manager = new AgentManager(managerOptions(root, {
-			acquire: async (metadata) => {
-				const step = recordedHost(metadata, version, { pending: false });
-				steps.push(step);
-				return step.connection;
-			}, connect: noHost,
-		}));
-		const record = createRecord(manager, root);
-		try {
-			await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
-			assert.equal(steps.length, 1, "an unsupported close never triggers acquisition");
-			assert.equal(steps[0].requests.some((entry) => entry.method === "close"), false);
-			const overview = await manager.status() as { failures: Array<{ error: string }> };
-			assert.ok(overview.failures.some((failure) => /Automatic update is blocked/u.test(failure.error)));
-		} finally { manager.close(); }
-	});
-}
-
-it("updates an idle version-3 host through process close before adopting version 4", async (t) => {
-	const root = fixtureRoot(t);
-	const steps: RecordedHost[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => {
-			const step = recordedHost(metadata, steps.length === 0 ? 3 : HOST_RUNTIME_VERSION, { pending: false });
-			steps.push(step);
-			return step.connection;
-		}, connect: noHost,
-	}));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root);
-	await manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root });
-	assert.equal(HOST_RUNTIME_VERSION, 4);
-	assert.equal(steps.length, 2);
-	assert.ok(steps[0].requests.some((entry) => entry.method === "close"));
-	assert.equal(steps[0].connection.closed, true);
-	assert.equal(steps[1].connection.runtimeVersion, 4);
-});
-
-/** Exercise the replacement invariant independently of a version mismatch. */
-function replaceHost(manager: AgentManager, record: CatalogRecord, client: HostConnection): Promise<HostConnection> {
-	return (manager as unknown as { replaceIdleHost(record: CatalogRecord, client: HostConnection): Promise<HostConnection> }).replaceIdleHost(record, client);
-}
-
-it("replaces an idle host only after its writer claim releases", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const work = { pending: true };
-	const connections: HostConnection[] = [];
-	let closing!: () => void;
-	const runtimeClosing = new Promise<void>((resolve) => { closing = resolve; });
-	let release!: () => void;
-	const releaseGate = new Promise<void>((resolve) => { release = resolve; });
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => {
-			if (connections.length > 0) assert.equal(existsSync(hostPaths(metadata).claim), false, "acquisition requires proof of writer release");
-			const client = connections.length === 0 ? await connectHost(metadata, { retryAttempts: 0 }) : recordedHost(metadata, HOST_RUNTIME_VERSION, work).connection;
-			connections.push(client);
-			return client;
-		}, connect: noHost,
-	}));
-	const record = createRecord(manager, root);
-	const host = await runHost(() => ({
-		request: async (method) => method === "recovery-state" ? { workPending: work.pending, deliveriesPending: false } : {},
-		isIdle: () => !work.pending,
-		close: async () => { closing(); await releaseGate; },
-	}), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
-	t.after(async () => { release(); await host.close(); });
-	try {
-		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
-		await replaceHost(manager, record, connections[0]);
-		assert.equal(connections.length, 1, "a busy host is not replaced");
-		work.pending = false;
-		const updated = replaceHost(manager, record, connections[0]);
-		await runtimeClosing;
-		assert.equal(connections.length, 1, "transport closure is not writer-release proof");
-		assert.equal(existsSync(hostPaths(record).claim), true);
-		release();
-		await updated;
-		assert.equal(connections.length, 2);
-		assert.equal(connections[0].closed, true);
-	} finally { release(); manager.close(); }
-});
-
-it("refuses replacement when writer release cannot be confirmed", async (t) => {
-	const root = fixtureRoot(t);
-	const steps: RecordedHost[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => { const step = recordedHost(metadata, HOST_RUNTIME_VERSION, { pending: false }); steps.push(step); return step.connection; },
-		release: async () => { throw new Error("writer claim remains live"); },
-		connect: noHost,
-	}));
-	const record = createRecord(manager, root);
-	try {
-		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
-		await assert.rejects(replaceHost(manager, record, steps[0].connection), /writer claim remains live/u);
-		assert.equal(steps.length, 1);
-	} finally { manager.close(); }
-});
-
-it("stops automatic host replacement at the crash-window cap", async (t) => {
-	const root = fixtureRoot(t);
-	const steps: RecordedHost[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => { const step = recordedHost(metadata, HOST_RUNTIME_VERSION, { pending: false }); steps.push(step); return step.connection; },
-		connect: noHost,
-	}));
-	const record = createRecord(manager, root);
-	try {
-		await manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root });
-		for (let attempt = 0; attempt < 4; attempt++) {
-			const current = steps.at(-1);
-			assert.ok(current);
-			await replaceHost(manager, record, current.connection);
-		}
-		assert.equal(steps.length, 4, "one initial host plus three bounded replacements");
-		const status = await manager.status() as { failures: Array<{ error: string }> };
-		assert.ok(status.failures.some((failure) => /update stopped after repeated replacements/u.test(failure.error)));
-	} finally { manager.close(); }
-});
-
-it("keeps status readable from a busy older host and reports the pending update", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	let connected = 0;
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => {
-			connected += 1;
-			return fakeConnection(metadata, async (method) => {
-				if (method === "recovery-state") return { workPending: true, deliveriesPending: false };
-				if (method === "status") return { conversation: { conversationId: 1, identity: metadata.storageId }, inventory: { contributions: [], ordinaryOnly: [] }, pid: 1, storageId: metadata.storageId };
-				return {};
-			}, 0);
-		},
-		acquire: noHost,
-	}));
-	const record = createRecord(manager, root);
-	try {
-		const status = await manager.status(record.storageId) as { inventory: { failed?: unknown } };
-		assert.equal(status.inventory.failed, undefined, "an older host's readable status carries no failure member");
-		assert.equal(connected, 1, "a busy older host stays connected");
-		const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
-		assert.ok(overview.failures.some((failure) => failure.storageId === record.storageId && /Host runtime version 0/u.test(failure.error)), "the pending update is visible in status");
-	} finally { manager.close(); }
-});
-
-it("never replaces a newer host and reports that this Pi needs a restart", async (t) => {
-	const root = fixtureRoot(t);
-	const steps: RecordedHost[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => { const step = recordedHost(metadata, HOST_RUNTIME_VERSION + 1, { pending: false }); steps.push(step); return step.connection; },
-		connect: noHost,
-	}));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root);
-	await manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root });
-	assert.equal(steps.length, 1);
-	assert.equal(steps[0].requests.some((entry) => entry.method === "close"), false);
-	const status = await manager.status() as { failures: Array<{ error: string }> };
-	assert.ok(status.failures.some((failure) => /This Pi runs older code.*Restart this Pi/u.test(failure.error)));
-	const page = await manager.dashboardPage();
-	assert.match(page.rows[0].health?.lastError ?? "", /Restart this Pi/u);
-	await assert.rejects(manager.control("submit", { sessionId: record.storageId, message: "task" }, { id: "caller", cwd: root }), /Restart this Pi/u);
-	assert.equal(steps[0].requests.some((entry) => entry.method === "submit"), false);
-	steps[0].connection.change();
-	await manager.status();
-	assert.equal(steps.length, 1);
-	assert.equal([...(manager as unknown as { crashes: { entries: Iterable<[string, unknown]> } }).crashes.entries].length, 0);
-});
-
-it("releases a blocked older host only after all concurrent reads finish", async (t) => {
-	const root = fixtureRoot(t);
-	const clients: FakeConnection[] = [];
-	const replies: Array<(value: unknown) => void> = [];
-	let entered!: () => void;
-	const bothEntered = new Promise<void>((resolve) => { entered = resolve; });
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => {
-			const client = fakeConnection(metadata, async (method) => {
-				assert.equal(method, "status");
-				return new Promise((resolve) => { replies.push(resolve); if (replies.length === 2) entered(); });
-			}, 1);
-			clients.push(client);
-			return client;
-		}, acquire: noHost,
-	}));
-	const record = createRecord(manager, root);
-	const first = manager.status(record.storageId);
-	const second = manager.status(record.storageId);
-	t.after(async () => { for (const reply of replies) reply({}); await Promise.allSettled([first, second]); manager.close(); });
-	await bothEntered;
-	assert.equal(clients.length, 1, "concurrent readers share their attachment");
-	replies[0]({});
-	await first;
-	assert.equal(clients[0].closed, false, "the other read still owns its connection");
-	replies[1]({});
-	await second;
-	assert.equal(clients[0].closed, true, "the manager does not veto idle retirement after its reads");
-});
-
-it("releases a blocked-version client's real transport and permits idle retirement", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	let attached: HostConnection | undefined;
-	let read = false;
-	let scheduled!: (check: () => void) => void;
-	const retirement = new Promise<() => void>((resolve) => { scheduled = resolve; });
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => {
-			attached = await connectHost(metadata, { retryAttempts: 0 });
-			Object.defineProperty(attached, "runtimeVersion", { value: 1 });
-			return attached;
-		}, acquire: noHost,
-	}));
-	const record = createRecord(manager, root);
-	const host = await runHost(() => ({
-		request: async () => { read = true; return {}; },
-		isIdle: () => true,
-		close: async () => {},
-	}), { metadata: hostMetadata(record), idleMs: 1, announceReady: () => {}, scheduleIdleCheck: (check) => { if (read) scheduled(check); return () => {}; } });
-	t.after(async () => { manager.close(); await host.close(); });
-	await manager.status(record.storageId);
-	assert.equal(attached?.closed, true);
-	(await retirement)();
-	await host.done;
-	assert.equal(existsSync(hostPaths(record).claim), false);
-});
-
-it("retains native work but ignores another window's passive client after a blocked-version read", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const checks = eventLog<() => void>();
-	let idle = false;
-	let observed = false;
-	let acquired = 0;
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => { const link = await connectHost(metadata, { retryAttempts: 0 }); Object.defineProperty(link, "runtimeVersion", { value: 2 }); return link; },
-		acquire: async (metadata) => { acquired++; return fakeConnection(metadata, async () => ({})); },
-	}));
-	const record = createRecord(manager, root);
-	const host = await runHost(() => ({ request: async () => { observed = true; return {}; }, isIdle: () => idle, close: async () => {} }), {
-		metadata: hostMetadata(record), idleMs: 1, announceReady: () => {}, scheduleIdleCheck: (check) => { if (observed) checks.push(check); return () => {}; },
-	});
-	const otherWindow = await connectHost(hostMetadata(record), { retryAttempts: 0 });
-	t.after(async () => { manager.close(); await otherWindow.close(); await host.close(); });
-	await manager.status(record.storageId);
-	assert.deepEqual(manager.connectedStorageIds(), []);
-	await otherWindow.request("status");
-	assert.ok(checks.length > 0, "the other window does not prevent idle checks");
-	const count = checks.length;
-	checks[checks.length - 1]();
-	assert.equal(existsSync(hostPaths(record).claim), true, "pending native work survives client release");
-	await checks.waitForCount(count + 1);
-	idle = true;
-	const lost = new Promise<void>((resolve) => otherWindow.onClose(resolve));
-	checks[checks.length - 1]();
-	await host.done;
-	await lost;
-	assert.equal(otherWindow.closed, true);
-	await manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root });
-	assert.equal(acquired, 1);
-	assert.equal((await manager.status() as { failures: unknown[] }).failures.length, 0, "the obsolete version notice clears");
-});
-
 it("shares one real attach across concurrent reads and a canceled live selection", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const entered = deferred();
@@ -1161,7 +883,7 @@ it("shares one real attach across concurrent reads and a canceled live selection
 	assert.equal(links.every((link) => link.closed), true);
 });
 
-it("closes an attachment whose subscription fails", async (t) => {
+it("retains a healthy attachment when its optional change subscription fails", async (t) => {
 	const root = fixtureRoot(t);
 	const links: FakeConnection[] = [];
 	const manager = new AgentManager(managerOptions(root, {
@@ -1172,7 +894,71 @@ it("closes an attachment whose subscription fails", async (t) => {
 	const record = createRecord(manager, root);
 	await manager.status(record.storageId);
 	assert.equal(links.length, 1);
-	assert.equal(links[0].closed, true);
+	assert.equal(links[0].closed, false);
+	assert.deepEqual(manager.connectedStorageIds(), [record.storageId]);
+	const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
+	assert.ok(overview.failures.some((failure) => failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error)));
+});
+
+it("keeps acquired clients usable when only their current change contracts disagree", async (t) => {
+	const root = fixtureRoot(t);
+	const { changes: _changes, ...withoutChanges } = HOST_CONTRACT.operations;
+	const peers: RuntimeContract[] = [
+		{ ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, changes: { ...HOST_CONTRACT.operations.changes, request: "changes/2.0.0" } } },
+		{ ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, changes: { ...HOST_CONTRACT.operations.changes, response: "changes/2.0.0" } } },
+		{ ...HOST_CONTRACT, operations: withoutChanges },
+	];
+	for (const remote of peers) {
+		let acquisitions = 0;
+		let link: FakeConnection | undefined;
+		const methods: string[] = [];
+		const manager = new AgentManager(managerOptions(root, {
+			acquire: async (metadata) => {
+				acquisitions++;
+				link = fakeConnection(metadata, async (method) => {
+					assert.equal(contractRefusal(method, remote), undefined);
+					methods.push(method);
+					return method === "submit" ? { submissionId: 7 } : { ready: true };
+				}, remote);
+				link.subscribeChanges = async () => { throw contractRefusal("changes", remote); };
+				return link;
+			},
+			connect: noHost,
+		}));
+		t.after(() => manager.close());
+		const record = createRecord(manager, root);
+		assert.deepEqual(await manager.control("submit", { sessionId: record.storageId, message: "Compatible work" }, { id: "caller", cwd: root }), { submissionId: 7 });
+		assert.ok(link);
+		assert.equal(link.closed, false);
+		assert.equal(acquisitions, 1);
+		assert.deepEqual(manager.connectedStorageIds(), [record.storageId]);
+		assert.deepEqual(await manager.status(record.storageId), { ready: true });
+		assert.deepEqual(methods, ["submit", "status"]);
+		const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
+		assert.ok(overview.failures.some((failure) => failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error)));
+		await link.close();
+		assert.deepEqual(manager.connectedStorageIds(), []);
+		const afterClose = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
+		assert.equal(afterClose.failures.some((failure) => failure.storageId === `changes:${record.storageId}`), false);
+		manager.close();
+	}
+});
+
+it("releases a genuinely closed attachment when its change subscription fails", async (t) => {
+	const root = fixtureRoot(t);
+	let link: FakeConnection | undefined;
+	const manager = new AgentManager(managerOptions(root, {
+		connect: async (metadata) => {
+			link = fakeConnection(metadata, async () => ({}));
+			link.subscribeChanges = async () => { await link?.close(); throw new Error("connection closed during subscription"); };
+			return link;
+		},
+		acquire: noHost, observe: async () => ({}),
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	await manager.status(record.storageId);
+	assert.equal(link?.closed, true);
 	assert.deepEqual(manager.connectedStorageIds(), []);
 });
 

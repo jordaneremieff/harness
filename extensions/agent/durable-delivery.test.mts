@@ -16,7 +16,8 @@ import type { HostConnection } from "./host-client.ts";
 import { eventLog } from "./host-fixture.mts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import type { HostMetadata } from "./host-protocol.ts";
-import { HOST_RUNTIME_VERSION, parseHostMetadata } from "./host-protocol.ts";
+import { parseHostMetadata } from "./host-protocol.ts";
+import { HOST_CONTRACT } from "./version-contract.ts";
 import { createPrimaryChannel, primaryEndpointPath, type PrimaryDelivery } from "./primary-channel.ts";
 
 function fixtureRoot(t: { after(fn: () => void | Promise<void>): void }): string {
@@ -86,7 +87,7 @@ function fakeTarget(target: DurableHost, calls: SubmitRecord[], gate?: Promise<v
 		socketPath: "/tmp/fake-target.sock",
 		storageId: target.storageId,
 		metadata: { storageId: target.storageId } as HostMetadata,
-		runtimeVersion: HOST_RUNTIME_VERSION,
+		runtimeContract: HOST_CONTRACT,
 		get closed() {
 			return closed;
 		},
@@ -127,13 +128,13 @@ async function deliveryState(host: DurableHost) {
 	return host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
 }
 
-/** One readable endpoint record in the older contract: a live owner that ignores the quiet flag. */
-function writeOlderEndpoint(sessionsRoot: string, id: string, pid = process.pid): void {
+/** A readable endpoint advertises an incompatible current delivery contract. */
+function writeIncompatibleEndpoint(sessionsRoot: string, id: string, pid = process.pid): void {
 	mkdirSync(join(sessionsRoot, ".primaries"), { recursive: true, mode: 0o700 });
 	writeFileSync(
 		primaryEndpointPath(sessionsRoot, id),
 		JSON.stringify({
-			version: 1,
+			version: "primary-delivery/9.0.0",
 			id,
 			serverId: randomUUID(),
 			cwd: "/older/work",
@@ -1021,7 +1022,7 @@ it("holds a quiet notice for an older owner, then delivers after that owner rest
 	const received = eventLog<PrimaryDelivery>();
 	const dead = spawnSync(process.execPath, ["-e", ""]);
 	assert.ok(dead.pid);
-	writeOlderEndpoint(sessionsRoot, owner, dead.pid);
+	writeIncompatibleEndpoint(sessionsRoot, owner, dead.pid);
 	const sourcePath = join(root, "source.sqlite");
 	const source = await openHost(sourcePath, "source-storage", root);
 	t.after(async () => {
@@ -1047,7 +1048,7 @@ it("holds a quiet notice for an older owner, then delivers after that owner rest
 	});
 	t.after(() => watcher.close());
 	await errors.waitForCount(1);
-	assert.match(errors[0]?.message ?? "", /endpoint version 1/u);
+	assert.ok(errors[0]?.message.includes("primary-delivery/9.0.0"));
 	assert.match(errors[0]?.message ?? "", /Restart that Pi/u);
 	assert.equal(received.length, 0, "an older owner never receives the quiet notice");
 	const pending = await deliveryState(source);
@@ -1098,7 +1099,7 @@ it("holds a fallback when a registered primary runs an older endpoint", { timeou
 	t.after(async () => {
 		await channel.close().catch(() => undefined);
 	});
-	writeOlderEndpoint(sessionsRoot, older);
+	writeIncompatibleEndpoint(sessionsRoot, older);
 	const sourcePath = join(root, "source.sqlite");
 	const source = await openHost(sourcePath, "source-storage", root);
 	t.after(async () => {
@@ -1116,7 +1117,7 @@ it("holds a fallback when a registered primary runs an older endpoint", { timeou
 	});
 	t.after(() => watcher.close());
 	await errors.waitForCount(1);
-	assert.match(errors[0]?.message ?? "", /endpoint version 1/u);
+	assert.ok(errors[0]?.message.includes("primary-delivery/9.0.0"));
 	assert.match(errors[0]?.message ?? "", /stays unacknowledged/u);
 	assert.equal(received.length, 0, "no registered primary receives while an older primary is registered");
 	const state = await deliveryState(source);
@@ -1733,6 +1734,54 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 	assert.equal(retained?.reports[0]?.message, longReport, "the retained report stays full");
 	assert.deepEqual(errors, []);
 	await watcher.close();
+});
+
+it("delivers opted-in thread notices as passive native writes without a reply loop", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const catalog = new AgentCatalog(root);
+	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
+	const sourcePath = join(root, "thread-source.sqlite");
+	const source = await openHost(sourcePath, randomUUID(), root);
+	const target = await openHost(record.storagePath, record.storageId, root);
+	t.after(async () => { await source.close(); await target.close(); });
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		state.reports.push({ sourceId: "report:thread-notice", requestId: "thread-notice", ownerId: record.storageId, senderIdentity: source.storageId, message: "A joined thread has a new event. No reply is requested.", replyTo: null, acknowledged: false, createdAt: Date.now(), direct: true, passive: true, steer: false });
+	}, BACKGROUND_CONTEXT);
+	const requests: string[] = [];
+	const errors = eventLog<Error>();
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog, signal: new AbortController().signal, acquire: async () => {
+		const client = fakeTarget(target, []);
+		return { ...client, request: async (method, params, options) => { requests.push(method); return client.request(method, params, options); } };
+	}, onError: (error) => errors.push(error) });
+	t.after(() => watcher.close());
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
+	assert.ok(requests.includes("passive-submit"));
+	assert.equal(requests.includes("submit"), false);
+	const observation = await target.request("inspect", { view: "history" }) as { entries?: unknown[]; rows?: unknown[] };
+	assert.match(JSON.stringify(observation), /agent.thread-notice/u);
+	assert.equal((await target.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
+	assert.equal((await target.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.intents.length ?? 0, 0);
+	assert.deepEqual(errors, []);
+});
+
+it("keeps a direct thread notice pending rather than broadcasting to another primary", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sourcePath = join(root, "thread-direct.sqlite");
+	const source = await openHost(sourcePath, randomUUID(), root);
+	t.after(() => source.close());
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		state.reports.push({ sourceId: "report:direct", requestId: "direct", ownerId: randomUUID(), senderIdentity: source.storageId, message: "Private thread attention", replyTo: null, acknowledged: false, createdAt: Date.now(), direct: true });
+	}, BACKGROUND_CONTEXT);
+	const errors = eventLog<Error>();
+	let discoveries = 0;
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog: new AgentCatalog(root), signal: new AbortController().signal, sessionsRoot: root, listPrimaryChannels: async () => { discoveries++; return { ids: [], visited: 0, complete: true }; }, onError: (error) => errors.push(error) });
+	t.after(() => watcher.close());
+	await errors.waitForCount(1);
+	assert.match(errors[0].message, /without broadcast/u);
+	assert.equal(discoveries, 0);
+	assert.equal((await deliveryState(source))?.reports[0].acknowledged, false);
 });
 
 it("bounds the native catalog follow-up body", { timeout: 30000 }, async (t) => {

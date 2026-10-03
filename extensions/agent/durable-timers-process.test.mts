@@ -33,7 +33,7 @@ it("fires a killed host's scheduled input once after reopen with the original de
 	const runner = fileURLToPath(new URL("./durable-schedule-fixture.mts", import.meta.url));
 	const first = await acquireHost(f.metadata, { runner, env: { DURABLE_TEST_NOW: "1000" }, retryAttempts: 0 });
 	trackHost(t, first.pid);
-	assert.deepEqual(await first.request("fixture-clock"), { now: 1000 });
+	assert.deepEqual(await first.request("command", { name: "fixture-clock" }), { now: 1000 });
 	const scheduled = (await first.request("timer-schedule", {
 		sessionId: f.metadata.storageId, message: "PROCESS_TIMER", deliverAt: deadline,
 		mode: "followUp", origin: "operator", ownerId: f.ownerId,
@@ -50,8 +50,8 @@ it("fires a killed host's scheduled input once after reopen with the original de
 	trackHost(t, second.pid);
 	try {
 		assert.notEqual(second.pid, first.pid);
-		assert.deepEqual(await second.request("fixture-clock"), { now: 4000 });
-		await second.request("fixture-resume");
+		assert.deepEqual(await second.request("command", { name: "fixture-clock" }), { now: 4000 });
+		await second.request("command", { name: "fixture-resume" });
 		const receipt = await waitForRequestReceipt(second, f.ownerId, "process-timer-delivery");
 		assert.equal(receipt.status, "done");
 		assert.match(receipt.answer ?? "", /schedule fixture answer/u);

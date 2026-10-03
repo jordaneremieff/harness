@@ -24,6 +24,7 @@ export const AGENT_CONTROL_TOOL_NAMES = [
 	"agent_inspect",
 	"agent_attach",
 	"agent_place",
+	"agent_collaborate",
 ] as const;
 
 export type AgentControlToolName = (typeof AGENT_CONTROL_TOOL_NAMES)[number];
@@ -86,6 +87,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	agent_inspect: { snippet: "Read an agent's retained entries, activity, or results" },
 	agent_attach: { snippet: "Attach to a stored agent session" },
 	agent_place: { snippet: "Work in the session bound to an area" },
+	agent_collaborate: { snippet: "Find peers and exchange work in a shared purpose thread", guidelines: ["List threads before asking the primary to relay identities. Read the governing frame, join relevant work, and develop or challenge peer contributions. Choose and revise arrangements together; no fixed roles or agreement vote is required.", "A thread preserves purpose, carried authority and source, restrictions, acceptance, and integrator. Agent labels do not prove operator authority. Keep the original decision and its scope distinct from interpretations and proposals.", "Joining opts into bounded passive notices for new thread events at existing conversation boundaries. These notices start no model turn. Posts retain shared evidence without waking a model. Name notify recipients only when their attention matters. Notices do not request automatic replies or check-ins. Inspect the thread or peer evidence rather than poll while useful work continues."] },
 };
 
 /** Render the guidance lines for the selected controls, in control order. */

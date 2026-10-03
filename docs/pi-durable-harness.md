@@ -471,7 +471,7 @@ submissions; `taskGraph()` includes all live tasks. Native waiting tasks,
 including check-ins and scheduled inputs, therefore remain host work rather than
 passive connections.
 
-The agent host's version-4 lifetime contract ignores passive primary and peer
+The agent host's current lifetime contract ignores passive primary and peer
 connections and footer subscriptions. Retirement waits for the configured idle
 interval with no native work, pending delivery row or in-flight delivery effect,
 request, local control, or open
@@ -493,14 +493,42 @@ clean close and retains the claim until process death. Clean retirement preserve
 catalog costs and causes no recovery acquisition or crash-budget charge. Cold
 reads stay writer-free; later controls acquire a fresh host.
 
-Managers replace an idle version-3 host through its supported close contract,
-after native work and delivery settle and writer release is proved. Older Pi
-windows and already-running hosts retain their loaded policy until restart or
-replacement. Versions below 3 still lack safe process close and require all
-clients to release for their own natural retirement. A closed native runtime is
-not repaired by this policy, and an open live observation intentionally keeps
-its host alive. This extension-owned lifetime change does not change Pi Durable's
-storage or replay guarantees.
+Pi windows and hosts retain loaded code on independent timelines. The manager
+does not replace a host because its source release differs. Natural idle
+retirement permits new code on the next control, while operation contracts
+keep unchanged methods usable. A missing or incompatible contract refuses with
+restart guidance, without translating retired state or interrupting work. An
+open live observation intentionally keeps its host alive. This extension-owned
+policy does not change Pi Durable's storage or replay guarantees.
+
+### Process contracts and peer threads
+
+Verified 2026-10-03 against installed coding-agent and Pi Durable 1.0.0 public
+contracts, `pi-durable/dist/harness/{types,harness}.d.ts`,
+`pi-durable/dist/types.d.ts`, and the agent slice's `version-contract.ts`,
+`collaboration.ts`, `durable-host.ts`, and `durable-delivery.ts`.
+
+Actual upstream releases are diagnostic facts, not a substitute for an
+operation contract. The host descriptor separates its release label and API
+floors from current request/response identities. Typed observation schemas
+supply hashes; operations carrying opaque native data also bind to the exact
+experimental Durable release. Both sides refuse incompatible operations before
+dispatch. Other operations continue. Retained manager, native contribution, and
+primary notice interfaces have independent identities. This permits concurrent
+current processes, not backward readers or predecessor migrations. The
+[agent README](../extensions/agent/README.md#current-process-contracts) defines
+maintenance and restart behavior.
+
+Peer threads use public native document families and transactions for frames,
+membership, attributed events, and mutation receipts. Events and delivery
+intents commit together. Joining opts into bounded passive notice entries via
+`Conversation.submit({type: "write", ...})`; explicit attention uses input
+steering. A passive write starts no model turn and does not establish immediate
+model awareness. Request IDs deduplicate delivery retries. The existing host
+catalog publishes bounded discovery hints; cold reads neither schedule work
+nor create storage writers. The dashboard displays the same retained exchange,
+not a fabricated conversation. See
+[peer threads](../extensions/agent/README.md#peer-threads) for use and limits.
 
 ### Native extension integration boundary
 

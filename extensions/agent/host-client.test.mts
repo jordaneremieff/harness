@@ -10,10 +10,11 @@ import { ServerError, type ServerHost } from "@earendil-works/pi-server";
 import { Client } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
-import { HOST_RUNTIME_VERSION, HOST_SERVICE_ID, HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
+import { HOST_SERVICE_ID, HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
 import { acquireHost, connectHost, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose, writeFixtureState } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
+import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { markerFixture } from "./durable-runtime-fixture.mts";
 
 const fixturePath = fileURLToPath(new URL("./host-fixture.mts", import.meta.url));
@@ -54,8 +55,8 @@ async function observeFrames(connection: HostConnection, scope: HostObservationS
 	return connection.observe(scope);
 }
 
-/** One versioned service fixture; version zero predates the runtime-version member. */
-async function openVersionedHost(root: string, version = 0, status?: JsonValue): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; calls: string[]; close(): Promise<void> }> {
+/** A service fixture with independently declared operation contracts. */
+async function openVersionedHost(root: string, contract: RuntimeContract | undefined, status?: JsonValue): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; calls: string[]; close(): Promise<void> }> {
 	const metadata = fixtureMetadata(root);
 	const paths = hostPaths(metadata);
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
@@ -71,14 +72,14 @@ async function openVersionedHost(root: string, version = 0, status?: JsonValue):
 			attachClient: () => ({
 				invokeService: async (call: ServiceCall) => {
 					calls.push(call.member);
-					if (version > 0 && call.member === "runtime-version") return { version };
+					if (contract && call.member === "runtime-contract") return contract as unknown as JsonValue;
 					if (status !== undefined && call.member === "status") return status;
 					throw new ServerError("service_invalid_value", `unknown durable host method ${call.member}`);
 				},
 				release: () => {},
 			}),
 		},
-		resolveSession: async () => { throw new ServerError("session_not_found", "this older host routes no sessions"); },
+		resolveSession: async () => { throw new ServerError("session_not_found", "this fixture routes no sessions"); },
 		openSession: async () => { throw new ServerError("session_not_found", "this older host routes no sessions"); },
 	};
 	const server = createUnixServer(host, { serverId: paths.serverId, path: paths.socket, mode: 0o600 });
@@ -86,43 +87,38 @@ async function openVersionedHost(root: string, version = 0, status?: JsonValue):
 	return { metadata, calls, close: async () => { await server.close().catch(() => undefined); } };
 }
 
-it("detects an older host and refuses its new-only methods with the update reason", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const older = await openVersionedHost(root);
-	t.after(() => older.close());
-	const connection = await connectHost(older.metadata, launch());
-	t.after(() => connection.close().catch(() => {}));
-	assert.equal(connection.runtimeVersion, 0, "a host without the version member reads as older");
-	await assert.rejects(
-		connection.request("timer-schedule", {}),
-		(error: unknown) => error instanceof Error && /older code and does not support timer-schedule\. Automatic update is blocked/u.test(error.message),
-	);
-	const observe = connection.observe?.bind(connection);
-	assert.ok(observe, "an attached connection exposes observations");
-	await assert.rejects(
-		observe({ scope: "conversation", sessionId: older.metadata.storageId }),
-		(error: unknown) => error instanceof Error && /older code and does not support observe-open\. Automatic update is blocked/u.test(error.message),
-	);
-	// An older host still serves the methods all versions share; its own error passes through.
-	await assert.rejects(connection.request("status", {}), /unknown durable host method status/u);
-	await connection.close();
+it("refuses a peer without the current negotiation contract before dispatch", async (t) => {
+ const root = fixtureRoot(t);
+ const peer = await openVersionedHost(root, undefined);
+ t.after(() => peer.close());
+ await assert.rejects(connectHost(peer.metadata, launch()), /current operation contract.*Restart/u);
+ assert.deepEqual(peer.calls, ["runtime-contract"]);
 });
 
-it("keeps compatible newer-host reads but refuses mutations and unknown newer output", async (t) => {
-	const root = fixtureRoot(t);
-	const status = { conversation: { conversationId: 1, identity: "fixture", busy: false, lastText: null, live: null, inbox: null, agent: { thinkingLevel: "off", extensions: [], tools: [] }, tasks: [] as JsonValue[], submissions: [] } };
-	const server = await openVersionedHost(root, HOST_RUNTIME_VERSION + 1, status);
-	t.after(() => server.close());
-	const client = await connectHost(server.metadata, { retryAttempts: 0 });
-	t.after(() => client.close());
-	assert.deepEqual(await client.request("status"), status);
-	await assert.rejects(client.request("close"), /This Pi runs older code.*Restart this Pi/u);
-	await assert.rejects(client.request("submit", { message: "task" }), /Restart this Pi/u);
-	assert.equal(server.calls.includes("close"), false);
-	assert.equal(server.calls.includes("submit"), false);
-	status.conversation.tasks.push({ id: 1, kind: "fixture", status: "future-state", background: false, abortRequested: false });
-	await assert.rejects(client.request("status"), /unsupported status.*Restart this Pi/u);
-	assert.equal(client.closed, false, "unsupported data does not authorize transport recovery");
+it("admits unchanged operations across releases and refuses only changed contracts", async (t) => {
+ const root = fixtureRoot(t);
+ const contract = structuredClone(HOST_CONTRACT);
+ const altered: RuntimeContract = { ...contract, release: "9.0.0", operations: { ...contract.operations, submit: { request: "submit/2.0.0", response: "submit/2.0.0" } } };
+ const status: JsonValue = { conversation: { conversationId: 1 } };
+ const peer = await openVersionedHost(root, altered, status);
+ t.after(() => peer.close());
+ const client = await connectHost(peer.metadata, { retryAttempts: 0 });
+ t.after(() => client.close());
+ assert.deepEqual(await client.request("status"), status);
+ await assert.rejects(client.request("submit", { message: "task" }), /submit request contract.*Restart/u);
+ assert.equal(peer.calls.includes("submit"), false);
+ assert.equal(client.closed, false);
+});
+
+it("refuses a changed observation contract before its payload reaches a schema parser", async (t) => {
+ const root = fixtureRoot(t);
+ const contract: RuntimeContract = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, response: "different-shape" } } };
+ const peer = await openVersionedHost(root, contract, { different: true });
+ t.after(() => peer.close());
+ const client = await connectHost(peer.metadata);
+ t.after(() => client.close());
+ await assert.rejects(client.request("status"), /status response contract.*Restart/u);
+ assert.equal(peer.calls.includes("status"), false);
 });
 
 it("waits for an owned launch's readiness frame instead of probing its socket", { timeout: 15000 }, async (t) => {
@@ -149,7 +145,7 @@ it("waits for an owned launch's readiness frame instead of probing its socket", 
 	const paths = hostPaths(config);
 	const raw = await Client.connect({ serverId: paths.serverId, transportFactory: createUnixTransportFactory({ path: paths.socket }) });
 	t.after(() => raw.dispose());
-	await raw.request({ serverId: paths.serverId }, { serviceId: HOST_SERVICE_ID, member: "status", args: [null, randomUUID()] });
+	await raw.request({ serverId: paths.serverId }, { serviceId: HOST_SERVICE_ID, member: "status", args: [null, randomUUID(), HOST_CONTRACT.operations.status as unknown as JsonValue] });
 	assert.equal(attached, false, "a listening socket does not replace the held readiness frame");
 	release();
 	const [first, second] = await Promise.all([started, attaching]);
@@ -174,11 +170,11 @@ it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }
 	const first = await openHost(t, root);
 	assert.ok(first.pid > 0);
 	assert.equal(first.closed, false);
-	assert.deepEqual(await first.request("echo", { hello: "world" }), { hello: "world" });
+	assert.deepEqual(await first.request("timer-list", { hello: "world" }), { hello: "world" });
 	const second = await connectHost(config, launch());
 	track(t, second.pid);
 	assert.equal(second.pid, first.pid);
-	assert.deepEqual(await second.request("echo", { from: "second" }), { from: "second" });
+	assert.deepEqual(await second.request("timer-list", { from: "second" }), { from: "second" });
 	assert.equal(readFixtureState(statePath).starts, 1);
 	await second.close();
 	await first.close();
@@ -230,7 +226,7 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	const statePath = join(root, "state.json");
 	const config = fixtureMetadata(root);
 	const connection = await openHost(t, root);
-	const pending = connection.request("hang");
+	const pending = connection.request("abort");
 	await waitForFixtureState(connection, statePath, (state) => (state.hangsStarted ?? 0) >= 1);
 	process.kill(connection.pid, "SIGKILL");
 	await assert.rejects(pending, /connection was lost|disconnected|closed/iu);
@@ -238,7 +234,7 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	await connection.close();
 	const again = await acquireHost(config, launch());
 	track(t, again.pid);
-	assert.deepEqual(await again.request("echo", 1), 1);
+	assert.deepEqual(await again.request("timer-list", 1), 1);
 	assert.equal(readFixtureState(statePath).starts, 2);
 	await again.close();
 });
@@ -254,7 +250,7 @@ it("aborting a wait cancels the host-side wait without harming the host", { time
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsCancelled ?? 0) >= 1);
 	assert.equal(readFixtureState(statePath).waitCompleted ?? 0, 0, "the cancelled wait did not complete");
-	assert.deepEqual(await connection.request("echo", { alive: true }), { alive: true });
+	assert.deepEqual(await connection.request("timer-list", { alive: true }), { alive: true });
 	assert.equal(connection.closed, false);
 	await connection.close();
 });
@@ -268,10 +264,10 @@ it("aborting without the wait flag leaves the host-side wait running", { timeout
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
-	await connection.request("release-waits");
+	await connection.request("timer-cancel");
 	await waitForFixtureState(connection, statePath, (state) => (state.waitCompleted ?? 0) >= 1);
 	assert.equal(readFixtureState(statePath).waitsCancelled ?? 0, 0, "no cancel was sent for a plain read");
-	assert.deepEqual(await connection.request("echo", { alive: true }), { alive: true });
+	assert.deepEqual(await connection.request("timer-list", { alive: true }), { alive: true });
 	await connection.close();
 });
 
@@ -280,12 +276,12 @@ it("aborting an unsafe call never cancels host work", { timeout: 30000 }, async 
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
 	const controller = new AbortController();
-	const pending = connection.request("hang", {}, { signal: controller.signal });
+	const pending = connection.request("abort", {}, { signal: controller.signal });
 	await waitForFixtureState(connection, statePath, (state) => (state.hangsStarted ?? 0) >= 1);
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
 	assert.equal(readFixtureState(statePath).hangsSignaled, undefined, "unsafe work receives no cancel signal");
-	assert.deepEqual(await connection.request("echo", { alive: true }), { alive: true });
+	assert.deepEqual(await connection.request("timer-list", { alive: true }), { alive: true });
 	assert.equal(connection.closed, false);
 	await connection.close();
 });
@@ -296,14 +292,14 @@ it("reports initial and changed state and stops on cancel", { timeout: 30000 }, 
 	const changes = eventLog<number>();
 	const unsubscribe = await subscribeChanges(connection, () => changes.push(changes.length));
 	await changes.waitForCount(1);
-	await connection.request("touch");
+	await connection.request("report");
 	await changes.waitForCount(2);
 	unsubscribe();
 	const settled = changes.length;
-	await connection.request("touch");
-	await connection.request("echo", { barrier: true });
+	await connection.request("report");
+	await connection.request("timer-list", { barrier: true });
 	assert.equal(changes.length, settled, "cancelled subscription stopped");
-	assert.deepEqual(await connection.request("echo", { alive: true }), { alive: true });
+	assert.deepEqual(await connection.request("timer-list", { alive: true }), { alive: true });
 	await connection.close();
 });
 
@@ -331,14 +327,14 @@ it("closing the connection with admitted work does not cancel it", { timeout: 30
 	const statePath = join(root, "state.json");
 	const config = fixtureMetadata(root);
 	const connection = await openHost(t, root);
-	const pending = connection.request("hang");
+	const pending = connection.request("abort");
 	await waitForFixtureState(connection, statePath, (state) => (state.hangsStarted ?? 0) >= 1);
 	await connection.close();
 	await assert.rejects(pending);
 	const again = await acquireHost(config, launch());
 	track(t, again.pid);
 	assert.equal(readFixtureState(statePath).hangsSignaled, undefined, "admitted work received no cancel signal");
-	assert.deepEqual(await again.request("echo", { alive: true }), { alive: true });
+	assert.deepEqual(await again.request("timer-list", { alive: true }), { alive: true });
 	await again.close();
 });
 
@@ -386,7 +382,7 @@ it("keeps a deep agent directory working with a short socket path", { timeout: 3
 	const connection = await acquireHost(config, launch());
 	track(t, connection.pid);
 	assert.ok(Buffer.byteLength(connection.socketPath, "utf8") <= HOST_SOCKET_PATH_LIMIT_BYTES);
-	assert.deepEqual(await connection.request("echo", "deep"), "deep");
+	assert.deepEqual(await connection.request("timer-list", "deep"), "deep");
 	await connection.close();
 });
 

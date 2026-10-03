@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { projectCollaboration, collaborationStorage } from "./collaboration.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { dirname } from "node:path";
 import { clampThinkingLevel, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -9,7 +10,7 @@ import { acquireHost } from "./host-client.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
 import { DurableHost } from "./durable-host.ts";
-import { createDurableServices, type DurableServices } from "./durable-services.ts";
+import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
 import { AgentDeliveryDoc, reconcileDeliveries } from "./durable-controls.ts";
 import { isThinkingLevel } from "./configuration.ts";
@@ -23,12 +24,12 @@ function controlParams(input: unknown): Record<string, unknown> {
 }
 
 /** Methods that admit work or delivery into this storage. */
-const ADMITTING_METHODS: ReadonlySet<string> = new Set(["submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule"]);
+const ADMITTING_METHODS: ReadonlySet<string> = new Set(["submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit"]);
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
 
-async function bootstrap(metadata: HostMetadata, controller: AbortController, execution: boolean): Promise<DurableServices> {
-	return createDurableServices({ cwd: metadata.cwd, agentDir: metadata.agentDir, storageId: metadata.storageId,
+async function bootstrap(metadata: HostMetadata, controller: AbortController, execution: boolean, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<DurableServices> {
+	return createDurableServices({ ...options, cwd: metadata.cwd, agentDir: metadata.agentDir, storageId: metadata.storageId,
 		packageDir: metadata.packageDir, trusted: metadata.trust, signal: controller.signal,
 		askPrimary: async (cwd) => {
 			const root = dirname(dirname(metadata.storagePath));
@@ -90,9 +91,9 @@ function validateModel(services: DurableServices, model: { provider: string; mod
 }
 
 /** Constructed only after the process claims the storage writer. */
-export async function createDurableRuntime(metadata: HostMetadata): Promise<HostRuntime> {
+export async function createDurableRuntime(metadata: HostMetadata, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<HostRuntime> {
 	const controller = new AbortController();
-	let services = await bootstrap(metadata, controller, true);
+	let services = await bootstrap(metadata, controller, true, options);
 	let host: DurableHost;
 	let closed = false;
 	let reloading = false;
@@ -159,7 +160,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 			try {
 				const rows = await host.request("dashboard", {}) as readonly CatalogViewRow[];
 				const view = boundCatalogView({ updatedAt: new Date().toISOString(), rows, storageId: metadata.storageId });
-				catalog.updateView(metadata.storageId, view);
+				catalog.updateView(metadata.storageId, view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
 				for (const listener of changeListeners) listener();
 			} catch (error) {
 				if (force) throw error;
@@ -238,8 +239,14 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 			return await attachForeign(client, params, sessionId);
 		} finally { await client.close(); }
 	}
+	async function collaborationObservation(method: string, params: Record<string, unknown>): Promise<unknown> {
+		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		try { return await manager.collaborate({ ...params, action: method === "collaboration-list" ? "list" : "read" }, { id: String(params.senderIdentity ?? metadata.storageId), cwd: metadata.cwd }); } finally { await manager.close(); }
+	}
 	const dispatch: AgentControlDispatch = async (method, input) => {
 		const params = { ...input };
+		if (["collaboration-list", "collaboration-read"].includes(method)) return collaborationObservation(method, params);
+		if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
 		if (storageIdOf(sessionId) !== metadata.storageId) {
 			if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
@@ -320,7 +327,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 			await flushCatalogView();
 			await settleRecoveryMarker();
 			await services.close(); await host.close();
-			services = await bootstrap(metadata, controller, true);
+			services = await bootstrap(metadata, controller, true, options);
 			host = await openHost();
 			deliveries = delivery();
 		} catch (error) {

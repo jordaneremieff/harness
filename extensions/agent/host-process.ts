@@ -17,7 +17,8 @@ import { ServerError } from "@earendil-works/pi-server";
 import type { RoutedServerServiceAttachment, Server, ServerHost } from "@earendil-works/pi-server";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
 import { type ClaimFile, type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
-import { formatHostReady, HOST_CHANGE_MEMBER, HOST_CHANGE_SERVICE_ID, HOST_OBSERVE_MEMBER, HOST_OBSERVE_SERVICE_ID, HOST_RUNTIME_VERSION, HOST_RUNTIME_VERSION_MEMBER, HOST_SERVICE_ID, hostPaths, isCancelableHostWait, observationTokenFromServiceId, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
+import { formatHostReady, HOST_CHANGE_MEMBER, HOST_CHANGE_SERVICE_ID, HOST_OBSERVE_MEMBER, HOST_OBSERVE_SERVICE_ID, HOST_CONTRACT_MEMBER, HOST_SERVICE_ID, hostPaths, isCancelableHostWait, observationTokenFromServiceId, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
+import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
 
 /** The host-side surface the parent runtime must supply. */
@@ -297,7 +298,7 @@ class HostProcessServer implements HostProcess {
 			this.cancelIdleCheck = undefined;
 			this.scheduleRetirement();
 		});
-		announce({ pid: this.pid, socketPath: this.paths.socket, runtimeVersion: HOST_RUNTIME_VERSION });
+		announce({ pid: this.pid, socketPath: this.paths.socket, contract: HOST_CONTRACT });
 		this.scheduleRetirement();
 	}
 
@@ -339,7 +340,7 @@ class HostProcessServer implements HostProcess {
 		state: AttachmentState,
 	): Promise<JsonValue | undefined> {
 		const control = decodeServiceControlCall(call);
-		const passive = call.member === HOST_RUNTIME_VERSION_MEMBER || control?.type === "subscribe" && control.serviceId === HOST_CHANGE_SERVICE_ID
+		const passive = call.member === HOST_CONTRACT_MEMBER || control?.type === "subscribe" && control.serviceId === HOST_CHANGE_SERVICE_ID
 			|| control?.type === "unsubscribe" && !state.observations.has(control.subscriptionId);
 		if (this.closing) throw new ServerError("service_invalid_value", "The durable host process is shutting down");
 		if (!passive && call.member !== "close") this.beginActivity();
@@ -522,11 +523,15 @@ class HostProcessServer implements HostProcess {
 	 */
 	private async dispatch(call: ServiceCall, context: Context, state: AttachmentState): Promise<JsonValue | undefined> {
 		if (call.serviceId !== HOST_SERVICE_ID) throw new ServerError("service_not_found", `unknown host service ${call.serviceId}`);
-		const [rawParams, rawRequestId] = call.args;
+		const [rawParams, rawRequestId, rawContract] = call.args;
 		const params = rawParams === null ? undefined : rawParams;
 		const requestId = typeof rawRequestId === "string" && rawRequestId !== "" ? rawRequestId : randomUUID();
-		// The runtime contract version is a host-process property; an older host has no branch here and errors below.
-		if (call.member === HOST_RUNTIME_VERSION_MEMBER) return { version: HOST_RUNTIME_VERSION };
+		// Negotiate before parsing or dispatching an operation payload.
+		if (call.member === HOST_CONTRACT_MEMBER) return HOST_CONTRACT as unknown as JsonValue;
+		let mismatch: string | undefined;
+		try { mismatch = operationContractMismatch(call.member, parseOperationContract(rawContract)); }
+		catch { mismatch = "The caller does not provide a current operation contract."; }
+		if (mismatch) throw new ServerError("service_invalid_value", `${mismatch} Restart the caller or host with matching current agent code; no operation was admitted.`);
 		// Process shutdown owns the transport, runtime, writer claim, and done promise.
 		if (call.member === "close") {
 			await this.shutdown();

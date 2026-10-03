@@ -824,6 +824,7 @@ export function createAgentToolCards(): Readonly<Record<string, AgentToolCard>> 
 		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult },
 		agent_attach: { renderCall: bindCall("agent_attach"), renderResult: renderAgentResult },
 		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult },
+		agent_collaborate: { renderCall: bindCall("agent_collaborate"), renderResult: renderAgentResult },
 		agent_status: { renderCall: bindCall("agent_status"), renderResult: renderAgentResult },
 		agent_fork: { renderCall: bindCall("agent_fork"), renderResult: renderAgentResult },
 		agent_rewind: { renderCall: bindCall("agent_rewind"), renderResult: renderAgentResult },

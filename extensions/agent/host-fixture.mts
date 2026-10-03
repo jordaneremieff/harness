@@ -192,7 +192,7 @@ export function createFixtureRuntime(statePath: string): HostRuntime {
 	return {
 		request: async (method, params, requestId, signal) => {
 			switch (method) {
-				case "echo":
+				case "timer-list":
 					return params;
 				case "submit": {
 					const state = readFixtureState(statePath);
@@ -205,27 +205,26 @@ export function createFixtureRuntime(statePath: string): HostRuntime {
 					}
 					return { submissionId, requestId, params };
 				}
-				case "wait":
 				case "receipts":
 					return startWait(signal);
-				case "release-waits":
+				case "timer-cancel":
 					releaseWaits();
 					return { released: true };
-				case "effect": {
+				case "configure": {
 					const state = readFixtureState(statePath);
 					writeFixtureState(statePath, { effects: (state.effects ?? 0) + 1 });
 					return { effect: true };
 				}
-				case "hang":
+				case "abort":
 					publishState({ hangsStarted: (readFixtureState(statePath).hangsStarted ?? 0) + 1, ...(signal === undefined ? {} : { hangsSignaled: true }) });
 					return new Promise(() => {});
-				case "touch":
+				case "report":
 					for (const listener of [...changeListeners]) listener();
 					return { touched: true };
-				case "busy":
+				case "timer-schedule":
 					busy = true;
 					return { busy: true };
-				case "release-busy":
+				case "reset":
 					busy = false;
 					return { busy: false };
 				case "inspect":

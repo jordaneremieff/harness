@@ -12,6 +12,7 @@ import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { observeClaim } from "./claims.ts";
 import { HOST_CHANGE_SERVICE_ID, HOST_SERVICE_ID, HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
+import { HOST_CONTRACT } from "./version-contract.ts";
 import { eventLog } from "./host-fixture.mts";
 
 function noop(): void {}
@@ -37,7 +38,7 @@ function metadata(root: string): HostMetadata {
 function echoRuntime(): HostRuntime {
 	return {
 		request: async (method, params) => {
-			if (method === "fail") throw new HostError("not allowed", "invalid");
+			if (method === "configure") throw new HostError("not allowed", "invalid");
 			return { method, params };
 		},
 		close: async () => {},
@@ -50,7 +51,7 @@ async function connectClient(config: HostMetadata): Promise<Client> {
 }
 
 function serviceCall(method: string, params?: unknown, id = randomUUID()): ServiceCall {
-	return { serviceId: HOST_SERVICE_ID, member: method, args: [params === undefined ? null : (params as JsonValue), id] };
+	return { serviceId: HOST_SERVICE_ID, member: method, args: [params === undefined ? null : (params as JsonValue), id, HOST_CONTRACT.operations[method] as unknown as JsonValue] };
 }
 
 function call(client: Client, config: HostMetadata, method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -76,9 +77,24 @@ it("serves a request and rejects a client with the wrong serverId", { timeout: 1
 	const { host, metadata: config } = await startHost(root);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
-	assert.deepEqual(await call(client, config, "echo", { value: 1 }), { method: "echo", params: { value: 1 } });
+	assert.deepEqual(await call(client, config, "timer-list", { value: 1 }), { method: "timer-list", params: { value: 1 } });
 	await client.dispose();
 	await assert.rejects(Client.connect({ serverId: randomUUID(), transportFactory: createUnixTransportFactory({ path: hostPaths(config).socket }) }));
+});
+
+it("refuses absent or mismatched caller contracts before any runtime effect", async (t) => {
+	const root = fixtureRoot(t);
+	let effects = 0;
+	const { host, metadata: config } = await startHost(root, 0, () => ({ request: async () => { effects++; return {}; }, close: async () => {}, isIdle: () => true }));
+	t.after(() => host.close());
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	for (const contract of [null, { ...HOST_CONTRACT.operations.submit, request: "submit/2.0.0" }, { ...HOST_CONTRACT.operations.submit, response: "changed" }]) {
+		await assert.rejects(client.request({ serverId: hostPaths(config).serverId }, { serviceId: HOST_SERVICE_ID, member: "submit", args: [{ message: "task" }, randomUUID(), contract] }), /no operation was admitted/u);
+	}
+	assert.equal(effects, 0);
+	await call(client, config, "submit", { message: "safe" });
+	assert.equal(effects, 1);
 });
 
 it("preserves a runtime error message", { timeout: 15000 }, async (t) => {
@@ -86,7 +102,7 @@ it("preserves a runtime error message", { timeout: 15000 }, async (t) => {
 	const { host, metadata: config } = await startHost(root);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
-	await assert.rejects(call(client, config, "fail"), (error: unknown) => error instanceof Error && error.message === "not allowed");
+	await assert.rejects(call(client, config, "configure"), (error: unknown) => error instanceof Error && error.message === "not allowed");
 	await client.dispose();
 });
 
@@ -222,7 +238,7 @@ it("publishes changed state to a public subscription", { timeout: 15000 }, async
 	const listeners = new Set<() => void>();
 	const runtime: HostRuntime = {
 		request: async (method) => {
-			if (method === "touch") {
+			if (method === "report") {
 				for (const listener of [...listeners]) listener();
 				return { touched: true };
 			}
@@ -246,7 +262,7 @@ it("publishes changed state to a public subscription", { timeout: 15000 }, async
 	});
 	assert.equal(subscription.snapshot.serviceId, HOST_CHANGE_SERVICE_ID);
 	subscription.start();
-	await call(client, config, "touch");
+	await call(client, config, "report");
 	await updates.waitForCount(1);
 	await subscription.dispose();
 	await client.dispose();
@@ -272,6 +288,6 @@ it("keeps a deep agent directory working with a short socket path", { timeout: 1
 	t.after(() => host.close().catch(() => {}));
 	assert.ok(Buffer.byteLength(host.socketPath, "utf8") <= 100);
 	const client = await connectClient(config);
-	assert.deepEqual(await call(client, config, "echo", "deep"), { method: "echo", params: "deep" });
+	assert.deepEqual(await call(client, config, "timer-list", "deep"), { method: "timer-list", params: "deep" });
 	await client.dispose();
 });

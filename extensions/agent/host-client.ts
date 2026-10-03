@@ -18,13 +18,10 @@ import { observeClaim, readClaimFile } from "./claims.ts";
 import {
 	HOST_CHANGE_SERVICE_ID,
 	HOST_OBSERVE_MEMBER,
-	HOST_RUNTIME_VERSION,
-	HOST_RUNTIME_VERSION_MEMBER,
+	HOST_CONTRACT_MEMBER,
 	HOST_SERVICE_ID,
 	HostError,
-	hostMethodMinVersion,
 	hostRequestVersionError,
-	newerHostError,
 	hostPaths,
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
@@ -35,8 +32,8 @@ import {
 	type HostPaths,
 	type HostReady,
 } from "./host-protocol.ts";
+import { HOST_CONTRACT, parseRuntimeContract, type RuntimeContract } from "./version-contract.ts";
 import { frameFromOps, isObservationFrame, type ObservationFrame } from "./live-frames.ts";
-import { AgentConversationSummarySchema, ListRowSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000;
 // An unresolved project trust decision includes time for the primary UI answer.
@@ -94,8 +91,8 @@ export interface HostConnection {
 	readonly socketPath: string;
 	readonly storageId: string;
 	readonly metadata: HostMetadata;
-	/** Runtime contract version; 0 for an older host that predates the handshake. */
-	readonly runtimeVersion: number;
+	/** Current operation contracts advertised by this host. */
+	readonly runtimeContract: RuntimeContract;
 	readonly closed: boolean;
 	request(method: string, params?: unknown, options?: HostRequestOptions): Promise<unknown>;
 	/**
@@ -123,7 +120,7 @@ interface Link {
 	readonly client: Client;
 	readonly pid: number;
 	readonly socketPath: string;
-	readonly runtimeVersion: number;
+	readonly runtimeContract: RuntimeContract;
 }
 
 interface PendingCall {
@@ -317,7 +314,7 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions):
 	try {
 		if (ready.socketPath !== paths.socket) throw new Error(`durable host readiness path does not match the storage endpoint: ${ready.socketPath}`);
 		const client = await connectClient(paths.serverId, paths.socket);
-		return { client, pid: ready.pid, socketPath: paths.socket, runtimeVersion: ready.runtimeVersion };
+		return { client, pid: ready.pid, socketPath: paths.socket, runtimeContract: ready.contract };
 	} catch (error) {
 		child.kill("SIGKILL");
 		throw error;
@@ -330,7 +327,7 @@ async function attachLink(metadata: HostMetadata): Promise<Link> {
 	if (observeClaim(paths.claim, paths.identity).kind !== "live") throw new Error(`no live durable host for ${metadata.storageId}`);
 	const client = await connectWhenReady(paths);
 	try {
-		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeVersion: await readRuntimeVersion(client, paths.serverId) };
+		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeContract: await readRuntimeContract(client, paths.serverId) };
 	} catch (error) {
 		const answered = client.connected;
 		await client.dispose().catch(() => undefined);
@@ -339,20 +336,13 @@ async function attachLink(metadata: HostMetadata): Promise<Link> {
 	}
 }
 
-/**
- * Read one live host's runtime contract version. An older host answers the
- * member with its unknown-method error and reads as version 0; that is version
- * detection for a live peer, not a fallback for retired data.
- */
-async function readRuntimeVersion(client: Client, serverId: string): Promise<number> {
+/** Read the advertised current contract without an older-handshake fallback. */
+async function readRuntimeContract(client: Client, serverId: string): Promise<RuntimeContract> {
 	try {
-		const value = await client.request({ serverId }, { serviceId: HOST_SERVICE_ID, member: HOST_RUNTIME_VERSION_MEMBER, args: [] }, AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS));
-		const version = (value as { version?: unknown } | undefined)?.version;
-		if (typeof version !== "number" || !Number.isSafeInteger(version) || version <= 0) throw new Error("host runtime version is malformed");
-		return version;
+		const value = await client.request({ serverId }, { serviceId: HOST_SERVICE_ID, member: HOST_CONTRACT_MEMBER, args: [] }, AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS));
+		return parseRuntimeContract(value);
 	} catch (error) {
-		if (error instanceof Error && error.message.includes("unknown durable host method")) return 0;
-		throw error;
+		throw new HostError(`The host does not provide a usable current operation contract. Restart the agent host after active work ends. ${toError(error).message}`, "unavailable", { cause: error });
 	}
 }
 
@@ -430,7 +420,7 @@ class HostConnectionImpl implements HostConnection {
 	private client: Client;
 	private pidValue: number;
 	private socketPathValue: string;
-	private runtimeVersionValue: number;
+	private runtimeContractValue: RuntimeContract;
 	private readonly pending = new Map<string, PendingCall>();
 	private readonly changeEntries = new Map<number, ChangeEntry>();
 	private readonly observationEntries = new Map<number, ObservationEntry>();
@@ -453,7 +443,7 @@ class HostConnectionImpl implements HostConnection {
 		this.client = link.client;
 		this.pidValue = link.pid;
 		this.socketPathValue = link.socketPath;
-		this.runtimeVersionValue = link.runtimeVersion;
+		this.runtimeContractValue = link.runtimeContract;
 		this.launchOptions = launchOptions;
 		this.retryAttempts = launchOptions.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS;
 		this.installClient(link);
@@ -471,8 +461,8 @@ class HostConnectionImpl implements HostConnection {
 		return this.socketPathValue;
 	}
 
-	get runtimeVersion(): number {
-		return this.runtimeVersionValue;
+	get runtimeContract(): RuntimeContract {
+		return this.runtimeContractValue;
 	}
 
 	get closed(): boolean {
@@ -502,7 +492,7 @@ class HostConnectionImpl implements HostConnection {
 		this.client = link.client;
 		this.pidValue = link.pid;
 		this.socketPathValue = link.socketPath;
-		this.runtimeVersionValue = link.runtimeVersion;
+		this.runtimeContractValue = link.runtimeContract;
 		this.unsubscribeState = link.client.onConnectionStateChange((change) => {
 			if (this.closedValue || link.client !== this.client) return;
 			if (change.state === "disconnected") this.startRecovery(change.error ?? new Error("durable host connection was lost"));
@@ -513,7 +503,7 @@ class HostConnectionImpl implements HostConnection {
 		if (this.closedValue) return Promise.reject(new Error("durable host connection is closed"));
 		if (!isWellFormedRequestText(method)) return Promise.reject(new HostError("host request method must be 1..128 well-formed characters", "invalid"));
 		if (options.requestId !== undefined && !isWellFormedRequestText(options.requestId)) return Promise.reject(new HostError("host requestId must be 1..128 well-formed characters", "invalid"));
-		const versionError = hostRequestVersionError(method, this.runtimeVersionValue);
+		const versionError = hostRequestVersionError(method, this.runtimeContractValue);
 		if (versionError) return Promise.reject(versionError);
 		const signal = options.signal;
 		if (signal?.aborted) return Promise.reject(abortReason(signal));
@@ -523,7 +513,7 @@ class HostConnectionImpl implements HostConnection {
 				id,
 				method,
 				params,
-				call: { serviceId: HOST_SERVICE_ID, member: method, args: [params === undefined ? null : (params as JsonValue), id] },
+				call: { serviceId: HOST_SERVICE_ID, member: method, args: [params === undefined ? null : (params as JsonValue), id, HOST_CONTRACT.operations[method] as unknown as JsonValue] },
 				signal,
 				attempts: 0,
 				resolve: (value) => {
@@ -560,31 +550,13 @@ class HostConnectionImpl implements HostConnection {
 		void this.client.request({ serverId: this.serverId }, call.call, wireSignal).then(
 			(result) => {
 				if (!this.pending.delete(call.id)) return;
-				try { call.resolve(this.checkedRead(call.method, result)); }
+				try { call.resolve(result); }
 				catch (error) { call.reject(toError(error)); }
 			},
 			(error) => this.handleFailure(call, error),
 		);
 	}
 
-	private checkedRead(method: string, value: unknown): unknown {
-		if (this.runtimeVersionValue <= HOST_RUNTIME_VERSION) return value;
-		try {
-			if (method === "status" || method === "inspect") return structuredObservation(observationSchema(method), value);
-			if (method === "dashboard") {
-				if (!Array.isArray(value)) throw new Error("dashboard is not an array");
-				for (const row of value) structuredObservation(AgentConversationSummarySchema, row);
-			}
-			if (method === "list") this.checkListRows(value);
-			return value;
-		} catch { throw newerHostError(this.runtimeVersionValue, `The host returned unsupported ${method} data.`); }
-	}
-
-	private checkListRows(value: unknown): void {
-		const items = (value as { items?: unknown } | null)?.items;
-		if (!Array.isArray(items)) throw new Error("list has no items");
-		for (const row of items) structuredObservation(ListRowSchema, { ...row, sessionId: row?.identity, storageId: this.storageId, cwd: this.metadata.cwd });
-	}
 
 	async subscribeChanges(listener: () => void, signal?: AbortSignal): Promise<() => void> {
 		if (this.closedValue) throw new Error("durable host connection is closed");
@@ -614,6 +586,8 @@ class HostConnectionImpl implements HostConnection {
 	/** Bind or re-bind one logical subscription to the current client link. */
 	private async bindChangeEntry(entry: ChangeEntry): Promise<void> {
 		if (this.closedValue || entry.disposed) return;
+		const refusal = hostRequestVersionError("changes", this.runtimeContractValue);
+		if (refusal) throw refusal;
 		const subscription = await this.client.subscribeService(
 			{ serverId: this.serverId },
 			HOST_CHANGE_SERVICE_ID,
@@ -665,7 +639,7 @@ class HostConnectionImpl implements HostConnection {
 	 */
 	async observe(scope: HostObservationScope, options: { readonly signal?: AbortSignal } = {}): Promise<HostObservation> {
 		if (this.closedValue) throw new Error("durable host connection is closed");
-		const versionError = hostRequestVersionError("observe-open", this.runtimeVersionValue);
+		const versionError = hostRequestVersionError("observe-open", this.runtimeContractValue);
 		if (versionError) throw versionError;
 		const signal = options.signal;
 		if (signal?.aborted) throw abortReason(signal);
@@ -726,7 +700,7 @@ class HostConnectionImpl implements HostConnection {
 		const token = randomUUID();
 		const opened = (await this.client.request(
 			{ serverId: this.serverId },
-			{ serviceId: HOST_SERVICE_ID, member: "observe-open", args: [observationParams(entry.scope, token) as JsonValue, token] },
+			{ serviceId: HOST_SERVICE_ID, member: "observe-open", args: [observationParams(entry.scope, token) as JsonValue, token, HOST_CONTRACT.operations["observe-open"] as unknown as JsonValue] },
 		)) as { frame?: unknown } | undefined;
 		if (this.closedValue || entry.disposed) {
 			this.closeObservationToken(token);
@@ -784,9 +758,9 @@ class HostConnectionImpl implements HostConnection {
 
 	private closeObservationToken(token: string): void {
 		if (this.closedValue) return;
-		if (hostMethodMinVersion("observe-close") > this.runtimeVersionValue) return;
+		if (hostRequestVersionError("observe-close", this.runtimeContractValue)) return;
 		void this.client
-			.request({ serverId: this.serverId }, { serviceId: HOST_SERVICE_ID, member: "observe-close", args: [{ token }, randomUUID()] })
+			.request({ serverId: this.serverId }, { serviceId: HOST_SERVICE_ID, member: "observe-close", args: [{ token }, randomUUID(), HOST_CONTRACT.operations["observe-close"] as unknown as JsonValue] })
 			.catch(() => undefined);
 	}
 

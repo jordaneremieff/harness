@@ -67,6 +67,49 @@ async function suggest(native: CombinedAutocompleteProvider, line: string, col =
 	return native.getSuggestions([line], 0, col, { signal });
 }
 
+it("the dashboard collaboration adapter carries its primary context and structured read", async () => {
+	const calls: Array<{ input: Record<string, unknown>; ctx: unknown }> = [];
+	const command = createAgentCommand([], source(), extras, async (input, ctx) => {
+		calls.push({ input, ctx });
+		return { items: [], sources: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
+	});
+	let dashboard: AgentDashboard | undefined;
+	let finish = () => {};
+	const ctx = {
+		mode: "tui",
+		hasUI: true,
+		sessionManager: { getSessionId: () => "thread-adapter" },
+		ui: {
+			custom: async (
+				factory: (tui: TUI, currentTheme: typeof theme, currentKeys: typeof keys, done: () => void) => AgentDashboard,
+			) =>
+				new Promise<void>((resolve) => {
+					finish = resolve;
+					dashboard = factory(
+						{ terminal: { rows: 24, columns: 80 }, requestRender() {} } as unknown as TUI,
+						theme,
+						keys,
+						resolve,
+					);
+				}),
+			notify() {},
+		},
+	} as unknown as ExtensionCommandContext;
+	const opened = command.openDashboard(ctx);
+	try {
+		await turn();
+		assert.ok(dashboard);
+		dashboard.handleInput("t");
+		await turn();
+		assert.deepEqual(calls, [{ input: { action: "list" }, ctx }]);
+		assert.match(stripVTControlCharacters(dashboard.render(80).join("\n")), /Agents > Threads/);
+	} finally {
+		dashboard?.dispose();
+		finish();
+		await opened;
+	}
+});
+
 const rows: AgentConversationSummary[] = [
 	{
 		id: "stored-1",

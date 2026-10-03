@@ -11,6 +11,7 @@ import { AGENT_CONTROL_GUIDANCE, AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceL
 const CURRENT_TOOLS = [
 	"agent_abort",
 	"agent_attach",
+	"agent_collaborate",
 	"agent_command",
 	"agent_compact",
 	"agent_configure",

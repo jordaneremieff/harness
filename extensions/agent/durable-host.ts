@@ -14,6 +14,7 @@
  * writer claim.
  */
 import { randomUUID } from "node:crypto";
+import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
@@ -349,6 +350,16 @@ export class DurableHost {
 		if (this.closed) throw new DurableHostClosedError();
 		const requestContext = context instanceof AbortSignal ? withAbortSignal(context, BACKGROUND_CONTEXT) : context;
 		switch (method) {
+			case "collaboration-list": return listCollaboration(this.harness, params ?? {}, requestContext);
+			case "collaboration-read": return readCollaboration(this.harness, params ?? {}, requestContext);
+			case "collaboration-mutate": return mutateCollaboration(this.harness, this.storageId, params ?? {}, requestContext);
+			case "passive-submit": {
+				const conversation = await this.target(params, requestContext);
+				const message = requestRequiredString(params, "message");
+				if (Buffer.byteLength(message) > 16 * 1024) throw new Error("Passive thread notice exceeds its byte bound");
+				const submission = await conversation.submit({ type: "write", requestId: requestRequiredString(params, "requestId"), entry: { kind: "agent.thread-notice", model: [{ role: "user", content: message, timestamp: Date.now() }] } }, requestContext);
+				return { submissionId: submission.id, conversationId: conversation.id, passive: true };
+			}
 			case "submit":
 				return this.submitRequest(params, requestContext);
 			case "receipts":

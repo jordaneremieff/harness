@@ -22,6 +22,7 @@ import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel 
 import {
 	AssistantEntry,
 	defineDoc,
+	defineDocFamily,
 	type AgentChange,
 	type Conversation,
 	type ConversationId,
@@ -126,6 +127,14 @@ export type DeliveryReport = {
 	readonly senderIdentity: string;
 	readonly message: string;
 	readonly replyTo: string | null;
+	/** Direct thread notices never broadcast to unrelated primary sessions. */
+	readonly direct?: boolean;
+	/** Explicit peer attention interrupts at the next native boundary, not the next answer. */
+	readonly steer?: boolean;
+	/** Opted-in thread subscribers receive a passive native entry, not a model turn. */
+	readonly passive?: boolean;
+	/** Thread-keyed pending projection updated in the acknowledgment transaction. */
+	readonly threadId?: string;
 	readonly acknowledged: boolean;
 	readonly createdAt: number;
 	readonly checkIn?: { readonly origin: DeliveryOrigin; readonly elapsedMs: number; readonly cost: number | null; readonly conversationId: number; readonly requestId: string; readonly fallbackBroadcast?: boolean };
@@ -145,6 +154,9 @@ export const AgentDeliveryDoc = defineDoc<AgentDeliveryState>({
 	initial: () => ({ intents: [], receipts: {}, reports: [] }),
 	checkpointWhen: () => true,
 });
+
+/** One bounded pending-notice count avoids reading the whole report ledger during observation. */
+export const ThreadDeliveryDoc = defineDocFamily<{ pending: number }, null>({ kind: "agent.thread-delivery", version: 1, scope: "session", family: true, initial: () => ({ pending: 0 }) });
 
 /** Session-scoped fork markers: request key to the conversation it created. */
 export type AgentForkState = {
@@ -903,11 +915,16 @@ export async function acknowledgeReports(harness: Harness, ownerId: string, sour
 	const acknowledged: string[] = [];
 	await harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
-		state.reports.forEach((report, index) => {
-			if (report.ownerId !== ownerId || report.acknowledged || !wanted.has(report.sourceId)) return;
+		for (const [index, report] of state.reports.entries()) {
+			if (report.ownerId !== ownerId || report.acknowledged || !wanted.has(report.sourceId)) continue;
+			if (report.threadId !== undefined) {
+				const notices = await tx.doc(ThreadDeliveryDoc, report.threadId, null);
+				if (notices.pending < 1) throw new Error("The pending thread-notice projection is inconsistent");
+				notices.pending -= 1;
+			}
 			state.reports[index] = { ...report, acknowledged: true };
 			acknowledged.push(report.sourceId);
-		});
+		}
 	}, context);
 	return acknowledged;
 }

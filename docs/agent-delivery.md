@@ -1,4 +1,4 @@
-# Autonomous delivery through ordinary Pi sessions
+# Autonomous delivery through full Pi sessions
 
 This package-level workflow connects an invocation such as `/evo` to registered
 full Pi sessions. It owns outcome development and coordination, not a runtime
@@ -129,7 +129,7 @@ content and operation outcomes, correction delivery, and native context/session
 control. Check active availability, not just configured presence; use no frozen
 tool list or private lifecycle vocabulary.
 
-Use full ordinary Pi sessions for implementation, with the selected workspace's
+Use full Pi sessions for implementation, with the selected workspace's
 resources, instructions, tools, extensions, trust decisions, and model
 configuration. A headless host is not a TUI-parity claim. A missing capability,
 failed bootstrap, or rejected trust decision is explicit. Do not silently
@@ -140,10 +140,26 @@ Where collaboration helps, invite a full-session collaborator to develop or
 challenge the use path or its decisive uncertainty while the approach remains
 open, not only review a prescribed patch. Share discoveries that change
 selection or another task's question while they still affect the work. The
-coordinator synthesizes contributions against the purpose and revises the split
-when needed. No mandatory council, fork, roster, or candidate count applies.
-Parallelize independent investigation and review where useful. Auxiliary helpers
-remain distinct from full-session implementation.
+coordinator owns the integrated outcome; peers revise their own arrangement
+against the shared purpose without a message relay through the coordinator.
+No mandatory council, fork, roster, or candidate count applies. Parallelize
+independent investigation and review where useful. Auxiliary helpers remain
+distinct from full-session implementation.
+
+Use the current [peer thread surface](../extensions/agent/README.md#peer-threads)
+to discover related work and keep purpose, authority source, restrictions,
+acceptance, and integration attached to the exchange. Participants choose and
+revise their contributions. A frame remains an attributed claim; challenge it
+against the original source rather than treat peer agreement as verification.
+A revised frame or carried decision preserves the operator's restrictions.
+
+Joining opts into passive notices at existing conversation boundaries. Request
+a peer's attention explicitly when the task needs a timely response; do not
+mistake a retained post or delivery acknowledgment for understanding. End a
+contribution with a useful finding or clear boundary instead of polling for
+replies. Leave or close an arrangement that no longer serves the work. The
+operator observes the exchange through the dashboard and retains the ordinary
+primary as the main conversation.
 
 Each execution contract carries:
 

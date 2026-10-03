@@ -9,6 +9,8 @@ import { connectHost, type HostConnection } from "./host-client.ts";
 import { eventLog, fixtureMetadata } from "./host-fixture.mts";
 import { HOST_CHANGE_SERVICE_ID, HOST_SERVICE_ID, hostPaths } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
+import { HOST_CONTRACT } from "./version-contract.ts";
+import type { JsonValue } from "@earendil-works/chord";
 
 function deferred() {
 	let resolve!: () => void;
@@ -108,7 +110,7 @@ it("releases a token after observation subscription setup fails", { timeout: 300
 	const paths = hostPaths(f.metadata);
 	const client = await Client.connect({ serverId: paths.serverId, transportFactory: createUnixTransportFactory({ path: paths.socket }) });
 	t.after(() => client.dispose());
-	await client.request({ serverId: paths.serverId }, { serviceId: HOST_SERVICE_ID, member: "observe-open", args: [{ scope: "tasks" }, "open"] });
+	await client.request({ serverId: paths.serverId }, { serviceId: HOST_SERVICE_ID, member: "observe-open", args: [{ scope: "tasks" }, "open", HOST_CONTRACT.operations["observe-open"] as unknown as JsonValue] });
 	await assert.rejects(client.subscribeService({ serverId: paths.serverId }, "pi.agent.host.observe:bad-frame", "singleton", () => {}));
 	// A normal change subscription is not a conversation or task observation.
 	await client.subscribeService({ serverId: paths.serverId }, HOST_CHANGE_SERVICE_ID, "singleton", () => {});

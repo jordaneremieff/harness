@@ -231,8 +231,9 @@ async function main(): Promise<void> {
 	const fixture = await scheduleFixture({ after() {} }, { agentExtension: true, metadata, now: () => now, resume: false });
 	const host = await runHost(() => ({
 		request: async (method, params) => {
-			if (method === "fixture-clock") return { now };
-			if (method === "fixture-resume") { fixture.host.harness.resume(); return { resumed: true }; }
+			const command = method === "command" ? (params as { name?: unknown } | undefined)?.name : undefined;
+			if (command === "fixture-clock") return { now };
+			if (command === "fixture-resume") { fixture.host.harness.resume(); return { resumed: true }; }
 			return fixture.host.request(method, params as Record<string, unknown> | undefined);
 		},
 		close: () => fixture.close(),

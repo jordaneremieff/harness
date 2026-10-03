@@ -28,12 +28,14 @@ import type { TaskLabel, ConversationFrame } from "./live-frames.ts";
 import { firstTaskEntry } from "./dashboard-conversation.ts";
 import { ConversationHistory } from "./conversation-view.ts";
 import type { NativeSurface } from "./action-dialogs.ts";
+import { CollaborationView, createCollaborationViewState, type Collaborate } from "./collaboration-view.ts";
 
 export interface DashboardResult {
 	text: string;
 	sessionId?: string;
 }
 export interface DashboardOperations {
+	collaborate?: Collaborate;
 	submit(input: { id: string; text: string; mode: "steer" | "followUp" }): Promise<DashboardResult>;
 	newAgent(input: { prompt: string; onCreated: (row: AgentConversationSummary) => void }): Promise<DashboardResult>;
 	chooseConversation(labels: readonly TaskLabel[], surface: NativeSurface): Promise<string | undefined>;
@@ -43,7 +45,10 @@ const HELP = [
 	"Dashboard",
 	"↑↓ selects an agent. Enter opens its full conversation.",
 	"Tab or m writes to the selected agent. n starts a new agent.",
-	"a opens actions. / finds loaded agents. ? opens help.",
+	"a opens actions. / finds loaded agents. t opens Threads. ? opens help.",
+	"Threads shows the frame, peers, and exchange. p posts without a model wake.",
+	"n chooses peers to notify. Tab returns to the message. Enter posts.",
+	"Published omissions have storage rows. Enter reads their full thread directory.",
 	"",
 	"Messages",
 	"Enter sends. A working agent starts with Steer at next step.",
@@ -80,6 +85,7 @@ export class AgentDashboard implements Component, Focusable {
 	private findBefore = { filter: "", selected: undefined as string | undefined };
 	private readonly newComposer: AgentComposer;
 	private tasks?: AgentTasksView;
+	private threads?: CollaborationView;
 	private actionIndex = 0;
 	private helpOffset = 0;
 	private result = "";
@@ -155,7 +161,10 @@ export class AgentDashboard implements Component, Focusable {
 		};
 		this.unsubscribe.push(
 			source.subscribe(() => this.frameChanged()),
-			source.subscribeRoster(() => this.queueRoster()),
+			source.subscribeRoster(() => {
+				this.queueRoster();
+				if (this.navigation.screen === "threads") void this.threads?.refresh();
+			}),
 		);
 		this.reconciliation = setInterval(() => {
 			if (!this.hidden) void this.refreshRoster();
@@ -809,11 +818,33 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		if (this.console) this.navigation.enter("console", this.console.row.id);
 	}
+	private openThreads(): void {
+		if (!this.operations.collaborate) {
+			this.notice = "Threads unavailable. Restart this Pi window with the current agent extension.";
+			return;
+		}
+		this.saveConsole();
+		this.navigation.enter("threads");
+		this.state.threads ??= createCollaborationViewState();
+		this.threads ??= new CollaborationView({
+			tui: this.tui,
+			theme: this.theme,
+			keys: this.keys,
+			state: this.state.threads,
+			collaborate: this.operations.collaborate,
+			nameFor: (id) => this.page?.rows.find((row) => row.id === id)?.name || id,
+			selectedAgent: () => this.state.selected,
+			redraw: () => this.redraw(),
+			onBack: () => this.back(),
+		});
+		this.threads.open();
+	}
 	private rosterInput(data: string): void {
 		this.notice = undefined;
 		if (!matchesKey(data, "up") && !matchesKey(data, "down")) this.rosterOrderLocked = false;
 		const actions: Record<string, () => void> = {
 			n: () => this.navigation.enter("new"),
+			t: () => this.openThreads(),
 			a: () => {
 				if (this.console && !this.loadMore) {
 					this.actionIndex = 0;
@@ -875,6 +906,12 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	handleInput(data: string): void {
 		if (this.closed) return;
+		if (this.navigation.screen === "threads") {
+			if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
+				this.threads?.handleInput(data);
+			this.redraw();
+			return;
+		}
 		if (matchesKey(data, "escape")) {
 			this.back();
 			return;
@@ -976,12 +1013,12 @@ export class AgentDashboard implements Component, Focusable {
 		};
 		const normal: [string[], string] = this.rows.length
 			? [
-					["↑↓ select", "Enter open", "Tab message", "n new", "a actions", "/ find", "? help"],
+					["↑↓ select", "Enter open", "Tab message", "t threads", "n new", "a actions", "/ find", "? help"],
 					this.state.filter ? "Esc clear find" : "Esc close",
 				]
 			: this.emptyStore()
-				? [["Enter new agent", "n new", "/ find", "? help"], "Esc close"]
-				: [["n new", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
+				? [["Enter new agent", "n new", "t threads", "/ find", "? help"], "Esc close"]
+				: [["n new", "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
 		const [items, back] = hints[screen] ?? normal;
 		return fitHints(items, back, width);
 	}
@@ -1060,6 +1097,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.newComposer.focused = screen === "new";
 		this.find.focused = screen === "find";
 		if (this.console) this.console.composer.focused = screen === "message" || screen === "console";
+		if (screen === "threads") return this.threads?.render(width, height) ?? [];
 		const lines = ["help", "actions", "tasks", "result"].includes(screen)
 			? this.renderModal(width, height)
 			: this.renderDashboard(width, height);
@@ -1070,6 +1108,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.console?.composer.invalidate();
 		this.newComposer.invalidate();
 		this.find.invalidate();
+		this.threads?.invalidate();
 	}
 	dispose(): void {
 		if (this.closed) return;
@@ -1081,6 +1120,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.source.select(undefined);
 		this.source.releaseTasks();
 		this.tasks?.dispose();
+		this.threads?.dispose();
 		clearInterval(this.reconciliation);
 		clearInterval(this.age);
 		clearTimeout(this.rosterTimer);

@@ -431,15 +431,17 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		["availability is current", /Check active availability, not just configured presence/],
 		[
-			"ordinary implementation sessions",
-			/full ordinary Pi sessions for implementation.*resources, instructions, tools, extensions, trust decisions, and model configuration/,
+			"full implementation sessions",
+			/full Pi sessions for implementation.*resources, instructions, tools, extensions, trust decisions, and model configuration/,
 		],
 		[
 			"early shared development",
 			/collaborator to develop or challenge the use path or its decisive uncertainty while the approach remains open/,
 		],
 		["selection-changing discoveries", /Share discoveries that change selection or another task's question/],
-		["coordinator synthesis", /coordinator synthesizes contributions against the purpose and revises the split/],
+		["integration and peer judgment", /coordinator owns the integrated outcome; peers revise their own arrangement against the shared purpose/],
+		["shared context and source", /purpose, authority source, restrictions, acceptance, and integration attached to the exchange/],
+		["admission is not understanding", /do not mistake a retained post or delivery acknowledgment for understanding/],
 		["flexible collaboration", /No mandatory council, fork, roster, or candidate count/],
 		[
 			"task frame",

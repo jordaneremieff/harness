@@ -46,7 +46,7 @@ it("refuses a mismatched binding with both versions and a restart", (t) => {
 			error.message.includes(`requires version ${AGENT_CONTROL_BINDING_VERSION}`) &&
 			error.message.includes("Restart the agent host"),
 	);
-	globals[AGENT_CONTROL_BINDING_KEY] = { version: "1", dispatch: noop };
+	globals[AGENT_CONTROL_BINDING_KEY] = { version: 1, dispatch: noop };
 	assert.throws(() => resolveAgentControlDispatch(), /malformed/u);
 	globals[AGENT_CONTROL_BINDING_KEY] = { version: AGENT_CONTROL_BINDING_VERSION };
 	assert.throws(() => resolveAgentControlDispatch(), /malformed/u);

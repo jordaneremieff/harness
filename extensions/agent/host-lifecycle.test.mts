@@ -55,7 +55,7 @@ async function rejectingVersionHost(t: { after(fn: () => void | Promise<void>): 
 	let count = 0;
 	const routed: ServerHost = {
 		serverServices: { attachClient: () => ({
-			invokeService: async () => { if (malformed) return { version: "invalid" }; throw new ServerError("service_invalid_value", "durable host is closed"); },
+			invokeService: async () => { if (malformed) return { format: "pi.agent.contract/1", release: "invalid" }; throw new ServerError("service_invalid_value", "durable host is closed"); },
 			release: () => { released.resolve(); },
 		}) },
 		resolveSession: async () => { throw new Error("no session"); },
@@ -67,7 +67,7 @@ async function rejectingVersionHost(t: { after(fn: () => void | Promise<void>): 
 	return { metadata, released: released.promise, count: () => count };
 }
 
-it("disposes a client when its runtime version request fails", { timeout: 15000 }, async (t) => {
+it("disposes a client when its runtime contract request fails", { timeout: 15000 }, async (t) => {
 	const fixture = await rejectingVersionHost(t, root(t));
 	await assert.rejects(connectHost(fixture.metadata), /durable host is closed/u);
 	await fixture.released;
@@ -87,9 +87,9 @@ it("does not launch after an application error from a live writer", { timeout: 1
 	assert.equal(fixture.count(), 0);
 });
 
-it("preserves a malformed version error without waiting for a live writer to die", { timeout: 15000 }, async (t) => {
+it("preserves a malformed contract error without waiting for a live writer to die", { timeout: 15000 }, async (t) => {
 	const fixture = await rejectingVersionHost(t, root(t), true);
-	await assert.rejects(acquireHost(fixture.metadata), /runtime version is malformed/u);
+	await assert.rejects(acquireHost(fixture.metadata), /runtime contract is missing or malformed/u);
 	await fixture.released;
 	assert.equal(fixture.count(), 0);
 });

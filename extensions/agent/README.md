@@ -53,7 +53,8 @@ stopping work.
   without another asynchronous gap. The seal also stops new delivery effects.
   Delivery-pass completion starts a new idle interval, even if another caller
   acknowledged the row while its effect was in flight. Late controls receive a shutdown refusal;
-  the manager does not retry mutations after transport loss. Final catalog
+  the manager does not retry unprotected mutations after transport loss. Requests
+  with a declared replay-safe contract reuse their retained deduplication key. Final catalog
   publication precedes recovery-marker clearance. A failed final publication
   or marker write rejects shutdown and retains the writer claim until process
   death, rather than announce a clean retirement. Busy shutdown retains the recovery marker,
@@ -69,7 +70,7 @@ stopping work.
   local command dispatch. Release the observers before reload; an attempted
   reload does not destroy an existing observation.
 - Local protocol validation rejects only the malformed request and leaves its
-  healthy connection usable. A failed runtime-version attachment disposes its
+  healthy connection usable. A failed runtime-contract attachment disposes its
   client. Application or protocol errors from a live writer do not authorize a
   replacement process.
 
@@ -133,7 +134,7 @@ selection and MCP server configuration follow the current Pi settings.
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | Create a root storage. Inside a Durable agent, the same cwd uses a native child; a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
-| `agent_send` | Admit a task, report, or correction. Busy recipients receive Durable steering. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_send` | Admit a task, report, or correction. Busy recipients receive Durable steering by default; `mode: "followUp"` queues after the current answer. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -147,6 +148,7 @@ selection and MCP server configuration follow the current Pi settings.
 | `agent_list` | Page through stored identities and conversation metadata. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results. |
+| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. |
 
 Each `agent_list` call collects one bounded catalog batch before it observes
 hosts, so metadata rewrites during those observations do not invalidate that
@@ -193,6 +195,78 @@ model-facing `agent_send` tool keeps its documented steering disposition. The
 status card labels its newest text by role and state: `Latest reply` or
 `Latest input` when idle, and `Working on reply` or `Working on the task` while
 active.
+
+## Peer threads
+
+A thread keeps shared purpose and evidence in an existing participant's native
+Durable storage. It is not another agent, a transcript substitute, or a broker.
+The primary seeds its purpose, authority and source, restrictions, acceptance,
+and integration owner. Peers choose their contributions, join or leave, share
+findings, and challenge decisions directly. No roster, rounds, roles, votes,
+or automatic replies are prescribed.
+
+Use `agent_collaborate` with `action: "list"` and an optional literal `query` to
+find purpose across storages. Global discovery reads published hints, not hosts.
+It visits a bounded catalog batch and returns `nextCursor`, explicit coverage,
+and omitted or unavailable source storages. Follow the cursor even after an
+empty page. Use `sessionId` for a storage's full retained thread list. A changed
+catalog or publication refuses a stale continuation rather than imply complete
+coverage. There is no background relevance search or polling loop.
+
+`create` needs `title`, `purpose`, `authority`, `source`, `restrictions`, and
+`acceptance`; `integrator` defaults to the caller. An ordinary primary also
+selects an existing participant with `sessionId`. Native agents default to
+their own storage. `join` records a self-chosen `contribution`; another join
+revises it. `post` accepts `message`, optional `replyTo` event sequence, `source`,
+and explicit `notify` identities. `read` returns the current frame, members,
+chronological events, pending notice count, and `nextBefore` for older pages.
+Reads do not start a host or model. Events record their sender, origin, frame
+revision, and reply reference.
+
+A frame is an attributed statement, not authenticated authority. A
+`carried-authority` post requires a source, but its label does not grant
+permission. Preserve the original operator decision and restrictions; challenge
+unsupported claims in a post. The creator, integrator, or operator can `revise`
+the complete frame. Revisions remain in the exchange; compare an event's
+revision with the current frame. The integrator is revisable, not a compulsory
+role in a fixed plan. Participants can split work into another thread, leave,
+or `close` with a retained conclusion. Closing ends mutations, not history.
+
+Creating or joining opts into passive notices for later events. Each notice
+contains a bounded excerpt and a thread/event reference. A native write places
+it at an existing conversation boundary without starting a model turn. An idle
+peer learns it on later work, not immediately. Only named `notify` recipients
+receive steering and a model wake. No post or notice arms a check-in. Leaving
+stops future subscription notices. Notification admission and acknowledgment
+do not prove model awareness, understanding, or acceptance.
+
+The event, mutation receipt, and notice intents commit together. Retries reuse
+caller-qualified mutation IDs and recipient-qualified native request IDs;
+changed content under the same mutation key refuses. Direct notices never
+broadcast to unrelated primaries. An unavailable recipient leaves a visible
+pending intent and delivery error. Pending delivery keeps the source host
+alive. Source-host retirement or process loss does not delete the thread;
+retained reads stay available and a later mutation or recovery opens its owner.
+This has the same process-crash, not power-loss, guarantee as other native
+state. A primary process restart can repeat a displayed notice after loss of
+its in-memory deduplication.
+
+Each call bounds visits, records, and bytes. A thread frame and membership fit
+within 24 KiB, each event within 20 KiB, and a read page within 48 KiB. Global
+hints are not an exhaustive search of retained history. Explicit coverage and
+scoped continuation are part of the result, not a claim that absent matches
+do not exist.
+
+In `/agent`, press `t` for Threads. Select a thread or an omitted-source row
+with arrows and Enter; `s` scopes discovery to the selected agent's storage.
+Use `p` to write a post without a wake, or `n` to select notify peers. Tab moves
+between recipient selection and the editor; Enter submits from the editor.
+Use `b` for earlier events, `r` for the latest page, `f` for the frame, and `e`
+for the exchange tail. At the exchange tail, new events stay visible. Frame
+and earlier-page reads keep their position. Esc returns through Threads to the roster and native
+primary. Drafts, agent selection, and focus stay intact. The view shows frame,
+contributions, attributed chronological exchange, revisions, and coverage.
+Catalog changes refresh it without polling or waking models.
 
 ## Recovery and delivery
 
@@ -329,49 +403,53 @@ A registered primary refreshes its recorded model, reasoning level, and session
 name when the ordinary session changes them, so `agent_status` and endpoint
 discovery report the identity the operator runs.
 
-The host runtime and the contribution code loaded in the same process share one
-control binding. That binding carries a version: a native reload that pairs new
-contribution code with a retained runtime of another version refuses with both
-versions and a restart message, instead of dispatching across two contracts. An
-open live observation reconnects to a live host only. The observation link
-never relaunches a lost host; it signals its listeners unavailable and leaves
-relaunch to the manager's bounded recovery pool. Separately, when any read
-meets a host of another version, the manager applies the version check
-described below. A listener that attaches after a frame arrives receives that
-current frame at once.
+### Current process contracts
 
-The current host runtime contract is version 4. Version 4 permits retirement
-with passive connections; version 3 still requires every client to disconnect.
-Every host advertises a runtime version in its readiness line and answers a
-`runtime-version` request. A host that reports no version predates the
-handshake and reads as version 0. Process close requires runtime version 3. A
-manager replaces only an older host with a supported close contract; it never
-replaces a newer host. Compatible bounded reads from a newer host remain
-available. Mutations and persistent observations of a newer host require a
-restart of this Pi, and unsupported newer data receives an explicit version
-error.
+`version-contract.ts` separates source release, actual loaded upstream releases,
+and operation contracts. A host advertises its descriptor in readiness and
+`runtime-contract`. Each operation names its current request and response
+contract. Client and host compare those identities before dispatch; a mismatch
+refuses that operation before a mutation or response decoding. Unchanged
+operations remain usable across independently restarted Pi windows and hosts,
+including mutations. Release ordering never grants or denies an operation.
+An unavailable change feed leaves compatible reads and controls usable;
+`agent_status` reports the live-update failure.
 
-Versions 0 to 2 do not provide the current process-close contract, so their
-automatic update is blocked. This manager disconnects from such a host after
-the last concurrent bounded operation and refuses persistent observation of it.
-Other Pi windows and live observations still prevent its idle retirement:
-close every client, allow configured retirement after native work ends, then
-use `agent_attach`. A manager loaded before the version-4 contract still retains
-its ordinary clients after completion. A host whose Durable runtime already closed does not recover through idle
-retirement.
+Typed observation results use schema hashes, so a changed published schema
+changes its contract without a manual stamp. Opaque native results and native
+ABI-dependent operations also require the same experimental Pi Durable release.
+Normalized extension-owned operations do not require identical upstream
+releases. The descriptor records actual coding-agent and Durable versions plus
+minimum public API floors. Meeting a floor is necessary, not a guarantee for
+unknown future upstream APIs. Wildcard dependency declarations remain unchanged.
 
-An older host with a supported close contract is replaced when it is idle. The
-manager first verifies that no native work or delivery remains, requests
-process close, and checks the actual writer claim after close completion or
-owned process exit before it acquires the replacement; neither a close response
-nor socket loss alone authorizes replacement. While the host works, the window
-keeps using the methods the host supports and marks the storage `Host runtime
-version N; this Pi runs version M. It updates when idle.` Replacement never
-interrupts active work and shares the three replacements per sixty seconds cap
-with crash recovery; `agent_attach` clears a stopped update. A newer-only
-method against an older host returns a clear refusal instead of a raw
-unknown-method error. Local validation errors and live-writer application
-errors never authorize another writer.
+The retained manager, native control binding, and primary delivery channel have
+separate exact interface identities. The binding includes the loaded Durable
+release. An incompatible manager or binding refuses reload with restart
+instructions. An incompatible primary endpoint holds notices pending without
+broadcast. Unrelated additions to host methods change none of those interfaces.
+
+No descriptor means refusal, not a version-zero fallback. No reader translates
+retired payloads or stored shapes. When an operation changes, update only its
+request/response identity, or its schema, in the same change and test both sides
+of refusal. Change a retained interface identity only when that interface
+changes. Source release is diagnostic provenance, not a compatibility promise.
+
+Mismatches name the affected contract and the available restart path. Active
+work stays intact. Let an idle host retire, restart a stale caller when needed,
+then use `agent_attach` and retry. The manager does not replace hosts based on
+source ordering; ordinary idle retirement loads new code on the next control.
+A newly added operation remains unavailable on a running host that lacks it.
+A process predating the current descriptor needs a restart; there is no hidden
+upgrade, migration, or interruption of active work. Application errors from a
+live writer never authorize another writer.
+
+An open live observation reconnects only to a live host. It never relaunches a
+lost host; it signals unavailable and leaves relaunch to bounded manager
+recovery. A listener attached after a frame arrives receives that current
+frame at once. Live status excludes provider-private tool parsing buffers from
+its public projection; raw native state stays unchanged. A status schema error
+alone does not establish different process versions.
 
 Owned launches supply readiness events. For a host launched elsewhere, this Pi
 makes one bounded attach attempt and reports when no readiness event is

@@ -854,7 +854,7 @@ it("continues compact history without losing an entry at each page boundary", as
 
 it("prioritizes failure rows within the digest bound and exposes excluded failures through history", async (t) => {
  const storagePath=join(fixtureRoot(t),"failure-priority.sqlite");
- const tool={...failingTool(),execute:async()=>{throw new Error("large intentional failure "+"x".repeat(4000));}};
+ const tool={...failingTool(),execute:async()=>{throw new Error(`large intentional failure ${"x".repeat(4000)}`);}};
  const scripts=Array.from({length:8},()=>[toolCallMessage("failing-tool"),answerMessage("recovered")]).flat();
  const host=await DurableHost.open(hostOptions(storagePath,await scriptedRuntime(scripts),fixtureRegistry([tool])),BACKGROUND_CONTEXT);
  for(let n=0;n<8;n++){const s=await host.submit({message:"task",requestId:String(n)});await host.wait(s.submissionId,BACKGROUND_CONTEXT);}
