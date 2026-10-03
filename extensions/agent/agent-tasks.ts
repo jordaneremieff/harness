@@ -90,6 +90,7 @@ export class AgentTasksView {
 	private error: string | undefined;
 	private closed = false;
 	private viewportRows = 1;
+	private renderedTaskIds: number[] = [];
 	private readonly onChooseConversations: AgentTasksOptions["onChooseConversations"];
 
 	constructor(options: AgentTasksOptions) {
@@ -120,11 +121,13 @@ export class AgentTasksView {
 			try {
 				const frame = await this.source.tasks(this.id);
 				if (this.closed) return;
+				this.renderedTaskIds = [];
 				this.frame = frame;
 				this.ordered = orderTaskRows(frame.tasks);
 				this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.ordered.length - 1));
 				this.error = undefined;
 			} catch (caught) {
+				this.renderedTaskIds = [];
 				this.error = caught instanceof Error ? caught.message : String(caught);
 			}
 		})();
@@ -134,6 +137,19 @@ export class AgentTasksView {
 		return this.pending;
 	}
 
+	/** Wheel over tasks changes only the selected task, without starting a task. */
+	scroll(delta: number): void {
+		this.move(delta);
+	}
+	/** A row click selects a task; a later Enter opens its conversation. */
+	clickRow(line: number): boolean {
+		const id = this.renderedTaskIds[line - 1];
+		if (id === undefined) return false;
+		const index = this.ordered.findIndex((item) => item.row.id === id);
+		if (index < 0) return false;
+		this.selectedIndex = index;
+		return true;
+	}
 	selected(): OrderedRow | undefined {
 		return this.ordered[this.selectedIndex];
 	}
@@ -248,6 +264,7 @@ export class AgentTasksView {
 	render(width: number, height: number): string[] {
 		width = Math.max(1, Math.floor(width));
 		height = Math.max(0, Math.floor(height));
+		this.renderedTaskIds = [];
 		if (height === 0) return [];
 		const lines: string[] = [this.headerLine(width)];
 		const count = this.frame?.tasks.length ?? 0;
@@ -262,7 +279,10 @@ export class AgentTasksView {
 			);
 			for (let index = start; index < Math.min(this.ordered.length, start + this.viewportRows); index++) {
 				const ordered = this.ordered[index];
-				if (ordered !== undefined) lines.push(this.rowLine(ordered, index, width));
+				if (ordered !== undefined) {
+					this.renderedTaskIds.push(ordered.row.id);
+					lines.push(this.rowLine(ordered, index, width));
+				}
 			}
 			if (truncated)
 				lines.push(

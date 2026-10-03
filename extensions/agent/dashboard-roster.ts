@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { dashboardTime } from "./dashboard-time.ts";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
@@ -177,27 +178,70 @@ function uniqueTitle(row: AgentConversationSummary, rows: readonly AgentConversa
 	const suffix = ` ${row.id.slice(-length)}`;
 	return truncateToWidth(name, Math.max(1, width - visibleWidth(suffix))) + suffix;
 }
-export function rosterAge(modifiedAt: number, now: number): string {
-	return now - modifiedAt < 1000 ? "now" : elapsed(now - modifiedAt);
-}
 function rosterRow(
 	row: AgentConversationSummary,
 	rows: readonly AgentConversationSummary[],
 	selected: string | undefined,
 	width: number,
-	now: number,
 	theme: Theme,
 	compact: boolean,
-): string[] {
+	exactTime: boolean,
+): { lines: string[]; timeX: number; timeWidth: number; timeLine: number } {
 	const appearance = sessionAppearance[row.state];
-	const detail = `${appearance.label}  ${costOf(row)}  ${rosterAge(row.modifiedAt, now)}`;
+	const updated = `Updated ${dashboardTime(row.modifiedAt, exactTime)}`;
+	const detail = `${appearance.label}  ${costOf(row)}  ${updated}`;
 	const titleWidth = compact ? Math.max(1, width - 3 - visibleWidth(detail)) : width - 3;
 	let text = (row.id === selected ? "› " : "  ") + pad(uniqueTitle(row, rows, titleWidth), titleWidth);
 	if (compact) text += ` ${theme.fg(appearance.color, detail)}`;
 	text = pad(text, width);
 	const lines = [row.id === selected ? theme.bg("selectedBg", text) : text];
-	if (!compact) lines.push(theme.fg(appearance.color, truncateToWidth(`  ${detail}`, width)));
-	return lines;
+	if (!compact) {
+		lines.push(theme.fg(appearance.color, truncateToWidth(`  ${appearance.label}  ${costOf(row)}`, width)));
+		lines.push(theme.fg("muted", truncateToWidth(`  ${updated}`, width)));
+	}
+	const timeX = compact ? 3 + titleWidth + visibleWidth(`${appearance.label}  ${costOf(row)}  `) : 2;
+	return {
+		lines: lines.map((line) => truncateToWidth(line, width)),
+		timeX,
+		timeWidth: Math.max(0, Math.min(visibleWidth(updated), width - timeX)),
+		timeLine: compact ? 0 : 2,
+	};
+}
+function rosterWindow(
+	rows: readonly AgentConversationSummary[],
+	selected: string | undefined,
+	height: number,
+	compact: boolean,
+	requested?: number,
+): { capacity: number; start: number; maxStart: number } {
+	const index = Math.max(
+		0,
+		rows.findIndex((row) => row.id === selected),
+	);
+	const capacity = compact ? 3 : Math.max(1, Math.floor((height - 2) / 4));
+	const maxStart = Math.max(0, rows.length - capacity);
+	return { capacity, maxStart, start: Math.min(maxStart, Math.max(0, requested ?? index - Math.floor(capacity / 2))) };
+}
+interface RosterViewport {
+	start?: number;
+	exactTime?: boolean;
+	range?(start: number, maxStart: number): void;
+	row?(row: AgentConversationSummary, line: number, height: number): void;
+	timestamp?(row: AgentConversationSummary, line: number, x: number, width: number): void;
+}
+function rosterHit(
+	viewport: RosterViewport | undefined,
+	row: AgentConversationSummary,
+	block: ReturnType<typeof rosterRow>,
+	line: number,
+	width: number,
+	height: number,
+): void {
+	if (line >= height) return;
+	viewport?.row?.(row, line, Math.min(block.lines.length, height - line));
+	const timeLine = line + block.timeLine;
+	if (timeLine < height)
+		viewport?.timestamp?.(row, timeLine, block.timeX, Math.min(block.timeWidth, width - block.timeX));
 }
 export function rosterLines(
 	rows: readonly AgentConversationSummary[],
@@ -207,13 +251,10 @@ export function rosterLines(
 	now: number,
 	theme: Theme,
 	compact: boolean,
+	viewport?: RosterViewport,
 ): string[] {
-	const index = Math.max(
-		0,
-		rows.findIndex((row) => row.id === selected),
-	);
-	const capacity = compact ? 3 : Math.max(1, Math.floor((height - 3) / 3));
-	const start = Math.min(Math.max(0, rows.length - capacity), Math.max(0, index - Math.floor(capacity / 2)));
+	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, viewport?.start);
+	viewport?.range?.(start, maxStart);
 	const lines: string[] = compact ? [] : ["Roster"];
 	let section = "";
 	for (const row of rows.slice(start, start + capacity)) {
@@ -222,7 +263,9 @@ export function rosterLines(
 			lines.push(theme.fg("accent", group));
 			section = group;
 		}
-		lines.push(...rosterRow(row, rows, selected, width, now, theme, compact));
+		const block = rosterRow(row, rows, selected, width, theme, compact, viewport?.exactTime ?? false);
+		rosterHit(viewport, row, block, lines.length, width, height);
+		lines.push(...block.lines);
 	}
 	while (compact && lines.length < 3) lines.push("");
 	const shown = rows.slice(start, start + capacity).length;

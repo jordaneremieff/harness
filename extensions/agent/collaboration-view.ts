@@ -1,23 +1,31 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, wrapTextWithAnsi, type TUI } from "@earendil-works/pi-tui";
+import {
+	matchesKey,
+	wrapTextWithAnsi,
+	visibleWidth,
+	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
+import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
+import { dashboardTime } from "./dashboard-time.ts";
 import { stripVTControlCharacters } from "node:util";
 import { randomUUID } from "node:crypto";
 import type { CollaborationList, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
 import { AgentComposer } from "./agent-composer.ts";
-import { fitHints, fitLine } from "./dashboard-layout.ts";
+import { fitLine } from "./dashboard-layout.ts";
 
 export type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;
 type Discovery = CollaborationList & { sources?: Array<{ sessionId: string; omitted: number; unavailable: boolean }> };
 export interface CollaborationViewState {
 	selected?: string;
-	exactTime: boolean;
 	drafts: Map<
 		string,
 		{ text: string; revision: number; notify: string[]; pending: boolean; request?: { id: string; content: string } }
 	>;
 }
 export function createCollaborationViewState(): CollaborationViewState {
-	return { drafts: new Map(), exactTime: false };
+	return { drafts: new Map() };
 }
 const listeners = new WeakMap<CollaborationViewState, Set<() => void>>();
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object";
@@ -103,6 +111,8 @@ interface CollaborationViewOptions {
 	theme: Theme;
 	keys: KeybindingsManager;
 	state: CollaborationViewState;
+	exactTime(): boolean;
+	toggleTime(): void;
 	collaborate: Collaborate;
 	nameFor(id: string): string;
 	selectedAgent(): string | undefined;
@@ -111,6 +121,9 @@ interface CollaborationViewOptions {
 }
 /** Reads are bounded pages; roster notifications supply refresh, never a private timer. */
 export class CollaborationView {
+	private readonly mouse = new DashboardMouse();
+	private mouseScreen?: string;
+	private timeLines = new Set<number>();
 	private list?: Discovery;
 	private page?: CollaborationPage;
 	private screen: "list" | "thread" | "compose" | "notify" = "list";
@@ -393,7 +406,7 @@ export class CollaborationView {
 			r: () => this.latest(),
 			b: () => this.earlier(),
 			i: () => {
-				this.options.state.exactTime = !this.options.state.exactTime;
+				this.options.toggleTime();
 			},
 			f: () => {
 				this.offset = 0;
@@ -442,23 +455,13 @@ export class CollaborationView {
 		routes[this.screen]();
 	}
 	private eventTime(at: number): string {
-		const date = new Date(at);
-		return this.options.state.exactTime
-			? date.toISOString()
-			: `${date.toLocaleString("en-US", {
-					year: "numeric",
-					month: "short",
-					day: "numeric",
-					hour: "numeric",
-					minute: "2-digit",
-					hour12: true,
-				})} (local)`;
+		return dashboardTime(at, this.options.exactTime()) + (this.options.exactTime() ? "" : " (local)");
 	}
 	private threadLines(): string[] {
 		const page = this.page;
 		if (!page) return ["Read thread…"];
 		const t = page.thread;
-		return [
+		const lines = [
 			plain(t.title),
 			`${t.closed ? "Closed" : "Open"} · Frame revision ${t.revision}`,
 			`Purpose: ${plain(t.purpose)}`,
@@ -476,16 +479,23 @@ export class CollaborationView {
 			"",
 			"Exchange (chronological)",
 			...(this.before ? ["Earlier page. r reads latest."] : []),
-			...page.events.flatMap((event) => [
-				`#${event.sequence} · ${this.nameFor(event.sender)} [${event.sender}] · ${event.origin} · ${plain(event.kind)} · frame ${event.revision}`,
-				`Time: ${this.eventTime(event.at)}${event.replyTo ? ` · Reply to #${event.replyTo}` : ""}`,
-				...(event.source ? [`Source: ${plain(event.source)}`] : []),
-				plain(event.message),
-				...(event.notify.length ? [`Notify: ${event.notify.map((id) => this.nameFor(id)).join(", ")}`] : []),
-				"",
-			]),
-			`Notification intents pending: ${page.pending} · ${page.coverage.complete ? "Page complete" : "Page bounded"}${page.nextBefore ? " · b reads earlier" : ""}`,
 		];
+		this.timeLines.clear();
+		for (const event of page.events) {
+			lines.push(
+				`#${event.sequence} · ${this.nameFor(event.sender)} [${event.sender}] · ${event.origin} · ${plain(event.kind)} · frame ${event.revision}`,
+			);
+			this.timeLines.add(lines.length);
+			lines.push(`Time: ${this.eventTime(event.at)}${event.replyTo ? ` · Reply to #${event.replyTo}` : ""}`);
+			if (event.source) lines.push(`Source: ${plain(event.source)}`);
+			lines.push(plain(event.message));
+			if (event.notify.length) lines.push(`Notify: ${event.notify.map((id) => this.nameFor(id)).join(", ")}`);
+			lines.push("");
+		}
+		lines.push(
+			`Notification intents pending: ${page.pending} · ${page.coverage.complete ? "Page complete" : "Page bounded"}${page.nextBefore ? " · b reads earlier" : ""}`,
+		);
+		return lines;
 	}
 	private listLines(width: number, height: number): string[] {
 		const choices = this.choices();
@@ -497,7 +507,26 @@ export class CollaborationView {
 			wrapTextWithAnsi(`${index === this.index ? "›" : " "} ${choice.label}`, width),
 		);
 		const selectedLine = blocks.slice(0, this.index).reduce((total, block) => total + block.length, 0);
-		return blocks.flat().slice(Math.max(0, selectedLine - Math.floor(height / 3)));
+		const start = Math.max(0, selectedLine - Math.floor(height / 3));
+		let line = 0;
+		for (let index = 0; index < blocks.length; index++) {
+			const block = blocks[index];
+			if (block && line + block.length > start && line < start + height) {
+				const top = Math.max(line, start);
+				this.mouse.add({
+					x: 0,
+					y: 2 + top - start,
+					width,
+					height: Math.min(line + block.length, start + height) - top,
+					click: () => {
+						if (this.index === index) this.choose();
+						else this.index = index;
+					},
+				});
+			}
+			line += block?.length ?? 0;
+		}
+		return blocks.flat().slice(start);
 	}
 	private notifyLines(height: number): string[] {
 		const members = this.page?.thread.members ?? [];
@@ -506,16 +535,46 @@ export class CollaborationView {
 				`${index === this.memberIndex ? "›" : " "} [${this.draft()?.notify.includes(member.identity) ? "x" : " "}] ${this.nameFor(member.identity)} [${member.identity}]`,
 		);
 		const start = Math.max(0, this.memberIndex - height + 3);
+		for (let index = start; index < members.length && index - start + 1 < height; index++)
+			this.mouse.add({
+				x: 0,
+				y: 3 + index - start,
+				width: this.options.tui.terminal.columns,
+				height: 1,
+				click: () => {
+					this.memberIndex = index;
+					this.toggleMember();
+				},
+			});
 		return ["Select peers to notify. Each selected peer receives a steer. No automatic reply.", ...lines.slice(start)];
 	}
 	private bodyLines(width: number, height: number): string[] {
 		if (this.screen === "list") return this.listLines(width, height);
 		if (this.screen === "notify") return this.notifyLines(height);
-		const lines = this.threadLines().flatMap((line) => wrapTextWithAnsi(line, width));
+		let line = 0;
+		const lines = this.threadLines().flatMap((text, index) => {
+			const wrapped = wrapTextWithAnsi(text, width);
+			if (this.timeLines.has(index)) {
+				const first = line;
+				for (let offset = 0; offset < wrapped.length; offset++) {
+					this.mouse.add({
+						x: 0,
+						y: 2 + first + offset,
+						width: Math.min(width, visibleWidth(wrapped[offset] ?? "")),
+						height: 1,
+						click: () => this.options.toggleTime(),
+					});
+				}
+			}
+			line += wrapped.length;
+			return wrapped;
+		});
 		this.offset = this.follow
 			? Math.max(0, lines.length - height)
 			: Math.max(0, Math.min(this.offset, Math.max(0, lines.length - height)));
-		return lines.slice(this.offset);
+		const offset = this.offset;
+		this.mouse.shiftY(-offset, 2, 2 + height);
+		return lines.slice(offset);
 	}
 	private status(): string {
 		if (this.screen !== "list")
@@ -537,7 +596,7 @@ export class CollaborationView {
 			thread: [
 				"p post",
 				"n notify",
-				this.options.state.exactTime ? "i local time" : "i exact UTC",
+				this.options.exactTime() ? "i local time" : "i exact UTC",
 				"PgUp/PgDn read",
 				"f frame",
 				"e exchange",
@@ -552,19 +611,54 @@ export class CollaborationView {
 			this.composer.setText(this.draft()?.text ?? "");
 		this.composer.focused = this.screen === "compose";
 		const editor = this.screen === "compose" ? this.composer.render(width) : [];
+		this.mouse.reset(width, height);
+		this.mouseScreen = this.screen;
 		const bodyHeight = Math.max(1, height - 5 - editor.length);
 		const lines = this.bodyLines(width, bodyHeight);
+		this.mouse.add({
+			x: 0,
+			y: 2,
+			width,
+			height: bodyHeight,
+			wheel: (delta) => {
+				if (this.screen === "thread" || this.screen === "compose") {
+					this.follow = false;
+					this.offset = Math.max(0, this.offset + delta);
+				} else if (this.screen === "list")
+					this.index = Math.max(0, Math.min(this.choices().length - 1, this.index + delta));
+				else if (this.screen === "notify")
+					this.memberIndex = Math.max(
+						0,
+						Math.min((this.page?.thread.members.length ?? 1) - 1, this.memberIndex + delta),
+					);
+			},
+		});
+		if (this.screen === "compose")
+			this.mouse.add({
+				x: 0,
+				y: 2 + bodyHeight,
+				width,
+				height: editor.length,
+				click: (event) => this.composer.handleMouse(event),
+			});
 		return [
 			"Agents > Threads",
 			this.status(),
 			...Array.from({ length: bodyHeight }, (_, i) => lines[i] ?? ""),
 			...editor,
 			this.notice,
-			fitHints(this.hints(), "Esc back", width),
+			mouseHints(this.mouse, height - 2, this.hints(), "Esc back", width, (data) => this.handleInput(data)),
 			"",
 		].map((line) => fitLine(line, width));
 	}
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.disposed || this.mouseScreen !== this.screen) return;
+		const result = this.mouse.handle(event);
+		if (result?.handled) this.options.redraw();
+		return result;
+	}
 	invalidate(): void {
+		this.mouse.reset();
 		this.composer.invalidate();
 	}
 	dispose(): void {

@@ -5,7 +5,15 @@
  * the text.
  */
 import { CustomEditor, getSelectListTheme, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, parseKey, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import {
+	matchesKey,
+	parseKey,
+	type Component,
+	type Focusable,
+	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
 
 export interface AgentComposerOptions {
 	tui: TUI;
@@ -93,6 +101,10 @@ export class AgentComposer implements Component, Focusable {
 		if (key?.includes("alt+") || /^f\d+$/.test(key ?? "")) return;
 		this.editor.handleInput(data);
 		this.options.onChange?.(this.getText());
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		return this.editor.handleMouse(event);
 	}
 
 	render(width: number): string[] {

@@ -74,6 +74,66 @@ it("Tasks selection stays visible under paging and resolves full identities", as
 	assert.deepEqual(choices, [["storage", "storage:2"]]);
 	view.dispose();
 });
+it("task row clicks select the visible row and wheels do not open a conversation", async () => {
+	const choices: string[][] = [];
+	const view = new AgentTasksView({
+		theme,
+		id: "storage",
+		source: { tasks: async () => frame },
+		onChooseConversations: (labels) => choices.push(labels.map((label) => label.identity)),
+	});
+	try {
+		await view.refresh();
+		view.render(80, 10);
+		assert.equal(view.clickRow(0), false);
+		assert.equal(view.clickRow(9), false);
+		assert.equal(view.clickRow(3), true);
+		assert.equal(view.selected()?.row.id, 3);
+		view.scroll(10);
+		view.render(80, 10);
+		assert.equal(view.clickRow(1), true);
+		assert.equal(view.selected()?.row.id, 9);
+		assert.deepEqual(choices, []);
+		view.handleInput("\r");
+		assert.deepEqual(choices, [["storage", "storage:2"]]);
+	} finally {
+		view.dispose();
+	}
+});
+it("task clicks reject stale row positions after refresh and error renders", async () => {
+	let fail = false;
+	let current = frame;
+	const view = new AgentTasksView({
+		theme,
+		id: "storage",
+		source: {
+			tasks: async () => {
+				if (fail) throw new Error("offline");
+				return current;
+			},
+		},
+	});
+	try {
+		await view.refresh();
+		view.render(80, 10);
+		current = { ...frame, tasks: [...frame.tasks].reverse() };
+		await view.refresh();
+		assert.equal(view.clickRow(1), false);
+		view.render(80, 10);
+		assert.equal(view.clickRow(1), true);
+		fail = true;
+		await view.refresh();
+		view.render(80, 10);
+		assert.equal(view.clickRow(1), false);
+		fail = false;
+		current = { ...frame, tasks: [] };
+		await view.refresh();
+		view.render(80, 10);
+		assert.equal(view.clickRow(1), false);
+	} finally {
+		view.dispose();
+	}
+});
 it("an unresolved conversation does not dispatch a numeric ID", async () => {
 	const identities: string[] = [];
 	const notices: string[] = [];

@@ -38,13 +38,14 @@ export interface AgentDraftState {
 }
 export interface DashboardState {
 	selected?: string;
+	exactTime: boolean;
 	filter: string;
 	newTask: string;
 	agents: Map<string, AgentDraftState>;
 	threads?: CollaborationViewState;
 }
 export function createDashboardState(): DashboardState {
-	return { filter: "", newTask: "", agents: new Map() };
+	return { filter: "", newTask: "", agents: new Map(), exactTime: false };
 }
 export function agentState(state: DashboardState, id: string): AgentDraftState {
 	let value = state.agents.get(id);

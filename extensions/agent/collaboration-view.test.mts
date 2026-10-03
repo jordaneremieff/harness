@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { fixture, source, row, turn, deferred } from "./dashboard-test-fixture.mts";
 import type { CollaborationPage, CollaborationList } from "./collaboration.ts";
@@ -179,7 +179,7 @@ it("i toggles exact UTC times without a read and retains the choice across dashb
 		f.ui.handleInput("p");
 		f.ui.handleInput("i");
 		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "i");
-		assert.equal(f.state.threads?.exactTime, false);
+		assert.equal(f.state.exactTime, false);
 		f.ui.handleInput("\x1b");
 		f.ui.handleInput("i");
 		f.ui.dispose();
@@ -199,7 +199,7 @@ it("i toggles exact UTC times without a read and retains the choice across dashb
 			reopened.ui.handleInput("e");
 			const shown = stripVTControlCharacters(reopened.ui.render(100).join("\n"));
 			assert.match(shown, /Time: 1970-01-01T00:00:00\.002Z/);
-			assert.equal(f.state.threads?.exactTime, true);
+			assert.equal(f.state.exactTime, true);
 		} finally {
 			reopened.ui.dispose();
 		}
@@ -208,10 +208,71 @@ it("i toggles exact UTC times without a read and retains the choice across dashb
 			await open(fresh);
 			fresh.ui.handleInput("e");
 			assert.match(text(fresh), /\(local\)/);
-			assert.equal(fresh.state.threads?.exactTime, false);
+			assert.equal(fresh.state.exactTime, false);
 		} finally {
 			fresh.ui.dispose();
 		}
+	} finally {
+		f.ui.dispose();
+	}
+});
+it("mouse follows thread rows, timestamps, notify choices and hints without consuming selection drags", async () => {
+	const current = page();
+	assert.ok(current.events[0]);
+	current.events[0].message = "Time: forged message label";
+	const f = setup(100, 36, async (input) => (input.action === "list" ? list() : current));
+	const mouse = (needle: string, patch: Partial<TuiMouseEvent> = {}) => {
+		const lines = f.ui.render(100).map(stripVTControlCharacters);
+		const y = lines.findIndex((line) => line.includes(needle));
+		assert.ok(y >= 0, needle);
+		const x = lines[y]?.indexOf(needle) ?? 0;
+		return f.ui.handleMouse({
+			type: "click",
+			button: "left",
+			x,
+			y,
+			screenX: x,
+			screenY: y,
+			width: 100,
+			height: 36,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 1,
+			...patch,
+		});
+	};
+	try {
+		await turn();
+		f.ui.handleInput("t");
+		await turn();
+		mouse("Boundary review");
+		await turn();
+		f.ui.handleInput("e");
+		assert.match(text(f), /\(local\)/);
+		const before = f.calls.length;
+		mouse("Time: forged message label");
+		assert.equal(f.state.exactTime, false);
+		const stamp = "Time: ";
+		mouse(stamp, { type: "press" });
+		mouse(stamp, { type: "drag" });
+		mouse(stamp, { type: "release" });
+		assert.equal(f.state.exactTime, false);
+		mouse(stamp);
+		assert.equal(f.state.exactTime, true);
+		assert.equal(f.calls.length, before);
+		mouse("i local time");
+		assert.equal(f.state.exactTime, false);
+		mouse("n notify");
+		mouse("[ ] Reviewer");
+		assert.deepEqual(f.state.threads?.drafts.get(threadId)?.notify, ["two"]);
+		mouse("Tab write");
+		f.ui.handleInput("draft");
+		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "draft");
+		mouse("Esc back");
+		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "draft");
+		mouse("Time: ", { type: "wheel", wheelDelta: -5 });
+		assert.match(text(f), /Purpose: Choose a usable contract/);
 	} finally {
 		f.ui.dispose();
 	}
@@ -558,7 +619,7 @@ it("dashboard help distinguishes a silent post from passive notification deliver
 		await turn();
 		f.ui.handleInput("?");
 		assert.match(text(f, 120), /p posts without a model wake\./);
-		assert.match(text(f, 120), /i switches Threads event times between local time and exact UTC timestamps\./);
+		assert.match(text(f, 120), /i switches roster and Threads times between local time and exact UTC timestamps\./);
 		assert.doesNotMatch(text(f, 120), /p posts without notification\./);
 	} finally {
 		f.ui.dispose();

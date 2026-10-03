@@ -4,9 +4,20 @@ export function fitLine(text: string, width: number): string {
 	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
 }
 /** Remove optional hints from the right, but always retain the escape destination. */
-export function fitHints(items: readonly string[], backHint: string, width: number): string {
+export function fitHints(
+	items: readonly string[],
+	backHint: string,
+	width: number,
+	onHint?: (hint: string, x: number, width: number) => void,
+): string {
 	const kept = [...items];
 	while (kept.length && visibleWidth([...kept, backHint].join(" · ")) > width) kept.pop();
+	let x = 0;
+	for (const hint of [...kept, backHint]) {
+		const size = visibleWidth(hint);
+		if (x < width) onHint?.(hint, x, Math.min(size, width - x));
+		x += size + 3;
+	}
 	return fitLine([...kept, backHint].join(" · "), width);
 }
 export function dashboardGeometry(

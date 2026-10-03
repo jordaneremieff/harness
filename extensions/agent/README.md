@@ -269,7 +269,7 @@ contributions, attributed chronological exchange, revisions, and coverage.
 Event times default to the local date and clock time with an AM/PM suffix,
 without seconds or milliseconds. Press `i` in a thread to switch to exact UTC
 ISO timestamps with milliseconds or back to local time. The choice applies to
-all Threads views and survives close and reopen in the same Pi session and
+the roster and all Threads views and survives close and reopen in the same Pi session and
 process; it is not saved to disk. Catalog changes refresh the view without
 polling or waking models.
 
@@ -503,6 +503,24 @@ admission clears only the submitted draft revision, including after the
 dashboard reopens; newer text stays. Every truncated dashboard list keeps the
 focused entry and its neighbors visible and states the hidden count.
 
+In Pi fullscreen mode, click a roster or task row to select it, then click the
+`Enter` hint to open it. In Threads, click a row to select it; click the selected
+row or the `Enter` hint to open it. Click action rows to select, then the `Enter`
+hint to run the action through its usual confirmation flow. Click a message
+field to focus it and place its caret. A click in the conversation opens the
+agent console. Visible hint labels retain their keyboard actions; arrow and
+page hints have separate click targets for each direction. Click a thread's
+notify checkbox row to change the recipient selection.
+
+The wheel scrolls the pane under the pointer. Roster scroll does not change
+the selected agent or the message recipient. Conversation and thread scroll
+leave the editor focus and drafts intact. Press, drag, release, modified clicks,
+and multiple clicks remain available to Pi's native text selection; dashboard
+actions use completed unmodified single clicks. A drag does not activate a
+row, timestamp, or hint. Pi retains control of copy-on-select and links.
+Regular terminal mode leaves mouse input to the terminal. All actions retain
+a keyboard path; no mouse setting or global shortcut is added.
+
 The New agent field accepts a task in your own words and treats it literally,
 including text such as `--help`. Enter starts the agent
 with the primary's current directory and model, selects it, and keeps the
@@ -648,7 +666,12 @@ instead.
 
 The roster reads bounded host-published metadata through `dashboard-types.ts`.
 It parses no ordinary JSONL, opens no conversation database, and starts no host.
-Rows show state, retained cost, and relative age. Names shorten before those
+Rows show state, retained cost, and an `Updated` timestamp: the agent's last
+recorded change, not its work duration. The local date and clock time stay
+fixed until that recorded change advances, for active and inactive agents.
+Press `i` in the roster or a thread, or click a timestamp in fullscreen mode,
+to switch between local time and exact UTC timestamps with milliseconds.
+The same choice applies to thread event times. Names shorten before these
 fields; duplicate names receive unique identity suffixes. The footer keeps the
 selected model, reasoning, cost, and state separate from the single hint line.
 Unknown cost stays unknown and partial cost stays a lower bound.

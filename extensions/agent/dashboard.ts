@@ -1,20 +1,23 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { Input, matchesKey, wrapTextWithAnsi, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import {
+	Input,
+	matchesKey,
+	wrapTextWithAnsi,
+	type Component,
+	type Focusable,
+	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
+import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
-import { dashboardGeometry, fitHints, fitLine } from "./dashboard-layout.ts";
-import {
-	dashboardRecords,
-	rosterLines,
-	coverageText,
-	rosterTotals,
-	rosterAge,
-	attentionReason,
-} from "./dashboard-roster.ts";
+import { dashboardGeometry, fitLine } from "./dashboard-layout.ts";
+import { dashboardRecords, rosterLines, coverageText, rosterTotals, attentionReason } from "./dashboard-roster.ts";
 import {
 	agentState,
 	dashboardSessionState,
@@ -48,7 +51,11 @@ const HELP = [
 	"a opens actions. / finds loaded agents. t opens Threads. ? opens help.",
 	"Threads shows the frame, peers, and exchange. p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
-	"i switches Threads event times between local time and exact UTC timestamps.",
+	"i switches roster and Threads times between local time and exact UTC timestamps.",
+	"Updated means the agent's last recorded change, not an activity timer.",
+	"In fullscreen mode, click rows to select and visible hints to act.",
+	"Click a time to switch its format. Click a message field to write.",
+	"Use the wheel over a pane to scroll. Drag text to select it.",
 	"Published omissions have storage rows. Enter reads their full thread directory.",
 	"",
 	"Messages",
@@ -87,6 +94,11 @@ export class AgentDashboard implements Component, Focusable {
 	private readonly newComposer: AgentComposer;
 	private tasks?: AgentTasksView;
 	private threads?: CollaborationView;
+	private readonly mouse = new DashboardMouse();
+	private mouseScreen?: string;
+	private rosterScroll?: number;
+	private rosterStart = 0;
+	private rosterMaxStart = 0;
 	private actionIndex = 0;
 	private helpOffset = 0;
 	private result = "";
@@ -105,11 +117,9 @@ export class AgentDashboard implements Component, Focusable {
 	private rosterCache = new Map<string, { signature: string; row: AgentConversationSummary }>();
 	private readonly unsubscribe: Array<() => void> = [];
 	private readonly reconciliation: ReturnType<typeof setInterval>;
-	private readonly age: ReturnType<typeof setInterval>;
 	private rosterTimer?: ReturnType<typeof setTimeout>;
 	private streamTimer?: ReturnType<typeof setTimeout>;
 	private lastStreamPaint = 0;
-	private lastAgeText = "";
 	private bodyHeight = 10;
 	private creating = false;
 	private rosterOrderLocked = false;
@@ -170,15 +180,6 @@ export class AgentDashboard implements Component, Focusable {
 		this.reconciliation = setInterval(() => {
 			if (!this.hidden) void this.refreshRoster();
 		}, 2000);
-		this.age = setInterval(() => {
-			if (!this.hidden && !this.closed) {
-				const text = this.rows.map((row) => rosterAge(row.modifiedAt, Date.now())).join(",");
-				if (text !== this.lastAgeText) {
-					this.lastAgeText = text;
-					this.redraw();
-				}
-			}
-		}, 1000);
 		void this.refreshRoster();
 	}
 	private redraw(): void {
@@ -465,6 +466,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.redraw();
 	}
 	private move(delta: number): void {
+		this.rosterScroll = undefined;
 		this.navigation.generation++;
 		this.rosterOrderLocked = this.navigation.screen === "roster";
 		const index = this.rows.findIndex((row) => row.id === this.state.selected);
@@ -832,6 +834,11 @@ export class AgentDashboard implements Component, Focusable {
 			theme: this.theme,
 			keys: this.keys,
 			state: this.state.threads,
+			exactTime: () => this.state.exactTime,
+			toggleTime: () => {
+				this.state.exactTime = !this.state.exactTime;
+				this.redraw();
+			},
 			collaborate: this.operations.collaborate,
 			nameFor: (id) => this.page?.rows.find((row) => row.id === id)?.name || id,
 			selectedAgent: () => this.state.selected,
@@ -875,6 +882,10 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		if (matchesKey(data, "tab")) {
 			if (!this.loadMore) actions.m();
+			return;
+		}
+		if (data === "i") {
+			this.state.exactTime = !this.state.exactTime;
 			return;
 		}
 		if (actions[data]) {
@@ -928,6 +939,30 @@ export class AgentDashboard implements Component, Focusable {
 		this.routeInput(data);
 		this.redraw();
 	}
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.closed || this.hidden || this.mouseScreen !== this.navigation.screen) return;
+		if (this.navigation.screen === "threads") return this.threads?.handleMouse(event);
+		return this.mouse.handle(event);
+	}
+	private mouseSelect(id: string): false | undefined {
+		if (!this.rows.some((row) => row.id === id)) return false;
+		if (this.navigation.screen === "find") this.find.onSubmit?.(this.find.getValue());
+		else this.navigation.roster();
+		this.state.selected = id;
+		this.loadMore = false;
+		this.rosterOrderLocked = true;
+		this.reconcile();
+		this.redraw();
+	}
+	private wheelConversation(delta: number): void {
+		const conversation = this.console?.conversation;
+		if (!conversation) return;
+		if (delta < 0 && conversation.atTop()) this.earlier();
+		else if (delta > 0 && conversation.atBottom() && this.history.newer())
+			void this.readHistory(this.history.newer()?.upper);
+		else conversation.page(delta);
+		this.redraw();
+	}
 	private reloadContent(): void {
 		this.setConversation(this.console ? this.source.frame(this.console.row.id)?.live : []);
 		this.redraw();
@@ -951,6 +986,16 @@ export class AgentDashboard implements Component, Focusable {
 		const capacity = Math.max(1, Math.floor((this.bodyHeight - 2) / 2));
 		const start = Math.max(0, Math.min(choices.length - capacity, this.actionIndex - Math.floor(capacity / 2)));
 		const visible = choices.slice(start, start + capacity);
+		for (let index = 0; index < visible.length; index++)
+			this.mouse.add({
+				x: 0,
+				y: 1 + index * 2,
+				width: this.tui.terminal.columns,
+				height: 2,
+				click: () => {
+					this.actionIndex = start + index;
+				},
+			});
 		const lines = visible.flatMap((choice, index) => [
 			`${start + index === this.actionIndex ? "›" : " "} ${choice.label}${choice.disabled ? ` · ${choice.disabled}` : ""}`,
 			`  ${choice.description}`,
@@ -974,6 +1019,25 @@ export class AgentDashboard implements Component, Focusable {
 				: screen === "actions"
 					? this.actionLines()
 					: this.readerLines(width);
+		this.mouse.add({
+			x: 0,
+			y: 1,
+			width,
+			height: this.bodyHeight,
+			wheel: (delta) => {
+				if (screen === "tasks") this.tasks?.scroll(delta);
+				else if (screen === "actions") this.actionIndex = Math.max(0, Math.min(11, this.actionIndex + delta));
+				else this.helpOffset = Math.max(0, this.helpOffset + delta);
+			},
+		});
+		if (screen === "tasks")
+			this.mouse.add({
+				x: 0,
+				y: 1,
+				width,
+				height: this.bodyHeight,
+				click: (event) => (this.tasks?.clickRow(event.y) ? undefined : false),
+			});
 		const hints =
 			screen === "help" || screen === "result"
 				? ["↑↓ scroll", "PgUp/PgDn read"]
@@ -982,7 +1046,7 @@ export class AgentDashboard implements Component, Focusable {
 			this.title(),
 			...Array.from({ length: this.bodyHeight }, (_, index) => body[index] ?? ""),
 			(screen === "actions" ? this.console?.state.receipt : undefined) ?? this.notice ?? "",
-			fitHints(hints, "Esc back", width),
+			mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data)),
 		];
 	}
 	private messageLabel(width: number, focused: boolean): string {
@@ -1014,16 +1078,26 @@ export class AgentDashboard implements Component, Focusable {
 		};
 		const normal: [string[], string] = this.rows.length
 			? [
-					["↑↓ select", "Enter open", "Tab message", "t threads", "n new", "a actions", "/ find", "? help"],
+					[
+						"↑↓ select",
+						"Enter open",
+						"Tab message",
+						"t threads",
+						this.state.exactTime ? "i local time" : "i exact UTC",
+						"n new",
+						"a actions",
+						"/ find",
+						"? help",
+					],
 					this.state.filter ? "Esc clear find" : "Esc close",
 				]
 			: this.emptyStore()
 				? [["Enter new agent", "n new", "t threads", "/ find", "? help"], "Esc close"]
 				: [["n new", "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
 		const [items, back] = hints[screen] ?? normal;
-		return fitHints(items, back, width);
+		return mouseHints(this.mouse, this.tui.terminal.rows - 1, items, back, width, (data) => this.handleInput(data));
 	}
-	private rosterViewport(width: number, height: number, compact: boolean): string[] {
+	private rosterViewport(width: number, height: number, compact: boolean, y: number): string[] {
 		const lines = rosterLines(
 			this.rows,
 			this.loadMore ? undefined : this.state.selected,
@@ -1032,10 +1106,54 @@ export class AgentDashboard implements Component, Focusable {
 			Date.now(),
 			this.theme,
 			compact,
+			{
+				start: this.rosterScroll,
+				exactTime: this.state.exactTime,
+				range: (start, maxStart) => {
+					this.rosterStart = start;
+					this.rosterMaxStart = maxStart;
+				},
+				row: (row, line, count) =>
+					this.mouse.add({ x: 0, y: y + line, width, height: count, click: () => this.mouseSelect(row.id) }),
+				timestamp: (_row, line, x, timeWidth) =>
+					this.mouse.add({
+						x,
+						y: y + line,
+						width: timeWidth,
+						height: 1,
+						click: () => {
+							this.state.exactTime = !this.state.exactTime;
+						},
+					}),
+			},
 		);
+		this.mouse.add({
+			x: 0,
+			y,
+			width,
+			height,
+			wheel: (delta) => {
+				this.rosterScroll = Math.max(0, Math.min(this.rosterMaxStart, this.rosterStart + delta));
+				this.redraw();
+			},
+		});
 		if (!this.rows.length && this.page?.rows.length)
 			lines[lines.length - 1] = `0 matches of ${this.page.rows.length} loaded`;
 		return lines;
+	}
+	private loadMoreLine(width: number, y: number): string {
+		if (!this.page?.coverage.nextCursor) return coverageText(this.page?.coverage);
+		this.mouse.add({
+			x: 0,
+			y,
+			width,
+			height: 1,
+			click: () => {
+				this.loadMore = true;
+				this.rosterEnter();
+			},
+		});
+		return this.loadMore ? "› Load more agents · Enter" : "  Load more agents";
 	}
 	private dashboardBody(
 		width: number,
@@ -1043,24 +1161,16 @@ export class AgentDashboard implements Component, Focusable {
 		conversation: string[],
 	): string[] {
 		if (geometry.wide) {
-			const roster = this.rosterViewport(38, geometry.bodyHeight, false);
+			const roster = this.rosterViewport(38, geometry.bodyHeight, false, this.navigation.screen === "find" ? 3 : 2);
 			if (this.page?.coverage.nextCursor && roster.length < geometry.bodyHeight)
-				roster.push(this.loadMore ? "› Load more agents · Enter" : "  Load more agents");
+				roster.push(this.loadMoreLine(38, (this.navigation.screen === "find" ? 3 : 2) + roster.length));
 			return conversation.map(
 				(line, index) => `${fitLine(roster[index] ?? "", 38)}│${fitLine(line, geometry.conversationWidth)}`,
 			);
 		}
 		if (this.navigation.screen === "console") return conversation;
-		const roster = this.rosterViewport(width, 4, true);
-		return [
-			...roster,
-			this.page?.coverage.nextCursor
-				? this.loadMore
-					? "› Load more agents · Enter"
-					: "  Load more agents"
-				: coverageText(this.page?.coverage),
-			...conversation,
-		];
+		const roster = this.rosterViewport(width, 4, true, this.navigation.screen === "find" ? 3 : 2);
+		return [...roster, this.loadMoreLine(width, this.navigation.screen === "find" ? 7 : 6), ...conversation];
 	}
 	private renderDashboard(width: number, height: number): string[] {
 		const screen = this.navigation.screen;
@@ -1076,7 +1186,43 @@ export class AgentDashboard implements Component, Focusable {
 				index === Math.floor(geometry.bodyHeight / 2) ? status : "",
 			);
 		const body = this.dashboardBody(width, geometry, conversation);
-		if (screen === "find") body.unshift(this.find.render(width)[0] ?? "");
+		if (screen === "find") {
+			body.unshift(this.find.render(width)[0] ?? "");
+			this.mouse.add({
+				x: 0,
+				y: 2,
+				width,
+				height: 1,
+				click: (event) => this.find.handleMouse({ ...event, type: "press" }),
+			});
+		}
+		const conversationY = 2 + (screen === "find" ? 1 : 0) + geometry.rosterHeight;
+		this.mouse.add({
+			x: geometry.wide ? 39 : 0,
+			y: conversationY,
+			width: geometry.conversationWidth,
+			height: geometry.bodyHeight,
+			click: () => {
+				if (!this.console || screen === "new" || screen === "find") return false;
+				if (screen !== "console") this.navigation.enter("console", this.console.row.id);
+			},
+			wheel: (delta) => this.wheelConversation(delta),
+		});
+		const composerY = 3 + body.length;
+		this.mouse.add({
+			x: 0,
+			y: composerY - 1,
+			width,
+			height: editor.length + 1,
+			click: (event) => {
+				const composer = screen === "new" ? this.newComposer : this.console?.composer;
+				if (!composer) return false;
+				if (screen !== "new" && screen !== "console" && screen !== "message" && this.console)
+					this.navigation.enter("message", this.console.row.id);
+				composer.focused = true;
+				return composer.handleMouse({ ...event, y: event.y - 1, height: editor.length });
+			},
+		});
 		return [
 			this.title(),
 			this.console ? status : "",
@@ -1090,6 +1236,8 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	render(width: number): string[] {
 		const height = this.tui.terminal.rows;
+		this.mouse.reset(width, height);
+		this.mouseScreen = this.navigation.screen;
 		if (width < 60 || height < 20)
 			return Array.from({ length: height }, (_, index) =>
 				fitLine(index === 0 ? "Resize to use Agents. Esc back." : "", width),
@@ -1105,6 +1253,7 @@ export class AgentDashboard implements Component, Focusable {
 		return lines.map((line) => fitLine(line, width));
 	}
 	invalidate(): void {
+		this.mouse.reset();
 		this.console?.conversation.invalidate();
 		this.console?.composer.invalidate();
 		this.newComposer.invalidate();
@@ -1123,7 +1272,6 @@ export class AgentDashboard implements Component, Focusable {
 		this.tasks?.dispose();
 		this.threads?.dispose();
 		clearInterval(this.reconciliation);
-		clearInterval(this.age);
 		clearTimeout(this.rosterTimer);
 		clearTimeout(this.streamTimer);
 	}
