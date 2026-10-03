@@ -16,6 +16,11 @@ name is not a unique address or proof of expertise.
 Resolve the recurring concern with `agent_spawn({handle: "session-history", ...})`;
 it resolves or creates one root. Supply creation defaults for its display name,
 role, and any requested model. Reuse leaves those defaults unapplied.
+
+On first creation, set `cwd` to a stable directory, such as the harness package
+root. Never use a temporary, archive, or task-specific directory: `cwd` is fixed
+for the agent's lifetime.
+
 Use `agent_list` when discovery is needed, not as a substitute for resolving the
 known handle. Do not mine discovery previews as historical evidence.
 Resolve without a prompt,
