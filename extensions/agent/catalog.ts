@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { publishCatalogChange } from "./catalog-events.ts";
 import {
 	closeSync,
 	constants,
@@ -139,6 +140,7 @@ export class AgentCatalog {
 				throw new Error("Spawn request ID already belongs to different agent configuration");
 			return { record: previous, created: false };
 		}
+		publishCatalogChange(this.root);
 		return { record, created: true };
 	}
 
@@ -160,6 +162,7 @@ export class AgentCatalog {
 		const current = lstatSync(path, { throwIfNoEntry: false });
 		if (current === undefined || current.dev !== before.dev || current.ino !== before.ino) return "record-changed";
 		unlinkSync(path);
+		publishCatalogChange(this.root);
 		return "removed";
 	}
 	path(identity: string): string {
@@ -266,6 +269,7 @@ export class AgentCatalog {
 			}
 			throw error;
 		}
+		publishCatalogChange(this.root);
 		return record;
 	}
 

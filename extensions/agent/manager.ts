@@ -3,6 +3,7 @@ import { checkInMinutes } from "./durable-checkins.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
+import { subscribeCatalogChanges } from "./catalog-events.ts";
 import { formatDurableFooter } from "./footer.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
@@ -149,7 +150,25 @@ class BoundedMap<V> {
 export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
 	private readonly rosterListeners = new Set<() => void>();
-	subscribeRoster(listener: () => void): () => void { this.rosterListeners.add(listener); return () => { this.rosterListeners.delete(listener); }; }
+	private stopCatalogObservation?: () => void;
+	subscribeRoster(listener: () => void): () => void {
+		if (this.shuttingDown) throw new Error("Agent manager is closed");
+		if (!this.stopCatalogObservation) {
+			this.stopCatalogObservation = subscribeCatalogChanges(this.catalog.root, () => this.rosterChanged(), (error) => {
+				this.failures.set("catalog-observation", `Catalog updates are unavailable: ${error.message}. Restart this Pi process.`);
+				this.rosterChanged();
+			});
+		}
+		this.rosterListeners.add(listener);
+		return () => {
+			this.rosterListeners.delete(listener);
+			if (this.rosterListeners.size === 0) {
+				this.stopCatalogObservation?.();
+				this.stopCatalogObservation = undefined;
+				this.failures.delete("catalog-observation");
+			}
+		};
+	}
 	private rosterChanged(): void { for (const listener of this.rosterListeners) listener(); }
 	readonly catalog: AgentCatalog;
 	readonly places: PlaceBook;
@@ -763,6 +782,9 @@ export class AgentManager {
 	close(): void {
 		this.shuttingDown = true;
 		this.lifecycle.abort();
+		this.stopCatalogObservation?.();
+		this.stopCatalogObservation = undefined;
+		this.rosterListeners.clear();
 		for (const primary of this.primaries.values()) primary.status?.(undefined);
 		this.primaries.clear();
 		for (const channel of this.primaryChannels.values()) void channel.close();
