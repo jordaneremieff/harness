@@ -100,7 +100,7 @@ const inputs: Record<string, string> = {
 	Tab: "\t",
 	Esc: "\x1b",
 	Space: " ",
-	"Ctrl+J": "\n",
+	"Ctrl+J": "\x1b[106;5u",
 	"Ctrl+O": "\x0f",
 	"Ctrl+T": "\x14",
 	PgUp: "\x1b[5~",
