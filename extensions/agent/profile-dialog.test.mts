@@ -25,6 +25,29 @@ it("profile text separates identity, provenance, current routes, and on-demand e
 	assert.match(profileText({ ...profile, model: null, requests: [] }), /Model: Unknown[\s\S]*earlier requester evidence is unknown/);
 });
 for (const width of [28, 48, 120]) {
+	it(`profile exposes structured current and queued routes on demand at width ${width}`, () => {
+		const routed: AgentProfile = { ...profile, requests: [
+			{ requestId: "active-request", requester: "active-requester", replyTo: "active-recipient", origin: "operator", status: "placed" },
+			{ requestId: "queued-request", requester: "queued-requester", replyTo: "queued-recipient", origin: "model", status: "queued" },
+		] };
+		const panel = new ProfilePanel(routed, draft(), theme, () => 20, () => {}, () => {});
+		const pages: string[] = [];
+		for (let page = 0; page < 10; page++) {
+			const lines = panel.render(width);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			const footer = lines.findIndex((line) => /\d+-\d+ of \d+ lines/.test(line));
+			assert.ok(footer > 0);
+			pages.push(lines.slice(1, footer).join("\n"));
+			panel.handleInput("\x1b[6~");
+		}
+		const text = pages.join("\n").replace(/\s/gu, "");
+		for (const route of routed.requests) {
+			assert.ok(text.includes(`${route.requestId}·${route.status}·${route.origin}`), route.requestId);
+			assert.ok(text.includes(`Requester:${route.requester}`));
+			assert.ok(text.includes(`Replyrecipient:${route.replyTo}`));
+		}
+		assert.doesNotMatch(text, /Sourcedfact/);
+	});
 	it(`profile scrolling and mouse actions retain full content at width ${width}`, () => {
 		const choices: string[] = [];
 		let height = 20;

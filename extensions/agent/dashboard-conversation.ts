@@ -65,10 +65,10 @@ const nativeTools = (cwd: string) => [
 	createPowerShellToolDefinition(cwd),
 ];
 
-function contentText(content: Message["content"]): string {
+function contentText(content: Message["content"], includeImageLabels = true): string {
 	if (typeof content === "string") return content;
 	return content
-		.flatMap((part) => (part.type === "text" ? [part.text] : part.type === "image" ? ["[Image]"] : []))
+		.flatMap((part) => (part.type === "text" ? [part.text] : includeImageLabels && part.type === "image" ? ["[Image]"] : []))
 		.join("\n");
 }
 
@@ -121,7 +121,7 @@ export function firstTaskEntry(
 	if (first === "") return undefined;
 	const present = snapshot.entries.some(
 		(entry) =>
-			entry.kind === "pi.user" && (entry.model ?? []).some((message) => contentText(message.content).startsWith(first)),
+			entry.kind === "pi.user" && (entry.model ?? []).some((message) => contentText(message.content, false).trimStart().startsWith(first)),
 	);
 	if (present) return undefined;
 	return {
@@ -335,6 +335,7 @@ export class AgentConversation {
 				this.appendResult(id, message, id.startsWith("live:"));
 				return;
 			case "user":
+				// Host routes live in structured request context; routing-looking user text stays user text.
 				component = new UserMessageComponent(contentText(message.content), markdown);
 				break;
 			case "system": {

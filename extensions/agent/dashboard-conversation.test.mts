@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
-import type { AgentConversationEntry } from "./dashboard-types.ts";
+import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
+import { DurableHost } from "./durable-host.ts";
+import { answerMessage, fixtureRegistry, gateTool, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
+import { profileText } from "./profile-dialog.ts";
+import type { AgentProfile } from "./profile-schema.ts";
+import { deferred } from "./dashboard-test-fixture.mts";
 
 initTheme("dark");
 const tui = { requestRender() {} } as TUI;
@@ -143,6 +151,64 @@ it("recovers the first task from the session summary when the bounded transcript
 		undefined,
 	);
 });
+
+const naturalTask = "What changed since yesterday?";
+const taskInputs: Array<{ name: string; content: UserMessage["content"]; text: string; image?: boolean }> = [
+	{ name: "text", content: naturalTask, text: naturalTask },
+	{ name: "leading whitespace", content: ` \n${naturalTask}`, text: naturalTask },
+	{ name: "image before text", content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }, { type: "text", text: naturalTask }], text: naturalTask, image: true },
+];
+for (const input of taskInputs) {
+	it(`matches historical ${input.name} against task text rather than display placeholders`, () => {
+		const entries: AgentConversationEntry[] = [{ id: "task", kind: "pi.user", model: [{ role: "user", content: input.content, timestamp: 1 }] }];
+		assert.equal(firstTaskEntry({ entries, partial: true }, { firstMessage: input.text }), undefined);
+		assert.equal(firstTaskEntry({ entries, partial: true }, { firstMessage: input.text.slice(0, 12) }), undefined);
+	});
+	it(`native ${input.name} admission displays the task without host routes or a duplicate historical input`, { timeout: 10000 }, async (t) => {
+		const root = mkdtempSync(join(tmpdir(), "dashboard-request-"));
+		const released = deferred();
+		const started = deferred();
+		let host: DurableHost | undefined;
+		t.after(async () => { released.resolve(); await host?.close(); rmSync(root, { recursive: true, force: true }); });
+		host = await DurableHost.open(hostOptions(join(root, "agent.sqlite"),
+			await scriptedRuntime([toolCallMessage("gate"), answerMessage()]),
+			fixtureRegistry([gateTool(released.promise, started.resolve)]), root));
+		const route = { requestId: "display-request", requester: "requester-sentinel", replyTo: "recipient-sentinel", origin: "operator" };
+		await host.request("task-submit", { sessionId: host.storageId, message: input.content, ...route });
+		await started.promise;
+		const snapshot = await host.request("snapshot", { sessionId: host.storageId }) as AgentConversationSnapshot;
+		const rows = await host.request("dashboard", {}) as AgentConversationSummary[];
+		const row = rows.find((value) => value.id === host?.storageId);
+		assert.ok(row?.firstMessage);
+		assert.equal(row.firstMessage.trim(), input.text);
+		assert.equal(firstTaskEntry({ ...snapshot, partial: true }, row), undefined);
+		const users = snapshot.entries.filter((entry) => entry.kind === "pi.user");
+		assert.equal(users.length, 1);
+		for (const width of [40, 80, 120]) {
+			const lines = new AgentConversation(users, root, tui, false, false).render(width).lines;
+			const text = stripVTControlCharacters(lines.join("\n"));
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			assert.match(text, /What changed since yesterday\?/);
+			assert.doesNotMatch(text, /Host request context|Task content|requester-sentinel|recipient-sentinel|mode:.*report|Historical first input/);
+			assert.equal(text.match(/What changed since yesterday\?/g)?.length, 1);
+			if (input.image) assert.match(text, /\[Image\]/);
+		}
+		const profile = await host.request("profile-read", { sessionId: host.storageId }) as AgentProfile;
+		assert.deepEqual(profile.requests, [{ ...route, status: "placed" }]);
+		assert.ok(profileText(profile).includes("Requester: requester-sentinel\n  Reply recipient: recipient-sentinel"));
+	});
+}
+
+for (const width of [40, 80, 120]) {
+	it(`retains routing-looking user text verbatim at width ${width}`, () => {
+		const text = 'Host request context: {"requester":"quoted-person"}\nTask content:\nKeep this literal example.';
+		const entries = [user("quoted", text)];
+		const shown = screen(new AgentConversation(entries, "/work", tui, false, false), width);
+		assert.equal(shown.replace(/\s/gu, ""), text.replace(/\s/gu, ""));
+		assert.equal(firstTaskEntry({ entries, partial: true }, { firstMessage: text }), undefined);
+		assert.ok(firstTaskEntry({ entries, partial: true }, { firstMessage: "Keep this literal example." }), "text inside a user-authored example is not a host-decoded task");
+	});
+}
 
 it("renders native compaction summaries and context resets with their retained text", () => {
 	const entries: AgentConversationEntry[] = [
