@@ -194,6 +194,7 @@ export class CollaborationView {
 		});
 		if (!this.current(generation)) return;
 		if (!discovery(result)) throw new Error("The host returned an invalid thread list. Restart the Pi window or host.");
+		this.mouse.reset();
 		this.list = cursor && this.list ? this.mergeList(this.list, result) : result;
 		this.index = Math.min(this.index, Math.max(0, this.choices().length - 1));
 	}
@@ -215,6 +216,7 @@ export class CollaborationView {
 		if (!this.current(generation)) return;
 		if (!threadPage(result) || result.thread.id !== id)
 			throw new Error("The host returned an invalid thread page. Restart the Pi window or host.");
+		this.mouse.reset();
 		this.page = result;
 	}
 	async refresh(cursor?: string): Promise<void> {

@@ -269,9 +269,13 @@ contributions, attributed chronological exchange, revisions, and coverage.
 Event times default to the local date and clock time with an AM/PM suffix,
 without seconds or milliseconds. Press `i` in a thread to switch to exact UTC
 ISO timestamps with milliseconds or back to local time. The choice applies to
-the roster and all Threads views and survives close and reopen in the same Pi session and
-process; it is not saved to disk. Catalog changes refresh the view without
-polling or waking models.
+the roster and all Threads views and survives close and reopen in the same Pi
+session and process; it is not saved to disk. Catalog publishers notify open
+roster subscribers, including readers with no attached host. Those notifications
+refresh the open Threads view after an external process publishes a change.
+Observation starts no host or model turn and adds no polling loop. The observer
+closes with its last subscriber. A refreshed thread list or peer list rejects
+old mouse positions until the new rows render.
 
 ## Recovery and delivery
 

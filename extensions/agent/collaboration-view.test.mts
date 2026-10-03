@@ -216,6 +216,66 @@ it("i toggles exact UTC times without a read and retains the choice across dashb
 		f.ui.dispose();
 	}
 });
+function cellEvent(f: ReturnType<typeof setup>, needle: string): TuiMouseEvent {
+	const lines = f.ui.render(100).map(stripVTControlCharacters);
+	const y = lines.findIndex((line) => line.includes(needle));
+	assert.ok(y >= 0, needle);
+	const x = lines[y]?.indexOf(needle) ?? 0;
+	return {
+		type: "click",
+		button: "left",
+		x,
+		y,
+		screenX: x,
+		screenY: y,
+		width: 100,
+		height: 36,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+	};
+}
+it("thread discovery refresh rejects clicks on the previous list before repaint", async () => {
+	let current = list();
+	const f = setup(100, 36, async () => structuredClone(current));
+	try {
+		await turn();
+		f.ui.handleInput("t");
+		await turn();
+		const oldClick = cellEvent(f, "Boundary review");
+		const first = current.items[0];
+		assert.ok(first);
+		current = { ...current, items: [{ ...first, id: "storage/replacement", title: "Replacement thread" }] };
+		f.notify();
+		await turn();
+		const calls = f.calls.length;
+		assert.equal(f.ui.handleMouse(oldClick), undefined);
+		assert.equal(f.calls.length, calls);
+		assert.equal(f.state.threads?.selected, undefined);
+		assert.match(text(f), /Replacement thread/);
+	} finally {
+		f.ui.dispose();
+	}
+});
+it("member refresh rejects stale notify hits until the new recipient rows render", async () => {
+	let current = page();
+	const f = setup(100, 36, async (input) => structuredClone(input.action === "list" ? list() : current));
+	try {
+		await open(f);
+		f.ui.handleInput("n");
+		const oldClick = cellEvent(f, "[ ] Reviewer");
+		current = { ...current, thread: { ...current.thread, members: current.thread.members.toReversed() } };
+		f.notify();
+		await turn();
+		assert.equal(f.ui.handleMouse(oldClick), undefined);
+		assert.deepEqual(f.state.threads?.drafts.get(threadId)?.notify, []);
+		f.ui.handleMouse(cellEvent(f, "[ ] Reviewer"));
+		assert.deepEqual(f.state.threads?.drafts.get(threadId)?.notify, ["two"]);
+	} finally {
+		f.ui.dispose();
+	}
+});
 it("mouse follows thread rows, timestamps, notify choices and hints without consuming selection drags", async () => {
 	const current = page();
 	assert.ok(current.events[0]);
