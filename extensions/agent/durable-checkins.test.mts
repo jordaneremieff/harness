@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { AgentDeliveryDoc, recordDeliveryIntent, settleDeliveries, type DeliveryReport } from "./durable-controls.ts";
-import { CheckInTask } from "./durable-checkins.ts";
+import { CheckInTask, createCheckIn } from "./durable-checkins.ts";
+import { AssistantEntry, CompactionEntry, LiveDoc, UserEntry, type ConversationId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
+import { testModel } from "./test-runtime.mts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
 import { checkInMinutes } from "./durable-checkins.ts";
 
@@ -122,6 +124,112 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 		assert.deepEqual(settled?.reports ?? [], [], "settlement removes pending, acknowledged, and fallback rows for every owner");
 		assert.equal(await f.host.refreshIdle(), true);
 	} finally { f.releaseAnswer(); }
+});
+
+async function digestFixture(t: { after(fn: () => void | Promise<void>): void }, seed: (tx: Tx, conversationId: ConversationId) => Promise<void>) {
+	const now = Date.now();
+	const f = await scheduleFixture(t, { resume: false, now: () => now });
+	const conversation = await f.conversation();
+	await f.host.harness.commit(async (tx) => {
+		await seed(tx, conversation.id);
+		await tx.doc(AgentDeliveryDoc);
+		await createCheckIn(tx, { conversationId: Number(conversation.id), requestId: "watched", ownerId: f.ownerId,
+			senderIdentity: f.storageId, message: "second task", whenBusy: "followUp", origin: "model", admittedAt: now - 15000 }, 0.25);
+	}, BACKGROUND_CONTEXT);
+	f.host.harness.resume();
+	return { f, report: await waitForReport(f, `check-in:${conversation.id}:watched:1`) };
+}
+
+function assistant(text: string, calls = 0) {
+	return { role: "assistant" as const, content: [
+		...(text === "" ? [] : [{ type: "text" as const, text }]),
+		...Array.from({ length: calls }, (_, index) => ({ type: "toolCall" as const, id: `call-${index}`, name: "read", arguments: {} })),
+	], api: testModel.api, provider: testModel.provider, model: testModel.id, stopReason: "stop" as const,
+		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };
+}
+
+async function placeWatched(tx: Tx, conversationId: ConversationId, queued = false): Promise<SubmissionRecord> {
+	if (queued) return tx.createSubmission({ conversationId, requestId: "watched", type: "input", status: "queued" });
+	const entry = await tx.appendEntry(UserEntry, conversationId, { model: [{ role: "user", content: "second task", timestamp: Date.now() }] });
+	return tx.createSubmission({ conversationId, requestId: "watched", type: "input", status: "placed", entry: entry.id });
+}
+
+it("excludes the answered task from the watched task's reply and tool count", { timeout: 60000 }, async (t) => {
+	const { report } = await digestFixture(t, async (tx, conversationId) => {
+		const input = await tx.appendEntry(UserEntry, conversationId, { model: [{ role: "user", content: "first task", timestamp: Date.now() }] });
+		await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("", 5)] });
+		const answer = await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("First task final answer.")] });
+		await tx.createSubmission({ conversationId, requestId: "answered", type: "input", status: "done", entry: input.id, answer: answer.id });
+		await placeWatched(tx, conversationId);
+		await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("", 1)] });
+		const live = await tx.doc(LiveDoc, conversationId);
+		live.tools = [{ callId: "call-0", name: "read", status: "running", output: "old line\nline one\nline two\nline three" }];
+	});
+	assert.match(report.message, /Latest reply excerpt \(not a result\): No reply text yet\./u);
+	assert.match(report.message, /^Tool calls: 1 \(watched task\)\./u);
+	assert.doesNotMatch(report.message, /First task final answer|at least|old line/u);
+	assert.match(report.message, /Current tool: read; call issued 0s ago \(not exact runtime\)\./u);
+	assert.match(report.message, /Last tool lines:\nline one\nline two\nline three/u);
+});
+
+it("does not report the active task's live state while the watched input is queued", { timeout: 60000 }, async (t) => {
+	const { report } = await digestFixture(t, async (tx, conversationId) => {
+		await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("Earlier answer.", 5)] });
+		await placeWatched(tx, conversationId, true);
+		const live = await tx.doc(LiveDoc, conversationId);
+		live.generation = { attempt: 1, message: assistant("Earlier task partial.") };
+		live.tools = [{ callId: "call-0", name: "read", status: "running", output: "Earlier task output." }];
+	});
+	assert.equal(report.message, "Tool calls: 0 (watched task).\nCurrent step: queued or between steps.\nLatest reply excerpt (not a result): No reply text yet.");
+});
+
+it("uses only watched reply text and prefers its live partial", { timeout: 60000 }, async (t) => {
+	const { report } = await digestFixture(t, async (tx, conversationId) => {
+		await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("Earlier answer.")] });
+		await placeWatched(tx, conversationId);
+		await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("Watched retained reply.")] });
+		const live = await tx.doc(LiveDoc, conversationId);
+		live.generation = { attempt: 1, message: assistant("Watched live reply.") };
+	});
+	assert.match(report.message, /Current step: model request\./u);
+	assert.match(report.message, /Latest reply excerpt \(not a result\): Watched live reply\./u);
+	assert.doesNotMatch(report.message, /Earlier answer|Watched retained reply/u);
+});
+
+it("uses the watched retained reply without treating a compaction summary as reply text", { timeout: 60000 }, async (t) => {
+	const { report } = await digestFixture(t, async (tx, conversationId) => {
+		await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("Earlier answer.")] });
+		await placeWatched(tx, conversationId);
+		const reply = await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("Watched retained reply.")] });
+		await tx.appendEntry(CompactionEntry, conversationId, { head: reply.id, data: { reason: "manual" },
+			model: [{ role: "user", content: "Summary of earlier answer.", timestamp: Date.now() }] });
+	});
+	assert.match(report.message, /Latest reply excerpt \(not a result\): Watched retained reply\./u);
+	assert.doesNotMatch(report.message, /Earlier answer|Summary/u);
+});
+
+it("retains watched running tools when the bounded page omits their call entry", { timeout: 60000 }, async (t) => {
+	const { report } = await digestFixture(t, async (tx, conversationId) => {
+		await placeWatched(tx, conversationId);
+		await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("", 1)] });
+		for (let index = 0; index < 65; index += 1) await tx.appendEntry(UserEntry, conversationId, { model: [{ role: "user", content: "passive note", timestamp: Date.now() }] });
+		const live = await tx.doc(LiveDoc, conversationId);
+		live.tools = [{ callId: "call-0", name: "read", status: "running", output: "Watched tool output." }];
+	});
+	assert.match(report.message, /^Tool calls: at least 0 \(bounded retained entries for watched task\)\./u);
+	assert.match(report.message, /Current tool: read; call age unknown \(not exact runtime\)\./u);
+	assert.match(report.message, /Last tool lines:\nWatched tool output\./u);
+});
+
+for (const entries of [63, 64, 65]) it(`labels the tool count according to actual scan coverage with ${entries} watched entries`, { timeout: 60000 }, async (t) => {
+	const { report } = await digestFixture(t, async (tx, conversationId) => {
+		for (let index = 0; index < 70; index += 1) await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("Earlier answer.", 5)] });
+		await placeWatched(tx, conversationId);
+		for (let index = 1; index < entries; index += 1) await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("Watched retained reply.", 1)] });
+	});
+	if (entries <= 64) assert.match(report.message, new RegExp(`^Tool calls: ${entries - 1} \\(watched task\\)\\.`, "u"));
+	else assert.match(report.message, /^Tool calls: at least 64 \(bounded retained entries for watched task\)\./u);
+	assert.doesNotMatch(report.message, /Earlier answer/u);
 });
 
 it("arms and deduplicates the deadline task in the durable intent commit", { timeout: 60000 }, async (t) => {

@@ -296,13 +296,19 @@ after every required receiver accepts it. Repeated intervals never broadcast
 again for that owner. A failed or incomplete fallback stays pending.
 
 The headline names the agent and says it is still working, not finished, with
-elapsed time and retained conversation-total cost. The bounded body shows a
-lower bound of recent tool calls, current tools, their call age (not exact
-execution time), last tool lines, and a reply excerpt labeled as unfinished.
-Conversation cost includes earlier tasks and excludes unreported in-flight
-usage. The coordinator assesses a check-in and decides whether to report
-progress, let work continue, steer a wrap-up, or abort a hung tool. Steering
-waits for a tool boundary and does not interrupt a running tool.
+elapsed time and retained conversation-total cost. The bounded body covers only
+the watched task. Its retained-entry scan starts at the watched input's
+transcript entry. It shows the task's tool call count, current tools, their call
+age (not exact execution time), last tool lines, and a reply excerpt labeled as
+unfinished. The count is exact when
+the scan covers that range; a cut-off scan labels it as a lower bound. A current
+tool stays visible when its call entry is outside the scan, with an unknown call
+age. A queued input has no task activity yet. Before the task's first reply text,
+the excerpt says "No reply text yet." Conversation cost includes earlier tasks
+and excludes unreported in-flight usage. The coordinator assesses a check-in
+and decides whether to report progress, let work continue, steer a wrap-up, or
+abort a hung tool. Steering waits for a tool boundary and does not interrupt a
+running tool.
 
 A scheduled input is a native `agent.timer` background task in the target's
 storage. Its input persists the absolute deadline, target conversation,
