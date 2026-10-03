@@ -535,9 +535,11 @@ live writer never authorize another writer.
 An open live observation reconnects only to a live host. It never relaunches a
 lost host; it signals unavailable and leaves relaunch to bounded manager
 recovery. A listener attached after a frame arrives receives that current
-frame at once. Live status excludes provider-private tool parsing buffers from
-its public projection; raw native state stays unchanged. A status schema error
-alone does not establish different process versions.
+frame at once. Live status and dashboard tails expose only the declared
+tool-call fields, including parsed arguments and optional namespace/signature
+fields. Provider parsing buffers do not enter these live projections; raw native
+state stays unchanged. A status schema error alone does not establish different
+process versions.
 
 Owned launches supply readiness events. For a host launched elsewhere, this Pi
 makes one bounded attach attempt and reports when no readiness event is

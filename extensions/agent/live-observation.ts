@@ -8,9 +8,9 @@
  * it. Reading never resumes the Harness, schedules work, or opens storage.
  */
 import type { Context } from "@earendil-works/chord";
-import type { ConversationId, ConversationView, Harness, TaskGraph, WatchHandle } from "@earendil-works/pi-durable";
+import type { ConversationId, ConversationView, Harness, LiveState, TaskGraph, WatchHandle } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
-import { durableIdentity, readConversationStatus, selectSnapshotEntries, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_ENTRY_LIMIT, snapshotEntry } from "./durable-observation.ts";
+import { durableIdentity, publicLiveState, readConversationStatus, selectSnapshotEntries, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_ENTRY_LIMIT, snapshotEntry } from "./durable-observation.ts";
 import { buildLiveEntries, jsonSafeFrame, taskGraphRows, type ConversationFrame, type ObservationFrame, type TaskLabel, type TasksFrame } from "./live-frames.ts";
 
 /** What one observation token reads. */
@@ -250,7 +250,7 @@ export class LiveObservationService {
 			observedAt: new Date(this.options.now?.() ?? Date.now()).toISOString(),
 			entries,
 			nextBefore: selection.nextBefore,
-			live: buildLiveEntries(value.docs["pi.live"], entries),
+			live: buildLiveEntries(publicLiveState(value.docs["pi.live"] as LiveState | undefined), entries),
 			status,
 			coverage: selection.coverage,
 		});

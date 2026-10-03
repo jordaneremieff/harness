@@ -629,8 +629,11 @@ export function publicLiveState(live: LiveState | undefined): LiveState | null {
 	if (!message || !generation) return live ?? null;
 	return { ...live, generation: { ...generation, message: { ...message, content: message.content.map((part) => {
 		if (part.type !== "toolCall") return part;
-		const { partialJson: _partialJson, customInput: _customInput, ...publicPart } = part as typeof part & { partialJson?: unknown; customInput?: unknown };
-		return publicPart;
+		return {
+			type: part.type, id: part.id, name: part.name, arguments: part.arguments,
+			...(part.thoughtSignature === undefined ? {} : { thoughtSignature: part.thoughtSignature }),
+			...(part.namespace === undefined ? {} : { namespace: part.namespace }),
+		};
 	}) } } };
 }
 
