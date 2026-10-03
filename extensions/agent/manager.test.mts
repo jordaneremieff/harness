@@ -131,13 +131,16 @@ function deferred() {
 	return { promise, resolve };
 }
 
-for (const minutes of [undefined, 0, 2.5]) it(`applies the place model interval ${minutes} on both create and reuse`, async (t) => {
+const { "task-submit": _taskSubmit, ...baseOperations } = HOST_CONTRACT.operations;
+const BASE_SUBMIT_CONTRACT: RuntimeContract = { ...HOST_CONTRACT, operations: baseOperations };
+
+for (const operation of ["submit", "task-submit"] as const) for (const minutes of [undefined, 0, 2.5]) it(`preserves the place model interval ${minutes} through ${operation} on create and reuse`, async (t) => {
 	const root = fixtureRoot(t);
 	const submits: Array<Record<string, unknown>> = [];
 	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		if (method === "submit") submits.push(params as Record<string, unknown>);
+		if (method === operation) submits.push(params as Record<string, unknown>);
 		return { busy: false };
-	}) }));
+	}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT) }));
 	t.after(() => manager.close());
 	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
 	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
@@ -148,6 +151,9 @@ for (const minutes of [undefined, 0, 2.5]) it(`applies the place model interval 
 	await manager.place(input, caller);
 	assert.equal(submits.length, 2);
 	assert.deepEqual(submits.map((params) => params.checkInMinutes), [minutes ?? 7, minutes ?? 7]);
+	assert.deepEqual(submits.map((params) => params.origin), ["model", "model"]);
+	assert.deepEqual(submits.map((params) => params.ownerId), [caller.id, caller.id]);
+	if (operation === "task-submit") assert.deepEqual(submits.map((params) => params.requester), [caller.id, caller.id]);
 	await manager.place({ area: root, prompt: "Operator task", origin: "operator" }, caller);
 	assert.equal(submits[2]?.checkInMinutes, 0);
 });
@@ -218,30 +224,56 @@ it("preserves a successful spawn admission when its status snapshot fails", asyn
 	} finally { manager.close(); }
 });
 
-it("preserves supplied admission keys and creates absent keys", async (t) => {
+for (const operation of ["submit", "task-submit"] as const) it(`preserves caller admission keys and creates absent keys through ${operation}`, async (t) => {
 	const root = fixtureRoot(t);
 	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
 	const manager = new AgentManager(managerOptions(root, {
 		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
 			seen.push({ method, params: params as Record<string, unknown> });
 			return {};
-		}),
+		}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT),
 	}));
 	const record = createRecord(manager, root);
 	try {
 		for (const method of ["submit", "rewind", "fork"]) {
-			await manager.control(method, { sessionId: record.storageId, requestId: `stable:${method}` }, { id: "caller", cwd: root });
+			await manager.control(method, { sessionId: record.storageId, requestId: `stable:${method}`, operationId: `operation:${method}` }, { id: "caller", cwd: root });
 			await manager.control(method, { sessionId: record.storageId }, { id: "caller", cwd: root });
 		}
 		const mutations = seen.filter((entry) => entry.method !== "status");
 		assert.equal(mutations.length, 6);
+		assert.deepEqual(mutations.map((entry) => entry.method), [operation, operation, "rewind", "rewind", "fork", "fork"]);
+		const callerMethods = ["submit", "rewind", "fork"];
 		for (let index = 0; index < mutations.length; index += 2) {
-			assert.equal(mutations[index].params.requestId, `stable:${mutations[index].method}`);
+			assert.equal(mutations[index].params.requestId, `stable:${callerMethods[index / 2]}`);
+			assert.equal(mutations[index].params.operationId, `operation:${callerMethods[index / 2]}`);
 			assert.equal(typeof mutations[index + 1].params.requestId, "string");
 			assert.notEqual(mutations[index + 1].params.requestId, mutations[index].params.requestId);
 		}
 		assert.ok(seen.some((entry) => entry.method === "status"), "mutation snapshots add filtered status requests");
 	} finally { manager.close(); }
+});
+
+for (const rich of [false, true]) it(`preserves an explicit reply recipient or reports the missing rich admission contract (${rich})`, async (t) => {
+	const root = fixtureRoot(t);
+	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+	const manager = new AgentManager(managerOptions(root, { acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+		seen.push({ method, params: params as Record<string, unknown> });
+		return { submissionId: 9 };
+	}, rich ? HOST_CONTRACT : BASE_SUBMIT_CONTRACT) }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	const send = manager.control("submit", { sessionId: record.storageId, message: "Task", replyTo: "recipient-c", origin: "model", requestId: "routed" }, { id: "requester-b", cwd: root });
+	if (!rich) {
+		await assert.rejects(send, /task-submit|replyTo|request context|unavailable/iu);
+		assert.equal(seen.length, 0, "an unavailable route guarantee admits no base input");
+		return;
+	}
+	await send;
+	assert.deepEqual(seen.map((entry) => entry.method), ["task-submit"]);
+	assert.equal(seen[0].params.requester, "requester-b");
+	assert.equal(seen[0].params.replyTo, "recipient-c");
+	assert.equal(seen[0].params.requestId, "routed");
+	assert.equal(seen[0].params.origin, "model");
 });
 
 it("closes a host opened for a primary that aborts mid-registration", { timeout: 15000 }, async (t) => {
@@ -773,7 +805,7 @@ it("pages list rows and reports unavailable storages", { timeout: 15000 }, async
 	manager.close();
 });
 
-it("forwards admission origins and keeps absent origins absent", async (t) => {
+for (const operation of ["submit", "task-submit"] as const) it(`preserves explicit origins and uses the ${operation} contract for absent origin`, async (t) => {
 	const root = fixtureRoot(t);
 	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
 	const manager = new AgentManager(managerOptions(root, {
@@ -781,7 +813,7 @@ it("forwards admission origins and keeps absent origins absent", async (t) => {
 		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
 			seen.push({ method, params: params as Record<string, unknown> });
 			return { submissionId: 9 };
-		}),
+		}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT),
 	}));
 	const record = createRecord(manager, root);
 	const caller = { id: "caller", cwd: root, model: { provider: "fixture", modelId: "model-1" } };
@@ -794,16 +826,21 @@ it("forwards admission origins and keeps absent origins absent", async (t) => {
 		await manager.spawn({ prompt: "board task", origin: "operator" }, caller);
 		await manager.spawn({ prompt: "model task", origin: "model" }, caller);
 		await manager.spawn({ prompt: "opt out", origin: "model", checkInMinutes: 0 }, caller);
+		await manager.spawn({ prompt: "unspecified origin" }, caller);
 		await manager.spawn({ origin: "model" }, caller);
-		const submits = seen.filter((entry) => entry.method === "submit");
+		const submits = seen.filter((entry) => entry.method === operation);
 		assert.equal(submits[0]?.params.origin, "operator");
 		assert.equal(submits[1]?.params.origin, "model");
-		assert.equal(submits[2]?.params.origin, undefined);
+		assert.equal(submits[2]?.params.origin, operation === "submit" ? undefined : "operator");
 		assert.equal(submits[3]?.params.origin, "operator");
 		assert.equal(submits[3]?.params.checkInMinutes, 0);
 		assert.equal(submits[4]?.params.checkInMinutes, 7);
 		assert.equal(submits[5]?.params.checkInMinutes, 0);
-		assert.equal(submits.length, 6, "a promptless spawn arms no task");
+		assert.equal(submits[6]?.params.origin, operation === "submit" ? undefined : "operator");
+		assert.equal(submits[6]?.params.checkInMinutes, 0);
+		assert.equal(submits.length, 7, "a promptless spawn arms no task");
+		if (operation === "task-submit") assert.ok(submits.every((entry) => entry.params.requester === caller.id));
+		assert.ok(submits.every((entry) => entry.params.ownerId === caller.id));
 	} finally {
 		manager.close();
 		if (previous === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
@@ -918,7 +955,7 @@ it("keeps acquired clients usable when only their current change contracts disag
 				link = fakeConnection(metadata, async (method) => {
 					assert.equal(contractRefusal(method, remote), undefined);
 					methods.push(method);
-					return method === "submit" ? { submissionId: 7 } : { ready: true };
+					return method === "task-submit" ? { submissionId: 7 } : { ready: true };
 				}, remote);
 				link.subscribeChanges = async () => { throw contractRefusal("changes", remote); };
 				return link;
@@ -933,7 +970,7 @@ it("keeps acquired clients usable when only their current change contracts disag
 		assert.equal(acquisitions, 1);
 		assert.deepEqual(manager.connectedStorageIds(), [record.storageId]);
 		assert.deepEqual(await manager.status(record.storageId), { ready: true });
-		assert.deepEqual(methods, ["submit", "status"]);
+		assert.deepEqual(methods, ["task-submit", "status"]);
 		const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
 		assert.ok(overview.failures.some((failure) => failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error)));
 		await link.close();

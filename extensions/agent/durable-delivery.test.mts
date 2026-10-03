@@ -8,7 +8,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
-import { AgentDeliveryDoc, type AgentDeliveryState, settleDeliveries } from "./durable-controls.ts";
+import { AgentDeliveryDoc, ThreadDeliveryDoc, type AgentDeliveryState, recordReport, richSubmitConversation, settleDeliveries } from "./durable-controls.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
@@ -656,6 +656,8 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 	}
 	assert.match(String(receiptCall.params.message), new RegExp(`submissions ${submissionId}`, "u"));
 	assert.match(String(reportCall.params.message), /source report:source-report/u);
+	assert.equal((await target.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.intents.length ?? 0, 0, "delivered reports and answers create no reply-owner loop");
+	assert.equal((await target.harness.inspect(BACKGROUND_CONTEXT)).tasks.some((task) => task.record.kind === "agent.check-in"), false);
 	assert.deepEqual(errors, []);
 	await passes.waitFor((events) => events.filter((error) => error === undefined).length >= 2);
 	assert.equal(calls.length, 2, "acknowledgement commits do not route duplicates in a completed follow-up pass");
@@ -1838,4 +1840,80 @@ it("bounds the native catalog follow-up body", { timeout: 30000 }, async (t) => 
 	assert.equal(retained?.receipts[String(submissionId)]?.answer, longAnswer, "the retained answer stays full");
 	assert.deepEqual(errors, []);
 	await watcher.close();
+});
+
+for (const evidence of ["handle", "name", "missing"] as const) it(`labels a foreign thread sender from ${evidence} evidence without host acquisition`, { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const catalog = new AgentCatalog(root);
+	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "bootstrap", modelId: "not-current" }, thinkingLevel: "off" });
+	const senderIdentity = `${record.storageId}:7`;
+	const publishedAt = "2026-01-01T00:00:00.000Z";
+	catalog.updateView(record.storageId, {
+		updatedAt: publishedAt, storageId: record.storageId, coverage: { complete: true, omitted: 0 },
+		rows: [{ id: evidence === "missing" ? record.storageId : senderIdentity, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false, name: "Actual sender", model: { provider: fixtureProvider, modelId: fixtureModelId, thinkingLevel: "high" } }],
+		...(evidence === "handle" ? { profiles: { rows: [{ identity: senderIdentity, handle: "@expert", role: "Research", revision: "a".repeat(64), hasExpertise: false, updatedAt: 1 }], coverage: { complete: true, omitted: 0 } } } : {}),
+	});
+	const owner = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const sourcePath = join(root, "thread-owner.sqlite");
+	const source = await openHost(sourcePath, randomUUID(), root);
+	t.after(() => source.close());
+	const report = await recordReport(source.harness, { ownerId: owner, senderIdentity, message: "A peer contributed evidence", requestId: "thread-event" }, BACKGROUND_CONTEXT);
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		state.reports[0] = { ...report, threadId: "purpose-thread", direct: true, passive: true };
+		(await tx.doc(ThreadDeliveryDoc, "purpose-thread", null)).pending = 1;
+	}, BACKGROUND_CONTEXT);
+	const status = t.mock.method(source, "request", source.request.bind(source));
+	const errors = eventLog<Error>();
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog, sessionsRoot, signal: new AbortController().signal, acquire: async () => { throw new Error("Source labels must not acquire a host"); }, onError: (error) => errors.push(error) });
+	t.after(() => watcher.close());
+	await received.waitForCount(1);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
+	const message = received[0];
+	const details = message.details as Record<string, unknown>;
+	assert.equal(details.identity, senderIdentity);
+	assert.equal(details.label, evidence === "handle" ? "@expert" : evidence === "name" ? "Actual sender" : "7");
+	assert.equal(details.threadId, "purpose-thread");
+	assert.equal(details.wake, false);
+	assert.match(message.text, /^Thread notice from agent/u);
+	assert.doesNotMatch(message.text, /sent a report/u);
+	assert.equal(details.metadataSource, evidence === "missing" ? undefined : "retained-catalog");
+	assert.equal(details.metadataObservedAt, evidence === "missing" ? undefined : publishedAt);
+	assert.equal(details.sourceOwner, undefined, "catalog ownership visibility is not a creator identity");
+	assert.equal(details.modelId, evidence === "missing" ? undefined : fixtureModelId);
+	assert.equal(details.metadataUnknown, evidence === "missing" ? true : undefined);
+	assert.equal(status.mock.calls.some((call) => call.arguments[0] === "status" && call.arguments[1]?.sessionId === senderIdentity), false);
+	assert.deepEqual(errors, []);
+});
+
+it("delivers a reused agent's report and final answer to its explicit recipient, not its creator", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), sessionsRoot = join(root, "sessions");
+	const creator = randomUUID(), requester = randomUUID(), recipient = randomUUID();
+	const creatorMessages = eventLog<PrimaryDelivery>(), recipientMessages = eventLog<PrimaryDelivery>();
+	const creatorChannel = await createPrimaryChannel({ id: creator, cwd: root, sessionsRoot, deliver: (message) => { creatorMessages.push(message); }, promptTrust: async () => undefined });
+	const recipientChannel = await createPrimaryChannel({ id: recipient, cwd: root, sessionsRoot, deliver: (message) => { recipientMessages.push(message); }, promptTrust: async () => undefined });
+	t.after(async () => { await creatorChannel.close(); await recipientChannel.close(); });
+	const sourcePath = join(root, "reused.sqlite");
+	const source = await openHost(sourcePath, randomUUID(), root);
+	t.after(() => source.close());
+	const submitted = await richSubmitConversation(source.root(), { message: "Second request", requestId: "second-request", requester, replyTo: recipient, origin: "model" }, BACKGROUND_CONTEXT);
+	const nativeSubmission = await source.harness.submission(submitted.submissionId, BACKGROUND_CONTEXT);
+	assert.ok(nativeSubmission);
+	await nativeSubmission.wait(BACKGROUND_CONTEXT);
+	await recordReport(source.harness, { ownerId: recipient, senderIdentity: source.storageId, message: "Interim report", requestId: "interim" }, BACKGROUND_CONTEXT);
+	const errors = eventLog<Error>();
+	const watcher = startDurableDelivery({ host: source, metadata: { ...sourceMetadata(root, source.storageId, sourcePath), ownerId: creator }, catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onError: (error) => errors.push(error) });
+	t.after(() => watcher.close());
+	await recipientMessages.waitForCount(2);
+	await waitForDelivery(source, async () => {
+		const state = await deliveryState(source);
+		return state?.receipts[String(submitted.submissionId)]?.acknowledged === true && state.reports[0]?.acknowledged === true;
+	});
+	assert.equal(creatorMessages.length, 0);
+	assert.deepEqual(recipientMessages.map((message) => (message.details as Record<string, unknown>).kind).sort(), ["receipt", "report"]);
+	assert.deepEqual(errors, []);
 });

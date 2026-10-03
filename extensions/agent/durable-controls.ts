@@ -16,6 +16,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { createCheckIn } from "./durable-checkins.ts";
+import { cleanupRequestContexts, recordRequestContext, requestEnvelope, type RequestContext } from "./request-context.ts";
+import { refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -192,6 +194,27 @@ export interface DurableSubmitParams {
 	readonly origin?: DeliveryOrigin;
 	readonly checkInMinutes?: number;
 	readonly senderIdentity?: string;
+	/** Host-authored metadata; base submit callers need not supply it. */
+	readonly requestContext?: RequestContext;
+}
+
+export interface RichSubmitParams {
+	readonly message: UserInput;
+	readonly requestId: string;
+	readonly requester: string;
+	readonly replyTo?: string;
+	readonly origin: DeliveryOrigin;
+	readonly whenBusy?: "steer" | "followUp" | "reject";
+	readonly operationId?: string;
+	readonly checkInMinutes?: number;
+	/** Worker identity used by check-ins, not the requester. */
+	readonly senderIdentity?: string;
+}
+
+/** Enriched admission is independent of the unchanged base submit operation. */
+export async function richSubmitConversation(conversation: Conversation, params: RichSubmitParams, context: Context, now: () => number = Date.now): Promise<DurableSubmitResult> {
+	const request: RequestContext = { requestId: params.requestId, requester: params.requester, replyTo: params.replyTo ?? params.requester, origin: params.origin };
+	return submitConversation(conversation, { ...params, ownerId: request.replyTo, requestContext: request }, context, now);
 }
 
 export interface DurableSubmitResult {
@@ -215,6 +238,7 @@ export interface DeliveryAdmission {
 	readonly origin: DeliveryOrigin;
 	readonly checkInMinutes?: number;
 	readonly senderIdentity?: string;
+	readonly requestContext?: RequestContext;
 }
 
 /** What the admission intent lookup found: no record, an unlinked record, or a retained submission. */
@@ -238,6 +262,11 @@ export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId
  */
 export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now()): Promise<DeliveryIntentState> {
 	const state = await tx.doc(AgentDeliveryDoc);
+	if (admission.requestContext !== undefined) {
+		if (admission.requestContext.requestId !== admission.requestId || admission.requestContext.replyTo !== admission.ownerId || admission.requestContext.origin !== admission.origin)
+			throw new Error("The request context does not match its delivery admission");
+		await recordRequestContext(tx, conversationId, admission.requestContext);
+	}
 	await recordAdmissionMeta(tx, conversationId, admission.message);
 	const index = intentIndex(state, conversationId, admission.requestId);
 	if (index >= 0) {
@@ -245,16 +274,17 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 		if (prior !== undefined && prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
 		return { kind: "unlinked" };
 	}
+	const message = admission.requestContext === undefined ? admission.message : requestEnvelope(admission.message, admission.requestContext);
 	await createCheckIn(tx, {
 		conversationId, requestId: admission.requestId, ownerId: admission.ownerId,
-		senderIdentity: admission.senderIdentity ?? String(conversationId), message: storedMessage(admission.message),
+		senderIdentity: admission.senderIdentity ?? String(conversationId), message: storedMessage(message),
 		whenBusy: admission.whenBusy ?? "steer", origin: admission.origin, admittedAt,
 	}, admission.checkInMinutes ?? 0);
 	state.intents.push({
 		requestId: admission.requestId,
 		ownerId: admission.ownerId,
 		conversationId,
-		message: storedMessage(admission.message),
+		message: storedMessage(message),
 		whenBusy: admission.whenBusy ?? null,
 		operationId: admission.operationId ?? null,
 		submissionId: null,
@@ -320,17 +350,20 @@ export async function submitConversation(
 		// An owned admission requires an explicit origin before its delivery intent is recorded.
 		if (origin === undefined) throw new Error("This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.");
 		const state = await conversation.commit(
-			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin, ...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }), ...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }) }, now()),
+			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin, ...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }), ...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }), ...(params.requestContext === undefined ? {} : { requestContext: params.requestContext }) }, now()),
 			context,
 		);
 		if (state.kind === "linked") deduped = true;
 	} else {
-		await conversation.commit((tx) => recordAdmissionMeta(tx, conversation.id, message), context);
+		await conversation.commit(async (tx) => {
+			if (params.requestContext !== undefined) await recordRequestContext(tx, conversation.id, params.requestContext);
+			await recordAdmissionMeta(tx, conversation.id, message);
+		}, context);
 	}
 	const submission = await conversation.submit(
 		{
 			type: "input",
-			content: message,
+			content: params.requestContext === undefined ? message : requestEnvelope(message, params.requestContext),
 			requestId,
 			...(whenBusy === undefined ? {} : { whenBusy }),
 		},
@@ -496,6 +529,7 @@ export async function forkConversation(
 					const meta = await tx.doc(AgentMetaDoc, childId);
 					if (options.name !== undefined) (meta as { name: string | null }).name = options.name;
 					if (options.owner !== undefined) (meta as { owner: string | null }).owner = options.owner;
+					await refreshManagedInstructions(tx, childId);
 				},
 			},
 			context,
@@ -767,6 +801,7 @@ export async function writeConversationName(conversation: Conversation, name: st
 	await conversation.commit(async (tx) => {
 		const meta = await tx.doc(AgentMetaDoc, conversation.id);
 		(meta as { name: string | null }).name = name;
+		await refreshManagedInstructions(tx, conversation.id);
 	}, context);
 }
 
@@ -879,6 +914,7 @@ export async function settleDeliveries(harness: Harness, context: Context): Prom
 	await harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
 		for (const [index, intent] of state.intents.entries()) await finalizeReceipt(tx, state, intent, index);
+		for (const conversationId of new Set(state.intents.map((intent) => intent.conversationId))) await cleanupRequestContexts(tx, conversationId);
 		for (let index = state.reports.length - 1; index >= 0; index -= 1) {
 			const report = state.reports[index];
 			if (report?.checkIn === undefined) continue;

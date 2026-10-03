@@ -22,6 +22,7 @@
 import type { Context } from "@earendil-works/chord";
 import { defineDoc, defineTask, type ConversationId, type Harness, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { linkDeliveryIntent, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
+import { requestEnvelope, type RequestContext } from "./request-context.ts";
 
 /** Registered task kind of one scheduled input. */
 export const TIMER_TASK_NAME = "agent.timer";
@@ -54,6 +55,7 @@ export type TimerInput = {
 	readonly requestId: string;
 	readonly createdAt: number;
 	readonly checkInMinutes?: number;
+	readonly requestContext?: RequestContext;
 };
 
 /** Checkpoint of the timer task. The deadline lives in the input, never in the checkpoint. */
@@ -191,11 +193,12 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					origin: task.input.origin,
 					checkInMinutes: task.input.checkInMinutes ?? 0,
 					senderIdentity: task.input.identity,
+					...(task.input.requestContext === undefined ? {} : { requestContext: task.input.requestContext }),
 				}, runtime.now());
 				return undefined;
 			}, context);
 			const submission = await conversation.submit(
-				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: task.input.mode },
+				{ type: "input", content: task.input.requestContext === undefined ? task.input.message : requestEnvelope(task.input.message, task.input.requestContext), requestId: task.input.requestId, whenBusy: task.input.mode },
 				context,
 			);
 			const firedAt = runtime.now();
@@ -242,11 +245,11 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					return undefined;
 				}, context);
 				await runtime.commit(async (tx) => {
-					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: input.mode, origin: input.origin, checkInMinutes: input.checkInMinutes ?? 0, senderIdentity: input.identity }, runtime.now());
+					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: input.mode, origin: input.origin, checkInMinutes: input.checkInMinutes ?? 0, senderIdentity: input.identity, ...(input.requestContext === undefined ? {} : { requestContext: input.requestContext }) }, runtime.now());
 					return undefined;
 				}, context);
 				const submission = await conversation.submit(
-					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: input.mode },
+					{ type: "input", content: input.requestContext === undefined ? input.message : requestEnvelope(input.message, input.requestContext), requestId: input.requestId, whenBusy: input.mode },
 					context,
 				);
 				const result: TimerResult = {
@@ -295,6 +298,7 @@ export interface ScheduleTimerParams {
 	readonly requestId: string;
 	readonly createdAt: number;
 	readonly checkInMinutes?: number;
+	readonly requestContext?: RequestContext;
 }
 
 export interface ScheduleTimerResult {
@@ -315,6 +319,11 @@ export interface ScheduleTimerResult {
  */
 export async function scheduleTimer(harness: Harness, params: ScheduleTimerParams, context: Context): Promise<ScheduleTimerResult> {
 	parseDeliverAt(params.deadline);
+	if (params.requestContext !== undefined) {
+		if (params.requestContext.requestId !== params.requestId || params.requestContext.replyTo !== params.ownerId || params.requestContext.origin !== params.origin)
+			throw new Error("The request context does not match its scheduled delivery");
+		requestEnvelope(params.message, params.requestContext);
+	}
 	return harness.commit(async (tx) => {
 		const state = await tx.doc(AgentTimerDoc);
 		const existing = state.timers.find((record) => record.scheduleId === params.scheduleId && record.status === "pending");
@@ -342,6 +351,7 @@ export async function scheduleTimer(harness: Harness, params: ScheduleTimerParam
 			requestId: params.requestId,
 			createdAt: params.createdAt,
 			checkInMinutes: params.checkInMinutes ?? 0,
+			...(params.requestContext === undefined ? {} : { requestContext: params.requestContext }),
 		};
 		const timerId = await tx.createTask(TimerTask, input, {
 			ownership: { kind: "conversation" },
