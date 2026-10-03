@@ -247,10 +247,32 @@ it("declares direct resource tools and serves a model-issued resource listing", 
 		mcpServers: { "remote-docs": { url: server.url, description: "Remote docs", exposure: "direct" } },
 		mcpAuth: { [`mcp__remote_docs|${server.url}`]: { serverUrl: server.url, tokens: { access_token: token, token_type: "Bearer" } } },
 	});
-	await f.waitForTool("list_mcp_resources");
+	assert.ok(f.services.registry.snapshot().tools().some(({ tool }) => tool.name === "list_mcp_resources"), "fixture installation completes direct resource registration");
 	const result = await f.submit("list the resources");
 	assert.ok(declaredTools(f.requests[0]).includes("list_mcp_resources"));
 	assert.match(toolResultText(result.toolResults.at(-1)), /docs:\/\/readme/u);
+});
+
+it("keeps fixture registration pending until the server supplies its tools", { timeout: 30000 }, async (t) => {
+	const token = `token-${randomUUID()}`;
+	const entered = deferred();
+	const release = deferred();
+	t.after(() => release.resolve());
+	const server = await httpMcpServer(token, { beforeResponse: async (method) => {
+		if (method === "tools/list") { entered.resolve(); await release.promise; }
+	} });
+	t.after(() => server.close());
+	let registered = false;
+	const completion = executionFixture(t, {
+		mcpServers: { "held-docs": { url: server.url, exposure: "direct" } },
+		mcpAuth: { [`mcp__held_docs|${server.url}`]: { serverUrl: server.url, tokens: { access_token: token, token_type: "Bearer" } } },
+	}).then((fixture) => { registered = true; return fixture; });
+	await entered.promise;
+	assert.equal(registered, false, "the server still holds its tool list");
+	release.resolve();
+	const f = await completion;
+	assert.equal(registered, true);
+	assert.ok(f.services.registry.snapshot().tools().some(({ tool }) => tool.name === "mcp__held_docs__echo"));
 });
 
 it("rejects auth in a trusted project's mcp.json", () => {
@@ -280,15 +302,25 @@ it("bounds ready for a direct server that never answers", { timeout: 30000 }, as
 
 it("waits for a late direct server before the first request", { timeout: 30000 }, async (t) => {
 	const token = `token-${randomUUID()}`;
-	const server = await httpMcpServer(token, { delayMs: 80 });
+	const entered = deferred();
+	const release = deferred();
+	t.after(() => release.resolve());
+	const server = await httpMcpServer(token, { beforeResponse: async (method) => {
+		if (method === "tools/list") { entered.resolve(); await release.promise; }
+	} });
 	t.after(() => server.close());
-	const f = await executionFixture(t, {
+	let ready = false;
+	const completion = executionFixture(t, {
 		code: `const out = await tools.mcp__remote_docs__echo({ value: "ready" });\nreturn out.content[0].text;`,
 		readyTimeoutMs: 5000,
 		awaitReady: true,
 		mcpServers: { "remote-docs": { url: server.url, description: "Remote docs", exposure: "direct" } },
 		mcpAuth: { [`mcp__remote_docs|${server.url}`]: { serverUrl: server.url, tokens: { access_token: token, token_type: "Bearer" } } },
-	});
+	}).then((fixture) => { ready = true; return fixture; });
+	await entered.promise;
+	assert.equal(ready, false, "the server still holds registration before the first model request");
+	release.resolve();
+	const f = await completion;
 	assert.ok(f.readyElapsedMs !== undefined && f.readyElapsedMs < 5000, `ready took ${String(f.readyElapsedMs)}ms`);
 	const result = await f.submit("use the late server");
 	assert.ok(declaredTools(f.requests[0]).includes("mcp__remote_docs__echo"));

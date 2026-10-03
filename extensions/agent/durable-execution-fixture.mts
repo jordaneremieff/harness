@@ -212,7 +212,7 @@ export interface ExecutionFixtureOptions {
 	readonly mcpAuth?: Record<string, unknown>;
 	readonly autoEnableCodemode?: boolean;
 	readonly readyTimeoutMs?: number;
-	/** Await the execution's bounded `ready` before opening the Harness, as the host bootstrap does. */
+	/** Await the execution's bounded `ready` before resuming the Harness. */
 	readonly awaitReady?: boolean;
 }
 
@@ -229,8 +229,6 @@ export interface ExecutionFixture {
 	readonly execution: DurableExecution;
 	/** Milliseconds the fixture waited in `ready`, when `awaitReady` was set. */
 	readonly readyElapsedMs: number | undefined;
-	/** Resolve once the registry exposes a tool, for example after a background MCP connection. */
-	waitForTool(name: string, timeoutMs?: number): Promise<void>;
 	submit(content: string): Promise<{ answer: string; toolResults: readonly ToolResultMessage[]; messages: readonly TranscriptContext["messages"][number][] }>;
 	close(): Promise<void>;
 }
@@ -301,14 +299,6 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 		conversation,
 		execution: execution as DurableExecution,
 		readyElapsedMs,
-		async waitForTool(name: string, timeoutMs = 10000) {
-			const deadline = Date.now() + timeoutMs;
-			while (Date.now() < deadline) {
-				if (services.registry.snapshot().tools().some(({ tool }) => tool.name === name)) return;
-				await new Promise((resolve) => setTimeout(resolve, 25));
-			}
-			throw new Error(`tool ${name} did not register within ${timeoutMs}ms`);
-		},
 		async submit(content: string) {
 			const settled = await (await conversation.submit({ type: "input", content }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 			if (settled.status !== "done") throw new Error(`submission did not settle: ${settled.status}`);
@@ -357,7 +347,7 @@ export interface HttpMcpFixture {
 	close(): Promise<void>;
 }
 
-export async function httpMcpServer(token: string, options: { delayMs?: number; silent?: boolean } = {}): Promise<HttpMcpFixture> {
+export async function httpMcpServer(token: string, options: { beforeResponse?: (method: string) => Promise<void>; silent?: boolean } = {}): Promise<HttpMcpFixture> {
 	const server = createServer((request, response) => handleHttpMcp(request, response, token, options));
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
@@ -372,7 +362,7 @@ export async function httpMcpServer(token: string, options: { delayMs?: number; 
 	};
 }
 
-function handleHttpMcp(request: IncomingMessage, response: ServerResponse, token: string, options: { delayMs?: number; silent?: boolean }): void {
+function handleHttpMcp(request: IncomingMessage, response: ServerResponse, token: string, options: { beforeResponse?: (method: string) => Promise<void>; silent?: boolean }): void {
 	if (request.headers.authorization !== `Bearer ${token}`) {
 		response.writeHead(401, { "content-type": "application/json", "www-authenticate": 'Bearer realm="mcp"' });
 		response.end(JSON.stringify({ error: "unauthorized" }));
@@ -400,8 +390,8 @@ function handleHttpMcp(request: IncomingMessage, response: ServerResponse, token
 			response.writeHead(200, { "content-type": "application/json" });
 			response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: httpMcpResult(message) }));
 		};
-		if (options.delayMs === undefined || options.delayMs <= 0) respond();
-		else setTimeout(respond, options.delayMs);
+		if (options.beforeResponse) void options.beforeResponse(message.method ?? "").then(respond, (error: unknown) => response.destroy(error instanceof Error ? error : new Error(String(error))));
+		else respond();
 	});
 }
 

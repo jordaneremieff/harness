@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessageEventStream, type Models } from "@earendil-works/pi-ai";
-import { defineTool, type ConversationId } from "@earendil-works/pi-durable";
+import { defineTool, type ConversationId, type WatchHandle } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureProvider, fixtureRegistry, fixtureStorageId, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { LiveObservationService } from "./live-observation.ts";
-import type { ConversationFrame, TaskGraphRow, TasksFrame } from "./live-frames.ts";
+import type { ConversationFrame, ObservationFrame, TasksFrame } from "./live-frames.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
 const ROOT = 1 as ConversationId;
@@ -29,18 +29,59 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 	return { promise, resolve };
 }
 
-/** Poll an async condition without a fixed sleep. */
-async function until(check: () => Promise<boolean> | boolean, timeoutMs = 8000, label = "condition"): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		if (await check()) return;
-		if (Date.now() >= deadline) throw new Error(`${label} was not reached before its deadline`);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-}
-
-function serviceFor(host: DurableHost): LiveObservationService {
-	return new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+/** Observe the service's own watch after its callback updates the frame revision. */
+function serviceFor(host: DurableHost, t: TestContext) {
+	const listeners = new Set<() => Promise<void>>();
+	const tap = <T,>(handle: WatchHandle<T>): WatchHandle<T> => ({
+		get value() { return handle.value; },
+		closed: handle.closed,
+		stop: () => handle.stop(),
+		start: (listener) => handle.start(async (...args) => {
+			await listener(...args);
+			for (const check of [...listeners]) await check();
+		}),
+	});
+	const conversation = host.harness.conversation.bind(host.harness);
+	t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof conversation>) => {
+		const value = await conversation(...args);
+		if (value) {
+			const watch = value.watch.bind(value);
+			t.mock.method(value, "watch", async (...watchArgs: Parameters<typeof watch>) => tap(await watch(...watchArgs)));
+		}
+		return value;
+	});
+	const tasks = host.harness.watchTaskGraph.bind(host.harness);
+	t.mock.method(host.harness, "watchTaskGraph", async (...args: Parameters<typeof tasks>) => tap(await tasks(...args)));
+	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+	return Object.assign(service, {
+		/** Read once now, then once per publication; the timer only rejects a missing event. */
+		waitForFrame(token: string, accept: (frame: ObservationFrame) => boolean, label: string): Promise<ObservationFrame> {
+			return new Promise((resolve, reject) => {
+				let settled = false;
+				let checking = Promise.resolve();
+				const finish = (frame?: ObservationFrame, error?: Error): void => {
+					if (settled) return;
+					settled = true;
+					clearTimeout(timer);
+					listeners.delete(check);
+					if (frame) resolve(frame);
+					else reject(error);
+				};
+				const check = (): Promise<void> => {
+					checking = checking.then(async () => {
+						if (settled) return;
+						const frame = await service.frame(token);
+						if (!frame) throw new Error(`observation token ${token} has no frame`);
+						if (accept(frame)) finish(frame);
+					}).catch((error: unknown) => finish(undefined, error instanceof Error ? error : new Error(String(error))));
+					return checking;
+				};
+				const timer = setTimeout(() => finish(undefined, new Error(`${label} was not reached before its deadline`)), 8000);
+				listeners.add(check);
+				void check();
+			});
+		},
+	});
 }
 
 /** One runtime that streams the supplied synthetic events under the fixture model identity. */
@@ -62,7 +103,7 @@ it("advances the conversation frame after a commit and serves committed entries"
 	const storagePath = join(fixtureRoot(t), "conversation.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
 	t.after(() => host.close());
-	const service = serviceFor(host);
+	const service = serviceFor(host, t);
 	const token = "watch-conversation";
 	const first = (await service.open(token, { scope: "conversation", conversationId: ROOT })) as ConversationFrame;
 	assert.equal(first.scope, "conversation");
@@ -73,8 +114,8 @@ it("advances the conversation frame after a commit and serves committed entries"
 
 	const submitted = await host.submit({ message: "first prompt", requestId: "live-1" });
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
-	await until(async () => ((await service.frame(token)) as ConversationFrame).revision > first.revision, 8000, "frame revision advance");
-	const frame = (await service.frame(token)) as ConversationFrame;
+	const frame = await service.waitForFrame(token, (value) => value.scope === "conversation" && value.revision > first.revision
+		&& value.entries.some((entry) => entry.kind === "pi.user") && value.entries.some((entry) => entry.kind === "pi.assistant"), "committed frame revision") as ConversationFrame;
 	assert.ok(frame.entries.some((entry) => entry.kind === "pi.user"), "the committed user entry is served");
 	assert.ok(frame.entries.some((entry) => entry.kind === "pi.assistant"), "the committed answer is served");
 	assert.equal(frame.status.lastTextRole, "assistant", "the retained tail carries its author role");
@@ -86,12 +127,18 @@ it("advances the conversation frame after a commit and serves committed entries"
 it("serves the uncommitted tail and drops it after the committed entry arrives", { timeout: 30000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "tail.sqlite");
 	const release = defer();
+	const publish = defer();
+	const started = defer();
+	t.after(() => { publish.resolve(); release.resolve(); });
 	const stream = (): AssistantMessageEventStream => {
+		started.resolve();
 		const events = createAssistantMessageEventStream();
 		const base = answerMessage("");
 		const partial = { ...base, stopReason: "pending" as const, content: [{ type: "text" as const, text: "streaming answer" }] };
-		events.push({ type: "start", partial });
-		events.push({ type: "text_delta", contentIndex: 0, delta: "streaming answer", partial });
+		void publish.promise.then(() => {
+			events.push({ type: "start", partial });
+			events.push({ type: "text_delta", contentIndex: 0, delta: "streaming answer", partial });
+		});
 		// The stream stays open until the test releases it, so the committed
 		// partial is observable as the live tail.
 		release.promise.then(() => {
@@ -103,16 +150,17 @@ it("serves the uncommitted tail and drops it after the committed entry arrives",
 	};
 	const host = await DurableHost.open(hostOptions(storagePath, await streamingRuntime(stream), fixtureRegistry()), BACKGROUND_CONTEXT);
 	t.after(() => host.close());
-	const service = serviceFor(host);
+	const service = serviceFor(host, t);
 	const token = "watch-tail";
 	await service.open(token, { scope: "conversation", conversationId: ROOT });
 	await host.submit({ message: "stream please", requestId: "tail-1" });
-	await until(
-		async () => ((await service.frame(token)) as ConversationFrame).live.some((entry) => entry.kind === "pi.assistant"),
-		8000,
-		"in-flight assistant tail",
-	);
-	const liveFrame = (await service.frame(token)) as ConversationFrame;
+	let tailObserved = false;
+	const tail = service.waitForFrame(token, (value) => value.scope === "conversation" && value.live.some((entry) => entry.kind === "pi.assistant"), "in-flight assistant tail")
+		.then((frame) => { tailObserved = true; return frame as ConversationFrame; });
+	await started.promise;
+	assert.equal(tailObserved, false, "the provider holds its first event");
+	publish.resolve();
+	const liveFrame = await tail;
 	const liveAssistant = liveFrame.live.find((entry) => entry.kind === "pi.assistant");
 	assert.ok(liveAssistant !== undefined);
 	const text = (liveAssistant.model ?? [])
@@ -120,12 +168,13 @@ it("serves the uncommitted tail and drops it after the committed entry arrives",
 		.join("");
 	assert.match(text, /streaming answer/u);
 	assert.ok(liveFrame.coverage.complete, "the committed page stays complete while the tail streams");
-	// Release and settle; the committed entry replaces the tail.
+	let answerObserved = false;
+	const committed = service.waitForFrame(token, (value) => value.scope === "conversation" && value.live.length === 0
+		&& value.entries.some((entry) => entry.kind === "pi.assistant"), "committed answer").then(() => { answerObserved = true; });
+	assert.equal(answerObserved, false, "the provider still holds completion");
 	release.resolve();
-	await until(async () => {
-		const frame = (await service.frame(token)) as ConversationFrame;
-		return frame.live.length === 0 && frame.entries.some((entry) => entry.kind === "pi.assistant");
-	}, 8000, "committed answer");
+	await committed;
+	assert.equal(answerObserved, true);
 	await service.closeAll();
 });
 
@@ -133,7 +182,7 @@ it("stops the conversation watch when its last token closes", { timeout: 30000 }
 	const storagePath = join(fixtureRoot(t), "cancel.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("one"), answerMessage("two")]), fixtureRegistry()), BACKGROUND_CONTEXT);
 	t.after(() => host.close());
-	const service = serviceFor(host);
+	const service = serviceFor(host, t);
 	const scope = { scope: "conversation", conversationId: ROOT } as const;
 	await service.open("first", scope);
 	await service.open("second", scope);
@@ -151,6 +200,7 @@ it("projects the live task graph with owner edges and conversation labels", { ti
 	const storagePath = join(fixtureRoot(t), "tasks.sqlite");
 	const started = defer();
 	const release = defer();
+	t.after(() => release.resolve());
 	const streamer = defineTool({
 		name: "streamer",
 		description: "Publish running output, then wait for the test.",
@@ -164,7 +214,7 @@ it("projects the live task graph with owner edges and conversation labels", { ti
 	});
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("streamer"), answerMessage("finished")]), fixtureRegistry([streamer])), BACKGROUND_CONTEXT);
 	t.after(() => host.close());
-	const service = serviceFor(host);
+	const service = serviceFor(host, t);
 	const token = "watch-tasks";
 	const baseline = (await service.open(token, { scope: "tasks" })) as TasksFrame;
 	assert.equal(baseline.scope, "tasks");
@@ -173,17 +223,21 @@ it("projects the live task graph with owner edges and conversation labels", { ti
 
 	const submitted = await host.submit({ message: "run the streamer", requestId: "tasks-1" });
 	await started.promise;
-	await until(async () => ((await service.frame(token)) as TasksFrame).tasks.some((row: TaskGraphRow) => row.kind === "pi.tool"), 8000, "live tool task");
-	const frame = (await service.frame(token)) as TasksFrame;
+	const frame = await service.waitForFrame(token, (value) => value.scope === "tasks" && value.tasks.some((row) => row.kind === "pi.tool"), "live tool task") as TasksFrame;
 	const toolRow = frame.tasks.find((row) => row.kind === "pi.tool");
 	assert.ok(toolRow !== undefined);
 	assert.equal(toolRow.conversationId, 1);
 	assert.equal(toolRow.background, false);
 	assert.equal(toolRow.abortRequested, false);
 	assert.ok(frame.labels.some((label) => label.conversationId === 1 && label.identity === fixtureStorageId), "the root conversation is named");
+	let emptyObserved = false;
+	const empty = service.waitForFrame(token, (value) => value.scope === "tasks" && value.tasks.length === 0, "empty graph after completion")
+		.then(() => { emptyObserved = true; });
+	assert.equal(emptyObserved, false, "the tool holds its task completion");
 	release.resolve();
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
-	await until(async () => ((await service.frame(token)) as TasksFrame).tasks.length === 0, 8000, "empty graph after completion");
+	await empty;
+	assert.equal(emptyObserved, true);
 	await service.closeAll();
 });
 
@@ -191,7 +245,7 @@ it("open is idempotent for one token and rejects an unknown conversation", { tim
 	const storagePath = join(fixtureRoot(t), "open.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage()]), fixtureRegistry()), BACKGROUND_CONTEXT);
 	t.after(() => host.close());
-	const service = serviceFor(host);
+	const service = serviceFor(host, t);
 	const scope = { scope: "conversation", conversationId: ROOT } as const;
 	const first = await service.open("same", scope);
 	const second = await service.open("same", scope);
@@ -205,7 +259,7 @@ it("keeps the task watch alive across tokens and stops it with the last close", 
 	const storagePath = join(fixtureRoot(t), "task-cancel.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage()]), fixtureRegistry()), BACKGROUND_CONTEXT);
 	t.after(() => host.close());
-	const service = serviceFor(host);
+	const service = serviceFor(host, t);
 	await service.open("a", { scope: "tasks" });
 	await service.open("b", { scope: "tasks" });
 	assert.equal(service.watches, 1);
