@@ -188,20 +188,35 @@ it("cancels a trust prompt through the caller signal", async (t) => {
 });
 
 it("publishes exactly one of two simultaneous same-id registrations", async (t) => {
-	const root = testRoot(t);
+	const root = join(testRoot(t), "long-primary-root-".repeat(8));
+	// A short private temp root isolates fallback sockets from other test processes.
+	const socketRoot = mkdtempSync("/tmp/pc-");
+	const previousTmpdir = process.env.TMPDIR;
+	const channels: Fixture["channel"][] = [];
+	process.env.TMPDIR = socketRoot;
+	t.after(async () => {
+		try {
+			await Promise.all(channels.map((channel) => channel.close()));
+		} finally {
+			if (previousTmpdir === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previousTmpdir;
+			rmSync(socketRoot, { recursive: true, force: true });
+		}
+	});
 	const id = uuidV7();
 	const options = channelOptions(root, id);
-	const socketDirs = [join(root, ".primaries"), join(tmpdir(), "pi-primary")];
+	const socketDirs = [join(root, ".primaries"), join(socketRoot, "pi-primary")];
 	const before = new Map(socketDirs.map((directory) => [directory, new Set(existsSync(directory) ? readdirSync(directory).filter((name) => name.endsWith(".sock")) : [])]));
 	const results = await Promise.allSettled([createPrimaryChannel(options), createPrimaryChannel(options)]);
 	const fulfilled = results.filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof createPrimaryChannel>>> => result.status === "fulfilled");
 	const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+	channels.push(...fulfilled.map((result) => result.value));
 	assert.equal(fulfilled.length, 1, JSON.stringify(results.map((result) => result.status)));
 	assert.equal(rejected.length, 1);
 	assert.ok(rejected[0]?.reason instanceof PrimaryChannelConflictError);
 	assert.ok(fulfilled[0]);
 	const winner = fulfilled[0].value;
-	t.after(() => void winner.close().catch(() => undefined));
+	assert.equal(dirname(winner.socketPath), join(socketRoot, "pi-primary"), "the long root exercises the private fallback directory");
 	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string; pid: number };
 	assert.equal(record.socketPath, winner.socketPath, "the published record points at the winner");
 	assert.equal(record.pid, process.pid);
