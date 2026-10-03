@@ -23,6 +23,18 @@ capabilities where they answer a selection question. Distinguish shipped,
 active, provisional, and merely proposed capabilities; a source file or resource
 listing does not establish usable behavior.
 
+When a bounded history question informs orientation, use the standing
+[session-history expert](session-history.md). Discover a retained expert whose
+role covers the question, check its current operation, and give it the question,
+source window, and task-specific restrictions instead of another corpus brief.
+Resolve or create the expert through the public agent controls; creation supplies
+a short role and a reachable corpus-reference pointer, not a fixed team. Check
+its stored role and selected model before sending work. An existing handle does
+not establish suitability, availability, or compliance with a requested model.
+The reference owns corpus access, provenance, durable expertise, and correction
+handling. History is a source for the current purpose, not a mandatory phase of
+every run. The coordinator retains judgment and integration ownership.
+
 Read only enough to form a useful purpose and identify the uncertainty that
 decides the next act. Broaden a read for a named gap, not an exhaustive inventory.
 Preserve each source's scope, freshness, coverage, and unavailable boundaries.
@@ -177,10 +189,14 @@ an auxiliary worker's submission protocol. Keep concurrent edit ownership
 disjoint. One coordinator serializes shared worktree synchronization,
 integration, promotion, push, and activation.
 
-Use a fresh execution session for each distinct task by default. Keep corrections,
-review repairs, and native compaction in that session while its task is open.
-Reuse an existing owner only when retained context and ownership serve this task;
-state that reason and check its current operation before admission.
+Reuse a session when its retained expertise, context, and ownership serve the
+current task. Check its current operation and preserve the current requester and
+reply route before admission. For recurring concerns such as session history,
+resolve an existing expert before creating another. Use a fresh session for
+unrelated work, necessary independent judgment, conflicting ownership, or context
+that no longer serves the task. State the reason for the choice, not a ritual
+justification for reuse. Keep corrections, review repairs, and native compaction
+in that session while its task is open.
 
 ## Accept the outcome, not just the changes
 

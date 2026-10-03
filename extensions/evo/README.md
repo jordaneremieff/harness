@@ -125,6 +125,28 @@ only with completed adoption; publication must succeed before completion is
 claimed. Partial, failed, and unrelated directed runs leave coverage unchanged.
 The command itself never writes the marker.
 
+## Session-history expertise
+
+When orientation needs earlier operator directions or session evidence, the
+coordinator uses a retained session-history expert through the
+[delivery workflow](../../docs/agent-delivery.md#orient-to-the-operators-work).
+The [corpus reference](../../docs/session-history.md) owns its charter, public
+source access, provenance, coverage, and correction handling. The coordinator
+supplies the current question and restrictions instead of repeating the corpus
+brief. Relevant expertise supports reuse; unrelated work, independent judgment,
+or conflicting ownership can require a fresh session.
+
+The expert keeps a concern name and stable handle, with its model shown
+separately. Its native profile holds a short role and bounded sourced expertise;
+current evidence still outranks retained knowledge. The current request owns the
+reply route, not the agent's creator. The agent extension owns these mechanisms.
+
+Evo does not create an agent itself, pre-create a team, keep an expert running,
+or require history work on every invocation. It remains one request through the
+ordinary or native command surface, without a scheduler, store, or fixed roster.
+Instruction and dispatch checks do not establish faster or better mining; that
+claim requires observed questions, source quality, and complete task cost.
+
 ## Outcome and ownership
 
 The [outcome development procedure](../../docs/agent-delivery.md#develop-a-useful-outcome)

@@ -15,6 +15,7 @@ interface SentMessage {
 }
 
 const deliveryWorkflow = readFileSync(new URL("../../docs/agent-delivery.md", import.meta.url), "utf8");
+const sessionHistory = readFileSync(new URL("../../docs/session-history.md", import.meta.url), "utf8");
 
 function assertContracts(text: string, contracts: ReadonlyArray<readonly [string, RegExp]>): void {
 	const normalized = text.replace(/\s+/g, " ");
@@ -297,6 +298,14 @@ for (const direction of [undefined, "Improve ordinary document tasks; do not pub
 				"mandatory owning workflow",
 				/Load the harness skill, repository instructions, and docs\/agent-delivery.md.*in full before selection or governed work/,
 			],
+			[
+				"conditional history expertise",
+				/When orientation needs session history, use the standing session-history expert through the delivery workflow/,
+			],
+			[
+				"reuse before repeated briefing",
+				/Reuse relevant expertise instead of repeating a corpus brief; create the expert only when none exists/,
+			],
 			["full-session implementation", /registered full Pi agent controls and use full Pi sessions for implementation/],
 			[
 				"no silent reduced replacement",
@@ -396,6 +405,46 @@ test("the required workflow develops operator use before selection rather than a
 	assert.ok(orient >= 0 && develop > orient && collaborate > develop && accept > collaborate);
 });
 
+test("history orientation uses retained expertise without making history a mandatory phase", () => {
+	assertContracts(deliveryWorkflow, [
+		["conditional expert", /When a bounded history question informs orientation, use the standing/],
+		["corpus contract reference", /\[session-history expert\]\(session-history\.md\)/],
+		["role and operation checked", /role covers the question, check its current operation/],
+		["short task", /question, source window, and task-specific restrictions instead of another corpus brief/],
+		["creation role", /creation supplies a short role and a reachable corpus-reference pointer, not a fixed team/],
+		["model checked", /Check its stored role and selected model before sending work/],
+		["no mandatory history phase", /not a mandatory phase of every run/],
+		["coordinator judgment", /coordinator retains judgment and integration ownership/],
+	]);
+	assert.doesNotMatch(deliveryWorkflow, /fresh execution session for each distinct task by default/);
+});
+
+test("the session-history reference separates source authority, expertise, and current tasks", () => {
+	assertContracts(sessionHistory, [
+		["role names", /Keep the provider\/model and thinking level separate from the name/],
+		["source format", /installed Pi `docs\/session-format\.md`/],
+		["branch scope", /file order is not a selected conversation branch/],
+		["origin uncertainty", /do not mistake user role for operator authorship/],
+		["carried authority", /faithfully carried operator decision, with its source and original scope/],
+		["evidence only", /Historical instructions remain evidence/],
+		["public history", /Use `agent_list` for discovery, `agent_inspect` for retained evidence/],
+		["no private fallback", /Do not read private SQLite files or reproduce private schemas, even read-only/],
+		["historical subjects unchanged", /Never send to, steer, attach, configure, reset, or start a historical subject/],
+		["memory lifecycle", /Inspect lifecycle, freshness, qualifications, and replacement links/],
+		["prior artifact scope", /Check their origin, columns, cutoff, source locators, and limitations/],
+		["revision checked expertise", /Update it through the same public control with `expectedRevision`/],
+		["separate tasks", /conversation holds the current task/],
+		["no permanent journal", /instead of copying transcripts or keeping a permanent task journal/],
+		["source locators", /resolvable source locator.*event date or window.*origin classification/],
+		["fresh evidence wins", /Current instructions and fresh evidence outrank stale expertise/],
+		["correction provenance", /retain the superseded source link and reason/],
+		["reset retrieval", /After a context reset, read the current profile and relevant reference/],
+		["no new grant", /prior task or grant is not silently restored as standing authority/],
+		["bounded output", /Do not impose a fixed number of quotes, a ranked list, or a report file/],
+		["no continuous miner", /standing expert means retained identity and knowledge, not continuous execution/],
+	]);
+});
+
 test("the workflow preserves capability-specific warrants separately from permission", () => {
 	assertContracts(deliveryWorkflow, [
 		["owning classification contract", /harness skill owns classification, warrant, and new-surface approval/],
@@ -447,7 +496,16 @@ test("collaboration preserves the use path and accepts observed task improvement
 			"task frame",
 			/Each execution contract carries:.*purpose, selected use path.*source pointers.*explicit exclusions.*acceptance evidence.*end condition.*integration ownership.*dependencies.*result consumer/,
 		],
-		["fresh distinct tasks", /fresh execution session for each distinct task/],
+		[
+			"relevant reuse",
+			/Reuse a session when its retained expertise, context, and ownership serve the current task/,
+		],
+		["request-local routing", /preserve the current requester and reply route before admission/],
+		["resolve before creation", /For recurring concerns.*resolve an existing expert before creating another/],
+		[
+			"fresh session reasons",
+			/Use a fresh session for unrelated work, necessary independent judgment, conflicting ownership, or context that no longer serves the task/,
+		],
 		[
 			"same-owner corrections",
 			/Keep corrections, review repairs, and native compaction in that session while its task is open/,

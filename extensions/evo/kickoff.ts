@@ -160,6 +160,7 @@ export function buildEvoKickoff(options: EvoKickoffOptions): string {
 		"",
 		"Required delivery workflow:",
 		"- Load the harness skill, repository instructions, and docs/agent-delivery.md under the harness package root in full before selection or governed work. That document owns orientation, outcome development, collaboration, acceptance, continuity, and release checks; follow it rather than inventing a second process.",
+		"- When orientation needs session history, use the standing session-history expert through the delivery workflow. Reuse relevant expertise instead of repeating a corpus brief; create the expert only when none exists.",
 		"- The active session coordinates the integrated outcome. Discover the registered full Pi agent controls and use full Pi sessions for implementation. An unavailable execution capability is an exact blocker, not permission to substitute a reduced backend or claim local-only completion.",
 		"- Carry the same concrete before/after operator use path from exploration through task contracts, acceptance, and final claims. Develop and challenge it with collaborators where useful; revise agent-authored recipes when discoveries change the approach.",
 		"- Preserve concurrent work and inherited attribution. The coordinator alone owns shared synchronization, integration, promotion, push, and activation. Do not build another scheduler, store, model loop, fixed roster, or evaluation framework.",
