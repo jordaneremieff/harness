@@ -308,8 +308,13 @@ coverage explicitly. A live or unknown owner endpoint refuses fallback and
 retries. An owner endpoint carries the primary channel contract version. A host
 that meets a live owner with another version holds that delivery pending and
 reports the endpoint version and the restart that clears it; it never treats the
-owner as dead and never falls back for it. A fallback broadcast checks every
-registered primary before the first delivery, so one incompatible candidate
+owner as dead and never falls back for it. Endpoint identity and local process
+ownership are checked before delivery compatibility. A new registration removes
+a stored endpoint only for a proven dead local PID and an unchanged file
+identity, regardless of the stored contract tag. Foreign or unverified ownership
+stays protected. Ownership metadata never authorizes a retired delivery payload.
+A fallback broadcast checks every registered primary before the first delivery,
+so one incompatible candidate
 holds the whole fallback. The host keeps the latest routing failure in its
 status as `deliveryError`, and the status card shows it. The primary does not poll receipts. Delivery is at-least-once; stable
 answer-based request and source IDs let each receiver deduplicate retries and

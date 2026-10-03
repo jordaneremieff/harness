@@ -76,7 +76,10 @@ interface PrimaryEndpoint extends PrimaryInfo {
 	readonly serverId: string;
 }
 
-/** Cheap boundedly-read owner classification; `unknown` covers malformed and foreign records, `incompatible` a readable record with another contract version. */
+/** Ownership metadata is readable independently of whether its opaque tag authorizes delivery. */
+type RecordedPrimaryEndpoint = Omit<PrimaryEndpoint, "version"> & { readonly version: unknown };
+
+/** Cheap owner classification; `unknown` covers unverified ownership, `incompatible` a live local owner with another contract. */
 export type PrimaryEndpointOwnerState = "absent" | "dead" | "live" | "unknown" | "incompatible";
 
 /** Owner classification plus the observed endpoint version when the record is readable. */
@@ -213,11 +216,10 @@ function endpointPid(record: Record<string, unknown>): number {
 }
 
 /** Validate one decoded endpoint record. The contract version is checked by the caller. */
-function parseEndpoint(value: unknown): PrimaryEndpoint {
+function parseEndpoint(value: unknown): RecordedPrimaryEndpoint {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PrimaryChannelUnavailableError("primary endpoint is not an object");
 	const record = value as Record<string, unknown>;
 	const version = record.version;
-	if (typeof version !== "string" || version.length === 0 || version.length > 256) throw new PrimaryChannelUnavailableError("The primary endpoint does not advertise a usable current contract. Restart that Pi process before delivery.");
 	const identity = endpointIdentity(record);
 	const name = optionalString(record, "name");
 	const model = endpointModel(record);
@@ -232,11 +234,13 @@ function parseEndpoint(value: unknown): PrimaryEndpoint {
 	};
 }
 
-/**
- * One readable endpoint record with another contract version. A host holds its
- * delivery for this owner and names the restart, instead of treating the owner
- * as dead or unknown.
- */
+/** Bounded diagnostic label only; no conversion authorizes a contract. */
+function endpointVersionLabel(version: unknown): string {
+	const label = typeof version === "string" ? version : JSON.stringify(version);
+	return label === undefined ? "missing" : label.length === 0 ? "empty" : label.slice(0, 256);
+}
+
+/** Refuse another delivery contract with owner-specific restart guidance. */
 export function primaryEndpointIncompatibleError(id: string, version: string): PrimaryChannelUnavailableError {
 	return new PrimaryChannelUnavailableError(
 		`primary owner ${id} runs an agent extension with endpoint version ${version}; this host requires version ${PRIMARY_ENDPOINT_VERSION}. Restart that Pi process to load the current extension.`,
@@ -245,7 +249,7 @@ export function primaryEndpointIncompatibleError(id: string, version: string): P
 
 /** One decoded endpoint record plus the file identity it was read from. */
 interface EndpointFile {
-	readonly endpoint: PrimaryEndpoint;
+	readonly endpoint: RecordedPrimaryEndpoint;
 	readonly dev: number;
 	readonly ino: number;
 }
@@ -277,7 +281,7 @@ function readEndpointFile(path: string): EndpointFile | undefined {
 }
 
 /** Read one endpoint record with a no-symlink bounded read and exact identity validation. */
-function readEndpoint(path: string): PrimaryEndpoint | undefined {
+function readEndpoint(path: string): RecordedPrimaryEndpoint | undefined {
 	return readEndpointFile(path)?.endpoint;
 }
 
@@ -525,7 +529,7 @@ export async function connectPrimaryChannel(options: { readonly id: string; read
 	const directory = join(resolve(options.sessionsRoot), ".primaries");
 	const endpoint = readEndpoint(primaryEndpointPath(options.sessionsRoot, options.id));
 	if (endpoint === undefined || endpoint.id !== options.id) throw await unavailable(directory, options.id);
-	if (endpoint.version !== PRIMARY_ENDPOINT_VERSION) throw primaryEndpointIncompatibleError(options.id, endpoint.version);
+	if (endpoint.version !== PRIMARY_ENDPOINT_VERSION) throw primaryEndpointIncompatibleError(options.id, endpointVersionLabel(endpoint.version));
 	let client: Client;
 	try {
 		client = await connectClient(options.id, endpoint.socketPath, endpoint.serverId, timeoutMs);
@@ -572,20 +576,21 @@ export function primaryEndpointPath(sessionsRoot: string, id: string): string {
 /** Cheap boundedly-read owner status without connecting; malformed and foreign records stay unknown. */
 export function primaryEndpointStatus(sessionsRoot: string, id: string): PrimaryEndpointStatus {
 	if (!UUID_ANY.test(id)) return { state: "unknown" };
-	let record: PrimaryEndpoint | undefined;
+	let record: RecordedPrimaryEndpoint | undefined;
 	try {
 		record = readEndpoint(primaryEndpointPath(sessionsRoot, id));
 	} catch {
 		return { state: "unknown" };
 	}
 	if (record === undefined) return { state: "absent" };
-	if (record.version !== PRIMARY_ENDPOINT_VERSION) return { state: "incompatible", version: record.version };
-	if (record.id !== id || record.hostname !== hostname()) return { state: "unknown", version: record.version };
+	const version = endpointVersionLabel(record.version);
+	if (record.id !== id || record.hostname !== hostname()) return { state: "unknown", version };
 	const state = processState(record.pid);
-	return { state: state === "dead" ? "dead" : state === "live" ? "live" : "unknown", version: record.version };
+	if (state !== "live") return { state, version };
+	return { state: record.version === PRIMARY_ENDPOINT_VERSION ? "live" : "incompatible", version };
 }
 
-/** Owner state alone; an incompatible record never reads as dead or unknown. */
+/** Owner state alone; a live incompatible owner never authorizes fallback or replacement. */
 export function primaryEndpointOwnerState(sessionsRoot: string, id: string): PrimaryEndpointOwnerState {
 	return primaryEndpointStatus(sessionsRoot, id).state;
 }

@@ -412,7 +412,7 @@ it("publishes the current endpoint version and refuses an older record with the 
 	const channel = await createPrimaryChannel(channelOptions(root, id));
 	t.after(() => void channel.close().catch(() => undefined));
 	const path = primaryEndpointPath(root, id);
-	const published = JSON.parse(readFileSync(path, "utf8")) as { version: number };
+	const published = JSON.parse(readFileSync(path, "utf8")) as { version: string };
 	assert.equal(published.version, PRIMARY_ENDPOINT_VERSION);
 	writeFileSync(path, JSON.stringify({ ...published, version: "primary-delivery/0.0.1" }));
 	await assert.rejects(
@@ -424,7 +424,7 @@ it("publishes the current endpoint version and refuses an older record with the 
 	);
 });
 
-it("classifies another endpoint version as incompatible, never dead or unknown", async (t) => {
+it("classifies local endpoint ownership before delivery compatibility", async (t) => {
 	const root = testRoot(t);
 	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
 	const id = uuidV7();
@@ -432,11 +432,74 @@ it("classifies another endpoint version as incompatible, never dead or unknown",
 	writeFileSync(path, endpointRecord(root, id, { version: "primary-delivery/0.0.1" }));
 	assert.deepEqual(primaryEndpointStatus(root, id), { state: "incompatible", version: "primary-delivery/0.0.1" });
 	writeFileSync(path, endpointRecord(root, id, { version: "primary-delivery/0.0.1", pid: deadProcessId() }));
-	assert.deepEqual(primaryEndpointStatus(root, id), { state: "incompatible", version: "primary-delivery/0.0.1" }, "a dead older owner stays incompatible");
-	writeFileSync(path, endpointRecord(root, id, { version: 1 }));
-	assert.deepEqual(primaryEndpointStatus(root, id), { state: "unknown" }, "a non-string version is malformed");
+	assert.deepEqual(primaryEndpointStatus(root, id), { state: "dead", version: "primary-delivery/0.0.1" }, "a dead owner stays dead regardless of its delivery contract");
+	writeFileSync(path, endpointRecord(root, id, { version: 2 }));
+	assert.deepEqual(primaryEndpointStatus(root, id), { state: "incompatible", version: "2" });
 	writeFileSync(path, endpointRecord(root, id, { version: undefined }));
-	assert.deepEqual(primaryEndpointStatus(root, id), { state: "unknown" }, "a missing version is malformed");
+	assert.deepEqual(primaryEndpointStatus(root, id), { state: "incompatible", version: "missing" });
+});
+
+it("refuses delivery and replacement for a live owner without the current contract", async (t) => {
+	const f = await fixture(t);
+	const path = primaryEndpointPath(f.root, f.id);
+	const published = JSON.parse(readFileSync(path, "utf8"));
+	for (const version of [2, undefined, { contract: PRIMARY_ENDPOINT_VERSION }]) {
+		const record = JSON.stringify({ ...published, version });
+		writeFileSync(path, record);
+		assert.equal(primaryEndpointStatus(f.root, f.id).state, "incompatible");
+		await assert.rejects(connectPrimaryChannel({ id: f.id, sessionsRoot: f.root }), (error: unknown) => {
+			assert.ok(error instanceof PrimaryChannelUnavailableError);
+			assert.match(error.message, /this host requires version/u);
+			assert.match(error.message, /Restart that Pi process/u);
+			if (version === 2) assert.match(error.message, /endpoint version 2;/u);
+			return true;
+		});
+		await assert.rejects(createPrimaryChannel(channelOptions(f.root, f.id)), PrimaryChannelConflictError);
+		assert.equal(readFileSync(path, "utf8"), record);
+		assert.ok(existsSync(f.channel.socketPath));
+		assert.deepEqual(f.delivered, []);
+		assert.deepEqual(f.prompted, []);
+	}
+	writeFileSync(path, JSON.stringify(published));
+});
+
+it("replaces a dead local endpoint independently of its opaque contract tag", async (t) => {
+	const root = testRoot(t);
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const id = uuidV7();
+	for (const version of [2, undefined]) {
+		const path = primaryEndpointPath(root, id);
+		const staleSocket = join(root, "stale.sock");
+		writeFileSync(staleSocket, "stale socket marker");
+		writeFileSync(path, endpointRecord(root, id, { version, pid: deadProcessId(), socketPath: staleSocket }));
+		assert.equal(primaryEndpointStatus(root, id).state, "dead");
+		const channel = await createPrimaryChannel(channelOptions(root, id));
+		try {
+			assert.equal(existsSync(staleSocket), false);
+			assert.equal(primaryEndpointOwnerState(root, id), "live");
+			const current = JSON.parse(readFileSync(path, "utf8"));
+			assert.equal(current.version, PRIMARY_ENDPOINT_VERSION);
+			assert.equal(current.pid, process.pid);
+			const client = await connectPrimaryChannel({ id, sessionsRoot: root });
+			try { assert.equal((await client.info()).id, id); }
+			finally { await client.close(); }
+		} finally { await channel.close(); }
+		assert.equal(existsSync(path), false);
+	}
+});
+
+it("protects foreign and mismatched ownership regardless of contract tag", async (t) => {
+	const root = testRoot(t);
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const id = uuidV7();
+	const path = primaryEndpointPath(root, id);
+	for (const overrides of [{ hostname: "another-host" }, { id: uuidV7() }, { pid: 0 }]) {
+		const record = endpointRecord(root, id, { version: 2, pid: deadProcessId(), ...overrides });
+		writeFileSync(path, record);
+		assert.equal(primaryEndpointStatus(root, id).state, "unknown");
+		await assert.rejects(createPrimaryChannel(channelOptions(root, id)));
+		assert.equal(readFileSync(path, "utf8"), record);
+	}
 });
 
 it("replaces an older endpoint record with a dead owner at registration", async (t) => {

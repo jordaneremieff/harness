@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import { startDurableDelivery } from "./durable-delivery.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import type { HostConnection } from "./host-client.ts";
-import { eventLog } from "./host-fixture.mts";
+import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import { parseHostMetadata } from "./host-protocol.ts";
@@ -1020,9 +1020,12 @@ it("holds a quiet notice for an older owner, then delivers after that owner rest
 	const sessionsRoot = join(root, "sessions");
 	const owner = randomUUID();
 	const received = eventLog<PrimaryDelivery>();
-	const dead = spawnSync(process.execPath, ["-e", ""]);
-	assert.ok(dead.pid);
-	writeIncompatibleEndpoint(sessionsRoot, owner, dead.pid);
+	const ownerProcess = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+	assert.ok(ownerProcess.pid);
+	const exited = waitForProcessExit(ownerProcess, 30000);
+	void exited.catch(() => undefined);
+	t.after(async () => { ownerProcess.kill("SIGTERM"); await exited; });
+	writeIncompatibleEndpoint(sessionsRoot, owner, ownerProcess.pid);
 	const sourcePath = join(root, "source.sqlite");
 	const source = await openHost(sourcePath, "source-storage", root);
 	t.after(async () => {
@@ -1057,7 +1060,9 @@ it("holds a quiet notice for an older owner, then delivers after that owner rest
 	assert.match(status.deliveryError ?? "", /Restart that Pi/u, "the host status names the restart");
 	structuredObservation(StatusOutputSchema, { ...status, inventory: { contributions: [], ordinaryOnly: [] }, pid: 4, storageId: source.storageId });
 
-	// The older window restarts and registers the current endpoint; the held row delivers then.
+	// Replacement follows the recorded owner's real exit, never a failed connection.
+	ownerProcess.kill("SIGTERM");
+	await exited;
 	const channel = await createPrimaryChannel({
 		id: owner,
 		cwd: root,
