@@ -33,9 +33,13 @@ function identityLines(profile: AgentProfile): string[] {
 	];
 }
 function requestLines(profile: AgentProfile): string[] {
-	return ["Request routes:", ...(profile.requests.length ? profile.requests.map((request) =>
+	const omitted = profile.requestsOmitted ?? 0;
+	const lines = profile.requests.map((request) =>
 		`${safe(request.requestId)} · ${request.status} · ${request.origin}\n  Requester: ${safe(request.requester)}\n  Reply recipient: ${safe(request.replyTo)}`,
-	) : ["No retained active request routes; earlier requester evidence is unknown."])];
+	);
+	if (omitted > 0) lines.unshift(`${omitted} additional request route${omitted === 1 ? "" : "s"} omitted from this profile.`);
+	else if (lines.length === 0) lines.push("No retained active request routes; earlier requester evidence is unknown.");
+	return ["Request routes:", ...lines];
 }
 function draftLines(profile: AgentProfile, draft?: ProfileDraft): string[] {
 	return [
@@ -45,7 +49,7 @@ function draftLines(profile: AgentProfile, draft?: ProfileDraft): string[] {
 			? ["Conflict: draft retained. Read the current profile, then explicitly select its revision before Save."] : []),
 	];
 }
-/** Full identity and routing evidence; saved expertise is separate from present instructions. */
+/** Identity and bounded request routes; saved expertise is separate from present instructions. */
 export function profileText(profile: AgentProfile, expertise = false, draft?: ProfileDraft): string {
 	return [
 		...identityLines(profile), ...requestLines(profile), ...draftLines(profile, draft),

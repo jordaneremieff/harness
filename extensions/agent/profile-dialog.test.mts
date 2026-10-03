@@ -24,7 +24,28 @@ it("profile text separates identity, provenance, current routes, and on-demand e
 	assert.match(profileText(profile, true), /Sourced fact: reference.md/);
 	assert.match(profileText({ ...profile, model: null, requests: [] }), /Model: Unknown[\s\S]*earlier requester evidence is unknown/);
 });
+it("profile reports omitted routes without calling a partial list empty", () => {
+	for (const requests of [profile.requests, []]) {
+		const complete = { ...profile, requests };
+		assert.doesNotMatch(profileText(complete), /omitted from this profile/);
+		assert.equal(profileText({ ...complete, requestsOmitted: 0 }), profileText(complete));
+		for (const requestsOmitted of [1, 7]) {
+			const text = profileText({ ...complete, requestsOmitted });
+			assert.ok(text.includes(`${requestsOmitted} additional request route${requestsOmitted === 1 ? "" : "s"} omitted from this profile.`));
+			assert.doesNotMatch(text, /No retained active request routes/);
+			if (requests.length) assert.ok(text.indexOf("additional request route") < text.indexOf(`${requests[0].requestId} ·`), "coverage precedes the bounded list");
+		}
+	}
+});
 for (const width of [28, 48, 120]) {
+	it(`profile omission counts remain readable at width ${width}`, () => {
+		const panel = new ProfilePanel({ ...profile, requestsOmitted: 7 }, draft(), theme, () => 20, () => {}, () => {});
+		panel.render(width);
+		panel.handleInput("\x1b[F");
+		const lines = panel.render(width);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		assert.ok(lines.join("\n").replace(/\s/gu, "").includes("7additionalrequestroutesomittedfromthisprofile."));
+	});
 	it(`profile exposes structured current and queued routes on demand at width ${width}`, () => {
 		const routed: AgentProfile = { ...profile, requests: [
 			{ requestId: "active-request", requester: "active-requester", replyTo: "active-recipient", origin: "operator", status: "placed" },
@@ -126,6 +147,13 @@ it("profile field cancellation preserves the completed draft and empty submissio
 	await editProfile(profile, draft(), d.ctx, async (_method, input) => { patch = input; return { outcome: "applied", deduped: false, profile: { ...profile, role: "" } }; });
 	assert.equal(patch?.role, "");
 	assert.deepEqual(d.prefills, [profile.role, ""]);
+});
+it("non-TUI profile command preserves the request-route omission count", async () => {
+	const d = context([]);
+	const ctx = { ...d.ctx, hasUI: false } as ExtensionContext;
+	const result = await profileCommand(async () => ({ ...profile, requestsOmitted: 1 })).run([profile.identity], ctx);
+	assert.match(String(result), /1 additional request route omitted from this profile\./);
+	assert.match(String(result), /Sourced fact: reference\.md/);
 });
 it("non-TUI profile command returns full expertise without opening an editor", async () => {
 	const d = context([]);
