@@ -41,7 +41,10 @@ stopping work.
   attempts final catalog publication, seals native admission, and exits through
   the runner. It keeps the live claim until process death; the next host
   replaces the dead claim and resumes retained native work. Concurrent close
-  paths share one shutdown.
+  paths share one shutdown. If reload fails after runtime teardown starts, the
+  host returns the reload error and takes the same process shutdown path. It
+  retains the recovery marker and writer claim until process death; the next
+  acquisition starts a fresh host.
 - Local protocol validation rejects only the malformed request and leaves its
   healthy connection usable. A failed runtime-version attachment disposes its
   client. Application or protocol errors from a live writer do not authorize a

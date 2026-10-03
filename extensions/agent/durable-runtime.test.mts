@@ -15,6 +15,8 @@ import { dirname, join } from "node:path";
 import { it } from "node:test";
 import type { Models } from "@earendil-works/pi-ai";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
+import { observeClaim } from "./claims.ts";
+import { hostPaths } from "./host-protocol.ts";
 import { acquireHost, waitForHostRelease } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
 import { observeDurableStorage, sessionKeyedModels } from "./durable-runtime.ts";
@@ -392,6 +394,80 @@ it("publishes a bounded catalog view and clears recovery due on a clean close", 
 	assert.ok(view.rows.some((row) => row.storageId === f.metadata.storageId), "the view carries this storage's rows");
 	assert.equal(view.coverage.complete, true);
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false, "a clean idle close clears the marker");
+});
+
+for (const pendingDelivery of [false, true]) it(`exits after a failed reload with pending delivery=${pendingDelivery} and serves controls after acquisition`, { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const runner = join(f.testDir, "failed-reload.mts");
+	const hostModule = new URL("./durable-host.ts", import.meta.url).href;
+	const runtimeModule = new URL("./durable-runtime.ts", import.meta.url).href;
+	const signalModule = new URL("./testdata/durable-runtime/signal.ts", import.meta.url).href;
+	writeFileSync(runner, `
+		import { writeFileSync } from "node:fs";
+		import { DurableHost } from ${JSON.stringify(hostModule)};
+		import { publishFixtureMarker } from ${JSON.stringify(signalModule)};
+		const original = DurableHost.open;
+		let opens = 0;
+		DurableHost.open = async function (...args) {
+			if (++opens === 2) throw new Error("forced reload open failure");
+			return original.apply(this, args);
+		};
+		// Record the runtime state before the process handles the failed request.
+		const { createDurableRuntime } = await import(${JSON.stringify(runtimeModule)});
+		const { runHost } = await import(${JSON.stringify(new URL("./host-process.ts", import.meta.url).href)});
+		const metadata = JSON.parse(process.argv[2]);
+		const host = await runHost(async () => {
+			const runtime = await createDurableRuntime(metadata);
+			const request = runtime.request;
+			runtime.request = async (...args) => {
+				try { return await request(...args); }
+				catch (error) {
+					if (args[0] === "command" && args[1]?.name === "reload") {
+						let nextError;
+						try { await request("status", {}, "after-failure"); }
+						catch (next) { nextError = next.message; }
+						writeFileSync(${JSON.stringify(join(f.testDir, "reload-state.json"))}, JSON.stringify({ shutdownRequired: runtime.shutdownRequired ?? false, idle: runtime.isIdle(), nextError }));
+						await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "reload-failed");
+					}
+					throw error;
+				}
+			};
+			return runtime;
+		}, { metadata, exit: () => process.exit(0) });
+		await host.done;
+	`);
+	const first = await acquireHost(f.metadata, { runner, env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "0" }, retryAttempts: 0 });
+	trackHost(t, first.pid);
+	let submission: SubmitResult | undefined;
+	try {
+		if (pendingDelivery) {
+			submission = await first.request("submit", { message: "retain this delivery", requestId: "reload-delivery", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+			await waitForReceipt(first, f.ownerId, submission.submissionId);
+			await first.request("recovery-state");
+		}
+		await assert.rejects(first.request("command", { name: "reload" }), /forced reload open failure/u);
+		await f.marker("reload-failed");
+		const state = JSON.parse(readFileSync(join(f.testDir, "reload-state.json"), "utf8"));
+		assert.equal(state.idle, false, "a closed native host does not retire as idle");
+		assert.match(state.nextError, /closed/u, "later controls cannot use the torn-down runtime");
+		assert.equal(state.shutdownRequired, true, "the failed runtime requires process shutdown instead of retaining its live claim");
+		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+		const paths = hostPaths(f.metadata);
+		assert.equal(observeClaim(paths.claim, paths.identity).kind, "dead", "process death leaves a replaceable writer claim");
+		assert.equal(new AgentCatalog(f.root).read(f.metadata.storageId).recoveryDue, true, "failure retains recovery due, including an unacknowledged delivery");
+	} finally { await first.close().catch(() => {}); }
+	const second = await acquireHost(f.metadata, { env: f.env("answer"), retryAttempts: 0 });
+	trackHost(t, second.pid);
+	try {
+		assert.notEqual(second.pid, first.pid);
+		assert.equal((await second.request("status") as { storageId: string }).storageId, f.metadata.storageId);
+		await second.request("configure", { name: "after failed reload" });
+		if (submission) {
+			const receipt = await waitForReceipt(second, f.ownerId, submission.submissionId);
+			assert.equal(receipt.status, "done");
+			await second.request("acknowledge", { ownerId: f.ownerId, submissionIds: [submission.submissionId] });
+		}
+	} finally { await second.close().catch(() => {}); }
 });
 
 it("keeps change notifications after reload replaces the durable host", { timeout: 120000 }, async (t) => {

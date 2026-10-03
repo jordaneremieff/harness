@@ -90,6 +90,36 @@ it("preserves a runtime error message", { timeout: 15000 }, async (t) => {
 	await client.dispose();
 });
 
+it("returns a failed runtime response before shared shutdown releases the claim", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const config = metadata(root);
+	let failed = false;
+	let closed = 0;
+	const host = await runHost(() => ({
+		request: async (method, params) => {
+			if (method !== "command") return { method, params };
+			failed = true;
+			throw new Error("reload failed");
+		},
+		get shutdownRequired() { return failed; },
+		isIdle: () => false,
+		close: async () => { closed++; },
+	}), { metadata: config, idleMs: 0, announceReady: noop });
+	t.after(() => host.close().catch(() => {}));
+	const client = await connectClient(config);
+	try {
+		await assert.rejects(call(client, config, "command", { name: "reload" }), /reload failed/u);
+		await host.done;
+		await host.close();
+		assert.equal(closed, 1, "fatal and explicit close share one shutdown");
+		assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "absent");
+	} finally { await client.dispose().catch(() => {}); }
+	const replacement = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
+	const next = await connectClient(config);
+	try { assert.deepEqual(await call(next, config, "status", {}), { method: "status", params: {} }); }
+	finally { await next.dispose().catch(() => {}); await replacement.close(); }
+});
+
 it("refuses a second host while the claim is live without creating its runtime", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const { host, metadata: config } = await startHost(root);

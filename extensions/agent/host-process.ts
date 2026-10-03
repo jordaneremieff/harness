@@ -29,9 +29,11 @@ export interface HostRuntime {
 	 * stop on it, admitted Durable work does not.
 	 */
 	request(method: string, params: unknown, requestId: string, signal?: AbortSignal): Promise<unknown>;
-	/** Busy native work requires process death rather than an unbounded task join. */
+	/** Pending native work or a failed runtime requires process death rather than an unbounded task join. */
 	close(): Promise<void> | Promise<"process-exit" | undefined>;
 	isIdle(): boolean;
+	/** A failed runtime requires process shutdown after the current response. */
+	readonly shutdownRequired?: boolean;
 	/**
 	 * Subscribe to actual storage writes for the change-notification service.
 	 * The source is the native commit stream; the runtime must not fire it for
@@ -500,7 +502,14 @@ class HostProcessServer implements HostProcess {
 			// The public protocol carries bounded structural codes; the runtime
 			// message is preserved so consumers keep actionable errors.
 			throw new ServerError("service_invalid_value", error instanceof Error ? error.message : String(error));
-		}
+		} finally { this.shutdownIfRequired(); }
+	}
+
+	private shutdownIfRequired(): void {
+		if (!this.runtime.shutdownRequired || this.closing) return;
+		this.closing = true;
+		// Let the service response reach the client before shutdown closes transport.
+		setImmediate(() => { void this.shutdown().catch(() => {}); });
 	}
 
 	private waitSignal(caller?: AbortSignal): AbortSignal {

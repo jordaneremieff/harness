@@ -96,6 +96,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	let host: DurableHost;
 	let closed = false;
 	let reloading = false;
+	let reloadFailed = false;
 	let activeRequests = 0;
 	const changeListeners = new Set<() => void>();
 	let unsubscribeChanges: (() => void) | undefined;
@@ -105,6 +106,8 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	let publishingView = false;
 	let flushingView = false;
 	let publishAgain = false;
+
+	function runtimeUnavailable(): boolean { return closed || reloadFailed; }
 
 	/** Write the recovery marker; a failed write blocks the admitting request. */
 	function markRecoveryDue(due: boolean): void {
@@ -226,7 +229,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		const params = { ...input };
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
 		if (storageIdOf(sessionId) !== metadata.storageId) {
-			if (closed || reloading) throw new Error("Durable host is closed or reloading");
+			if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
 			activeRequests++;
 			try { return await foreignControl(method, params, sessionId); }
 			finally { activeRequests--; }
@@ -294,19 +297,25 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		if (params.name !== "reload") return host.request("command", params);
 		if (!host.isIdle()) throw new Error("Reload requires an idle storage; it cannot replace another conversation's active tasks");
 		await services.services.resourceLoader.reload();
-		await deliveries.close();
-		unsubscribeChanges?.();
-		unsubscribeChanges = undefined;
-		await flushCatalogView();
-		await settleRecoveryMarker();
-		await services.close(); await host.close();
-		services = await bootstrap(metadata, controller, true);
-		host = await openHost();
-		deliveries = delivery();
+		try {
+			await deliveries.close();
+			unsubscribeChanges?.();
+			unsubscribeChanges = undefined;
+			await flushCatalogView();
+			await settleRecoveryMarker();
+			await services.close(); await host.close();
+			services = await bootstrap(metadata, controller, true);
+			host = await openHost();
+			deliveries = delivery();
+		} catch (error) {
+			// Teardown has started; only a fresh process can own a usable runtime.
+			reloadFailed = true;
+			throw error;
+		}
 		return { sessionId: params.sessionId ?? metadata.storageId, inventory: services.inventory, reloaded: true };
 	}
 	async function request(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
-		if (closed) throw new Error("Durable host is closed");
+		if (runtimeUnavailable()) throw new Error("Durable host is closed");
 		if (reloading) throw new Error("Durable host reload is in progress; retry the control after reload");
 		const reload = method === "command" && (input as { name?: unknown } | undefined)?.name === "reload";
 		if (reload && activeRequests > 0) throw new Error("Reload requires all other controls to settle");
@@ -359,7 +368,8 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 	const closeHost = async (): Promise<"process-exit" | undefined> => {
 		if (closed) return;
 		closed = true;
-		const workPending = !(await host.refreshIdle());
+		// A failed reload no longer provides a reliable native work or delivery snapshot.
+		const processExit = reloadFailed || !(await host.refreshIdle());
 		restoreDispatch();
 		controller.abort();
 		if (publishTimer !== undefined) {
@@ -367,11 +377,11 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 			publishTimer = undefined;
 		}
 		unsubscribeChanges?.();
-		if (workPending) markRecoveryDue(true);
+		if (processExit) markRecoveryDue(true);
 		else await settleRecoveryMarker();
 		await flushCatalogView();
 		changeListeners.clear();
-		if (workPending) {
+		if (processExit) {
 			// Native close seals admission synchronously, but joins even noncooperative task code.
 			// Process death ends those invocations without manufacturing a durable task outcome.
 			void host.close().catch((error: unknown) => process.stderr.write(`Native close: ${String(error)}\n`));
@@ -382,7 +392,7 @@ export async function createDurableRuntime(metadata: HostMetadata): Promise<Host
 		try { await deliveries.close(); } finally { try { await services.close(); } finally { await host.close(); } }
 		return undefined;
 	};
-	return { request, isIdle: () => host.isIdle(), onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, close: closeHost };
+	return { request, get shutdownRequired() { return reloadFailed; }, isIdle: () => host.isIdle(), onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, close: closeHost };
 }
 
 /** Cold inspection writes a bounded disposable SQLite snapshot; it never writes source content. */
