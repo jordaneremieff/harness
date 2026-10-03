@@ -47,6 +47,11 @@ it("validates every inspect view and the empty and missing cases against a real 
 		default: await readInspection(harness, fixtureStorageId, conversation, {}, BACKGROUND_CONTEXT),
 	};
 	for (const value of Object.values(views)) structuredObservation(InspectOutputSchema, value);
+	assert.equal((views.history as { format: string }).format, "compact");
+	assert.equal((views.activity as { format: string }).format, "compact");
+	assert.equal((views.branch as { format?: string }).format, undefined);
+	for (const entry of (views.history as { entries: { format: string }[] }).entries) assert.equal(entry.format, "compact");
+	for (const turn of (views.activity as { turns: { entries: { format: string }[] }[] }).turns) for (const entry of turn.entries) assert.equal(entry.format, "compact");
 	const history = views.history as { view: string; entries: readonly unknown[] };
 	assert.equal(history.view, "history");
 	assert.ok(history.entries.some((entry) => (entry as { kind: string }).kind === "pi.assistant"));
@@ -68,9 +73,11 @@ it("validates every inspect view and the empty and missing cases against a real 
 		const emptyHistory = await readInspection(fresh.harness, fixtureStorageId, fresh.root(), { view: "history" }, BACKGROUND_CONTEXT);
 		structuredObservation(InspectOutputSchema, emptyHistory);
 		assert.deepEqual((emptyHistory as { entries: readonly unknown[]; nextCursor: null }).entries, []);
+		assert.equal((emptyHistory as { format: string }).format, "compact");
 		assert.equal((emptyHistory as { nextCursor: null }).nextCursor, null);
 		const emptyActivity = await readInspection(fresh.harness, fixtureStorageId, fresh.root(), { view: "activity" }, BACKGROUND_CONTEXT);
 		structuredObservation(InspectOutputSchema, emptyActivity);
+		assert.equal((emptyActivity as { format: string }).format, "compact");
 	} finally {
 		await fresh.close();
 	}

@@ -235,13 +235,13 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_status",
-		"Read Durable conversations and live host state. A selected session lists its bounded pending scheduled inputs with timer ID and deadline. Unavailable evidence remains explicit.",
+		"Orient over agents with compact excerpts, working and attention rows first, then recent rows. Summary and coverage name omitted rows; agent_list discovers full identities. A selected session returns full state and bounded pending timers.",
 		Type.Object({ sessionId: Type.Optional(id) }, { additionalProperties: false }),
 		(input) => getManager().status(input.sessionId as string | undefined),
 	);
 	register(
 		"agent_inspect",
-		"Read retained Durable entries, results, and task state. Pass returned next objects as cursor. Result reads use submissionId or operationId; exact reads use entryId. Images and signatures are omitted.",
+		"Read compact history or activity: role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
 		inspect,
 		(input, ctx) => control("inspect", input, ctx),
 	);

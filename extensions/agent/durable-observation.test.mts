@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, SystemEntry, UserEntry, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
+import { LiveDoc, SystemEntry, UserEntry, type EntryRecord, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DurableHost } from "./durable-host.ts";
-import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, dashboardHealth, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
+import { InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
 import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
@@ -395,6 +396,7 @@ it("bounds the serialized activity digest for many large UTF-8 turns", async (t)
 		const activity = (await observation.request("inspect", { view: "activity", limit: 12 })) as { coverage: { bytes: number; byteLimitReached: boolean; omittedEntries: number; complete: boolean }; detail: string };
 		const bytes = Buffer.byteLength(JSON.stringify(activity), "utf8");
 		assert.ok(bytes <= ACTIVITY_DIGEST_BYTES, `digest is ${bytes} bytes`);
+		assert.ok(bytes <= 8_000, "the compact coordinator digest stays within its byte ceiling");
 		assert.equal(activity.coverage.bytes, bytes, "coverage.bytes is the exact fixed point");
 		assert.equal(activity.coverage.byteLimitReached, true);
 		assert.ok(activity.coverage.omittedEntries > 0);
@@ -660,4 +662,212 @@ it("carries the author role of the retained tail text", { timeout: 30000 }, asyn
 	} finally {
 		await host.close();
 	}
+});
+
+it("keeps exhausted text and argument markers within the shared excerpt budget", () => {
+	const entry = { id: 1, kind: "pi.assistant", model: [{ ...answerMessage(""), content: [
+		{ type: "text", text: "answer ".repeat(300) },
+		...Array.from({ length: 8 }, (_, index) => ({ type: "toolCall", id: String(index), name: `tool-${index}`, arguments: { payload: "x".repeat(2000) } })),
+	] }] } as unknown as EntryRecord;
+	for (const units of [80, 1200]) {
+		const row = entryRow(entry, units);
+		const used = row.text.length + (row.toolCalls ?? []).reduce((total, call) => total + call.arguments.length, 0) + (row.toolResults ?? []).reduce((total, result) => total + result.text.length, 0);
+		assert.ok(used <= units, `${used} excerpt units exceed ${units}`);
+		assert.equal(row.truncated, true);
+		assert.ok(row.toolCalls?.some((call) => call.truncated));
+	}
+});
+
+it("keeps both ends of a readable fragment on Unicode boundaries", () => {
+	const cut = fragment("A😀B", 2, 4);
+	assert.equal(cut.start, 1);
+	assert.equal(cut.text, "😀B");
+	assert.equal(cut.nextOffset, null);
+});
+
+it("projects readable compact entries with named tools and bounded arguments", () => {
+	const entry = {
+		id: 1,
+		kind: "pi.assistant",
+		model: [
+			{
+				...answerMessage("review done"),
+				content: [
+					{ type: "text", text: "review done" },
+					{
+						type: "toolCall",
+						id: "call-1",
+						name: "read",
+						arguments: { path: "file.ts", payload: "x".repeat(2000) },
+						partialJson: "duplicate arguments",
+					},
+				],
+			},
+		],
+	} as unknown as EntryRecord;
+	const row = entryRow(entry);
+	assert.equal(row.text, "review done");
+	assert.equal(row.toolCalls?.[0]?.name, "read");
+	assert.match(row.toolCalls?.[0]?.arguments ?? "", /file.ts/u);
+	assert.match(row.toolCalls?.[0]?.arguments ?? "", /\[truncated\]/u);
+	assert.equal(row.truncated, true);
+	assert.equal(row.nextOffset, null);
+	assert.doesNotMatch(JSON.stringify(row), /partialJson|totalTokens|duplicate arguments/u);
+	assert.match(projectEntry(entry).text, /partialJson|duplicate arguments/u);
+});
+
+it("bounds compact text and tool parts with visible markers and intact Unicode", () => {
+	const entry = {
+		id: 2,
+		kind: "pi.tool-result",
+		model: [
+			{ role: "toolResult", toolName: "bash", isError: true, content: [{ type: "text", text: "😀".repeat(3000) }] },
+		],
+	} as unknown as EntryRecord;
+	const row = entryRow(entry, 80);
+	assert.equal(row.toolResults?.[0]?.name, "bash");
+	assert.equal(row.toolResults?.[0]?.isError, true);
+	assert.equal(row.toolResults?.[0]?.truncated, true);
+	assert.match(row.toolResults?.[0]?.text ?? "", /\[truncated\]/u);
+	assert.ok((row.toolResults?.[0]?.text.length ?? 0) <= 80);
+	assert.doesNotMatch(JSON.stringify(row), /\\ud83d"/u);
+	const many = {
+		id: 3,
+		kind: "pi.assistant",
+		model: [
+			{
+				...answerMessage(""),
+				content: Array.from({ length: 30 }, (_, i) => ({
+					type: "toolCall",
+					id: String(i),
+					name: `tool-${i}`,
+					arguments: {},
+				})),
+			},
+		],
+	} as unknown as EntryRecord;
+	const bounded = entryRow(many);
+	assert.equal(bounded.toolCalls?.length, 8);
+	assert.equal(bounded.omittedParts, 22);
+	assert.equal(bounded.truncated, true);
+});
+
+it("keeps full retained entry evidence across exact pages after compact history and activity", async (t) => {
+	const storagePath = join(fixtureRoot(t), "full-evidence.sqlite");
+	const answer = answerMessage("full evidence 😀 ".repeat(3000));
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime([answer]), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
+	const submitted = await host.submit({ message: "inspect the worker", requestId: "full-evidence" });
+	await host.wait(submitted.submissionId, BACKGROUND_CONTEXT);
+	const retained = (await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT)).items.find(
+		(e) => e.kind === "pi.assistant",
+	);
+	assert.ok(retained);
+	const expected = projectEntry(retained).text;
+	await host.close();
+	const observation = await observationFor(storagePath);
+	try {
+		const history = (await observation.request("inspect", { view: "history" })) as {
+			entries: ReturnType<typeof entryRow>[];
+		};
+		structuredObservation(InspectOutputSchema, history);
+		const compact = history.entries.find((e) => e.id === retained.id);
+		assert.ok(compact);
+		assert.equal(compact.truncated, true);
+		assert.match(compact.text, /\[truncated\]/u);
+		assert.ok(JSON.stringify(compact).length < 2000);
+		const activity = (await observation.request("inspect", { view: "activity" })) as {
+			turns: { entries: ReturnType<typeof entryRow>[] }[];
+		};
+		structuredObservation(InspectOutputSchema, activity);
+		assert.deepEqual(
+			activity.turns.flatMap((t) => t.entries).find((e) => e.id === retained.id),
+			compact,
+		);
+		const emojiOffset = expected.indexOf("😀");
+		assert.ok(emojiOffset >= 0);
+		const normalized = await observation.request("inspect", { view: "exact", entryId: retained.id, offset: emojiOffset + 1 }) as { offset: number; text: string };
+		structuredObservation(InspectOutputSchema, normalized);
+		assert.equal(normalized.offset, emojiOffset);
+		assert.ok(normalized.text.startsWith("😀"));
+		let text = "",
+			offset = 0,
+			pages = 0;
+		for (;;) {
+			const page = (await observation.request("inspect", { view: "exact", entryId: retained.id, offset })) as {
+				text: string;
+				nextOffset: number | null;
+			};
+			structuredObservation(InspectOutputSchema, page);
+			text += page.text;
+			pages++;
+			if (page.nextOffset === null) break;
+			assert.ok(page.nextOffset > offset);
+			offset = page.nextOffset;
+			assert.ok(pages < 20);
+		}
+		assert.ok(pages > 1);
+		assert.equal(text, expected);
+		assert.deepEqual(JSON.parse(text).model, retained.model);
+	} finally {
+		await observation.close();
+	}
+});
+
+it("continues compact history without losing an entry at each page boundary", async (t) => {
+	const storagePath = join(fixtureRoot(t), "history-pages.sqlite");
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([answerMessage("one"), answerMessage("two"), answerMessage("three")]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
+	for (const n of [1, 2, 3]) {
+		const s = await host.submit({ message: `prompt ${n}`, requestId: `page-${n}` });
+		await host.wait(s.submissionId, BACKGROUND_CONTEXT);
+	}
+	const expected = (await host.root().entries({}, 100, undefined, BACKGROUND_CONTEXT)).items.map((e) => e.id);
+	await host.close();
+	const obs = await observationFor(storagePath);
+	try {
+		const seen: number[] = [];
+		let cursor: unknown;
+		for (let n = 0; n < 100; n++) {
+			const page = (await obs.request("inspect", {
+				view: "history",
+				limit: 1,
+				...(cursor === undefined ? {} : { cursor }),
+			})) as { entries: { id: number }[]; nextCursor: unknown };
+			seen.push(...page.entries.map((e) => e.id));
+			if (page.nextCursor === null) break;
+			cursor = page.nextCursor;
+		}
+		assert.deepEqual(seen, expected);
+	} finally {
+		await obs.close();
+	}
+});
+
+it("prioritizes failure rows within the digest bound and exposes excluded failures through history", async (t) => {
+ const storagePath=join(fixtureRoot(t),"failure-priority.sqlite");
+ const tool={...failingTool(),execute:async()=>{throw new Error("large intentional failure "+"x".repeat(4000));}};
+ const scripts=Array.from({length:8},()=>[toolCallMessage("failing-tool"),answerMessage("recovered")]).flat();
+ const host=await DurableHost.open(hostOptions(storagePath,await scriptedRuntime(scripts),fixtureRegistry([tool])),BACKGROUND_CONTEXT);
+ for(let n=0;n<8;n++){const s=await host.submit({message:"task",requestId:String(n)});await host.wait(s.submissionId,BACKGROUND_CONTEXT);}
+ const failures=(await host.root().entries({},100,undefined,BACKGROUND_CONTEXT)).items.filter(e=>e.kind==="pi.tool-result"&&e.model?.[0]?.role==="toolResult"&&e.model[0].isError);
+ await host.close();
+ const obs=await observationFor(storagePath);
+ try {
+  const activity=await obs.request("inspect",{view:"activity",limit:12}) as {turns:{entries:{id:number}[]}[];detail:string;coverage:{omittedEntries:number;byteLimitReached:boolean}};
+  const kept=new Set(activity.turns.flatMap(t=>t.entries.map(e=>e.id)));
+  const excluded=failures.filter(e=>!kept.has(e.id));
+  assert.ok(excluded.length>0);assert.equal(activity.coverage.byteLimitReached,true);assert.ok(activity.coverage.omittedEntries>=excluded.length);
+  assert.match(activity.detail,/Failure rows take priority within the digest bound/u);assert.doesNotMatch(activity.detail,/Failure rows survive/u);
+  const history=await obs.request("inspect",{view:"history",limit:50}) as {entries:{id:number}[]};
+  for(const failure of excluded){assert.ok(history.entries.some(e=>e.id===failure.id));const exact=await obs.request("inspect",{view:"exact",entryId:failure.id}) as {text:string};assert.match(exact.text,/large intentional failure/u);}
+ } finally {await obs.close();}
 });

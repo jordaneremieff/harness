@@ -474,11 +474,59 @@ reload. Only a contiguous loaded range appears; newer gaps load before the live
 tail joins that range. Offscreen blocks retain height and anchor measurements,
 not every rendered line. A partial transcript also shows its first task from the
 published summary. Blank runs between chat blocks reduce to one blank line.
-History, exact entries, branch reads, searches, and results have explicit
-bounds and continuation fields. Continue incomplete pages even without matches.
-Activity and status coverage names omitted content and unavailable reads.
-Provider signatures, image payloads, and redacted thinking are omitted with
-markers. Observation and task outcomes grant no control or acceptance authority.
+The primary's no-target `agent_status` is a compact fleet overview. Working
+and starting rows without an attention reason come first, then attention rows,
+then recent quiet rows. Independent host, recovery, or availability faults make
+any state an attention row; a deliberate stop alone does not. Summary counts
+are priority groups, not state totals: `working` counts the first group,
+`attention` counts every attention row, and `quiet` counts the remaining rows. Each
+priority group uses newest update first with a stable identity tie-breaker.
+Excerpts have visible shortening markers. Working and attention rows retain
+identity, cwd, ownership, model, update time, state, cost, partial-cost flag,
+current tool, tool count, duration, latest reply, errors, and recovery health
+when those fields exist. Quiet history, connected primaries, and failures have
+bounded samples and explicit `summary` totals rather than silent row drops.
+
+`coverage` states source visits, skipped views, excluded rows, byte omissions,
+and the exact serialized byte size. Counts cover the supplied catalog page,
+not unseen inventory. `complete` remains true for an intentional quiet summary
+only when source coverage is complete; source gaps or byte exclusions make it
+false. `coverage.reasons` names recovery paths and boundaries. The overview
+returns `coverage.nextCursor: null` because `agent_status` accepts no cursor;
+it never exposes the dashboard's catalog cursor. Call `agent_list` without a
+cursor, then repeat its returned `nextCursor` to find other identities. Use
+targeted `agent_status` for
+full conversation state. Native agents without a status target read their own
+storage's conversation state rather than the primary's fleet overview.
+
+History and activity mark every page and entry row with `format: "compact"`,
+including empty pages. Their schemas require this marker; raw branch and exact
+reads do not carry it. Compact entry rows contain entry ID, kind, source, role,
+readable text, named tool calls with argument summaries, and named tool result
+excerpts with error flags and call IDs. Text and tool excerpts share a bounded
+character budget, including inline truncation markers. An exhausted budget
+leaves a shortened or empty excerpt with `truncated: true` rather than an
+out-of-budget marker. Tool arrays have bounds; `omittedParts` counts excluded
+parts. `truncated` and inline markers identify shortened text, arguments, results, or
+names. Assistant text precedes visible thinking in the readable excerpt.
+History is newest first; `nextCursor` continues older entries. Activity groups
+recent entries by turn and retains live metadata, running tools, and coverage.
+Failure rows take priority within the digest bound; they still lose rows when
+their combined size exceeds it.
+Its cursor continues older turns and unfinished scans, not rows excluded from
+the digest; coverage states those exclusions. Use history to read excluded rows.
+
+Use `agent_inspect` with `view: "exact"`, `entryId: row.id`, and `offset: 0`
+for the full retained redacted entry JSON. Repeat with `nextOffset` until null.
+Exact reports the actual `offset`; a requested offset inside a Unicode pair
+moves to that pair's start.
+Compact rows set `nextOffset` to null because their excerpts are not raw JSON
+offsets. Branch remains a bounded raw JSON view. Exact and branch retain usage,
+structured arguments, and other retained entry fields rather than compact
+summaries. Search and result reads keep their existing evidence paths.
+Continue incomplete pages even without matches. Provider signatures, image
+payloads, and redacted thinking stay omitted with markers and counts on raw
+reads. Observation and task outcomes grant no control or acceptance authority.
 
 A stopped agent uses a cached public snapshot without services, model runtime,
 extension bootstrap, or Harness resume. The cache tracks database and WAL

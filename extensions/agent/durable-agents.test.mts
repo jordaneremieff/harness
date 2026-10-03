@@ -258,6 +258,7 @@ function inspectObservation(holder: DispatchHolder): Record<string, unknown> {
 	return (
 		holder.inspectPages?.shift() ?? {
 			view: "history",
+			format: "compact",
 			sessionId: `${storageId}:1`,
 			conversationId: 1,
 			entries: [],
@@ -895,6 +896,7 @@ it("forwards an object inspect cursor for pagination", async (t) => {
 	holder.inspectPages = [
 		{
 			view: "history",
+			format: "compact",
 			sessionId: `${storageId}:1`,
 			conversationId: 1,
 			entries: [],
@@ -904,6 +906,7 @@ it("forwards an object inspect cursor for pagination", async (t) => {
 		},
 		{
 			view: "history",
+			format: "compact",
 			sessionId: `${storageId}:1`,
 			conversationId: 1,
 			entries: [],

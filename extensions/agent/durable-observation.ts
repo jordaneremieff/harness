@@ -41,7 +41,7 @@ export const ACTIVITY_TURN_LIMIT_MAX = 12;
 export const ACTIVITY_SCAN_ENTRIES = 200;
 export const ACTIVITY_SCAN_BYTES = 64 * 1024;
 /** Whole serialized activity digest bound, metadata and coverage included. */
-export const ACTIVITY_DIGEST_BYTES = 16_000;
+export const ACTIVITY_DIGEST_BYTES = 8_000;
 /** Selection margin covering the finalized coverage.bytes digits and flags. */
 const ACTIVITY_DIGEST_SELECT_BYTES = ACTIVITY_DIGEST_BYTES - 64;
 /** Running-tool row cap applied only when the full metadata does not fit. */
@@ -57,6 +57,7 @@ export type DurableEntrySource = "user" | "assistant" | "toolResult" | "summary"
 
 export interface DurableEntryRow {
 	readonly id: EntryId;
+	readonly format?: "compact";
 	readonly kind: string;
 	readonly source: DurableEntrySource;
 	readonly role?: string;
@@ -65,6 +66,9 @@ export interface DurableEntryRow {
 	readonly truncated: boolean;
 	readonly nextOffset: number | null;
 	readonly omissions?: EntryOmissions;
+	readonly toolCalls?: readonly { readonly callId?: string; readonly name: string; readonly arguments: string; readonly truncated: boolean }[];
+	readonly toolResults?: readonly { readonly callId?: string; readonly name: string; readonly text: string; readonly isError: boolean; readonly truncated: boolean }[];
+	readonly omittedParts?: number;
 }
 
 export interface DurableInspectParams {
@@ -282,7 +286,10 @@ export function searchableText(entry: EntryRecord): string {
 
 /** UTF-16 fragment that keeps surrogate pairs intact and returns the continuation offset. */
 export function fragment(text: string, offset: number, maxUnits: number): { readonly text: string; readonly start: number; readonly nextOffset: number | null; readonly truncated: boolean } {
-	const start = Math.max(0, Math.min(Number.isFinite(offset) ? Math.trunc(offset) : 0, text.length));
+	let start = Math.max(0, Math.min(Number.isFinite(offset) ? Math.trunc(offset) : 0, text.length));
+	const first = text.charCodeAt(start);
+	const previous = text.charCodeAt(start - 1);
+	if (first >= 0xdc00 && first <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) start -= 1;
 	let end = Math.min(text.length, start + Math.max(0, maxUnits));
 	if (end < text.length && end > start) {
 		const code = text.charCodeAt(end - 1);
@@ -298,8 +305,8 @@ function entryPreview(entry: EntryRecord): { readonly text: string; readonly tru
 	return { text: cut.text, truncated: cut.truncated };
 }
 
-/** Bounded row of one entry: redacted text plus a readable preview. */
-export function entryRow(entry: EntryRecord, maxUnits = ENTRY_PAGE_UNITS): DurableEntryRow {
+/** Bounded raw entry for the branch view; exact continues the same serialization. */
+function rawEntryRow(entry: EntryRecord, maxUnits = ENTRY_PAGE_UNITS): DurableEntryRow {
 	const projected = projectEntry(entry);
 	const cut = fragment(projected.text, 0, maxUnits);
 	const preview = entryPreview(entry);
@@ -313,6 +320,94 @@ export function entryRow(entry: EntryRecord, maxUnits = ENTRY_PAGE_UNITS): Durab
 		truncated: cut.truncated,
 		nextOffset: cut.nextOffset,
 		...(projected.omissions === undefined ? {} : { omissions: projected.omissions }),
+	};
+}
+
+interface CompactEntryParts {
+	remaining: number;
+	truncated: boolean;
+	text: string[];
+	thoughts: string[];
+	toolCalls: NonNullable<DurableEntryRow["toolCalls"]>[number][];
+	toolResults: NonNullable<DurableEntryRow["toolResults"]>[number][];
+	omittedParts: number;
+}
+
+function compactExcerpt(parts: CompactEntryParts, text: string, limit = parts.remaining): { text: string; truncated: boolean } {
+	const budget = Math.min(parts.remaining, limit);
+	const cut = fragment(text, 0, budget);
+	const marker = cut.truncated && budget >= "[truncated]".length ? "[truncated]" : "";
+	const value = cut.truncated ? `${fragment(text, 0, budget - marker.length).text}${marker}` : cut.text;
+	parts.remaining = Math.max(0, parts.remaining - value.length);
+	parts.truncated ||= cut.truncated;
+	return { text: value, truncated: cut.truncated };
+}
+
+function compactName(parts: CompactEntryParts, name: string): string {
+	const cut = fragment(name, 0, 128);
+	parts.truncated ||= cut.truncated;
+	return cut.truncated ? `${fragment(name, 0, 116).text}[truncated]` : name;
+}
+
+function compactCall(parts: CompactEntryParts, part: Record<string, unknown>): void {
+	if (parts.toolCalls.length >= 8) { parts.omittedParts++; return; }
+	const name = String(part.name);
+	const cut = compactExcerpt(parts, JSON.stringify(part.arguments), 240);
+	parts.toolCalls.push({
+		...(typeof part.id === "string" ? { callId: compactName(parts, part.id) } : {}),
+		name: compactName(parts, name), arguments: cut.text, truncated: cut.truncated || name.length > 128,
+	});
+}
+
+function compactPart(parts: CompactEntryParts, value: unknown): void {
+	if (value === null || typeof value !== "object") return;
+	const part = value as Record<string, unknown>;
+	switch (part.type) {
+		case "text": if (typeof part.text === "string") parts.text.push(part.text); break;
+		case "thinking": if (typeof part.thinking === "string") parts.thoughts.push(`Thinking: ${part.thinking}`); break;
+		case "image": parts.text.push(IMAGE_MARKER); break;
+		case "toolCall": compactCall(parts, part); break;
+		default: parts.omittedParts++;
+	}
+}
+
+function compactMessage(parts: CompactEntryParts, message: Message): void {
+	if (message.role === "toolResult") {
+		if (parts.toolResults.length >= 8) { parts.omittedParts++; return; }
+		const cut = compactExcerpt(parts, textOfMessage(message));
+		parts.toolResults.push({
+			...(typeof message.toolCallId === "string" ? { callId: compactName(parts, message.toolCallId) } : {}),
+			name: compactName(parts, message.toolName), text: cut.text, isError: message.isError,
+			truncated: cut.truncated || message.toolName.length > 128,
+		});
+		return;
+	}
+	const content = (message as { content?: unknown }).content;
+	if (typeof content === "string") parts.text.push(content);
+	else if (Array.isArray(content)) for (const part of content) compactPart(parts, part);
+	if (message.role === "assistant" && message.errorMessage) parts.text.push(`Error: ${message.errorMessage}`);
+}
+
+/** Readable entry digest. Exact entry reads retain the redacted source JSON. */
+export function entryRow(entry: EntryRecord, maxUnits = ENTRY_PREVIEW_UNITS): DurableEntryRow {
+	const omissions: EntryOmissions = { providerSignatures: 0, imagePayloads: 0, redactedThinking: 0 };
+	const messages = projectMessages(entry.model, omissions) ?? [];
+	const units = Math.max(32, Math.min(maxUnits, ENTRY_PREVIEW_UNITS));
+	const reservedText = Math.min(Math.floor(units / 2), messages.filter((message) => message.role !== "toolResult").map(textOfMessage).join("\n").length);
+	const parts: CompactEntryParts = { remaining: units - reservedText, truncated: false, text: [], thoughts: [], toolCalls: [], toolResults: [], omittedParts: 0 };
+	for (const message of messages) compactMessage(parts, message);
+	if (messages.length === 0 && entry.data !== undefined) parts.text.push(JSON.stringify(entry.data));
+	parts.remaining += reservedText;
+	const readable = compactExcerpt(parts, [...parts.text, ...parts.thoughts].join("\n"));
+	const anyOmissions = omissions.providerSignatures + omissions.imagePayloads + omissions.redactedThinking > 0;
+	return {
+		id: entry.id, format: "compact", kind: entry.kind, source: entrySource(entry.kind),
+		...(entry.model?.[0]?.role === undefined ? {} : { role: entry.model[0].role }),
+		text: readable.text, truncated: parts.truncated || parts.omittedParts > 0, nextOffset: null,
+		...(parts.toolCalls.length === 0 ? {} : { toolCalls: parts.toolCalls }),
+		...(parts.toolResults.length === 0 ? {} : { toolResults: parts.toolResults }),
+		...(parts.omittedParts === 0 ? {} : { omittedParts: parts.omittedParts }),
+		...(anyOmissions ? { omissions } : {}),
 	};
 }
 
@@ -1042,6 +1137,7 @@ export async function readReceipts(harness: Harness, ownerId: string | undefined
 
 interface HistoryPage {
 	readonly view: "history" | "branch";
+	readonly format?: "compact";
 	readonly sessionId: string;
 	readonly conversationId: ConversationId;
 	readonly entries: readonly DurableEntryRow[];
@@ -1068,8 +1164,8 @@ async function scanHistory(conversation: Conversation, params: DurableInspectPar
 	let cursor = params.cursor;
 	let next: Cursor | undefined;
 	for (let page = 0; page < 8; page++) {
-		const result = await conversation.entries(end === undefined ? {} : { maxEntryId: end }, limit + 1 - scanned.length, cursor, context);
-		const collected = collectHistoryEntries(result.items, params, limit + 1 - scanned.length, seen);
+		const result = await conversation.entries(end === undefined ? {} : { maxEntryId: end }, limit - scanned.length, cursor, context);
+		const collected = collectHistoryEntries(result.items, params, limit - scanned.length, seen);
 		scanned.push(...collected.entries);
 		next = result.next;
 		if (collected.hitLimit || next === undefined) break;
@@ -1090,12 +1186,15 @@ async function readHistoryPage(
 	const scanned = await scanHistory(conversation, params, end, limit, context);
 	return {
 		view,
+		...(view === "history" ? { format: "compact" as const } : {}),
 		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
 		conversationId: conversation.id,
-		entries: scanned.entries.map((entry) => entryRow(entry)),
+		entries: scanned.entries.map((entry) => view === "branch" ? rawEntryRow(entry) : entryRow(entry)),
 		nextCursor: scanned.next ?? null,
 		order: "newestFirst",
-		detail: "Newest first. Redacted JSON representation; continue with nextCursor. Provider signatures, image data, and redacted thinking are omitted with markers and counts.",
+		detail: view === "branch"
+			? "Newest first. Redacted JSON; continue with nextCursor or exact entryId and nextOffset."
+			: "Newest first. Compact readable entries; continue with nextCursor. Truncated text and tool parts have markers. Use exact with entryId and offset 0 for full retained redacted JSON.",
 	};
 }
 
@@ -1296,6 +1395,7 @@ export interface DurableActivityMetadata {
 
 interface ActivityPage {
 	readonly view: "activity";
+	readonly format: "compact";
 	readonly sessionId: string;
 	readonly conversationId: ConversationId;
 	readonly turns: readonly TurnRow[];
@@ -1428,6 +1528,7 @@ interface ActivityCoverage {
 
 interface ActivityBase {
 	readonly view: "activity";
+	readonly format: "compact";
 	readonly sessionId: string;
 	readonly conversationId: ConversationId;
 	readonly nextCursor: Cursor | null;
@@ -1619,11 +1720,12 @@ async function readActivity(harness: Harness, storageId: string, conversation: C
 	const hasOlder = allGroups.length > turnLimit || !scan.complete;
 	const baseFor = (metadata: DurableActivityMetadata): ActivityBase => ({
 		view: "activity",
+		format: "compact",
 		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
 		conversationId: conversation.id,
 		nextCursor: oldestSelected === undefined || !hasOlder ? null : ({ after: oldestSelected.id } as Cursor),
 		metadata,
-		detail: "Newest turns first, redacted, failure rows survive the 16000-byte digest bound; nextCursor resumes older turns and unfinished scans only, not rows dropped by the bound.",
+		detail: "Newest turns first. Compact readable entries; exact with entryId and offset 0 returns retained redacted JSON. Failure rows take priority within the digest bound; nextCursor resumes older turns and unfinished scans only, not rows dropped by the bound. Use history for those rows.",
 	});
 	// A metadata-only overflow must fit before any row is considered.
 	const reduced = reduceActivityMetadata(await activityMetadata(harness, conversation, options, context), (candidate) =>

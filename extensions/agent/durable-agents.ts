@@ -1362,7 +1362,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_status",
 			description:
-				"Inspect conversation state and tools through the session host's common observation. A selected session lists its bounded pending scheduled inputs with timer ID and deadline. Without a target, report the storage overview.",
+				"Read conversation state and tools through the host observation. A selected session lists bounded pending timers with IDs and deadlines. Without a target, read this storage's conversations. Primary fleet overviews use compact excerpts and summary coverage.",
 			parameters: StatusParams,
 			replay: "safe",
 			execute: async (args: StatusInput) =>
@@ -1397,7 +1397,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_inspect",
 			description:
-				"Read one conversation's history, activity, ancestry, or search results through the session host's common observation.",
+				"Read compact history or activity: role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
 			parameters: InspectParams,
 			replay: "safe",
 			execute: async (args: InspectInput) =>

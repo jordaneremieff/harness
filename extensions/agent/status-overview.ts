@@ -1,17 +1,6 @@
-/**
- * agent/status-overview: bounded no-target status for the primary manager.
- *
- * The manager reads a dashboard page and its own primary and failure records,
- * then this pure builder produces the status object. It caps the serialized
- * result at `STATUS_OVERVIEW_BYTE_LIMIT` including the exact `coverage.bytes`
- * figure, drops array tails in session, primary, failure order, and reports
- * each omission separately. `complete` is false and `byteLimitReached` is true
- * whenever a byte bound dropped anything; the caller's own catalog coverage
- * still travels in `coverage`.
- */
+/** Compact fleet orientation over one supplied dashboard page, without host acquisition. */
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
 
-/** One primary row as the manager reports it. */
 export interface StatusOverviewPrimary {
 	readonly sessionId: string;
 	readonly cwd: string;
@@ -26,60 +15,56 @@ export interface StatusOverviewFailure {
 }
 
 export interface StatusOverviewCoverage {
-	/** True only when the catalog scan completed and no byte bound omitted any row. */
+	/** Complete source inventory for this page, with no additional byte omissions. Summaries are intentional. */
 	readonly complete: boolean;
 	readonly storagesVisited: number;
 	readonly skipped: number;
-	/** Materialized sessions excluded by the caller's page or this byte bound. */
+	/** Source-excluded rows plus live or attention rows excluded by this byte bound. */
 	readonly omitted: number;
 	readonly omittedPrimaries: number;
 	readonly omittedFailures: number;
-	/** Exact serialized byte size of the whole status object, this field included. */
+	/** Exact serialized size, including this field. */
 	readonly bytes: number;
 	readonly byteLimitReached: boolean;
-	readonly nextCursor: string | null;
+	/** Status has no continuation parameter; raw source cursors are never exposed. */
+	readonly nextCursor: null;
+	/** Source boundaries and exact reasons that continuation cannot recover some detail. */
+	readonly reasons: readonly string[];
 }
 
 export interface StatusOverview {
 	readonly sessions: readonly AgentConversationSummary[];
 	readonly primaries: readonly StatusOverviewPrimary[];
 	readonly failures: readonly StatusOverviewFailure[];
+	readonly summary: {
+		readonly sessions: {
+			readonly observed: number;
+			readonly working: number;
+			readonly attention: number;
+			readonly quiet: number;
+			readonly summarizedQuiet: number;
+		};
+		readonly primaries: { readonly observed: number; readonly summarized: number };
+		readonly failures: { readonly observed: number; readonly summarized: number };
+	};
 	readonly coverage: StatusOverviewCoverage;
 	readonly observedAt: string;
 	readonly discovery: string;
 }
 
-/** Largest serialized status overview, including the measured coverage bytes. */
-export const STATUS_OVERVIEW_BYTE_LIMIT = 48 * 1024;
-
-/** Stable discovery line the manager uses for the no-target status. */
-export const STATUS_OVERVIEW_DISCOVERY = "Use agent_list for paged discovery.";
-
-type MutableOverview = {
-	sessions: AgentConversationSummary[];
-	primaries: StatusOverviewPrimary[];
-	failures: StatusOverviewFailure[];
-	coverage: {
-		complete: boolean;
-		storagesVisited: number;
-		skipped: number;
-		omitted: number;
-		omittedPrimaries: number;
-		omittedFailures: number;
-		bytes: number;
-		byteLimitReached: boolean;
-		nextCursor: string | null;
-	};
-	observedAt: string;
-	discovery: string;
-};
+export const STATUS_OVERVIEW_BYTE_LIMIT = 16 * 1024;
+export const STATUS_OVERVIEW_DISCOVERY =
+	"Counts cover the supplied page, not unseen storage. Quiet sessions, primaries, and failures include bounded samples. Call agent_list without a cursor, then repeat its nextCursor to see more. Use agent_status with sessionId for full status; agent_inspect retains full text.";
+const EXCERPT_CHARACTERS = 160;
+const QUIET_SAMPLE = 5;
+const PRIMARY_SAMPLE = 3;
+const FAILURE_SAMPLE = 5;
 
 function measure(value: unknown): number {
 	return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
-/** Set coverage.bytes to the size of the whole object until the figure is stable. */
-function fixedPointBytes(value: MutableOverview): number {
+function fixedPointBytes(value: { coverage: { bytes: number } }): number {
 	let bytes = 0;
 	for (;;) {
 		value.coverage.bytes = bytes;
@@ -89,22 +74,96 @@ function fixedPointBytes(value: MutableOverview): number {
 	}
 }
 
-/**
- * Build the bounded no-target status. Sessions drop from the end first, then
- * primaries, then failures. Each dropped row increments its own coverage
- * counter; any drop sets `byteLimitReached` and `complete: false`.
- */
-export function buildStatusOverview(
+/** Unicode code points remain intact; the marker occupies the last excerpt position. */
+function excerpt(text: string): string {
+	const characters: string[] = [];
+	for (const character of text) {
+		if (characters.length === EXCERPT_CHARACTERS) return `${characters.slice(0, -1).join("")}…`;
+		characters.push(character);
+	}
+	return text;
+}
+
+function compactHealth(
+	health: NonNullable<AgentConversationSummary["health"]>,
+): NonNullable<AgentConversationSummary["health"]> {
+	const result = { ...health };
+	if (health.lastError !== undefined) result.lastError = excerpt(health.lastError);
+	if (health.compactionFailure !== undefined) {
+		result.compactionFailure = { ...health.compactionFailure };
+		if (health.compactionFailure.errorMessage !== undefined)
+			result.compactionFailure.errorMessage = excerpt(health.compactionFailure.errorMessage);
+	}
+	if (health.autoRetry !== undefined)
+		result.autoRetry = { ...health.autoRetry, errorMessage: excerpt(health.autoRetry.errorMessage) };
+	return result;
+}
+
+function compact(row: AgentConversationSummary): AgentConversationSummary {
+	const result = { ...row };
+	for (const key of ["name", "firstMessage", "latestReply", "ownerLabel", "error"] as const) {
+		const text = row[key];
+		if (text !== undefined) result[key] = excerpt(text);
+	}
+	if (row.currentTool !== undefined)
+		result.currentTool = { ...row.currentTool, argument: excerpt(row.currentTool.argument) };
+	if (row.health !== undefined) result.health = compactHealth(row.health);
+	return result;
+}
+
+function priority(row: AgentConversationSummary): number {
+	if (
+		row.owner === "unavailable" ||
+		row.state === "unavailable" ||
+		row.health?.lastError ||
+		row.health?.compactionFailure ||
+		(row.health?.autoRetry && row.health.autoRetry.attempt >= row.health.autoRetry.maxAttempts) ||
+		(row.state === "failed" && Boolean(row.error))
+	)
+		return 1;
+	if (row.state === "working" || row.state === "starting") return 0;
+	return 2;
+}
+
+function byIdentity(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function initialOverview(
 	page: AgentConversationPage,
 	primaries: readonly StatusOverviewPrimary[],
 	failures: readonly StatusOverviewFailure[],
-): StatusOverview {
-	const value: MutableOverview = {
-		sessions: [...page.rows],
-		primaries: [...primaries],
-		failures: [...failures],
+) {
+	const ordered = [...page.rows].sort(
+		(a, b) => priority(a) - priority(b) || b.modifiedAt - a.modifiedAt || byIdentity(a.id, b.id),
+	);
+	const working = ordered.filter((row) => priority(row) === 0).length;
+	const attention = ordered.filter((row) => priority(row) === 1).length;
+	const quiet = ordered.length - working - attention;
+	const sessions = ordered.slice(0, working + attention + QUIET_SAMPLE).map(compact);
+	const value = {
+		sessions,
+		primaries: [...primaries]
+			.sort((a, b) => byIdentity(a.sessionId, b.sessionId))
+			.slice(0, PRIMARY_SAMPLE)
+			.map((row) => ({ ...row, ...(row.name === undefined ? {} : { name: excerpt(row.name) }) })),
+		failures: [...failures]
+			.sort((a, b) => byIdentity(a.storageId, b.storageId))
+			.slice(0, FAILURE_SAMPLE)
+			.map((row) => ({ ...row, error: excerpt(row.error) })),
+		summary: {
+			sessions: {
+				observed: ordered.length,
+				working,
+				attention,
+				quiet,
+				summarizedQuiet: Math.max(0, quiet - QUIET_SAMPLE),
+			},
+			primaries: { observed: primaries.length, summarized: Math.max(0, primaries.length - PRIMARY_SAMPLE) },
+			failures: { observed: failures.length, summarized: Math.max(0, failures.length - FAILURE_SAMPLE) },
+		},
 		coverage: {
-			complete: page.coverage.complete,
+			complete: false,
 			storagesVisited: page.coverage.storagesVisited,
 			skipped: page.coverage.skipped,
 			omitted: page.coverage.omitted,
@@ -112,34 +171,93 @@ export function buildStatusOverview(
 			omittedFailures: 0,
 			bytes: 0,
 			byteLimitReached: false,
-			nextCursor: page.coverage.nextCursor,
+			nextCursor: null,
+			reasons: [] as string[],
 		},
 		observedAt: page.observedAt,
 		discovery: STATUS_OVERVIEW_DISCOVERY,
 	};
-	for (;;) {
-		const dropped = value.coverage.omitted > page.coverage.omitted || value.coverage.omittedPrimaries > 0 || value.coverage.omittedFailures > 0;
-		value.coverage.byteLimitReached = dropped;
-		value.coverage.complete = page.coverage.complete && !dropped;
-		const bytes = fixedPointBytes(value);
-		if (bytes <= STATUS_OVERVIEW_BYTE_LIMIT) break;
-		if (value.sessions.length > 0) {
-			value.sessions.pop();
-			value.coverage.omitted++;
-			continue;
-		}
-		if (value.primaries.length > 0) {
-			value.primaries.pop();
-			value.coverage.omittedPrimaries++;
-			continue;
-		}
-		if (value.failures.length > 0) {
-			value.failures.pop();
-			value.coverage.omittedFailures++;
-			continue;
-		}
-		// An empty overview is far below the limit; nothing more can be dropped.
-		break;
-	}
 	return value;
+}
+
+type MutableOverview = ReturnType<typeof initialOverview>;
+type ByteOmissions = { sessions: number; quiet: number; rows: number };
+
+function sourceReasons(page: AgentConversationPage): string[] {
+	const reasons: string[] = [];
+	if (
+		!page.coverage.complete ||
+		page.coverage.nextCursor !== null ||
+		page.coverage.skipped > 0 ||
+		page.coverage.omitted > 0
+	) {
+		reasons.push(
+			"Source inventory is incomplete; counts describe only the supplied page, and the remaining extent is unknown.",
+		);
+		reasons.push(
+			"agent_status has no continuation parameter; use fresh agent_list discovery. Call agent_list without a cursor, then repeat its nextCursor to see more.",
+		);
+	}
+	if (page.coverage.skipped > 0)
+		reasons.push(
+			`${page.coverage.skipped} source storages were unreadable, unavailable, or had incomplete published views; this overview does not recover those views.`,
+		);
+	if (page.coverage.omitted > 0)
+		reasons.push(
+			`${page.coverage.omitted} rows were excluded by source view or page budgets; the source does not identify which exclusions fresh agent_list discovery recovers.`,
+		);
+	return reasons;
+}
+
+function excludeRow(value: MutableOverview, dropped: ByteOmissions): void {
+	const rowBudget = STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [] });
+	const oversized = value.sessions.findIndex((row) => measure(row) > rowBudget);
+	const last = value.sessions.at(-1);
+	if (oversized >= 0 || (last !== undefined && priority(last) === 2)) {
+		const [row] = value.sessions.splice(oversized >= 0 ? oversized : value.sessions.length - 1, 1);
+		if (priority(row) === 2) {
+			value.summary.sessions.summarizedQuiet++;
+			dropped.quiet++;
+		} else {
+			dropped.sessions++;
+			value.coverage.omitted++;
+		}
+	} else if (value.primaries.length > 0) {
+		value.primaries.pop();
+		value.summary.primaries.summarized++;
+		value.coverage.omittedPrimaries++;
+	} else if (value.failures.length > 0) {
+		value.failures.pop();
+		value.summary.failures.summarized++;
+		value.coverage.omittedFailures++;
+	} else if (value.sessions.length > 0) {
+		value.sessions.pop();
+		dropped.sessions++;
+		value.coverage.omitted++;
+	} else {
+		throw new Error("Status overview metadata exceeds the byte limit after every row was summarized or omitted.");
+	}
+	dropped.rows++;
+}
+
+/** Keep coordinator fields on working and attention rows; sample quiet history after those rows. */
+export function buildStatusOverview(
+	page: AgentConversationPage,
+	primaries: readonly StatusOverviewPrimary[],
+	failures: readonly StatusOverviewFailure[],
+): StatusOverview {
+	const value = initialOverview(page, primaries, failures);
+	const reasons = sourceReasons(page);
+	const dropped: ByteOmissions = { sessions: 0, quiet: 0, rows: 0 };
+	for (;;) {
+		value.coverage.reasons = [...reasons];
+		if (dropped.rows > 0)
+			value.coverage.reasons.push(
+				`Status byte limit excluded ${dropped.sessions} working or attention rows, ${dropped.quiet} quiet sample rows, ${value.coverage.omittedPrimaries} primary sample rows, and ${value.coverage.omittedFailures} failure sample rows; use fresh agent_list discovery or targeted agent_status. agent_status has no continuation parameter; call agent_list without a cursor to rediscover these rows.`,
+			);
+		value.coverage.complete = reasons.length === 0 && dropped.rows === 0;
+		if (fixedPointBytes(value) <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
+		value.coverage.byteLimitReached = true;
+		excludeRow(value, dropped);
+	}
 }

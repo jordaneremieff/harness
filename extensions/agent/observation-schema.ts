@@ -247,7 +247,7 @@ export type ListOutput = Static<typeof ListOutputSchema>;
 
 /**
  * `agent_status` union:
- * - manager overview without a target: `{sessions, failures, observedAt}`;
+ * - compact manager overview: priority rows, bounded samples, summary counts, and explicit coverage;
  * - live host status with inventory: `{conversation|conversations, inventory, pid, storageId}`;
  * - cold primary status: the same without `pid` and with `live: false`;
  * - a bare `{conversation}` from the native attach path.
@@ -269,7 +269,12 @@ export const StatusOutputSchema = union([
 			}),
 		),
 		failures: Type.Array(object({ storageId: string, error: string })),
-		coverage: object({ complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: nullableText }),
+		summary: object({
+			sessions: object({ observed: count, working: count, attention: count, quiet: count, summarizedQuiet: count }),
+			primaries: object({ observed: count, summarized: count }),
+			failures: object({ observed: count, summarized: count }),
+		}),
+		coverage: object({ complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: Type.Null(), reasons: Type.Array(string) }),
 		observedAt: string,
 		discovery: string,
 	}),
@@ -285,28 +290,43 @@ const entrySource = union([literal("user"), literal("assistant"), literal("toolR
 const messageRole = union([literal("system"), literal("user"), literal("assistant"), literal("toolResult")]);
 const omissions = object({ providerSignatures: count, imagePayloads: count, redactedThinking: count });
 
-/** One bounded redacted entry row shared by the history, branch, and activity views. */
-export const DurableEntryRowSchema = object({
+const entryRowFields = {
 	id,
 	kind: string,
 	source: entrySource,
 	role: Type.Optional(messageRole),
-	preview: Type.Optional(object({ text: string, truncated: boolean })),
 	text: string,
 	truncated: boolean,
-	nextOffset: nullableCount,
 	omissions: Type.Optional(omissions),
+};
+const rawEntryRow = object({
+	...entryRowFields,
+	preview: Type.Optional(object({ text: string, truncated: boolean })),
+	nextOffset: nullableCount,
 });
+/** Explicit compact semantics, including text-only entries. */
+export const CompactEntryRowSchema = object({
+	...entryRowFields,
+	format: literal("compact"),
+	nextOffset: Type.Null(),
+	toolCalls: Type.Optional(Type.Array(object({ callId: Type.Optional(string), name: string, arguments: string, truncated: boolean }), { maxItems: 8 })),
+	toolResults: Type.Optional(Type.Array(object({ callId: Type.Optional(string), name: string, text: string, isError: boolean, truncated: boolean }), { maxItems: 8 })),
+	omittedParts: Type.Optional(count),
+});
+export const DurableEntryRowSchema = union([CompactEntryRowSchema, rawEntryRow]);
 
-export const HistoryOutputSchema = object({
-	view: union([literal("history"), literal("branch")]),
+const historyFields = {
 	sessionId: string,
 	conversationId: id,
-	entries: Type.Array(DurableEntryRowSchema),
 	nextCursor: nullable(cursorSchema),
 	order: literal("newestFirst"),
 	detail: string,
-});
+};
+/** Compact history has a page discriminator even when no entries exist; branch stays raw. */
+export const HistoryOutputSchema = union([
+	object({ ...historyFields, view: literal("history"), format: literal("compact"), entries: Type.Array(CompactEntryRowSchema) }),
+	object({ ...historyFields, view: literal("branch"), entries: Type.Array(rawEntryRow) }),
+]);
 
 const searchMatch = object({ entryId: id, kind: string, source: entrySource, matchOffset: count, excerpt: string, excerptText: string, truncated: boolean });
 const searchCursor = object({ cursor: nullable(cursorSchema), skip: count, scannedBytes: count });
@@ -341,9 +361,10 @@ const runningTool = object({
 });
 export const ActivityOutputSchema = object({
 	view: literal("activity"),
+	format: literal("compact"),
 	sessionId: string,
 	conversationId: id,
-	turns: Type.Array(object({ entries: Type.Array(DurableEntryRowSchema) })),
+	turns: Type.Array(object({ entries: Type.Array(CompactEntryRowSchema) })),
 	nextCursor: nullable(cursorSchema),
 	metadata: object({
 		owner: union([literal("here"), literal("unavailable"), literal("unknown")]),
