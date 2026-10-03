@@ -56,6 +56,18 @@ it("framed headings reserve the visible right-side position before a long title"
 		assert.match(heading, /\x1b\[36m/);
 	}
 });
+it("framed headings keep multiline metadata within one physical row", () => {
+	for (const width of [60, 90, 120]) {
+		for (const separator of ["\n", "\r\n", "\r", "\t", "\u2028", "\u2029"]) {
+			const heading = dashboardHeading(`Agents > Threads > First${separator}Second`, "Frame 1", width, painted);
+			const plain = stripVTControlCharacters(heading);
+			assert.doesNotMatch(plain, /[\r\n\t\u2028\u2029]/);
+			assert.match(plain, /First Second/);
+			assert.ok(plain.endsWith(" Frame 1 ╮"));
+			assert.equal(visibleWidth(heading), width);
+		}
+	}
+});
 it("tinted hint bars decorate keys after hit geometry and preserve the escape destination", () => {
 	const regions: Array<[string, number, number]> = [];
 	const line = fitHints(["Enter open", "r refresh"], "Esc back", 25, (...area) => regions.push(area), painted);

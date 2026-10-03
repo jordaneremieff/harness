@@ -114,6 +114,43 @@ for (const [width, height] of [
 	[80, 24],
 	[140, 45],
 ]) {
+	it(`multiline thread titles keep headings and captions on one row at ${width}`, async () => {
+		const current = page();
+		current.thread.title = "First\nSecond";
+		const event = current.events[0];
+		assert.ok(event);
+		event.message = "Body first\nBody second";
+		const f = setup(width, height, async (input) => (input.action === "list" ? list() : current));
+		const render = () => {
+			const lines = f.ui.render(width).map(stripVTControlCharacters);
+			assert.equal(lines.length, height);
+			assert.ok(lines.every((line) => !/[\r\n]/.test(line) && visibleWidth(line) <= width));
+			assert.match(lines[0] ?? "", /Threads > First Second/);
+			assert.match(lines.at(-1) ?? "", /Esc back/);
+			return lines;
+		};
+		try {
+			await open(f);
+			const initial = render();
+			const first = initial.findIndex((line) => line.trim() === "First");
+			assert.ok(first > 0);
+			assert.equal(initial[first + 1]?.trim(), "Second");
+			f.ui.handleInput("e");
+			const exchange = render();
+			const body = exchange.findIndex((line) => line.trim() === "Body first");
+			assert.ok(body > 0);
+			assert.equal(exchange[body + 1]?.trim(), "Body second");
+			f.ui.handleInput("p");
+			f.ui.handleInput("\x1b[200~Draft first\nDraft second\x1b[201~");
+			const composed = render();
+			assert.ok(composed.some((line) => line.startsWith("╭─ Post to First Second")));
+			assert.ok(composed.some((line) => /^│Draft first/.test(line)));
+			assert.ok(composed.some((line) => /^│Draft second/.test(line)));
+			assert.equal(f.state.threads?.drafts.get(threadId)?.text, "Draft first\nDraft second");
+		} finally {
+			f.ui.dispose();
+		}
+	});
 	it(`Threads shows governing context, peers and chronological exchange within ${width} columns`, async () => {
 		const f = setup(width, height);
 		try {

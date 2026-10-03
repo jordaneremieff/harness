@@ -521,7 +521,9 @@ native message blocks outside the viewport still have estimated heights.
 Observation and coverage, model and
 reasoning, state and cost, and any receipt share one adjacent status block.
 The native editor has a captioned frame with the recipient and message mode.
-The frame preserves native keyboard input, text selection, and caret placement.
+Headings and captions display metadata on one line; body text and drafts retain
+their line breaks. The frame preserves native keyboard input, text selection,
+and caret placement.
 
 In Pi fullscreen mode, click a roster or task row to select it, then click the
 `Enter` hint to open it. In Threads, click a row to select it; click the selected

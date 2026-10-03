@@ -7,7 +7,7 @@ export function fitLine(text: string, width: number): string {
 }
 export function dashboardHeading(title: string, position: string, width: number, theme: Paint, bottom = false): string {
 	const right = position ? ` ${position} ` : "";
-	const label = truncateToWidth(title, Math.max(1, width - visibleWidth(right) - 6));
+	const label = truncateToWidth(title.replace(/\s+/g, " ").trim(), Math.max(1, width - visibleWidth(right) - 6));
 	const fill = "─".repeat(Math.max(0, width - visibleWidth(label) - visibleWidth(right) - 5));
 	return fitLine(
 		theme.fg("borderMuted", bottom ? "╰─ " : "╭─ ") +
