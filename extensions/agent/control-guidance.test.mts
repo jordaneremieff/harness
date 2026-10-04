@@ -86,6 +86,16 @@ it("describes retained delivery and automatic unfinished-task check-ins", () => 
 	assert.match(all, /not a finished result/u);
 });
 
+it("teaches nested spawn placement and lineage status", () => {
+	const spawn = AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "";
+	assert.match(spawn, /native child conversation in your storage/u);
+	assert.match(spawn, /new storage with its own host/u);
+	assert.match(spawn, /run their own agents in turn/u);
+	assert.match(spawn, /regardless of nesting depth/u);
+	const status = AGENT_CONTROL_GUIDANCE.agent_status.guidelines?.join("\n") ?? "";
+	assert.match(status, /Your agents section/u);
+});
+
 it("renders only the selected controls in control order", () => {
 	const lines = agentControlGuidanceLines(["agent_status", "agent_spawn"]);
 	const text = lines.join("\n");

@@ -47,6 +47,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		guidelines: [
 			MODEL_SELECTION_GUIDANCE,
 			"Before creating an agent for a recurring concern, look for an existing @handle whose role covers it. Reuse it with a short task; use a fresh agent for unrelated or independent work. Spawn with handle resolves or creates one independent root and never reapplies creation defaults on reuse. Display names may repeat; targets accept @handle or canonical identity, not bare names.",
+			"Inside an agent, spawn placement is part of the result: the same cwd creates a native child conversation in your storage; a different cwd creates a new storage with its own host. Native children inherit your configuration and controls, so they can run their own agents in turn. The operator sees every agent in /agent regardless of nesting depth.",
 			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. Apply the universal AGENTS.md "Intent authority" section to assignments, corrections, and relayed decisions; preserve operator restrictions and distinguish them from agent choices.',
 			"Model tool tasks get automatic check-ins while unanswered, separate from voluntary worker reports. checkInMinutes overrides PI_AGENT_CHECK_IN_MINUTES (default 30); 0 disables. A check-in is not a finished result. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. Steering waits for the tool boundary.",
 			"Agent work runs in the background. Each task's answer reports to its request's reply recipient automatically. Settlement is execution evidence, not task acceptance. Integrate needed results and resolve live work before a final conclusion: continue useful work, redirect changed work, or abort superseded work.",
@@ -88,6 +89,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		guidelines: [
 			"Use agent_status for orientation and agent_inspect for concrete transcript or result evidence, not as waiting tools. Never poll with sleeps or repeated status/inspection calls. Settlement notices arrive automatically; do independent work while useful agent work continues.",
 			"A selected session's status lists its bounded pending scheduled inputs with timer ID, target, deadline, mode, and overdue flag.",
+			"With no target, your storage overview includes a Your agents section listing the agents you spawned, in this storage and in storages of their own.",
 			"Use view: fleet for sampled machine-local model costs, current selections, and attributed failures. Missing evidence is unknown, not zero; conversation warnings do not prove provider faults.",
 		],
 	},
