@@ -93,7 +93,7 @@ describe("agent call cards", () => {
 			const args = { sessionId: "target-session", message: "First line\n\n**literal Markdown** and `code`\nLast line", replyTo: "message-reference" };
 			const before = structuredClone(args);
 			const collapsed = renderer(args, theme, context());
-			assert.match(screen(collapsed), new RegExp(`${name} → target-session`));
+			assert.match(screen(collapsed), new RegExp(`${name} · target-session`));
 			assert.match(screen(collapsed), /reply to message-reference/);
 			assert.match(screen(collapsed), /First line \*\*literal Markdown\*\*/);
 			assert.match(screen(collapsed), /expand for full details/);
@@ -107,7 +107,7 @@ describe("agent call cards", () => {
 	it("distinguishes pending, whitespace-only, and bounded messages", () => {
 		assert.match(screen(renderSendCall({ sessionId: "t", message: " \n " }, theme, context())), /empty or whitespace-only message/);
 		assert.match(screen(renderSendCall({ sessionId: "t", message: " " }, theme, context({ argsComplete: false }))), /message pending/);
-		assert.match(screen(renderSendCall({}, theme, context())), /\(target pending\)/);
+		assert.doesNotMatch(screen(renderSendCall({}, theme, context())), /target pending|unknown|unavailable/);
 		const message = `${"long line\n".repeat(5000)}EXACT_END`;
 		const expanded = screen(renderSendCall({ sessionId: "t", message }, theme, context({ expanded: true })));
 		assert.match(expanded, /Display limit: \d+ more UTF-16 code units/);
@@ -148,7 +148,7 @@ describe("agent result cards", () => {
 		const card = renderAgentResult(resultValue, { expanded: false, isPartial: false }, theme, context());
 		const text = screen(card, 180);
 		assert.match(text, /Parser review/);
-		assert.match(text, /Model: provider\/model · thinking high/);
+		assert.match(text, /provider\/model · high/);
 		assert.match(text, /Activity: working · tool read · 1 pending/);
 		assert.match(text, /Running: read · call call-7/);
 		assert.match(text, /Running: bash · call call-8 · pending/);
@@ -185,7 +185,7 @@ describe("agent result cards", () => {
 		const compact = result({ sessionId: "storage-a", cwd: "/work", admission: { submissionId: 9, conversationId: 1, deduped: false }, status: { identity: "storage-a", conversationId: 1, name: "Parser review", cwd: "/work", busy: false, state: "idle", agent: { model: { provider: "provider", modelId: "model" }, thinkingLevel: "high" }, limits: { ordinaryOnly: ["/ext/ordinary.ts"] } } });
 		const text = screen(renderAgentResult(compact, { expanded: false, isPartial: false }, theme, context()), 180);
 		assert.match(text, /Parser review/);
-		assert.match(text, /Model: provider\/model · thinking high/);
+		assert.match(text, /provider\/model · high/);
 		assert.match(text, /State: idle/);
 		assert.match(text, /Capability limits: 1 configured extension without a native form/);
 		assert.doesNotMatch(text, /Activity: idle · pending unknown/u);
@@ -201,7 +201,7 @@ describe("agent result cards", () => {
 	it("shows an enriched mutation snapshot beside its receipt", () => {
 		const fork = result({ conversationId: 2, identity: "storage-a:2", deduped: false, status: { conversation: conversationStatus({ name: "Forked review" }) } });
 		const text = screen(renderAgentResult(fork, { expanded: false, isPartial: false }, theme, context()), 180);
-		assert.match(text, /Model: provider\/model · thinking high/);
+		assert.match(text, /provider\/model · high/);
 		assert.match(text, /Fork created · storage-a:2/);
 	});
 
@@ -342,19 +342,19 @@ describe("agent result notice card", () => {
 	it("shows sourced sender names and plain kinds without optional-fact placeholders", () => {
 		const id = "12345678-1234-4234-8234-123456789abc";
 		const cases = [
-			{ details: { identity: id, name: "Catalog reader", kind: "receipt", status: "done", provider: "provider", modelId: "model", thinkingLevel: "high" }, heading: "Catalog reader · result · provider/model high" },
-			{ details: { identity: id, handle: "@reader", kind: "report" }, heading: "@reader · report" },
-			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "message" }, heading: "Parser session · message from another session" },
-			{ details: { senderIdentity: id, senderKind: "session", observedPurpose: "Review the parser", kind: "message", provider: "provider" }, heading: "Review the parser · message from another session · provider: provider" },
-			{ details: { senderIdentity: id, senderKind: "session", kind: "message" }, heading: `${id} · message from another session` },
-			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "report", threadId: "retained-thread", threadTitle: "Parser contract", operatorMessage: "The sourced event body" }, heading: "Parser contract · Parser session · thread notice" },
-			{ details: { identity: id, name: "Fallback reader", kind: "receipt", status: "done", liveOwner: false, fallback: true }, heading: "Fallback reader · result" },
+			{ details: { identity: id, name: "Catalog reader", kind: "receipt", status: "done", provider: "provider", modelId: "model", thinkingLevel: "high" }, heading: "result · Catalog reader" },
+			{ details: { identity: id, handle: "@reader", kind: "report" }, heading: "report · @reader" },
+			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "message" }, heading: "message from another session · Parser session" },
+			{ details: { senderIdentity: id, senderKind: "session", observedPurpose: "Review the parser", kind: "message", provider: "provider" }, heading: "message from another session · Review the parser" },
+			{ details: { senderIdentity: id, senderKind: "session", kind: "message" }, heading: `message from another session · ${id}` },
+			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "report", threadId: "retained-thread", threadTitle: "Parser contract", operatorMessage: "The sourced event body" }, heading: "thread notice · Parser session" },
+			{ details: { identity: id, name: "Fallback reader", kind: "receipt", status: "done", liveOwner: false, fallback: true }, heading: "result · Fallback reader" },
 			{ details: {}, heading: "message from another session" },
 		];
 		for (const { details, heading } of cases) {
 			const card = renderPeerNoticeCard({ content: "Stored model body", details }, theme, false);
 			assert.ok(card);
-			const lines = screen(card, 240).split("\n");
+			const lines = screen(card, 240).split("\n").filter((line) => line.trim());
 			assert.equal(lines[0]?.trim(), `[agent] ${heading}`);
 			assert.doesNotMatch(lines[0] ?? "", /unknown|unavailable/u);
 			if ("threadId" in details) {
@@ -373,8 +373,8 @@ describe("agent result notice card", () => {
 		const identity = "12345678-1234-4234-8234-123456789abc";
 		const card = renderPeerNoticeCard({ content: "Direct message", details: { senderIdentity: identity, senderKind: "session", kind: "message" } }, theme, false);
 		assert.ok(card);
-		assert.equal(screen(card, 240).split("\n")[0]?.trim(), `[agent] ${identity} · message from another session`);
-		assert.doesNotMatch(screen(card, 240).split("\n")[0] ?? "", /…|unknown|unavailable/u);
+		assert.equal(screen(card, 240).split("\n").find((line) => line.trim())?.trim(), `[agent] message from another session · ${identity}`);
+		assert.doesNotMatch(screen(card, 240).split("\n").find((line) => line.trim()) ?? "", /…|unknown|unavailable/u);
 		assert.ok(card.render(24).every((line) => visibleWidth(line) <= 24));
 	});
 
@@ -391,8 +391,8 @@ describe("agent result notice card", () => {
 	it("keeps a check-in headline when elapsed time, cost and configuration are absent", () => {
 		const card = renderPeerNoticeCard({ content: "Stored guidance", details: { name: "Reader", message: "Current step: review", checkIn: {} } }, theme, false);
 		assert.ok(card);
-		const lines = screen(card, 160).split("\n");
-		assert.equal(lines[0]?.trim(), "[agent] Reader · still working");
+		const lines = screen(card, 160).split("\n").filter((line) => line.trim());
+		assert.equal(lines[0]?.trim(), "[agent] still working · Reader");
 		assert.match(lines.join("\n"), /Current step: review/u);
 		assert.doesNotMatch(lines[0] ?? "", /unknown|unavailable|elapsed|conversation total/u);
 	});
@@ -400,7 +400,7 @@ describe("agent result notice card", () => {
 		const collapsed = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "**Review:** fix the token.\n\nKeep the identifier.", details: { submissionId: 9, identity: "storage-a", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(collapsed);
 		const text = screen(collapsed);
-		assert.match(text, /\[agent\] storage-a · result/);
+		assert.match(text, /\[agent\] result · storage-a/);
 		assert.doesNotMatch(text, /Open:|Source details:|\/agent opens|to expand/);
 		assert.match(text, /Review: fix the token\./);
 		assert.match(text, /Keep the identifier\./);
@@ -417,7 +417,7 @@ describe("agent result notice card", () => {
 		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "Done", details: { submissionId: 9, identity: "6de48f73-1111-4111-8111-111111111111", label: "poem task", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(card);
 		const text = screen(card);
-		assert.match(text, /\[agent\] poem task · result/);
+		assert.match(text, /\[agent\] result · poem task/);
 		assert.doesNotMatch(text, /6de48f73/);
 	});
 
@@ -432,7 +432,7 @@ describe("agent result notice card", () => {
 			const card = renderAgentPeerMessage(message, { expanded, outputPad: 1 }, theme);
 			assert.ok(card);
 			const text = screen(card, 180);
-			assert.match(text, /\[agent\] reader · still working · 30m/u);
+			assert.match(text, /\[agent\] still working · reader\n\s*30m/u);
 			if (cost === null) assert.doesNotMatch(text, /conversation total|unavailable/u);
 			else assert.match(text, new RegExp(`\\$${cost.toFixed(3).replace(".", "\\.")} conversation total`, "u"));
 			assert.match(text, /Tool calls: 4/u);
@@ -456,7 +456,7 @@ describe("agent result notice card", () => {
 			checkIn: { conversationId: 1, requestId: "task", origin: "model", elapsedMs: 11_100_000, cost: 0 } } }, theme, false);
 		assert.ok(card);
 		const text = screen(card, 180);
-		assert.match(text, /still working · 3h05m elapsed/u);
+		assert.match(text, /still working · reader\n\s*3h05m elapsed/u);
 		assert.match(text, /Current tool: bash/u);
 		assert.doesNotMatch(text, /185m/u);
 	});
@@ -465,12 +465,12 @@ describe("agent result notice card", () => {
 		const reportCard = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "Progress report", details: { senderIdentity: "storage-b", sourceId: "report:1", acknowledged: false } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(reportCard);
 		const report = screen(reportCard);
-		assert.match(report, /\[agent\] storage-b · report/);
+		assert.match(report, /\[agent\] report · storage-b/);
 		assert.match(report, /Progress report/);
 		const unansweredCard = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "No answer", details: { identity: "storage-a", status: "unanswered", reason: "aborted" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(unansweredCard);
 		const unanswered = screen(unansweredCard);
-		assert.match(unanswered, /\[agent\] storage-a · result/);
+		assert.match(unanswered, /\[agent\] result · storage-a/);
 		assert.match(unanswered, /Result unavailable or unanswered/);
 		assert.match(unanswered, /aborted/);
 	});
@@ -480,9 +480,9 @@ describe("agent result notice card", () => {
 		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: hostile, details: { submissionId: 9, entryId: 4, answerEntryId: 5, requestId: "req-1", identity: "storage-a", status: "done", name: "Message reviewer", provider: "SelectedProvider", modelId: "MixedCase-Model", thinkingLevel: "high", liveOwner: false, saved: false } }, { expanded: true, outputPad: 1 }, theme);
 		assert.ok(card);
 		const text = screen(card, 180);
-		assert.match(text, /\[agent\] Message reviewer · result/);
+		assert.match(text, /\[agent\] result · Message reviewer/);
 		assert.match(text, /name: Message reviewer/);
-		assert.match(text, /SelectedProvider\/MixedCase-Model · thinking: high/);
+		assert.match(text, /SelectedProvider\/MixedCase-Model · high/);
 		assert.match(text, /No live owner; retained result only/);
 		assert.match(text, /Result not saved; retained only by the live owner/);
 		assert.match(text, /submissionId: 9/);
@@ -500,7 +500,7 @@ describe("agent result notice card", () => {
 		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content, details: { label: "reader", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(card);
 		const text = screen(card);
-		assert.match(text, /\[agent\] reader · result/);
+		assert.match(text, /\[agent\] result · reader/);
 		assert.match(text, /SECOND READY/);
 		assert.doesNotMatch(text, /Open:|Source details:|\/agent opens|to expand/);
 		assert.doesNotMatch(text, /Results do not establish/);
@@ -517,16 +517,19 @@ describe("agent result notice card", () => {
 		assert.match(stored, /Results do not establish/, "the stored model content is unchanged");
 	});
 
-	it("keeps the label, outcome, model and reasoning on one line without extra spacing", () => {
+	it("uses a padded two-tier header and keeps the body distinct", () => {
 		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 1, content: "A short answer.\n\n", details: { label: "A very long task label ".repeat(8), provider: "provider", modelId: "model", thinkingLevel: "high", status: "done" } };
 		const before = structuredClone(message);
 		const card = renderAgentPeerMessage(message, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(card);
 		for (const width of [80, 140]) {
 			const lines: string[] = card.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.equal(lines.length, 2);
-			assert.match(lines[0] ?? "", /\[agent\] A very long.* · result · provider\/model high/);
-			assert.equal(lines[1]?.trim(), "A short answer.");
+			assert.equal(lines.length, 5);
+			assert.equal(lines[0]?.trim(), "");
+			assert.match(lines[1] ?? "", /\[agent\] result · A very long/u);
+			assert.equal(lines[2]?.trim(), "provider/model · high");
+			assert.equal(lines[3]?.trim(), "A short answer.");
+			assert.equal(lines[4]?.trim(), "");
 			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 			assert.doesNotMatch(lines.join("\n"), /Open:|Source details|to expand|opens the dashboard/);
 		}
@@ -544,15 +547,15 @@ describe("agent result notice card", () => {
 		assert.ok(collapsed && expanded);
 		for (const width of [80, 140]) {
 			const preview: string[] = collapsed.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.equal(preview.length, 10, "one headline, eight body lines and one truncation hint");
+			assert.equal(preview.length, 13, "two padded lines, a two-tier header, eight body lines and one hint");
 			const full: string[] = expanded.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			const source = full.findIndex((line) => line.trim() === "Source details");
-			const bodyLines = source - 2;
-			assert.match(preview[9] ?? "", new RegExp(`… \\(${bodyLines - 8} more lines, ctrl\\+o to expand\\)`));
+			assert.match(preview[11] ?? "", /\.\.\. \(ctrl\+o to expand\)/u);
+			assert.equal(preview.filter((line) => /to expand/u.test(line)).length, 1);
+			assert.doesNotMatch(preview.join("\n"), /^\s*…\s*$/mu);
 			assert.doesNotMatch(preview.join("\n"), /FINAL_RESULT|Source details|Open:|opens the dashboard/);
 			assert.match(full.join("\n"), /FINAL_RESULT/);
 			assert.match(full.join("\n"), /submissionId: 7/);
-			assert.equal(full.at(-1)?.trim(), "/agent opens the dashboard");
+			assert.equal(full.filter((line) => line.trim()).at(-1)?.trim(), "/agent opens the dashboard");
 			assert.doesNotMatch(full.join("\n"), /more lines,|Source details:/);
 			assert.ok(collapsed.render(width).every((line) => visibleWidth(line) <= width));
 			assert.ok(expanded.render(width).every((line) => visibleWidth(line) <= width));
@@ -562,14 +565,14 @@ describe("agent result notice card", () => {
 		assert.equal(message.content, content);
 	});
 
-	it("uses only Pi's normal separator between adjacent short notices", () => {
+	it("matches Pi tool padding between adjacent short notices", () => {
 		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 1, content: "Short answer.", details: { label: "reader", provider: "provider", modelId: "model", thinkingLevel: "high", status: "done" } };
 		for (const width of [80, 140]) {
 			const components = Array.from({ length: 4 }, () => new CustomMessageComponent(message, renderAgentPeerMessage));
 			const lines = components.flatMap((component) => component.render(width)).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.equal(lines.length, 12, "four native separators, four headlines, four answer lines");
-			assert.equal(lines.filter((line) => line.trim() === "").length, 4);
-			assert.equal(lines.at(-1)?.trim(), "Short answer.");
+			assert.equal(lines.length, 24, "four native separators and four padded two-tier cards");
+			assert.equal(lines.filter((line) => line.trim() === "").length, 12);
+			assert.equal(lines.filter((line) => line.trim()).at(-1)?.trim(), "Short answer.");
 			const first = components[0];
 			assert.ok(first);
 			first.setExpanded(true);
@@ -582,15 +585,15 @@ describe("agent result notice card", () => {
 	it("builds the same card from stored entry data for an agent conversation", () => {
 		const card = renderPeerNoticeCard({ content: "Body text", details: { label: "reader", status: "done" } }, theme, false);
 		assert.ok(card);
-		assert.match(screen(card), /\[agent\] reader · result/);
+		assert.match(screen(card), /\[agent\] result · reader/);
 		assert.match(screen(card), /Body text/);
 	});
 });
 
 describe("agent tool card factory", () => {
-	it("binds call and result renderers for every native tool", () => {
+	it("binds call and result renderers for every agent tool", () => {
 		const cards = createAgentToolCards();
-		assert.deepEqual(Object.keys(cards).sort(), ["agent_abort", "agent_attach", "agent_collaborate", "agent_command", "agent_compact", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind", "agent_send", "agent_spawn", "agent_status", "agent_steer"]);
+		assert.deepEqual(Object.keys(cards).sort(), ["agent_abort", "agent_attach", "agent_collaborate", "agent_command", "agent_compact", "agent_configure", "agent_fork", "agent_inspect", "agent_intent", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind", "agent_send", "agent_spawn", "agent_status", "agent_steer"]);
 		for (const [name, card] of Object.entries(cards)) {
 			assert.equal(typeof card.renderCall, "function", `${name} renderCall`);
 			assert.equal(typeof card.renderResult, "function", `${name} renderResult`);

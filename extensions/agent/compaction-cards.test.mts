@@ -38,6 +38,8 @@ it("captures self context once at execution and keeps it stable through native r
 	let rendered = screen(row);
 	assert.match(rendered, /this session · Parser session/u);
 	assert.match(rendered, /provider\/model.*high/u);
+	assert.equal((rendered.match(/provider\/model/gu) ?? []).length, 1);
+	assert.equal((rendered.match(/Parser session/gu) ?? []).length, 1);
 	assert.match(rendered, /Before: 12000 tokens · 48000 window · 25\.0%/u);
 	assert.match(rendered, new RegExp(`Summary: ${args.summary.length} chars`, "u"));
 	assert.match(rendered, /Summary queued/u);
@@ -91,12 +93,14 @@ it("keeps complete target, operation, thread and revision identities at wide wid
 	for (const [name, card] of Object.entries(cards)) {
 		if (name === "agent_list") continue;
 		const args = { sessionId: `${identity}:12345678901234567890`, action: "read", message: "Task", name: "command" };
-		const rendered = screen(card.renderCall(args, theme, context()), 600);
+		const callArgs = name === "agent_intent" ? { action: "clear" } : args;
+		const state = name === "agent_intent" ? { observation: { identity: args.sessionId } } : undefined;
+		const rendered = screen(card.renderCall(callArgs, theme, context({ state })), 600);
 		assert.ok(rendered.includes(args.sessionId), name);
 		assert.doesNotMatch(rendered.split("\n")[0] ?? "", /…/u, name);
-		const narrow = card.renderCall(args, theme, context()).render(24);
+		const narrow = card.renderCall(callArgs, theme, context({ state })).render(24);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24), name);
-		assert.ok(screen(card.renderCall(args, theme, context({ expanded: true })), 600).includes(args.sessionId), name);
+		assert.ok(screen(card.renderCall(callArgs, theme, context({ expanded: true, state })), 600).includes(args.sessionId), name);
 	}
 	const operationId = `operation-${"a".repeat(160)}`;
 	assert.ok(screen(cards.agent_inspect.renderCall({ sessionId: identity, operationId }, theme, context()), 600).includes(operationId));

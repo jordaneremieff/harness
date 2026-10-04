@@ -22,10 +22,10 @@ const hintCount = (value: string) => (value.match(/to expand|expand for full/gu)
 describe("human-readable agent targets", () => {
 	it("uses observed names, model and provider on every targeted call, with full IDs expanded", () => {
 		const cards = createAgentToolCards(() => [row]);
-		for (const [name, card] of Object.entries(cards).filter(([name]) => name !== "agent_list" && name !== "agent_place")) {
+		for (const [name, card] of Object.entries(cards).filter(([name]) => name !== "agent_list" && name !== "agent_place" && name !== "agent_intent")) {
 			const args = { sessionId: id, name: "reload", message: "Task", action: "read" };
 			const collapsed = screen(card.renderCall(args, theme, context({ executionStarted: true })));
-			assert.match(collapsed, /Parser review · provider\/model · high/u, name);
+			assert.match(collapsed, /Parser review\nprovider\/model · high/u, name);
 			assert.doesNotMatch(collapsed, new RegExp(id), name);
 			assert.ok(screen(card.renderCall(args, theme, context({ expanded: true }))).includes(id), name);
 		}
@@ -35,19 +35,19 @@ describe("human-readable agent targets", () => {
 		const profile = { identity: id, handle: "@parser", role: "Review source", revision: "abc", hasExpertise: false, updatedAt: null };
 		const cards = createAgentToolCards(() => [{ ...row, profile }]);
 		for (const name of ["agent_send", "agent_steer", "agent_status"]) {
-			assert.match(screen(cards[name].renderCall({ sessionId: "@parser", message: "Task" }, theme, context())), /@parser · provider\/model · high/u);
+			assert.match(screen(cards[name].renderCall({ sessionId: "@parser", message: "Task" }, theme, context())), /@parser\nprovider\/model · high/u);
 		}
-		assert.match(screen(cards.agent_spawn.renderCall({ handle: "parser" }, theme, context())), /@parser · provider\/model · high/u);
+		assert.match(screen(cards.agent_spawn.renderCall({ handle: "parser" }, theme, context())), /@parser\nprovider\/model · high/u);
 		assert.ok(screen(cards.agent_spawn.renderCall({ handle: "parser" }, theme, context({ expanded: true }))).includes(id));
 		assert.ok(screen(cards.agent_send.renderCall({ sessionId: "@parser", message: "Task" }, theme, context({ expanded: true }))).includes(id));
-		assert.match(screen(cards.agent_send.renderResult(receipt, { expanded: false, isPartial: false }, theme, context())), /Admitted · @parser · provider\/model/u);
+		assert.match(screen(cards.agent_send.renderResult(receipt, { expanded: false, isPartial: false }, theme, context())), /provider\/model · high\nAdmitted · @parser/u);
 	});
 
 	it("falls back to the full identity and retains unknown handles", () => {
 		const cards = createAgentToolCards();
-		assert.ok(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context())).includes(`agent_send → ${id}`));
+		assert.ok(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context())).includes(`agent_send · ${id}`));
 		assert.ok(screen(cards.agent_abort.renderCall({ sessionId: `${id}:7` }, theme, context())).includes(`${id}:7`));
-		assert.match(screen(cards.agent_send.renderCall({ sessionId: "@unknown", message: "Task" }, theme, context())), /agent_send → @unknown/u);
+		assert.match(screen(cards.agent_send.renderCall({ sessionId: "@unknown", message: "Task" }, theme, context())), /agent_send · @unknown/u);
 		assert.ok(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context({ expanded: true }))).includes(id));
 	});
 
@@ -92,7 +92,7 @@ describe("human-readable agent targets", () => {
 		assert.doesNotMatch(call, /unknown|unavailable/u);
 		assert.equal(hintCount(call) + hintCount(output), 1);
 		const off = createAgentToolCards(() => [{ ...row, model: { ...model, thinkingLevel: "off" } }]);
-		assert.doesNotMatch(screen(off.agent_send.renderCall(args, theme, context())), / · off/u);
+		assert.match(screen(off.agent_send.renderCall(args, theme, context())), /\nprovider\/model · off\n/u);
 	});
 
 	it("keeps admission concise, labels the target, and preserves the full result", () => {

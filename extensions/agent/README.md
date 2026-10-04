@@ -373,11 +373,20 @@ separate detach operation or detached-run registry.
 
 ### Tool cards
 
-Targeted tool cards show the retained `@handle` or display name, followed by
-provider/model and a non-off thinking level. Duplicate display names add a short
-ID only when neither handles nor model settings distinguish them. The synchronous
-lookup uses the latest roster facts already observed by the primary footer; it opens no storage and
-starts no host. Unobserved targets use a short ID or the supplied `@handle`.
+All tool and peer cards use one layout. The first header line shows the tool
+name or message kind and the target or sender label. The muted second line shows
+known provider/model, thinking level, and other secondary facts. All card kinds
+use the same `provider/model · xhigh` form, without redundant `Model:`,
+`thinking`, or `reasoning` labels. Ambiguous values retain labels such as
+`submission 2987` or `mode report`. Missing facts create no placeholders.
+Targeted cards use the retained `@handle` or display name. Duplicate display names add the full identity when neither handles nor
+model settings distinguish them. Unobserved targets use the full identity or
+the supplied `@handle`; only the rendered width clips a collapsed line.
+The synchronous lookup uses roster facts already observed by the primary footer;
+it opens no storage and starts no host. Each native row retains its own result
+observations so its header reflects applied settings without a discovery read.
+Tool cards retain Pi's native padding. Peer cards supply the same inner top and
+bottom padding, while Pi supplies their outer separator.
 The manager contract is `manager/1.3.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
@@ -388,14 +397,22 @@ owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole
 card, not just its result. Expanded cards show no expansion hint. Expanded
 messages use the plain `Message:` label.
 
-Message receipts use `Admitted` or `Steer admitted` and the submission number.
-Receipts omit target facts already visible in the call or snapshot. A different
+Collapsed results use plain outcomes rather than raw JSON. Expanded results
+retain the raw result within the display bound. Message receipts use `Admitted`
+or `Steer admitted` and the submission number. A primary channel receipt after
+successful delivery shows `Report delivered to` or `Message delivered to` and
+the target label. Receipts omit target facts already visible in the call or snapshot. A different
 conversation or a newly resolved target retains its label. Snapshots show changed
-model facts without repeating unchanged header facts. Collaboration and context
-reset use the same card layout. Scheduled inputs show their timer and deadline;
+model facts without repeating unchanged header facts. Intent cards show
+`Intent published` or `Intent cleared` from the returned primary endpoint,
+with its full identity. Its known name and configuration update the header;
+expanded results retain the intent claim and bounded awareness as raw data.
+An intent claim is not verified authority or a reservation. Collaboration and
+context reset use the same card layout. Scheduled inputs show their timer and deadline;
 timer cancellation shows whether it changed the timer.
 
-Admission does not establish delivery, action, or task completion. Model-visible
+Admission does not establish delivery, action, or task completion. A primary
+channel delivery receipt does not establish action or task acceptance. Model-visible
 results remain unchanged. Status totals mark partial costs with a trailing `+`, such as
 `$0.25+`: at least that amount is known; some data was not fully readable.
 
@@ -622,14 +639,16 @@ its published configuration is not a live-state observation. Missing source
 evidence does not classify a report sender as an agent. Thread notices show
 the thread title and sender; their display
 body comes from the defining event, while stored model content stays unchanged.
-The headline uses plain kinds: result, still working, report, thread notice,
-or message from another session. Model, provider, reasoning, check-in elapsed
-time, and cost appear only when known. Missing optional facts produce no
-unknown or unavailable headline fields; real failure warnings remain in the
-body.
-The collapsed answer uses a short visual-line preview, with Pi's expansion hint
-only when text is hidden. It adds no navigation instructions or trailing blank
-rows beyond native message spacing. Expanding the notice shows the full
+The first header line uses plain kinds: result, still working, report, thread
+notice, or message from another session, followed by the sender label. The muted
+second line contains known model, provider, thinking level, check-in elapsed
+time, cost, and thread title. Missing optional facts produce no unknown or
+unavailable header fields. Expected reports and direct messages omit the unsaved
+result warning; genuine failure warnings remain in the body.
+The collapsed answer uses a short visual-line preview, with one Pi expansion
+hint only when text is hidden and no separate ellipsis row. The shared layout
+adds the same inner top and bottom padding as Pi tool cards, with no collapsed
+navigation instructions. Expanding the notice shows the full
 received answer, source details including full identities and submission rows,
 and `/agent opens the dashboard`. Model-facing caveats stay in the stored
 message content rather than the answer preview. Catalog follow-ups between Durable hosts keep their

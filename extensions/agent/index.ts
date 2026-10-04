@@ -241,6 +241,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			const { action, ...fields } = input;
 			return result(await getManager().publishIntent(ctx.sessionManager.getSessionId(), action === "clear" ? undefined : fields as Omit<PrimaryIntentClaim, "updatedAt">));
 		},
+		renderCall: cards.agent_intent.renderCall,
+		renderResult: cards.agent_intent.renderResult,
 	});
 	register(
 		"agent_collaborate",

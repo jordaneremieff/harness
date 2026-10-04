@@ -88,11 +88,12 @@ it("place receipts omit labels and models already shown in the card", () => {
 it("new fork facts survive an incomplete roster and applied settings preserve host adjustments", () => {
 	const fork = nativeRow("agent_fork", fixtures.agent_fork.args, fixtures.agent_fork.details, rows.slice(0, 1));
 	const forkText = screen(fork);
-	assert.match(forkText, /Fork created · Fork review · provider\/model · high/u);
+	assert.match(forkText, /Fork created · Fork review/u);
+	assert.match(forkText, /provider\/model · high/u);
 	assert.equal((forkText.match(/Fork review/gu) ?? []).length, 1);
 	const snapshot = { identity: targetId, conversationId: 1, name: "Parser review", busy: false, state: "idle", agent: { model: { provider: "provider", modelId: "new-model" }, thinkingLevel: "low" } };
 	const configured = nativeRow("agent_configure", { sessionId: targetId, model: "provider/new-model", thinkingLevel: "high" }, { identity: targetId, conversationId: 1, status: snapshot });
-	assert.match(screen(configured), /Model: provider\/new-model · thinking low/u);
+	assert.match(screen(configured), /provider\/new-model · low/u);
 	assert.match(screen(configured), /Configuration applied/u);
 });
 
@@ -135,6 +136,6 @@ it("same-target message receipts omit repeated facts but newly resolved and diff
 	const context = { expanded: false, argsComplete: true, executionStarted: true, state: {} };
 	const render = (args: Record<string, unknown>, identity: string) => cards.agent_send.renderResult(fixtureResult({ identity, conversationId: 1, submissionId: 405 }), { expanded: false, isPartial: false }, { fg: (_color: string, text: string) => text } as never, { ...context, args }).render(240).join("\n");
 	assert.match(render({ sessionId: targetId }, targetId), /^Admitted · submission 405/u);
-	assert.match(render({ sessionId: "@unobserved" }, targetId), /Admitted · Parser review · provider\/model · high · submission 405/u);
-	assert.match(render({ sessionId: targetId }, forkId), /Admitted · Fork review · provider\/model · high · submission 405/u);
+	assert.match(render({ sessionId: "@unobserved" }, targetId), /provider\/model · high\nAdmitted · Parser review · submission 405/u);
+	assert.match(render({ sessionId: targetId }, forkId), /provider\/model · high\nAdmitted · Fork review · submission 405/u);
 });
