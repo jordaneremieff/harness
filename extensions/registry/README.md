@@ -28,18 +28,18 @@ returned count against the matched total, the returned resource kinds, page
 bounds, and any continuation. A single-record page replaces the kind tally with
 that record's key facts: a model's cached availability, configured auth, context
 window, and supported thinking levels, or a tool's configured and active state.
-A bounded kind tally marks each omitted kind. The host context percent is a
-whole number. The argument and result expansion
+A bounded kind tally reports the number of omitted kinds. The host context
+percent is a whole number. The argument and result expansion
 hints appear only when the collapsed view hides or clips content, and each
 rides the row it belongs to. An expanded card shows the full arguments or the
 bounded result text.
 
-Model-result cards state `chat models only`, including no-match cards. An empty
-model page also points to native codemode `models.*` discovery; expansion shows
-the complete catalog boundary and API names.
+Cards with `catalogBoundary` state `chat models only`, including no-match cards.
+A model page with no matched records also points to native codemode `models.*`
+discovery; expansion shows the complete catalog boundary and API names.
 
-The card never repeats the requested name, search, or content phrase in the
-result unless the result resolves a different resource. Counts are page
+Resource and model list cards do not repeat the requested name, search, or
+content phrase. Content-scan cards name the resolved resource. Counts are page
 counts, not an inventory; the result text carries the evidence and observation
 boundaries, and a bounded or partial page never reads as an absence result.
 Terminal controls are escaped and long values are clipped.
@@ -48,14 +48,14 @@ Terminal controls are escaped and long values are clipped.
 
 | Parameter | Contract |
 |---|---|
-| `name` | Optional text, 1–256 characters. Name comparisons are case-sensitive. Skill names also match their `skill:<name>` and `/skill:<name>` invocation forms. |
+| `name` | Optional text, 1–256 characters. Name comparisons are case-sensitive. Skills also match `skill:<name>`; ordinary sessions additionally match `/skill:<name>`. |
 | `match` | `exact` or `substring`; default `exact`. |
 | `kind` | Optional `tool`, `command`, `skill`, `prompt`, `model`, or `context_file`. `model` covers chat models only, not classifier or image models. Without it, name/search queries cover only tools and slash-command resources. |
-| `search` | Optional text, 1–256 characters. Models require every whitespace-delimited token as a case-insensitive literal substring somewhere in the canonical name or display name, in any order; whitespace-only model queries match nothing. Other resources retain one case-insensitive literal substring within names, descriptions, or registered tool usage guidelines; context files use path. No file reads, index, or semantic ranking. |
+| `search` | Optional text, 1–256 characters. Models require every whitespace-delimited token as a case-insensitive literal substring somewhere in the canonical name or display name, in any order; whitespace-only model queries match nothing. Other resources retain one case-insensitive literal substring within names, descriptions, or registered tool usage guidelines; context files use path. Search does not scan resource contents and uses no index or semantic ranking. |
 | `detail` | Optional boolean. Requires `kind: "tool"` and an exact name, without `search` or `contains`. `true` returns that tool's complete parameters and prompt guidelines as bounded data. Lists omit them. |
 | `provider` | Optional exact provider ID, 1–256 characters. Requires `kind: "model"`. |
 | `available` | Optional boolean filter on the cached availability snapshot. Requires `kind: "model"`. |
-| `health` | Optional boolean. With `kind: "model"`, `true` returns only records with offline catalog review signals; `false` keeps the ordinary model query. |
+| `health` | Optional boolean. Requires `kind: "model"`. `true` returns only records with offline catalog review signals; `false` keeps the ordinary model query. |
 | `contains` | Optional literal text, 1–1024 characters. Case-insensitive search over one uniquely resolved file-backed skill or prompt. No regular expressions. |
 | `limit` | Integer, 1–100; default 20. Applies to record, ambiguity, and content-match pages. |
 | `cursor` | Opaque continuation text, at most 16 KiB of UTF-8. Supply it as the only argument. |
@@ -135,10 +135,11 @@ quota, balance, and remote health remain unchecked.
 `kind: "model"` projects Pi's chat catalog only. Classifier and image models are
 not queried, so a `missing` result does not establish their absence. Model pages
 carry `catalogBoundary` in both `details` and `structuredContent`, including
-no-match, incomplete, stale, health, and continued pages. The same boundary
-appears in result text. Invalid or cancelled queries do not
-claim a catalog read; oversized outer metadata retains the explicit no-absence
-bound instead.
+no-match, incomplete, health, and continued pages, plus pages whose model
+snapshot changed. The same boundary appears in result text. A continuation from
+a different session returns a generic `stale_cursor` without `catalogBoundary`.
+Invalid or cancelled queries do not claim a catalog read; oversized outer
+metadata retains the explicit no-absence bound instead.
 
 Use native codemode `models.getModelsOfType("classifier")` or
 `models.getModelsOfType("image")` for catalog discovery. Use
@@ -357,11 +358,11 @@ its schema and registered guidance without activating it.
 | Outcome | Meaning |
 |---|---|
 | `host_summary` | No selectors were supplied; host facts and observation boundaries follow. |
-| `ok` | Matching registration records or source lines are available. |
+| `ok` | Matching registration records or source lines are available, or a complete health review returned, including one with no flagged records. |
 | `missing` | All required registry accessors answered and no record matched within the queried source, or a complete file scan found no matching line. Model queries establish no absence outside the chat catalog. |
-| `ambiguous` | More than one file-backed resource matched a content query. No file was opened. |
+| `ambiguous` | More than one file-backed resource matched a content query, or more than one tool matched an exact detail query. No file was opened and no tool schema was returned. |
 | `unavailable` | A required host accessor failed, a matched resource has only a synthetic/non-absolute source, or current frontmatter is invalid/non-object. This is not absence. |
-| `partial` | A model catalog reports an error, a retained observation overflowed, or a content read stopped or changed. No absence is established. |
+| `partial` | A model catalog reports an error, a health review lacks selected-auth evidence, a retained observation overflowed, or a content read stopped or changed. No absence is established. |
 | `cancelled` | The call stopped on cancellation. Open handles close before the result returns. |
 | `stale_cursor` | The session, query-dependent metadata, model state, retained observation, or scanned file changed. Reissue the original query. |
 | `invalid_arguments` | An argument or cursor violates the tool contract. |
@@ -437,7 +438,7 @@ its source does not edit settings or activate other resources.
 
 A Pi Durable conversation receives the lookup through the native contribution
 the ordinary factory emits on `durable:contribution`. The contribution installs
-one `registry` tool and one prompt section. The tool declares `replay: "safe"`:
+the `registry` tool and its prompt section. The tool declares `replay: "safe"`:
 it only reads host state, so a rerun after process loss repeats no external
 effect and needs no deduplication key.
 
@@ -499,11 +500,13 @@ Documented differences from the ordinary tool:
   the host. `mode`, `hasUI`, `projectTrusted`, `sessionId`, and `sessionFile`
   stay unavailable.
 - Context usage is an estimate read from committed state at call time: the
-  newest assistant entry's reported usage, converted to tokens, against the
-  model's context window. No response after a reset or compaction, a zero-usage
-  response, or a bounded scan that finds nothing leaves the state `unknown`;
-  a missing model window or a failed read leaves it `unavailable`. The estimate
-  never reports zero.
+  newest usable assistant usage within the active context, converted to tokens,
+  against the model's context window. The scan skips zero-usage, aborted, and
+  error responses, so an older usable response still supplies the estimate.
+  It stops at a context head, including reset or compaction. A bounded scan
+  with no usable usage leaves the state `unknown`; a missing model window or a
+  failed read leaves it `unavailable`. The estimate adds no trailing entries
+  and never reports zero.
 - Durable tool records carry no `promptGuidelines`: the Durable tool registry
   has no such field, so this contribution renders its guidance as a prompt
   section instead. Search matches registered names and descriptions only.
@@ -550,14 +553,15 @@ host facts and uncertainty, and smaller list text. Structured model list records
 omit price tiers but retain their presence flag; exact selectors recover them.
 
 `durable.test.mts` runs the contribution through a real pi-durable Harness over
-`MemoryStorage` with pi-ai's faux provider. It drives one model-issued call per
-query kind and checks the declared `replay: "safe"` class, the native-fact
+`MemoryStorage` with pi-ai's faux provider. It drives model-issued calls across
+query kinds and checks the declared `replay: "safe"` class, the native-fact
 records, Durable coverage, the structured-content carrier, the root and
-non-root agent identity, and the committed-usage context estimate. It also
-checks that an aborted host binds the call to `cancelled` without reading any
-host fact, and that model pages preserve present, absent, and unreadable
-settings evidence. Settings tests verify trusted-project overrides, privacy,
-and unchanged settings bytes.
+non-root agent identity, and the committed-usage context estimate, including
+older usable usage after a zero-usage response and reset/compaction boundaries.
+It also checks that an aborted host binds the call to `cancelled` without
+reading any host fact, and that model pages preserve present, absent, and
+unreadable settings evidence. Settings tests verify trusted-project overrides,
+privacy, and unchanged settings bytes.
 Schema tests validate every outcome, source kinds, continuation, partial
 coverage, and bounded pages. The native codemode test uses the public factory
 and real QuickJS executor with fixture host accessors and nested dispatch. It
