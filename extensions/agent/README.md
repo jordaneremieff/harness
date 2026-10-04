@@ -208,10 +208,19 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. |
 
 Each `agent_list` call collects one bounded catalog batch before it observes
-hosts, so metadata rewrites during those observations do not invalidate that
-fresh call. Continuations retain both the native page position and the catalog
-revision. If the catalog changes before a supplied continuation resumes,
-including a native continuation inside the final storage, restart discovery.
+hosts. Continuations retain both the native page position and the last visited
+catalog filename. Catalog discovery sorts filenames and resumes strictly after
+that name, so view publications and record creation or removal do not invalidate
+continuations or repeat records. Repeat the same query and cwd with a cursor;
+a different query or cwd is refused explicitly.
+
+Discovery is not a frozen snapshot. Each page lists the current directory names,
+then bounds entry visits and record reads. Records created behind the cursor,
+or changed to match a filter after their name was visited, appear on the next
+fresh scan. Removed records are absent. Complete catalog coverage means the end
+of that page's sorted directory listing was reached, not that all pages observed
+one instant. Dashboard and cross-storage thread discovery use the same catalog
+continuations.
 
 All agents have independent process lifetimes. There is no separate detach
 operation or detached-run registry.

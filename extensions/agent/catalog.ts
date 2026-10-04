@@ -13,7 +13,7 @@ import {
 	writeFileSync,
 	linkSync,
 } from "node:fs";
-import { opendir, stat } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { type CatalogView, parseCatalogView } from "./catalog-view.ts";
 import { parseCollaborationProjection, type CollaborationProjection } from "./collaboration.ts";
@@ -43,20 +43,19 @@ function pageLimit(value: number | undefined): number {
 		throw new Error("Catalog limit must be between 1 and 32");
 	return limit;
 }
-function queryBinding(revision: string, options: CatalogQuery): string {
-	return JSON.stringify([revision, options.query ?? "", options.cwd ?? ""]);
+function queryBinding(options: CatalogQuery): string {
+	return JSON.stringify([options.query ?? "", options.cwd ?? ""]);
 }
-function startOffset(cursor: string | undefined, binding: string): number {
-	if (!cursor) return 0;
-	const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-	if (
-		parsed.binding !== binding ||
-		!Number.isSafeInteger(parsed.offset) ||
-		parsed.offset < 0 ||
-		parsed.offset > 1_000_000
-	)
-		throw new Error("Catalog changed or cursor does not match the query; restart discovery");
-	return parsed.offset;
+function startName(cursor: string | undefined, binding: string): string {
+	if (!cursor) return "";
+	let parsed: { binding?: unknown; after?: unknown } | null;
+	try { parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")); }
+	catch { throw new Error("Invalid catalog cursor; restart discovery"); }
+	if (!parsed || typeof parsed.binding !== "string" || typeof parsed.after !== "string" ||
+		!parsed.after || parsed.after.length > 255 || /[/\0]/u.test(parsed.after))
+		throw new Error("Invalid catalog cursor; restart discovery");
+	if (parsed.binding !== binding) throw new Error("Catalog cursor does not match the query or cwd; repeat the same query and cwd");
+	return parsed.after;
 }
 function matches(record: CatalogRecord, options: CatalogQuery): boolean {
 	if (options.cwd && options.cwd !== record.cwd) return false;
@@ -65,12 +64,13 @@ function matches(record: CatalogRecord, options: CatalogQuery): boolean {
 		!query || [record.storageId, record.cwd, record.name ?? ""].some((text) => text.toLocaleLowerCase().includes(query))
 	);
 }
-async function directoryRevision(root: string): Promise<string | undefined> {
+async function directoryEntries(root: string) {
 	try {
-		const info = await stat(root);
-		return `${info.ino}:${info.mtimeMs}`;
+		const entries = await readdir(root, { withFileTypes: true });
+		// Filename order survives record replacement and insertion/removal before the cursor.
+		return entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw error;
 	}
 }
@@ -336,38 +336,36 @@ export class AgentCatalog {
 	async page(options: CatalogQuery = {}): Promise<CatalogPage> {
 		const limit = pageLimit(options.limit);
 		const observedAt = new Date().toISOString();
-		const revision = await directoryRevision(this.root);
-		if (revision === undefined)
-			return { records: [], recordCursors: [], nextCursor: null, coverage: { visited: 0, skipped: 0, complete: true }, observedAt };
-		const binding = queryBinding(revision, options);
-		const start = startOffset(options.cursor, binding);
+		const binding = queryBinding(options);
+		const start = startName(options.cursor, binding);
+		const entries = await directoryEntries(this.root);
 		const records: CatalogRecord[] = [];
 		const recordCursors: string[] = [];
-		const cursorAt = (offset: number): string => Buffer.from(JSON.stringify({ binding, offset })).toString("base64url");
-		let index = 0,
+		const cursorAt = (after: string): string => Buffer.from(JSON.stringify({ binding, after })).toString("base64url");
+		let last = start,
 			visited = 0,
 			skipped = 0,
 			complete = true;
-		const directory = await opendir(this.root);
-		for await (const entry of directory) {
-			if (index++ < start) continue;
+		for (const entry of entries) {
+			if (entry.name <= start) continue;
+			if (visited === MAX_VISITS || records.length === limit) {
+				complete = false;
+				break;
+			}
+			last = entry.name;
 			visited++;
 			try {
 				const record = entry.isFile() ? this.select(entry.name, options) : undefined;
 				if (record) {
 					records.push(record);
-					recordCursors.push(cursorAt(index));
+					recordCursors.push(cursorAt(last));
 				}
 			} catch {
 				skipped++;
 			}
-			if (visited === MAX_VISITS || records.length === limit) {
-				complete = false;
-				break;
-			}
 		}
-		const nextCursor = complete ? null : cursorAt(index);
-		if (recordCursors.length > 0) recordCursors[recordCursors.length - 1] = cursorAt(index);
+		const nextCursor = complete ? null : cursorAt(last);
+		if (recordCursors.length > 0) recordCursors[recordCursors.length - 1] = cursorAt(last);
 		return {
 			records,
 			recordCursors,

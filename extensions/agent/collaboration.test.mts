@@ -159,6 +159,28 @@ it("discovers bounded purpose hints without opening hosts and names omitted stor
 	assert.equal((await listCollaboration(f.host.harness, {}, context)).items.length, 10);
 });
 
+it("continues discovery across storages while another writer publishes views", async (t) => {
+	const f = await fixture(t);
+	const catalog = new AgentCatalog(f.root);
+	const writer = new AgentCatalog(f.root);
+	const view = { updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } };
+	const records = Array.from({ length: 10 }, () => catalog.create({ cwd: f.root, agentDir: f.root, packageDir: f.root, model: { provider: "test", modelId: "test" }, thinkingLevel: "off" }));
+	for (const record of records) {
+		catalog.updateView(record.storageId, view, { updatedAt: view.updatedAt, omitted: 0, items: [{ id: `${record.storageId}/${"a".repeat(32)}`, title: "Shared purpose", purpose: "Compare evidence", updatedAt: 1, closed: false, members: 1 }] });
+	}
+	const seen: string[] = [];
+	let cursor: string | null = null;
+	for (let pageIndex = 0; pageIndex < 12; pageIndex++) {
+		const page = await discoverCollaboration(catalog, { limit: 1, ...(cursor ? { cursor } : {}) });
+		seen.push(...page.items.map((item) => item.id));
+		cursor = page.nextCursor;
+		if (!cursor) break;
+		writer.updateView(records[0].storageId, view);
+	}
+	assert.equal(cursor, null);
+	assert.deepEqual(seen.sort(), records.map((record) => `${record.storageId}/${"a".repeat(32)}`).sort());
+});
+
 it("bounds serialized event and read bytes independently of character and row counts", async (t) => {
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);

@@ -62,7 +62,7 @@ it("retains a continuation for each prefetched catalog record", async (t) => {
 	assert.deepEqual(page.records.map((record) => record.recoveryDue), frozen, "a collected batch is independent of subsequent observations");
 });
 
-it("bounds a discovery batch and refuses a genuinely stale user cursor", async (t) => {
+it("bounds a discovery batch and binds continuations only to query and cwd", async (t) => {
 	const { catalog, input } = fixture(t);
 	for (let index = 0; index < 33; index++) catalog.create(input);
 	utimesSync(catalog.root, 1, 1);
@@ -71,8 +71,66 @@ it("bounds a discovery batch and refuses a genuinely stale user cursor", async (
 	assert.equal(page.coverage.complete, false);
 	assert.ok(page.nextCursor);
 	catalog.create(input);
-	await assert.rejects(catalog.page({ cursor: page.nextCursor }), /restart discovery/u);
+	const next = await catalog.page({ cursor: page.nextCursor });
+	assert.equal(next.coverage.complete, true);
+	assert.equal(next.records.some((record) => page.records.some((previous) => previous.storageId === record.storageId)), false);
+	await assert.rejects(catalog.page({ cursor: page.nextCursor, query: "different" }), /query or cwd/u);
+	await assert.rejects(catalog.page({ cursor: page.nextCursor, cwd: "/different" }), /query or cwd/u);
 	await assert.rejects(catalog.page({ limit: 33 }), /Catalog limit/u);
+});
+
+it("continues strictly after the last name through publication, creation, and removal", async (t) => {
+	const { catalog, input } = fixture(t);
+	const candidates = Array.from({ length: 12 }, (_, index) => ({ request: `record-${index}`, record: catalog.create(input, `record-${index}`) }))
+		.sort((a, b) => a.record.storageId < b.record.storageId ? -1 : 1);
+	const behind = candidates[0];
+	const ahead = candidates[candidates.length - 1];
+	assert.equal(catalog.discardUnopened(behind.record), "removed");
+	assert.equal(catalog.discardUnopened(ahead.record), "removed");
+	const existing = candidates.slice(1, -1).map(({ record }) => record.storageId);
+	const first = await catalog.page({ limit: 3 });
+	assert.ok(first.nextCursor);
+	assert.deepEqual(first.records.map((record) => record.storageId), existing.slice(0, 3));
+	assert.equal(catalog.discardUnopened(first.records[2]), "removed");
+	const writer = new AgentCatalog(input.cwd);
+	writer.markRecoveryDue(existing[3], true);
+	writer.create(input, behind.request);
+	writer.create(input, ahead.request);
+	const seen = first.records.map((record) => record.storageId);
+	let cursor: string | null = first.nextCursor;
+	for (let pageIndex = 0; cursor && pageIndex < 10; pageIndex++) {
+		const page = await catalog.page({ limit: 3, cursor });
+		seen.push(...page.records.map((record) => record.storageId));
+		cursor = page.nextCursor;
+	}
+	assert.equal(cursor, null);
+	assert.deepEqual(seen, [...existing, ahead.record.storageId]);
+	assert.ok((await catalog.page()).records.some((record) => record.storageId === behind.record.storageId));
+});
+
+it("bounds visits through nonmatching entries and preserves corrupt-record accounting", async (t) => {
+	const { catalog, input } = fixture(t);
+	const corrupt = catalog.create(input);
+	writeFileSync(catalog.path(corrupt.storageId), "x".repeat(32_769));
+	for (let index = 0; index < 260; index++) writeFileSync(join(catalog.root, `other-${index}`), "");
+	const first = await catalog.page({ query: "absent" });
+	assert.equal(first.coverage.visited, 256);
+	assert.equal(first.coverage.skipped, 1);
+	assert.equal(first.records.length, 0);
+	assert.equal(first.coverage.complete, false);
+	assert.ok(first.nextCursor);
+	catalog.create(input);
+	const next = await catalog.page({ cursor: first.nextCursor, query: "absent" });
+	assert.equal(next.coverage.visited, 5);
+	assert.equal(next.coverage.complete, true);
+});
+
+it("refuses malformed catalog cursors even when the catalog is absent", async (t) => {
+	const { catalog } = fixture(t);
+	for (const value of [null, {}, { binding: "[]", offset: 2 }, { binding: "[]", after: "../record" }]) {
+		const cursor = Buffer.from(JSON.stringify(value)).toString("base64url");
+		await assert.rejects(catalog.page({ cursor }), /Invalid catalog cursor/u);
+	}
 });
 
 it("deduplicates a spawn request by owner and request identity", (t) => {
