@@ -64,7 +64,7 @@ interface PrimaryClient { send(text: string, details: unknown): void; status?(te
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
 interface ListRecordStep { record: CatalogRecord; catalog?: string }
-interface ListBatch { steps: ListRecordStep[]; nextCursor: string | null; complete: boolean }
+interface ListBatch { steps: ListRecordStep[]; skippedStorageIds: string[]; nextCursor: string | null; complete: boolean }
 
 const DEFAULT_DELIVERED_LIMIT = 1024;
 const DEFAULT_FAILURE_LIMIT = 256;
@@ -483,7 +483,7 @@ export class AgentManager {
 		for (let index = 0; index < page.records.length; index++) {
 			steps.push({ record: page.records[index], catalog: page.recordCursors[index] ?? undefined });
 		}
-		return { steps, nextCursor: page.nextCursor, complete: page.coverage.complete };
+		return { steps, skippedStorageIds: page.skippedStorageIds ?? [], nextCursor: page.nextCursor, complete: page.coverage.complete };
 	}
 
 	private async collectListPage(record: CatalogRecord, cursor: ListCursor, limit: number, rows: unknown[], unavailable: Array<{ storageId: string; reason: string }>): Promise<void> {
@@ -505,8 +505,8 @@ export class AgentManager {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("List limit must be between 1 and 20");
 		const cursor = this.listCursor(input);
 		const rows: unknown[] = [];
-		const unavailable: Array<{ storageId: string; reason: string }> = [];
 		const batch = await this.listBatch(cursor, input.cwd);
+		const unavailable = batch.skippedStorageIds.map((storageId) => ({ storageId, reason: "Catalog record could not be read" }));
 		let visits = 0;
 		const profileHints = { complete: true, unknownStorages: 0, omitted: 0 };
 		let index = 0;

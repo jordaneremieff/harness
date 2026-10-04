@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -19,8 +19,28 @@ function fixture(t: { after(fn: () => void | Promise<void>): void }, hooks: Part
 interface ListResult {
 	rows: Array<{ identity: string }>;
 	nextCursor: string | null;
-	coverage: { complete: boolean; storagesVisited: number; unavailable: unknown[] };
+	coverage: { complete: boolean; storagesVisited: number; unavailable: Array<{ storageId: string; reason: string }> };
 }
+
+it("agent_list reports every unreadable catalog record without changing completion", async (t) => {
+	const f = fixture(t, {
+		connect: async () => { throw new Error("no live fixture host"); },
+		observe: async (record) => ({ items: [{ identity: record.storageId }] }),
+	});
+	const valid = f.create();
+	const corrupt = f.create();
+	const invalid = f.create();
+	writeFileSync(f.manager.catalog.path(corrupt.storageId), "{");
+	writeFileSync(f.manager.catalog.path(invalid.storageId), "{}");
+	const result = await f.manager.list() as ListResult;
+	assert.deepEqual(result.rows.map((row) => row.identity), [valid.storageId]);
+	assert.deepEqual(result.coverage.unavailable, [corrupt.storageId, invalid.storageId].sort().map((storageId) => ({
+		storageId,
+		reason: "Catalog record could not be read",
+	})));
+	assert.equal(result.coverage.complete, true);
+	assert.equal(result.nextCursor, null);
+});
 
 for (const query of [undefined, "sol"]) {
 	it(`keeps a fresh ${query ? "filtered" : "default"} list usable when observation rewrites catalog metadata`, async (t) => {

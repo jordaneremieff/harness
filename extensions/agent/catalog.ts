@@ -91,6 +91,7 @@ export interface CatalogPage {
 	records: CatalogRecord[];
 	/** Continuation after each record, so a prefetched batch may stop before its end. */
 	recordCursors: string[];
+	skippedStorageIds?: string[];
 	nextCursor: string | null;
 	coverage: { visited: number; skipped: number; complete: boolean };
 	observedAt: string;
@@ -341,6 +342,7 @@ export class AgentCatalog {
 		const entries = await directoryEntries(this.root);
 		const records: CatalogRecord[] = [];
 		const recordCursors: string[] = [];
+		const skippedStorageIds: string[] = [];
 		const cursorAt = (after: string): string => Buffer.from(JSON.stringify({ binding, after })).toString("base64url");
 		let last = start,
 			visited = 0,
@@ -362,6 +364,7 @@ export class AgentCatalog {
 				}
 			} catch {
 				skipped++;
+				skippedStorageIds.push(entry.name.slice(0, -5));
 			}
 		}
 		const nextCursor = complete ? null : cursorAt(last);
@@ -369,6 +372,7 @@ export class AgentCatalog {
 		return {
 			records,
 			recordCursors,
+			skippedStorageIds,
 			nextCursor,
 			coverage: { visited, skipped, complete },
 			observedAt,

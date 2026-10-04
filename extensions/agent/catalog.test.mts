@@ -160,6 +160,7 @@ it("reports corrupt metadata as skipped without losing valid records", async (t)
 	const page = await catalog.page();
 	assert.deepEqual(page.records, [valid]);
 	assert.equal(page.coverage.skipped, 1);
+	assert.deepEqual(page.skippedStorageIds, [corrupt.storageId]);
 	assert.equal(page.coverage.complete, true);
 	assert.throws(() => catalog.read(corrupt.storageId), /reasoning level/u);
 });
