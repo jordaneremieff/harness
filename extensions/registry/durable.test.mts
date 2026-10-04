@@ -121,6 +121,9 @@ function modelReader(models: ReturnType<typeof createModels>, probes: string[] =
 			probes.push("providers");
 			return ["faux"];
 		},
+		isUsingOAuth: () => false,
+		isUsingSubscription: () => false,
+		getProviderAuthStatus: () => ({ source: "environment" as const }),
 		hasConfiguredAuth: () => {
 			probes.push("auth");
 			return true;
@@ -177,7 +180,8 @@ function fixture() {
 	const faux = fauxProvider({ models: [{ id: "faux-1", name: "Faux One", contextWindow: 200000, maxTokens: 8192 }] });
 	const models = createModels();
 	models.setProvider(faux.provider);
-	const services: RegistryDurableServices = { resourceLoader: resourceLoader(probes), modelRuntime: modelReader(models, probes) };
+	const services: RegistryDurableServices = { resourceLoader: resourceLoader(probes), modelRuntime: modelReader(models, probes),
+		settingsManager: { isProjectTrusted: () => true } };
 	return { probes, faux, models, services };
 }
 
@@ -222,7 +226,7 @@ test("durable registry answers model-issued queries from native Durable facts", 
 					fauxToolCall("registry", { kind: "prompt" }, { id: "prompt" }),
 					fauxToolCall("registry", { kind: "skill", name: "example-skill", contains: PHRASE }, { id: "contains" }),
 					fauxToolCall("registry", { kind: "model", name: "faux/faux-1" }, { id: "model" }),
-					fauxToolCall("registry", { kind: "model", name: "cloudflare-workers-ai/@cf/cloudflare/clef" }, { id: "non-chat" }),
+					fauxToolCall("registry", { kind: "model", name: `unconfigured-${models.getModels().length}/missing-${models.getModels().length}` }, { id: "non-chat" }),
 					fauxToolCall("registry", { kind: "context_file" }, { id: "context" }),
 					fauxToolCall("registry", {}, { id: "summary" }),
 				],
@@ -297,6 +301,8 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		assert.equal(selected.configuredAuth, true);
 		assert.equal(selected.extensionProvider, true);
 		assert.equal(selected.inScope, null);
+		assert.equal(selected.providerHasScopedModels, null);
+		assert.equal(objectOf(objectOf(model.details).settingsScope).status, "absent");
 		assert.equal(typeof selected.currentThinkingLevel, "string");
 		assert.match(String(objectOf(model.details).catalogBoundary), /Chat models only/);
 
@@ -344,12 +350,49 @@ test("durable registry answers model-issued queries from native Durable facts", 
 	}
 });
 
+test("Durable model pages carry present, absent, and unreadable settings evidence", async () => {
+	for (const state of ["available", "absent", "unavailable"] as const) {
+		const { faux, models, services } = fixture();
+		const directory = await mkdtemp(join(ROOT, "settings-"));
+		const cwd = join(directory, "workspace");
+		const agentDir = join(directory, "agent");
+		await mkdir(agentDir, { recursive: true });
+		const selected = models.getModels()[0];
+		const patterns = [`${selected.provider}/${selected.id}:high`];
+		const scopeFile = join(agentDir, "settings.json");
+		if (state !== "absent") await writeFile(scopeFile, state === "available" ? JSON.stringify({ enabledModels: patterns }) : "private-invalid-settings");
+		const nativeHost = { ...host(services), cwd, agentDir };
+		const extension = await createRegistryDurableContribution(REGISTRY_SOURCE).create(nativeHost);
+		const { harness, root } = await open(models, extension);
+		try {
+			faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("registry", { kind: "model" }, { id: "settings" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage("Inspected."),
+			]);
+			await (await root.submit({ type: "input", content: "Inspect models." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+			const result = toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "settings");
+			assert.equal(result.isError, false, textOf(result));
+			const details = objectOf(result.details);
+			const scope = objectOf(details.settingsScope);
+			assert.equal(scope.status, state);
+			assert.deepEqual(scope.patterns, state === "available" ? patterns : null);
+			assert.equal(typeof scope.observedAt, "number");
+			assert.deepEqual(objectOf(details.structuredContent).settingsScope, scope);
+			assert.ok(recordsOf(result).every((record) => record.inScope === null && record.providerHasScopedModels === null));
+			assert.doesNotMatch(JSON.stringify(result), /private-invalid-settings/);
+		} finally {
+			await harness.close(BACKGROUND_CONTEXT);
+		}
+	}
+});
+
 test("an aborted host signal cancels the query without probing host facts", async () => {
 	const probes: string[] = [];
 	const faux = fauxProvider({ models: [{ id: "faux-1", name: "Faux One", contextWindow: 200000, maxTokens: 8192 }] });
 	const models = createModels();
 	models.setProvider(faux.provider);
-	const services: RegistryDurableServices = { resourceLoader: resourceLoader(probes), modelRuntime: modelReader(models, probes) };
+	const services: RegistryDurableServices = { resourceLoader: resourceLoader(probes), modelRuntime: modelReader(models, probes),
+		settingsManager: { isProjectTrusted: () => true } };
 	const aborted = new AbortController();
 	aborted.abort();
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE).create(host(services, aborted.signal));

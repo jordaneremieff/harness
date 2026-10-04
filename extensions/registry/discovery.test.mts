@@ -65,7 +65,7 @@ describe("model discovery", () => {
 	it("qualifies non-chat misses in text and structured evidence without changing chat records", async () => {
 		const { ctx } = context();
 		const models = readModels(ctx, 1);
-		for (const name of ["cloudflare-workers-ai/@cf/cloudflare/clef", "fixture/image-model"]) {
+		for (const name of ["classifier", "image"].map((kind, index) => `unconfigured-${index}/${kind}-${index}`)) {
 			const result = await run({ kind: "model", name }, host(), models);
 			assert.equal(result.outcome, "missing");
 			assert.equal(result.details.catalogAvailable, true);

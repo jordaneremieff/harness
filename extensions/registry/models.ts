@@ -1,5 +1,70 @@
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getSupportedThinkingLevels, type ModelCost, type ModelCostRates } from "@earendil-works/pi-ai";
+import { SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+export const AUTH_SOURCES = ["stored", "runtime", "environment", "fallback", "models_json_key", "models_json_command"] as const;
+type AuthSource = (typeof AUTH_SOURCES)[number];
+
+/** Configuration evidence, never a resolved session cycle or preference. */
+export interface SettingsScopeEvidence {
+	status: "available" | "absent" | "unavailable";
+	patterns: string[] | null;
+	observedAt: number;
+}
+
+export function readSettingsScope(cwd: string, agentDir: string, at: number, projectTrusted: boolean): SettingsScopeEvidence {
+	const unavailable: SettingsScopeEvidence = { status: "unavailable", patterns: null, observedAt: at };
+	try {
+		const settings = SettingsManager.create(cwd, agentDir, { projectTrusted });
+		if (settings.drainErrors().length > 0) return unavailable;
+		const patterns = settings.getEnabledModels();
+		if (patterns === undefined) return { status: "absent", patterns: null, observedAt: at };
+		if (!Array.isArray(patterns) || patterns.some((pattern) => typeof pattern !== "string")) return unavailable;
+		return { status: "available", patterns: [...patterns], observedAt: at };
+	} catch {
+		return unavailable;
+	}
+}
+
+function readBoolean(read: () => boolean): boolean | null {
+	try {
+		const value = read();
+		return typeof value === "boolean" ? value : null;
+	} catch {
+		return null;
+	}
+}
+
+function readAuthSource(read: () => { source?: string }): AuthSource | null {
+	try {
+		const source = read().source;
+		return AUTH_SOURCES.find((candidate) => candidate === source) ?? null;
+	} catch {
+		return null;
+	}
+}
+
+function costRates(value: ModelCostRates): ModelCostRates | null {
+	const { input, output, cacheRead, cacheWrite } = value;
+	return [input, output, cacheRead, cacheWrite].every((rate) => Number.isFinite(rate) && rate >= 0)
+		? { input, output, cacheRead, cacheWrite } : null;
+}
+
+/** Select price fields only; a malformed price stays unknown rather than zero. */
+function catalogCost(model: ModelInfo): ModelCost | null {
+	try {
+		const base = costRates(model.cost);
+		if (base === null) return null;
+		if (model.cost.tiers === undefined) return base;
+		const tiers = model.cost.tiers.map((tier) => {
+			const rates = costRates(tier);
+			return rates !== null && Number.isFinite(tier.inputTokensAbove) && tier.inputTokensAbove >= 0
+				? { ...rates, inputTokensAbove: tier.inputTokensAbove } : null;
+		});
+		return tiers.every((tier) => tier !== null) ? { ...base, tiers } : null;
+	} catch {
+		return null;
+	}
+}
 
 /** Safe projections of synchronous registry snapshots, never resolved credentials. */
 export interface ModelRecord {
@@ -17,6 +82,12 @@ export interface ModelRecord {
 	supportedThinkingLevels: string[];
 	available: boolean | null;
 	configuredAuth: boolean | null;
+	oauth: boolean | null;
+	subscriptionRecognized: boolean | null;
+	authSource: AuthSource | null;
+	catalogCost: ModelCost | null;
+	catalogCostHasTiers: boolean | null;
+	providerHasScopedModels: boolean | null;
 	extensionProvider: boolean | null;
 	inScope: boolean | null;
 	scopeIndex?: number;
@@ -33,6 +104,7 @@ export interface ModelSnapshot {
 	catalogError: boolean | null;
 	scopeConfigured: boolean | null;
 	scopeOrder: string[] | null;
+	settingsScope?: SettingsScopeEvidence;
 }
 
 type ModelRegistry = ExtensionContext["modelRegistry"];
@@ -50,6 +122,9 @@ export interface DurableModelReader {
 	getError(): string | undefined;
 	getRegisteredProviderIds(): readonly string[];
 	hasConfiguredAuth(providerId: string): boolean;
+	isUsingOAuth(providerId: string): boolean;
+	isUsingSubscription(providerId: string): boolean;
+	getProviderAuthStatus(providerId: string): { source?: string };
 }
 
 /** The agent's model choice, independent of the process-wide catalog. */
@@ -119,6 +194,8 @@ interface ModelBuildInput {
 	selectedRef: { provider: string; modelId: string } | undefined;
 	thinkingLevel: string | undefined;
 	hasConfiguredAuth: (model: ModelInfo) => boolean | null;
+	billing: (model: ModelInfo) => Pick<ModelRecord, "oauth" | "subscriptionRecognized" | "authSource">;
+	settingsScope?: SettingsScopeEvidence;
 	at: number;
 }
 
@@ -131,6 +208,7 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 			(entry) => entry.model.provider === model.provider && entry.model.id === model.id,
 		) ?? -1;
 	const scope = input.scopedModels?.[scopeIndex];
+	const cost = catalogCost(model);
 	return {
 		kind: "model",
 		name,
@@ -146,6 +224,11 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 		supportedThinkingLevels: [...getSupportedThinkingLevels(model)],
 		available: input.availableSnapshot ? input.available.has(name) : null,
 		configuredAuth: input.hasConfiguredAuth(model),
+		...input.billing(model),
+		catalogCost: cost,
+		catalogCostHasTiers: cost === null ? null : (cost.tiers?.length ?? 0) > 0,
+		providerHasScopedModels: input.scopeConfigured === true
+			? input.scopedModels?.some((entry) => entry.model.provider === model.provider) ?? null : null,
 		extensionProvider: input.extensionProviders === null ? null : input.extensionProviders.has(model.provider),
 		inScope: input.scopeConfigured === null ? null : !input.scopeConfigured || scope !== undefined,
 		...(scopeIndex < 0 ? {} : { scopeIndex }),
@@ -164,9 +247,11 @@ function buildModelSnapshot(input: ModelBuildInput): ModelSnapshot {
 		catalogError: input.catalogError,
 		scopeConfigured: input.scopeConfigured,
 		scopeOrder: input.scopeOrder,
+		...(input.settingsScope === undefined ? {} : { settingsScope: input.settingsScope }),
 	};
 	for (const model of input.models) result.records.push(buildModelRecord(model, input));
-	result.records.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	const group = (record: ModelRecord) => record.available === true ? 0 : record.configuredAuth === true ? 1 : 2;
+	result.records.sort((a, b) => group(a) - group(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return result;
 }
 
@@ -193,6 +278,14 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 		scopeOrder: scopeConfigured ? scopedModels.map(({ model }) => `${model.provider}/${model.id}`) : null,
 		selectedRef: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 		thinkingLevel: ctx.thinkingLevel,
+		billing: (model) => {
+			const oauth = readBoolean(() => registry.isUsingOAuth(model));
+			return {
+				oauth,
+				subscriptionRecognized: oauth === null ? null : readBoolean(() => oauth && registry.getProvider(model.provider)?.auth.oauth?.isSubscription === true),
+				authSource: readAuthSource(() => registry.getProviderAuthStatus(model.provider)),
+			};
+		},
 		hasConfiguredAuth: (model) => {
 			try {
 				return registry.hasConfiguredAuth(model);
@@ -210,7 +303,7 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
  * model choice and has no Pi session model scope, so scope stays unavailable
  * rather than empty.
  */
-export function readDurableModels(reader: DurableModelReader, agent: DurableAgentModel, at: number): ModelSnapshot {
+export function readDurableModels(reader: DurableModelReader, agent: DurableAgentModel, at: number, settingsScope: SettingsScopeEvidence): ModelSnapshot {
 	let catalog: ModelInfo[] = [];
 	let catalogAvailable = false;
 	try {
@@ -268,8 +361,14 @@ export function readDurableModels(reader: DurableModelReader, agent: DurableAgen
 		scopedModels: undefined,
 		scopeConfigured: null,
 		scopeOrder: null,
+		settingsScope,
 		selectedRef: agent.model,
 		thinkingLevel: agent.thinkingLevel,
+		billing: (model) => ({
+			oauth: readBoolean(() => reader.isUsingOAuth(model.provider)),
+			subscriptionRecognized: readBoolean(() => reader.isUsingSubscription(model.provider)),
+			authSource: readAuthSource(() => reader.getProviderAuthStatus(model.provider)),
+		}),
 		hasConfiguredAuth: (model) => {
 			try {
 				return reader.hasConfiguredAuth(model.provider);

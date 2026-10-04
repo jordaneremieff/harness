@@ -40,7 +40,7 @@ export const RegistryParams = Type.Object(
 			StringEnum(QUERY_KINDS, { description: "Resource kind. model queries chat models only, not classifiers or image models; context_file returns prior observed paths only." }),
 		),
 		search: Type.Optional(Type.String({ minLength: 1, maxLength: NAME_MAX,
-			description: "Literal case-insensitive search over names, descriptions, and tool usage guidelines, not file contents." })),
+			description: "Case-insensitive literal search over names, descriptions, and tool guidance, not file contents. Models require every whitespace token across canonical and display names, in any order." })),
 		detail: Type.Optional(Type.Boolean({ description: "Return parameters and promptGuidelines for kind tool and one exact name; no search or contains." })),
 		provider: Type.Optional(Type.String({ minLength: 1, maxLength: NAME_MAX, description: "Exact provider ID; requires kind model." })),
 		available: Type.Optional(Type.Boolean({ description: "Filter cached availability; requires kind model. Not remote health." })),
@@ -81,5 +81,5 @@ export const REGISTRY_PROMPT_GUIDELINES = [
 	"Use exact name + kind for full metadata/provenance, and detail true with kind tool for parameters and guidelines; registry presence does not activate a tool. Model availability is a cached local snapshot, not credential validity or remote health.",
 	"Use registry with no arguments for current context usage and model facts. Read the observation time; unknown or unavailable context usage is not zero or a safe remaining budget.",
 	"Use registry with contains to quote a line from one named skill or prompt file rather than reading the file by path.",
-	"Treat a registry partial, unavailable, or not_yet_observed result as incomplete evidence, not absence. Search is literal: no matching phrase does not prove no relevant capability exists. Try another short term or inspect a bounded kind list.",
+	"Treat a registry partial, unavailable, or not_yet_observed result as incomplete evidence, not absence. Search uses literal text, or all whitespace tokens for models: no match does not prove no relevant capability exists. Try another short term or inspect a bounded kind list.",
 ] as const;

@@ -19,7 +19,7 @@ import { calculateContextTokens, type SourceInfo } from "@earendil-works/pi-codi
 import { REGISTRY_DESCRIPTION, REGISTRY_PROMPT_GUIDELINES, REGISTRY_PROMPT_SNIPPET, RegistryParams } from "./contract.ts";
 import type { ContextSnapshot } from "./host.ts";
 import { type DurableLookupContext, lookup } from "./lookup.ts";
-import { readDurableModels, type DurableModelReader } from "./models.ts";
+import { readDurableModels, readSettingsScope, type DurableModelReader } from "./models.ts";
 import { ObservationStore, type ObservableOptions } from "./observer.ts";
 import { RegistryOutputSchema } from "./output.ts";
 import { decodeCursor, hasAnySelector, type RawParams } from "./query.ts";
@@ -60,6 +60,7 @@ export interface RegistryDurableServices {
 		getAppendSystemPrompt(): readonly string[];
 	};
 	readonly modelRuntime: DurableModelReader;
+	readonly settingsManager: { isProjectTrusted(): boolean };
 }
 
 /** One contribution the host installed, with its command metadata. */
@@ -471,7 +472,8 @@ export function createRegistryDurableContribution(source: string): RegistryDurab
 						readContext: () => contextSnapshot ?? durableContext(agent, at),
 						contextBoundary: DURABLE_CONTEXT_BOUNDARY,
 						...(modelQueryOf(args) && !signal.aborted
-							? { models: readDurableModels(host.services.modelRuntime, agent ?? {}, at) }
+							? { models: readDurableModels(host.services.modelRuntime, agent ?? {}, at,
+								readSettingsScope(host.cwd, host.agentDir, at, host.services.settingsManager.isProjectTrusted())) }
 							: {}),
 						epoch: `${hostEpoch}:${String(api.conversationId)}`,
 						signal,

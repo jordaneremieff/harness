@@ -33,6 +33,7 @@ function model(): ModelRecord {
 	return { kind: "model", name: "fixture/model", provider: "fixture", id: "model", displayName: "Fixture Model",
 		catalog: true, selected: true, reasoning: true, input: ["text", "image"], contextWindow: 10000, maxTokens: 1000,
 		supportedThinkingLevels: ["off", "high"], available: true, configuredAuth: true, extensionProvider: false,
+		oauth: null, subscriptionRecognized: null, authSource: null, catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: true,
 		inScope: true, scopeIndex: 0, scopeThinkingLevel: "off", currentThinkingLevel: "high", evidence: "registration", at };
 }
 function models(records = [model()]): ModelSnapshot {
@@ -113,7 +114,8 @@ describe("compact registry output", () => {
 			if (kind === "skill") assert.match(result.text, /modelInvocable is default skill-list eligibility from the disable flag, not visibility or permission; active tools and later hooks/);
 			else assert.doesNotMatch(result.text, /modelInvocable/);
 			if (kind === "model") {
-				assert.match(result.text, /cached availability.*local snapshots, not remote health/);
+				assert.match(result.text, /cached availability.*local snapshots/);
+				assert.match(result.text, /Quota, balance, and remote health remain unchecked/);
 				assert.match(result.text, /configuredAuth is presence, not credential validity/);
 				assert.match(result.text, /scope order is session cycle order, not operator preference/);
 				assert.doesNotMatch(result.text, /extension inventory|immutable executing bytes/);

@@ -51,7 +51,7 @@ Terminal controls are escaped and long values are clipped.
 | `name` | Optional text, 1–256 characters. Name comparisons are case-sensitive. Skill names also match their `skill:<name>` and `/skill:<name>` invocation forms. |
 | `match` | `exact` or `substring`; default `exact`. |
 | `kind` | Optional `tool`, `command`, `skill`, `prompt`, `model`, or `context_file`. `model` covers chat models only, not classifier or image models. Without it, name/search queries cover only tools and slash-command resources. |
-| `search` | Optional literal text, 1–256 characters. Case-insensitive substring within resource names, descriptions, or registered tool usage guidelines; models use canonical name and display name; context files use path. No file reads, index, or semantic ranking. |
+| `search` | Optional text, 1–256 characters. Models require every whitespace-delimited token as a case-insensitive literal substring somewhere in the canonical name or display name, in any order; whitespace-only model queries match nothing. Other resources retain one case-insensitive literal substring within names, descriptions, or registered tool usage guidelines; context files use path. No file reads, index, or semantic ranking. |
 | `detail` | Optional boolean. Requires `kind: "tool"` and an exact name, without `search` or `contains`. `true` returns that tool's complete parameters and prompt guidelines as bounded data. Lists omit them. |
 | `provider` | Optional exact provider ID, 1–256 characters. Requires `kind: "model"`. |
 | `available` | Optional boolean filter on the cached availability snapshot. Requires `kind: "model"`. |
@@ -85,14 +85,39 @@ field and the record's evidence time. Exact resource queries also retain the
 observer summary that resource lists omit. `detail: true` with an exact tool name and
 `kind: "tool"` additionally returns its parameters and prompt guidelines.
 
-Chat model lists show canonical and display names, input modalities, selected state,
+### Chat model lists
+
+Model pages place available records first, then remaining configured-auth
+records, then the rest. Each group sorts alphabetically by canonical
+`provider/id`, independently of selection, scope, price, or past use. The result
+header states the ordering rule. Search tokens match across canonical and
+display names without aliases or model-family rules.
+
+Lists show canonical and display names, input modalities, selected state,
 catalog membership, cached availability, configured-auth presence, scope
 membership and position when present, reasoning capability, context window,
 supported thinking levels, and current thinking level when present. Scope
 position is session cycle order, not operator preference. Each record retains
 its evidence time. Use exact `name: "provider/id"` with `kind: "model"` for
 provider, ID, output limit, extension-provider registration, and scope thinking pin.
-Offline health reports retain full records beside their findings.
+Offline health reports retain records beside their findings.
+
+Model records also carry nullable `oauth`, `subscriptionRecognized`,
+`authSource`, `catalogCost`, `catalogCostHasTiers`, and
+`providerHasScopedModels`. Compact text labels these as `oauth`, `subscription`,
+`authSource`, `price`, `tiers`, and `providerScoped`. Price text uses
+input/output/cache-read/cache-write rates in USD per million tokens. Structured
+`catalogCost` preserves those named base-rate fields; only exact-name lookups
+include its optional `tiers` array with `inputTokensAbove` thresholds.
+`catalogCostHasTiers` identifies tiered pricing without repeating the tiers on
+list pages. Failed or malformed price reads stay null, not zero.
+
+These are catalog and configuration facts, not a billing account view. OAuth
+does not by itself establish subscription access. An unrecognized subscription
+does not establish metered billing, and nominal catalog prices are not invoices.
+Configured access and scope do not establish operator preference. Current task
+directions and operator route, budget, and role preferences govern selection;
+quota, balance, and remote health remain unchecked.
 
 ### Non-chat model discovery
 
@@ -125,8 +150,10 @@ oversized outer metadata was omitted. An empty array alone never establishes
 absence.
 
 `structuredContent` mirrors the already bounded `details` data. Both
-`details.records` and `structuredContent.records` retain the complete projected
-records in both text forms; compact text does not shrink the evidence used by continuation checks.
+`details.records` and `structuredContent.records` retain the same projected
+records in both text forms, except that model price tiers require an exact-name
+lookup. Compact pages still fingerprint the complete model snapshot, including
+undisplayed tiers and settings scope patterns, for continuation checks.
 Resource schemas and guidelines still require tool detail. The complete-result
 bound includes content, details, and structuredContent together, so compact text does not guarantee that
 an arbitrarily large record fits. Descriptions and other display previews retain
@@ -217,7 +244,8 @@ its schema and registered guidance without activating it.
 ## Evidence and observation
 
 - Chat model records project `ctx.modelRegistry.getAll()`, `getAvailable()`,
-  `hasConfiguredAuth()`, `getError()`, `getRegisteredProviderIds()`, `ctx.model`,
+  `hasConfiguredAuth()`, `isUsingOAuth()`, `getProviderAuthStatus()`,
+  `getProvider()`, `getError()`, `getRegisteredProviderIds()`, `ctx.model`,
   `ctx.thinkingLevel`, and `ctx.scopedModels`. Names are canonical `provider/id`;
   display names are separate. Records state catalog membership, selected state,
   cached availability, configured-auth presence, reasoning capability, supported
@@ -225,11 +253,20 @@ its schema and registered guidance without activating it.
   Only the selected model carries the current thinking level. Scope pins remain
   separate from effective thinking. An empty scope means no restriction.
   `scopeIndex` is the model's zero-based position in `ctx.scopedModels`; it is
-  omitted for models outside the scope and when no scope is configured. Pages
-  remain alphabetical, independent of scope order.
+  omitted for models outside the scope and when no scope is configured.
+  `providerHasScopedModels` reports whether the provider has any entry in a
+  resolved, nonempty scope; otherwise it is null. Scope never changes the
+  availability-first page order.
   `extensionProvider` is true when `getRegisteredProviderIds()` includes the
   model's provider, false otherwise, and null when the accessor fails. The tool
   reads provider registration once per model snapshot.
+  `oauth` projects `isUsingOAuth()`. In ordinary sessions,
+  `subscriptionRecognized` combines OAuth use with the provider's public
+  `auth.oauth.isSubscription` flag. `authSource` admits only Pi's source enum:
+  `stored`, `runtime`, `environment`, `fallback`, `models_json_key`, or
+  `models_json_command`. Labels, configuration values, and resolved credentials
+  are never returned. `catalogCost` copies only public catalog price fields,
+  including request-wide tiers for exact lookups. Unknown facts remain null.
   Model records contain no operator preference data. Scope order describes the
   session cycle order, with unavailable entries skipped by Pi, not operator
   preference. When no scope is configured, scope order is absent and models
@@ -274,8 +311,9 @@ its schema and registered guidance without activating it.
   Pi's invocation name and every `sourceInfo` field: `path`, `source`, `scope`,
   `origin`, and optional `baseDir`.
 - Results identify registration, prior observation, or current file-content
-  evidence and its observation time. Records use deterministic ordinal order by
-  kind, name, and source fields, not locale-dependent sorting.
+  evidence and its observation time. Resource records use deterministic ordinal
+  order by kind, name, and source fields, not locale-dependent sorting. Model
+  records use the availability groups described above.
 - `before_agent_start` copies only names, paths, selected tool names, skill
   invocation metadata, and custom/appended/forced prompt-presence flags. An empty
   forced replacement still counts as present. These are prior handler inputs,
@@ -405,10 +443,24 @@ The native form reads Durable facts instead of a Pi session:
   observation at call time. Content queries read the resolved source file the
   same way as the ordinary tool.
 - Chat model records come from the host's model runtime: catalog, cached
-  availability snapshot, configured-auth presence, and registered providers.
+  availability snapshot, configured-auth presence, registered providers,
+  `isUsingOAuth()`, `isUsingSubscription()`, and `getProviderAuthStatus()`.
   The conversation's selected model and thinking level come from the resolved
-  agent. A Durable conversation has no Pi model scope, so scope fields stay
-  unavailable rather than empty.
+  agent. A Durable conversation has no Pi model scope, so `inScope` and
+  `providerHasScopedModels` stay null rather than unrestricted.
+- Model pages carry `settingsScope: {status, patterns, observedAt}`. A fresh
+  public `SettingsManager.create(cwd, agentDir, {projectTrusted})` reads the host's
+  global and trusted-project configuration for each model query. The trust flag
+  comes from the host's settings manager. Only raw `getEnabledModels()` patterns
+  leave that manager; other settings and load-error text stay private. `status`
+  is `available` when the key contains a string array, `absent` when the key is
+  absent, and `unavailable` after load errors or a malformed value. An explicitly
+  empty array remains available; absent and unavailable patterns are null.
+  These patterns are configuration evidence, not resolved session scope or
+  preference. No resolver runs: the public scope resolver refreshes availability.
+  The read uses Pi's settings lock but calls no setter and changes no settings.
+  Cursor fingerprints include pattern values and status, not their read time.
+  Oversized settings evidence follows the existing blocked-page result bound.
 - The no-argument summary reports the Durable agent identity (storage ID,
   conversation ID, and the external agent ID), `cwd`, the resolved model and
   thinking level, the context estimate, and the Durable coverage: every
@@ -463,14 +515,16 @@ Model-scope tests retain chat-only evidence and the native non-chat discovery
 route through ordinary and Durable delivery, schema checks, bounded pages,
 continuations, incomplete sources, health reviews, and collapsed result cards.
 Model, metadata-search, exact-schema, and context-path tests also cover safe
-field projection, zero-based scope positions, scope order, extension-provider
-registration, selection/scope distinctions, unavailable surfaces, stale
-continuations, privacy, and oversized output. Search tests cover tool-guideline
+field projection, availability groups, token search across model names,
+zero-based scope positions, provider scope evidence, public authentication
+facts, nullable prices, exact price tiers, extension-provider registration,
+selection/scope distinctions, unavailable surfaces, stale continuations,
+privacy, and oversized output. Search tests cover tool-guideline
 matches, field-local literal semantics, explicit negative-result boundaries,
 and continuation invalidation after usage guidance changes. Compact-output tests
 check full-record recovery through exact selectors, per-kind caveats, retained
-host facts and uncertainty, and smaller list text with unchanged structured
-records.
+host facts and uncertainty, and smaller list text. Structured model list records
+omit price tiers but retain their presence flag; exact selectors recover them.
 
 `durable.test.mts` runs the contribution through a real pi-durable Harness over
 `MemoryStorage` with pi-ai's faux provider. It drives one model-issued call per
@@ -478,7 +532,9 @@ query kind and checks the declared `replay: "safe"` class, the native-fact
 records, Durable coverage, the structured-content carrier, the root and
 non-root agent identity, and the committed-usage context estimate. It also
 checks that an aborted host binds the call to `cancelled` without reading any
-host fact.
+host fact, and that model pages preserve present, absent, and unreadable
+settings evidence. Settings tests verify trusted-project overrides, privacy,
+and unchanged settings bytes.
 Schema tests validate every outcome, source kinds, continuation, partial
 coverage, and bounded pages. The native codemode test uses the public factory
 and real QuickJS executor with fixture host accessors and nested dispatch. It

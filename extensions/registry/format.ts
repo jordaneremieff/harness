@@ -177,7 +177,7 @@ export const BOUNDARY_LINES = [
 
 export const INVENTORY_BOUNDARY = "Not a complete extension inventory: extensions without registered resources are excluded. Built-in interactive commands, full settings, and load rejection reasons are excluded.";
 export const PROMPT_BOUNDARY = "Final provider payload and serialized system instructions are not readable here; observed prompt inputs do not establish them.";
-export const MODEL_SCOPE_BOUNDARY = "No preference data; model scope order is session cycle order, not operator preference.";
+export const MODEL_SCOPE_BOUNDARY = "Configured access and scope do not establish operator preference. Apply current task directions and operator route, budget, and role preferences before selection. Model scope order is session cycle order, not operator preference.";
 export const MODEL_CATALOG_BOUNDARY = 'Chat models only. Classifier and image models are not queried; missing here does not establish their absence. In codemode, use models.getModelsOfType("classifier") or models.getModelsOfType("image") for catalog entries, or models.getAvailableOfType(type) for availability.';
 
 const NAMESPACE_INSTRUCTIONS_BOUNDARY = "Namespace instructions are not shown here (instructionsOmitted). Read them with the codemode helper describeNamespace(name), where name is the record's namespace name.";

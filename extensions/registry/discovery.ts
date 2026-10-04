@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { BOUNDARY_LINES, MODEL_CATALOG_BOUNDARY, MODEL_SCOPE_BOUNDARY, boundResult, fullRecordQuery, isoTime, oneLine, type Block, type Outcome } from "./format.ts";
-import type { ModelSnapshot } from "./models.ts";
+import type { ModelRecord, ModelSnapshot } from "./models.ts";
 import { catalogHealth, HEALTH_BOUNDARIES, healthCoverage, type HealthFinding } from "./health.ts";
 import { encodeCursor, paginate, type Page, type Query } from "./query.ts";
 import type { ObservationSnapshot } from "./records.ts";
@@ -65,6 +65,8 @@ function discoveryFingerprint(
 				partial,
 				scopeConfigured: models?.scopeConfigured,
 				scopeOrder: models?.scopeOrder ?? null,
+				settingsScope: models?.settingsScope === undefined ? null
+					: { status: models.settingsScope.status, patterns: models.settingsScope.patterns },
 			}),
 		)
 		.digest("hex")
@@ -73,10 +75,14 @@ function discoveryFingerprint(
 
 function matchesDiscovery(record: Record<string, unknown>, query: Query): boolean {
 	const name = String(record.name);
+	const text = `${name}\n${record.displayName ?? ""}`.toLowerCase();
+	const tokens = query.search?.toLowerCase().trim().split(/\s+/).filter(Boolean);
+	const matchesSearch = query.search === undefined || (query.kind === "model"
+		? tokens !== undefined && tokens.length > 0 && tokens.every((token) => text.includes(token))
+		: text.includes(query.search.toLowerCase()));
 	return (
 		(query.name === undefined || (query.match === "exact" ? name === query.name : name.includes(query.name))) &&
-		(query.search === undefined ||
-			`${name}\n${record.displayName ?? ""}`.toLowerCase().includes(query.search.toLowerCase())) &&
+		matchesSearch &&
 		(query.provider === undefined || record.provider === query.provider) &&
 		(query.available === undefined || record.available === query.available)
 	);
@@ -86,29 +92,56 @@ function compactModelQuery(query: Query): boolean {
 	return query.kind === "model" && !fullRecordQuery(query) && !query.health;
 }
 
-const MODEL_LIST_FIELDS = ["displayName", "input", "selected", "catalog", "available", "configuredAuth", "inScope", "scopeIndex", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
+const MODEL_LIST_FIELDS = ["displayName", "input", "selected", "catalog", "available", "configuredAuth", "oauth", "subscriptionRecognized", "authSource", "catalogCost", "catalogCostHasTiers", "inScope", "scopeIndex", "providerHasScopedModels", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
 
-function discoveryBlocks(records: Record<string, unknown>[], stale: boolean, compact: boolean): Block[] {
+const MODEL_LIST_LABELS: Record<string, string> = { subscriptionRecognized: "subscription", catalogCost: "price", catalogCostHasTiers: "tiers", providerHasScopedModels: "providerScoped" };
+
+function compactModelValue(key: string, value: unknown): string {
+	if (key !== "catalogCost" || value === null) return oneLine(JSON.stringify(value));
+	const cost = value as NonNullable<ModelRecord["catalogCost"]>;
+	return [cost.input, cost.output, cost.cacheRead, cost.cacheWrite].join("/");
+}
+
+function compactModelRecord(record: Record<string, unknown>): Record<string, unknown> {
+	const cost = record.catalogCost as ModelRecord["catalogCost"];
+	if (cost === null) return record;
+	const { tiers: _tiers, ...rates } = cost;
+	return { ...record, catalogCost: rates };
+}
+
+function discoveryBlocks(records: Record<string, unknown>[], stale: boolean, compact: boolean, exact: boolean): Block[] {
 	if (stale) return [];
-	return records.map((record) => ({
-		lines: compact ? [
-			`MODEL ${oneLine(String(record.name))}`,
-			`  ${MODEL_LIST_FIELDS.filter((key) => key in record).map((key) => `${key}=${oneLine(JSON.stringify(record[key]))}`).join(" ")}`,
-			`  evidence: ${oneLine(String(record.evidence))} at ${isoTime(Number(record.at))}`,
-		] : [
-			"",
-			`${String(record.kind).toUpperCase()} ${oneLine(String(record.name))}`,
-			...Object.entries(record)
-				.filter(([key]) => key !== "name" && key !== "kind" && key !== "findings")
-				.map(([key, value]) => `  ${key}: ${oneLine(JSON.stringify(value))}`),
-			...((record.findings ?? []) as HealthFinding[]).flatMap((finding) => [
-				`  ${finding.code}: ${finding.reason}`,
-				`    boundary: ${finding.boundary}`,
-				...(finding.fields ? [`    conflicting fields: ${finding.fields.join(", ")} | duplicate records: ${finding.duplicateRecords}`] : []),
-			]),
-		],
-		detail: record,
-	}));
+	return records.map((source) => {
+		const record = source.kind === "model" && !exact ? compactModelRecord(source) : source;
+		return {
+			lines: compact ? [
+				`MODEL ${oneLine(String(record.name))}`,
+				`  ${MODEL_LIST_FIELDS.filter((key) => key in record).map((key) => `${MODEL_LIST_LABELS[key] ?? key}=${compactModelValue(key, record[key])}`).join(" ")}`,
+				`  evidence: ${oneLine(String(record.evidence))} at ${isoTime(Number(record.at))}`,
+			] : [
+				"",
+				`${String(record.kind).toUpperCase()} ${oneLine(String(record.name))}`,
+				...Object.entries(record)
+					.filter(([key]) => key !== "name" && key !== "kind" && key !== "findings")
+					.map(([key, value]) => `  ${key}: ${oneLine(JSON.stringify(value))}`),
+				...((record.findings ?? []) as HealthFinding[]).flatMap((finding) => [
+					`  ${finding.code}: ${finding.reason}`,
+					`    boundary: ${finding.boundary}`,
+					...(finding.fields ? [`    conflicting fields: ${finding.fields.join(", ")} | duplicate records: ${finding.duplicateRecords}`] : []),
+				]),
+			],
+			detail: record,
+		};
+	});
+}
+
+function settingsScopeLines(models: ModelSnapshot | undefined): string[] {
+	const scope = models?.settingsScope;
+	if (scope === undefined) return [];
+	return [
+		`Settings scope configuration: ${scope.status}; enabledModels=${oneLine(JSON.stringify(scope.patterns))}`,
+		"Raw settings patterns are not effective session scope or operator preference; Durable inScope remains unknown.",
+	];
 }
 
 function discoveryHeader(
@@ -127,8 +160,11 @@ function discoveryHeader(
 	if (modelQuery) {
 		lines.push(
 			MODEL_CATALOG_BOUNDARY,
-			"Model metadata and cached availability are synchronous local snapshots, not remote health. configuredAuth is presence, not credential validity; no refresh, auth resolution, or probe.",
+			"Order: available first, then remaining configured-auth records, then the rest; alphabetical provider/id within each group.",
+			"Model metadata and cached availability are synchronous local snapshots. configuredAuth is presence, not credential validity; no refresh, auth resolution, or probe. Quota, balance, and remote health remain unchecked.",
 			MODEL_SCOPE_BOUNDARY,
+			"price: catalog USD/Mtok, input/output/cacheRead/cacheWrite; not billed spend. subscription means Pi-recognized, not inferred from OAuth; false does not imply metered billing. tiers marks price tiers; exact model lookup returns them.",
+			...settingsScopeLines(request.models),
 			...(compactModelQuery(request.query) ? ["Compact models; use kind:model + exact provider/id name for full metadata."] : []),
 		);
 		if (request.query.health) {
@@ -168,6 +204,7 @@ function discoveryDetails(
 					availableSnapshot: models?.availableSnapshot ?? false,
 					catalogError: models?.catalogError ?? null,
 					scopeConfigured: models?.scopeConfigured ?? null,
+					...(models?.settingsScope === undefined ? {} : { settingsScope: models.settingsScope }),
 				}
 			: { observed: observation !== null, observedAt: observation?.observedAt ?? null, observationPartial: partial }),
 	};
@@ -197,7 +234,7 @@ export function discoveryPage(request: DiscoveryRequest) {
 	const outcome = discoveryOutcome(stale, unavailable, partial, selected.length > 0 || query.health === true);
 	const result = boundResult({
 		header: discoveryHeader(outcome, request, modelQuery, observation, stale, unavailable, partial),
-		blocks: discoveryBlocks(page.items, stale, compactModelQuery(query)),
+		blocks: discoveryBlocks(page.items, stale, compactModelQuery(query), fullRecordQuery(query)),
 		footer: ["", ...BOUNDARY_LINES],
 		details: {
 			...discoveryDetails(outcome, query, selected, page, modelQuery, models, observation, partial),

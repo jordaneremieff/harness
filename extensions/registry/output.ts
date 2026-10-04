@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { AUTH_SOURCES } from "./models.ts";
 
 // Aggregate byte/line limits apply before publication, including both structured copies.
 const text = Type.String({ maxLength: 50 * 1024 });
@@ -32,11 +33,18 @@ const resource = Type.Object({
 }, closed);
 const finding = Type.Object({ code: StringEnum(["expiry_marker", "selected_not_in_catalog", "selected_auth_missing", "metadata_conflict"]),
 	reason: text, boundary: text, fields: Type.Optional(strings), duplicateRecords: Type.Optional(count) }, closed);
+const priceRates = { input: Type.Number(), output: Type.Number(), cacheRead: Type.Number(), cacheWrite: Type.Number() };
+const catalogCost = Type.Union([Type.Object({ ...priceRates, tiers: Type.Optional(Type.Array(
+	Type.Object({ ...priceRates, inputTokensAbove: Type.Number() }, closed))) }, closed), Type.Null()]);
+const settingsScope = Type.Object({ status: StringEnum(["available", "absent", "unavailable"]),
+	patterns: Type.Union([strings, Type.Null()]), observedAt: Type.Number() }, closed);
 const model = Type.Object({
 	kind: Type.Literal("model"), name: text, provider: text, id: text, displayName: text,
 	catalog: Type.Boolean(), selected: Type.Boolean(), reasoning: Type.Boolean(), input: strings,
 	contextWindow: Type.Number(), maxTokens: Type.Number(), supportedThinkingLevels: strings,
 	available: nullableBoolean, configuredAuth: nullableBoolean, extensionProvider: nullableBoolean, inScope: nullableBoolean,
+	oauth: nullableBoolean, subscriptionRecognized: nullableBoolean, authSource: Type.Union([StringEnum(AUTH_SOURCES), Type.Null()]),
+	catalogCost, catalogCostHasTiers: nullableBoolean, providerHasScopedModels: nullableBoolean,
 	scopeIndex: Type.Optional(count), scopeThinkingLevel: Type.Optional(text), currentThinkingLevel: Type.Optional(text),
 	evidence: Type.Literal("registration"), at: Type.Number(), findings: Type.Optional(Type.Array(finding, { maxItems: 4 })),
 }, closed);
@@ -73,6 +81,7 @@ export const RegistryOutputSchema = Type.Object({
 	catalogBoundary: Type.Optional(text),
 	catalogAvailable: Type.Optional(Type.Boolean()), availableSnapshot: Type.Optional(Type.Boolean()),
 	catalogError: Type.Optional(nullableBoolean), scopeConfigured: Type.Optional(nullableBoolean), health: Type.Optional(health),
+	settingsScope: Type.Optional(settingsScope),
 	scanned: Type.Optional(Type.Boolean()), cancelled: Type.Optional(Type.Boolean()), staleCursor: Type.Optional(Type.Boolean()),
 	reason: Type.Optional(text), message: Type.Optional(text), ioError: Type.Optional(text),
 	resolved: Type.Optional(Type.Object({ kind: StringEnum(["tool", "command", "skill", "prompt"]), name: text, sourceInfo }, closed)),
