@@ -33,6 +33,7 @@ import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
+import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
 import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
 import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
@@ -290,7 +291,6 @@ function modelOf(value: string): Durable.ModelRef {
 const StringEnum = <T extends readonly string[]>(values: T) => Type.Union(values.map((value) => Type.Literal(value)));
 
 const CheckInParams = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval while unanswered, in minutes. Default PI_AGENT_CHECK_IN_MINUTES or 30; 0 disables." }));
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 const SpawnParams = Type.Object(
 	{

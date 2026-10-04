@@ -13,6 +13,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, type AssistantMessage, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import {
 	type FauxResponseStep,
 	fauxAssistantMessage,
@@ -25,6 +26,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Type } from "typebox";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution } from "./durable-agents.ts";
 import { CheckInTask } from "./durable-checkins.ts";
+import { THINKING_LEVELS } from "./configuration.ts";
 import { ProfileDoc, readProfile } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
@@ -484,6 +486,36 @@ it("declares every control tool with an explicit replay classification", () => {
 	const contribution = createAgentContribution({ source: "/abs/extensions/agent/index.ts" });
 	assert.equal(contribution.name, "agent");
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
+});
+
+it("accepts every shared thinking level in native spawn, configure, and attach schemas", () => {
+	const { extension } = buildRegistry();
+	for (const name of ["agent_spawn", "agent_configure", "agent_attach"]) {
+		const tool = extension.tools?.find((candidate) => candidate.name === name);
+		assert.ok(tool, `${name} is declared`);
+		for (const thinkingLevel of THINKING_LEVELS) {
+			const args = { ...(name === "agent_spawn" ? {} : { sessionId: storageId }), thinkingLevel };
+			assert.deepEqual(validateToolArguments(tool, fauxToolCall(name, args)), args);
+		}
+		assert.throws(() => validateToolArguments(tool, fauxToolCall(name, {
+			...(name === "agent_spawn" ? {} : { sessionId: storageId }), thinkingLevel: "unsupported",
+		})), /Validation failed/u);
+	}
+});
+
+it("creates a native child with max thinking through tool-call validation", async (t) => {
+	const route = createRoute();
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(async () => { await harness.close(context); });
+	route.script.push({ tool: "agent_spawn", args: { name: "max-child", thinkingLevel: "max", checkInMinutes: 0 } });
+	await say(root, "Create a child at max thinking.");
+	const spawn = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_spawn");
+	assert.equal(spawn?.isError, false, spawn?.text);
+	const children = await harness.snapshot(TestChildren, root.id, context);
+	const child = children?.children.find((record) => record.name === "max-child");
+	assert.ok(child?.conversationId !== undefined, "the native child exists");
+	assert.equal((await harness.snapshot(Durable.AgentDoc, child.conversationId, context))?.thinkingLevel, "max");
 });
 
 it("spawns an anchor-owned child and reports its answer once", async (t) => {
