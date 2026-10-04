@@ -2,12 +2,18 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
+import type { ToolExecutionResult } from "@earendil-works/pi-durable";
+import type { AgentLineage } from "./agent-lineage.ts";
+import type { readEffortAwareness } from "./effort-awareness.ts";
+import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
+import { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } from "./primary-channel.ts";
 import { createDurableExecution, checkClassifierContext, checkImagesContext, loadMcpConfig } from "./durable-execution.ts";
 import { reconcileDeliveries } from "./durable-controls.ts";
 import { answerRuntime, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
@@ -97,6 +103,73 @@ it("hands a structured result to the script through details.structuredContent", 
 	const result = await f.submit("call the structured tool");
 	const text = result.toolResults.map(toolResultText).join("\n");
 	assert.match(text, /"answer":"42"/u);
+});
+
+it("preserves native lineage and effort awareness together through codemode", { timeout: 30000 }, async (t) => {
+	const peer = randomUUID();
+	const label = "\u0001😀".repeat(60);
+	const captured: ToolExecutionResult[] = [];
+	const calls: Readonly<Record<string, unknown>>[] = [];
+	const hostStatus = { conversations: [], live: false, storageId: "fixture-execution" };
+	const f = await executionFixture(t, {
+		code: `const before = await tools.agent_status({});
+			for (let i = 0; i < 21; i++) await tools.agent_spawn({ name: ${JSON.stringify(label)} + i });
+			return { before, combined: await tools.agent_status({}),
+				selected: await tools.agent_status({ sessionId: ${JSON.stringify(peer)} }),
+				fleet: await tools.agent_status({ view: "fleet" }) };`,
+		builtinExtensions: (host) => {
+			const sessionsRoot = join(host.agentDir, "sessions");
+			const catalogRoot = join(sessionsRoot, "durable");
+			mkdirSync(join(sessionsRoot, ".primaries"), { recursive: true });
+			mkdirSync(catalogRoot);
+			writeFileSync(primaryEndpointPath(sessionsRoot, peer), JSON.stringify({
+				id: peer, version: PRIMARY_ENDPOINT_VERSION, serverId: randomUUID(),
+				cwd: host.cwd, hostname: hostname(), pid: process.pid,
+				socketPath: join(sessionsRoot, "missing.sock"), startedAt: "2026-10-04T09:00:00Z",
+				intentClaim: { purpose: "Shared native status", integration: "Test structured observations", authority: "Fixture only", scope: { paths: ["extensions/agent"], branches: ["topic"] }, updatedAt: "2026-10-04T10:00:00Z" },
+			}));
+			return [createAgentContribution({
+				source: fileURLToPath(new URL("./index.ts", import.meta.url)),
+				dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return hostStatus; },
+			}).create({ ...host, catalogRoot }), host.durable.defineExtension({
+				name: "fixture.status-capture",
+				hooks: [host.durable.hook(host.durable.ToolTask, { afterTool(call, result) {
+					if (call.name === "agent_status") captured.push(result);
+					return undefined;
+				} })],
+			})];
+		},
+	});
+	const result = await f.submit("Read native lineage and current effort together");
+	type Overview = typeof hostStatus & { lineage?: AgentLineage; awareness?: Awaited<ReturnType<typeof readEffortAwareness>> };
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { before: Overview; combined: Overview; selected: Overview; fleet: Record<string, unknown> };
+	assert.equal(captured.length, 4);
+	for (const [index, value] of [output.before, output.combined, output.selected, output.fleet].entries()) {
+		assert.equal(Value.Check(StatusToolOutputSchema, value), true, JSON.stringify([...Value.Errors(StatusToolOutputSchema, value)]));
+		assert.deepEqual((captured[index]?.details as { structuredContent?: unknown })?.structuredContent, value, "codemode retains the native structured result");
+		assert.notEqual(captured[index]?.isError, true);
+	}
+	assert.equal(output.before.lineage, undefined);
+	assert.equal(output.before.awareness?.presence.efforts[0]?.id, peer);
+	const combined = output.combined;
+	assert.deepEqual({ conversations: combined.conversations, live: combined.live, storageId: combined.storageId }, hostStatus);
+	assert.equal(combined.awareness?.presence.efforts[0]?.id, peer);
+	assert.ok(combined.lineage !== undefined);
+	assert.equal(combined.lineage.children.length, 20);
+	assert.equal(combined.lineage?.omitted, 1);
+	assert.equal(combined.lineage.children[0]?.name, `${label.slice(0, 160)}…`);
+	assert.ok(combined.lineage.children.every((child) => child.kind === "native-child" && child.identity.startsWith(`${hostStatus.storageId}:`)));
+	const combinedText = messageText(captured[1]);
+	assert.deepEqual(JSON.parse(combinedText.split("\n\nYour agents")[0] ?? ""), { ...hostStatus, awareness: combined.awareness });
+	assert.ok(combinedText.includes("Your agents (direct children, newest first; retained creation labels):"));
+	assert.ok(combinedText.includes(JSON.stringify(combined.lineage.children[0]?.name)));
+	assert.ok(combinedText.endsWith("1 more omitted."));
+	assert.equal(Value.Check(StatusOutputSchema, combined), false, "the host wire schema is not widened");
+	assert.deepEqual(output.selected, hostStatus);
+	assert.equal(output.fleet.view, "fleet");
+	assert.equal("awareness" in output.fleet, false);
+	assert.equal("lineage" in output.fleet, false);
+	assert.deepEqual(calls, [{}, {}, { sessionId: peer }]);
 });
 
 it("omits model headers from every codemode catalog lookup and retains sampling metadata", { timeout: 30000 }, async (t) => {

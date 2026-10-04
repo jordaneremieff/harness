@@ -1423,13 +1423,19 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusOutputSchema);
 				if (args.sessionId !== undefined || result.isError) return result;
 				const lineage = await readAgentLineage(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
-				const agent = host.catalogRoot === undefined ? undefined : await api.agent(context);
-				const awareness = host.catalogRoot === undefined ? undefined : await readEffortAwareness(dirname(host.catalogRoot), { id: identity(api.conversationId), cwd: agent?.cwd ?? host.cwd });
-				if (lineage === undefined && awareness === undefined) return result;
-				const observed = { ...result.details?.structuredContent, ...(awareness === undefined ? {} : { awareness }) };
-				const structured = structuredObservation(StatusToolOutputSchema, { ...observed, ...(lineage === undefined ? {} : { lineage }) }) as Record<string, JsonValue>;
-				const text = `${controlText(observed)}${lineage === undefined ? "" : `\n\n${renderAgentLineage(lineage)}`}`;
-				return { ...result, content: [{ type: "text" as const, text }], details: { ...result.details, structuredContent: structured } };
+				if (lineage === undefined && host.catalogRoot === undefined) return result;
+				const observed: Record<string, unknown> = { ...result.details?.structuredContent };
+				if (host.catalogRoot !== undefined) {
+					const agent = await api.agent(context);
+					observed.awareness = await readEffortAwareness(dirname(host.catalogRoot), { id: identity(api.conversationId), cwd: agent.cwd ?? host.cwd });
+				}
+				const text = [controlText(observed)];
+				if (lineage !== undefined) {
+					observed.lineage = lineage;
+					text.push(renderAgentLineage(lineage));
+				}
+				const structured = structuredObservation(StatusToolOutputSchema, observed) as Record<string, JsonValue>;
+				return { ...result, content: [{ type: "text" as const, text: text.join("\n\n") }], details: { ...result.details, structuredContent: structured } };
 			},
 		}),
 		outputSchema: StatusToolOutputSchema,
