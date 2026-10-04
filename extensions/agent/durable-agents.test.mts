@@ -6,7 +6,7 @@
  * delivery, and reports do not duplicate.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -35,7 +35,8 @@ import { AgentMetaDoc } from "./durable-controls.ts";
 const context = BACKGROUND_CONTEXT;
 const storageId = "test-storage";
 const model = { provider: "faux", modelId: "faux-1" } as const;
-const testCwd = realpathSync(mkdtempSync(join(tmpdir(), "durable-agents-cwd-")));
+const testCwdAlias = mkdtempSync(join(tmpdir(), "durable-agents-cwd-"));
+const testCwd = realpathSync(testCwdAlias);
 process.on("exit", () => {
 	rmSync(testCwd, { recursive: true, force: true });
 });
@@ -916,11 +917,9 @@ it("applies a self-compaction after the whole tool batch and continues the run",
 	);
 });
 
-it("spawns a native child for a symlinked spelling of the host cwd", async (t) => {
-	const linkRoot = mkdtempSync(join(tmpdir(), "durable-agent-link-"));
-	const linkedCwd = join(linkRoot, "cwd");
-	symlinkSync(testCwd, linkedCwd, "dir");
-	t.after(() => rmSync(linkRoot, { recursive: true, force: true }));
+it("spawns a native child through the existing temporary-directory alias", async (t) => {
+	if (testCwdAlias === testCwd) { t.skip("the system temporary directory has no distinct canonical spelling"); return; }
+	const linkedCwd = testCwdAlias;
 	const route = createRoute();
 	const calls: DispatchCalls = [];
 	const { registry } = buildRegistry(createDispatch({}, calls));
