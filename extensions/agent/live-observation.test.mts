@@ -5,13 +5,14 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessageEventStream, type Models } from "@earendil-works/pi-ai";
-import { defineTool, type ConversationId, type WatchHandle } from "@earendil-works/pi-durable";
+import { defineTool, LiveDoc, type ConversationId, type LiveState, type WatchHandle } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureProvider, fixtureRegistry, fixtureStorageId, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { LiveObservationService } from "./live-observation.ts";
 import type { ConversationFrame, ObservationFrame, TasksFrame } from "./live-frames.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
+import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 
 const ROOT = 1 as ConversationId;
 
@@ -274,6 +275,55 @@ it("serves the uncommitted tail and drops it after the committed entry arrives",
 	release.resolve();
 	await committed;
 	assert.equal(answerObserved, true);
+	await service.closeAll();
+});
+
+it("validates status while provider-indexed thinking and text parts stream", { timeout: 30000 }, async (t) => {
+	const release = defer();
+	const publish = defer();
+	const started = defer();
+	t.after(() => { publish.resolve(); release.resolve(); });
+	const content = [
+		{ type: "thinking" as const, thinking: "in-flight reasoning", thinkingSignature: "" },
+		{ type: "text" as const, text: "in-flight answer", textSignature: "text-signature" },
+		{ type: "thinking" as const, thinking: "[Reasoning redacted]", thinkingSignature: "opaque-reasoning", redacted: true },
+	];
+	const indexed = content.map((part, index) => ({ ...part, index }));
+	const stream = (): AssistantMessageEventStream => {
+		started.resolve();
+		const events = createAssistantMessageEventStream();
+		const partial = { ...answerMessage(""), stopReason: "pending" as const, content: indexed };
+		void publish.promise.then(() => {
+			events.push({ type: "start", partial });
+			events.push({ type: "thinking_delta", contentIndex: 0, delta: "in-flight reasoning", partial });
+		});
+		void release.promise.then(() => {
+			const message = answerMessage("finished answer");
+			events.push({ type: "done", reason: "stop", message });
+			events.end(message);
+		});
+		return events;
+	};
+	const host = await DurableHost.open(hostOptions(join(fixtureRoot(t), "thinking.sqlite"), await streamingRuntime(stream), fixtureRegistry()));
+	t.after(() => host.close());
+	const service = serviceFor(host, t);
+	await service.open("thinking", { scope: "conversation", conversationId: ROOT });
+	const submitted = await host.submit({ message: "stream reasoning", requestId: "thinking-status" });
+	const tail = service.waitForFrame("thinking", (value) => value.scope === "conversation"
+		&& value.live.some((entry) => entry.model?.some((message) => message.role === "assistant"
+			&& message.content.some((part) => part.type === "thinking"))), "in-flight thinking tail");
+	await started.promise;
+	publish.resolve();
+	await tail;
+	const raw = await host.harness.snapshot(LiveDoc, ROOT, BACKGROUND_CONTEXT);
+	assert.equal(raw?.generation?.message?.stopReason, "pending");
+	assert.deepEqual(raw?.generation?.message?.content, indexed, "the provider's parsing state is present during streaming");
+	const status = structuredObservation(StatusOutputSchema, await host.request("status", { sessionId: fixtureStorageId })) as { conversation: { live: LiveState | null } };
+	assert.ok(status.conversation);
+	assert.deepEqual(status.conversation.live?.generation?.message?.content, content, "status preserves every public content field");
+	assert.deepEqual((await host.harness.snapshot(LiveDoc, ROOT, BACKGROUND_CONTEXT))?.generation?.message?.content, indexed, "projection does not alter native state");
+	release.resolve();
+	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 	await service.closeAll();
 });
 

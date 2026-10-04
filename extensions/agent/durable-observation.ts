@@ -624,18 +624,28 @@ export interface DurableStatusOptions {
 }
 
 /** Provider parsing buffers are not part of the public AssistantMessage contract. */
+function publicContentPart(part: NonNullable<NonNullable<LiveState["generation"]>["message"]>["content"][number]) {
+	if (part.type === "text") return {
+		type: part.type, text: part.text,
+		...(part.textSignature === undefined ? {} : { textSignature: part.textSignature }),
+	};
+	if (part.type === "thinking") return {
+		type: part.type, thinking: part.thinking,
+		...(part.thinkingSignature === undefined ? {} : { thinkingSignature: part.thinkingSignature }),
+		...(part.redacted === undefined ? {} : { redacted: part.redacted }),
+	};
+	return {
+		type: part.type, id: part.id, name: part.name, arguments: part.arguments,
+		...(part.thoughtSignature === undefined ? {} : { thoughtSignature: part.thoughtSignature }),
+		...(part.namespace === undefined ? {} : { namespace: part.namespace }),
+	};
+}
+
 export function publicLiveState(live: LiveState | undefined): LiveState | null {
 	const generation = live?.generation;
 	const message = generation?.message;
 	if (!message || !generation) return live ?? null;
-	return { ...live, generation: { ...generation, message: { ...message, content: message.content.map((part) => {
-		if (part.type !== "toolCall") return part;
-		return {
-			type: part.type, id: part.id, name: part.name, arguments: part.arguments,
-			...(part.thoughtSignature === undefined ? {} : { thoughtSignature: part.thoughtSignature }),
-			...(part.namespace === undefined ? {} : { namespace: part.namespace }),
-		};
-	}) } } };
+	return { ...live, generation: { ...generation, message: { ...message, content: message.content.map(publicContentPart) } } };
 }
 
 export async function readConversationStatus(
