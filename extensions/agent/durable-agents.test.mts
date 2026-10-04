@@ -6,7 +6,7 @@
  * delivery, and reports do not duplicate.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -916,6 +916,28 @@ it("applies a self-compaction after the whole tool batch and continues the run",
 	);
 });
 
+it("spawns a native child for a symlinked spelling of the host cwd", async (t) => {
+	const linkRoot = mkdtempSync(join(tmpdir(), "durable-agent-link-"));
+	const linkedCwd = join(linkRoot, "cwd");
+	symlinkSync(testCwd, linkedCwd, "dir");
+	t.after(() => rmSync(linkRoot, { recursive: true, force: true }));
+	const route = createRoute();
+	const calls: DispatchCalls = [];
+	const { registry } = buildRegistry(createDispatch({}, calls));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(async () => { await harness.close(context); });
+	route.script.push({ tool: "agent_spawn", args: { name: "linked", cwd: linkedCwd, prompt: "CONTRACT: reply LINKED", checkInMinutes: 0 } });
+	await say(root, "SPAWN");
+	await settle(harness, root.id);
+	const child = (await harness.snapshot(TestChildren, root.id, context))?.children[0];
+	assert.ok(child?.conversationId !== undefined, "the child uses the caller's storage");
+	assert.equal(child.foreignSessionId, undefined);
+	assert.equal(calls.some((call) => call.method === "spawn"), false, "no foreign host spawn occurs");
+	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
+	assert.equal(outcome?.isError, false);
+	assert.equal(outcome?.text, `Spawned linked as native child conversation ${child.conversationId} in your storage. The prompt was delivered and the answer will report back.`);
+});
+
 it("spawns a child in a new storage when the cwd differs", async (t) => {
 	const route = createRoute();
 	const holder: DispatchHolder = {};
@@ -944,7 +966,7 @@ it("spawns a child in a new storage when the cwd differs", async (t) => {
 	assert.equal(child?.conversationId, undefined, "no local conversation is created");
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
 	assert.ok(outcome && !outcome.isError, "the spawn result is not an error");
-	assert.match(outcome.text, /other-storage:7/u);
+	assert.equal(outcome.text, "Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was delivered and the answer will report back.");
 });
 
 it("refuses a self abort and continues the run", async (t) => {

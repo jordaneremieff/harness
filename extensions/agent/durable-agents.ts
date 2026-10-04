@@ -935,7 +935,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return textResult(
 			outcome.deduped
 				? `Reused the child created by this call: ${outcome.child.name} (${outcome.sessionId}).`
-				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId}.${args.prompt === undefined ? "" : " The prompt was delivered and the answer will report back."}`,
+				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was delivered and the answer will report back."}`,
 			{ sessionId: outcome.sessionId, name: outcome.child.name },
 		);
 	};
@@ -954,7 +954,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return textResult(
 			outcome.deduped
 				? `Reused the child created by this call: ${child.name} (${child.conversationId}).`
-				: `Spawned ${child.name} as conversation ${child.conversationId}.${args.prompt === undefined ? "" : " The prompt was delivered and the answer will report back."}`,
+				: `Spawned ${child.name} as native child conversation ${child.conversationId} in your storage.${args.prompt === undefined ? "" : " The prompt was delivered and the answer will report back."}`,
 			{ conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId },
 		);
 	};
@@ -970,7 +970,15 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			if (args.role !== undefined) return errorResult("A creation role requires a handle; use agent_profile for another agent");
 			const hostCwd = resolve(host.cwd);
 			const requestedCwd = args.cwd === undefined ? undefined : resolve(host.cwd, args.cwd);
-			return requestedCwd !== undefined && requestedCwd !== hostCwd
+			let sameCwd = requestedCwd === undefined || requestedCwd === hostCwd;
+			if (requestedCwd !== undefined) {
+				try {
+					sameCwd = realpathSync(requestedCwd) === realpathSync(hostCwd);
+				} catch {
+					// Nonexistent paths retain the lexical placement decision.
+				}
+			}
+			return !sameCwd && requestedCwd !== undefined
 				? foreignSpawnResult(api, context, args, requestedCwd)
 				: localSpawnResult(api, context, args, requestedCwd);
 		},
