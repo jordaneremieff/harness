@@ -19,7 +19,7 @@ it("serves only roster facts already observed by a footer refresh without lookup
 		createPrimary: async (options) => ({
 			id: options.id, socketPath: join(root, "primary.sock"),
 			info: () => ({ id: options.id, cwd: root, hostname: "test-host", pid: process.pid, socketPath: join(root, "primary.sock"), startedAt: new Date().toISOString() }),
-			update: () => {}, close: async () => {},
+			update: () => {}, publishIntent: () => {}, touch: () => {}, setObservedPurpose: () => {}, close: async () => {},
 		}),
 	});
 	t.after(() => manager.close());
@@ -40,12 +40,12 @@ it("serves only roster facts already observed by a footer refresh without lookup
 	assert.equal(manager.observedToolCardRows(), rows);
 });
 
-it("refuses a retained manager without the renderer lookup contract before any control executes", async (t) => {
+for (const retained of ["manager/1.2.0", "manager/1.4.0"]) it(`refuses a retained manager with a different interface (${retained}) before any control executes`, async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-card-reload-")));
 	const previousRoot = process.env.PI_AGENT_SESSIONS_DIR;
 	process.env.PI_AGENT_SESSIONS_DIR = root;
 	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[Symbol.for("pi.extension.agent.owners")];
-	owners.managers.set(root, { managerProtocol: "manager/1.1.0" } as unknown as AgentManager);
+	owners.managers.set(root, { managerProtocol: retained } as unknown as AgentManager);
 	t.after(() => {
 		owners.managers.delete(root);
 		if (previousRoot === undefined) delete process.env.PI_AGENT_SESSIONS_DIR;
@@ -57,6 +57,6 @@ it("refuses a retained manager without the renderer lookup contract before any c
 	registerAgentExtension(pi);
 	const status = tools.get("agent_status");
 	assert.ok(status);
-	assert.equal(MANAGER_CONTRACT, "manager/1.2.0");
-	await assert.rejects(status.execute("call", {}, new AbortController().signal, undefined, {} as ExtensionToolContext), /manager\/1\.1\.0.*manager\/1\.2\.0.*Restart Pi before agent controls/u);
+	assert.equal(MANAGER_CONTRACT, "manager/1.3.0");
+	await assert.rejects(status.execute("call", {}, new AbortController().signal, undefined, {} as ExtensionToolContext), (error: Error) => error.message.includes(retained) && error.message.includes(MANAGER_CONTRACT) && error.message.includes("Restart Pi before agent controls"));
 });

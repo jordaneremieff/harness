@@ -32,6 +32,8 @@ import { ServerError, type RoutedServerServiceAttachment, type ServerHost } from
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
+import type { PrimaryIntentClaim } from "./effort-presence.ts";
+export type { PrimaryIntentClaim } from "./effort-presence.ts";
 
 /** Service id all primary channel calls use. */
 export const PRIMARY_CHANNEL_SERVICE_ID = "pi.agent.primary";
@@ -57,6 +59,13 @@ export interface PrimaryDelivery {
 	readonly replyTo?: string;
 }
 
+export type PrimaryRepositoryState = "git" | "outside-git" | "unknown";
+
+export interface PrimaryObservedPurpose {
+	readonly source: "session-name" | "interactive-input";
+	readonly text: string;
+}
+
 /** Read-only live information about one registered primary. */
 export interface PrimaryInfo {
 	readonly id: string;
@@ -68,6 +77,13 @@ export interface PrimaryInfo {
 	readonly pid: number;
 	readonly socketPath: string;
 	readonly startedAt: string;
+	/** Canonical Git common directory, written by the host. */
+	readonly repository?: string;
+	readonly repositoryState?: PrimaryRepositoryState;
+	readonly lastActivityAt?: string;
+	/** Session-written declaration, not verified host state. */
+	readonly intentClaim?: PrimaryIntentClaim;
+	readonly observedPurpose?: PrimaryObservedPurpose;
 }
 
 interface PrimaryEndpoint extends PrimaryInfo {
@@ -103,7 +119,7 @@ export class PrimaryChannelConflictError extends Error {
 }
 
 export interface PrimaryChannelOptions {
-	/** Primary session id; must be a canonical lowercase UUIDv4. */
+	/** Primary session id; must be a canonical lowercase UUID. */
 	readonly id: string;
 	readonly cwd: string;
 	/** Root under which `.primaries` stores endpoint records. */
@@ -116,6 +132,11 @@ export interface PrimaryChannelOptions {
 	readonly name?: string;
 	readonly model?: { readonly provider: string; readonly modelId: string };
 	readonly thinkingLevel?: string;
+	readonly repository?: string;
+	readonly repositoryState?: PrimaryRepositoryState;
+	readonly lastActivityAt?: string;
+	readonly intentClaim?: PrimaryIntentClaim;
+	readonly observedPurpose?: PrimaryObservedPurpose;
 }
 
 export interface PrimaryChannel {
@@ -124,6 +145,9 @@ export interface PrimaryChannel {
 	info(): PrimaryInfo;
 	/** Replace the displayed identity fields; the announced server identity and socket stay unchanged. */
 	update(info: { name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }): void;
+	publishIntent(intentClaim: PrimaryIntentClaim | undefined): void;
+	touch(at: string): void;
+	setObservedPurpose(value: PrimaryObservedPurpose | undefined): void;
 	close(): Promise<void>;
 }
 
@@ -188,6 +212,40 @@ function optionalString(record: Record<string, unknown>, key: string): string | 
 	return value;
 }
 
+/** Validate bounded session declarations independently from the delivery contract. */
+export function validatePrimaryIntentClaim(value: unknown): PrimaryIntentClaim {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("intentClaim must be an object");
+	const record = value as Record<string, unknown>;
+	const text = (key: string, max: number): string => {
+		const field = record[key];
+		if (typeof field !== "string" || field.length === 0 || field.length > max) throw new TypeError(`intentClaim ${key} must contain 1-${max} characters`);
+		return field;
+	};
+	const scope = record.scope;
+	if (scope === null || typeof scope !== "object" || Array.isArray(scope)) throw new TypeError("intentClaim scope must be an object");
+	const fullGate = (scope as Record<string, unknown>).fullGate;
+	if (fullGate !== undefined && typeof fullGate !== "boolean") throw new TypeError("intentClaim scope.fullGate must be a boolean");
+	const list = (key: "paths" | "branches"): string[] => {
+		const entries = (scope as Record<string, unknown>)[key];
+		if (!Array.isArray(entries) || entries.length > 32 || entries.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > 512)) throw new TypeError(`intentClaim scope.${key} requires at most 32 strings of 1-512 characters`);
+		return [...entries] as string[];
+	};
+	return {
+		purpose: text("purpose", 1024), integration: text("integration", 2048), authority: text("authority", 2048),
+		scope: { paths: list("paths"), branches: list("branches"), ...(fullGate === undefined ? {} : { fullGate }) },
+		...(record.contactThread === undefined ? {} : { contactThread: text("contactThread", 256) }),
+		updatedAt: text("updatedAt", 64),
+	};
+}
+
+function validateObservedPurpose(value: unknown): PrimaryObservedPurpose {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("observedPurpose must be an object");
+	const record = value as Record<string, unknown>;
+	if (record.source !== "session-name" && record.source !== "interactive-input") throw new TypeError("observedPurpose source is invalid");
+	if (typeof record.text !== "string" || record.text.length === 0 || record.text.length > 512) throw new TypeError("observedPurpose text must contain 1-512 characters");
+	return { source: record.source, text: record.text };
+}
+
 /** Required identity fields of one endpoint record. */
 function endpointIdentity(record: Record<string, unknown>): Pick<PrimaryEndpoint, "id" | "serverId" | "cwd" | "hostname" | "socketPath" | "startedAt"> {
 	const id = optionalString(record, "id");
@@ -215,8 +273,28 @@ function endpointPid(record: Record<string, unknown>): number {
 	return record.pid;
 }
 
+type EndpointDescriptor = Pick<PrimaryInfo, "repository" | "repositoryState" | "lastActivityAt" | "intentClaim" | "observedPurpose">;
+
+function endpointDescriptor(record: Record<string, unknown>): EndpointDescriptor {
+	const repository = optionalString(record, "repository");
+	const repositoryState = record.repositoryState;
+	if (repositoryState !== undefined && repositoryState !== "git" && repositoryState !== "outside-git" && repositoryState !== "unknown") throw new TypeError("repositoryState is invalid");
+	if (repositoryState === "git" && !repository) throw new TypeError("Git repository identity is missing");
+	if (repositoryState === "outside-git" && repository) throw new TypeError("outside-git repository identity is invalid");
+	const lastActivityAt = optionalString(record, "lastActivityAt");
+	const intentClaim = record.intentClaim === undefined ? undefined : validatePrimaryIntentClaim(record.intentClaim);
+	const observedPurpose = record.observedPurpose === undefined ? undefined : validateObservedPurpose(record.observedPurpose);
+	return {
+		...(observedPurpose === undefined ? {} : { observedPurpose }),
+		...(repositoryState === undefined ? {} : { repositoryState }),
+		...(repository === undefined ? {} : { repository }),
+		...(lastActivityAt === undefined ? {} : { lastActivityAt }),
+		...(intentClaim === undefined ? {} : { intentClaim }),
+	};
+}
+
 /** Validate one decoded endpoint record. The contract version is checked by the caller. */
-function parseEndpoint(value: unknown): RecordedPrimaryEndpoint {
+function parseEndpoint(value: unknown, strictDescriptor = false): RecordedPrimaryEndpoint {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PrimaryChannelUnavailableError("primary endpoint is not an object");
 	const record = value as Record<string, unknown>;
 	const version = record.version;
@@ -224,8 +302,16 @@ function parseEndpoint(value: unknown): RecordedPrimaryEndpoint {
 	const name = optionalString(record, "name");
 	const model = endpointModel(record);
 	const thinkingLevel = optionalString(record, "thinkingLevel");
+	let descriptor: EndpointDescriptor = {};
+	try {
+		descriptor = endpointDescriptor(record);
+	} catch (error) {
+		if (strictDescriptor) throw error;
+		// Descriptive corruption does not prevent core delivery or ownership checks.
+	}
 	return {
 		version,
+		...descriptor,
 		...identity,
 		...(name === undefined ? {} : { name }),
 		...(model === undefined ? {} : { model }),
@@ -255,7 +341,7 @@ interface EndpointFile {
 }
 
 /** Read one endpoint file with a no-symlink bounded read and exact identity validation. */
-function readEndpointFile(path: string): EndpointFile | undefined {
+function readEndpointFile(path: string, strictDescriptor = false): EndpointFile | undefined {
 	let fd: number;
 	try {
 		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -274,7 +360,7 @@ function readEndpointFile(path: string): EndpointFile | undefined {
 			bytes += count;
 		}
 		if (bytes > ENDPOINT_BYTES) throw new PrimaryChannelUnavailableError("primary endpoint exceeds its bound");
-		return { endpoint: parseEndpoint(JSON.parse(buffer.toString("utf8", 0, bytes))), dev: stat.dev, ino: stat.ino };
+		return { endpoint: parseEndpoint(JSON.parse(buffer.toString("utf8", 0, bytes)), strictDescriptor), dev: stat.dev, ino: stat.ino };
 	} finally {
 		closeSync(fd);
 	}
@@ -285,16 +371,23 @@ function readEndpoint(path: string): RecordedPrimaryEndpoint | undefined {
 	return readEndpointFile(path)?.endpoint;
 }
 
+/** Refuse unreadable publication rather than advertise metadata beyond the read bound. */
+function serializeEndpoint(endpoint: PrimaryEndpoint): string {
+	const encoded = JSON.stringify(endpoint);
+	if (Buffer.byteLength(encoded) > ENDPOINT_BYTES) throw new TypeError("primary endpoint exceeds its 16 KiB bound");
+	return encoded;
+}
+
 /** Publish one complete record exclusively; an existing path refuses publication. */
 function publishEndpoint(path: string, endpoint: PrimaryEndpoint): void {
-	writeFileSync(path, JSON.stringify(endpoint), { flag: "wx", mode: 0o600 });
+	writeFileSync(path, serializeEndpoint(endpoint), { flag: "wx", mode: 0o600 });
 }
 
 /** Replace one complete record atomically, so a reader never sees a partial write. */
 function rewriteEndpoint(path: string, endpoint: PrimaryEndpoint): void {
 	const temporary = `${path}.${process.pid}.tmp`;
 	try {
-		writeFileSync(temporary, JSON.stringify(endpoint), { mode: 0o600 });
+		writeFileSync(temporary, serializeEndpoint(endpoint), { mode: 0o600 });
 		renameSync(temporary, path);
 	} finally {
 		removeFile(temporary);
@@ -393,21 +486,33 @@ class PrimaryChannelHost implements ServerHost {
 
 	/** Replace the displayed identity fields and rewrite the endpoint record atomically. */
 	update(info: { name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }): void {
-		const { version, id, serverId, cwd, hostname, pid, socketPath, startedAt } = this.endpoint;
-		this.endpoint = {
-			version,
-			id,
-			serverId,
-			cwd,
-			hostname,
-			pid,
-			socketPath,
-			startedAt,
+		const { name: _name, model: _model, thinkingLevel: _thinkingLevel, ...retained } = this.endpoint;
+		this.replace({
+			...retained,
 			...(info.name === undefined ? {} : { name: info.name }),
 			...(info.model === undefined ? {} : { model: { provider: info.model.provider, modelId: info.model.modelId } }),
 			...(info.thinkingLevel === undefined ? {} : { thinkingLevel: info.thinkingLevel }),
-		};
-		rewriteEndpoint(this.endpointPath, this.endpoint);
+		});
+	}
+
+	publishIntent(intentClaim: PrimaryIntentClaim | undefined): void {
+		const { intentClaim: _claim, ...retained } = this.endpoint;
+		this.replace({ ...retained, ...(intentClaim === undefined ? {} : { intentClaim: validatePrimaryIntentClaim(intentClaim) }) });
+	}
+
+	touch(at: string): void {
+		if (typeof at !== "string" || at.length === 0) throw new TypeError("lastActivityAt must be a non-empty string");
+		this.replace({ ...this.endpoint, lastActivityAt: at });
+	}
+
+	setObservedPurpose(value: PrimaryObservedPurpose | undefined): void {
+		const { observedPurpose: _purpose, ...retained } = this.endpoint;
+		this.replace({ ...retained, ...(value === undefined ? {} : { observedPurpose: validateObservedPurpose(value) }) });
+	}
+
+	private replace(endpoint: PrimaryEndpoint): void {
+		rewriteEndpoint(this.endpointPath, endpoint);
+		this.endpoint = endpoint;
 	}
 
 	private async dispatch(call: ServiceCall): Promise<JsonValue | undefined> {
@@ -454,6 +559,11 @@ function endpointRecord(options: PrimaryChannelOptions, serverId: string, socket
 		id: options.id,
 		serverId,
 		cwd: options.cwd,
+		...(options.observedPurpose === undefined ? {} : { observedPurpose: validateObservedPurpose(options.observedPurpose) }),
+		...(options.repository === undefined ? {} : { repository: options.repository }),
+		...(options.repositoryState === undefined ? {} : { repositoryState: options.repositoryState }),
+		...(options.lastActivityAt === undefined ? {} : { lastActivityAt: options.lastActivityAt }),
+		...(options.intentClaim === undefined ? {} : { intentClaim: validatePrimaryIntentClaim(options.intentClaim) }),
 		...(options.name === undefined ? {} : { name: options.name }),
 		...(options.model === undefined ? {} : { model: { provider: options.model.provider, modelId: options.model.modelId } }),
 		...(options.thinkingLevel === undefined ? {} : { thinkingLevel: options.thinkingLevel }),
@@ -512,7 +622,7 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 		void close().catch(() => undefined);
 	};
 	options.signal?.addEventListener("abort", onAbort, { once: true });
-	return { id: options.id, socketPath, info: () => host.info(), update: (info) => host.update(info), close };
+	return { id: options.id, socketPath, info: () => host.info(), update: (info) => host.update(info), publishIntent: (claim) => host.publishIntent(claim), touch: (at) => host.touch(at), setObservedPurpose: (value) => host.setObservedPurpose(value), close };
 }
 
 /** Compose the unknown-id refusal with a bounded supported-id page. */
@@ -583,11 +693,30 @@ export function primaryEndpointStatus(sessionsRoot: string, id: string): Primary
 		return { state: "unknown" };
 	}
 	if (record === undefined) return { state: "absent" };
+	return classifyEndpoint(record, id);
+}
+
+function classifyEndpoint(record: RecordedPrimaryEndpoint, id: string): PrimaryEndpointStatus {
 	const version = endpointVersionLabel(record.version);
 	if (record.id !== id || record.hostname !== hostname()) return { state: "unknown", version };
 	const state = processState(record.pid);
 	if (state !== "live") return { state, version };
 	return { state: record.version === PRIMARY_ENDPOINT_VERSION ? "live" : "incompatible", version };
+}
+
+/** One checked descriptor read uses the same parser and ownership rules as delivery. */
+export function readPrimaryEndpointDescriptor(sessionsRoot: string, id: string): PrimaryEndpointStatus & { readonly info?: PrimaryInfo; readonly unreadable?: true } {
+	if (!UUID_ANY.test(id)) return { state: "unknown", unreadable: true };
+	try {
+		const file = readEndpointFile(primaryEndpointPath(sessionsRoot, id), true);
+		if (!file) return { state: "absent" };
+		const endpoint = file.endpoint;
+		if (endpoint.id !== id) return { state: "unknown", unreadable: true };
+		const { version: _version, serverId: _serverId, ...info } = endpoint;
+		return { ...classifyEndpoint(endpoint, id), info };
+	} catch {
+		return { state: "unknown", unreadable: true };
+	}
 }
 
 /** Owner state alone; a live incompatible owner never authorizes fallback or replacement. */

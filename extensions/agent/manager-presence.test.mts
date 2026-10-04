@@ -1,0 +1,69 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { it } from "node:test";
+import { AgentManager } from "./manager.ts";
+import { createPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
+import { EFFORT_PURPOSE_ENTRY, retainedPurpose } from "./effort-purpose.ts";
+
+it("samples activity writes and keeps observed purpose separate from declared intent", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "effort-manager-"));
+	let channel: PrimaryChannel | undefined;
+	let touches = 0;
+	const manager = new AgentManager({ root, agentDir: join(root, "agent"), packageDir: root, createPrimary: async (options) => {
+		const created = await createPrimaryChannel(options);
+		channel = created;
+		return { ...created, touch: (at) => { touches++; created.touch(at); } };
+	} });
+	const signal = new AbortController();
+	t.after(async () => { signal.abort(); manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
+	const id = randomUUID();
+	await manager.registerPrimary(id, { signal: signal.signal, cwd: root, send: () => {}, observedInput: "Review the parser" });
+	assert.ok(channel);
+	assert.equal(channel.info().observedPurpose?.source, "interactive-input");
+	const lastActivityAt = channel.info().lastActivityAt;
+	assert.ok(lastActivityAt);
+	const at = Date.parse(lastActivityAt);
+	manager.touchPrimary(id, at + 1000);
+	manager.touchPrimary(id, at + 59_999);
+	assert.equal(touches, 0);
+	manager.touchPrimary(id, at + 60_000);
+	manager.touchPrimary(id, at + 60_001);
+	assert.equal(touches, 1);
+	const intent = { purpose: "Declared review", integration: "Run one full gate", authority: "Operator permits this review", scope: { paths: ["src"], branches: ["work"], fullGate: true } };
+	const result = await manager.publishIntent(id, intent);
+	assert.equal(result.published.intentClaim?.purpose, intent.purpose);
+	assert.equal(result.awareness.self.intentClaim?.scope.fullGate, true);
+	manager.updatePrimary(id, { name: "Parser effort" });
+	assert.deepEqual(channel.info().observedPurpose, { source: "session-name", text: "Parser effort" });
+	assert.equal(channel.info().intentClaim?.purpose, intent.purpose);
+	manager.updatePrimary(id, { name: undefined });
+	assert.equal(channel.info().observedPurpose?.text, "Review the parser");
+	await manager.publishIntent(id, undefined);
+	assert.equal(channel.info().intentClaim, undefined);
+	assert.equal(channel.info().observedPurpose?.text, "Review the parser");
+	assert.equal(manager.recordPrimaryInput(id, "Second operator prompt"), false);
+});
+
+it("does not replace unvisited first-input provenance after resume", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "effort-resume-"));
+	let channel: PrimaryChannel | undefined;
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root, createPrimary: async (options) => {
+		channel = await createPrimaryChannel(options);
+		return channel;
+	} });
+	t.after(async () => { manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
+	const purpose = retainedPurpose([...Array.from({ length: 256 }, () => null), { type: "custom", customType: EFFORT_PURPOSE_ENTRY, data: { source: "interactive", text: "Original task" } }]);
+	const id = randomUUID();
+	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send: () => {}, observedInput: purpose.text, observedInputComplete: purpose.complete });
+	assert.equal(manager.recordPrimaryInput(id, "A later task"), false);
+	const view = await manager.awareness(id);
+	assert.equal(view.self.observedPurpose, undefined);
+	assert.equal(view.self.omitted, true);
+	manager.updatePrimary(id, { name: "Named purpose" });
+	const named = await manager.awareness(id);
+	assert.equal(named.self.observedPurpose?.text, "Named purpose");
+	assert.equal(named.self.omitted, undefined);
+});

@@ -10,7 +10,10 @@ import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./c
 import { subscribeCatalogChanges } from "./catalog-events.ts";
 import { sessionFigures } from "./footer.ts";
 import { buildStatusOverview } from "./status-overview.ts";
-import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
+import { purposeExcerpt } from "./effort-purpose.ts";
+import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
+import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel, type PrimaryInfo, type PrimaryIntentClaim } from "./primary-channel.ts";
+import { discoverPrimaryLocation, readRelatedEfforts, formatEffortSummary, pushEffortNotice, type EffortPresencePage } from "./effort-presence.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, type HostConnection, type HostObservationListener } from "./host-client.ts";
@@ -60,7 +63,7 @@ export interface AgentManagerOptions {
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
 }
-interface PrimaryClient { send(text: string, details: unknown): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
+interface PrimaryClient { send(text: string, details: unknown): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
 interface ListRecordStep { record: CatalogRecord; catalog?: string }
@@ -71,6 +74,7 @@ const DEFAULT_FAILURE_LIMIT = 256;
 const MAX_ERROR_TEXT = 512;
 const MAX_INVENTORY_PAGES = 16;
 const MAX_LIST_VISITS = 32;
+const PRIMARY_ACTIVITY_INTERVAL_MS = 60_000;
 const CRASH_WINDOW_MS = 60_000;
 const MAX_AUTOMATIC_RESTARTS = 3;
 const MANAGED_LINK = { retryAttempts: 0 } as const;
@@ -551,7 +555,7 @@ export class AgentManager {
 				coverage.omitted += projection.omitted;
 				const recoveryError = this.recoveryErrors.get(record.storageId);
 				const hostLabel = recoveryError;
-				rows.push(...projection.rows.map((row) => hostLabel === undefined ? row : { ...row, health: { ...row.health, lastError: hostLabel } }));
+				rows.push(...projection.rows.map((row) => ({ ...row, ...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}), ...(hostLabel === undefined ? {} : { health: { ...row.health, lastError: hostLabel } }) })));
 			}
 			coverage.nextCursor = page.nextCursor;
 			if (!page.nextCursor) { coverage.complete = true; break; }
@@ -636,7 +640,7 @@ export class AgentManager {
 		return this.control("collaboration-mutate", { ...input, sessionId, senderIdentity: caller.id, origin: input.origin ?? "model", requestId: input.requestId ?? randomUUID() }, caller);
 	}
 
-	async status(sessionId?: string, view?: "fleet"): Promise<unknown> {
+	async status(sessionId?: string, view?: "fleet", caller?: AgentCaller): Promise<unknown> {
 		if (view === "fleet") {
 			if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
 			return readFleetStatus(this.catalog);
@@ -646,14 +650,17 @@ export class AgentManager {
 		const failures = [
 			[...this.failures.entries].map(([storageId, error]) => ({ storageId, error })),
 		].flat();
-		return buildStatusOverview({ ...page, rows: page.rows.map(({ profile: _profile, ...row }) => row) }, [...this.primaries].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd ?? "", name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel })), failures);
+		const awareness = caller ? await this.awareness(caller.id, caller.cwd) : undefined;
+		return buildStatusOverview({ ...page, rows: page.rows.map(({ profile: _profile, creatingOwnerId: _creatingOwnerId, ...row }) => row) }, [...this.primaries].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd ?? "", name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel })), failures, awareness);
 	}
 
 	async registerPrimary(ownerId: string, primary: PrimaryClient): Promise<void> {
 		if (this.stopping(primary)) return;
 		await this.closingPrimaries.get(ownerId);
 		await this.primaryChannels.get(ownerId)?.close();
-		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({ id: ownerId, cwd: primary.cwd ?? this.options.root, name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel, sessionsRoot: this.options.root, signal: primary.signal,
+		const location = await discoverPrimaryLocation(primary.cwd ?? this.options.root);
+		if (this.stopping(primary)) return;
+		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({ id: ownerId, ...location, lastActivityAt: new Date().toISOString(), observedPurpose: this.observedPurpose(primary), name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel, sessionsRoot: this.options.root, signal: primary.signal,
 			promptTrust: (cwd) => primary.promptTrust?.(cwd) ?? Promise.resolve(undefined),
 			deliver: (message) => {
 				if (this.stopping(primary)) throw new Error("Primary session is closed");
@@ -661,6 +668,7 @@ export class AgentManager {
 				if (this.delivered.has(key)) return;
 				primary.send(message.text, message.details);
 				this.delivered.set(key, true);
+				if (record(message.details).effortNotice === true) this.rosterChanged();
 			},
 		});
 		if (this.stopping(primary)) { await channel.close(); return; }
@@ -677,6 +685,7 @@ export class AgentManager {
 			this.closingPrimaries.set(ownerId, closing);
 			if (!this.primaries.size) this.releaseClients();
 		}, { once: true });
+		await this.announcePrimary(ownerId, "started");
 		await this.refreshFooter();
 		const due: CatalogRecord[] = [];
 		let cursor: string | undefined;
@@ -691,6 +700,69 @@ export class AgentManager {
 		await this.enqueueRecovery(due, primary);
 	}
 
+	/** Bounded local-machine efforts with full intent only for a shared repository or cwd. */
+	async efforts(ownerId: string, cwd?: string): Promise<EffortPresencePage> {
+		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, ...await discoverPrimaryLocation(cwd ?? this.options.root) };
+		return readRelatedEfforts(this.options.root, self);
+	}
+
+	/** Current bounded view for model runs, status, and the dashboard. */
+	async awareness(ownerId: string, cwd?: string): Promise<EffortAwareness> {
+		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, cwd: cwd ?? this.options.root };
+		const awareness = await readEffortAwareness(this.options.root, self, this.catalog);
+		if (this.primaries.get(ownerId)?.observedInputComplete === false && !awareness.self.observedPurpose && !awareness.self.intentClaim) awareness.self.omitted = true;
+		return awareness;
+	}
+
+	/** Publish a session's claim without changing host facts or another primary. */
+	async publishIntent(ownerId: string, input: Omit<PrimaryIntentClaim, "updatedAt"> | undefined): Promise<{ published: PrimaryInfo; awareness: EffortAwareness }> {
+		const channel = this.primaryChannels.get(ownerId);
+		if (!channel) throw new Error("Intent publication requires this live ordinary primary session");
+		channel.publishIntent(input === undefined ? undefined : { ...input, updatedAt: new Date().toISOString() });
+		await this.announcePrimary(ownerId, "intent");
+		return { published: channel.info(), awareness: await this.awareness(ownerId) };
+	}
+
+	private async announcePrimary(ownerId: string, reason: "started" | "intent"): Promise<EffortPresencePage> {
+		const channel = this.primaryChannels.get(ownerId);
+		const page = await this.efforts(ownerId);
+		if (!channel || this.primaryChannels.get(ownerId) !== channel) return page;
+		if (reason === "started" && page.efforts.some((effort) => effort.liveness === "live")) {
+			this.primaries.get(ownerId)?.send(`Effort snapshot at ${new Date().toISOString()}. Read the current effort section or agent_status for present state.\n${formatEffortSummary(page)}`, { wake: false, effortNotice: true });
+		}
+		void pushEffortNotice(this.options.root, channel.info(), page, reason).catch((error) => {
+			this.failures.set(`efforts:${ownerId}`, errorText(error));
+		});
+		this.rosterChanged();
+		return page;
+	}
+
+	private observedPurpose(primary: PrimaryClient): PrimaryInfo["observedPurpose"] {
+		const name = purposeExcerpt(primary.name ?? "");
+		return name ? { source: "session-name", text: name } : primary.observedInput ? { source: "interactive-input", text: purposeExcerpt(primary.observedInput) } : undefined;
+	}
+
+	/** Only interactive input supplies an observed fallback; extension-generated text never does. */
+	recordPrimaryInput(ownerId: string, text: string): boolean {
+		const primary = this.primaries.get(ownerId);
+		const excerpt = purposeExcerpt(text);
+		if (!primary || primary.observedInputComplete === false || primary.observedInput || !excerpt) return false;
+		primary.observedInput = excerpt;
+		this.primaryChannels.get(ownerId)?.setObservedPurpose(this.observedPurpose(primary));
+		void this.announcePrimary(ownerId, "intent").catch((error) => this.failures.set(`efforts:${ownerId}`, errorText(error)));
+		return true;
+	}
+
+	/** Event-driven activity is sampled, never refreshed by a heartbeat. */
+	touchPrimary(ownerId: string, now = Date.now()): void {
+		const channel = this.primaryChannels.get(ownerId);
+		if (!channel) return;
+		const previous = Date.parse(channel.info().lastActivityAt ?? channel.info().startedAt);
+		if (Number.isFinite(previous) && now - previous < PRIMARY_ACTIVITY_INTERVAL_MS) return;
+		try { channel.touch(new Date(now).toISOString()); }
+		catch (error) { this.failures.set(`primary:${ownerId}`, errorText(error)); }
+	}
+
 	/** Refresh the recorded identity of a registered primary; the channel endpoint record is rewritten. */
 	updatePrimary(ownerId: string, info: { name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }): void {
 		const primary = this.primaries.get(ownerId);
@@ -700,6 +772,10 @@ export class AgentManager {
 		if ("thinkingLevel" in info) primary.thinkingLevel = info.thinkingLevel;
 		try {
 			this.primaryChannels.get(ownerId)?.update({ name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel });
+			if ("name" in info) {
+				this.primaryChannels.get(ownerId)?.setObservedPurpose(this.observedPurpose(primary));
+				void this.announcePrimary(ownerId, "intent").catch((error) => this.failures.set(`efforts:${ownerId}`, errorText(error)));
+			}
 		} catch (error) {
 			this.failures.set(`primary:${ownerId}`, errorText(error));
 		}

@@ -29,6 +29,7 @@ import { CollaborationParams } from "./collaboration.ts";
 import { dirname, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
 import { readFleetStatus } from "./fleet-status.ts";
+import { readEffortAwareness, formatEffortAwareness } from "./effort-awareness.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
@@ -1405,16 +1406,18 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_status",
 			description:
-				"Read conversation state and tools through the host observation. A selected session lists bounded pending timers with IDs and deadlines. Without a target, read this storage's conversations. Primary fleet overviews use compact excerpts and summary coverage.",
+				"Read conversation state and tools through the host observation. A selected session lists bounded pending timers with IDs and deadlines. Without a target, read this storage's conversations, effort presence and intent claims, and recent active thread hints with explicit coverage. Fleet overviews use compact excerpts and summary coverage.",
 			parameters: StatusParams,
 			replay: "safe",
-			execute: async (args: StatusInput) => args.view === "fleet" ? fleetObservation(host.catalogRoot, args.sessionId) :
-				hostObservation(
-					"status",
-					defined(args, ["sessionId"]),
-					`Status of ${args.sessionId ?? "the storage"} failed`,
-					StatusOutputSchema,
-				),
+			execute: async (args: StatusInput, api, context) => {
+				if (args.view === "fleet") return fleetObservation(host.catalogRoot, args.sessionId);
+				const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusOutputSchema);
+				if (args.sessionId !== undefined || result.isError || host.catalogRoot === undefined) return result;
+				const agent = await api.agent(context);
+				const awareness = await readEffortAwareness(dirname(host.catalogRoot), { id: identity(api.conversationId), cwd: agent.cwd ?? host.cwd });
+				const structured = structuredObservation(StatusToolOutputSchema, { ...result.details?.structuredContent, awareness }) as Record<string, JsonValue>;
+				return { ...result, content: [{ type: "text" as const, text: controlText(structured) }], details: { structuredContent: structured } };
+			},
 		}),
 		outputSchema: StatusToolOutputSchema,
 	};
@@ -1575,6 +1578,15 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return [...SECTION_PREAMBLE, ...agentControlGuidanceLines(selected)].join("\n");
 	});
 
+	const efforts = durable.section("agent-efforts", async (input) => {
+		if (host.catalogRoot === undefined) return undefined;
+		try {
+			return formatEffortAwareness(await readEffortAwareness(dirname(host.catalogRoot), { id: identity(input.conversationId), cwd: input.agent.cwd ?? host.cwd }));
+		} catch {
+			return "Current effort and active thread awareness is unavailable. Read agent_status for a new bounded observation. Earlier notices describe changes, not current state.";
+		}
+	});
+
 	return durable.defineExtension({
 		name: "agent",
 		tasks: [Anchor, Reporter, TimerTask],
@@ -1597,6 +1609,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			resetTool,
 			collaborateTool,
 		],
-		sections: [guidance],
+		sections: [guidance, efforts],
 	});
 }

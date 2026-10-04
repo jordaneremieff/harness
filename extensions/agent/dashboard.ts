@@ -34,12 +34,16 @@ import { firstTaskEntry, cleanDashboardText } from "./dashboard-conversation.ts"
 import { ConversationHistory } from "./conversation-view.ts";
 import type { NativeSurface } from "./action-dialogs.ts";
 import { CollaborationView, createCollaborationViewState, type Collaborate } from "./collaboration-view.ts";
+import type { EffortAwareness } from "./effort-awareness.ts";
+import { EffortView } from "./effort-view.ts";
 
 export interface DashboardResult {
 	text: string;
 	sessionId?: string;
 }
 export interface DashboardOperations {
+	efforts?(): Promise<EffortAwareness>;
+	messageEffort?(id: string, text: string): Promise<DashboardResult>;
 	sessionFigures?(page: AgentConversationPage): Promise<string>;
 	contextWindow?(provider: string, modelId: string): number | undefined;
 	collaborate?: Collaborate;
@@ -52,7 +56,9 @@ const HELP = [
 	"Dashboard",
 	"↑↓ selects an agent. Enter opens its full conversation.",
 	"Tab or m writes to the selected agent. n starts a new agent.",
-	"a opens actions. / finds loaded agents. t opens Threads. ? opens help.",
+	"a opens actions. / finds loaded agents. t opens Threads. b opens Related efforts. ? opens help.",
+	"[other] marks an agent created by another session, not its current task requester.",
+	"Related efforts shows presence and labeled intent claims. Enter opens a contact thread; m sends an operator message.",
 	"Threads shows the frame, peers, and exchange. p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
 	"i switches all times between relative age and local date and time.",
@@ -99,6 +105,8 @@ export class AgentDashboard implements Component, Focusable {
 	private readonly newComposer: AgentComposer;
 	private tasks?: AgentTasksView;
 	private threads?: CollaborationView;
+	private efforts?: EffortView;
+	private effortsOpen = false;
 	private readonly mouse = new DashboardMouse();
 	private mouseScreen?: string;
 	private rosterScroll?: number;
@@ -140,6 +148,7 @@ export class AgentDashboard implements Component, Focusable {
 	private readonly source: AgentObservationSource;
 	private readonly operations: DashboardOperations;
 	private readonly surface: NativeSurface;
+	private readonly primaryId?: string;
 	constructor(
 		tui: TUI,
 		theme: Theme,
@@ -149,6 +158,7 @@ export class AgentDashboard implements Component, Focusable {
 		source: AgentObservationSource,
 		operations: DashboardOperations,
 		surface: NativeSurface,
+		primaryId?: string,
 	) {
 		this.tui = tui;
 		this.theme = theme;
@@ -158,6 +168,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.source = source;
 		this.operations = operations;
 		this.surface = surface;
+		this.primaryId = primaryId;
 		this.navigation = new DashboardNavigation(state);
 		this.newComposer = new AgentComposer({
 			tui,
@@ -183,6 +194,7 @@ export class AgentDashboard implements Component, Focusable {
 			source.subscribeRoster(() => {
 				this.queueRoster();
 				if (this.navigation.screen === "threads") void this.threads?.refresh();
+				if (this.effortsOpen) void this.efforts?.refresh();
 			}),
 		);
 		this.reconciliation = setInterval(() => {
@@ -837,12 +849,32 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		if (this.console) this.navigation.enter("console", this.console.row.id);
 	}
-	private openThreads(): void {
-		if (!this.operations.collaborate) {
-			this.notice = "Threads unavailable. Restart this Pi window with the current agent extension.";
+	private openEfforts(): void {
+		if (!this.operations.efforts) {
+			this.notice = "Related efforts unavailable. Restart this Pi window with the current agent extension.";
 			return;
 		}
 		this.saveConsole();
+		this.effortsOpen = true;
+		this.efforts ??= new EffortView({
+			tui: this.tui, theme: this.theme, keys: this.keys,
+			efforts: this.operations.efforts,
+			messageEffort: this.operations.messageEffort,
+			openContact: (threadId) => this.openThreads(threadId),
+			openThreads: () => this.openThreads(),
+			onBack: () => { this.effortsOpen = false; this.mouse.reset(); this.redraw(); },
+			redraw: () => this.redraw(),
+		});
+		this.mouse.reset();
+		this.efforts.open();
+	}
+	private openThreads(contactThread?: string): string | undefined {
+		if (!this.operations.collaborate) {
+			this.notice = "Threads unavailable. Restart this Pi window with the current agent extension.";
+			return this.notice;
+		}
+		this.saveConsole();
+		this.effortsOpen = false;
 		this.navigation.enter("threads");
 		this.state.threads ??= createCollaborationViewState();
 		this.threads ??= new CollaborationView({
@@ -861,7 +893,8 @@ export class AgentDashboard implements Component, Focusable {
 			redraw: () => this.redraw(),
 			onBack: () => this.back(),
 		});
-		this.threads.open();
+		if (contactThread) this.threads.openContact(contactThread);
+		else this.threads.open();
 	}
 	private rosterInput(data: string): void {
 		this.notice = undefined;
@@ -869,6 +902,7 @@ export class AgentDashboard implements Component, Focusable {
 		const actions: Record<string, () => void> = {
 			n: () => this.navigation.enter("new"),
 			t: () => this.openThreads(),
+			b: () => this.openEfforts(),
 			a: () => {
 				if (this.console && !this.loadMore) {
 					this.actionIndex = 0;
@@ -932,8 +966,13 @@ export class AgentDashboard implements Component, Focusable {
 		if (screen === "message" || screen === "console") this.messageInput(data);
 		else this.rosterInput(data);
 	}
+	private effortInput(data: string): void {
+		if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
+			this.efforts?.handleInput(data);
+	}
 	handleInput(data: string): void {
 		if (this.closed) return;
+		if (this.effortsOpen) { this.effortInput(data); return; }
 		if (this.navigation.screen === "threads") {
 			if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
 				this.threads?.handleInput(data);
@@ -957,6 +996,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed || this.hidden || this.mouseScreen !== this.navigation.screen) return;
+		if (this.effortsOpen) return this.efforts?.handleMouse(event);
 		if (this.navigation.screen === "threads") return this.threads?.handleMouse(event);
 		return this.mouse.handle(event);
 	}
@@ -1120,6 +1160,7 @@ export class AgentDashboard implements Component, Focusable {
 					[
 						"↑↓ select",
 						"Enter open",
+						"b efforts",
 						"Tab message",
 						"t threads",
 						"n new",
@@ -1130,8 +1171,8 @@ export class AgentDashboard implements Component, Focusable {
 					this.state.filter ? "Esc clear find" : "Esc close",
 				]
 			: this.emptyStore()
-				? [["Enter new agent", "n new", "t threads", "/ find", "? help"], "Esc close"]
-				: [["n new", "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
+				? [["b efforts", "Enter new agent", "n new", "t threads", "/ find", "? help"], "Esc close"]
+				: [["b efforts", "n new", "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
 		const [items, back] = hints[screen] ?? normal;
 		return mouseHints(
 			this.mouse,
@@ -1153,6 +1194,7 @@ export class AgentDashboard implements Component, Focusable {
 			this.theme,
 			compact,
 			{
+				primaryId: this.primaryId,
 				start: this.rosterScroll,
 				exactTime: this.state.exactTime,
 				range: (start, maxStart) => {
@@ -1316,6 +1358,7 @@ export class AgentDashboard implements Component, Focusable {
 			return Array.from({ length: height }, (_, index) =>
 				fitLine(index === 0 ? "Resize to use Agents. Esc back." : "", width),
 			);
+		if (this.effortsOpen) return this.efforts?.render(width, height) ?? [];
 		const screen = this.navigation.screen;
 		this.newComposer.focused = screen === "new";
 		this.find.focused = screen === "find";
@@ -1333,6 +1376,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.newComposer.invalidate();
 		this.find.invalidate();
 		this.threads?.invalidate();
+		this.efforts?.invalidate();
 	}
 	dispose(): void {
 		if (this.closed) return;
@@ -1345,6 +1389,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.source.releaseTasks();
 		this.tasks?.dispose();
 		this.threads?.dispose();
+		this.efforts?.dispose();
 		clearInterval(this.reconciliation);
 		clearTimeout(this.rosterTimer);
 		clearTimeout(this.streamTimer);
@@ -1375,6 +1420,7 @@ export async function showAgentDashboard(input: {
 				input.source,
 				input.operations,
 				surface,
+				ctx.sessionManager.getSessionId(),
 			),
 		{
 			overlay: true,

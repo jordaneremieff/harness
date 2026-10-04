@@ -1,5 +1,6 @@
 /** Compact fleet orientation over one supplied dashboard page, without host acquisition. */
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
+import type { EffortAwareness } from "./effort-awareness.ts";
 
 export interface StatusOverviewPrimary {
 	readonly sessionId: string;
@@ -33,6 +34,7 @@ export interface StatusOverviewCoverage {
 }
 
 export interface StatusOverview {
+	readonly awareness?: EffortAwareness;
 	readonly sessions: readonly AgentConversationSummary[];
 	readonly primaries: readonly StatusOverviewPrimary[];
 	readonly failures: readonly StatusOverviewFailure[];
@@ -100,7 +102,7 @@ function compactHealth(
 }
 
 function compact(row: AgentConversationSummary): AgentConversationSummary {
-	const result = { ...row };
+	const { creatingOwnerId: _creatingOwnerId, ...result } = row;
 	for (const key of ["name", "firstMessage", "latestReply", "ownerLabel", "error"] as const) {
 		const text = row[key];
 		if (text !== undefined) result[key] = excerpt(text);
@@ -133,6 +135,7 @@ function initialOverview(
 	page: AgentConversationPage,
 	primaries: readonly StatusOverviewPrimary[],
 	failures: readonly StatusOverviewFailure[],
+	awareness?: EffortAwareness,
 ) {
 	const ordered = [...page.rows].sort(
 		(a, b) => priority(a) - priority(b) || b.modifiedAt - a.modifiedAt || byIdentity(a.id, b.id),
@@ -142,6 +145,7 @@ function initialOverview(
 	const quiet = ordered.length - working - attention;
 	const sessions = ordered.slice(0, working + attention + QUIET_SAMPLE).map(compact);
 	const value = {
+		...(awareness === undefined ? {} : { awareness: structuredClone(awareness) }),
 		sessions,
 		primaries: [...primaries]
 			.sort((a, b) => byIdentity(a.sessionId, b.sessionId))
@@ -209,8 +213,27 @@ function sourceReasons(page: AgentConversationPage): string[] {
 	return reasons;
 }
 
+function excludeAwareness(awareness: EffortAwareness | undefined): boolean {
+	if (!awareness) return false;
+	if (awareness.presence.efforts.length > 0) {
+		awareness.presence.efforts.pop();
+		awareness.presence.coverage.omitted++;
+		awareness.presence.coverage.complete = false;
+		if (!awareness.presence.coverage.reasons.includes("status-byte-limit")) awareness.presence.coverage.reasons.push("status-byte-limit");
+	} else if (awareness.threads.items.length > 0) {
+		awareness.threads.items.pop();
+		awareness.threads.coverage.omittedResults++;
+		awareness.threads.coverage.complete = false;
+		if (!awareness.threads.coverage.reasons.includes("status-byte-limit")) awareness.threads.coverage.reasons.push("status-byte-limit");
+	} else if (awareness.self.intentClaim || awareness.self.observedPurpose) {
+		const { id, cwd, repository } = awareness.self;
+		awareness.self = { id, cwd, ...(repository === undefined ? {} : { repository }), omitted: true };
+	} else return false;
+	return true;
+}
+
 function excludeRow(value: MutableOverview, dropped: ByteOmissions): void {
-	const rowBudget = STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [] });
+	const rowBudget = STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
 	const oversized = value.sessions.findIndex((row) => measure(row) > rowBudget);
 	const last = value.sessions.at(-1);
 	if (oversized >= 0 || (last !== undefined && priority(last) === 2)) {
@@ -230,6 +253,9 @@ function excludeRow(value: MutableOverview, dropped: ByteOmissions): void {
 		value.failures.pop();
 		value.summary.failures.summarized++;
 		value.coverage.omittedFailures++;
+	} else if (excludeAwareness(value.awareness)) {
+		dropped.rows++;
+		return;
 	} else if (value.sessions.length > 0) {
 		value.sessions.pop();
 		dropped.sessions++;
@@ -245,8 +271,9 @@ export function buildStatusOverview(
 	page: AgentConversationPage,
 	primaries: readonly StatusOverviewPrimary[],
 	failures: readonly StatusOverviewFailure[],
+	awareness?: EffortAwareness,
 ): StatusOverview {
-	const value = initialOverview(page, primaries, failures);
+	const value = initialOverview(page, primaries, failures, awareness);
 	const reasons = sourceReasons(page);
 	const dropped: ByteOmissions = { sessions: 0, quiet: 0, rows: 0 };
 	for (;;) {
@@ -255,7 +282,8 @@ export function buildStatusOverview(
 			value.coverage.reasons.push(
 				`Status byte limit excluded ${dropped.sessions} working or attention rows, ${dropped.quiet} quiet sample rows, ${value.coverage.omittedPrimaries} primary sample rows, and ${value.coverage.omittedFailures} failure sample rows; use fresh agent_list discovery or targeted agent_status. agent_status has no continuation parameter; call agent_list without a cursor to rediscover these rows.`,
 			);
-		value.coverage.complete = reasons.length === 0 && dropped.rows === 0;
+		if (value.awareness && (!value.awareness.presence.coverage.complete || !value.awareness.threads.coverage.complete || value.awareness.self.omitted)) value.coverage.reasons.push("Effort awareness is partial; its presence, thread, and self coverage identifies omitted observations.");
+		value.coverage.complete = value.coverage.reasons.length === 0 && dropped.rows === 0;
 		if (fixedPointBytes(value) <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
 		value.coverage.byteLimitReached = true;
 		excludeRow(value, dropped);

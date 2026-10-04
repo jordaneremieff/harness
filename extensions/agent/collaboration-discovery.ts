@@ -1,5 +1,70 @@
+import { opendir } from "node:fs/promises";
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
 import type { CollaborationList, CollaborationSummary } from "./collaboration.ts";
+
+export interface RecentCollaborationPage {
+	items: CollaborationSummary[];
+	coverage: {
+		visited: number; records: number; unreadable: number; missingHints: number;
+		omittedHints: number; omittedResults: number; unvisited: boolean; complete: boolean; reasons: string[];
+	};
+	limits: { visits: number; results: number; bytes: number; hintsPerRecord: number };
+}
+export const RECENT_COLLABORATION_LIMITS = { visits: 256, results: 12, bytes: 8192, hintsPerRecord: 8 } as const;
+const CATALOG_RECORD_NAME = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u;
+
+function recentPartial(page: RecentCollaborationPage, reason: string): void {
+	page.coverage.complete = false;
+	if (!page.coverage.reasons.includes(reason)) page.coverage.reasons.push(reason);
+}
+function collectRecentHints(page: RecentCollaborationPage, record: CatalogRecord): void {
+	if (record.threads === undefined) { page.coverage.missingHints += 1; recentPartial(page, "missing-thread-hints"); return; }
+	page.coverage.omittedHints += record.threads.omitted;
+	if (record.threads.omitted > 0) recentPartial(page, "omitted-thread-hints");
+	for (const thread of record.threads.items.slice(0, page.limits.hintsPerRecord)) {
+		if (thread.closed) continue;
+		page.items.push(thread);
+		page.items.sort((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+		if (page.items.length > page.limits.results) { page.items.pop(); page.coverage.omittedResults += 1; recentPartial(page, "result-limit"); }
+	}
+}
+function collectRecentRecord(page: RecentCollaborationPage, catalog: AgentCatalog, entry: import("node:fs").Dirent): void {
+	if (!CATALOG_RECORD_NAME.test(entry.name)) return;
+	page.coverage.records += 1;
+	try {
+		if (!entry.isFile()) throw new Error("Not a catalog file");
+		collectRecentHints(page, catalog.read(entry.name.slice(0, -5)));
+	} catch { page.coverage.unreadable += 1; recentPartial(page, "unreadable-records"); }
+}
+
+/** Newest active published hints in a bounded directory sample, not a complete store history. */
+export async function readRecentCollaboration(catalog: AgentCatalog): Promise<RecentCollaborationPage> {
+	const page: RecentCollaborationPage = {
+		items: [], limits: RECENT_COLLABORATION_LIMITS,
+		coverage: { visited: 0, records: 0, unreadable: 0, missingHints: 0, omittedHints: 0, omittedResults: 0, unvisited: false, complete: true, reasons: [] },
+	};
+	let directory: Awaited<ReturnType<typeof opendir>>;
+	try { directory = await opendir(catalog.root, { bufferSize: 1 }); }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") { page.coverage.unvisited = true; recentPartial(page, "directory-unreadable"); }
+		return page;
+	}
+	try {
+		// Reading directly bounds directory traversal; catalog.page materializes the whole directory.
+		while (page.coverage.visited < page.limits.visits) {
+			const entry = await directory.read();
+			if (entry === null) break;
+			page.coverage.visited += 1;
+			collectRecentRecord(page, catalog, entry);
+		}
+		if (page.coverage.visited === page.limits.visits) { page.coverage.unvisited = true; recentPartial(page, "visit-limit"); }
+	} catch { page.coverage.unvisited = true; recentPartial(page, "directory-unreadable"); }
+	finally { await directory.close().catch(() => {}); }
+	while (Buffer.byteLength(JSON.stringify(page)) > page.limits.bytes && page.items.length > 0) {
+		page.items.pop(); page.coverage.omittedResults += 1; recentPartial(page, "byte-limit");
+	}
+	return page;
+}
 
 type ThreadCursor = { query: string; catalog: string | null; storage: string | null; offset: number; publication: string | null };
 type DiscoverySource = { sessionId: string; omitted: number; unavailable: boolean };

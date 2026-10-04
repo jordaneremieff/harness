@@ -181,6 +181,16 @@ export class CollaborationView {
 		this.screen = "list";
 		void this.refresh();
 	}
+	openContact(threadId: string): void {
+		this.options.state.selected = threadId;
+		this.screen = "thread";
+		this.page = undefined;
+		this.before = undefined;
+		this.offset = 0;
+		this.follow = false;
+		this.generation++;
+		void this.refresh();
+	}
 	private async call(input: Record<string, unknown>): Promise<unknown> {
 		return this.options.collaborate(input);
 	}

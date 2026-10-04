@@ -169,7 +169,11 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 	].join("\n");
 }
 
-function uniqueTitle(row: AgentConversationSummary, rows: readonly AgentConversationSummary[], width: number): string {
+function uniqueTitle(row: AgentConversationSummary, rows: readonly AgentConversationSummary[], width: number, primaryId?: string): string {
+	const marker = primaryId && row.creatingOwnerId && row.creatingOwnerId !== primaryId ? "[other] " : "";
+	return marker + uniqueName(row, rows, Math.max(0, width - visibleWidth(marker)));
+}
+function uniqueName(row: AgentConversationSummary, rows: readonly AgentConversationSummary[], width: number): string {
 	const name = titleOf(row);
 	const duplicates = rows.filter((other) => titleOf(other) === name);
 	if (duplicates.length < 2) return clip(name, width);
@@ -237,6 +241,7 @@ function rosterRow(
 	compact: boolean,
 	exactTime: boolean,
 	now: number,
+	primaryId?: string,
 ): { lines: string[]; timeX: number; timeWidth: number; timeLine: number } {
 	const appearance = sessionAppearance[row.state];
 	const time = dashboardTime(row.modifiedAt, exactTime, now);
@@ -247,7 +252,7 @@ function rosterRow(
 	const timeWidth = Math.min(visibleWidth(time), width - 4);
 	const timeX = width - timeWidth;
 	const titleWidth = compact ? Math.max(8, Math.floor((width - timeWidth - 10) * 0.3)) : Math.max(1, width - 4 - (exactRow ? 0 : timeWidth + 1));
-	const title = theme.bold(theme.fg("text", pad(uniqueTitle(row, rows, titleWidth), titleWidth)));
+	const title = theme.bold(theme.fg("text", pad(uniqueTitle(row, rows, titleWidth, primaryId), titleWidth)));
 	let lines: string[];
 	if (compact) {
 		const cost = costOf(row);
@@ -308,6 +313,7 @@ function rosterWindow(
 	return { capacity: capacityAt(start), maxStart, start };
 }
 interface RosterViewport {
+	primaryId?: string;
 	start?: number;
 	exactTime?: boolean;
 	range?(start: number, maxStart: number): void;
@@ -348,7 +354,7 @@ export function rosterLines(
 			lines.push(theme.fg("muted", `${group} · ${rows.filter((item) => sectionOf(item, now) === group).length}`));
 			section = group;
 		}
-		const block = rosterRow(row, rows, selected, width, theme, compact, viewport?.exactTime ?? false, now);
+		const block = rosterRow(row, rows, selected, width, theme, compact, viewport?.exactTime ?? false, now, viewport?.primaryId);
 		rosterHit(viewport, row, block, lines.length, width, height);
 		lines.push(...block.lines);
 	}

@@ -141,6 +141,30 @@ authority. Develop an unapproved surface's proposal in chat, not an implementati
 disguised as an experiment. Complete independent authorized work while holding
 only the act that requires a missing decision.
 
+## Coordinate with related efforts
+
+At kickoff and before each promotion, publish the ordinary primary's purpose,
+integration intent, declared scope, carried operator direction, and contact
+thread through `agent_intent`. Read the related efforts in its result or in
+`agent_status`. Host facts and session intent claims are different evidence;
+unknown liveness and incomplete coverage do not prove absence.
+
+Use `agent_send` for direct contact with a live effort primary. The operator
+also sends direct messages from `/agent`'s Related efforts view. A delivery receipt
+proves admission, not action or agreement. Open or join one peer thread for a
+real overlap, record the governing frame there, and agree the order of shared
+mutations without operator relay. A contact-thread claim links the effort to
+that retained exchange.
+
+Declare full-gate runs in integration intent with `scope.fullGate` set to `true`.
+Check related efforts before a full suite and run one full gate per machine at a time.
+
+Each coordinator controls only its own workers, checkouts, and branches. Never
+control another coordinator's resources or promote its unpublished commits.
+Keep unpublished commits off live slice branches. Share advice, evidence, and
+review requests without treating discovery as permission. Resolve technical
+order in the thread; escalate only conflicting operator directions.
+
 ## Collaborate from the shared purpose
 
 Discover the current registered full-session controls and read their schemas and

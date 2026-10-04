@@ -515,3 +515,74 @@ it("replaces an older endpoint record with a dead owner at registration", async 
 	assert.equal(record.version, PRIMARY_ENDPOINT_VERSION, "a restart replaces the older record");
 	assert.equal(record.pid, process.pid);
 });
+
+
+it("preserves host presence fields through identity updates, intent publication, and touch", async (t) => {
+	const root = testRoot(t);
+	const id = randomUUID();
+	const channel = await createPrimaryChannel(channelOptions(root, id, { repository: "/work/repository/.git", lastActivityAt: "2026-10-04T09:00:00Z" }));
+	t.after(async () => { await channel.close(); });
+	const claim = { purpose: "Presence", integration: "Compose the change", authority: "Operator request", scope: { paths: ["extensions/agent"], branches: [] }, updatedAt: "2026-10-04T10:00:00Z" };
+	channel.publishIntent(claim);
+	channel.touch("2026-10-04T10:01:00Z");
+	channel.update({ name: "Updated", model: undefined, thinkingLevel: undefined });
+	assert.equal(channel.info().repository, "/work/repository/.git");
+	assert.equal(channel.info().lastActivityAt, "2026-10-04T10:01:00Z");
+	assert.deepEqual(channel.info().intentClaim, claim);
+	const connection = await connectPrimaryChannel({ id, sessionsRoot: root });
+	try {
+		assert.deepEqual((await connection.info()).intentClaim, claim);
+	} finally { await connection.close(); }
+	const path = primaryEndpointPath(root, id);
+	const record = JSON.parse(readFileSync(path, "utf8"));
+	assert.equal(record.repository, "/work/repository/.git");
+	assert.equal(record.version, PRIMARY_ENDPOINT_VERSION);
+	channel.publishIntent(undefined);
+	assert.equal("intentClaim" in JSON.parse(readFileSync(path, "utf8")), false);
+	assert.equal(channel.info().repository, record.repository);
+});
+
+it("contains malformed optional intent without refusing core delivery or ownership", async (t) => {
+	const f = await fixture(t);
+	const path = primaryEndpointPath(f.root, f.id);
+	const record = JSON.parse(readFileSync(path, "utf8"));
+	writeFileSync(path, JSON.stringify({ ...record, intentClaim: { purpose: 12 } }));
+	assert.equal(primaryEndpointStatus(f.root, f.id).state, "live");
+	const connection = await connectPrimaryChannel({ id: f.id, sessionsRoot: f.root });
+	try { await connection.deliver({ sourceId: "sender", text: "core delivery" }); }
+	finally { await connection.close(); }
+	assert.equal(f.delivered[0]?.text, "core delivery");
+});
+
+it("refuses oversized publication atomically and copies caller intent arrays", async (t) => {
+	const f = await fixture(t);
+	const claim = { purpose: "Presence", integration: "Compose", authority: "Operator request", scope: { paths: ["extensions/agent"], branches: [] as string[] }, updatedAt: "2026-10-04T10:00:00Z" };
+	f.channel.publishIntent(claim);
+	claim.scope.paths.push("unpublished");
+	assert.deepEqual(f.channel.info().intentClaim?.scope.paths, ["extensions/agent"]);
+	const path = primaryEndpointPath(f.root, f.id);
+	const before = readFileSync(path, "utf8");
+	assert.throws(() => f.channel.publishIntent({ ...claim, scope: { paths: Array.from({ length: 32 }, () => "界".repeat(512)), branches: [] } }), /16 KiB/u);
+	assert.equal(readFileSync(path, "utf8"), before);
+	assert.equal(f.channel.info().intentClaim?.purpose, "Presence");
+	assert.throws(() => f.channel.publishIntent({ ...claim, purpose: "x".repeat(1025) }), /purpose/u);
+	assert.throws(() => f.channel.touch(""), /lastActivityAt/u);
+});
+
+
+it("publishes and clears observed purpose without erasing host facts or intent", async (t) => {
+	const root = testRoot(t);
+	const channel = await createPrimaryChannel(channelOptions(root, randomUUID(), { repository: "/work/common", repositoryState: "git", observedPurpose: { source: "session-name", text: "Effort awareness" } }));
+	t.after(async () => { await channel.close(); });
+	channel.setObservedPurpose({ source: "interactive-input", text: "Build presence" });
+	channel.update({ name: undefined, model: undefined, thinkingLevel: undefined });
+	channel.touch("2026-10-04T12:00:00Z");
+	assert.deepEqual(channel.info().observedPurpose, { source: "interactive-input", text: "Build presence" });
+	assert.equal(channel.info().repositoryState, "git");
+	const stored = JSON.parse(readFileSync(primaryEndpointPath(root, channel.id), "utf8"));
+	assert.deepEqual(stored.observedPurpose, channel.info().observedPurpose);
+	assert.throws(() => channel.setObservedPurpose({ source: "session-name", text: "x".repeat(513) }), /512/u);
+	channel.setObservedPurpose(undefined);
+	assert.equal("observedPurpose" in JSON.parse(readFileSync(primaryEndpointPath(root, channel.id), "utf8")), false);
+	assert.equal(channel.info().repository, "/work/common");
+});

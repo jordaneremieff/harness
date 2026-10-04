@@ -177,8 +177,8 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 		root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
 		createPrimary: async (options) => ({
 			id: options.id, socketPath: "unused",
-			info: () => { throw new Error("No primary channel read is required"); },
-			update: () => {}, close: async () => {},
+			info: () => ({ id: options.id, cwd: root, hostname: "test-host", pid: process.pid, socketPath: "unused", startedAt: new Date().toISOString() }),
+			update: () => {}, publishIntent: () => {}, touch: () => {}, setObservedPurpose: () => {}, close: async () => {},
 		}),
 		acquire: async () => { throw new Error("A footer read must not launch a host"); },
 		observe: async () => { throw new Error("A footer read must not observe native storage"); },

@@ -61,6 +61,8 @@ export interface AgentConversationSummary {
 	id: string;
 	/** Storage that owns this conversation. */
 	storageId: string;
+	/** Creating-session provenance, not the current requester or task owner. */
+	creatingOwnerId?: string;
 	/** Stored conversation name when one exists. */
 	name?: string;
 	/** Retained profile hint, joined outside the base observation wire contract. Absent means unknown coverage. */

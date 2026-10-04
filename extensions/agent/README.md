@@ -88,6 +88,77 @@ The package declares Pi Durable, Codemode, MCP, and Chord as runtime dependencie
 Core coding-agent services come from the primary's selected public Pi package
 entrypoint. No private upstream implementation is imported or copied.
 
+## Efforts, presence, and intent
+
+An **effort** is a session's intent-driven work with its agents. **Presence** is
+host-observed process and location information. **Intent** is a session's claim
+about its purpose and next shared acts. A **shared substrate** is a resource
+that efforts use, such as a repository, cwd, or the machine for a full-gate run.
+These observations expose opportunities for cooperation; they do not grant
+control over another effort or authority to act outside the operator's direction.
+
+The existing primary endpoint records publish host identity, process liveness,
+canonical cwd, Git common directory, start time, and sampled last activity. Git
+worktrees share their common-directory identity. Activity comes from input,
+completed tool execution, and settled turns, with at most one activity write
+per minute. It is not a heartbeat; an idle record's old timestamp does not prove
+process death. Only the existing local PID and host checks classify liveness.
+Dead records do not appear as live efforts. Unknown and incompatible ownership
+remain explicit. Discovery never removes primary endpoint records.
+
+A primary without declared intent still has an observed purpose: its Pi session
+name, otherwise an excerpt of its first interactive input. The extension retains
+its own attributed input projection in the session, rather than interpreting
+another extension's prompts or entry formats. RPC and extension-generated input
+do not become an operator-typed purpose. A resumed session with no name or retained
+projection has an unknown purpose. If the bounded branch scan is complete, the
+next interactive input supplies the fallback. If the scan leaves entries unread,
+the current view marks the purpose unavailable instead of calling a later input
+the first. A session name or declared purpose still supplies useful context.
+
+`agent_intent` is an ordinary-primary tool. Publish with `action: "publish"`,
+`purpose`, `integration`, `authority`, `scope: { paths, branches, fullGate? }`, and
+an optional `contactThread`. Clear with `action: "clear"`. The host supplies the
+claim's update time. Repository-relative paths use exact or component-prefix
+matching, not globs. `scope.fullGate` declares a planned full-gate run; it is not
+a reservation or lock. The endpoint's total byte bound still applies to a claim.
+Publishing returns the recorded host facts, the labeled claim, and current effort
+awareness. Clearing removes the declared claim, not the observed purpose.
+
+The bounded view lists live efforts on this machine within the configured
+`PI_AGENT_SESSIONS_DIR`, including efforts in other repositories. It shows
+purpose-level claims for those without a shared repository or cwd, and full
+intent for those with either shared location. Shared locations
+and declared machine-gate use are marked. Agents judge purpose-level relevance;
+the extension does not infer intent from file names or coordinate work for them.
+Carried operator directions appear as quoted, scoped claims, never as permission
+for the reader. Active peer-thread hints appear newest-first within the covered
+store records. Missing hints and unvisited records leave global recency unknown.
+
+Ordinary primaries and Durable agents read this view through untargeted
+`agent_status`. Their model context receives a separate current-effort section
+at natural run boundaries. The section contains no relative ages or render-time
+clock, so unchanged source state gives unchanged text. Registration and changed
+intent also send dated quiet notices through the existing primary channel.
+Those transcript entries record events, not the current view. Failed pushes do
+not block the publisher. There is no presence polling, file watcher, model wake,
+or new store. Every view reports its finite coverage and omissions.
+
+`/agent` opens Related efforts with `b` or its mouse hint. The view shows observed
+purpose, declared purpose and integration claims, quoted operator direction with
+scope, and active threads. A contact-thread link opens the existing Threads view.
+The operator sends a direct quiet message to a live effort's primary from this
+view. `agent_send` already supports direct model contact with that primary.
+Delivery proves admission, not action, agreement, or a Durable task result. Use
+one peer thread for a real overlap or agreement. Threads remain in a participant's
+existing agent storage. The dashboard marks agents created by another session;
+that marker describes provenance, not their current requester or task owner.
+
+The ordinary manager interface changes independently of the primary delivery
+interface. A retained manager with a different interface requires a Pi restart.
+Effort awareness is a tool-only status addition; native host observation response
+contracts and the primary channel's delivery contract remain unchanged.
+
 ## Standing agents and expertise
 
 `agent_spawn({handle, name, role, model?, thinkingLevel?, prompt?})` resolves or
@@ -643,14 +714,14 @@ stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 
 ## Dashboard and agent console
 
-The dashboard is one full-screen overlay. It observes agents only: it projects
-no primary conversation, reads no primary draft, and writes no primary editor
+The dashboard is one full-screen overlay. It observes agents and effort presence,
+not primary conversations. It reads no primary draft and writes no primary editor
 text. Selection, drafts, successful-message history, reading positions, and
 Steer/Follow-up disposition survive closing and reopening in the same primary
 process. Different primary sessions have independent UI state. A successful
 admission clears only the submitted draft revision, including after the
 dashboard reopens; newer text stays. Every truncated dashboard list keeps the
-focused entry and its neighbors visible and states the hidden count.
+focused entry and nearby entries visible and states the hidden count.
 
 Each view has a framed heading and one plain hint line at the bottom. Keys use
 an accent color; action words and metadata use a quieter color. Scroll controls

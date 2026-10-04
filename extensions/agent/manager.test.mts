@@ -117,7 +117,7 @@ function fakePrimary(signal: AbortSignal) {
 				statuses.push(text);
 			},
 			signal,
-			cwd: "/work",
+			cwd: process.cwd(),
 			name: "primary",
 		},
 	};
@@ -193,6 +193,9 @@ function primaryFactory(onClose?: (channel: CapturedPrimaryChannel, invocation: 
 			update: (info) => {
 				captured.updates.push(info);
 			},
+			publishIntent: () => {},
+			touch: () => {},
+			setObservedPurpose: () => {},
 			close: async () => {
 				captured.closed = true;
 				closedEvent.resolve();
@@ -1055,6 +1058,6 @@ it("refreshes the registered primary identity after model, thinking, and name ch
 		manager.updatePrimary("owner-1", { name: "primary review" });
 		assert.deepEqual(channel.updates.at(-1), { name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" });
 		const status = await manager.status() as { primaries: Array<{ sessionId: string; name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }> };
-		assert.deepEqual(status.primaries, [{ sessionId: "owner-1", cwd: "/work", name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" }]);
+		assert.deepEqual(status.primaries, [{ sessionId: "owner-1", cwd: process.cwd(), name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" }]);
 	} finally { manager.close(); }
 });

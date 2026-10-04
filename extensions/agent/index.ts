@@ -38,6 +38,10 @@ import { createRestartCommand, type RestartHosts } from "./restart.ts";
 import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
 import { promptProjectTrust } from "./trust-support.ts";
+import { IntentParams } from "./effort-schema.ts";
+import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
+import { formatEffortAwareness } from "./effort-awareness.ts";
+import type { PrimaryIntentClaim } from "./primary-channel.ts";
 
 export { AgentManager } from "./manager.ts";
 const ownerKey = Symbol.for("pi.extension.agent.owners");
@@ -222,6 +226,17 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			renderResult: cards[name].renderResult,
 		});
 	};
+	pi.registerTool({
+		name: "agent_intent",
+		label: "Agent intent",
+		description: "Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Publish at kickoff and before promotion; use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
+		parameters: IntentParams,
+		outputSchema: Type.Unknown(),
+		async execute(_callId, input, _signal, _update, ctx) {
+			const { action, ...fields } = input;
+			return result(await getManager().publishIntent(ctx.sessionManager.getSessionId(), action === "clear" ? undefined : fields as Omit<PrimaryIntentClaim, "updatedAt">));
+		},
+	});
 	register(
 		"agent_collaborate",
 		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Join, leave and exchange sourced contributions. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read the frame and paged exchange without starting a host.",
@@ -254,9 +269,9 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_status",
-		"Orient over agents with compact excerpts, working and attention rows first, then recent rows. Summary and coverage name omitted rows; agent_list discovers full identities. A selected session returns full state and bounded pending timers.",
+		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected agent returns full state and bounded pending timers.",
 		Type.Object({ sessionId: Type.Optional(id), view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId." })) }, { additionalProperties: false }),
-		(input) => getManager().status(input.sessionId as string | undefined, input.view as "fleet" | undefined),
+		(input, ctx) => getManager().status(input.sessionId as string | undefined, input.view as "fleet" | undefined, caller(ctx, pi)),
 	);
 	register(
 		"agent_inspect",
@@ -266,7 +281,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_send",
-		"Admit a task, report, or correction. Idle agents start; busy agents receive durable steering. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
+		"Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Idle agents start; busy agents receive durable steering. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
 		send,
 		(input, ctx, callId) => {
 			if (input.mode === "report") {
@@ -688,6 +703,13 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		},
 		(input, ctx) => getManager().collaborate({ ...input, origin: "operator" }, caller(ctx, pi)),
 		(ctx, page) => getManager().sessionFigures(ctx.sessionManager.getSessionId(), page),
+		{
+			efforts: (ctx) => getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd),
+			messageEffort: async (id, text, ctx) => {
+				await control("submit", { sessionId: id, message: text, origin: "operator" }, ctx);
+				return { text: "Message delivered to the effort's primary. Delivery does not prove action." };
+			},
+		},
 	);
 	pi.registerCommand("agent", command);
 	pi.registerShortcut("ctrl+alt+g", {
@@ -702,10 +724,13 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		primaries.get(sessionId)?.abort();
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
+		const purpose = retainedPurpose(ctx.sessionManager.getBranch());
 		await getManager().registerPrimary(sessionId, {
 			signal: abort.signal,
 			cwd: ctx.cwd,
 			name: ctx.sessionManager.getSessionName(),
+			observedInput: purpose.text,
+			observedInputComplete: purpose.complete,
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
 			send: (text, details) => {
@@ -737,8 +762,22 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	pi.on("session_info_changed", (event, ctx) => {
 		getManager().updatePrimary(ctx.sessionManager.getSessionId(), { name: event.name });
 	});
-	pi.on("agent_settled", () => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd));
+	});
+	pi.on("input", (event, ctx) => {
+		const id = ctx.sessionManager.getSessionId();
+		getManager().touchPrimary(id);
+		if (event.source === "interactive" && getManager().recordPrimaryInput(id, event.text)) {
+			pi.appendEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: purposeExcerpt(event.text) });
+		}
+	});
+	pi.on("tool_execution_end", (_event, ctx) => {
+		getManager().touchPrimary(ctx.sessionManager.getSessionId());
+	});
+	pi.on("agent_settled", (_event, ctx) => {
 		selfCompaction.clear();
+		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		selfCompaction.clear();

@@ -3,7 +3,8 @@ import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { dashboardSessionState } from "./dashboard-state.ts";
-import { showAgentDashboard } from "./dashboard.ts";
+import { showAgentDashboard, type DashboardResult } from "./dashboard.ts";
+import type { EffortAwareness } from "./effort-awareness.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { hideAround, runActionDialog, type ActionDialogExtras } from "./action-dialogs.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
@@ -157,6 +158,10 @@ export function createAgentCommand(
 	options: ActionDialogExtras,
 	collaborate?: (input: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>,
 	sessionFigures?: (ctx: ExtensionContext, page: AgentConversationPage) => Promise<string>,
+	effortWiring?: {
+		efforts(ctx: ExtensionContext): Promise<EffortAwareness>;
+		messageEffort(id: string, text: string, ctx: ExtensionContext): Promise<DashboardResult>;
+	},
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
@@ -205,6 +210,8 @@ export function createAgentCommand(
 				state,
 				source: sources,
 				operations: {
+					efforts: effortWiring ? () => effortWiring.efforts(ctx) : undefined,
+					messageEffort: effortWiring ? (id, text) => effortWiring.messageEffort(id, text, ctx) : undefined,
 					sessionFigures: sessionFigures ? (page) => sessionFigures(ctx, page) : undefined,
 					contextWindow: (provider, modelId) => ctx.modelRegistry.find(provider, modelId)?.contextWindow,
 					collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
