@@ -212,7 +212,9 @@ hosts. Continuations retain both the native page position and the last visited
 catalog filename. Catalog discovery sorts filenames and resumes strictly after
 that name, so view publications and record creation or removal do not invalidate
 continuations or repeat records. Repeat the same query and cwd with a cursor;
-a different query or cwd is refused explicitly.
+a different query or cwd is refused explicitly. `agent_list` reports each
+unreadable catalog record in `coverage.unavailable`, even when
+`coverage.complete` is true.
 
 Discovery is not a frozen snapshot. Each page lists the current directory names,
 then bounds entry visits and record reads. Records created behind the cursor,
