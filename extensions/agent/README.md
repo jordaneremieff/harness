@@ -613,7 +613,8 @@ recipient's model. A receipt whose stored origin is missing or malformed is
 reported and held pending; the watcher never defaults it to a model admission.
 A notice names an agent by its display name or handle, with its full identity
 as the unnamed fallback. An ordinary session uses its session name, observed
-purpose excerpt, or short session ID. Direct messages carry the sender's
+purpose excerpt, or full session ID. Identity text is not shortened to a fixed
+length; a headline clips only when it exceeds the rendered width. Direct messages carry the sender's
 current name and published purpose. Foreign thread senders use their exact
 retained agent row or published primary endpoint without a host launch or
 discovery scan. A dead primary descriptor retains its parsed sender metadata;
@@ -1139,6 +1140,25 @@ Primary `agent_compact` requires an agent-authored summary and retains the whole
 requesting tool batch. It uses the ordinary `turn_end` boundary. A native Durable
 agent uses Durable compaction and its own task boundary, not an ordinary
 SessionManager.
+
+Tool cards keep complete identities, including operation, thread, and revision
+identifiers. Collapsed lines clip at the rendered width; expanded source wraps
+and retains full identities within the explicit source-display safety bound.
+Compaction cards use execution-specific facts. A self request copies the public
+context estimate, session name, selected provider/model/thinking, and supplied
+summary size before it queues the boundary request. Later redraws do not read
+new context usage or turn cumulative usage/cost into context size. Its queued
+receipt does not prove completed compaction or post-compaction size.
+
+Another conversation's host returns its observed pre-compaction name and
+configuration, plus the selected model's known context window. Native Durable
+context has no numerical token estimate in its public context view, so the card
+omits token counts and percentages rather than deriving them from lifetime
+usage. After a completed task places its summary, the host reports the retained
+wrapped summary text size in UTF-16 code units. An admitted or unplaced summary
+has no observed retained size. Optional name or size read failures retain the
+compaction outcome and appear as body diagnostics. No path adds a transcript message to measure
+post-compaction context; the card makes no post-size claim.
 
 ## Configuration and storage
 

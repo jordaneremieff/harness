@@ -240,7 +240,7 @@ function displayName(status: SourceStatus | undefined, identity: string): string
 	if (name !== "") return name;
 	const purpose = status?.observedPurpose ? displayExcerpt(status.observedPurpose) : "";
 	if (purpose !== "") return purpose;
-	return status?.senderKind === "session" ? identity.slice(0, 8) : identity;
+	return identity;
 }
 
 /** Stable request ID for one settled receipt; reused across retries and reopens. */

@@ -93,8 +93,8 @@ describe("agent call cards", () => {
 			const args = { sessionId: "target-session", message: "First line\n\n**literal Markdown** and `code`\nLast line", replyTo: "message-reference" };
 			const before = structuredClone(args);
 			const collapsed = renderer(args, theme, context());
-			assert.match(screen(collapsed), new RegExp(`${name} → target-s…`));
-			assert.match(screen(collapsed), /reply to message-…/);
+			assert.match(screen(collapsed), new RegExp(`${name} → target-session`));
+			assert.match(screen(collapsed), /reply to message-reference/);
 			assert.match(screen(collapsed), /First line \*\*literal Markdown\*\*/);
 			assert.match(screen(collapsed), /expand for full details/);
 			const expanded = renderer(args, theme, context({ expanded: true, lastComponent: collapsed }));
@@ -117,7 +117,7 @@ describe("agent call cards", () => {
 	it("marks a compact summary call as self and keeps the summary text hidden", () => {
 		const summary = "Objective: hand over the slice. Next: run the checks.";
 		const text = screen(renderCompactCall({ sessionId: "current-session", summary }, theme, context()));
-		assert.match(text, /agent_compact · self · current-…/);
+		assert.match(text, /agent_compact · this session · current-session/);
 		assert.match(text, new RegExp(`Summary: ${summary.length} chars`));
 		assert.doesNotMatch(text, /Objective: hand over/);
 		const plain = screen(renderCompactCall({ sessionId: "worker-session" }, theme, context()));
@@ -202,7 +202,7 @@ describe("agent result cards", () => {
 		const fork = result({ conversationId: 2, identity: "storage-a:2", deduped: false, status: { conversation: conversationStatus({ name: "Forked review" }) } });
 		const text = screen(renderAgentResult(fork, { expanded: false, isPartial: false }, theme, context()), 180);
 		assert.match(text, /Model: provider\/model · thinking high/);
-		assert.match(text, /Fork created · storage-…:2/);
+		assert.match(text, /Fork created · storage-a:2/);
 	});
 
 	it("keeps a successful mutation receipt when the post-mutation snapshot failed", () => {
@@ -210,7 +210,7 @@ describe("agent result cards", () => {
 		const card = renderAgentResult(fork, { expanded: false, isPartial: false }, theme, context());
 		const text = screen(card, 180);
 		assert.match(text, /Snapshot unavailable: claim refused after mutation/);
-		assert.match(text, /Fork created · storage-…:2/);
+		assert.match(text, /Fork created · storage-a:2/);
 		assert.doesNotMatch(text, /Model: |Activity:/);
 		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 	});
@@ -286,20 +286,20 @@ describe("agent result cards", () => {
 		const receipt = { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" };
 		const send = screen(renderSendResult(result(receipt), { expanded: false, isPartial: false }, theme, context()));
 		assert.match(send, /Admitted/);
-		assert.match(send, /Admitted · storage-…/);
+		assert.match(send, /Admitted · storage-a/);
 		assert.match(send, /submission 9/);
 		assert.match(screen(renderSteerResult(result(receipt), { expanded: false, isPartial: false }, theme, context())), /Steer admitted/);
-		assert.match(screen(renderAgentResult(result({ conversationId: 2, identity: "storage-…:2", deduped: false }), { expanded: false, isPartial: false }, theme, context())), /Fork created · storage-…:2/);
+		assert.match(screen(renderAgentResult(result({ conversationId: 2, identity: "storage-a:2", deduped: false }), { expanded: false, isPartial: false }, theme, context())), /Fork created · storage-a:2/);
 		const rewind = screen(renderAgentResult(result({ conversationId: 3, identity: "storage-a:3", predecessorEntryId: 5, submissionId: 11, deduped: false }), { expanded: false, isPartial: false }, theme, context()));
-		assert.match(rewind, /Rewind submitted · storage-…:3/);
+		assert.match(rewind, /Rewind submitted · storage-a:3/);
 		assert.match(rewind, /forked before entry 5/);
 		assert.match(rewind, /submission 11/);
-		assert.match(screen(renderAgentResult(result({ conversationId: 1, identity: "storage-…" }), { expanded: false, isPartial: false }, theme, context())), /Configuration applied · storage-…/);
+		assert.match(screen(renderAgentResult(result({ conversationId: 1, identity: "storage-a" }), { expanded: false, isPartial: false }, theme, context())), /Configuration applied · storage-a/);
 		const abort = createAgentToolCards().agent_abort.renderResult(result({ conversationId: 1, identity: "storage-a", background: false }), { expanded: false, isPartial: false }, theme, context());
-		assert.match(screen(abort), /Abort requested · storage-…/);
+		assert.match(screen(abort), /Abort requested · storage-a/);
 		const command = createAgentToolCards().agent_command.renderResult(result({ name: "reload", conversationId: 1, identity: "storage-a", text: "Reloaded 3 extensions" }), { expanded: false, isPartial: false }, theme, context());
 		assert.match(screen(command), /Reloaded 3 extensions/);
-		assert.match(screen(command), /command reload\nstorage-…/);
+		assert.match(screen(command), /command reload\nstorage-a/);
 		const reload = createAgentToolCards().agent_command.renderResult(result({ sessionId: "storage-a", inventory: { contributions: [{}, {}] }, reloaded: true }), { expanded: false, isPartial: false }, theme, context());
 		assert.match(screen(reload), /Host registrations reloaded/);
 		assert.match(screen(reload), /2 native contributions installed/);
@@ -346,7 +346,7 @@ describe("agent result notice card", () => {
 			{ details: { identity: id, handle: "@reader", kind: "report" }, heading: "@reader · report" },
 			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "message" }, heading: "Parser session · message from another session" },
 			{ details: { senderIdentity: id, senderKind: "session", observedPurpose: "Review the parser", kind: "message", provider: "provider" }, heading: "Review the parser · message from another session · provider: provider" },
-			{ details: { senderIdentity: id, senderKind: "session", kind: "message" }, heading: "12345678 · message from another session" },
+			{ details: { senderIdentity: id, senderKind: "session", kind: "message" }, heading: `${id} · message from another session` },
 			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "report", threadId: "retained-thread", threadTitle: "Parser contract", operatorMessage: "The sourced event body" }, heading: "Parser contract · Parser session · thread notice" },
 			{ details: { identity: id, name: "Fallback reader", kind: "receipt", status: "done", liveOwner: false, fallback: true }, heading: "Fallback reader · result" },
 			{ details: {}, heading: "message from another session" },
@@ -367,6 +367,15 @@ describe("agent result notice card", () => {
 			if (Object.keys(details).length) assert.ok(screen(expanded, 240).includes(id));
 			for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 		}
+	});
+
+	it("shows an unnamed session's full identity on a wide peer headline", () => {
+		const identity = "12345678-1234-4234-8234-123456789abc";
+		const card = renderPeerNoticeCard({ content: "Direct message", details: { senderIdentity: identity, senderKind: "session", kind: "message" } }, theme, false);
+		assert.ok(card);
+		assert.equal(screen(card, 240).split("\n")[0]?.trim(), `[agent] ${identity} · message from another session`);
+		assert.doesNotMatch(screen(card, 240).split("\n")[0] ?? "", /…|unknown|unavailable/u);
+		assert.ok(card.render(24).every((line) => visibleWidth(line) <= 24));
 	});
 
 	it("preserves full source identities in expanded details", () => {

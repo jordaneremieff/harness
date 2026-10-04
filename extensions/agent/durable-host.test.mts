@@ -7,6 +7,7 @@ import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, HarnessInspection, SubmissionId, TaskGraph } from "@earendil-works/pi-durable";
+import { AgentMetaDoc } from "./durable-controls.ts";
 import { AgentDeliveryDoc, DurableHost, sessionIsIdle, type ConfigurationResult, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, reasoningRuntime, redactedAnswerMessage, scriptedRuntime, slowEffectTool, toolCallMessage } from "./durable-host-fixture.mts";
 
@@ -417,6 +418,51 @@ it("aborts active work before compacting and does not resume it", { timeout: 300
 		release.resolve();
 		await host.close();
 	}
+});
+
+it("returns observed compaction configuration and the retained summary text size", async (t) => {
+	const runtime = await fixtureRuntime("answer");
+	const options = hostOptions(join(fixtureRoot(t), "compact.sqlite"), runtime, fixtureRegistry());
+	const host = await DurableHost.open({ ...options, settings: { ...options.settings, compaction: { keepRecentTokens: 0, reserveTokens: 128 } } }, BACKGROUND_CONTEXT);
+	try {
+		await host.request("configure", { name: "Other parser" });
+		const submitted = await host.submit({ message: "Retain the original task", requestId: "context" });
+		await host.wait(submitted.submissionId);
+		const outcome = await host.request("compact", { wait: true }) as { status: string; summaryChars?: number; compaction: { identity: string; name: string; provider: string; modelId: string; thinkingLevel: string; before: { contextWindow: number; tokens?: number }; summaryChars?: number } };
+		assert.equal(outcome.status, "completed");
+		assert.equal(outcome.compaction.identity, host.storageId);
+		assert.equal(outcome.compaction.name, "Other parser");
+		assert.equal(outcome.compaction.provider, fixtureProvider);
+		assert.equal(outcome.compaction.modelId, fixtureModelId);
+		assert.equal(outcome.compaction.before.contextWindow, runtime.getModel(fixtureProvider, fixtureModelId)?.contextWindow);
+		assert.equal(Object.hasOwn(outcome.compaction.before, "tokens"), false, "cumulative usage is not context size");
+		assert.ok((outcome.summaryChars ?? 0) > 0);
+		assert.equal(outcome.compaction.summaryChars, outcome.summaryChars);
+		const marker = (await host.root().context(BACKGROUND_CONTEXT)).head?.model?.[0];
+		assert.equal(marker?.role, "user");
+		const retainedText = typeof marker?.content === "string" ? marker.content : marker?.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+		assert.equal(outcome.summaryChars, retainedText?.length, "size measures the actual retained wrapped summary");
+		await host.request("configure", { name: "Later name" });
+		assert.equal(outcome.compaction.name, "Other parser", "the execution facts stay fixed");
+	} finally { await host.close(); }
+});
+
+it("keeps compaction operational when optional name metadata is unreadable", async (t) => {
+	const options = hostOptions(join(fixtureRoot(t), "metadata.sqlite"), await fixtureRuntime("answer"), fixtureRegistry());
+	const host = await DurableHost.open({ ...options, settings: { ...options.settings, compaction: { keepRecentTokens: 0, reserveTokens: 128 } } }, BACKGROUND_CONTEXT);
+	try {
+		const submitted = await host.submit({ message: "Retain the task", requestId: "source" });
+		await host.wait(submitted.submissionId);
+		const snapshot = host.harness.snapshot.bind(host.harness);
+		t.mock.method(host.harness, "snapshot", async (...args: Parameters<typeof snapshot>) => {
+			if ((args[0] as unknown) === AgentMetaDoc) throw new Error("name metadata read failed");
+			return snapshot(...args);
+		});
+		const outcome = await host.request("compact", { wait: true }) as { status: string; compaction: { name?: string; metadataError?: string } };
+		assert.equal(outcome.status, "completed");
+		assert.equal(outcome.compaction.name, undefined);
+		assert.equal(outcome.compaction.metadataError, "name metadata read failed");
+	} finally { await host.close(); }
 });
 
 it("runs a contributed command with its host bindings", async (t) => {

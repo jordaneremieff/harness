@@ -1981,7 +1981,7 @@ for (const evidence of ["name", "purpose", "identity", "dead"] as const) it(`car
 	const details = received[0]?.details as Record<string, unknown>;
 	assert.equal(details.identity, senderIdentity);
 	assert.equal(details.senderIdentity, senderIdentity);
-	assert.equal(details.label, named ? "Parser session" : evidence === "purpose" ? "Review the parser" : senderIdentity.slice(0, 8));
+	assert.equal(details.label, named ? "Parser session" : evidence === "purpose" ? "Review the parser" : senderIdentity);
 	assert.equal(details.senderKind, "session");
 	assert.equal(details.metadataSource, "primary-endpoint");
 	assert.equal(details.threadId, thread.threadId);

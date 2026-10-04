@@ -24,7 +24,7 @@ const PREVIEW_CHARS = 600;
 export interface AgentCardContext {
 	readonly args?: unknown;
 	readonly lookup?: AgentCardLookup;
-	readonly state?: { callHint?: boolean };
+	readonly state?: { callHint?: boolean; compaction?: Record<string, unknown>; compactFactsShown?: boolean };
 	readonly executionStarted?: boolean;
 	readonly isPartial?: boolean;
 	readonly expanded: boolean;
@@ -67,8 +67,18 @@ function boundedSource(value: string, limit = SOURCE_DISPLAY_LIMIT): string {
 	return displayText(prefix) + (value.length > prefix.length ? `\n[Display limit: ${value.length - prefix.length} more UTF-16 code units. Full text remains in native history.]` : "");
 }
 
-function textComponent(text: string, previous?: Component): Text {
-	const component = previous instanceof Text ? previous : new Text("", 0, 0);
+class CardText extends Text {
+	private source = "";
+	expanded = false;
+	override setText(value: string): void { this.source = value; super.setText(value); }
+	override render(width: number): string[] {
+		return this.expanded ? super.render(width) : this.source.split("\n").map((line) => truncateToWidth(line, Math.max(0, width)));
+	}
+}
+
+function textComponent(text: string, previous?: Component, expanded = false): Text {
+	const component = previous instanceof CardText ? previous : new CardText("", 0, 0);
+	component.expanded = expanded;
 	component.setText(text);
 	return component;
 }
@@ -95,10 +105,8 @@ function appendCardHint(lines: string[], theme: Theme, context: AgentCardContext
 	if (hint) lines.push(theme.fg("dim", hint));
 }
 
-function shortIdentity(identity: string): string {
-	if (identity.startsWith("@")) return displayPreview(identity, 64);
-	const [storage, conversation] = identity.split(":");
-	return `${displayPreview(storage ?? identity, 8)}${conversation ? `:${displayPreview(conversation, 16)}` : ""}`;
+function displayIdentity(identity: string): string {
+	return displayText(identity);
 }
 
 function modelCaption(model: AgentConversationSummary["model"]): string {
@@ -121,11 +129,11 @@ function targetLabel(identity: string, context: AgentCardContext): string {
 	if (!identity) return "(target pending)";
 	const rows = context.lookup?.() ?? [];
 	const row = findTarget(identity, rows);
-	if (!row) return shortIdentity(identity);
-	const label = row.profile?.handle || row.name || shortIdentity(row.id);
+	if (!row) return displayIdentity(identity);
+	const label = row.profile?.handle || row.name || row.id;
 	const configuration = modelCaption(row.model);
 	const duplicate = !row.profile?.handle && row.name && rows.some((other) => other.id !== row.id && other.name === row.name && !other.profile?.handle && modelCaption(other.model) === configuration);
-	return `${displayPreview(label, 80)}${duplicate ? ` [${shortIdentity(row.id)}]` : ""}${configuration ? ` · ${displayPreview(configuration, 160)}` : ""}`;
+	return `${displayText(label)}${duplicate ? ` [${displayIdentity(row.id)}]` : ""}${configuration ? ` · ${displayText(configuration)}` : ""}`;
 }
 
 export function record(value: unknown): Record<string, unknown> {
@@ -167,7 +175,7 @@ function resultDetails(result: AgentToolResult<unknown>): Record<string, unknown
 function resultPreview(value: string, limit = PREVIEW_UNITS): string {
 	const prefix = displayPrefix(value, limit);
 	const lines = prefix.split("\n").slice(0, 3).join("\n");
-	return displayText(lines).replace(/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}(?::[1-9][0-9]*)?/giu, shortIdentity) + (lines.length < value.length ? "\n…" : "");
+	return displayText(lines) + (lines.length < value.length ? "\n…" : "");
 }
 
 function callIdentity(context: AgentCardContext): string {
@@ -196,7 +204,7 @@ function snapshotFacts(context: AgentCardContext, snapshot: Record<string, unkno
 	const row: AgentConversationSummary = {
 		id: identity, storageId: identity.split(":")[0], name: text(snapshot.name) || known?.name,
 		profile: known?.profile, cwd: text(snapshot.cwd), modifiedAt: 0, owner: "unknown", state: "unavailable", cost: 0, partial: false,
-		model: text(model.provider) && text(model.modelId) ? { provider: text(model.provider), modelId: text(model.modelId), thinkingLevel: text(agent.thinkingLevel) || "unknown" } : known?.model,
+		model: text(model.provider) && text(model.modelId) ? { provider: text(model.provider), modelId: text(model.modelId), thinkingLevel: text(agent.thinkingLevel) } : known?.model,
 	};
 	return { ...context, lookup: () => [row, ...previous.filter((item) => item.id !== identity)] };
 }
@@ -247,7 +255,7 @@ function argumentCard(name: string, subject: string, qualifier: string | undefin
 	appendExpandedTarget(lines, args, theme, context);
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
 	else if (hidden) appendCardHint(lines, theme, context, "call", "arguments");
-	return textComponent(lines.join("\n"), context.lastComponent);
+	return textComponent(lines.join("\n"), context.lastComponent, context.expanded);
 }
 
 /** Generic call card for snapshot and control tools. */
@@ -260,8 +268,8 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 	if (configuration) lines.push(theme.fg("muted", configuration));
 	appendExpandedTarget(lines, args, theme, context);
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	else if (argsHidden(args, subjectKey, subjectValue) || subjectKey === "sessionId" && shortIdentity(subjectValue) !== subjectValue) appendCardHint(lines, theme, context, "call", "arguments");
-	return textComponent(lines.join("\n"), context.lastComponent);
+	else if (argsHidden(args, subjectKey, subjectValue)) appendCardHint(lines, theme, context, "call", "arguments");
+	return textComponent(lines.join("\n"), context.lastComponent, context.expanded);
 }
 
 function renderMessageCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
@@ -281,7 +289,7 @@ function renderMessageCall(name: string, value: unknown, theme: Theme, context: 
 		lines.push(theme.fg("toolOutput", preview || (context.argsComplete === false ? "(message pending)" : "(empty or whitespace-only message)")));
 		if ((preview !== message && message !== "") || target !== text(args.sessionId)) appendCardHint(lines, theme, context, "call", "message");
 	}
-	return textComponent(lines.join("\n"), context.lastComponent);
+	return textComponent(lines.join("\n"), context.lastComponent, context.expanded);
 }
 
 export function renderSendCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
@@ -292,12 +300,21 @@ export function renderSteerCall(value: unknown, theme: Theme, context: AgentCard
 	return renderMessageCall("agent_steer", value, theme, context);
 }
 
+function compactCallTarget(args: Record<string, unknown>, context: AgentCardContext): string {
+	if (context.state?.compaction) return compactTarget(context.state.compaction);
+	const target = text(args.sessionId) ? targetLabel(text(args.sessionId), context) : "(target pending)";
+	return text(args.summary) ? `this session · ${target}` : target;
+}
+
 /** The summary argument selects the self path; execution refuses a mismatched session ID. */
 export function renderCompactCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
-	const target = text(args.sessionId) ? targetLabel(text(args.sessionId), context) : "(target pending)";
+	const facts = context.state?.compaction;
 	const summary = text(args.summary);
-	const lines = [theme.fg("toolTitle", theme.bold("agent_compact")) + theme.fg("accent", summary ? ` · self · ${target}` : ` · ${target}`)];
+	const lines = [theme.fg("toolTitle", theme.bold("agent_compact")) + theme.fg("accent", ` · ${compactCallTarget(args, context)}`)];
+	if (context.state) context.state.compactFactsShown = facts !== undefined;
+	const configuration = facts ? compactConfiguration(facts) : "";
+	if (configuration) lines.push(muted(theme, configuration));
 	if (summary) lines.push(theme.fg("muted", context.expanded ? `Native compaction entry with the agent-authored summary (${summary.length} chars) at this tool batch's end` : `Summary: ${summary.length} chars`));
 	else {
 		lines.push(theme.fg("muted", context.expanded ? "Native summarization of the named conversation; it aborts active work and does not resume" : "Compacts after abort; leaves the agent idle"));
@@ -306,7 +323,7 @@ export function renderCompactCall(value: unknown, theme: Theme, context: AgentCa
 	appendExpandedTarget(lines, args, theme, context);
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
 	else if (summary || text(args.instructions)) appendCardHint(lines, theme, context, "call", "arguments");
-	return textComponent(lines.join("\n"), context.lastComponent);
+	return textComponent(lines.join("\n"), context.lastComponent, context.expanded);
 }
 
 export function renderListCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
@@ -344,7 +361,7 @@ function inspectQualifier(args: Record<string, unknown>): { qualifier: string; h
 	const push = (label: string, key: string, limit: number) => {
 		const value = text(args[key]);
 		if (!value) return;
-		parts.push(`${label} ${key === "operationId" ? shortIdentity(value) : displayPreview(value, limit)}`);
+		parts.push(`${label} ${key.endsWith("Id") ? displayIdentity(value) : displayPreview(value, limit)}`);
 		hidden ||= value.length > limit;
 	};
 	push("entry", "entryId", 120);
@@ -384,7 +401,7 @@ function outcomeCard(result: AgentToolResult<unknown>, options: ToolRenderResult
 		else lines.push(theme.fg(context.isError === true ? "error" : "toolOutput", resultPreview(output)));
 		if (summary || output.length > PREVIEW_UNITS || output.includes("\n")) appendCardHint(lines, theme, context, "result", context.isPartial ? "partial result" : "result");
 	}
-	return textComponent(lines.join("\n"), context.lastComponent);
+	return textComponent(lines.join("\n"), context.lastComponent, options.expanded);
 }
 
 function muted(theme: Theme, value: string): string {
@@ -469,7 +486,7 @@ function sessionSummaryLines(sessions: Record<string, unknown>[], theme: Theme):
 	const cost = sessions.reduce((sum, row) => sum + (count(row.cost) ?? 0), 0);
 	const partial = sessions.some((row) => row.partial === true);
 	const lines = [theme.fg("toolOutput", `${sessions.length} conversation${sessions.length === 1 ? "" : "s"} · ${working} working · $${cost.toFixed(2)}${partial ? "+" : ""}`)];
-	for (const row of sessions.slice(0, 4)) lines.push(muted(theme, `${displayPreview(text(row.name) || shortIdentity(text(row.id)), 120) || "conversation"} · ${text(row.state) || "unknown state"}`));
+	for (const row of sessions.slice(0, 4)) lines.push(muted(theme, `${text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.id)) || "conversation"} · ${text(row.state) || "unknown state"}`));
 	if (sessions.length > 4) lines.push(muted(theme, `${sessions.length - 4} more conversation records`));
 	return lines;
 }
@@ -477,7 +494,7 @@ function sessionSummaryLines(sessions: Record<string, unknown>[], theme: Theme):
 function conversationListLines(conversations: Record<string, unknown>[], theme: Theme): string[] {
 	const busy = conversations.filter((row) => row.busy === true || Object.keys(record(record(row.live).run)).length > 0).length;
 	const lines = [theme.fg("toolOutput", `${conversations.length} conversation${conversations.length === 1 ? "" : "s"} · ${busy} working`)];
-	for (const row of conversations.slice(0, 4)) lines.push(muted(theme, `${displayPreview(text(row.name) || shortIdentity(text(row.identity)), 120) || "conversation"} · ${row.busy === true ? "working" : "idle"}`));
+	for (const row of conversations.slice(0, 4)) lines.push(muted(theme, `${text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.identity)) || "conversation"} · ${row.busy === true ? "working" : "idle"}`));
 	if (conversations.length > 4) lines.push(muted(theme, `${conversations.length - 4} more conversation records`));
 	return lines;
 }
@@ -527,7 +544,7 @@ function runningSlots(live: Record<string, unknown>): Record<string, unknown>[] 
 }
 
 function runningSlotLine(slot: Record<string, unknown>): string {
-	const parts = [`Running: ${displayPreview(text(slot.name) || "tool", 100)}`, `call ${shortIdentity(text(slot.callId) || "unknown")}`];
+	const parts = [`Running: ${displayPreview(text(slot.name) || "tool", 100)}`, `call ${displayIdentity(text(slot.callId) || "unknown")}`];
 	if (slot.status === "pending") parts.push("pending");
 	return parts.join(" · ");
 }
@@ -653,10 +670,10 @@ export function renderAgentResult(result: AgentToolResult<unknown>, options: Too
 		if (snapshot) lines.push(...snapshotLines(snapshot, details, theme, { ...context, expanded: true }));
 		lines.push(theme.fg("toolOutput", boundedSource(output)));
 		if (snapshot) lines.push(theme.fg("dim", boundedSource(JSON.stringify(snapshot, null, 2))));
-		return textComponent(lines.join("\n"), context.lastComponent);
+		return textComponent(lines.join("\n"), context.lastComponent, options.expanded);
 	}
 	lines.push(...collapsedAgentLines(details, output, theme, context));
-	return textComponent(lines.join("\n"), context.lastComponent);
+	return textComponent(lines.join("\n"), context.lastComponent, options.expanded);
 }
 
 function messageResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext, labels: { error: string; partial: string; receipt: string }): Component {
@@ -672,7 +689,7 @@ function messageResult(result: AgentToolResult<unknown>, options: ToolRenderResu
 		if (!summary) lines.push(theme.fg("toolOutput", resultPreview(output, 300)));
 		appendCardHint(lines, theme, context, "result", options.isPartial ? "partial result" : "result");
 	}
-	return textComponent(lines.join("\n"), context.lastComponent);
+	return textComponent(lines.join("\n"), context.lastComponent, options.expanded);
 }
 
 export function renderSendResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
@@ -681,6 +698,32 @@ export function renderSendResult(result: AgentToolResult<unknown>, options: Tool
 
 export function renderSteerResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
 	return messageResult(result, options, theme, context, { error: "Steer error", partial: "Steering disposition pending", receipt: "Steer admitted" });
+}
+
+function compactTarget(facts: Record<string, unknown>): string {
+	const identity = text(facts.identity);
+	const name = text(facts.name);
+	return facts.self === true ? `this session${name ? ` · ${displayText(name)}` : ` · ${displayIdentity(identity)}`}` : displayText(name || identity);
+}
+
+function compactConfiguration(facts: Record<string, unknown>): string {
+	return resolvedModelLine(text(facts.provider), text(facts.modelId), text(facts.thinkingLevel), "thinking");
+}
+
+function compactFactLines(facts: Record<string, unknown>, showTarget: boolean): string[] {
+	const lines: string[] = [];
+	if (showTarget) {
+		if (compactTarget(facts)) lines.push(`Target: ${compactTarget(facts)}`);
+		const configuration = compactConfiguration(facts);
+		if (configuration) lines.push(configuration);
+	}
+	const before = record(facts.before);
+	const tokens = count(before.tokens), window = count(before.contextWindow), percent = count(before.percent);
+	const parts = [tokens === undefined ? "" : `${tokens} tokens`, window === undefined ? "" : `${window} window`, percent === undefined ? "" : `${percent.toFixed(1)}%`].filter(Boolean);
+	if (parts.length) lines.push(`Before: ${parts.join(" · ")}`);
+	if (facts.self !== true && count(facts.summaryChars) !== undefined) lines.push(`Summary: ${facts.summaryChars} chars`);
+	if (text(facts.metadataError)) lines.push(`Metadata read failed: ${displayPreview(text(facts.metadataError), 240)}`);
+	return lines;
 }
 
 function compactSummary(details: Record<string, unknown>, context: AgentCardContext): string[] | undefined {
@@ -694,30 +737,42 @@ function compactSummary(details: Record<string, unknown>, context: AgentCardCont
 	const lines = [`${self ? "Summary" : "Compaction"} ${displayPreview(status === "task" ? "admitted" : status || "pending", 40)}${taskId !== undefined ? ` · task ${taskId}` : ""}${submissionId !== undefined ? ` · submission ${submissionId}` : ""}`];
 	if (entryId !== undefined) lines.push(`summary entry ${entryId}`);
 	if (error) lines.push(displayPreview(error, 240));
+	if (text(details.summarySizeError)) lines.push(`Summary size read failed: ${displayPreview(text(details.summarySizeError), 240)}`);
 	return lines;
+}
+
+function rememberCompactionFacts(received: Record<string, unknown>, context: AgentCardContext): Record<string, unknown> {
+	if (Object.keys(received).length && context.state && context.state.compaction === undefined) context.state.compaction = received;
+	return context.state?.compaction ?? received;
 }
 
 export function renderCompactResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
 	const details = resultDetails(result);
 	const output = resultText(result);
+	const received = record(details.compaction);
+	const facts = rememberCompactionFacts(received, context);
 	const lines: string[] = [];
 	if (context.isError === true) lines.push(theme.fg("error", "Compact error"));
 	else if (options.isPartial) lines.push(theme.fg("muted", "Compaction pending"));
-	if (options.expanded) lines.push(theme.fg("toolOutput", boundedSource(output)));
-	else {
-		const summary = output === "Continuity summary queued for this completed tool batch." ? ["Summary queued"] : compactSummary(details, context);
+	if (options.expanded) {
+		lines.push(...compactFactLines(facts, true).map((line) => muted(theme, line)));
+		lines.push(theme.fg("toolOutput", boundedSource(output)));
+		if (Object.keys(received).length) lines.push(theme.fg("dim", boundedSource(JSON.stringify(received, null, 2))));
+	} else {
+		const summary = compactSummary(details, context);
 		if (summary) lines.push(...summary);
 		else lines.push(theme.fg("toolOutput", resultPreview(output, 300)));
+		lines.push(...compactFactLines(facts, context.state?.compactFactsShown !== true).map((line) => muted(theme, line)));
 		if (summary || output.length > 300 || text(record(context.args).summary)) appendCardHint(lines, theme, context, "result", context.isPartial ? "partial result" : "result");
 	}
-	return textComponent(lines.join("\n"), context.lastComponent);
+	return textComponent(lines.join("\n"), context.lastComponent, options.expanded);
 }
 
 function listedProfiles(rows: unknown[], theme: Theme): string[] {
 	const lines = rows.slice(0, 4).flatMap((value) => {
 		const row = record(value);
 		return [
-			theme.fg("accent", displayPreview([text(row.handle), text(row.name)].filter(Boolean).join(" · ") || shortIdentity(text(row.identity)), 160)),
+			theme.fg("accent", text(row.handle) || text(row.name) ? displayPreview([text(row.handle), text(row.name)].filter(Boolean).join(" · "), 160) : displayIdentity(text(row.identity))),
 			muted(theme, typeof row.role === "string" ? `Role: ${displayPreview(row.role, 180) || "(empty)"}` : "Role: unknown profile coverage"),
 		];
 	});
@@ -753,7 +808,7 @@ function profileIdentityLines(details: Record<string, unknown>, profile: Record<
 	const sameModel = headerHasModel(identity, text(model.provider), text(model.modelId), text(profile.thinkingLevel), context);
 	const configuration = resolvedModelLine(text(model.provider), text(model.modelId), text(profile.thinkingLevel), "reasoning");
 	return [
-		...(!sameName || details.outcome ? [theme.fg(details.outcome === "conflict" ? "warning" : "accent", `${details.outcome === "conflict" ? "Profile conflict; no change" : details.outcome === "applied" ? "Profile saved" : "Profile"} · ${displayPreview(text(profile.handle) || text(profile.name) || shortIdentity(text(profile.identity)), 160)}`)] : []),
+		...(!sameName || details.outcome ? [theme.fg(details.outcome === "conflict" ? "warning" : "accent", `${details.outcome === "conflict" ? "Profile conflict; no change" : details.outcome === "applied" ? "Profile saved" : "Profile"} · ${text(profile.handle) || text(profile.name) ? displayPreview(text(profile.handle) || text(profile.name), 160) : displayIdentity(text(profile.identity))}`)] : []),
 		...(!sameModel && configuration ? [muted(theme, configuration)] : []),
 	];
 }
@@ -764,7 +819,7 @@ function profileLines(details: Record<string, unknown>, theme: Theme, context: A
 	return [
 		...profileIdentityLines(details, profile, theme, context),
 		muted(theme, `Role: ${displayPreview(text(profile.role), 240) || "(empty)"}`),
-		muted(theme, `Revision: ${displayPreview(text(profile.revision), 12)} · ${profile.live === true ? "live host" : "retained"}`),
+		muted(theme, `Revision: ${displayIdentity(text(profile.revision))} · ${profile.live === true ? "live host" : "retained"}`),
 		...profileRouteLines(profile, theme),
 	];
 }
@@ -798,7 +853,7 @@ function inspectResultSummary(details: Record<string, unknown>, theme: Theme, co
 	const operation = args.operationId === details.operationId ? "" : text(details.operationId);
 	const reason = text(details.reason);
 	const hasAnswer = text(details.answer) !== "";
-	const headline = `saved result${status ? ` · ${displayPreview(status, 40)}` : ""}${operation ? ` · operation ${shortIdentity(operation)}` : submission !== undefined ? ` · submission ${submission}` : ""}`;
+	const headline = `saved result${status ? ` · ${displayPreview(status, 40)}` : ""}${operation ? ` · operation ${displayIdentity(operation)}` : submission !== undefined ? ` · submission ${submission}` : ""}`;
 	const lines = [theme.fg("toolOutput", headline)];
 	lines.push(muted(theme, `${hasAnswer ? "assistant answer retained" : "no assistant answer"}${reason ? ` · ${displayPreview(reason, 160)}` : ""}`));
 	return lines;
@@ -811,7 +866,7 @@ function inspectEntrySummary(details: Record<string, unknown>, theme: Theme): st
 	const omissions = record(details.omissions);
 	const omitted = ["providerSignatures", "imagePayloads", "redactedThinking"].reduce((sum, key) => sum + (count(omissions[key]) ?? 0), 0);
 	const remaining = details.nextOffset === null ? "representation complete" : "more of this entry remains";
-	const lines = [theme.fg("toolOutput", `entry ${displayPreview(entryId, 120)}${offset !== undefined ? ` · offset ${offset}` : ""}`)];
+	const lines = [theme.fg("toolOutput", `entry ${displayIdentity(entryId)}${offset !== undefined ? ` · offset ${offset}` : ""}`)];
 	lines.push(muted(theme, `${remaining}${truncated ? " · clipped to the display bound" : ""}${omitted ? ` · ${omitted} omitted fields` : ""}`));
 	return lines;
 }
@@ -846,15 +901,11 @@ export function renderInspectResult(result: AgentToolResult<unknown>, options: T
 	return outcomeCard(result, options, theme, context, { error: "Inspect error", partial: "Inspection pending" }, inspectSummary);
 }
 
-function shortThread(value: string): string {
-	return displayPreview(value.split("/").at(-1) ?? value, 8);
-}
-
 function renderCollaborateCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
 	const thread = text(args.threadId);
 	const source = text(args.sessionId) || thread.split("/")[0];
-	const topic = text(args.title) ? displayPreview(text(args.title), 100) : thread ? `thread ${shortThread(thread)}` : "";
+	const topic = text(args.title) ? displayPreview(text(args.title), 100) : thread ? `thread ${displayIdentity(thread)}` : "";
 	const subject = [text(args.action), topic, source ? targetLabel(source, context) : ""].filter(Boolean).join(" · ");
 	const message = text(args.message);
 	return argumentCard("agent_collaborate", subject, message ? displayPreview(message, 180) : undefined, args, theme, context, true);
@@ -866,7 +917,7 @@ function collaborationReceiptLines(details: Record<string, unknown>, theme: Them
 	if (threadId) {
 		const actions: Record<string, string> = { create: "Thread created", join: "Joined", leave: "Left", post: "Posted", revise: "Frame revised", close: "Thread closed" };
 		const sequence = count(details.sequence);
-		return [muted(theme, `${actions[text(args.action)] || "Recorded"}${sequence !== undefined ? ` · event ${sequence}` : ""}${args.threadId === threadId ? "" : ` · thread ${shortThread(threadId)}`}${details.deduped === true ? " · replay" : ""}`)];
+		return [muted(theme, `${actions[text(args.action)] || "Recorded"}${sequence !== undefined ? ` · event ${sequence}` : ""}${args.threadId === threadId ? "" : ` · thread ${displayIdentity(threadId)}`}${details.deduped === true ? " · replay" : ""}`)];
 	}
 	return undefined;
 }
@@ -944,7 +995,7 @@ function peerLabel(details: Record<string, unknown>): string {
 	const named = text(details.handle) || text(details.name) || text(details.label) || text(details.observedPurpose);
 	if (named) return named;
 	const identity = text(details.identity) || text(details.senderIdentity);
-	return details.senderKind === "session" ? identity.slice(0, 8) : identity;
+	return identity;
 }
 
 /** Model-facing caveat sentences that the operator card keeps in model context but not in view. */

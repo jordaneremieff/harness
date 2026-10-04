@@ -53,7 +53,8 @@ for (const [name, fixture] of Object.entries(fixtures)) it(`${name} uses the ins
 	component.updateResult(result);
 	for (const width of [40, 80, 240]) assert.ok(hints(screen(component, width)).length <= 1);
 	const collapsed = screen(component);
-	assert.doesNotMatch(collapsed, fullId);
+	if (name === "agent_collaborate") assert.ok(collapsed.includes(String(fixture.args.threadId)));
+	else assert.doesNotMatch(collapsed, fullId);
 	for (const label of ["Parser review", "Fork review"]) assert.ok((collapsed.split(label).length - 1) <= 1, `${label} appears once`);
 	if (!["agent_fork", "agent_rewind"].includes(name)) assert.ok((collapsed.split("provider/model").length - 1) <= 1, "model facts appear once");
 	assert.doesNotMatch(collapsed, /not proof|not task acceptance|controls escaped|unresolved|Deduplicated against/u);
@@ -110,17 +111,17 @@ it("collaboration pages, reset refusals, and raw error previews keep detail behi
 	const collaboration = nativeRow("agent_collaborate", { action: "read", threadId: `${targetId}/0123456789abcdef0123456789abcdef` }, { thread: { title: "Parser plan", closed: false, members: [{ identity: targetId }] }, events: [], pending: 1, coverage: { complete: false } });
 	assert.match(screen(collaboration), /Parser plan · open · 1 members/u);
 	assert.match(screen(collaboration), /bounded page/u);
-	assert.doesNotMatch(screen(collaboration), fullId);
+	assert.ok(screen(collaboration).includes(`${targetId}/0123456789abcdef0123456789abcdef`));
 	const reset = nativeRow("agent_reset", { sessionId: targetId }, { text: "Reset did not place for “Parser review”: unavailable." });
 	assert.match(screen(reset), /Reset not placed: unavailable/u);
 	const error = nativeRow("agent_status", { sessionId: targetId }, `Storage ${targetId} is unavailable`);
-	assert.doesNotMatch(screen(error), fullId);
+	assert.ok(screen(error).includes(targetId));
 	error.setExpanded(true);
 	assert.match(screen(error), new RegExp(targetId));
 });
 
 it("a primary continuity receipt and expanded messages use plain labels", () => {
-	const compact = nativeRow("agent_compact", { sessionId: targetId, summary: "Keep facts" }, "Continuity summary queued for this completed tool batch.");
+	const compact = nativeRow("agent_compact", { sessionId: targetId, summary: "Keep facts" }, { text: "Continuity summary queued for this completed tool batch.", status: "queued", compaction: { identity: targetId, self: true } });
 	assert.match(screen(compact), /Summary queued/u);
 	assert.doesNotMatch(screen(compact), /at this tool batch|does not establish/u);
 	const send = nativeRow("agent_send", fixtures.agent_send.args, fixtures.agent_send.details);

@@ -43,10 +43,10 @@ describe("human-readable agent targets", () => {
 		assert.match(screen(cards.agent_send.renderResult(receipt, { expanded: false, isPartial: false }, theme, context())), /Admitted · @parser · provider\/model/u);
 	});
 
-	it("falls back immediately to a short identity and retains unknown handles", () => {
+	it("falls back to the full identity and retains unknown handles", () => {
 		const cards = createAgentToolCards();
-		assert.match(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context())), /agent_send → 12345678…/u);
-		assert.match(screen(cards.agent_abort.renderCall({ sessionId: `${id}:7` }, theme, context())), /12345678…:7/u);
+		assert.ok(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context())).includes(`agent_send → ${id}`));
+		assert.ok(screen(cards.agent_abort.renderCall({ sessionId: `${id}:7` }, theme, context())).includes(`${id}:7`));
 		assert.match(screen(cards.agent_send.renderCall({ sessionId: "@unknown", message: "Task" }, theme, context())), /agent_send → @unknown/u);
 		assert.ok(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context({ expanded: true }))).includes(id));
 	});
@@ -54,7 +54,7 @@ describe("human-readable agent targets", () => {
 	it("disambiguates repeated names only without distinct handles", () => {
 		const other = { ...row, id: "87654321-1234-1234-1234-123456789abc" };
 		const cards = createAgentToolCards(() => [row, other]);
-		assert.match(screen(cards.agent_status.renderCall({ sessionId: id }, theme, context())), /Parser review \[12345678…\]/u);
+		assert.ok(screen(cards.agent_status.renderCall({ sessionId: id }, theme, context())).includes(`Parser review [${id}]`));
 		assert.doesNotMatch(screen(createAgentToolCards(() => [row]).agent_status.renderCall({ sessionId: id }, theme, context())), /\[/u);
 		const differentModel = { ...other, model: { ...model, modelId: "other-model" } };
 		assert.doesNotMatch(screen(createAgentToolCards(() => [row, differentModel]).agent_status.renderCall({ sessionId: id }, theme, context())), /\[/u);

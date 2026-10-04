@@ -644,7 +644,15 @@ export class DurableHost {
 		const conversation = await this.target(params, context);
 		// Stop every reached task first; compaction starts from an idle conversation and does not resume the stopped work.
 		await abortConversation(conversation, true, context);
-		return compactConversation(this.harness, conversation, requestString(params, "instructions"), requestBoolean(params, "wait") ?? true, context);
+		const agent = await conversation.agent(context);
+		let name: string | undefined;
+		let metadataError: string | undefined;
+		try { name = (await this.harness.snapshot(AgentMetaDoc, conversation.id, context))?.name ?? undefined; }
+		catch (error) { metadataError = error instanceof Error ? error.message : String(error); }
+		const model = agent.model === undefined ? undefined : this.models.getModel(agent.model.provider, agent.model.modelId);
+		const compaction = { identity: this.identity(conversation.id), name, provider: agent.model?.provider, modelId: agent.model?.modelId, thinkingLevel: agent.thinkingLevel, ...(metadataError === undefined ? {} : { metadataError }), ...(model === undefined ? {} : { before: { contextWindow: model.contextWindow } }) };
+		const outcome = await compactConversation(this.harness, conversation, requestString(params, "instructions"), requestBoolean(params, "wait") ?? true, context);
+		return { ...outcome, compaction: { ...compaction, ...(outcome.summaryChars === undefined ? {} : { summaryChars: outcome.summaryChars }) } };
 	}
 
 	private async configureRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {

@@ -221,7 +221,11 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			outputSchema: schema ?? Type.Unknown(),
 			...(modelOnly ? { exposure: "model-only" as const } : {}),
 			async execute(callId, input, _signal, _update, ctx) {
-				return result(await execute(input as Record<string, unknown>, ctx, callId), schema);
+				const value = await execute(input as Record<string, unknown>, ctx, callId);
+				const output = result(value, schema);
+				if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
+					return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
+				return output;
 			},
 			renderCall: cards[name].renderCall,
 			renderResult: cards[name].renderResult,
@@ -390,8 +394,15 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			if (input.sessionId === ctx.sessionManager.getSessionId()) {
 				if (input.instructions !== undefined)
 					throw new Error("Primary self-compaction accepts summary, not instructions");
+				const usage = ctx.getContextUsage();
+				const compaction = {
+					identity: String(input.sessionId), self: true, name: ctx.sessionManager.getSessionName(),
+					provider: ctx.model?.provider, modelId: ctx.model?.id, thinkingLevel: ctx.thinkingLevel ?? pi.getThinkingLevel(),
+					...(usage === undefined ? {} : { before: { tokens: usage.tokens, contextWindow: usage.contextWindow, percent: usage.percent } }),
+					summaryChars: typeof input.summary === "string" ? input.summary.length : undefined,
+				};
 				selfCompaction.request(String(input.sessionId), callId, input.summary as string | undefined);
-				return "Continuity summary queued for this completed tool batch.";
+				return { text: "Continuity summary queued for this completed tool batch.", status: "queued", compaction };
 			}
 			if (input.summary !== undefined) throw new Error("Another agent's compaction accepts instructions, not summary");
 			return control("compact", input, ctx);

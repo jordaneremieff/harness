@@ -23,6 +23,7 @@ import type { Context } from "@earendil-works/chord";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	AssistantEntry,
+	CompactionEntry,
 	defineDoc,
 	defineDocFamily,
 	type AgentChange,
@@ -615,6 +616,26 @@ export async function rewindConversation(
 	return { conversation: forked.conversation, predecessorEntryId: predecessor.id, submissionId: submitted.submissionId, deduped: forked.deduped };
 }
 
+/** Retained text includes the native wrapper; queued writes have no observed size. */
+async function compactionSummarySize(harness: Harness, result: { entryId?: EntryId; submissionId?: SubmissionId }, context: Context): Promise<number | undefined> {
+	let entryId = result.entryId;
+	if (entryId === undefined && result.submissionId !== undefined) {
+		const submission = await harness.submission(result.submissionId, context);
+		const record = await submission?.status(context);
+		if (record?.type === "write" && record.status === "done") entryId = record.entry;
+	}
+	if (entryId === undefined) return undefined;
+	const summary = await harness.commit((tx) => tx.entry(CompactionEntry, entryId), context);
+	return summary?.model?.reduce((size, message) => size + (typeof message.content === "string" ? message.content.length : message.content.reduce((chars, part) => chars + (part.type === "text" ? part.text.length : 0), 0)), 0);
+}
+
+async function compactionSummaryFacts(harness: Harness, result: { entryId?: EntryId; submissionId?: SubmissionId }, context: Context): Promise<{ summaryChars?: number; summarySizeError?: string }> {
+	try {
+		const summaryChars = await compactionSummarySize(harness, result, context);
+		return summaryChars === undefined ? {} : { summaryChars };
+	} catch (error) { return { summarySizeError: error instanceof Error ? error.message : String(error) }; }
+}
+
 /** Run a manual compaction and optionally wait for its placement. */
 export async function compactConversation(
 	harness: Harness,
@@ -625,6 +646,8 @@ export async function compactConversation(
 ): Promise<{
 	readonly taskId: TaskId<{ entryId?: EntryId; submissionId?: SubmissionId }>;
 	readonly status: "task" | "completed" | "aborted" | "failed" | "orphaned" | "faulted";
+	readonly summaryChars?: number;
+	readonly summarySizeError?: string;
 	readonly entryId?: EntryId;
 	readonly submissionId?: SubmissionId;
 	readonly error?: string;
@@ -637,6 +660,7 @@ export async function compactConversation(
 		return {
 			taskId,
 			status: "completed",
+			...await compactionSummaryFacts(harness, outcome.result, context),
 			...(outcome.result.entryId === undefined ? {} : { entryId: outcome.result.entryId }),
 			...(outcome.result.submissionId === undefined ? {} : { submissionId: outcome.result.submissionId }),
 		};
