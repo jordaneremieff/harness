@@ -915,9 +915,9 @@ The primary status line and dashboard heading use the same session scope:
 agents created by the current primary session plus their descendants through
 catalog ownership. Other primary sessions and unrelated retained agents do not
 contribute to these figures. The roster still lists discovered agents across
-sessions. The status says `agents this session: <working> working · <total>
-total · <cost>` and disappears when no session-scoped rows are found. Working
-counts only `working` rows; total includes all states in scope. Each registered
+sessions. The status says `agents: <working>/<total> active (session) · <cost>`
+and disappears when no session-scoped rows are found. The numerator counts only
+`working` rows; the denominator includes all states in scope. Each registered
 primary receives its own figures. The dashboard reuses its scanned roster page
 for these figures without another catalog scan. Repeated reads never add the
 same usage twice. Incomplete inventory prefixes the known cost subtotal with

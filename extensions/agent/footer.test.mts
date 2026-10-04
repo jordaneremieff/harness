@@ -24,14 +24,15 @@ function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): Agent
 test("coverage uncertainty qualifies cost without changing the complete status format", () => {
 	const rows = [row("working", { state: "working", cost: 0.25 })];
 	const complete = { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null };
-	assert.equal(formatDurableFooter(rows, complete), "agents this session: 1 working · 1 total · $0.25");
+	assert.equal(formatDurableFooter(rows, complete), "agents: 1/1 active (session) · $0.25");
 	for (const coverage of [
 		{ ...complete, complete: false },
 		{ ...complete, nextCursor: "more" },
 		{ ...complete, skipped: 1 },
 		{ ...complete, omitted: 1 },
 	]) {
-		assert.equal(formatDurableFooter(rows, coverage), "agents this session: 1 working · 1 total · ≥$0.25");
+		assert.equal(formatDurableFooter(rows, coverage), "agents: 1/1 active (session) · ≥$0.25");
+		assert.equal(formatDurableFooter([row("working", { state: "working", cost: 0.25, partial: true })], coverage), "agents: 1/1 active (session) · ≥$0.25+?", "inventory and cost uncertainty keep distinct markers");
 		assert.equal(formatDurableFooter([], coverage), "");
 	}
 });
@@ -44,22 +45,22 @@ test("counts only working conversations and keeps the empty footer", () => {
 		row("failed", { state: "failed", cost: 4 }),
 		row("unavailable", { owner: "unavailable", state: "unavailable", cost: 8 }),
 	];
-	assert.equal(formatDurableFooter(rows), "agents this session: 1 working · 5 total · $15.25");
+	assert.equal(formatDurableFooter(rows), "agents: 1/5 active (session) · $15.25");
 });
 
 test("sums native conversation costs and keeps sub-cent totals readable", () => {
-	assert.equal(formatDurableFooter([row("a", { cost: 0.1 }), row("b", { cost: 0.2 })]), "agents this session: 0 working · 2 total · $0.30");
-	assert.equal(formatDurableFooter([row("a", { cost: 0.0001 })]), "agents this session: 0 working · 1 total · $0.0001");
-	assert.equal(formatDurableFooter([row("a", { cost: 0 })]), "agents this session: 0 working · 1 total · $0.00");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.1 }), row("b", { cost: 0.2 })]), "agents: 0/2 active (session) · $0.30");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.0001 })]), "agents: 0/1 active (session) · $0.0001");
+	assert.equal(formatDurableFooter([row("a", { cost: 0 })]), "agents: 0/1 active (session) · $0.00");
 });
 
 test("marks incomplete native cost with +? and never reports detached work", () => {
-	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: true })]), "agents this session: 0 working · 1 total · $0.25+?");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: true })]), "agents: 0/1 active (session) · $0.25+?");
 	assert.equal(
 		formatDurableFooter([row("a", { cost: 0.25 }), row("b", { cost: 0.75, partial: true })]),
-		"agents this session: 0 working · 2 total · $1.00+?",
+		"agents: 0/2 active (session) · $1.00+?",
 	);
-	assert.equal(formatDurableFooter([row("a", { cost: Number.NaN }), row("b", { cost: -1 })]), "agents this session: 0 working · 2 total · $0.00+?");
+	assert.equal(formatDurableFooter([row("a", { cost: Number.NaN }), row("b", { cost: -1 })]), "agents: 0/2 active (session) · $0.00+?");
 	assert.doesNotMatch(formatDurableFooter([row("a", { state: "working" })]), /detached/);
 });
 
@@ -76,9 +77,9 @@ test("each primary counts only its created agents and descendants through conver
 	]);
 	const reads: string[] = [];
 	const readOwner = (storageId: string) => { reads.push(storageId); return owners.get(storageId); };
-	assert.equal(sessionFigures(rows, "primary-a", readOwner), "agents this session: 2 working · 4 total · $10.00");
+	assert.equal(sessionFigures(rows, "primary-a", readOwner), "agents: 2/4 active (session) · $10.00");
 	assert.equal(reads.filter((id) => id === "first").length, 1, "forks reuse one creating-owner read");
-	assert.equal(sessionFigures(rows, "primary-b", readOwner), "agents this session: 1 working · 1 total · $8.00");
+	assert.equal(sessionFigures(rows, "primary-b", readOwner), "agents: 1/1 active (session) · $8.00");
 	assert.equal(sessionFigures(rows, "empty-primary", readOwner), "");
 });
 
@@ -86,7 +87,7 @@ test("owner traversal reads ancestors absent from the roster and preserves exact
 	const rows = [row("descendant", { storageId: "descendant", cost: 0.5 })];
 	const owners = new Map([["descendant", "ancestor:5"], ["ancestor", "primary:2"]]);
 	const readOwner = (storageId: string) => owners.get(storageId);
-	assert.equal(sessionFigures(rows, "primary:2", readOwner), "agents this session: 0 working · 1 total · $0.50");
+	assert.equal(sessionFigures(rows, "primary:2", readOwner), "agents: 0/1 active (session) · $0.50");
 	assert.equal(sessionFigures(rows, "primary:3", readOwner), "");
 	assert.equal(sessionFigures(rows, "primary", readOwner), "");
 });
@@ -101,7 +102,7 @@ test("cycles terminate without importing unrelated agents into a primary scope",
 	const owners = new Map([["a", "b:2"], ["b", "a"], ["self", "self:9"], ["owned", "primary"]]);
 	let reads = 0;
 	const text = sessionFigures(rows, "primary", (storageId) => { reads++; return owners.get(storageId); });
-	assert.equal(text, "agents this session: 0 working · 1 total · $8.00");
+	assert.equal(text, "agents: 0/1 active (session) · $8.00");
 	assert.equal(reads, 4);
 });
 
@@ -114,7 +115,7 @@ test("owner traversal stops at a fixed depth and qualifies known totals", () => 
 		return storageId === "owned" ? "primary" : String(Number(storageId) + 1);
 	});
 	assert.equal(reads, 65);
-	assert.equal(text, "agents this session: 0 working · 1 total · ≥$1.00");
+	assert.equal(text, "agents: 0/1 active (session) · ≥$1.00");
 });
 
 test("owner reads have a total bound across unrelated chains", () => {
@@ -122,7 +123,7 @@ test("owner reads have a total bound across unrelated chains", () => {
 	const rows = Array.from({ length: 1100 }, (_, index) => row(String(index), { storageId: String(index) }));
 	const text = sessionFigures(rows, "primary", () => { reads++; return "primary"; });
 	assert.equal(reads, 1024);
-	assert.equal(text, "agents this session: 0 working · 1024 total · ≥$0.00");
+	assert.equal(text, "agents: 0/1024 active (session) · ≥$0.00");
 });
 
 test("manager supplies distinct primary footers and the same UI-local figures without host reads", async (t) => {
@@ -159,8 +160,8 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 			signal: new AbortController().signal, send: () => {}, status: (text) => { statuses.set(ownerId, text); },
 		});
 	}
-	assert.equal(statuses.get("primary-a"), "agents this session: 0 working · 3 total · $6.00");
-	assert.equal(statuses.get("primary-b"), "agents this session: 0 working · 1 total · $8.00");
+	assert.equal(statuses.get("primary-a"), "agents: 0/3 active (session) · $6.00");
+	assert.equal(statuses.get("primary-b"), "agents: 0/1 active (session) · $8.00");
 	assert.equal(statuses.has("empty-primary"), true, "the empty primary receives an explicit status clear");
 	assert.equal(statuses.get("empty-primary"), undefined);
 	const page = await manager.dashboardPage();

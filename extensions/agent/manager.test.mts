@@ -466,7 +466,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 	const primary = fakePrimary(new AbortController().signal);
 	try {
 		await manager.registerPrimary("owner-1", primary.client);
-		await primary.statuses.waitFor((items) => items.includes("agents this session: 1 working · 1 total · $0.00"));
+		await primary.statuses.waitFor((items) => items.includes("agents: 1/1 active (session) · $0.00"));
 		assert.ok(connection, "a live due record connects without launching");
 		publish("idle");
 		let changes = 0;
@@ -479,7 +479,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 		const afterClose = changes;
 		connection.change();
 		assert.equal(changes, afterClose);
-		await primary.statuses.waitFor((items) => items.includes("agents this session: 0 working · 1 total · $0.00"));
+		await primary.statuses.waitFor((items) => items.includes("agents: 0/1 active (session) · $0.00"));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
 	} finally { manager.close(); }
 });

@@ -24,7 +24,7 @@ function figures(rows: readonly AgentConversationSummary[], incomplete: boolean)
 	const working = rows.filter((row) => row.state === "working").length;
 	const total = rows.length;
 	const costText = price(rows, incomplete);
-	return total === 0 ? "" : `agents this session: ${working} working · ${total} total · ${costText}`;
+	return total === 0 ? "" : `agents: ${working}/${total} active (session) · ${costText}`;
 }
 
 function incompleteCoverage(coverage?: AgentDashboardCoverage): boolean {

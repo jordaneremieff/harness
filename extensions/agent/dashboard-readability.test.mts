@@ -42,14 +42,14 @@ it("selected status keeps live usage and receipts separate from conversation and
 	const observed = source([row("one")]);
 	observed.frame = () => frame;
 	observed.availability = () => ({ state: "live", at: frame.observedAt });
-	const f = fixture(160, 45, observed, { contextWindow: () => 1000, sessionFigures: async () => "agents this session: 1 working · 1 total · $0.42" });
+	const f = fixture(160, 45, observed, { contextWindow: () => 1000, sessionFigures: async () => "agents: 1/1 active (session) · $0.42" });
 	try {
 		await turn();
 		const state = f.state.agents.get("one");
 		assert.ok(state);
 		state.receipt = "Message admitted";
 		const lines = f.ui.render(160);
-		assert.match(lines[0], /Agents this session: 1 working · 1 total · \$0.42/);
+		assert.match(lines[0], /Agents: 1\/1 active \(session\) · \$0.42/);
 		const boundary = lines.findIndex((line) => line.startsWith("─ "));
 		const status = lines.slice(boundary + 1, lines.findIndex((line) => line.startsWith("╭─ Message to"))).join("\n");
 		assert.doesNotMatch(status, /LIVE|RETAINED|Earlier messages available|Roster/);
@@ -76,7 +76,7 @@ it("dashboard reconciliation and roster events reuse the scanned page for sessio
 	try {
 		await turn();
 		assert.equal(reads, 1);
-		assert.match(f.ui.render(100)[0], /Agents this session: 1 working · 1 total · \$0.42/);
+		assert.match(f.ui.render(100)[0], /Agents: 1\/1 active \(session\) · \$0.42/);
 		changed(); t.mock.timers.tick(250); await turn();
 		assert.equal(reads, 2, "the roster event performs one page read");
 		t.mock.timers.tick(1750); await turn();
@@ -88,7 +88,7 @@ it("a late session total read does not recreate the selection after close", asyn
 	const f = fixture(100, 30, source(), { sessionFigures: () => gate.promise });
 	await turn();
 	f.ui.dispose();
-	gate.resolve("agents this session: 1 working · 1 total · $0.42");
+	gate.resolve("agents: 1/1 active (session) · $0.42");
 	await turn();
 	assert.equal(f.state.selected, undefined);
 	assert.equal(f.state.agents.size, 0);
