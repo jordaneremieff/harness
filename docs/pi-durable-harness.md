@@ -907,8 +907,8 @@ for session figures, cost markers, clearing, and refresh behavior.
 Catalog-backed discovery is bounded rather than a frozen inventory. Continuations
 resume after a visited filename; ordinary catalog updates do not invalidate them.
 The primary status overview summarizes a supplied page and exposes no usable
-continuation. Fleet status is a separate sampled model-evidence view, also without
-continuation. Use the [agent controls](../extensions/agent/README.md#controls)
+continuation. Fleet status is a separate sampled model-evidence view, also
+without continuation. Use the [agent controls](../extensions/agent/README.md#controls)
 and [roster contract](../extensions/agent/README.md#roster-and-coverage) for
 current discovery and coverage rules. These are host projections over Durable
 records, not upstream archive-query guarantees.

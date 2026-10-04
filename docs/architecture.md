@@ -192,8 +192,7 @@ An extension contains:
   extensions and slices whose lifecycle state lives in an external
   integration own no disk store here.
 - Its own configuration: environment variables named `PI_*`, documented in
-  the README (see `docs/conventions/extension-config.md`). Host-injected
-  discovery variables form the documented exemption.
+  the README (see `docs/conventions/extension-config.md`).
 - Optional footer status keys through `ctx.ui.setStatus` (see
   `docs/conventions/status-keys.md`).
 

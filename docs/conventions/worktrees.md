@@ -144,8 +144,8 @@ After replaying, the command confirms that nothing but development records
 separates the branch from `main`, runs the repository gates, rebuilds the
 promoted branch, verifies that boundary again, and pushes. Sibling
 synchronization follows publication. The gates are `test`, `typecheck`, `check`,
-and `lint` for every kind. Extension promotion additionally runs the entrypoint load check;
-skill promotion additionally runs the skill validator.
+and `lint` for every kind. Extension promotion additionally runs the entrypoint
+load check; skill promotion additionally runs the skill validator.
 
 When a feature's replayed commits conflict with `main`'s shared files, the
 command aborts at the cherry-pick stage, attempts to restore `main`, and
