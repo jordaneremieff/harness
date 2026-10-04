@@ -13,7 +13,7 @@ it does not patch core or emulate ordinary extension contexts.
 
 ## Release review coverage
 
-<!-- pi-release-reviewed-through: 1.0.1 -->
+<!-- pi-release-reviewed-through: 1.0.2 -->
 
 The declaration above records the latest Pi release through which the harness
 completed cumulative release intake. Its value is a numeric major.minor.patch
