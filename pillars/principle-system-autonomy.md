@@ -116,6 +116,7 @@ A system can overreach by making value-laden choices appear deterministic. Keep 
 - **Compositional Simplicity:** autonomous absorption is valuable only when it reduces total system complexity.
 - **Harness Over Architecture:** begin with the lowest layer that can reliably absorb the observed mechanism.
 - **Burden Absorption:** applies the same intent/mechanism split to observable waiting.
+- **[Concurrent Work Discovery](heuristic-concurrent-work-discovery.md):** uses system-supplied presence and freshness while reserving relevance and coordination choices for agent judgment.
 - **Committed Contribution:** keeps the agent responsible for judgments even when mechanism is automated.
 
 ## Summary

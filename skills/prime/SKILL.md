@@ -96,7 +96,7 @@ Give every worker a self-contained contract with these four parts:
 2. **Evaluation criteria:** breadth before depth; one or two targeted searches
    per source, then selected source reads; factual claims within their evidence
    limits; actual-source citations; explicit empty, failed, and partial results.
-3. **Sibling awareness:** other assignments and their owners, what this worker
+3. **Dependency awareness:** other assignments and their owners, what this worker
    must not duplicate, and the parent as synthesis owner. Send material
    corrections to that owner, not new work to a sibling.
 4. **Terminal return:** at most 600 words, self-contained, with up to five useful

@@ -39,7 +39,8 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Frame Abandonment](heuristic-frame-abandonment.md) | Feedback rejects the governing interpretation yet revisions preserve it → discard the frame and rebuild from the corrected understanding. |
 | [Survival Selection](heuristic-survival-selection.md) | Rebuilding after a transition → treat repeated survival as selection evidence and build around demonstrated jobs. |
 | [Harness Over Architecture](heuristic-harness-over-architecture.md) | Infrastructure lacks an observed incident, measured omission, or binding requirement → start at the lowest sufficient harness layer. |
-| [Governing Context](heuristic-governing-context.md) | Understanding has been decomposed into sub-tasks → preserve the frame needed to evaluate their outputs. |
+| [Governing Context](heuristic-governing-context.md) | Understanding is decomposed or independent efforts become interdependent → preserve the frame needed to evaluate outputs and dependent decisions. |
+| [Concurrent Work Discovery](heuristic-concurrent-work-discovery.md) | A consequential action affects a shared substrate while relevant concurrent activity is unknown → use bounded discovery before acting. |
 | [Comprehension Checkpoint](heuristic-comprehension-checkpoint.md) | Reading expands without synthesis → stop, articulate the model, and target remaining gaps. |
 | [Verification Reach](heuristic-verification-reach.md) | Tool output is about to support a claim → verify that the evidence reached the claim's actual subject. |
 | [External Verification](heuristic-external-verification.md) | A claim concerns an external dependency's behavior → verify externally, qualify, or omit. |

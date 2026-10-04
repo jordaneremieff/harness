@@ -73,6 +73,7 @@ The load-bearing move is verification. The heuristic does not say that every abs
 ## Relationship to Pillars
 
 - **Coordination Phantom:** both test whether a collaboration convention's human precondition holds.
+- **[Concurrent Work Discovery](heuristic-concurrent-work-discovery.md):** checks relevant activity before a consequential shared action, without requiring encountered dirty state.
 - **Governing Context:** durable handovers preserve the frame needed to evaluate unfinished work.
 - **Survival Selection:** substrate lineage shows what has endured beyond one author's context.
 - **Committed Contribution:** honest attribution and explicit uncertainty replace vague deference.

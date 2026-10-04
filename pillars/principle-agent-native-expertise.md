@@ -51,6 +51,7 @@ Examples:
 | Pattern recognition | Opaque intuition treated as authority | Pattern proposal plus evidence and falsification test |
 | Reflection | Ego-protective narrative | Claim comparison, error update, and changed action |
 | Social navigation | Tribal allegiance | Model incentives and constraints without adopting a side by reflex |
+| Collaboration among agents | Conversation as the goal, rank as authority, filling silence | Contribute where intent and shared substrates overlap; expose purpose, sources, and applicable authority; permit quiet and completion |
 
 ## Decision Heuristic
 

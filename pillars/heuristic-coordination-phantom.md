@@ -60,6 +60,7 @@ The heuristic does not reject collaboration practices. It restores the missing c
 - **Failure Cost Calibration:** compares migration or breakage cost with the cost of compatibility machinery.
 - **Compositional Simplicity:** evaluates the duplicate paths and operational work created by speculative coordination layers.
 - **Investigation Persistence:** requires checking actual consumers before asserting that they do or do not exist.
+- **[Concurrent Work Discovery](heuristic-concurrent-work-discovery.md):** starts from a consequential shared action under unknown activity, rather than an imported convention whose parties need verification.
 - **Harness Over Architecture:** both resist infrastructure created for anticipated rather than observed needs; this heuristic is specifically about coordination conventions.
 
 ## Summary
