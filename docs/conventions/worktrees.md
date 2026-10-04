@@ -140,15 +140,16 @@ A prompt branch reaches a byte-identical steady state: promotion holds nothing
 back, so after a successful run the branch and `main` carry the same tree and
 `worktrees:status` reports the slice as current and clean.
 
-After replaying, the command synchronizes every worktree, confirms that nothing
-but development records separates the branch from `main`, runs the repository
-gates, and pushes. The gates are `test`, `typecheck`, `check`, and `lint` for
-every kind. Extension promotion additionally runs the entrypoint load check;
+After replaying, the command confirms that nothing but development records
+separates the branch from `main`, runs the repository gates, rebuilds the
+promoted branch, verifies that boundary again, and pushes. Sibling
+synchronization follows publication. The gates are `test`, `typecheck`, `check`,
+and `lint` for every kind. Extension promotion additionally runs the entrypoint load check;
 skill promotion additionally runs the skill validator.
 
 When a feature's replayed commits conflict with `main`'s shared files, the
-command aborts at the cherry-pick stage, restores `main` exactly, and reports;
-a repeated run is always safe.
+command aborts at the cherry-pick stage, attempts to restore `main`, and
+reports whether recovery succeeded.
 
 `PI_PROMOTE_GATES` replaces the repository gates the command runs before the
 push: a JSON array of `{ "name": string, "command": string[] }` entries, each
@@ -156,9 +157,10 @@ executed in the repository root and required to exit 0. Unset, the command runs
 the default gates (`scripts/worktrees.mts`). `--no-gates` still skips them
 entirely.
 
-Any failure before the push restores `main` to the commit it started from and
-leaves no cherry-pick in progress, so a repeated run is always safe. A failed
-push leaves the promotion committed locally; running the command again pushes it.
+A replay, verification, gate, or promoted-branch rebuild failure triggers
+rollback to the starting commits. Check the report: `recover` names manual
+recovery when rollback fails. A failed push leaves the promotion committed
+locally; running the command again retries publication.
 
 | Flag | Effect |
 | --- | --- |
@@ -199,7 +201,7 @@ node skills/harness/scripts/validate-skill.mts skills/<name>
 
 ## Pi configuration
 
-The main harness package supplies shared skills, prompts, and themes. Its extension
+The main harness package supplies shared skills and prompts. Its extension
 resources are disabled in Pi settings. Each active extension appears as an explicit
 package path to its worktree entrypoint.
 

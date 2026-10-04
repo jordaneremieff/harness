@@ -10,13 +10,8 @@ code is needed.
 The [Pillars](pillars/README.md) are the design doctrine behind this harness:
 principles, patterns, and heuristics for agent judgment. They guide decisions
 about evidence, structure, and communication. The [Pillars access
-extension](extensions/pillars/README.md) is the single consultation surface:
-its `pillars` tool carries the judgment-moment triggers and reads the corpus;
-the operator browses with `/pillars`, checks alignment and resumes the corrected
-work with `/pillars check`,
-explores candidates with `/pillars derive`, and reviews existing guidance with
-`/pillars review`. The judgment actions accept an optional free-text hint and
-otherwise use conversation context.
+extension](extensions/pillars/README.md) provides the consultation tool and
+operator commands; its README owns their use and boundaries.
 
 ## Structure and use
 
@@ -54,13 +49,13 @@ boundaries, rather than a central feature catalog.
   on this topic, then wait", or use `/skill:prime <topic>`. It instructs the
   agent to return a short cited summary with source coverage and then wait;
   these are instructions, not guaranteed enforcement.
-- [Memory](extensions/memory/README.md) retrieves prior operator knowledge before
-  dependent choices. Its tools search bounded note sources in `PI_MEMORY_DIR`,
-  combine alternative query formulations, read digest-checked source pages,
-  and retain compact cue browsing. Validated writes and targeted edits maintain
-  note format, dates, and concurrent-update checks. Writes maintain reciprocal
-  supersession. A per-run index places active note pointers in the system prompt
-  without a separate stored index.
+- [Agent](extensions/agent/README.md) owns Durable agent controls, the `/agent`
+  dashboard, session-scoped footer figures, and sampled fleet model evidence.
+- [Registry](extensions/registry/README.md) exposes session resources and the
+  chat model catalog. Its README distinguishes model selection facts from
+  non-chat discovery and remote health.
+- [Memory](extensions/memory/README.md) owns retrieval and maintenance of prior
+  operator knowledge, including its source and lifecycle boundaries.
 
 `npm test` includes a serialized tool-schema check in
 [scripts/extension-load-check.test.mts](scripts/extension-load-check.test.mts).

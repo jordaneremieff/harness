@@ -30,9 +30,10 @@ declaration before changing instructions or policy: `registry` with
 `kind: "tool"` and `name: "codemode"` reports `configured` and `active`
 separately. `/reload` activates a tool newly added to `defaultTools` in a
 running session; `--tools` replaces the whole selection, so an invocation that
-passes it must name `codemode` too. Managed sessions created by the
-[agent extension](../extensions/agent/README.md) load the built-in through its
-public factory and follow the same setting.
+passes it must name `codemode` too. This setup describes ordinary Pi sessions.
+Durable agents use the [agent extension's native execution
+integration](../extensions/agent/README.md#capabilities-and-project-resources),
+not the ordinary codemode factory.
 
 Keep native codemode's default `on` mode. It preserves direct tool declarations
 alongside script access, and each declared tool that scripts can call carries a
@@ -171,15 +172,19 @@ output while calls still running at script end are cancelled.
 | Tool | Records | Required interpretation |
 | --- | --- | --- |
 | `agent_list` | `rows` | Keep `coverage`, including its `unavailable` storages, `nextCursor`, `observedAt`, and `authority`. A row is catalog and conversation metadata, not live host state. |
-| `agent_status` | `sessions` | Keep `primaries`, `failures`, `coverage`, `observedAt`, and `discovery`. A row read from a storage without a live host is a snapshot, not live owner state. |
+| `agent_status` primary overview | `sessions` | Keep `primaries`, `failures`, `summary`, `coverage`, `observedAt`, and `discovery`. Do not treat summary counts or excerpts as a complete inventory. |
+| `agent_status` selected storage/conversation | `conversations` or `conversation` | Preserve the returned shape and `live` boundary; a cold snapshot is not live host state. See [agent observation](../extensions/agent/README.md#controls). |
+| `agent_status` with `view: "fleet"` | `models`, `failures`, `warnings` | Keep `conversations`, `toolReportedCost`, `coverage`, `observedAt`, and `notes`. These are sampled machine-local publications, not live provider health. See [model evidence](../extensions/agent/README.md#controls). |
 | `stash_list` with query | `matches` | Keep `skipped`, `coverage`, `nextCursor`, `consistency`, and `representation`. Search does not activate a handover. |
 | `stash_list` without query | `records` | Keep `omittedRecords`, `textTruncated`, and `limitReached`. `coverage.complete: null` means store-wide coverage is unknown. |
 | `memory_search` | `notes` | Keep `scan`, `coverage`, `countScope`, `hasMore`, and `nextCursor`. Ranking and counts cover one source window. |
-| `registry` | `records` | Keep `outcome`, availability/coverage fields, `resultBounded`, `pageBlocked`, and `cursor`. Registration, activation, and callability are separate facts. |
+| `registry` | `records` | Keep `outcome`, availability/coverage fields, `resultBounded`, `pageBlocked`, and `cursor`. For model pages, also keep `catalogBoundary` and `settingsScope` when present. See [structured results](../extensions/registry/README.md#structured-results) for the chat-only catalog and settings-evidence boundaries. |
 
 Follow each source's cursor independently:
 
 - For `agent_list`, repeat the query and cwd with `nextCursor` as `cursor`.
+  Agent status overview and fleet reads have no continuation input. Start fresh
+  `agent_list` discovery for retained conversations, not with a status cursor.
 - For stash search, repeat the query and filters with `nextCursor` as `cursor`.
 - For memory search, repeat the query and `includeRetired` with `nextCursor` as
   `cursor`. Continue after empty pages while a cursor remains.
@@ -231,13 +236,9 @@ A script that calls `searchTools`, `describeNamespace`, `describeTool`, or reads
 enabled server has `codemode` exposure, unless `autoEnableCodemode` is false in
 `mcp.json`, and activates `tool_search` for `deferred` exposure.
 
-`registry` with `kind: "tool"` lists MCP tools with their exposure (`deferred` for
-default servers), namespace, and configured presence; callability still comes
-only from the invocation's tool context. The registry extension reports the
-namespace `name` and `description`, omits `instructions`, and sets
-`instructionsOmitted: true` when instructions exist, as its
-[README](../extensions/registry/README.md) states. Use `describeNamespace()` for
-the full text. The [checked Pi contract](pi-durable-harness.md#mcp-and-deferred-tool-discovery)
+Use [registry's tool records](../extensions/registry/README.md#evidence-and-observation)
+for exposure, namespace, and presence evidence. Use `describeNamespace()` for
+the full namespace instructions. The [checked Pi contract](pi-durable-harness.md#mcp-and-deferred-tool-discovery)
 records the exposure, naming, and waiting rules with their sources.
 
 ## Generate images from a script

@@ -121,7 +121,9 @@ The harness is a Pi package. `package.json` declares the resources under the
 The manifest activates extensions, skills, and the prompt templates in
 `prompts/`. Other tracked package content has explicit consumers:
 
-- `pillars/` is the doctrine corpus that skills read by package-relative path.
+- `pillars/` is the doctrine corpus served by the
+  [Pillars extension](../extensions/pillars/README.md) and read by package-relative
+  path through the [Troll skill's armory](../skills/troll/references/pillar-armory.md).
 - `config/` mirrors application-owned config paths. Machines point Pi and Herdr
   at the files under their application directories; no package manifest entry
   activates them.
@@ -223,12 +225,19 @@ contract names its producer and its current consumers and lives outside
 either extension, so no extension parses a sibling's format without a
 documented surface:
 
-- `extension-config.md` — environment-variable configuration convention for
-  all extensions.
-- `status-keys.md` — the footer status-key registry (publisher, meaning,
-  consumers).
-- `evaluation-suites.md` — the package evaluation interfaces available to
-  colocated extension suites and deterministic tests.
+- [Extension configuration](conventions/extension-config.md): configuration
+  ownership and the environment-variable namespace.
+- [Status keys](conventions/status-keys.md): footer publishers and consumers.
+- [Durable contributions](conventions/durable-contributions.md): native
+  capability bundles supplied by extension factories to agent hosts.
+- [Session host roles](conventions/session-host-roles.md): ordinary primary
+  and Durable execution responsibilities.
+- [Policy recovery](conventions/policy-recovery.md): public tool evidence used
+  by cross-extension recovery seeds.
+- [Evaluation suites](conventions/evaluation-suites.md): package interfaces
+  available to colocated suites and deterministic tests.
+- [Prompts](conventions/prompts.md): shared template ownership and commands.
+- [Worktrees](conventions/worktrees.md): development, routing, and promotion.
 
 New cross-extension behavior belongs here before it ships: write the
 contract, name the producer and consumers, and keep it stable.

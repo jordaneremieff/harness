@@ -238,10 +238,9 @@ how a script uses them.
   (`getAllTools()` in `dist/core/agent-session.js`), so full instructions appear
   there and through `describeNamespace()`; the automatic `mcp_servers` prompt
   listing carries only the summary, while a codemode script can return the full
-  `describeNamespace().instructions` to the model. The registry extension's contract, stated
-  in its [README](../extensions/registry/README.md) and not a Pi behavior, is to
-  report `namespace.name` and `description`, omit `instructions`, and set
-  `instructionsOmitted: true` when instructions exist. Read the instructions with
+  `describeNamespace().instructions` to the model. The registry extension's
+  [namespace projection](../extensions/registry/README.md#evidence-and-observation)
+  is a separate contract, not a Pi behavior. Read full instructions with
   `describeNamespace()` in a codemode script.
 - **Project selection.** A trusted project entry without `command`, `url`, or
   `type` overrides only `enabled`, `exposure`, and `toolExposure` of the exact
@@ -583,8 +582,10 @@ The published coding-agent package excludes the experimental peer client and
 service distribution, and the extension API exposes no live InteractiveMode
 view to mount. The agent dashboard therefore composes public chat components,
 a native editor, and bounded scrolling for selected Durable agents. The primary
-stays on its native screen beneath the temporary overlay. The dashboard neither
-projects nor edits it; slash text is literal agent input.
+stays on its native screen beneath the temporary overlay. See the
+[dashboard and agent console](../extensions/agent/README.md#dashboard-and-agent-console)
+and [roster contract](../extensions/agent/README.md#roster-and-coverage) for
+controls, status presentation, timestamps, and failed-refresh behavior.
 
 ## Released ordinary-session changes
 
@@ -896,17 +897,21 @@ task and changes no global model defaults.
 
 ## Footer retention boundary
 
-The agent footer reads cumulative native usage per Durable conversation from the
-same bounded published metadata as the dashboard roster. It refreshes on host change
-notifications, not on a receipt poll, and it writes no ordinary footer
-checkpoints. Repeated observations do not add another local delta. Missing or
-invalid cost remains marked incomplete.
-The dashboard roster and footer share native observation records; neither parses
-ordinary JSONL. A page reports `complete`, `storagesVisited`, `skipped`,
-`omitted`, and `nextCursor`; a continuation cursor means more inventory to
-inspect and may end at an empty page, so a bounded or empty page is not proof of
-absence. Status and dashboard collection return partial coverage with a cursor
-instead of refusing at an inventory bound.
+Pi Durable retains conversation usage; the agent host publishes bounded native
+observations for the dashboard and footer. Neither surface reconstructs usage
+from ordinary JSONL or writes ordinary footer checkpoints. The footer applies
+the current primary's creating-owner scope, not the whole discovered roster.
+See [roster and coverage](../extensions/agent/README.md#roster-and-coverage)
+for session figures, cost markers, clearing, and refresh behavior.
+
+Catalog-backed discovery is bounded rather than a frozen inventory. Continuations
+resume after a visited filename; ordinary catalog updates do not invalidate them.
+The primary status overview summarizes a supplied page and exposes no usable
+continuation. Fleet status is a separate sampled model-evidence view, also without
+continuation. Use the [agent controls](../extensions/agent/README.md#controls)
+and [roster contract](../extensions/agent/README.md#roster-and-coverage) for
+current discovery and coverage rules. These are host projections over Durable
+records, not upstream archive-query guarantees.
 
 ## Ordinary-agent reload and recovery boundary
 
@@ -1094,7 +1099,7 @@ scheduler or transcript. The ordinary SDK remains the primary terminal host.
 | Resources and providers | Public cwd-bound coding-agent services; native contributions supply tools, prompts, hooks, and commands |
 | Process ownership | Agent host writer claim before storage open; same-user Unix control socket over the public `pi-server`/`pi-client` transport (private 0700 directory, owner-only 0600 socket, exact `serverId` handshake) and automatic dead-owner recovery |
 | Nested tools | Native call tasks, selected ToolTask hook chain, argument validation, committed intent, replay policy, and structured results |
-| Observation | Public native entries, documents, submissions, and task views; bounded status and dashboard pages with explicit coverage; cold inspection uses a bounded SQLite snapshot without resume |
+| Observation | Public native entries, documents, submissions, and task views; bounded catalog projections with explicit coverage. [Agent controls](../extensions/agent/README.md#controls) distinguish status summaries, fleet model evidence, and discovery; cold inspection uses a bounded SQLite snapshot without resume |
 | Owner delivery | Host durable-delivery owns retained intents, receipts, reports, and automatic unanswered-task check-ins; catalog follow-up or registered primary channel; labeled broadcast fallback only for an absent or dead owner, acknowledged only over complete discovery and deliveries; no exactly-once cross-host promise |
 | UI | Dashboard over an untouched native primary; roster and selected live conversation, full-window agent console, contextual actions, and explicit coverage. Host-owned Durable view and task-graph watches supply live frames. An embeddable InteractiveMode view and the experimental coding-agent client remain unpublished |
 | Handover and doctrine | Native transport and retention carry content; its meaning and authority remain application concerns |

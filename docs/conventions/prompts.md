@@ -134,7 +134,7 @@ Before a template change:
 1. Establish its job from operator intent and current source. Configuration
    proves availability, not invocation frequency or utility.
 2. Repair the existing template when it owns the job. A new template needs the
-   [Harness skill's surface approval](../../skills/harness/SKILL.md#new-surfaces-require-approval).
+   [Harness skill's surface approval](../../skills/harness/SKILL.md#new-surfaces-require-authority).
 3. Check discovery and argument expansion with Pi. Exercise the changed behavior
    with visible-context cases, including missing evidence and task boundaries.
 4. Keep behavioral evidence separate from discovery results. Lexical checks do

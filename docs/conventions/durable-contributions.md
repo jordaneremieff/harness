@@ -29,7 +29,8 @@ a shared module to satisfy it. Each slice copies the members it uses from the
    loaded extension set. It matches each contribution's `source` to the
    resolved paths of Pi's loaded extensions. A configured extension that emits
    nothing has no Durable form. The host names it in agent status and in the
-   agent's prompt; it never substitutes ordinary execution for it.
+   agent's prompt; it never substitutes ordinary execution for it. Loader
+   failures are a separate `inventory.failed` list, not ordinary-only extensions.
 4. In an ordinary Pi session no host listens on the channel, and the emission
    has no effect.
 
@@ -87,8 +88,10 @@ interface DurableInventory {
     readonly source: string;
     readonly commands: readonly { readonly name: string; readonly description: string }[];
   }[];
-  /** Resolved paths of configured extensions that emitted no contribution. */
+  /** Resolved paths of loaded extensions that emitted no contribution. */
   readonly ordinaryOnly: readonly string[];
+  /** Configured extensions that failed to load; absent when none failed. */
+  readonly failed?: readonly { readonly path: string; readonly error: string }[];
 }
 
 interface DurableCommand {
@@ -168,6 +171,8 @@ The agent session host supplies:
 - coding tools: `read` with image support, `write`, `edit`, and `bash`;
 - prompt sections composed from Pi's resource loader: context files, skills,
   appended system prompts, and the working directory; and
-- agent controls for agents that a Durable agent starts.
+- native execution and discovery capabilities described in the
+  [agent README](../../extensions/agent/README.md#capabilities-and-project-resources),
+  including agent controls, codemode, and configured MCP tools.
 
 Contributions do not duplicate these.

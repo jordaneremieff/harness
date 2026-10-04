@@ -1,10 +1,10 @@
 # Extension configuration conventions
 
 Repository-level convention for how extensions receive configuration. The
-standard mechanism is one `PI_*` environment variable per extension, documented
-in that extension's README. The repository ships no configuration-file
-mechanism; secrets and local paths stay out of committed content by staying in
-the operator's process environment.
+standard mechanism is `PI_*` environment variables, documented in the owning
+extension README. Extension-specific defaults, validation, and precedence live
+there, not in a second variable registry. Keep secrets and local paths out of
+committed content.
 
 ## Environment variables
 
@@ -13,31 +13,15 @@ that extension's README. A variable this harness reads is harness
 configuration, whatever external service it authenticates to; provider naming
 conventions from outside this repository do not apply.
 
-Current consumers:
+Configuration references for extensions that read environment variables:
 
-| Variable | Extension | Purpose |
-|---|---|---|
-| `PI_AGENT_SESSIONS_DIR` | agent | Store root for Durable agent storages, their discovery metadata, directory bindings, and primary delivery endpoints; default `<agentDir>/agent-sessions`. |
-| `PI_AGENT_DIR` | agent | Agent directory for session discovery, settings, and trust; default Pi's `getAgentDir()`. |
-| `PI_AGENT_IDLE_MINUTES` | agent | Idle Durable host retirement window in minutes; default `5`, `0` disables retirement. Values outside `0` through `35791` refuse host start. |
-| `PI_MEMORY_DIR` | memory | Required absolute corpus directory; unset, empty, or relative returns Memory unavailable, with no default. |
-| `PI_BRAVE_API_KEY` | brave | Brave Web Search subscription token. Precedence: explicit client option, then this variable. |
-| `PI_STASH_DIR` | stash | Stash store directory override; default `<agentDir>/stash`. |
-| `PI_STASH_CAPACITY` | stash | `1` or unset enables capacity requests; `0` disables them. |
-| `PI_STASH_CHECKPOINT_PERCENT` | stash | Checkpoint threshold; default `85`, positive and below the decision threshold. |
-| `PI_STASH_DECISION_PERCENT` | stash | Continuity-decision threshold; default `90`, above the checkpoint threshold and at most `100`. |
-| `PI_STASH_INTAKE_TOKEN_BUDGET` | stash | Optional positive integer text-intake estimate budget when host usage is unknown; never a context percentage. |
-| `PI_STASH_CHECKPOINT_DIR` | stash | Working-checkpoint destination; default `<stashDir>/checkpoints`, separate from handover discovery. |
-| `PI_STASH_MODEL` | stash | Optional model for `/stash new` distillation (`provider/id` or bare id). Unset inherits the parent session model. Set but missing or unauthenticated fails creation; no silent fallback. |
-| `PI_STASH_THINKING` | stash | Optional thinking level for `/stash new` distillation. Unset inherits the parent session level (default `low` when the parent has none). An explicit unsupported level fails creation; an inherited unsupported level clamps to the model. |
-| `PI_CLIPBOARD_DIR` | clipboard | Clipboard archive directory override; default `<agentDir>/clipboard`. |
-| `PI_PILLARS_DIR` | pillars | Aggregate directory override; default `<agentDir>/pillars`. |
-| `PI_PILLARS_COLLECT` | pillars | `1` or unset enables collection; `0` disables collection while preserving source access and readback. Other values disable collection with a diagnostic. |
-| `PI_PILLARS_CORPUS` | pillars | Absolute corpus root override; unset resolves the sibling `../../pillars` package directory. |
-| `PI_POLICY_DIR` | policy | Private rule, approved-data, and telemetry directory; default `<agentDir>/policy`. |
-| `PI_POLICY_MODE` | policy | Action limit: `observe` (default), `notice`, `annotate`, or `enforce`. Invalid configuration disables the runtime with a diagnostic; no silent fallback. |
-| `PI_POLICY_TEST_PI_ROOT` | policy tests | Test-only Pi package root for real-hook integration checks; the policy runtime does not read it. |
-| `PI_SESSION_ID` | Pi-injected | Parent session id; the stash extension reads it only as a fallback when the session manager supplies no id. |
+- [Agent](../../extensions/agent/README.md#configuration-and-storage)
+- [Brave](../../extensions/brave/README.md)
+- [Clipboard](../../extensions/clipboard/README.md)
+- [Memory](../../extensions/memory/README.md)
+- [Pillars](../../extensions/pillars/README.md)
+- [Policy](../../extensions/policy/README.md)
+- [Stash](../../extensions/stash/README.md)
 
 ## Rules
 
@@ -46,8 +30,10 @@ Current consumers:
 - Keep defaults derivable from the Pi agent directory
   (`getAgentDir()`/`~/.pi/agent`) so tests and isolated deployments can
   override the location.
-- Introduce no configuration-file mechanism. A new mechanism enters this
-  convention only by amending this document first.
+- Introduce no extension-owned configuration-file mechanism without amending
+  this convention first. Public Pi settings, provider configuration, project
+  trust, and MCP configuration remain host-owned surfaces; consuming them does
+  not create a harness configuration format.
 
 ## Operator-controlled application state
 

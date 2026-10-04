@@ -19,10 +19,10 @@ key, and a consumer must not parse a sibling's status text.
 
 ## Registry
 
-| Key | Publisher | Meaning | Current texts | Cleared by |
-|---|---|---|---|---|
-| `stash` | `extensions/stash` | Stash distillation progress for `/stash new <hint>`. The publisher owns the animation; the footer renders the text generically. | `stash: running <spinner frame> · <distiller model [thinking]>` while a distillation runs (TUI, 120 ms animation); then `stash: done <id> · <in> in · <out> out · ~$<cost>`, `stash: skipped`, or `stash: failed`. The done totals appear when the distill session reports stats. | 3 seconds after the terminal text, on `/stash abort`, and on `session_shutdown`. |
-| `agent` | `extensions/agent` | Active manager-local ordinary hosts and each primary's cumulative observed native price, including nested ordinary hosts. | `agents 2 · $0.37`; `agents 0 · $0.00` before work. Missing usage adds `+?`. Nonzero or unavailable detached records add a separate `$?` suffix. | Session shutdown clears the cell. Exact-session checkpoints survive reload; reopen restores saved native files only. Idle and zero stay visible. |
+| Key | Publisher and presentation contract | Meaning | Cleared by |
+|---|---|---|---|
+| `stash` | [Stash](../../extensions/stash/README.md) | Distillation progress and a brief terminal result. The publisher owns the animation; consumers render its text generically. | Result expiry, abort, or session shutdown. |
+| `agent` | [Agent roster and coverage](../../extensions/agent/README.md#roster-and-coverage) | Working and total agents created by the current primary session, including descendants, with observed native cost. Each primary receives its own figures. | No agents in that session scope, primary lifecycle cleanup, or manager close. Retained idle agents remain in scope. |
 
 ## Rules
 
