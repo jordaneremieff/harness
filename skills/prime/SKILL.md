@@ -7,7 +7,7 @@ description: >
   with source coverage, then wait. Do not use for a single lookup, a question
   already answered in the session, or a request to start implementation,
   diagnosis, review, or research for an answer.
-compatibility: Requires Pi with source-discovery tools and ordinary worker sessions that deliver native completion events. Uses the available read-only source tools and current model registry; no fixed provider or model roster.
+compatibility: Requires Pi with source-discovery tools and Pi Durable agent hosts with automatic task-result delivery. Uses the available read-only source tools and current model registry; no fixed provider or model roster.
 ---
 
 # Prime
@@ -83,7 +83,7 @@ lane only, explicitly select a permitted alternative model and thinking level
 from the current registry and preferences when it fits the invoking budget.
 Report the substitution; keep the same source assignment and bounds rather than
 start a new survey wave. If no authorized, budget-fitting alternative is
-available, or dispatch or native completion delivery is unavailable, mark the
+available, or dispatch or automatic result delivery is unavailable, mark the
 affected coverage errored and retain the useful bounded local result. Do not
 replace the missing worker with an unbounded parent read or a new runner.
 
@@ -134,13 +134,13 @@ Finish the bounded survey with those gaps explicit. Distinguish completion of
 the preparation pass from completeness of source coverage; do not expand the
 survey merely to eliminate every gap.
 
-Receive worker terminal results through native completion events. Do not poll
-status, inspect repeatedly as a wait loop, or use timed delays. While workers
-run, synthesize the evidence already available. Use exact result inspection to
-resolve a named evidence gap, not to collect their full raw transcripts. Before
-the final survey, resolve live workers through their current public lifecycle
-controls: accept useful terminal results, redirect changed work within scope,
-or stop superseded work. Preserve failed or interrupted coverage.
+Receive worker terminal results through the host's automatic result delivery.
+Do not poll status, inspect repeatedly as a wait loop, or use timed delays.
+While workers run, synthesize the evidence already available. Use exact result
+inspection to resolve a named evidence gap, not to collect their full raw
+transcripts. Before the final survey, resolve live workers through their current
+public lifecycle controls: accept useful terminal results, redirect changed work
+within scope, or stop superseded work. Preserve failed or interrupted coverage.
 
 ## 4. Synthesize, cite, and wait
 
