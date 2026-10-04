@@ -208,13 +208,12 @@ contract in TUI, RPC, JSON, and print modes without UI dependencies.
 
 A Durable agent receives its history capability from
 `extensions/history/durable.ts`. The ordinary factory in `index.ts` emits that
-contribution on the `durable:contribution` channel; a Durable session host
-matches its `source` to the loaded extension path, installs the contribution
-after its built-ins, and calls `create()` once per host. No host listens in an
-ordinary Pi session, so the emission has no effect there. The contribution
-takes every pi-durable runtime value from the host's module.
+contribution on the `durable:contribution` channel with the absolute entrypoint
+path as its source. The [agent extension](../agent/README.md) owns contribution
+discovery and host installation. The contribution takes every pi-durable runtime
+value from the host's module.
 
-The native form registers the same two tool names with the same argument names
+The native form registers the same tool names with the same argument names
 and bounds. Both declare `replay: "safe"`: each call reads committed entries
 only and repeats no external effect, so a rerun after process loss returns the
 same bounded page for the same pinned position. The native extension also
