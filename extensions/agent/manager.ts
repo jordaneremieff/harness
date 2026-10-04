@@ -843,7 +843,7 @@ export class AgentManager {
 		return sessionFigures(observed.rows, ownerId, (storageId) => {
 			try { return this.catalog.read(storageId).ownerId; }
 			catch { return undefined; }
-		}, observed.coverage);
+		});
 	}
 
 	private async refreshFooter(): Promise<void> {

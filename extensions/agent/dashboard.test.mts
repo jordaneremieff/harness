@@ -6,6 +6,7 @@ import { dashboardActions } from "./dashboard-actions.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { sessionFigures } from "./footer.ts";
 
 for (const [width, height] of [
 	[140, 45],
@@ -684,7 +685,7 @@ it("Load more is selected before admission and loaded coverage survives reconcil
 					coverage: { complete: false, storagesVisited: 1, skipped: 1, omitted: 0, nextCursor: "more" },
 				};
 	};
-	const f = fixture(80, 24, observed);
+	const f = fixture(80, 24, observed, { sessionFigures: async (roster) => sessionFigures(roster.rows, "primary", () => "primary") });
 	await turn();
 	f.ui.handleInput("\x1b[B");
 	f.ui.handleInput("\x1b[B");
@@ -693,11 +694,13 @@ it("Load more is selected before admission and loaded coverage survives reconcil
 	f.ui.handleInput("\r");
 	await turn();
 	assert.deepEqual(calls, [undefined, "more"]);
+	assert.match(f.ui.render(80)[0], /Agents: 3\/3 active · ~\$1\.26/);
 	assert.match(f.ui.render(80).join("\n"), /3 of 3 loaded agents/);
 	rosterChange();
 	t.mock.timers.tick(250);
 	await turn();
 	assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
+	assert.match(f.ui.render(80)[0], /Agents: 3\/3 active · ~\$1\.26/);
 	assert.match(f.ui.render(80).join("\n"), /3 stores skipped/);
 	f.ui.dispose();
 });

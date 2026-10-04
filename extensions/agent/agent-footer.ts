@@ -1,7 +1,7 @@
 import { visibleWidth, sliceByColumn } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 export function formatCost(cost: number | undefined, partial = false): string {
-	return cost === undefined || !Number.isFinite(cost) ? "$?" : `${partial ? "≥" : ""}$${cost.toFixed(2)}`;
+	return cost === undefined || !Number.isFinite(cost) ? "$?" : `$${cost.toFixed(2)}${partial ? "+" : ""}`;
 }
 export function footerText(row: AgentConversationSummary, width: number, metrics = ""): string {
 	const tail = ` · ${row.model?.thinkingLevel ?? "reasoning ?"}${metrics ? ` · ${metrics}` : ""} · ${formatCost(row.cost, row.partial)}`;

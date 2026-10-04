@@ -873,7 +873,10 @@ The same choice applies to thread event times and survives close and reopen
 in the same Pi session and process; it is not saved to disk. A retained
 `@handle` leads the label, followed by the display name when it fits. A historical
 first input is a labeled fallback, never a standing role. Duplicate labels receive unique
-identity suffixes. Unknown cost stays unknown and partial cost stays a lower bound.
+identity suffixes. Unknown cost shows `$?`; a known partial cost shows a trailing
+`+`, such as `$1.00+`, in the selected-agent footer and roster rows. Roster totals
+use the same marker, such as `$1.50+ retained`, for a known subtotal with incomplete
+cost or inventory coverage. These totals keep their roster scope.
 
 Working and Attention precede retained date groups. Attention names unavailable
 or conflicted storage, a host error, failed compaction, failed work with an
@@ -915,13 +918,16 @@ The primary status line and dashboard heading use the same session scope:
 agents created by the current primary session plus their descendants through
 catalog ownership. Other primary sessions and unrelated retained agents do not
 contribute to these figures. The roster still lists discovered agents across
-sessions. The status says `agents: <working>/<total> active (session) · <cost>`
+sessions. The status says `agents: <working>/<total> active · ~$<cost>`
 and disappears when no session-scoped rows are found. The numerator counts only
 `working` rows; the denominator includes all states in scope. Each registered
 primary receives its own figures. The dashboard reuses its scanned roster page
 for these figures without another catalog scan. Repeated reads never add the
-same usage twice. Incomplete inventory prefixes the known cost subtotal with
-`≥`; missing or partial cost adds `+?`.
+same usage twice. These figures cover this session's readable agent data. The
+`~` marks a recorded-pricing estimate, like the main session cost, not a billing
+statement. Cost uses two decimals; the entire cost segment is hidden below half
+a cent, leaving, for example, `agents: 0/1 active`. The dashboard shows unreadable
+agents and partial costs.
 
 ## Primary restart and continuity
 

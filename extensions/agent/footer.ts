@@ -2,53 +2,27 @@
  * Primary statusline for native Durable agents. Cost comes from retained
  * Durable usage; the footer holds no local checkpoint and adds no deltas.
  */
-import type { AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
+import type { AgentConversationSummary } from "./dashboard-types.ts";
 
 const MAX_OWNER_DEPTH = 64;
 const MAX_OWNER_READS = 1024;
-
-/** Spend text: cents normally, four decimals for a positive sub-cent total, and `+?` for incomplete native cost. */
-function price(rows: readonly AgentConversationSummary[], incompleteCoverage: boolean): string {
-	let cost = 0;
-	let incomplete = false;
-	for (const row of rows) {
-		if (Number.isFinite(row.cost) && row.cost >= 0) cost += row.cost;
-		else incomplete = true;
-		incomplete ||= row.partial;
-	}
-	const digits = cost > 0 && cost < 0.01 ? 4 : 2;
-	return `${incompleteCoverage ? "≥" : ""}$${cost.toFixed(digits)}${incomplete ? "+?" : ""}`;
-}
-
-function figures(rows: readonly AgentConversationSummary[], incomplete: boolean): string {
-	const working = rows.filter((row) => row.state === "working").length;
-	const total = rows.length;
-	const costText = price(rows, incomplete);
-	return total === 0 ? "" : `agents: ${working}/${total} active (session) · ${costText}`;
-}
-
-function incompleteCoverage(coverage?: AgentDashboardCoverage): boolean {
-	return Boolean(coverage && (!coverage.complete || coverage.nextCursor || coverage.skipped || coverage.omitted));
-}
 
 /** Follow creating owners through storage identities, not writer claims or display names. */
 export function sessionFigures(
 	rows: readonly AgentConversationSummary[],
 	ownerId: string,
 	readOwner: (storageId: string) => string | undefined,
-	coverage?: AgentDashboardCoverage,
 ): string {
 	const owners = new Map<string, string | undefined>();
-	let bounded = false;
 	const ownerOf = (storageId: string): string | undefined => {
 		if (owners.has(storageId)) return owners.get(storageId);
-		if (owners.size === MAX_OWNER_READS) { bounded = true; return undefined; }
+		if (owners.size === MAX_OWNER_READS) return undefined;
 		const owner = readOwner(storageId);
 		owners.set(storageId, owner);
 		return owner;
 	};
-	const scoped = rows.filter((row) => {
-		let identity = row.storageId;
+	const inScope = (storageId: string): boolean => {
+		let identity = storageId;
 		const visited = new Set<string>();
 		for (let depth = 0; depth < MAX_OWNER_DEPTH; depth++) {
 			const storageId = identity.split(":", 1)[0];
@@ -59,16 +33,15 @@ export function sessionFigures(
 			if (!owner) return false;
 			identity = owner;
 		}
-		bounded = true;
 		return false;
-	});
-	return figures(scoped, bounded || incompleteCoverage(coverage));
+	};
+	return formatDurableFooter(rows.filter((row) => inScope(row.storageId)));
 }
 
-/** Primary statusline for already-scoped conversation rows. */
-export function formatDurableFooter(
-	rows: readonly AgentConversationSummary[],
-	coverage?: AgentDashboardCoverage,
-): string {
-	return figures(rows, incompleteCoverage(coverage));
+/** Recorded-pricing estimate for already-scoped rows; hide costs below half a cent. */
+export function formatDurableFooter(rows: readonly AgentConversationSummary[]): string {
+	if (rows.length === 0) return "";
+	const working = rows.filter((row) => row.state === "working").length;
+	const cost = rows.reduce((sum, row) => sum + (Number.isFinite(row.cost) && row.cost >= 0 ? row.cost : 0), 0);
+	return `agents: ${working}/${rows.length} active${cost >= 0.005 ? ` · ~$${cost.toFixed(2)}` : ""}`;
 }

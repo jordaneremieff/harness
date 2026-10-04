@@ -38,11 +38,11 @@ it("unknown row costs stay unknown and totals retain the known lower bound", () 
 		];
 		const snapshot = { observedAt: 0, sessions: rows };
 		assert.match(rosterLines(rows, "unknown", 80, 4, 0, theme, true).join("\n"), /unknown.*\$\?/);
-		assert.equal(rosterTotals(snapshot), "3 working · ≥$1.50 retained");
+		assert.equal(rosterTotals(snapshot), "3 working · $1.50+ retained");
 		assert.doesNotMatch(dashboardText(snapshot), /NaN|Infinity/);
 		assert.equal(
 			rosterTotals({ observedAt: 0, sessions: [row("unknown", { cost: unknown })] }),
-			"1 working · ≥$0.00 retained",
+			"1 working · $0.00+ retained",
 		);
 	}
 });
@@ -53,7 +53,7 @@ it("incomplete roster coverage qualifies a known subtotal", () => {
 			sessions: [row()],
 			coverage: { complete: false, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: "more" },
 		}),
-		"1 working · ≥$0.42 retained",
+		"1 working · $0.42+ retained",
 	);
 });
 it("roster order separates working, attention, and retained results", () => {

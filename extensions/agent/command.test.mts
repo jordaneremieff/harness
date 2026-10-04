@@ -91,7 +91,7 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.deepEqual(roster, published);
 		assert.equal(roster.coverage, published.coverage);
 		assert.equal(primary.sessionManager.getSessionId(), "current-primary");
-		return "agents: 1/1 active (session) · $0.42";
+		return "agents: 1/1 active · ~$0.42";
 	});
 	const opened = command.openDashboard(ctx);
 	try {
@@ -101,7 +101,7 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.deepEqual(lookups, [["test", "model"]]);
 		assert.equal(reads, 1);
 		assert.match(text, /context 163k\/1.0M \(16%\)/);
-		assert.match(text, /Agents: 1\/1 active \(session\) · \$0.42/);
+		assert.match(text, /Agents: 1\/1 active · ~\$0.42/);
 	} finally { dashboard?.dispose(); finish(); await opened; }
 });
 it("the dashboard collaboration adapter carries its primary context and structured read", async () => {

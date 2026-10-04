@@ -16,5 +16,8 @@ it("model truncation preserves reasoning and cost without repeating state", () =
 	}
 	assert.equal(formatCost(undefined), "$?");
 	assert.equal(formatCost(0), "$0.00");
-	assert.equal(formatCost(1, true), "≥$1.00");
+	assert.equal(formatCost(1, true), "$1.00+");
+	assert.equal(formatCost(1), "$1.00");
+	assert.equal(formatCost(undefined, true), "$?");
+	assert.match(footerText(row("partial", { cost: 1, partial: true }), 80), /\$1\.00\+$/);
 });

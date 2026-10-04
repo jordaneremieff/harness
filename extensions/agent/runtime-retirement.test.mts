@@ -347,7 +347,7 @@ it("retains final costs, drops manager caches without recovery, serves cold read
 	let acquisitions = 0;
 	const lost = eventLog<void>();
 	const notices = eventLog<string>();
-	const partialFooter = deferred();
+	const footers = eventLog<string>();
 	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, acquire: async (metadata) => {
 		acquisitions++;
 		const client = await connectHost(metadata, { retryAttempts: 0 });
@@ -356,7 +356,7 @@ it("retains final costs, drops manager caches without recovery, serves cold read
 	} });
 	t.after(() => manager.close());
 	const observer = f.ownerId;
-	await manager.registerPrimary(observer, { signal: new AbortController().signal, cwd: f.cwd, send: (text) => notices.push(text), status: (text) => { if (text?.includes("≥")) partialFooter.resolve(); } });
+	await manager.registerPrimary(observer, { signal: new AbortController().signal, cwd: f.cwd, send: (text) => notices.push(text), status: (text) => { if (text) footers.push(text); } });
 	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: observer, cwd: f.cwd });
 	const oldAnswer = process.env.DURABLE_TEST_ANSWER;
 	process.env.DURABLE_TEST_ANSWER = "retained costly answer ".repeat(200);
@@ -393,7 +393,7 @@ it("retains final costs, drops manager caches without recovery, serves cold read
 	assert.equal(before.rows.reduce((sum, row) => sum + row.cost, 0), total);
 	assert.equal(f.catalog.read(f.metadata.storageId).view?.coverage.complete, false, "the trimmed final reply retains explicit partial coverage");
 	assert.equal(before.coverage.skipped, 1);
-	await partialFooter.promise;
+	await footers.waitFor((items) => items.some((text) => text.endsWith(` · ~$${total.toFixed(2)}`)));
 	const cold = await manager.control("inspect", { sessionId: f.metadata.storageId, view: "history" }, { id: observer, cwd: f.cwd }) as { entries: unknown[] };
 	assert.ok(cold.entries.length > 0);
 	assert.equal(existsSync(hostPaths(f.metadata).claim), false);
