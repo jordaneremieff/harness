@@ -9,8 +9,8 @@
  * only then acknowledges the source row.
  *
  * Routing: an owner with a discovery catalog record receives an untrusted
- * follow-up in its own Durable host, as before. A noncatalog owner is an
- * ordinary primary session, reached through its registered primary channel. If
+ * follow-up in its own Durable host. Without a catalog record, only a canonical
+ * primary identity can use a registered primary channel. If
  * that primary endpoint is absent or its owner process is proven dead, every
  * registered live or unknown primary receives a labeled fallback delivery. A
  * live or unknown candidate that cannot be reached leaves the row
@@ -701,7 +701,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const deliverPrimary = async (row: DeliveryRow, owner: string): Promise<void> => {
 		if (row.deliveredTo.has(`primary:${owner}`)) return;
 		if (!PRIMARY_ID.test(owner))
-			throw new Error(`delivery owner ${owner} is not a canonical primary id; refusing fallback`);
+			throw new Error(`delivery owner ${owner} has no catalog record and is not a canonical primary id; refusing fallback`);
 		const identity = deliverySender(row, host);
 		const status = primaryEndpointStatus(sessionsRoot, owner);
 		if (status.state === "live") await deliverLiveOwner(row, identity, owner);
@@ -754,7 +754,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		for (const owner of owners) {
 			if (closed || signal.aborted) return;
 			try { await routeOwner(row, owner); }
-			catch (error) { failure ??= asError(error); }
+			catch (error) {
+				failure ??= new Error(`Delivery ${rowSourceId(metadata, row)} to ${owner} failed: ${asError(error).message}`, { cause: error });
+			}
 		}
 		if (failure !== undefined) throw failure;
 		if (!closed && !signal.aborted) await acknowledgeRow(row);

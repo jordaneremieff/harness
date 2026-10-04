@@ -664,6 +664,53 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 	await watcher.close();
 });
 
+it("identifies an absent peer report without blocking a catalog owner's result", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const catalog = new AgentCatalog(root);
+	const record = catalog.create({
+		cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
+		model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off", ownerId: "fixture-owner",
+	}, "native-owner");
+	assert.equal(record.storageId, "df9df4ea-5dc7-236d-fbf2-d087b48aadfb", "a native storage identity need not be a canonical primary UUID");
+	const missingPeer = "11111111-2222-f333-7444-555555555555";
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	const target = await openHost(record.storagePath, record.storageId, root);
+	t.after(async () => { await source.close(); await target.close(); });
+	const report = await recordReport(source.harness, {
+		ownerId: missingPeer, senderIdentity: source.storageId, requestId: "absent-peer", message: "peer report",
+	}, BACKGROUND_CONTEXT);
+	const submissionId = await addReceipt(source, record.storageId);
+	const calls = eventLog<SubmitRecord>();
+	const errors = eventLog<Error>();
+	let acquired = 0;
+	const watcher = startDurableDelivery({
+		host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog,
+		signal: new AbortController().signal,
+		acquire: async (metadata) => {
+			acquired += 1;
+			assert.equal(metadata.storageId, record.storageId);
+			return fakeTarget(target, calls);
+		},
+		listPrimaryChannels: async () => { assert.fail("an absent native peer must not broadcast to primary sessions"); },
+		onError: (error) => errors.push(error),
+	});
+	t.after(() => watcher.close());
+	await errors.waitForCount(1);
+	await watcher.close();
+	const state = await deliveryState(source);
+	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, true, "the valid result reaches its catalog owner");
+	assert.equal(state?.reports.find((row) => row.sourceId === report.sourceId)?.acknowledged, false, "the absent peer report stays pending");
+	assert.equal(acquired, 1);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]?.params.sessionId, record.storageId);
+	assert.equal(calls[0]?.params.ownerId, undefined, "the result does not create another ownership intent");
+	assert.match(String(calls[0]?.params.message), /Agent result from source-storage:1/u);
+	assert.equal(errors[0]?.message, `Delivery source-storage:${report.sourceId} to ${missingPeer} failed: delivery owner ${missingPeer} has no catalog record and is not a canonical primary id; refusing fallback`);
+	const status = await source.request("status", {}, BACKGROUND_CONTEXT) as { deliveryError?: string };
+	assert.equal(status.deliveryError, errors[0]?.message, "status identifies the failed report, not the delivered result");
+});
+
 it("resumes after reopen and native dedup keeps one submission", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const catalog = new AgentCatalog(root);
