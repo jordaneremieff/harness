@@ -12,7 +12,7 @@ import { createAgentCommand, executeAgentAction } from "./command.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import registerAgentExtension from "./index.ts";
 import { defined } from "./test-assertions.mts";
-import { source, row, theme, keys, turn } from "./dashboard-test-fixture.mts";
+import { source, row, page as rosterPage, theme, keys, turn } from "./dashboard-test-fixture.mts";
 import type { AgentDashboard } from "./dashboard.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import type { ActionDialogExtras } from "./action-dialogs.ts";
@@ -68,7 +68,10 @@ async function suggest(native: CombinedAutocompleteProvider, line: string, col =
 }
 
 it("the dashboard gets its context window and session figures from the current primary context", async () => {
-	const observed = source([row("one")]);
+	const published = rosterPage([row("one")]);
+	const observed = source(published.rows);
+	let reads = 0;
+	observed.list = async () => { reads++; return published; };
 	observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160000, output: 3300, cacheRead: 0, cacheWrite: 0, totalTokens: 163300, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
 	const lookups: Array<[string, string]> = [];
 	let dashboard: AgentDashboard | undefined;
@@ -83,8 +86,10 @@ it("the dashboard gets its context window and session figures from the current p
 			dashboard = factory({ terminal: { rows: 45, columns: 160 }, requestRender() {} } as unknown as TUI, theme, keys, resolve);
 		}), notify() {} },
 	} as unknown as ExtensionCommandContext;
-	const command = createAgentCommand([], observed, extras, undefined, async (primary) => {
+	const command = createAgentCommand([], observed, extras, undefined, async (primary, roster) => {
 		assert.equal(primary, ctx);
+		assert.deepEqual(roster, published);
+		assert.equal(roster.coverage, published.coverage);
 		assert.equal(primary.sessionManager.getSessionId(), "current-primary");
 		return "agents this session: 1 working · 1 total · $0.42";
 	});
@@ -94,6 +99,7 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.ok(dashboard);
 		const text = stripVTControlCharacters(dashboard.render(160).join("\n"));
 		assert.deepEqual(lookups, [["test", "model"]]);
+		assert.equal(reads, 1);
 		assert.match(text, /context 163k\/1.0M \(16%\)/);
 		assert.match(text, /Agents this session: 1 working · 1 total · \$0.42/);
 	} finally { dashboard?.dispose(); finish(); await opened; }

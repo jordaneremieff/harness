@@ -16,6 +16,7 @@
  */
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
+import { FleetStatusSchema } from "./fleet-status.ts";
 
 const object = <T extends Record<string, TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const string = Type.String();
@@ -244,8 +245,6 @@ export const ListOutputSchema = object({
 	authority: string,
 });
 export type ListOutput = Static<typeof ListOutputSchema>;
-
-import { FleetStatusSchema } from "./fleet-status.ts";
 
 /**
  * `agent_status` union:

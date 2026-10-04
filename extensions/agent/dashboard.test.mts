@@ -511,8 +511,7 @@ it("new agent selects its task and starting conversation before host readiness",
 		]) {
 			f.resize(width, height);
 			const screen = f.ui.render(width).join("\n");
-			assert.match(screen, /starting/);
-			assert.match(screen, /Starting/);
+			assert.match(screen, /Starting · Starting agent/);
 			assert.doesNotMatch(screen, /retained/);
 			assert.match(screen, /Write the startup note/);
 			assert.match(screen, /Message to Write the startup note/);
@@ -523,7 +522,7 @@ it("new agent selects its task and starting conversation before host readiness",
 			);
 		}
 		await turn();
-		assert.match(f.ui.render(140).join("\n"), /starting/);
+		assert.match(f.ui.render(140).join("\n"), /Starting/);
 		assert.doesNotMatch(f.ui.render(140).join("\n"), /Conversation unavailable/);
 	} finally {
 		release.resolve();
@@ -548,12 +547,12 @@ it("a busy live frame updates the header, roster, and footer together", async ()
 		frame = conversationFrame();
 		changed();
 		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /working ·/);
+		assert.match(screen, /Working ·/);
 		assert.match(screen, /Working/);
 		assert.match(screen, /test\/model · high.*context/);
 		assert.doesNotMatch(screen, /Done|0 working/);
 		f.ui.handleInput("/");
-		assert.match(f.ui.render(140).join("\n"), /working ·/);
+		assert.match(f.ui.render(140).join("\n"), /Working ·/);
 	} finally {
 		f.ui.dispose();
 	}

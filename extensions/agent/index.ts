@@ -684,7 +684,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 				scheduleAgentInput({ control: (method, params) => control(method, params, ctx), label: agentLabel }, input),
 		},
 		(input, ctx) => getManager().collaborate({ ...input, origin: "operator" }, caller(ctx, pi)),
-		(ctx) => getManager().sessionFigures(ctx.sessionManager.getSessionId()),
+		(ctx, page) => getManager().sessionFigures(ctx.sessionManager.getSessionId(), page),
 	);
 	pi.registerCommand("agent", command);
 	pi.registerShortcut("ctrl+alt+g", {

@@ -17,7 +17,7 @@ import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
 import { dashboardGeometry, dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
-import { dashboardRecords, rosterLines, coverageText, activityOf } from "./dashboard-roster.ts";
+import { dashboardRecords, rosterLines, coverageText, activityOf, sessionAppearance } from "./dashboard-roster.ts";
 import {
 	agentState,
 	dashboardSessionState,
@@ -38,7 +38,7 @@ export interface DashboardResult {
 	sessionId?: string;
 }
 export interface DashboardOperations {
-	sessionFigures?(): Promise<string>;
+	sessionFigures?(page: AgentConversationPage): Promise<string>;
 	contextWindow?(provider: string, modelId: string): number | undefined;
 	collaborate?: Collaborate;
 	submit(input: { id: string; text: string; mode: "steer" | "followUp" }): Promise<DashboardResult>;
@@ -211,7 +211,7 @@ export class AgentDashboard implements Component, Focusable {
 			this.loadMore = false;
 			this.rosterFailures = 0;
 			this.rosterNotice = undefined;
-			this.sessionFigures = await this.operations.sessionFigures?.() ?? "";
+			this.sessionFigures = await this.operations.sessionFigures?.(this.page) ?? "";
 			if (this.closed) return;
 			this.reconcile();
 			this.redraw();
@@ -1094,7 +1094,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	private statusText(): string {
 		if (this.console) {
-			return `${this.console.row.state} · ${activityOf(this.console.row)}`;
+			return `${sessionAppearance[this.console.row.state].label} · ${activityOf(this.console.row)}`;
 		}
 		if (!this.page) return "Loading roster…";
 		if (this.state.filter) return `No agents match ${this.state.filter}`;

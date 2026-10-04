@@ -6,7 +6,7 @@ import { dashboardSessionState } from "./dashboard-state.ts";
 import { showAgentDashboard } from "./dashboard.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { hideAround, runActionDialog, type ActionDialogExtras } from "./action-dialogs.ts";
-import type { AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
+import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
 import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
 
 interface CommandArgument {
@@ -156,7 +156,7 @@ export function createAgentCommand(
 	sources: AgentObservationSource,
 	options: ActionDialogExtras,
 	collaborate?: (input: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>,
-	sessionFigures?: (ctx: ExtensionContext) => Promise<string>,
+	sessionFigures?: (ctx: ExtensionContext, page: AgentConversationPage) => Promise<string>,
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
@@ -205,7 +205,7 @@ export function createAgentCommand(
 				state,
 				source: sources,
 				operations: {
-					sessionFigures: sessionFigures ? () => sessionFigures(ctx) : undefined,
+					sessionFigures: sessionFigures ? (page) => sessionFigures(ctx, page) : undefined,
 					contextWindow: (provider, modelId) => ctx.modelRegistry.find(provider, modelId)?.contextWindow,
 					collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
 					chooseConversation: async (labels, surface) =>

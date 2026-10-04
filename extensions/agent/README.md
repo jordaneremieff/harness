@@ -898,7 +898,9 @@ agents created by the current primary session plus their descendants through
 catalog ownership. Other primary sessions and unrelated retained agents do not
 contribute. The status says `agents this session: <working> working · <total>
 total · <cost>` and disappears when the session has no agents. Each registered
-primary receives its own figures. Repeated reads never add the same usage twice.
+primary receives its own figures. The dashboard reuses its scanned roster page
+for these figures without another catalog scan. Repeated reads never add the
+same usage twice.
 Incomplete inventory qualifies the known subtotal.
 
 ## Primary restart and continuity

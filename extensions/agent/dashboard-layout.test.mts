@@ -132,7 +132,7 @@ for (const width of [80, 140]) {
 			assert.equal(lines[boundary - 1]?.trim(), "");
 			assert.match(lines[boundary] ?? "", /of \d+ loaded.*End of loaded view/);
 			assert.match(lines[boundary] ?? "", /Partial history/);
-			assert.match(lines[boundary + 1] ?? "", /idle/);
+			assert.match(lines[boundary + 1] ?? "", /Idle/);
 			assert.match(lines[boundary + 2] ?? "", /context.*\$0\.42/);
 			assert.match(lines[boundary + 3] ?? "", /^╭─ Message to Recipient/);
 			assert.match(lines[boundary + 4] ?? "", /^│.*│$/);
