@@ -50,7 +50,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			"Inside a Durable agent, spawning without a handle in the same cwd creates a native child conversation in your storage; a different cwd creates a storage with its own host. The receipt states placement. Native children inherit your stored configuration, with explicit model and thinking overrides; their selected controls permit further delegation. Descendants remain addressable to the operator and eligible for the bounded /agent roster.",
 			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. Apply the universal AGENTS.md "Intent authority" section to assignments, corrections, and relayed decisions; preserve operator restrictions and distinguish them from agent choices.',
 			"Model tool tasks get automatic check-ins while unanswered, separate from voluntary worker reports. checkInMinutes overrides PI_AGENT_CHECK_IN_MINUTES (default 30); 0 disables. A check-in is not a finished result. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. Steering waits for the tool boundary.",
-			"Agent work runs in the background. Each task's answer reports to its request's reply recipient automatically. Settlement is execution evidence, not task acceptance. Integrate needed results and resolve live work before a final conclusion: continue useful work, redirect changed work, or abort superseded work.",
+			"Agent work runs in the background. Each task's answer reports to its request's reply recipient automatically. Settlement is execution evidence, not task acceptance. Integrate the delegated results required by this request before claiming completion; a spawn or send receipt is not that result. Resolve live work for this request: continue useful work, redirect changed work, or abort superseded work. Do not stop unrelated, standing, or background agents merely to finish this request.",
 		],
 	},
 	agent_send: {
@@ -89,7 +89,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		guidelines: [
 			"Use agent_status for orientation and agent_inspect for concrete transcript or result evidence, not as waiting tools. Never poll with sleeps or repeated status/inspection calls. Settlement notices arrive automatically; do independent work while useful agent work continues.",
 			"A selected session's status lists its bounded pending scheduled inputs with timer ID, target, deadline, mode, and overdue flag.",
-			"Inside a Durable agent, no-target status includes a bounded Your agents section and structured lineage for direct children recorded by that caller, including children in other storages. Labels reflect creation records, not current activity or task ownership.",
+			"Inside a Durable agent with recorded children, no-target status includes a bounded Your agents section and structured lineage for direct children recorded by that caller, including children in other storages. Labels reflect creation records, not current activity or task ownership.",
 			"Use view: fleet for sampled machine-local model costs, current selections, and attributed failures. Missing evidence is unknown, not zero; conversation warnings do not prove provider faults.",
 		],
 	},

@@ -174,7 +174,7 @@ Agent controls reach native conversations whose effective selection includes
 them, so an agent can run its own agents. Placement without a handle is
 decided at spawn time and stated in the result. An omitted cwd selects the
 caller's cwd. The same canonical directory (compared by real path, with a
-lexical fallback for paths that do not exist yet) creates a native child
+lexical fallback if realpath resolution fails) creates a native child
 conversation in the caller's storage: `Spawned <name> as native child
 conversation <id> in your storage.` A different cwd creates a new storage
 with its own host: `Spawned <name> in <cwd> as <sessionId> with its own
@@ -584,7 +584,10 @@ stays protected. Ownership metadata never authorizes a retired delivery payload.
 A fallback broadcast checks every registered primary before the first delivery,
 so one incompatible candidate
 holds the whole fallback. The host keeps the latest routing failure in its
-status as `deliveryError`, and the status card shows it. The primary does not poll receipts. Delivery is at-least-once; stable
+status as `deliveryError`, and the status card shows it. The error names the
+failed record and recipient; it does not imply that another result failed. A
+missing catalog record does not authorize a noncanonical primary route. The
+primary does not poll receipts. Delivery is at-least-once; stable
 answer-based request and source IDs let each receiver deduplicate retries and
 host restarts. A primary process loss after display but before acknowledgement
 can repeat a notice if its in-memory deduplication was lost. Transmitted peer bodies have a

@@ -59,7 +59,10 @@ it("keeps the contract, reporting, polling, live-work, and authority guidance", 
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);
 	assert.match(all, /objective, output format, source guidance, and boundaries/u);
 	assert.match(all, /Intent authority/u);
-	assert.match(all, /resolve live work/u);
+	assert.match(all, /Resolve live work for this request/u);
+	assert.match(all, /delegated results required by this request before claiming completion/u);
+	assert.match(all, /a spawn or send receipt is not that result/u);
+	assert.match(all, /Do not stop unrelated, standing, or background agents merely to finish this request/u);
 	assert.match(all, /continue useful work, redirect changed work, or abort superseded work/u);
 	assert.match(all, /interim reports, blocking questions, and corrections/u);
 	assert.match(all, /Do not replace the terminal result with an interim report/u);
