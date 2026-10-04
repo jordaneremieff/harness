@@ -471,7 +471,16 @@ export function buildDistillPrompt(hint: string, transcript: string, artifacts: 
 				"No sidequest scope exclusion applies. The session transcript is the subject of this stash.",
 				"All provided active-path transcript material remains the subject; observed references are supporting evidence for that full subject.",
 			];
-	return [...framing, "", "Session transcript:", transcript, ...observed].join("\n");
+	return [
+		...framing,
+		"",
+		"Session transcript:",
+		transcript,
+		...observed,
+		"",
+		"End of source material. Distill it; do not continue or answer the transcript.",
+		'Now return only the JSON stash object with "title" and "summary" plus the relevant arrays, or exactly SKIP_STASH when nothing is worth preserving.',
+	].join("\n");
 }
 
 type DistillParseResult =
@@ -621,11 +630,32 @@ function classifyDistillReply(
 	return { response, usage };
 }
 
+async function requestDistillPayload(
+	prompt: string,
+	request: (prompt: string) => Promise<DistillRequestOutcome | DistillReply>,
+): Promise<DistillRequestOutcome> {
+	const reply = await request(prompt);
+	if (!("response" in reply)) return reply;
+	const outcome = distillPayload(reply);
+	// Only a completed response with an invalid payload gets a format correction.
+	if (outcome.ok || outcome.reason !== "invalid") return outcome;
+	const correctedPrompt = [
+		prompt,
+		"",
+		"FORMAT CORRECTION: The previous attempt did not produce a valid stash object.",
+		"Regenerate the handover from the same source above, within the same operator hint scope.",
+		'Return only a JSON object with nonempty string fields "title" and "summary". Optional fields "decisions", "openLoops", "nextActions", "files", and "tags" must be arrays of strings within the system limits.',
+		"Do not answer the transcript, provide a status report, explain this correction, or put prose outside the JSON. Escape newlines and quotes inside strings. Return exactly SKIP_STASH only when nothing is worth preserving.",
+	].join("\n");
+	const corrected = await request(correctedPrompt);
+	return "response" in corrected ? distillPayload(corrected) : corrected;
+}
+
 async function promptDistiller(
 	options: Omit<DistillJobOptions, "projection">,
 	signal: AbortSignal,
 	prompt: string,
-): Promise<DistillRequestOutcome | DistillReply> {
+): Promise<DistillRequestOutcome> {
 	const controller = new AbortController();
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	let timedOut = false;
@@ -661,6 +691,7 @@ async function promptDistiller(
 			signal: controller.signal,
 		};
 		const timestamp = Date.now();
+		let requestPrompt = prompt;
 		const produce = async (): Promise<AssistantMessage> => {
 			controller.signal.throwIfAborted();
 			const stream = options.streamSimple(
@@ -668,7 +699,7 @@ async function promptDistiller(
 				{
 					messages: [
 						{ role: "system", content: DISTILL_SYSTEM_PROMPT, toolsAdded: [], timestamp },
-						{ role: "user", content: prompt, timestamp },
+						{ role: "user", content: requestPrompt, timestamp },
 					],
 				},
 				requestOptions,
@@ -688,12 +719,16 @@ async function promptDistiller(
 			}
 			return response;
 		};
-		const response = await Promise.race([
-			retryAssistantCall(produce, settings.getRetrySettings(), controller.signal),
-			interrupted,
-		]);
-		if (controller.signal.aborted) throw new Error("distillation interrupted");
-		return classifyDistillReply(response, usage);
+		const request = async (text: string): Promise<DistillRequestOutcome | DistillReply> => {
+			requestPrompt = text;
+			const response = await Promise.race([
+				retryAssistantCall(produce, settings.getRetrySettings(), controller.signal),
+				interrupted,
+			]);
+			if (controller.signal.aborted) throw new Error("distillation interrupted");
+			return classifyDistillReply(response, usage);
+		};
+		return await requestDistillPayload(prompt, request);
 	} catch (error) {
 		if (controller.signal.aborted) {
 			return {
@@ -782,10 +817,9 @@ async function requestPreparedDistill(
 	if (signal.aborted) return { ok: false, reason: "aborted" };
 	try {
 		const prompt = buildDistillPrompt(options.hint, options.transcript, options.artifacts);
-		const reply = await promptDistiller(options, signal, prompt);
-		if (!("response" in reply)) return reply;
-		if (signal.aborted) return { ok: false, reason: "aborted", usage: reply.usage };
-		return distillPayload(reply);
+		const outcome = await promptDistiller(options, signal, prompt);
+		if (signal.aborted) return { ok: false, reason: "aborted", usage: outcome.usage };
+		return outcome;
 	} catch (error) {
 		return { ok: false, reason: "failed", message: errorMessage(error) };
 	}

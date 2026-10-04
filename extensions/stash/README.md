@@ -366,9 +366,10 @@ mainline work in the same live session is out of scope for a hinted stash even
 when it is longer, more recent, or more urgent-looking. A bounded reference
 section retains deduplicated paths, work-item keys, and URLs observed in projected
 tool results, including references outside the retained transcript window; those
-references are candidates for the hinted effort only. It returns one
-fenced JSON payload that the extension validates against the same shape and
-caps as `stash_write` before writing through the atomic store with project,
+references are candidates for the hinted effort only. The prompt ends with the
+output contract and an instruction not to continue or answer the transcript.
+It returns one JSON payload (optionally fenced) that the extension validates
+against the same shape and caps as `stash_write` before writing through the atomic store with project,
 branch, and session metadata. Before parsing, raw control characters inside
 JSON string literals (literal newlines, tabs, and other control characters
 that strict JSON requires escaped, which some models emit and `JSON.parse`
@@ -440,9 +441,19 @@ Transient retries use Pi's public `retryAssistantCall` with the on-disk global
 and project retry settings. Provider retry controls, transport, HTTP timeout,
 WebSocket timeout, and thinking budgets use the corresponding SettingsManager
 getters. Defaults permit three outer retries with exponential waits starting at
-two seconds; quota errors and context overflow do not retry. All attempts retain
-the same prompt and a separate request-cache identity. Model adapters retain
-their default output-token limits; the extension adds no universal token cap.
+two seconds; quota errors and context overflow do not retry. Transient retries
+retain identical input. Model adapters retain their default output-token limits;
+the extension adds no universal token cap.
+
+A completed response that fails JSON parsing or payload validation gets one
+format-correction request. It regenerates from the same captured source and hint
+with an explicit JSON instruction appended to the prompt. It does not replay the
+malformed response or save prose as a substitute handover. A second invalid
+payload fails without writing. Successful, skipped, incomplete, tool-request,
+and terminal provider-error responses do not start format correction. Both
+requests share the job's model, thinking level, separate request-cache identity,
+wall-clock deadline, cancellation signal, and cumulative usage totals. Transient
+retry settings apply to each request.
 
 The request does not run AgentSession compaction, length recovery, or cache
 warming. Context overflow fails without rewriting the transcript. Length-limited
@@ -450,7 +461,7 @@ or tool-request responses fail validation even if their text contains valid JSON
 Only a completed text response reaches the parser and store.
 
 The command handler returns immediately; the live agent receives no turn. The
-job uses zero tools, one fixed prompt, a 180-second wall-clock auto-abort across
+job uses zero tools, one captured source, a 180-second wall-clock auto-abort across
 requests and retry waits, and an AbortController that `/stash abort` and
 `session_shutdown` both trigger. Cancellation settles the job even if a provider
 ignores its signal; stopping the underlying request still requires provider
@@ -665,7 +676,8 @@ printf '%s\n' '{"id":"commands","type":"get_commands"}' \
 ```
 
 Controlled streams cover timeout, cancellation, late results, retry exhaustion,
-usage totals, invalid responses, and byte-exact artifact output. An entrypoint
+format correction and its attempt limit, usage totals, invalid responses, and
+byte-exact artifact output. An entrypoint
 test registers a synthetic provider in a real isolated ModelRuntime and invokes
 the command without a stream override. It checks registry binding, request-time
 authentication, tool-free input, storage, and no turn in the live session.

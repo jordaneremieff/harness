@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import fs, { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, describe, it, mock } from "node:test";
@@ -7,7 +8,6 @@ import registerStash from "./index.ts";
 import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
 
 import {
-	createAssistantMessageEventStream,
 	getCurrentSystemPrompt,
 	getCurrentTools,
 	InMemoryCredentialStore,
@@ -1360,7 +1360,7 @@ describe("stash creation", () => {
 		await done;
 		assert.match(
 			notifications.join("\n"),
-			/Stash distillation failed:.*did not return valid JSON.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s,
+			/Stash distillation failed:.*did not return valid JSON.*\n\nDistiller: test-model \[medium\] · 70k in · 4\.0k out · ~\$0\.25/s,
 		);
 	});
 
@@ -1580,37 +1580,27 @@ describe("stash creation", () => {
 		assert.match(notifications.join("\n"), /No stash creation is in flight/);
 	});
 
-	it("reports an artifact that commits after the creation is cancelled", async () => {
-		// The distiller checks the abort signal one last time before it writes. An
-		// abort that lands after that check still publishes the artifact, so the
-		// operator must hear about the file instead of only "cancelled".
-		let abortNow: (() => void) | null = null;
-		const stream: DistillStreamFunction = (model) => {
-			const events = createAssistantMessageEventStream();
-			const message = testAssistantMessage(DISTILL_PAYLOAD, model);
-			message.content = [
-				{
-					type: "text",
-					get text() {
-						abortNow?.();
-						return DISTILL_PAYLOAD;
-					},
-				},
-			];
-			events.push({ type: "done", reason: "stop", message });
-			events.end();
-			return events;
-		};
-		const { commands } = registry({ distillStream: stream });
+	it("reports an artifact that commits after the creation is cancelled", { timeout: 5000 }, async (t) => {
+		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
 		const notifications: string[] = [];
 		const { done, notify } = settledNotify((message: string) => notifications.push(message));
 		const ctx = creationCtx({
 			notify,
 			setStatus: () => {},
 		});
-		abortNow = () => {
-			void commands.get("stash").handler("abort", ctx);
-		};
+		// Cancel at filesystem publication, after the last pre-write signal check.
+		const originalLink = fs.link;
+		const publication = mock.method(fs, "link", async (...args: Parameters<typeof fs.link>) => {
+			if (typeof args[1] === "string" && args[1].startsWith(`${dir}/`)) {
+				await commands.get("stash").handler("abort", ctx);
+			}
+			return originalLink(...args);
+		});
+		syncBuiltinESMExports();
+		t.after(() => {
+			publication.mock.restore();
+			syncBuiltinESMExports();
+		});
 		await commands.get("stash").handler("new create one", ctx);
 		await done;
 		const text = notifications.join("\n");

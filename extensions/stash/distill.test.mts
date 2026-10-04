@@ -688,13 +688,18 @@ describe("distill job", () => {
 		assert.equal((await listStashes(dir, { limit: 200 })).length, before, "a skipped distillation must not write");
 	});
 
-	it("writes nothing for an invalid payload", async () => {
-		const { factory } = fakeFactory('{"title": 42}');
-		const outcome = await startDistillJob(baseOptions(factory)).result;
-		assert.equal(outcome.ok, false);
-		if (outcome.ok) return;
-		assert.equal(outcome.reason, "invalid");
-		assert.match(outcome.message ?? "", /"title" must be a string/);
+	it("stops after one format correction and writes nothing for repeated invalid payloads", async () => {
+		for (const reply of ['{"title": 42}', "The change is ready for review."]) {
+			const { factory, calls } = fakeFactory(reply);
+			const before = (await listStashes(dir, { limit: 200 })).length;
+			const outcome = await startDistillJob(baseOptions(factory)).result;
+			assert.equal(outcome.ok, false);
+			if (outcome.ok) return;
+			assert.equal(outcome.reason, "invalid");
+			assert.equal(calls.prompted.length, 2);
+			assert.match(calls.prompted[1], /FORMAT CORRECTION/);
+			assert.equal((await listStashes(dir, { limit: 200 })).length, before);
+		}
 	});
 
 	const usage: Usage = {
@@ -713,10 +718,99 @@ describe("distill job", () => {
 		costUsd: 0.123,
 	};
 
+	it("regenerates prose as validated JSON with the same source and controls, then writes once", async () => {
+		const calls: Parameters<DistillStreamFunction>[] = [];
+		const prose = "The change is ready for review.";
+		const streamSimple: DistillStreamFunction = (...args) => {
+			calls.push(args);
+			return completedDistillStream(calls.length === 1 ? prose : JSON.stringify(VALID_PAYLOAD), usage)(...args);
+		};
+		const before = (await listStashes(dir, { limit: 200 })).length;
+		const outcome = await startDistillJob(baseOptions(streamSimple)).result;
+		assert.equal(outcome.ok, true);
+		if (!outcome.ok) return;
+		assert.equal(calls.length, 2);
+		assert.equal((await listStashes(dir, { limit: 200 })).length, before + 1);
+		assert.match(await readFile(outcome.path, "utf8"), /The first tool ports cleanly/);
+		assert.equal(calls[0][0], calls[1][0]);
+		assert.deepEqual(calls[0][2], calls[1][2]);
+		assert.deepEqual(calls[0][1].messages[0], calls[1][1].messages[0]);
+		assert.equal(calls[1][1].messages.length, 2);
+		assert.deepEqual(getCurrentTools(calls[1][1].messages), []);
+		const original = calls[0][1].messages[1].content;
+		const corrected = calls[1][1].messages[1].content;
+		assert.equal(typeof original, "string");
+		assert.equal(typeof corrected, "string");
+		if (typeof original !== "string" || typeof corrected !== "string") return;
+		assert.ok(corrected.startsWith(original));
+		assert.match(corrected, /FORMAT CORRECTION/);
+		assert.ok(!corrected.includes(prose));
+		assert.deepEqual(outcome.usage, {
+			inputTokens: 2000,
+			outputTokens: 4000,
+			cacheReadTokens: 60000,
+			cacheWriteTokens: 8000,
+			costUsd: 0.246,
+		});
+	});
+
+	it("cancels an active format correction without writing or losing prior usage", async () => {
+		let attempts = 0;
+		let entered!: () => void;
+		const correctionStarted = new Promise<void>((resolve) => { entered = resolve; });
+		const streamSimple: DistillStreamFunction = (...args) => {
+			attempts++;
+			if (attempts === 1) return completedDistillStream("The change is ready.", usage)(...args);
+			const stream = controlledDistillStream()(...args);
+			entered();
+			return stream;
+		};
+		const before = (await listStashes(dir, { limit: 200 })).length;
+		const job = startDistillJob(baseOptions(streamSimple));
+		await withWatchdog(correctionStarted);
+		job.abort();
+		const outcome = await withWatchdog(job.result);
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) assert.equal(outcome.reason, "aborted");
+		assert.equal(attempts, 2);
+		assert.deepEqual(outcome.usage, expectedUsage);
+		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
+	});
+
+	it("times out a noncooperative format correction and discards its late payload", async () => {
+		let attempts = 0;
+		const lateStream = createAssistantMessageEventStream();
+		const streamSimple: DistillStreamFunction = (...args) => {
+			attempts++;
+			return attempts === 1 ? completedDistillStream("The change is ready.", usage)(...args) : lateStream;
+		};
+		const before = (await listStashes(dir, { limit: 200 })).length;
+		const outcome = await withWatchdog(startDistillJob(baseOptions(streamSimple, { timeoutMs: 20 })).result);
+		assert.equal(outcome.ok, false);
+		if (!outcome.ok) {
+			assert.equal(outcome.reason, "aborted");
+			assert.match(outcome.message ?? "", /timed out/);
+		}
+		assert.equal(attempts, 2);
+		assert.deepEqual(outcome.usage, expectedUsage);
+		const message = testAssistantMessage(JSON.stringify(VALID_PAYLOAD));
+		lateStream.push({ type: "done", reason: "stop", message });
+		lateStream.end();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
+	});
+
 	it("reports final usage on successful, skipped, invalid, and failed writes", async () => {
 		for (const reply of [JSON.stringify(VALID_PAYLOAD), "SKIP_STASH", "not json"]) {
 			const outcome = await startDistillJob(baseOptions(completedDistillStream(reply, usage))).result;
-			assert.deepEqual(outcome.usage, expectedUsage);
+			const attempts = reply === "not json" ? 2 : 1;
+			assert.deepEqual(outcome.usage, {
+				inputTokens: expectedUsage.inputTokens * attempts,
+				outputTokens: expectedUsage.outputTokens * attempts,
+				cacheReadTokens: expectedUsage.cacheReadTokens * attempts,
+				cacheWriteTokens: expectedUsage.cacheWriteTokens * attempts,
+				costUsd: expectedUsage.costUsd * attempts,
+			});
 		}
 		const outcome = await startDistillJob(
 			baseOptions(completedDistillStream(JSON.stringify(VALID_PAYLOAD), usage), {
