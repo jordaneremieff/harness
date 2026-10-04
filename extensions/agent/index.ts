@@ -2,6 +2,7 @@
 import { mkdirSync, realpathSync } from "node:fs";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
+import { DispatchOutputSchema } from "./result-reference.ts";
 import { profileCommand } from "./profile-dialog.ts";
 import { join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -154,6 +155,9 @@ const result = (value: unknown, schema?: TSchema): AgentToolResult<unknown> => (
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
 const observationSchemas: Partial<Record<AgentControlToolName, TSchema>> = {
+	agent_spawn: DispatchOutputSchema,
+	agent_send: DispatchOutputSchema,
+	agent_steer: DispatchOutputSchema,
 	agent_list: ProfiledListOutputSchema,
 	agent_profile: ProfileOutputSchema,
 	agent_status: StatusToolOutputSchema,

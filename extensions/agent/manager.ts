@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
+import { admittedResult } from "./result-reference.ts";
 import { readFleetStatus } from "./fleet-status.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 import type { AgentProfile } from "./profile-schema.ts";
@@ -326,9 +327,10 @@ export class AgentManager {
 		const client = await this.connection(retained);
 		const profile = await client.request("profile-read", { sessionId: id }) as AgentProfile;
 		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
-		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId: input.requestId ?? randomUUID(), requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
+		const requestId = input.requestId ?? randomUUID();
+		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
 		this.rosterChanged();
-		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, ...(admission === undefined ? {} : { admission }) };
+		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
 	}
 
 	private async creationMetadata(input: AgentSpawnInput, caller: AgentCaller): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
@@ -372,11 +374,11 @@ export class AgentManager {
 			let client: HostConnection;
 			try { client = await opening; }
 			catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
-			const submitMethod = client.runtimeContract.operations["task-submit"] ? "task-submit" : "submit";
-			const versionError = input.prompt ? hostRequestVersionError(submitMethod, client.runtimeContract) : undefined;
+			const versionError = input.prompt === undefined ? undefined : hostRequestVersionError("task-submit", client.runtimeContract);
 			if (versionError) throw versionError;
-			const admission = input.prompt ? await client.request(submitMethod, { sessionId: record.storageId, message: input.prompt, requestId: input.requestId ?? randomUUID(), ownerId: caller.id, ...(submitMethod === "task-submit" ? { requester: caller.id, origin: input.origin ?? "operator" } : originParams(input.origin)), checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") }) : undefined;
-			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, lifetime: "independent host process" };
+			const requestId = input.requestId ?? randomUUID();
+			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
+			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, lifetime: "independent host process", ...(admission === undefined ? {} : { result: admittedResult(record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
 			this.rosterChanged();
@@ -411,8 +413,8 @@ export class AgentManager {
 		return this.controlClient(await this.connection(record), method, params, caller);
 	}
 
-	private requestedOperation(method: string, params: Record<string, unknown>, client: HostConnection): string {
-		if (method === "submit" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return "task-submit";
+	private requestedOperation(method: string, params: Record<string, unknown>): string {
+		if (method === "submit") return "task-submit";
 		if (method === "report") return "submit";
 		if (method === "attach") return params.model === undefined ? "status" : "configure";
 		return method;
@@ -420,7 +422,7 @@ export class AgentManager {
 
 	private async controlClient(client: HostConnection, method: string, params: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
 		const sessionId = String(params.sessionId);
-		const requested = this.requestedOperation(method, params, client);
+		const requested = this.requestedOperation(method, params);
 		const versionError = hostRequestVersionError(requested, client.runtimeContract);
 		if (versionError) throw versionError;
 		if (method === "attach") return this.attachClient(client, sessionId, params.model);
@@ -432,6 +434,7 @@ export class AgentManager {
 		const outcome = requested === "task-submit"
 			? await client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" })
 			: await client.request(method, params);
+		if (requested === "task-submit") return { ...outcome as object, result: admittedResult(sessionId, outcome, String(params.requestId)) };
 		return ["fork", "rewind", "configure"].includes(method) ? this.mutationSnapshot(client, outcome, sessionId) : outcome;
 	}
 

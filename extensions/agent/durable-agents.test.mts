@@ -110,7 +110,7 @@ function messageText(message: Message | undefined): string {
 
 /** Declaration source for the tool-call script and the child answer hold. */
 type RouteState = {
-	route: FauxResponseStep;
+	route: Exclude<FauxResponseStep, AssistantMessage>;
 	script: Array<{ tool: string; args: Durable.JsonObject }>;
 	batch: Array<Array<{ tool: string; args: Durable.JsonObject }>>;
 	requests: Message[][];
@@ -279,6 +279,11 @@ function inspectObservation(holder: DispatchHolder): Record<string, unknown> {
 	);
 }
 
+function dispatchedSpawn(holder: DispatchHolder, params: Readonly<Record<string, unknown>>): Record<string, unknown> {
+	const sessionId = holder.spawnSessionId ?? "other-storage:1";
+	return { sessionId, ...(params.prompt === undefined ? {} : { result: { sessionId, submissionId: 23, requestId: params.requestId } }) };
+}
+
 function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentControlDispatch {
 	return async (method, params) => {
 		calls.push({ method, params: { ...params } });
@@ -297,8 +302,7 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 				return inspectObservation(holder);
 			case "compact":
 				return { taskId: 7, status: "task" };
-			case "spawn":
-				return { sessionId: holder.spawnSessionId ?? "other-storage:1" };
+			case "spawn": return dispatchedSpawn(holder, params);
 			case "place":
 				return { sessionId: holder.placeSessionId ?? "place-storage:1" };
 			case "command":
@@ -502,6 +506,34 @@ it("accepts every shared thinking level in native spawn, configure, and attach s
 			...(name === "agent_spawn" ? {} : { sessionId: storageId }), thinkingLevel: "unsupported",
 		})), /Validation failed/u);
 	}
+});
+
+for (const tool of ["agent_spawn", "agent_send"]) it(`${tool} returns an admitted exact result before the background answer and arms one default check-in`, async (t) => {
+	const route = createRoute();
+	let finish!: (answer: AssistantMessage) => void;
+	const producer = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
+	const models = createTestModels((...args) => {
+		const last = args[0].messages.findLast((message) => message.role !== "system");
+		return last?.role === "user" && messageText(last) === "CONTRACT: reply EXACT" ? producer : route.route(...args);
+	});
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
+	t.after(async () => { finish(fauxAssistantMessage("ANSWER-EXACT")); await harness.close(context); });
+	const existing = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
+	route.script.push({ tool, args: tool === "agent_spawn" ? { name: "exact-result", prompt: "CONTRACT: reply EXACT" } : { sessionId: `${storageId}:${existing.id}`, message: "CONTRACT: reply EXACT" } });
+	await say(root, "Dispatch background work");
+	const outcome = (await toolOutcomes(harness, root.id)).find((candidate) => candidate.name === tool);
+	assert.equal(outcome?.isError, false, outcome?.text);
+	const reference = (outcome?.details as { structuredContent?: { result?: { sessionId: string; submissionId: number; requestId: string } } })?.structuredContent?.result;
+	assert.ok(reference);
+	assert.ok(outcome?.text.includes(JSON.stringify(reference)));
+	const conversationId = Number(reference.sessionId.split(":")[1]) as Durable.ConversationId;
+	const admitted = await harness.commit((tx) => tx.submissionByRequest(conversationId, reference.requestId), context);
+	assert.equal(admitted?.id, reference.submissionId);
+	assert.equal(admitted?.conversationId, conversationId);
+	assert.ok(admitted?.status === "queued" || admitted?.status === "placed");
+	const checkIns = (await harness.inspect(context)).tasks.filter((task) => task.record.kind === CheckInTask.definition.name);
+	assert.equal(checkIns.length, 1, "the tool and Reporter share one admission marker");
 });
 
 it("creates a native child with max thinking through tool-call validation", async (t) => {
@@ -933,8 +965,13 @@ it("spawns a native child through the existing temporary-directory alias", async
 	assert.equal(child.foreignSessionId, undefined);
 	assert.equal(calls.some((call) => call.method === "spawn"), false, "no foreign host spawn occurs");
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
-	assert.equal(outcome?.isError, false);
-	assert.equal(outcome?.text, `Spawned linked as native child conversation ${child.conversationId} in your storage. The prompt was delivered and the answer will report back.`);
+	assert.ok(outcome);
+	assert.equal(outcome.isError, false);
+	const reference = (outcome.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	assert.equal(reference.sessionId, `${storageId}:${child.conversationId}`);
+	const admitted = await harness.commit((tx) => tx.submissionByRequest(child.conversationId as Durable.ConversationId, reference.requestId), context);
+	assert.equal(admitted?.id, reference.submissionId);
+	assert.equal(outcome?.text, `Spawned linked as conversation ${reference.sessionId} in your storage. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}`);
 });
 
 it("includes the busy-run boundary in native report receipts", async (t) => {
@@ -985,7 +1022,9 @@ it("spawns a child in a new storage when the cwd differs", async (t) => {
 	assert.equal(child?.conversationId, undefined, "no local conversation is created");
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
 	assert.ok(outcome && !outcome.isError, "the spawn result is not an error");
-	assert.equal(outcome.text, "Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was delivered and the answer will report back.");
+	const reference = (outcome.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	assert.deepEqual(reference, { sessionId: "other-storage:7", submissionId: 23, requestId: spawn.params.requestId });
+	assert.equal(outcome.text, `Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}`);
 });
 
 it("adds only the caller's retained children to storage status text and structured data", async (t) => {

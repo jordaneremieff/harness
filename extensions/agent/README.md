@@ -347,6 +347,18 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
 
 ## Controls
 
+Answer-bearing `agent_send`, `agent_steer`, and prompted `agent_spawn` return
+`result: { sessionId, submissionId, requestId? }` after native admission. The
+reference names the canonical conversation and its actual admitted submission,
+not a Reporter task, creation record, name, or latest answer. A known request ID
+is retained and must agree with the submission. Local, foreign, handle, and
+ordinary-primary dispatch expose the same reference in text and structured
+Codemode output. Dispatch stays in the background; admission is not settlement.
+
+Creation-only spawn, reports, scheduled inputs, thread posts, and messages
+between ordinary primary sessions do not produce native result references.
+An ordinary primary remains responsive and receives normal routed results.
+
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native child and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
@@ -403,7 +415,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/1.3.0`; a reload over an older retained manager
+The manager contract is `manager/1.4.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -584,7 +596,13 @@ an explicit recipient. `replyTo` changes the answer recipient without changing
 the requester or creator. Report mode does not accept `replyTo`, scheduling, or
 check-in controls. Scheduled tasks use their caller as requester and recipient.
 Rich host admission requires explicit origin; high-level callers default to
-operator origin unless the tool supplies model origin. Base-only calls preserve
+operator origin unless the tool supplies model origin. Answer-bearing dispatch
+requires the current `task-submit` response contract; it does not fall back to
+an older base-only host. Local dispatch obtains the public native Submission
+before returning its reference. The existing background Reporter reuses that
+same request ID and a task-owned admission marker, so both paths create
+one check-in and one input even under concurrent admission or safe replay.
+Base-only calls preserve
 an absent origin and refuse an explicit alternate recipient rather than ignore it.
 
 Model requests resume from native checkpoints after process loss. Unsafe tools

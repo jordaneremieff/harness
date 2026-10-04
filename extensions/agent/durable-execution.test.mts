@@ -105,6 +105,28 @@ it("hands a structured result to the script through details.structuredContent", 
 	assert.match(text, /"answer":"42"/u);
 });
 
+it("returns admitted spawn and send references as native codemode objects", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `const created = await tools.agent_spawn({ name: "idle-agent" });
+			const spawned = await tools.agent_spawn({ name: "working-agent", prompt: "Reply with a result" });
+			const sent = await tools.agent_send({ sessionId: created.sessionId, message: "Reply with another result" });
+			return { created, spawned, sent };`,
+		builtinExtensions: (host) => [createAgentContribution({ source: fileURLToPath(new URL("./index.ts", import.meta.url)) }).create(host)],
+	});
+	const result = await f.submit("Dispatch work and retain its exact references");
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as Record<string, { sessionId: string; result?: { sessionId: string; submissionId: number; requestId: string } }>;
+	assert.equal(output.created.result, undefined);
+	assert.equal(output.spawned.result?.sessionId, output.spawned.sessionId);
+	assert.equal(output.sent.result?.sessionId, output.created.sessionId);
+	for (const dispatch of [output.spawned, output.sent]) {
+		assert.ok(dispatch.result);
+		assert.ok(Number.isSafeInteger(dispatch.result.submissionId));
+		assert.ok(dispatch.result.submissionId > 0);
+		assert.match(dispatch.result.requestId, /^agent-deliver:\d+$/u);
+	}
+	assert.notEqual(output.spawned.result?.submissionId, output.sent.result?.submissionId);
+});
+
 it("preserves native lineage and effort awareness together through codemode", { timeout: 30000 }, async (t) => {
 	const peer = randomUUID();
 	const label = "\u0001😀".repeat(60);

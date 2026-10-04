@@ -25,6 +25,7 @@ import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { recordRequestContext, cleanupRequestContexts } from "./request-context.ts";
 import { targetIdentity } from "./identity.ts";
+import { admittedResult, dispatchFacts, DispatchOutputSchema, type ResultReference } from "./result-reference.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { dirname, resolve } from "node:path";
@@ -195,6 +196,7 @@ type AgentChild = {
 	readonly anchorTaskId?: Durable.TaskId;
 	/** External identity of a child in another storage. */
 	readonly foreignSessionId?: string;
+	readonly result?: ResultReference;
 	/** Tool task that created the child; a rerun of that task reuses this record. */
 	readonly createdBy: Durable.TaskId;
 	/** Answer entries already reported to the owner; several messages can end in one answer. */
@@ -647,8 +649,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		if (dispatch === undefined) return errorResult(`${failure}: no dispatch callback.`);
 		try {
-			const value = controlText(await dispatch(method, params));
-			return textResult(method === "report" ? `${value}\n${REPORT_DELIVERY_BOUNDARY}` : value);
+			const value = await dispatch(method, params);
+			if (method === "submit" || method === "task-submit") dispatchFacts(method, params, value);
+			const shown = controlText(value);
+			return textResult(method === "report" ? `${shown}\n${REPORT_DELIVERY_BOUNDARY}` : shown, value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {});
 		} catch (error) {
 			return errorResult(`${failure}: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -694,7 +698,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		/** Conversation that receives the answer; absent: the reporter's conversation. */
 		reportTo?: Durable.ConversationId;
 	};
-	type ReporterState = { phase: "deliver"; armed?: boolean } | { phase: "report"; report?: string };
+	type ReporterState = { phase: "deliver" } | { phase: "report"; report?: string };
 
 	const reporterInput = (
 		name: string,
@@ -734,6 +738,34 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return next(`[agent ${name} answered] ${text === "" ? "(no text)" : text}`);
 	};
 
+	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({ kind: "agent.local-admission", version: 1, scope: "task", initial: () => ({ armed: false }) });
+
+	type LocalAdmissionApi = {
+		readonly conversationId: Durable.ConversationId;
+		readonly registry: Durable.RegistrySnapshot;
+		conversation(id: Durable.ConversationId, context: Context): Promise<Durable.ConversationHandle | undefined>;
+		commit(change: (tx: Durable.Tx) => Promise<undefined>, context: Context): Promise<unknown>;
+	};
+	const admitLocal = async (api: LocalAdmissionApi, context: Context, reporterTaskId: Durable.TaskId, input: ReporterInput, report: (error: unknown) => void, now: number): Promise<{ submission: Durable.Submission; result: ResultReference }> => {
+		const conversation = await api.conversation(input.conversationId, context);
+		if (conversation === undefined) throw new Error("The result producer conversation is missing");
+		const request = { requestId: `agent-deliver:${reporterTaskId}`, requester: identity(api.conversationId), replyTo: identity(input.reportTo ?? api.conversationId), origin: "model" as const };
+		await reconcileProfile(api, input.conversationId, context, report, host.storageId);
+		await api.commit(async (tx) => {
+			const admission = await tx.doc(LocalAdmission, reporterTaskId);
+			await recordRequestContext(tx, input.conversationId, request, "retained");
+			if (admission.armed) return undefined;
+			await recordAdmissionMeta(tx, input.conversationId, input.message);
+			await createCheckIn(tx, { conversationId: input.conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(input.conversationId), message: input.message, whenBusy: input.whenBusy, origin: "model", admittedAt: now }, api.registry.task(CheckInTask.definition.name) === undefined ? 0 : input.checkInMinutes ?? 0);
+			admission.armed = true;
+			return undefined;
+		}, context);
+		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: input.whenBusy, requestId: request.requestId }, context);
+		const status = await submission.status(context);
+		if (status.id !== submission.id || status.requestId !== request.requestId || status.conversationId !== input.conversationId) throw new Error("Native admission identifiers disagree");
+		return { submission, result: admittedResult(identity(input.conversationId), { submissionId: submission.id, conversationId: status.conversationId, requestId: status.requestId }, request.requestId) };
+	};
+
 	const Reporter = durable.defineTask<ReporterInput, ReporterState, null>({
 		name: "agent.reporter",
 		version: 1,
@@ -742,7 +774,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			// Deliver one message, wait for its answer, and decide the report. One
 			// commit records the answer as reported, so a restart does not decide twice.
 			deliver: async (reporter, runtime, context) => {
-				const { name, conversationId, message, whenBusy } = reporter.input;
+				const { name, conversationId } = reporter.input;
 				const child = await runtime.conversation(conversationId, context);
 				if (child === undefined) {
 					const checkpoint: ReporterState = {
@@ -752,19 +784,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					await runtime.commit(() => ({ status: "running", checkpoint }), context);
 					return;
 				}
-				const request = { requestId: `agent-deliver:${reporter.id}`, requester: identity(runtime.conversationId), replyTo: identity(reporter.input.reportTo ?? runtime.conversationId), origin: "model" as const };
-				await reconcileProfile(runtime, conversationId, context, (error) => runtime.report(error), host.storageId);
-				await runtime.commit(async (tx) => {
-					await recordRequestContext(tx, conversationId, request, "retained");
-					if (reporter.state.checkpoint.armed === true) return undefined;
-					await recordAdmissionMeta(tx, conversationId, message);
-					await createCheckIn(tx, { conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(conversationId), message, whenBusy, origin: "model", admittedAt: runtime.now() }, runtime.registry.task(CheckInTask.definition.name) === undefined ? 0 : reporter.input.checkInMinutes ?? 0);
-					return { status: "running", checkpoint: { phase: "deliver", armed: true } };
-				}, context);
-				const submission = await child.submit(
-					{ type: "input", content: message, whenBusy, requestId: request.requestId },
-					context,
-				);
+				const { submission } = await admitLocal(runtime, context, reporter.id, reporter.input, (error) => runtime.report(error), runtime.now());
 				const settled = await submission.wait(context);
 				await runtime.commit(async (tx) => { await cleanupRequestContexts(tx, conversationId); return undefined; }, context);
 				await runtime.commit(
@@ -862,9 +882,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			thinkingLevel: parent.thinkingLevel,
 			...(cwd === undefined ? {} : { cwd }),
 		};
-		const child = await createChild(tx, api.conversationId, args.name ?? "child", api.taskId, change);
+		const child = await createChild(tx, api.conversationId, args.name ?? "agent", api.taskId, change);
 		const meta = await tx.doc(AgentMetaDoc, child.conversationId);
-		meta.name = args.name ?? "child";
+		meta.name = args.name ?? "agent";
 		meta.owner = identity(api.conversationId);
 		await initializeProfile(tx, child.conversationId, host.storageId);
 		registry.children.push(child);
@@ -879,6 +899,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return { kind: "local", child, deduped: false };
 	};
 
+	const retainedForeignSpawn = (child: AgentChild, sessionId: string, prompt: string | undefined): { kind: "foreign"; child: AgentChild; sessionId: string; deduped: boolean } | { kind: "error"; message: string } => {
+		if (prompt !== undefined && child.result === undefined) return { kind: "error", message: "The retained prompted dispatch has no result reference" };
+		return { kind: "foreign", child, sessionId, deduped: true };
+	};
+
 	/** Spawn in another storage through the host dispatch; the host owns the new storage process. */
 	const spawnForeign = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -891,8 +916,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const known = (await api.snapshot(Children, api.conversationId, context))?.children.find(
 			(child) => child.createdBy === api.taskId,
 		);
-		if (known?.foreignSessionId !== undefined)
-			return { kind: "foreign", child: known, sessionId: known.foreignSessionId, deduped: true };
+		if (known?.foreignSessionId !== undefined) return retainedForeignSpawn(known, known.foreignSessionId, args.prompt);
 		if (dispatch === undefined)
 			return { kind: "error", message: "A child with a different cwd needs the host dispatch callback." };
 		let result: unknown;
@@ -912,11 +936,15 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		}
 		const sessionId = sessionIdOf(result);
 		if (sessionId === undefined) return { kind: "error", message: "Host spawn returned no sessionId." };
+		let reference: ResultReference | undefined;
+		try { reference = args.prompt === undefined ? undefined : admittedResult(sessionId, (result as Record<string, unknown>).result, `spawn:${host.storageId}:${api.taskId}`); }
+		catch (error) { return { kind: "error", message: String(error) }; }
 		const child = await api.commit(async (tx) => {
 			const registry = await tx.doc(Children, api.conversationId);
 			const added: AgentChild = {
-				name: args.name ?? "child",
+				name: args.name ?? "agent",
 				foreignSessionId: sessionId,
+				...(reference === undefined ? {} : { result: reference }),
 				createdBy: api.taskId,
 				reported: [],
 			};
@@ -935,11 +963,17 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const outcome = await spawnForeign(api, context, args, cwd);
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		return textResult(
-			outcome.deduped
-				? `Reused the child created by this call: ${outcome.child.name} (${outcome.sessionId}).`
-				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was delivered and the answer will report back."}`,
-			{ sessionId: outcome.sessionId, name: outcome.child.name },
+			(outcome.deduped
+				? `Reused the agent created by this call: ${outcome.child.name} (${outcome.sessionId}).`
+				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (outcome.child.result === undefined ? "" : `\nResult: ${JSON.stringify(outcome.child.result)}`),
+			{ sessionId: outcome.sessionId, name: outcome.child.name, ...(outcome.child.result === undefined ? {} : { result: outcome.child.result }) },
 		);
+	};
+
+	const admissionOwner = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context): Promise<Durable.TaskId> => {
+		const reporter = (await api.snapshot(Children, api.conversationId, context))?.reporters[String(api.taskId)];
+		if (reporter === undefined) throw new Error("The prompted dispatch has no native admission owner");
+		return reporter as Durable.TaskId;
 	};
 
 	const localSpawnResult = async (
@@ -953,15 +987,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const outcome = await api.commit((tx) => spawnLocalInCommit(tx, api, args, cwd, parent.values), context);
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		const child = outcome.child;
+		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(args.checkInMinutes)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
 		return textResult(
-			outcome.deduped
-				? `Reused the child created by this call: ${child.name} (${child.conversationId}).`
-				: `Spawned ${child.name} as native child conversation ${child.conversationId} in your storage.${args.prompt === undefined ? "" : " The prompt was delivered and the answer will report back."}`,
-			{ conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId },
+			(outcome.deduped
+				? `Reused the agent created by this call: ${child.name} (${identity(child.conversationId)}).`
+				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (admission === undefined ? "" : `\nResult: ${JSON.stringify(admission.result)}`),
+			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...(admission === undefined ? {} : { result: admission.result }) },
 		);
 	};
 
-	const spawnTool = durable.defineTool({
+	const spawnTool = { ...durable.defineTool({
 		name: "agent_spawn",
 		description:
 			"Create a child agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts a child in a new storage owned by you. Answers report back to you. Unanswered tasks also send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. Names may repeat.",
@@ -984,7 +1019,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				? foreignSpawnResult(api, context, args, requestedCwd)
 				: localSpawnResult(api, context, args, requestedCwd);
 		},
-	});
+	}), outputSchema: DispatchOutputSchema };
 
 	const sendReporter = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -1009,9 +1044,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			registry.reporters[key] = reporter;
 			return { reporterTaskId: reporter };
 		}, context);
-		return textResult(`Delivered to ${name}; the answer will report back.`, {
-			reporterTaskId: result.reporterTaskId,
-			conversationId,
+		const admission = await admitLocal(api, context, result.reporterTaskId as Durable.TaskId, reporterInput(name, conversationId, message, whenBusy, reportTo, minutes), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
+		return textResult(`Admitted to ${name}; the answer will report back. Result: ${JSON.stringify(admission.result)}`, {
+			conversationId, submissionId: admission.result.submissionId, result: admission.result,
 		});
 	};
 
@@ -1613,8 +1648,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		tools: [
 			spawnTool,
 			profileTool,
-			sendTool,
-			steerTool,
+			{ ...sendTool, outputSchema: DispatchOutputSchema },
+			{ ...steerTool, outputSchema: DispatchOutputSchema },
 			abortTool,
 			forkTool,
 			rewindTool,

@@ -15,6 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { StrandedInputRecovery } from "./stranded-inputs.ts";
+import { admittedResult } from "./result-reference.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
 import { richSubmitConversation } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
@@ -403,7 +404,7 @@ export class DurableHost {
 					origin, ...optionalParam("replyTo", requestString(params, "replyTo")), ...optionalParam("whenBusy", this.busyMode(params)), ...optionalParam("operationId", requestString(params, "operationId")),
 					...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }), senderIdentity: this.identity(conversation.id),
 				}, requestContext);
-				return { ...submitted, identity: this.identity(conversation.id) };
+				return { ...submitted, identity: this.identity(conversation.id), result: admittedResult(this.identity(conversation.id), submitted, requestRequiredString(params, "requestId")) };
 			}
 			case "submit":
 				return this.submitRequest(params, requestContext);

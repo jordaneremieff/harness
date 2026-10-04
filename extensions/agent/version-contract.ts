@@ -35,6 +35,7 @@ for (const method of ["close", "recovery-state", "submit", "passive-submit", "sp
 	operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 }
 for (const method of ["profile-read", "profile-update", "profile-list", "resolve-agent", "task-submit"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
+operations["task-submit"] = { ...operations["task-submit"], response: "task-submit/1.1.0" };
 operations["profile-list"] = { ...operations["profile-list"], response: schemaId(ProfiledListOutputSchema) };
 operations["profile-read"] = { ...operations["profile-read"], response: schemaId(AgentProfileSchema) };
 operations["profile-update"] = { ...operations["profile-update"], response: schemaId(ProfileUpdateSchema) };

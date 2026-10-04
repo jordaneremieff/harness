@@ -477,6 +477,14 @@ through `requestId`. The background example also deduplicates reports by request
 ID. Those patterns depend on installed definitions and the storage owner; they
 do not supply ordinary extensions or detached-process control.
 
+The agent slice's answer-bearing send and prompted spawn return an exact
+native result reference after public submission admission. The tool and its
+background Reporter share one stable request ID and a task-scoped admission
+marker; the reference contains the admitted submission ID, not the Reporter ID.
+Creation-only dispatch and ordinary-primary messages carry no native result
+reference. This source contract does not establish result settlement or a
+foreground wait.
+
 ### Durability limits
 
 Only committed state is observable, but that does not establish a fixed

@@ -245,6 +245,14 @@ in that session while its task is open.
 
 ## Accept the outcome, not just the changes
 
+Answer-bearing agent dispatch returns `result: { sessionId, submissionId,
+requestId? }` only after native input admission. Keep that exact reference,
+including a known request ID. Creation ancestry, names, reports, timer IDs,
+thread posts, and ordinary-primary messages do not identify native results.
+The reference identifies work, not its completion or acceptance. Local dispatch
+and its background Reporter share the admitted native request; an ordinary
+primary still receives normal asynchronous results.
+
 Prompt admission, idle state, provider completion, and task acceptance are
 different facts. After an execution unit settles, inspect its real changes and
 the defining sources for consequential claims. Reconcile checks and release

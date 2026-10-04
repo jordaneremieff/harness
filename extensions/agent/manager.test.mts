@@ -134,11 +134,17 @@ function deferred() {
 const { "task-submit": _taskSubmit, ...baseOperations } = HOST_CONTRACT.operations;
 const BASE_SUBMIT_CONTRACT: RuntimeContract = { ...HOST_CONTRACT, operations: baseOperations };
 
+function nativeAdmission(params: unknown, submissionId = 9): Record<string, unknown> {
+	const input = params as Record<string, unknown>;
+	const sessionId = String(input.sessionId);
+	return { submissionId, identity: sessionId, requestId: input.requestId, result: { sessionId, submissionId, requestId: input.requestId } };
+}
+
 for (const operation of ["submit", "task-submit"] as const) for (const minutes of [undefined, 0, 2.5]) it(`preserves the place model interval ${minutes} through ${operation} on create and reuse`, async (t) => {
 	const root = fixtureRoot(t);
 	const submits: Array<Record<string, unknown>> = [];
 	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		if (method === operation) submits.push(params as Record<string, unknown>);
+		if (method === operation) { submits.push(params as Record<string, unknown>); return nativeAdmission(params, submits.length); }
 		return { busy: false };
 	}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT) }));
 	t.after(() => manager.close());
@@ -147,15 +153,38 @@ for (const operation of ["submit", "task-submit"] as const) for (const minutes o
 	t.after(() => { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; });
 	const caller = { id: "owner-1", cwd: root, model: { provider: "fixture", modelId: "model-1" }, thinkingLevel: "off" };
 	const input = { area: root, prompt: "Task", origin: "model" as const, checkInMinutes: minutes };
+	if (operation === "submit") {
+		await assert.rejects(manager.place(input, caller), /does not advertise task-submit/u);
+		assert.equal(submits.length, 0, "no fallback admission occurs");
+		return;
+	}
 	await manager.place(input, caller);
 	await manager.place(input, caller);
 	assert.equal(submits.length, 2);
 	assert.deepEqual(submits.map((params) => params.checkInMinutes), [minutes ?? 7, minutes ?? 7]);
 	assert.deepEqual(submits.map((params) => params.origin), ["model", "model"]);
-	assert.deepEqual(submits.map((params) => params.ownerId), [caller.id, caller.id]);
-	if (operation === "task-submit") assert.deepEqual(submits.map((params) => params.requester), [caller.id, caller.id]);
+	assert.deepEqual(submits.map((params) => params.requester), [caller.id, caller.id]);
 	await manager.place({ area: root, prompt: "Operator task", origin: "operator" }, caller);
 	assert.equal(submits[2]?.checkInMinutes, 0);
+});
+
+it("retains exact prompted handle references across creation and reuse", async (t) => {
+	const root = fixtureRoot(t);
+	const seen: Record<string, unknown>[] = [];
+	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+		if (method === "profile-read") return { handle: "@reviewer", live: true };
+		assert.equal(method, "task-submit");
+		seen.push(params as Record<string, unknown>);
+		return nativeAdmission(params, seen.length);
+	}) }));
+	t.after(() => manager.close());
+	const caller = { id: "owner", cwd: root, model: { provider: "fixture", modelId: "model-1" } };
+	for (const [index, requestId] of ["handle:first", "handle:next"].entries()) {
+		const outcome = await manager.spawn({ handle: "reviewer", role: "Review work", prompt: "Task", requestId }, caller) as { sessionId: string; created: boolean; result: unknown };
+		assert.equal(outcome.created, index === 0);
+		assert.deepEqual(outcome.result, { sessionId: outcome.sessionId, submissionId: index + 1, requestId });
+	}
+	assert.ok(seen.every((params) => params.whenBusy === "followUp" && params.requester === caller.id));
 });
 
 interface CapturedPrimaryChannel {
@@ -253,11 +282,16 @@ for (const operation of ["submit", "task-submit"] as const) it(`preserves caller
 	const manager = new AgentManager(managerOptions(root, {
 		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
 			seen.push({ method, params: params as Record<string, unknown> });
-			return {};
+			return method === "task-submit" ? nativeAdmission(params) : {};
 		}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT),
 	}));
 	const record = createRecord(manager, root);
 	try {
+		if (operation === "submit") {
+			await assert.rejects(manager.control("submit", { sessionId: record.storageId, requestId: "stable:submit" }, { id: "caller", cwd: root }), /does not advertise task-submit/u);
+			assert.equal(seen.length, 0);
+			return;
+		}
 		for (const method of ["submit", "rewind", "fork"]) {
 			await manager.control(method, { sessionId: record.storageId, requestId: `stable:${method}`, operationId: `operation:${method}` }, { id: "caller", cwd: root });
 			await manager.control(method, { sessionId: record.storageId }, { id: "caller", cwd: root });
@@ -954,6 +988,12 @@ for (const operation of ["submit", "task-submit"] as const) it(`preserves explic
 	const previous = process.env.PI_AGENT_CHECK_IN_MINUTES;
 	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
 	try {
+		if (operation === "submit") {
+			await assert.rejects(manager.control("submit", { sessionId: record.storageId, message: "operator task", origin: "operator" }, caller), /does not advertise task-submit/u);
+			await assert.rejects(manager.spawn({ prompt: "task" }, caller), /does not advertise task-submit/u);
+			assert.equal(seen.length, 0);
+			return;
+		}
 		await manager.control("submit", { sessionId: record.storageId, message: "operator task", origin: "operator" }, caller);
 		await manager.control("submit", { sessionId: record.storageId, message: "model task", origin: "model" }, caller);
 		await manager.control("submit", { sessionId: record.storageId, message: "absent origin" }, caller);
@@ -965,16 +1005,15 @@ for (const operation of ["submit", "task-submit"] as const) it(`preserves explic
 		const submits = seen.filter((entry) => entry.method === operation);
 		assert.equal(submits[0]?.params.origin, "operator");
 		assert.equal(submits[1]?.params.origin, "model");
-		assert.equal(submits[2]?.params.origin, operation === "submit" ? undefined : "operator");
+		assert.equal(submits[2]?.params.origin, "operator");
 		assert.equal(submits[3]?.params.origin, "operator");
 		assert.equal(submits[3]?.params.checkInMinutes, 0);
 		assert.equal(submits[4]?.params.checkInMinutes, 7);
 		assert.equal(submits[5]?.params.checkInMinutes, 0);
-		assert.equal(submits[6]?.params.origin, operation === "submit" ? undefined : "operator");
+		assert.equal(submits[6]?.params.origin, "operator");
 		assert.equal(submits[6]?.params.checkInMinutes, 0);
 		assert.equal(submits.length, 7, "a promptless spawn arms no task");
-		if (operation === "task-submit") assert.ok(submits.every((entry) => entry.params.requester === caller.id));
-		assert.ok(submits.every((entry) => entry.params.ownerId === caller.id));
+		assert.ok(submits.every((entry) => entry.params.requester === caller.id));
 	} finally {
 		manager.close();
 		if (previous === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
@@ -1098,7 +1137,7 @@ it("keeps acquired clients usable when only their current change contracts disag
 		}));
 		t.after(() => manager.close());
 		const record = createRecord(manager, root);
-		assert.deepEqual(await manager.control("submit", { sessionId: record.storageId, message: "Compatible work" }, { id: "caller", cwd: root }), { submissionId: 7 });
+		assert.deepEqual(await manager.control("submit", { sessionId: record.storageId, message: "Compatible work", requestId: "compatible" }, { id: "caller", cwd: root }), { submissionId: 7, result: { sessionId: record.storageId, submissionId: 7, requestId: "compatible" } });
 		assert.ok(link);
 		assert.equal(link.closed, false);
 		assert.equal(acquisitions, 1);
