@@ -16,7 +16,7 @@ language, dynamic plugin loader, background service, or sibling protocol.
 
 Pi Durable conversations receive the same policy capability through
 [durable.ts](durable.ts), emitted from the ordinary factory as a
-`durable:contribution`. The contribution installs the four tools, one usage
+`durable:contribution`. The contribution installs the policy tools, a usage
 section, and native task hooks:
 
 - `ToolTask.beforeTool` is the input phase: an enforce-mode denial becomes
