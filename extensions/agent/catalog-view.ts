@@ -10,6 +10,7 @@
  */
 
 import { Value } from "typebox/value";
+import { boundModelEvidence, MODEL_EVIDENCE_BUDGET_BYTES, ModelEvidenceSchema, type ModelEvidence } from "./model-evidence.ts";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
 import { ProfileHintsSchema, type ProfileHints } from "./profile-schema.ts";
 import type { ProfileSeed } from "./profile.ts";
@@ -45,6 +46,8 @@ export interface CatalogViewRow {
 
 /** Bounded projection of one host's conversations. */
 export interface CatalogView {
+	/** Optional sampled model evidence; absence means unknown, never zero usage. */
+	readonly modelEvidence?: ModelEvidence;
 	/** Bounded optional hints; base wire rows remain unchanged. */
 	readonly profiles?: ProfileHints;
 	/** Retained creation defaults, consumed only in the root's creation commit. */
@@ -152,7 +155,9 @@ function validateRows(rows: readonly CatalogViewRow[], storageId: string | undef
 	}
 }
 
-function validateProfiles(candidate: Partial<CatalogView>): void {
+function validateHints(candidate: Partial<CatalogView>): void {
+	if (candidate.modelEvidence !== undefined && (!Value.Check(ModelEvidenceSchema, candidate.modelEvidence) || byteLength(candidate.modelEvidence) > MODEL_EVIDENCE_BUDGET_BYTES))
+		throw new Error("Invalid model evidence");
 	if (candidate.profiles !== undefined && !Value.Check(ProfileHintsSchema, candidate.profiles)) throw new Error("Invalid profile hints");
 	if (candidate.profileSeed === undefined) return;
 	handleSlug(candidate.profileSeed.handle);
@@ -180,7 +185,7 @@ export function parseCatalogView(value: unknown): CatalogView {
 	if (candidate.unavailable !== undefined && typeof candidate.unavailable !== "string")
 		throw new Error("Agent view has an invalid unavailable reason");
 	validateRows(candidate.rows, candidate.storageId);
-	validateProfiles(candidate);
+	validateHints(candidate);
 	const view = candidate as CatalogView;
 	if (byteLength(view) > CATALOG_VIEW_BUDGET_BYTES) throw new Error("Agent view exceeds its byte budget");
 	if (!Number.isFinite(Date.parse(view.updatedAt)) || new Date(view.updatedAt).toISOString() !== view.updatedAt) throw new Error("Agent view has an invalid updatedAt");
@@ -199,6 +204,13 @@ export function withProfileHints(view: CatalogView, profiles: ProfileHints): Cat
 	const result = { ...view, profiles: { rows, coverage: { complete: profiles.coverage.complete && omitted === 0, omitted } } };
 	if (byteLength(result) > CATALOG_VIEW_BUDGET_BYTES) return view;
 	return parseCatalogView(result);
+}
+
+/** Evidence uses only the space left by operational rows and profile hints. */
+export function withModelEvidence(view: CatalogView, source: ModelEvidence): CatalogView {
+	const remaining = CATALOG_VIEW_BUDGET_BYTES - byteLength(view) - Buffer.byteLength(',"modelEvidence":');
+	const modelEvidence = boundModelEvidence(source, Math.min(MODEL_EVIDENCE_BUDGET_BYTES, remaining));
+	return modelEvidence === undefined ? view : parseCatalogView({ ...view, modelEvidence });
 }
 
 /** True when the value is a valid bounded view. */

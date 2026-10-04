@@ -26,7 +26,9 @@ import { recordRequestContext, cleanupRequestContexts } from "./request-context.
 import { targetIdentity } from "./identity.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration.ts";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { AgentCatalog } from "./catalog.ts";
+import { readFleetStatus } from "./fleet-status.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
@@ -34,13 +36,14 @@ import type * as Durable from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
-import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
+import { AGENT_CONTROL_TOOL_NAMES, MODEL_SELECTION_GUIDANCE, agentControlGuidanceLines } from "./control-guidance.ts";
 import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
 import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
 	InspectOutputSchema,
 	StatusOutputSchema,
+	StatusToolOutputSchema,
 	structuredObservation,
 } from "./observation-schema.ts";
 
@@ -304,7 +307,7 @@ const SpawnParams = Type.Object(
 			Type.String({ description: "Working directory for the child. Default: inherited from the owner." }),
 		),
 		model: Type.Optional(
-			Type.String({ minLength: 3, description: 'Exact provider/model, for example "anthropic/claude-sonnet".' }),
+			Type.String({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
 		),
 		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
 		checkInMinutes: CheckInParams,
@@ -397,7 +400,7 @@ const ConfigureParams = Type.Object(
 		sessionId: Type.String({ minLength: 1 }),
 		name: Type.Optional(Type.String({ description: "Owner-visible name; stored by the session host." })),
 		model: Type.Optional(
-			Type.String({ minLength: 3, description: 'Exact provider/model, for example "anthropic/claude-sonnet".' }),
+			Type.String({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
 		),
 		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
 	},
@@ -423,6 +426,7 @@ const CommandParams = Type.Object(
 
 const StatusParams = Type.Object(
 	{
+		view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId." })),
 		sessionId: Type.Optional(
 			Type.String({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." }),
 		),
@@ -542,6 +546,18 @@ export function createAgentContribution(options: AgentContributionOptions): Agen
 			return buildExtension(host, options);
 		},
 	};
+}
+
+/** Fleet observation stays local; no host operation or remote forwarding participates. */
+async function fleetObservation(catalogRoot: string | undefined, sessionId: string | undefined) {
+	try {
+		if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
+		if (!catalogRoot) throw new Error("Fleet discovery requires a configured local catalog root");
+		const value = structuredObservation(StatusToolOutputSchema, await readFleetStatus(new AgentCatalog(dirname(catalogRoot)))) as Record<string, JsonValue>;
+		return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { structuredContent: value } };
+	} catch (error) {
+		return errorResult(`Fleet status failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 function buildExtension(host: AgentContributionHost, options: AgentContributionOptions): Durable.Extension {
@@ -1392,7 +1408,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				"Read conversation state and tools through the host observation. A selected session lists bounded pending timers with IDs and deadlines. Without a target, read this storage's conversations. Primary fleet overviews use compact excerpts and summary coverage.",
 			parameters: StatusParams,
 			replay: "safe",
-			execute: async (args: StatusInput) =>
+			execute: async (args: StatusInput) => args.view === "fleet" ? fleetObservation(host.catalogRoot, args.sessionId) :
 				hostObservation(
 					"status",
 					defined(args, ["sessionId"]),
@@ -1400,7 +1416,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					StatusOutputSchema,
 				),
 		}),
-		outputSchema: StatusOutputSchema,
+		outputSchema: StatusToolOutputSchema,
 	};
 
 	const listTool = {

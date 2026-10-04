@@ -21,6 +21,7 @@ import { checkInMinutes } from "./durable-checkins.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
+import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { Harness, ROOT_CONVERSATION_ID, UsageDoc, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
@@ -437,6 +438,13 @@ export class DurableHost {
 			default:
 				throw new TypeError(`unknown durable host method ${method}`);
 		}
+	}
+
+	/** Read publication rows and evidence together without changing the host wire contract. */
+	async catalogProjection(context: Context = BACKGROUND_CONTEXT) {
+		const evidence = new ModelEvidenceCollector(new Date().toISOString());
+		const rows = await readDashboard(this.harness, this.storageId, {}, { ...this.dashboardOptions(undefined), modelEvidence: evidence }, context);
+		return { rows, modelEvidence: evidence.value, updatedAt: evidence.observedAt };
 	}
 
 	private dashboardOptions(params: RequestParams | undefined): DurableDashboardOptions {

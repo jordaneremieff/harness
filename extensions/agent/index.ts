@@ -26,9 +26,9 @@ import {
 	readAgentTimerRows,
 	scheduleAgentInput,
 } from "./durable-reset-timers.ts";
-import { AGENT_CONTROL_GUIDANCE, type AgentControlToolName } from "./control-guidance.ts";
+import { AGENT_CONTROL_GUIDANCE, MODEL_SELECTION_GUIDANCE, type AgentControlToolName } from "./control-guidance.ts";
 import {
-	StatusOutputSchema,
+	StatusToolOutputSchema,
 	InspectOutputSchema,
 	structuredObservation,
 } from "./observation-schema.ts";
@@ -96,7 +96,7 @@ const spawn = Type.Object(
 		cwd: Type.Optional(Type.String()),
 		name: Type.Optional(Type.String({ maxLength: 256 })),
 		prompt: Type.Optional(Type.String()),
-		model: Type.Optional(Type.String()),
+		model: Type.Optional(Type.String({ description: MODEL_SELECTION_GUIDANCE })),
 		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
 		trust: maybeTrust,
 		checkInMinutes: checkIn,
@@ -136,7 +136,7 @@ const configure = Type.Object(
 	{
 		sessionId: id,
 		name: Type.Optional(Type.String({ maxLength: 256 })),
-		model: Type.Optional(Type.String({ maxLength: 512 })),
+		model: Type.Optional(Type.String({ maxLength: 512, description: MODEL_SELECTION_GUIDANCE })),
 		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
 		trust: maybeTrust,
 	},
@@ -144,14 +144,14 @@ const configure = Type.Object(
 );
 const result = (value: unknown, schema?: TSchema): AgentToolResult<unknown> => ({
 	...((value as { outcome?: string } | null)?.outcome === "failed" ? { isError: true } : {}),
-	content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }],
+	content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, (value as { view?: string } | null)?.view === "fleet" ? undefined : 2) }],
 	details: value,
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
 const observationSchemas: Partial<Record<AgentControlToolName, TSchema>> = {
 	agent_list: ProfiledListOutputSchema,
 	agent_profile: ProfileOutputSchema,
-	agent_status: StatusOutputSchema,
+	agent_status: StatusToolOutputSchema,
 	agent_inspect: InspectOutputSchema,
 };
 const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
@@ -252,8 +252,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	register(
 		"agent_status",
 		"Orient over agents with compact excerpts, working and attention rows first, then recent rows. Summary and coverage name omitted rows; agent_list discovers full identities. A selected session returns full state and bounded pending timers.",
-		Type.Object({ sessionId: Type.Optional(id) }, { additionalProperties: false }),
-		(input) => getManager().status(input.sessionId as string | undefined),
+		Type.Object({ sessionId: Type.Optional(id), view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId." })) }, { additionalProperties: false }),
+		(input) => getManager().status(input.sessionId as string | undefined, input.view as "fleet" | undefined),
 	);
 	register(
 		"agent_inspect",

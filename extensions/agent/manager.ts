@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFleetStatus } from "./fleet-status.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 import type { AgentProfile } from "./profile-schema.ts";
 import { composeListRow, matchesListRow, enrichDashboardRow } from "./profile-discovery.ts";
@@ -629,7 +630,11 @@ export class AgentManager {
 		return this.control("collaboration-mutate", { ...input, sessionId, senderIdentity: caller.id, origin: input.origin ?? "model", requestId: input.requestId ?? randomUUID() }, caller);
 	}
 
-	async status(sessionId?: string): Promise<unknown> {
+	async status(sessionId?: string, view?: "fleet"): Promise<unknown> {
+		if (view === "fleet") {
+			if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
+			return readFleetStatus(this.catalog);
+		}
 		if (sessionId) { sessionId = await this.resolveTarget(sessionId); return this.observe(this.catalog.read(sessionId), "status", { sessionId }); }
 		const page = await this.dashboardPage();
 		const failures = [

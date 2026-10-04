@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { dirname } from "node:path";
 import { clampThinkingLevel, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
-import { boundCatalogView, type CatalogViewRow } from "./catalog-view.ts";
+import { boundCatalogView, withModelEvidence } from "./catalog-view.ts";
 import { observeColdStorage } from "./cold-observation.ts";
 import { acquireHost } from "./host-client.ts";
 import type { HostMetadata } from "./host-protocol.ts";
@@ -163,11 +163,12 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		publishingView = true;
 		publishPromise = (async () => {
 			try {
-				const rows = await host.request("dashboard", {}) as readonly CatalogViewRow[];
-				const base = boundCatalogView({ updatedAt: new Date().toISOString(), rows, storageId: metadata.storageId });
+				const projection = await host.catalogProjection();
+				const base = boundCatalogView({ updatedAt: projection.updatedAt, rows: projection.rows, storageId: metadata.storageId });
 				const ids = base.rows.map((row) => row.id === metadata.storageId ? ROOT_CONVERSATION_ID : Number(row.id.split(":")[1]) as ConversationId);
 				const profiles = await projectProfiles(host.harness, metadata.storageId, ids);
-				const view = withProfileHints(base, { ...profiles, coverage: { complete: profiles.coverage.complete && base.coverage.omitted === 0, omitted: profiles.coverage.omitted + base.coverage.omitted } });
+				const profiled = withProfileHints(base, { ...profiles, coverage: { complete: profiles.coverage.complete && base.coverage.omitted === 0, omitted: profiles.coverage.omitted + base.coverage.omitted } });
+				const view = withModelEvidence(profiled, projection.modelEvidence);
 				catalog.updateView(metadata.storageId, view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
 				for (const listener of changeListeners) listener();
 			} catch (error) {

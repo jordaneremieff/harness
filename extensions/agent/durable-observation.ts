@@ -21,6 +21,7 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { Message, Models } from "@earendil-works/pi-ai";
+import type { ModelEvidenceCollector } from "./model-evidence.ts";
 import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
@@ -780,6 +781,8 @@ export interface DurableDashboardParams {
 }
 
 export interface DurableDashboardOptions {
+	/** In-process publication collector; never part of a host request or row. */
+	readonly modelEvidence?: ModelEvidenceCollector;
 	/** Working directory used when a conversation records none. */
 	readonly cwd?: string;
 	/** Writer ownership of this storage, as the dashboard reports it. */
@@ -931,7 +934,7 @@ async function dashboardSummary(
 	const firstMessage = firstMessageOf(meta, entries);
 	const replyText = latestReplyOf(entries);
 	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
-	return {
+	const row: AgentConversationSummary = {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
 		storageId,
 		...(meta.name === undefined ? {} : { name: meta.name }),
@@ -949,6 +952,8 @@ async function dashboardSummary(
 		...liveExtras,
 		toolCalls: countToolCalls(entries),
 	};
+	options.modelEvidence?.observe(record.id, row, usage, entries);
+	return row;
 }
 
 /** Dashboard roster for this storage: the root, native forks, and child conversations. */
@@ -966,6 +971,7 @@ export async function readDashboard(
 		return record === undefined ? [] : [await dashboardSummary(harness, storageId, record, delivery, options, context)];
 	}
 	const page = await harness.commit((tx) => tx.scanConversations({}, 200, undefined), context);
+	if (options.modelEvidence) options.modelEvidence.value.coverage.conversationsComplete = page.next == null;
 	const summaries: AgentConversationSummary[] = [];
 	for (const record of page.items) summaries.push(await dashboardSummary(harness, storageId, record, delivery, options, context));
 	return summaries;

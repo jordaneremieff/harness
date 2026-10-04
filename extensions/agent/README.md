@@ -203,7 +203,7 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths; optional `checkInMinutes` overrides it and 0 disables it. |
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
-| `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. |
+| `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results. |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. |
 
@@ -762,6 +762,27 @@ targeted `agent_status` for
 full conversation state. Native agents without a status target read their own
 storage's conversation state rather than the primary's fleet overview.
 
+`agent_status {view: "fleet"}` is a separate local observation on both ordinary
+and native tools. It scans bounded catalog pages without opening hosts or
+reading transcripts. Model rows sort by exact provider/model identity and show
+reported model costs, sampled last-response times, current selections grouped
+by thinking level, and active conversation counts. Tool costs stay separate.
+The latest retained attributed failure per provider sorts newest first, with
+stable identity tie-breakers. Warning samples describe observed conversation
+state, not proven provider faults. The response bounds rows, samples, and
+serialized text; coverage separates catalog limits, unknown publications,
+source omissions, and output omissions. Each call starts a fresh scan. It
+reports whether more catalog entries remain but exposes no unusable cursor.
+Missing evidence is unknown, not zero. Reported costs are not invoices or
+remaining allowance; past use is not preference. This view does not query
+provider health, quotas, account balances, or billing services.
+
+Agent model parameters carry shared selection guidance: apply current task
+directions and the operator's route, budget, and role preferences, then verify
+the exact model identity and its supported thinking level. Configured access
+does not establish operator use. The extension carries no preferred provider
+roster or model ranking.
+
 History and activity mark every page and entry row with `format: "compact"`,
 including empty pages. Their schemas require this marker; raw branch and exact
 reads do not carry it. Compact entry rows contain entry ID, kind, source, role,
@@ -885,7 +906,28 @@ record and a SQLite file for each storage, plus directory bindings. Metadata
 locates a storage; native documents and entries remain authoritative for its
 conversation state. The catalog record also carries the optional bounded `view`
 published by its host and the host-local `recoveryDue` marker; neither is
-storage identity, and host metadata strips both. Directory bindings live in one
+storage identity, and host metadata strips both.
+
+The view's optional `modelEvidence` envelope sits beside operational rows and
+profile hints. Publication reuses each conversation's own `UsageDoc` and the
+active entries already read for its operational row. Exact model buckets include
+reported compaction-attempt costs; tool usage remains a separate total. A
+conversation's current model never receives costs from earlier model selections.
+Inherited entries do not count as a fork's own response or failure evidence.
+Last-response times and failures come only from inspected assistant messages
+with their own model identity and timestamp. Current row errors and recovery
+warnings carry observation time and current selection, not provider attribution.
+
+Evidence has its own byte bound inside the existing view budget and never
+evicts operational rows or profile hints. Retained coverage counts visited
+conversations, unavailable usage, incomplete history, and omitted samples. The
+mounted active entries do not prove complete retained history, so history
+coverage stays incomplete. If even the evidence header does not fit, the
+publication omits the envelope and fleet discovery counts that storage as
+unknown. The strict operational row schema remains unchanged; readers that
+ignore unknown view fields continue to parse those rows.
+
+Directory bindings live in one
 `PlaceBook`; native and
 primary controls resolve the same binding, and the longest bound directory wins.
 Host endpoints and claims live under `<agentDir>/durable-hosts/`; primary channel

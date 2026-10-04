@@ -245,6 +245,8 @@ export const ListOutputSchema = object({
 });
 export type ListOutput = Static<typeof ListOutputSchema>;
 
+import { FleetStatusSchema } from "./fleet-status.ts";
+
 /**
  * `agent_status` union:
  * - compact manager overview: priority rows, bounded samples, summary counts, and explicit coverage;
@@ -286,6 +288,9 @@ export const StatusOutputSchema = union([
 	object({ conversation: ConversationStatusSchema }),
 ]);
 export type StatusOutput = Static<typeof StatusOutputSchema>;
+
+/** Tool-only local observations extend status without changing the host response contract. */
+export const StatusToolOutputSchema = union([StatusOutputSchema, FleetStatusSchema]);
 
 const entrySource = union([literal("user"), literal("assistant"), literal("toolResult"), literal("summary"), literal("custom")]);
 const messageRole = union([literal("system"), literal("user"), literal("assistant"), literal("toolResult")]);
