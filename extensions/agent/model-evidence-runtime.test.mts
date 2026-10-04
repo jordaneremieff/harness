@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { realpathSync } from "node:fs";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ToolResultMessage, TranscriptContext } from "@earendil-works/pi-ai";
 import * as Durable from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -16,7 +16,7 @@ import { createAgentContribution } from "./durable-agents.ts";
 import { answerMessage, completed, fixtureRegistry, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { AgentManager } from "./manager.ts";
-import { buildStatusOverview } from "./status-overview.ts";
+import { buildStatusOverview, type StatusOverview } from "./status-overview.ts";
 import { MODEL_SELECTION_GUIDANCE } from "./control-guidance.ts";
 import type { FleetStatus } from "./fleet-status.ts";
 
@@ -55,7 +55,10 @@ it("publishes real host evidence and reads fleet status locally from ordinary an
 	const tools = primaryTools();
 	const status = tools.get("agent_status");
 	assert.ok(status);
-	const ordinary = await status.execute("fleet", { view: "fleet" }, undefined, undefined, {} as never);
+	const sessionManager = SessionManager.inMemory(f.cwd);
+	const toolContext = { cwd: f.cwd, sessionManager } satisfies Pick<ExtensionContext, "cwd" | "sessionManager">;
+	const identity = t.mock.method(sessionManager, "getSessionId", () => { throw new Error("Fleet and selected status must not read caller identity"); });
+	const ordinary = await status.execute("fleet", { view: "fleet" }, undefined, undefined, toolContext as never);
 	const fleet = ordinary.details as FleetStatus;
 	assert.equal(fleet.view, "fleet");
 	assert.equal(fleet.models.length, 1);
@@ -92,6 +95,26 @@ it("publishes real host evidence and reads fleet status locally from ordinary an
 		assert.deepEqual(nativeFleet.models, fleet.models);
 		assert.ok(native.content.every((part) => part.type !== "text" || Buffer.byteLength(part.text) <= 4096));
 	} finally { await observer.close(); }
+	await t.test("selected status does not read caller identity", async () => {
+		const selected = await status.execute("selected", { sessionId: metadata.storageId }, undefined, undefined, toolContext as never);
+		assert.ok(selected.details);
+		assert.match(JSON.stringify(selected.details), new RegExp(metadata.storageId));
+	});
+	identity.mock.restore();
+	await t.test("overview retains base status when optional self identity is unavailable", async () => {
+		const known = (await status.execute("known", {}, undefined, undefined, toolContext as never)).details as StatusOverview;
+		assert.equal(known.awareness?.self.id, sessionManager.getSessionId());
+		assert.equal(known.awareness?.self.cwd, realpathSync(f.cwd));
+		// Pi requires sessionManager; these incomplete contexts exercise observation without self identity.
+		for (const unavailable of [{ cwd: f.cwd }, undefined]) {
+			const unknown = (await status.execute("unknown", {}, undefined, undefined, unavailable as never)).details as StatusOverview;
+			assert.equal(unknown.awareness, undefined);
+			assert.deepEqual(unknown.sessions, known.sessions);
+			assert.deepEqual(unknown.primaries, known.primaries);
+			const withoutIdentity = (await status.execute("fleet-unknown", { view: "fleet" }, undefined, undefined, unavailable as never)).details as FleetStatus;
+			assert.deepEqual(withoutIdentity.models, fleet.models);
+		}
+	});
 	t.diagnostic(`Fleet sample: ${JSON.stringify(fleet)}`);
 });
 

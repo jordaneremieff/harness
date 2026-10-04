@@ -149,6 +149,10 @@ Those transcript entries record events, not the current view. Failed pushes do
 not block the publisher. There is no presence polling, file watcher, model wake,
 or new store. Every view reports its finite coverage and omissions.
 
+Fleet and selected-session status do not read caller identity. An ordinary
+overview uses it only for the optional effort-awareness section. If identity
+is unavailable, that section is omitted and the agent overview remains available.
+
 `/agent` opens Related efforts with `b` or its mouse hint. The view shows observed
 purpose, declared purpose and integration claims, quoted operator direction with
 scope, and active threads. A contact-thread link opens the existing Threads view.

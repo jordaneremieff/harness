@@ -271,7 +271,12 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		"agent_status",
 		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected agent returns full state and bounded pending timers.",
 		Type.Object({ sessionId: Type.Optional(id), view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId." })) }, { additionalProperties: false }),
-		(input, ctx) => getManager().status(input.sessionId as string | undefined, input.view as "fleet" | undefined, caller(ctx, pi)),
+		(input, ctx) => {
+			const sessionId = input.sessionId as string | undefined;
+			const view = input.view as "fleet" | undefined;
+			const selfId = !sessionId && !view ? ctx?.sessionManager?.getSessionId() : undefined;
+			return getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd } : undefined);
+		},
 	);
 	register(
 		"agent_inspect",
