@@ -13,12 +13,8 @@ import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import {
-	stashDurableContribution,
-	type StashDurableContribution,
-	type StashDurableHost,
-} from "./durable.ts";
-import { listStashes, writeStash } from "./store.ts";
+import { type StashDurableContribution, type StashDurableHost, stashDurableContribution } from "./durable.ts";
+import { listStashes, readStash, writeStash } from "./store.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -33,7 +29,10 @@ interface TestHarness {
 	readonly workdir: string;
 }
 
-async function startHarness(t: { after(fn: () => void | Promise<void>): void }, contextWindow?: number): Promise<TestHarness> {
+async function startHarness(
+	t: { after(fn: () => void | Promise<void>): void },
+	contextWindow?: number,
+): Promise<TestHarness> {
 	const storeDir = await mkdtemp(join(tmpdir(), "stash-durable-store-"));
 	const workdir = await mkdtemp(join(tmpdir(), "stash-durable-work-"));
 	t.after(async () => {
@@ -129,9 +128,12 @@ test("drives every stash tool from model-issued calls", { timeout: 30000 }, asyn
 		h.root,
 		h.faux,
 		[
-			fauxAssistantMessage(fauxToolCall("stash_write", { title: "Durable handover", summary: "State.", nextActions: ["resume"] }), {
-				stopReason: "toolUse",
-			}),
+			fauxAssistantMessage(
+				fauxToolCall("stash_write", { title: "Durable handover", summary: "State.", nextActions: ["resume"] }),
+				{
+					stopReason: "toolUse",
+				},
+			),
 			fauxAssistantMessage("stashed"),
 		],
 		"write the handover",
@@ -149,10 +151,7 @@ test("drives every stash tool from model-issued calls", { timeout: 30000 }, asyn
 	await answerWith(
 		h.root,
 		h.faux,
-		[
-			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("listed"),
-		],
+		[fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("listed")],
 		"list the handovers",
 	);
 	results = await toolResults(h.root);
@@ -164,17 +163,47 @@ test("drives every stash tool from model-issued calls", { timeout: 30000 }, asyn
 	await answerWith(
 		h.root,
 		h.faux,
-		[
-			fauxAssistantMessage(fauxToolCall("stash_read", { id }), { stopReason: "toolUse" }),
-			fauxAssistantMessage("read"),
-		],
+		[fauxAssistantMessage(fauxToolCall("stash_read", { id }), { stopReason: "toolUse" }), fauxAssistantMessage("read")],
 		"read the handover",
 	);
 	results = await toolResults(h.root);
 	assert.ok(
-		results.some((result) => result.name === "stash_read" && !result.isError && result.text.includes("Durable handover")),
+		results.some(
+			(result) => result.name === "stash_read" && !result.isError && result.text.includes("Durable handover"),
+		),
 		"the model receives the read result",
 	);
+
+	const readResult = results.findLast((result) => result.name === "stash_read");
+	const expectedDigest = readResult?.text.match(/Artifact digest: ([a-f0-9]{64})/)?.[1];
+	assert.ok(expectedDigest, "the model receives the complete artifact revision");
+	const edit = { id, expectedDigest, edits: [{ oldText: "State.", newText: "State with new information." }] };
+	await answerWith(
+		h.root,
+		h.faux,
+		[fauxAssistantMessage(fauxToolCall("stash_edit", edit), { stopReason: "toolUse" }), fauxAssistantMessage("edited")],
+		"amend the handover",
+	);
+	results = await toolResults(h.root);
+	assert.ok(
+		results.some((result) => result.name === "stash_edit" && !result.isError && result.text.includes("Updated stash")),
+	);
+	const updated = await readStash(h.storeDir, id);
+	assert.ok(updated.ok);
+	assert.match(updated.content, /State with new information\./);
+	assert.notEqual(updated.digest, expectedDigest);
+	await answerWith(
+		h.root,
+		h.faux,
+		[
+			fauxAssistantMessage(fauxToolCall("stash_edit", edit), { stopReason: "toolUse" }),
+			fauxAssistantMessage("stale revision refused"),
+		],
+		"try the stale edit",
+	);
+	results = await toolResults(h.root);
+	assert.ok(results.findLast((result) => result.name === "stash_edit")?.isError);
+	assert.deepEqual(await readStash(h.storeDir, id), updated);
 
 	await answerWith(
 		h.root,
@@ -192,7 +221,9 @@ test("drives every stash tool from model-issued calls", { timeout: 30000 }, asyn
 	assert.equal(closed[0]?.meta.outcome, "The durable handover was verified.");
 	results = await toolResults(h.root);
 	assert.ok(
-		results.some((result) => result.name === "stash_complete" && !result.isError && result.text.includes(`Closed stash ${id}`)),
+		results.some(
+			(result) => result.name === "stash_complete" && !result.isError && result.text.includes(`Closed stash ${id}`),
+		),
 		"the model receives the completion result",
 	);
 
@@ -210,7 +241,9 @@ test("drives every stash tool from model-issued calls", { timeout: 30000 }, asyn
 	assert.ok(archive.includes(`${id}.md`), "stash_rotate archives the artifact");
 	results = await toolResults(h.root);
 	assert.ok(
-		results.some((result) => result.name === "stash_rotate" && !result.isError && result.text.includes(`Rotated stash ${id}`)),
+		results.some(
+			(result) => result.name === "stash_rotate" && !result.isError && result.text.includes(`Rotated stash ${id}`),
+		),
 		"the model receives the rotation result",
 	);
 });
@@ -221,6 +254,7 @@ test("declares an explicit replay class for every tool", async (t) => {
 	assert.equal(classes.get("stash_write"), "safe");
 	assert.equal(classes.get("stash_list"), "safe");
 	assert.equal(classes.get("stash_read"), "safe");
+	assert.equal(classes.get("stash_edit"), "unsafe");
 	assert.equal(classes.get("stash_complete"), "unsafe");
 	assert.equal(classes.get("stash_rotate"), "unsafe");
 });
@@ -242,22 +276,25 @@ test("carries the native structured list result on details.structuredContent", {
 	await answerWith(
 		h.root,
 		h.faux,
-		[
-			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("listed"),
-		],
+		[fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("listed")],
 		"list",
 	);
 	const view = await h.root.context(context);
-	const listResult = view.messages.find((message) => message.role === "toolResult" && message.toolName === "stash_list");
+	const listResult = view.messages.find(
+		(message) => message.role === "toolResult" && message.toolName === "stash_list",
+	);
 	assert.ok(listResult && listResult.role === "toolResult");
 	assert.equal(listResult.isError, false);
-	const details = (listResult as unknown as { details?: { structuredContent?: { kind?: string; records?: unknown[] } } }).details;
+	const details = (
+		listResult as unknown as { details?: { structuredContent?: { kind?: string; records?: unknown[] } } }
+	).details;
 	assert.equal(details?.structuredContent?.kind, "recent");
 	assert.equal(details?.structuredContent?.records?.length, 1);
 });
 
-test("issues one capacity notice per threshold crossing and re-arms through the command", { timeout: 30000 }, async (t) => {
+test("issues one capacity notice per threshold crossing and re-arms through the command", {
+	timeout: 30000,
+}, async (t) => {
 	const h = await startHarness(t, 2000);
 	process.env.PI_STASH_CHECKPOINT_PERCENT = "1";
 	process.env.PI_STASH_DECISION_PERCENT = "2";
@@ -345,7 +382,10 @@ test("estimates context from reported assistant usage and labels the source", { 
 	assert.equal(second.status, "done");
 	text = await modelText(h.root);
 	assert.equal(occurrences(text, "[stash-capacity"), 2);
-	assert.match(text, /The newest reported assistant usage plus an estimate for later messages gives \d+\.\d% \(\S+ tokens of 2k\)\./u);
+	assert.match(
+		text,
+		/The newest reported assistant usage plus an estimate for later messages gives \d+\.\d% \(\S+ tokens of 2k\)\./u,
+	);
 	assert.match(text, /\[stash-capacity e=2 c=\d+ checkpoint decision\]/u);
 });
 
@@ -355,7 +395,9 @@ test("runs /stash new as a background distilling task with a receipt", { timeout
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
 	h.faux.setResponses([
-		fauxAssistantMessage('```json\n{"title":"Distilled focus","summary":"The command distilled the conversation context."}\n```'),
+		fauxAssistantMessage(
+			'```json\n{"title":"Distilled focus","summary":"The command distilled the conversation context."}\n```',
+		),
 	]);
 	const started = await command.run({
 		args: "new focus on the tests",
@@ -436,7 +478,14 @@ test("reports lifecycle failures from the command without changing the store", {
 	);
 	assert.equal((await listStashes(h.storeDir, {})).length, 0);
 	await assert.rejects(
-		command.run({ args: "new", conversation: h.root, context, host: h.host, invocationId: "empty-new", harness: h.harness }),
+		command.run({
+			args: "new",
+			conversation: h.root,
+			context,
+			host: h.host,
+			invocationId: "empty-new",
+			harness: h.harness,
+		}),
 		/Usage: \/stash new/u,
 	);
 });
@@ -552,7 +601,9 @@ async function replayCase(
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(workdir, { recursive: true });
 	const artifactId =
-		mode === "complete" ? (await writeStash(storeDir, { title: "Replay target", summary: "Target body." })).record.id : undefined;
+		mode === "complete"
+			? (await writeStash(storeDir, { title: "Replay target", summary: "Target body." })).record.id
+			: undefined;
 	const prompt = `replay ${mode}`;
 	const requestId = `replay-${mode}`;
 	const child = spawn(

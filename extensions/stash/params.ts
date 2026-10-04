@@ -64,6 +64,44 @@ export const ReadParams = Type.Object({
 	}),
 });
 
+export const EditParams = Type.Object({
+	id: Type.String({
+		description: "Stash id or unique id prefix from stash_read",
+		minLength: 1,
+		maxLength: 200,
+		pattern: "^[A-Za-z0-9._-]+$",
+	}),
+	expectedDigest: Type.String({
+		description: "SHA-256 digest from the latest stash_read; binds the complete artifact, including lifecycle state",
+		pattern: "^[a-f0-9]{64}$",
+	}),
+	edits: Type.Array(
+		Type.Object({
+			oldText: Type.String({
+				description: "Exact nonempty text occurring once in the original body, outside its title heading",
+				minLength: 1,
+				maxLength: 100_000,
+			}),
+			newText: Type.String({
+				description:
+					"Replacement text; empty deletes the matched text. Include the anchor plus new text to append an amendment.",
+				maxLength: 100_000,
+			}),
+		}),
+		{
+			description: "Nonoverlapping body replacements, all matched against the original artifact, not earlier edits",
+			minItems: 1,
+			maxItems: 32,
+		},
+	),
+	allowActive: Type.Optional(
+		Type.Boolean({
+			description:
+				"Explicitly acknowledge an authorized edit to an active effort. Default refuses active stashes. Closed stashes always refuse.",
+		}),
+	),
+});
+
 export const CompleteParams = Type.Object({
 	id: Type.String({
 		description: "Open or active stash id or unique id prefix",

@@ -8,7 +8,8 @@ The agent distills an effort into a durable Markdown handover. The extension own
 |---|---|---|
 | `stash_write` | tool | Persist a self-contained handover with project, branch, and session metadata; `checkpoint: true` saves a working synthesis outside handover discovery. |
 | `stash_list` | tool | List recent artifacts, or find remembered content with `query` and stateless continuation; filter by tag or lifecycle state. |
-| `stash_read` | tool | Read by exact id or unique prefix without changing lifecycle state. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
+| `stash_read` | tool | Read by exact id or unique prefix without changing lifecycle state. Returns a digest for edits. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
+| `stash_edit` | tool | Correct or amend the saved body with revision-checked exact replacements; preserve the title, metadata, and lifecycle. |
 | `stash_complete` | tool | Close an open or active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
 | `/stash` | command | Browse and pick up efforts (TUI overlay); bare invocation opens the browser. |
@@ -50,6 +51,10 @@ Terminal controls are escaped and long values are clipped.
   frontmatter state and title and the returned line count, and falls back to the
   line count when the frontmatter is absent. The artifact path stays in the
   expansion.
+- `stash_edit` names the artifact, replacement count, and any explicit active-edit
+  acknowledgement. Its outcome separates changed content from an unchanged
+  artifact and names the preserved lifecycle state. The digest stays in the
+  expanded result.
 - `stash_complete` previews the requested outcome on the call row. The outcome
   reports the closed state with the retained artifact; the recorded outcome
   stays in the expansion.
@@ -188,6 +193,66 @@ if (page.kind === "recent") {
   });
 }
 ```
+
+## Edit a saved handover
+
+Use `stash_read` before `stash_edit`. The read result includes a SHA-256 digest
+of the complete raw file, including its frontmatter and lifecycle state. The
+model-visible digest appears after a complete artifact or in its truncation
+notice. It is also available in result details. The displayed text remains
+terminal-safe; the digest binds the bytes on disk, not that escaped display.
+Continue a truncated or control-escaped read through the returned file path
+before selecting exact edit text.
+
+`stash_edit` accepts `id`, `expectedDigest`, and an `edits` array of
+`{ oldText, newText }` replacements. Every nonempty `oldText` must occur exactly
+once in the original body. Edits must not overlap; later edits do not match
+text introduced by earlier edits. An empty `newText` deletes its matched text.
+To append an amendment, replace a unique existing anchor with that anchor plus
+the new information. Replacement text receives credential redaction. The tool
+preserves the leading title heading and all frontmatter bytes, including
+unknown metadata, creation provenance, and lifecycle fields. It does not rename
+the artifact, edit tags, or reinterpret Markdown sections as structured fields.
+
+The store applies all replacements or refuses the whole request. A stale digest,
+missing or ambiguous match, overlap, invalid text, unsupported file, or oversized
+result leaves the artifact unchanged. The complete result retains the store's
+256 KiB limit. A no-op returns `changed: false` and the existing digest. Success
+returns the exact id, state, new digest, and whether content changed. There is
+no edit-history store or automatic rollback copy. If lock cleanup fails after
+publication, the error states that the mutation completed and names the lock
+path; read the artifact before another attempt.
+
+Lifecycle gates are explicit:
+
+- **Open:** a matching digest permits body edits.
+- **Active:** edits refuse unless `allowActive: true` accompanies the matching
+  digest. This acknowledges an authorized edit to an active effort; it neither
+  grants permission nor claims exclusive ownership. Pickup records activity,
+  not an owner lock. Do not add this flag merely to clear a refusal.
+- **Closed:** edits always refuse. Deliberate, operator-authorized
+  `/stash reopen <id>` precedes another read and edit. The edit tool never
+  reopens an effort or clears its recorded outcome itself.
+- **Unknown:** edits refuse until the artifact's state is resolved.
+
+On a stale revision, read again and reassess the requested change. Do not
+substitute the new digest into an old plan without reviewing the new content.
+
+Editing, lifecycle transitions, and rotation share an exclusive private
+`.<exact-id>.lock` file inside the store. Contention fails immediately instead
+of queuing across processes. A crash can leave the lock file behind; no timer,
+lease, or automatic deletion claims that the writer is gone. The refusal names
+the lock path. Verify that no writer remains before an explicitly authorized
+manual removal. Ordinary same-process lifecycle calls also retain Pi's file
+mutation queue.
+
+This lock protects cooperating current Stash writers across ordinary sessions
+and Durable hosts. Direct file edits and already-loaded older implementations
+do not honor it. Revision and identity checks detect observed external changes;
+they do not supply an atomic compare-and-swap against arbitrary external file
+writers. Restart or reload the relevant hosts before relying on the shared
+writer contract. Reads remain nonmutating apart from existing permission
+hardening. Locks do not appear in handover discovery.
 
 ## Lifecycle
 
@@ -647,9 +712,10 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `params.ts`: shared parameter schemas for both entrypoints.
 - `guidance.ts`: shared tool descriptions and model guidance for both entrypoints.
 - `capacity.ts`: bounded session-state restoration, context observations, configuration, and latched continuity requests.
-- `store.ts`: private, collision-safe filesystem store, atomic lifecycle transitions, and the rotation archive.
+- `store.ts`: private filesystem store, revision-checked body edits, shared mutation locks, lifecycle transitions, and the rotation archive.
 - `search.ts`: bounded content discovery, stateless inventory-bound continuation, and transformed-field excerpts.
 - `list-result.ts`: explicit native output schema and byte-bounded recent records derived from displayed rows.
+- `read-result.ts`: bounded terminal-safe artifact text with its complete-file digest on both tool entrypoints.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state and rendering.
 - `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.

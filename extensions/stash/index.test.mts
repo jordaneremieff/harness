@@ -1,33 +1,33 @@
 import assert from "node:assert/strict";
-import fs, { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import fs, { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, describe, it, mock } from "node:test";
-import registerStash from "./index.ts";
-import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
-
 import {
+	type Api,
 	getCurrentSystemPrompt,
 	getCurrentTools,
 	InMemoryCredentialStore,
 	InMemoryModelsStore,
-	type Api,
 	type Model,
 	type Provider,
 	type Usage,
 } from "@earendil-works/pi-ai";
 import {
+	type ExtensionContext,
 	ModelRegistry,
 	ModelRuntime,
 	SessionManager,
-	type ExtensionContext,
 	type SessionShutdownEvent,
 } from "@earendil-works/pi-coding-agent";
 import { CAPACITY_STATE, capacityReset, readCapacityState } from "./capacity.ts";
 import type { DistillStreamFunction } from "./distill.ts";
+import registerStash from "./index.ts";
 import type { PanelTheme, StashPanelResult } from "./panel.ts";
+import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
 import {
+	type CustomOptions,
 	captureCommand,
 	captureShortcut,
 	captureTool,
@@ -36,12 +36,11 @@ import {
 	hostContext,
 	RequiredMap,
 	stringArray,
+	type TestContext,
+	type TestUi,
 	testAssistantMessage,
 	testModel,
 	transcriptProjection,
-	type CustomOptions,
-	type TestContext,
-	type TestUi,
 } from "./test-fixtures.mts";
 
 function registry(overrides?: Parameters<typeof registerStash>[1]) {
@@ -117,7 +116,10 @@ after(async () => {
 describe("stash entrypoint", () => {
 	it("registers lifecycle-aware tools, the /stash command, and the browser shortcut", () => {
 		const { tools, commands, shortcuts } = registry();
-		assert.deepEqual([...tools.keys()], ["stash_write", "stash_list", "stash_read", "stash_complete", "stash_rotate"]);
+		assert.deepEqual(
+			[...tools.keys()],
+			["stash_write", "stash_list", "stash_read", "stash_edit", "stash_complete", "stash_rotate"],
+		);
 		assert.ok(commands.has("stash"));
 		assert.deepEqual([...shortcuts.keys()], ["ctrl+alt+s"]);
 		assert.equal(shortcuts.get("ctrl+alt+s").description, "Open the stash browser");
@@ -557,6 +559,67 @@ describe("stash entrypoint", () => {
 		assert.equal(result.details.truncated, true);
 		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
 		assert.match(result.content[0].text, /Full artifact:/);
+		assert.match(String(result.details.digest), /^[a-f0-9]{64}$/);
+		assert.ok(result.content[0].text.includes(String(result.details.digest)));
+	});
+
+	it("edits through the read revision without changing lifecycle or injecting a live turn", async () => {
+		const { tools, sent } = registry();
+		const { record, path } = await writeStash(dir, { title: "Editable handover", summary: "Original state." });
+		const signal = new AbortController().signal;
+		const read = await tools.get("stash_read").execute("read", { id: record.id }, signal);
+		const expectedDigest = read.details.digest;
+		assert.match(String(expectedDigest), /^[a-f0-9]{64}$/);
+		assert.ok(read.content[0].text.includes(String(expectedDigest)));
+		const params = {
+			id: record.id,
+			expectedDigest,
+			edits: [{ oldText: "Original state.", newText: "Updated state." }],
+		};
+		const edited = await tools.get("stash_edit").execute("edit", params, signal);
+		assert.equal(edited.details.state, "open");
+		assert.equal(edited.details.changed, true);
+		assert.notEqual(edited.details.digest, expectedDigest);
+		const stored = await readFile(path, "utf8");
+		assert.match(stored, /Updated state\./);
+		await assert.rejects(tools.get("stash_edit").execute("stale", params, signal), /digest|changed|revision/i);
+		assert.equal(await readFile(path, "utf8"), stored);
+		assert.deepEqual(sent, []);
+	});
+
+	it("requires active acknowledgement and refuses closed edits through the tool", async () => {
+		const { tools } = registry();
+		const { record, path } = await writeStash(dir, { title: "Gated handover", summary: "Active state." });
+		await transitionStash(dir, record.id, { action: "activate" });
+		const signal = new AbortController().signal;
+		const read = await tools.get("stash_read").execute("read", { id: record.id }, signal);
+		const params = {
+			id: record.id,
+			expectedDigest: read.details.digest,
+			edits: [{ oldText: "Active state.", newText: "New facts." }],
+		};
+		const before = await readFile(path, "utf8");
+		await assert.rejects(tools.get("stash_edit").execute("held", params, signal), /active/i);
+		assert.equal(await readFile(path, "utf8"), before);
+		const edited = await tools.get("stash_edit").execute("active", { ...params, allowActive: true }, signal);
+		assert.equal(edited.details.state, "active");
+		await tools.get("stash_complete").execute("complete", { id: record.id, outcome: "Work complete." }, signal);
+		const closed = await tools.get("stash_read").execute("closed", { id: record.id }, signal);
+		const finalBytes = await readFile(path, "utf8");
+		await assert.rejects(
+			tools.get("stash_edit").execute(
+				"refused",
+				{
+					id: record.id,
+					expectedDigest: closed.details.digest,
+					edits: [{ oldText: "New facts.", newText: "Another fact." }],
+					allowActive: true,
+				},
+				signal,
+			),
+			/closed|reopen/i,
+		);
+		assert.equal(await readFile(path, "utf8"), finalBytes);
 	});
 
 	it("uses /stash get <id> as a direct, deterministic pickup", async () => {

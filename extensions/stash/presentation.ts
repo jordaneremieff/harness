@@ -75,9 +75,7 @@ function expandHint(subject: string): string {
 }
 
 function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function textComponent(text: string, previous?: Component): Text {
@@ -109,7 +107,8 @@ function callCard(
 	theme: Theme,
 	context: CallContext,
 ): Text {
-	const heading = theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
+	const heading =
+		theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
 	if (context.expanded) {
 		return textComponent(
 			[heading, theme.fg("toolOutput", boundedBody(JSON.stringify(args ?? {}, null, 2)))].join("\n"),
@@ -217,7 +216,15 @@ export function renderWriteResult(
 	const details = record(result.details);
 	const path = typeof details.path === "string" ? previewMark(details.path, 160).text : "";
 	if (details.checkpoint === true) {
-		return resultCard({ color: "success", line: "checkpoint saved · not listed for pickup" }, path, false, textContent(result), options, theme, context);
+		return resultCard(
+			{ color: "success", line: "checkpoint saved · not listed for pickup" },
+			path,
+			false,
+			textContent(result),
+			options,
+			theme,
+			context,
+		);
 	}
 	const id = typeof details.id === "string" ? previewMark(details.id, 100).text : "";
 	if (!id) {
@@ -277,7 +284,10 @@ function stateTally(states: string[]): string {
 	const counts = new Map<string, number>();
 	for (const state of states) counts.set(state, (counts.get(state) ?? 0) + 1);
 	const entries = [...counts.entries()];
-	const shown = entries.slice(0, 4).map(([state, count]) => `${state} ${count}`).join(", ");
+	const shown = entries
+		.slice(0, 4)
+		.map(([state, count]) => `${state} ${count}`)
+		.join(", ");
 	const omitted = entries.length - 4;
 	if (omitted > 0) return `${shown}, +${omitted} more`;
 	return shown;
@@ -293,7 +303,9 @@ function searchPageCard(
 	const matches = Array.isArray(details.matches) ? details.matches.map(record) : [];
 	const skipped = Array.isArray(details.skipped) ? details.skipped.length : 0;
 	const complete = record(details.coverage).complete === true;
-	const states = matches.map((match) => (typeof match.state === "string" ? match.state : "")).filter((state) => state !== "");
+	const states = matches
+		.map((match) => (typeof match.state === "string" ? match.state : ""))
+		.filter((state) => state !== "");
 	const tally = stateTally(states);
 	const continuation = typeof details.nextCursor === "string" && details.nextCursor ? "continuation available" : "";
 	const color: OutcomeColor = complete ? (matches.length === 0 ? "muted" : "success") : "warning";
@@ -319,7 +331,9 @@ function listingCard(
 	context: ResultContext,
 ): Text {
 	const count = typeof details.count === "number" ? details.count : 0;
-	const states = Array.isArray(details.states) ? details.states.filter((state) => typeof state === "string").map(String) : [];
+	const states = Array.isArray(details.states)
+		? details.states.filter((state) => typeof state === "string").map(String)
+		: [];
 	const tally = stateTally(states);
 	const second = details.truncated === true ? `${tally ? `${tally} · ` : ""}list truncated` : tally;
 	return resultCard(
@@ -390,7 +404,10 @@ export function renderReadResult(
 	const lines = typeof details.totalLines === "number" ? `${details.totalLines} lines` : "";
 	const truncated = details.truncated === true ? " · truncated, full artifact remains in the file" : "";
 	const path = typeof details.path === "string" ? previewMark(details.path, 160).text : "";
-	const line = state || title ? joinedParts([state, title, lines]).concat(truncated) : `artifact read${lines ? ` · ${lines}` : ""}${truncated}`;
+	const line =
+		state || title
+			? joinedParts([state, title, lines]).concat(truncated)
+			: `artifact read${lines ? ` · ${lines}` : ""}${truncated}`;
 	return resultCard(
 		{ color: "success", line },
 		"",
@@ -400,6 +417,41 @@ export function renderReadResult(
 		theme,
 		context,
 	);
+}
+
+export interface EditDisplayArgs {
+	id: string;
+	expectedDigest: string;
+	edits: { oldText: string; newText: string }[];
+	allowActive?: boolean;
+}
+
+export function renderEditCall(
+	args: Partial<EditDisplayArgs> | null | undefined,
+	theme: Theme,
+	context: CallContext,
+): Component {
+	const id = typeof args?.id === "string" ? previewMark(args.id, 72).text : "";
+	const qualifiers: string[] = [];
+	if (Array.isArray(args?.edits)) {
+		qualifiers.push(`${args.edits.length} replacement${args.edits.length === 1 ? "" : "s"}`);
+	}
+	if (args?.allowActive === true) qualifiers.push("active edit acknowledged");
+	return callCard("stash_edit", id, qualifiers, true, args, theme, context);
+}
+
+export function renderEditResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: ResultContext,
+): Component {
+	if (options.isPartial) return partialCard("Editing stash...", theme, context);
+	if (context.isError) return errorCard("stash_edit", result, options, theme, context);
+	const details = record(result.details);
+	const outcome = details.changed === true ? "updated" : details.changed === false ? "unchanged" : "edit result";
+	const state = typeof details.state === "string" ? `state: ${previewMark(details.state, 40).text} (unchanged)` : "";
+	return resultCard({ color: "success", line: outcome }, state, true, textContent(result), options, theme, context);
 }
 
 export interface CompleteDisplayArgs {

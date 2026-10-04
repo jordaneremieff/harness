@@ -1,6 +1,6 @@
 /** Filesystem persistence for durable stash artifacts. */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, type Dirent, type Stats } from "node:fs";
 import { chmod, type FileHandle, link, lstat, mkdir, open, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -36,6 +36,21 @@ export interface StashInput {
 	project?: string;
 	branch?: string;
 	sessionId?: string;
+}
+
+export interface StashEditInput {
+	expectedDigest: string;
+	edits: { oldText: string; newText: string }[];
+	allowActive?: boolean;
+}
+
+export interface StashEditResult {
+	id: string;
+	path: string;
+	content: string;
+	digest: string;
+	meta: StashMeta;
+	changed: boolean;
 }
 
 export interface StashEntry {
@@ -397,7 +412,7 @@ export async function listStashes(dir: string, options: ListOptions = {}): Promi
 }
 
 type ReadResult =
-	| { ok: true; id: string; path: string; content: string }
+	| { ok: true; id: string; path: string; content: string; digest: string }
 	| { ok: false; error: string; candidates?: string[] };
 
 type LocatedArtifact = { ok: true; id: string; path: string } | Extract<ReadResult, { ok: false }>;
@@ -433,14 +448,8 @@ export async function readStash(dir: string, idOrPrefix: string): Promise<ReadRe
 	const located = await resolveStash(dir, idOrPrefix);
 	if ("error" in located) return located;
 	try {
-		const artifact = await readPrefix(located.path, MAX_STASH_BYTES);
-		if (artifact.truncated) {
-			return {
-				ok: false,
-				error: `stash ${located.id} is ${artifact.size} bytes; maximum readable size is ${MAX_STASH_BYTES}`,
-			};
-		}
-		return { ...located, content: artifact.text };
+		const artifact = await readMutationSource(located.path, "readable");
+		return { ...located, content: artifact.content, digest: artifact.digest };
 	} catch (error) {
 		return {
 			ok: false,
@@ -473,16 +482,34 @@ interface StashTransitionResult {
 	changed: boolean;
 }
 
-async function readMutationSource(path: string): Promise<{
+interface MutationSource {
 	content: string;
-	identity: { dev: number; ino: number };
-}> {
+	digest: string;
+	identity: Stats;
+}
+
+function artifactDigest(bytes: Uint8Array): string {
+	return createHash("sha256").update(bytes).digest("hex");
+}
+
+function sameRevision(before: Stats, after: Stats): boolean {
+	return (
+		before.dev === after.dev &&
+		before.ino === after.ino &&
+		before.size === after.size &&
+		before.mtimeMs === after.mtimeMs &&
+		before.ctimeMs === after.ctimeMs
+	);
+}
+
+async function readMutationSource(path: string, sizeKind = "mutable"): Promise<MutationSource> {
 	const { handle, info } = await openRegular(path);
 	try {
-		const before = info;
-		if ((before.mode & 0o7777) !== 0o600) await handle.chmod(0o600);
+		if ((info.mode & 0o7777) !== 0o600) await handle.chmod(0o600);
+		// Permission hardening changes ctime, so it precedes the consistency baseline.
+		const before = await handle.stat();
 		if (before.size > MAX_STASH_BYTES) {
-			throw new Error(`stash is ${before.size} bytes; maximum mutable size is ${MAX_STASH_BYTES}`);
+			throw new Error(`stash is ${before.size} bytes; maximum ${sizeKind} size is ${MAX_STASH_BYTES}`);
 		}
 		const buffer = Buffer.alloc(MAX_STASH_BYTES + 1);
 		let offset = 0;
@@ -492,18 +519,93 @@ async function readMutationSource(path: string): Promise<{
 			offset += result.bytesRead;
 		}
 		const after = await handle.stat();
+		const current = await lstat(path);
 		if (offset > MAX_STASH_BYTES || after.size > MAX_STASH_BYTES) {
-			throw new Error(`stash exceeds the maximum mutable size of ${MAX_STASH_BYTES} bytes`);
+			throw new Error(`stash exceeds the maximum ${sizeKind} size of ${MAX_STASH_BYTES} bytes`);
 		}
-		if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || after.size !== offset) {
-			throw new Error("stash changed while its lifecycle metadata was being read; retry the operation");
+		if (
+			!sameRevision(before, after) ||
+			after.size !== offset ||
+			!current.isFile() ||
+			current.isSymbolicLink() ||
+			!sameRevision(after, current)
+		) {
+			throw new Error("stash changed while it was being read; retry the operation");
 		}
-		return {
-			content: buffer.subarray(0, offset).toString("utf8"),
-			identity: { dev: after.dev, ino: after.ino },
-		};
+		const bytes = buffer.subarray(0, offset);
+		let content: string;
+		try {
+			content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+		} catch {
+			throw new Error("stash contains invalid UTF-8; repair the artifact before retrying");
+		}
+		return { content, digest: artifactDigest(bytes), identity: after };
 	} finally {
 		await handle.close();
+	}
+}
+
+function checkMutationSignal(signal?: AbortSignal): void {
+	if (signal?.aborted) throw new Error("stash mutation cancelled");
+}
+
+/** Shared cross-process exclusion for edits, lifecycle changes, and rotation. */
+async function withArtifactMutation<T>(
+	dir: string,
+	idOrPrefix: string,
+	signal: AbortSignal | undefined,
+	change: (located: Extract<LocatedArtifact, { ok: true }>) => Promise<T>,
+): Promise<T> {
+	checkMutationSignal(signal);
+	const located = await resolveStash(dir, idOrPrefix);
+	if ("error" in located) {
+		const candidates = located.candidates?.length ? ` Candidates: ${located.candidates.join(", ")}.` : "";
+		throw new Error(`${located.error}.${candidates}`);
+	}
+	checkMutationSignal(signal);
+	const lockPath = join(dir, `.${located.id}.lock`);
+	let lock: FileHandle;
+	try {
+		lock = await open(lockPath, "wx", 0o600);
+	} catch (error) {
+		if (hasCode(error, "EEXIST")) {
+			throw new Error(
+				`stash ${located.id} is busy; mutation lock exists at ${lockPath}. Retry after the mutation ends. If its process stopped, remove this exact lock only after confirming no mutation remains active.`,
+			);
+		}
+		throw error;
+	}
+	let completed = false;
+	let result!: T;
+	let failure: unknown;
+	try {
+		await lock.chmod(0o600);
+		checkMutationSignal(signal);
+		result = await change(located);
+		completed = true;
+	} catch (error) {
+		failure = error;
+	}
+	try {
+		await releaseMutationLock(lock, lockPath);
+	} catch (error) {
+		throw new Error(
+			`stash mutation ${completed ? "completed" : "stopped"}, but lock cleanup failed at ${lockPath}: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: failure ?? error },
+		);
+	}
+	if (!completed) throw failure;
+	return result;
+}
+
+async function releaseMutationLock(lock: FileHandle, lockPath: string): Promise<void> {
+	try {
+		const identity = await lock.stat();
+		const current = await lstat(lockPath);
+		if (!sameRegularFile(current, identity)) throw new Error("mutation lock was replaced");
+		await unlink(lockPath);
+	} finally {
+		await lock.close();
 	}
 }
 
@@ -556,67 +658,193 @@ function lifecyclePatch(
 	return { state: "open", closedAt: undefined, outcome: undefined };
 }
 
-/** Atomically rewrite only lifecycle frontmatter after rechecking the regular-file target. */
+/** Atomically rewrite only lifecycle frontmatter under the artifact mutation lock. */
 export async function transitionStash(
 	dir: string,
 	idOrPrefix: string,
 	change: StashLifecycleChange,
 	now: Date = new Date(),
 ): Promise<StashTransitionResult> {
-	const dirents = await secureStore(dir, false);
-	if (!dirents) throw new Error(`stash store not found: ${dir}`);
-	const located = locateArtifact(dir, dirents, idOrPrefix);
-	if ("error" in located) {
-		const candidates = located.candidates?.length ? ` Candidates: ${located.candidates.join(", ")}.` : "";
-		throw new Error(`${located.error}.${candidates}`);
-	}
-	const source = await readMutationSource(located.path);
-	const parsed = parseFrontmatter(source.content);
-	// The full content is read here, so the unclosed-header check runs on the
-	// whole artifact, not the bounded scan window: a header that closes beyond
-	// 16 KiB stays readable, while a header that never closes is UNKNOWN and
-	// must not be mutated as if it were a verified state.
-	if (headerUnclosed(source.content)) {
-		throw new Error(
-			`stash ${located.id} has a header that never closes; its state cannot be verified for lifecycle changes. Inspect the artifact and repair the frontmatter delimiter before retrying`,
-		);
-	}
-	const state = currentState(parsed.meta);
-	const stamp = utcTimestamp(now);
-	const patch = lifecyclePatch(located.id, state, change, stamp);
-	if (!patch) {
+	return withArtifactMutation(dir, idOrPrefix, undefined, async (located) => {
+		const source = await readMutationSource(located.path);
+		const parsed = parseFrontmatter(source.content);
+		// The full content is read here, so the unclosed-header check runs on the
+		// whole artifact, not the bounded scan window: a header that closes beyond
+		// 16 KiB stays readable, while a header that never closes is UNKNOWN and
+		// must not be mutated as if it were a verified state.
+		if (headerUnclosed(source.content)) {
+			throw new Error(
+				`stash ${located.id} has a header that never closes; its state cannot be verified for lifecycle changes. Inspect the artifact and repair the frontmatter delimiter before retrying`,
+			);
+		}
+		const state = currentState(parsed.meta);
+		const stamp = utcTimestamp(now);
+		const patch = lifecyclePatch(located.id, state, change, stamp);
+		if (!patch) {
+			return {
+				...located,
+				content: source.content,
+				meta: normalizeMeta(`${located.id}.md`, parsed.meta),
+				changed: false,
+			};
+		}
+
+		const content = updateFrontmatter(source.content, patch);
+		await publishRevision(dir, located, source, content);
 		return {
 			...located,
-			content: source.content,
-			meta: normalizeMeta(`${located.id}.md`, parsed.meta),
-			changed: false,
+			content,
+			meta: normalizeMeta(`${located.id}.md`, parseFrontmatter(content).meta),
+			changed: true,
 		};
-	}
+	});
+}
 
-	const content = updateFrontmatter(source.content, patch);
+async function publishRevision(
+	dir: string,
+	located: Extract<LocatedArtifact, { ok: true }>,
+	source: MutationSource,
+	content: string,
+	signal?: AbortSignal,
+): Promise<void> {
 	const bytes = Buffer.byteLength(content, "utf8");
 	if (bytes > MAX_STASH_BYTES) throw new Error(`updated stash is ${bytes} bytes; maximum is ${MAX_STASH_BYTES}`);
+	checkMutationSignal(signal);
 	const temporary = join(dir, `.${located.id}.${randomUUID()}.tmp`);
+	let staged = false;
 	let published = false;
 	try {
 		await writeFile(temporary, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+		staged = true;
 		await chmod(temporary, 0o600);
 		const current = await lstat(located.path);
 		if (current.isSymbolicLink() || !current.isFile()) throw new Error("stash target is no longer a regular file");
-		if (current.dev !== source.identity.dev || current.ino !== source.identity.ino) {
-			throw new Error("stash target changed before lifecycle publication; retry the operation");
+		if (!sameRevision(source.identity, current)) {
+			throw new Error("stash target changed before revision publication; retry the operation");
 		}
+		checkMutationSignal(signal);
 		await rename(temporary, located.path);
 		published = true;
 	} finally {
-		await cleanTemporary(temporary, published);
+		if (staged) await cleanTemporary(temporary, published);
 	}
-	return {
-		...located,
-		content,
-		meta: normalizeMeta(`${located.id}.md`, parseFrontmatter(content).meta),
-		changed: true,
-	};
+}
+
+function validateEdits(input: StashEditInput): void {
+	if (typeof input.expectedDigest !== "string" || !/^[a-f0-9]{64}$/.test(input.expectedDigest)) {
+		throw new Error("expectedDigest must be a SHA-256 digest from stash_read");
+	}
+	if (!Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > 32) {
+		throw new Error("stash edits must contain 1 to 32 replacements");
+	}
+	if (input.allowActive !== undefined && typeof input.allowActive !== "boolean") {
+		throw new Error("allowActive must be a boolean");
+	}
+	for (const edit of input.edits) {
+		if (
+			!edit ||
+			typeof edit.oldText !== "string" ||
+			typeof edit.newText !== "string" ||
+			!edit.oldText ||
+			edit.oldText.length > 100_000 ||
+			edit.newText.length > 100_000
+		) {
+			throw new Error("each stash edit requires nonempty oldText and string newText, each at most 100000 characters");
+		}
+		for (const text of [edit.oldText, edit.newText]) {
+			if (Buffer.from(text, "utf8").toString("utf8") !== text) {
+				throw new Error("stash edits must not contain unpaired Unicode surrogates");
+			}
+		}
+	}
+}
+
+/** Preserve the original header delimiters, whitespace, and all metadata bytes. */
+function bodyOffset(content: string): number {
+	const lines = content.split("\n");
+	if (lines[0]?.trim() !== "---") throw new Error("stash requires a closed frontmatter header");
+	let offset = lines[0].length + 1;
+	for (let index = 1; index < lines.length; index++) {
+		offset += lines[index].length + (index < lines.length - 1 ? 1 : 0);
+		if (lines[index].trim() === "---") return offset;
+	}
+	throw new Error("stash requires a closed frontmatter header");
+}
+
+function bodyTitle(body: string): string | undefined {
+	const first = body.split("\n").find((line) => line.trim() !== "");
+	return first !== undefined && /^#(?:[ \t]+|$)/.test(first) ? first : undefined;
+}
+
+function replaceBody(content: string, edits: StashEditInput["edits"]): string {
+	const offset = bodyOffset(content);
+	const body = content.slice(offset);
+	const replacements = edits
+		.map(({ oldText, newText }, index) => {
+			const start = body.indexOf(oldText);
+			if (start < 0) throw new Error(`stash edit ${index + 1} oldText does not match the body`);
+			if (body.indexOf(oldText, start + 1) >= 0) {
+				throw new Error(`stash edit ${index + 1} oldText matches more than once; supply a unique body anchor`);
+			}
+			return { start, end: start + oldText.length, text: redactSecrets(newText) };
+		})
+		.sort((left, right) => left.start - right.start);
+	let position = 0;
+	const parts: string[] = [];
+	for (const replacement of replacements) {
+		if (replacement.start < position) throw new Error("stash edits overlap in the original body");
+		parts.push(body.slice(position, replacement.start), replacement.text);
+		position = replacement.end;
+	}
+	parts.push(body.slice(position));
+	const updatedBody = parts.join("");
+	if (bodyTitle(updatedBody) !== bodyTitle(body)) {
+		throw new Error("stash edits must preserve the body title heading");
+	}
+	return content.slice(0, offset) + updatedBody;
+}
+
+/** Apply all exact body replacements under the shared artifact mutation lock. */
+export async function editStash(
+	dir: string,
+	idOrPrefix: string,
+	input: StashEditInput,
+	signal?: AbortSignal,
+): Promise<StashEditResult> {
+	checkMutationSignal(signal);
+	validateEdits(input);
+	return withArtifactMutation(dir, idOrPrefix, signal, async (located) => {
+		const source = await readMutationSource(located.path);
+		checkMutationSignal(signal);
+		if (source.digest !== input.expectedDigest) {
+			throw new Error(
+				`stash revision conflict for ${located.id}; current digest is ${source.digest}. Read the stash again before retrying.`,
+			);
+		}
+		const parsed = parseFrontmatter(source.content);
+		const state = currentState(parsed.meta);
+		if (state === "closed") {
+			throw new Error(
+				`stash ${located.id} is closed; deliberately reopen it with /stash reopen ${located.id}, then read it again before editing`,
+			);
+		}
+		if (state === "active" && input.allowActive !== true) {
+			throw new Error(
+				`stash ${located.id} is active; allowActive: true explicitly acknowledges an edit to the active handover`,
+			);
+		}
+		const content = replaceBody(source.content, input.edits);
+		const changed = content !== source.content;
+		if (changed) await publishRevision(dir, located, source, content, signal);
+		return {
+			id: located.id,
+			path: located.path,
+			content,
+			digest: changed ? artifactDigest(Buffer.from(content, "utf8")) : source.digest,
+			meta: normalizeMeta(`${located.id}.md`, parsed.meta),
+			changed,
+		};
+	});
 }
 
 async function secureArchive(dir: string): Promise<string> {
@@ -679,25 +907,7 @@ async function publishArchive(
 	}
 }
 
-/**
- * Operator-initiated rotation: retain an open or closed artifact under
- * the dot-hidden archive subdirectory (`.trash`). Rotated artifacts disappear
- * from discovery, listing, pickup, and lifecycle changes, but the file is
- * retained byte-for-byte and restoring it is a plain move back into the store.
- * Active artifacts are excluded: a live session owns them and completion is the
- * only close path. Only the bounded header is read for eligibility, so oversized
- * artifacts remain rotatable. A private temporary link pins the verified inode
- * before exclusive archive publication; source removal follows publication.
- */
-export async function rotateStash(dir: string, idOrPrefix: string): Promise<StashRotateResult> {
-	const dirents = await secureStore(dir, false);
-	if (!dirents) throw new Error(`stash store not found: ${dir}`);
-	const located = locateArtifact(dir, dirents, idOrPrefix);
-	if ("error" in located) {
-		const candidates = located.candidates?.length ? ` Candidates: ${located.candidates.join(", ")}.` : "";
-		throw new Error(`${located.error}.${candidates}`);
-	}
-
+async function readRotationSource(located: Extract<LocatedArtifact, { ok: true }>) {
 	let prefix: Awaited<ReturnType<typeof readPrefix>>;
 	try {
 		prefix = await readPrefix(located.path, HEADER_SCAN_BYTES);
@@ -711,23 +921,37 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 				: `stash ${located.id} has a header that never closes; its state cannot be verified for rotation`,
 		);
 	}
-	const state = currentState(parseFrontmatter(prefix.text).meta);
-	if (state === "active") {
-		throw new Error(`stash ${located.id} is active; complete it before rotation (state: active)`);
-	}
+	return { prefix, state: currentState(parseFrontmatter(prefix.text).meta) };
+}
 
-	const archiveDir = await secureArchive(dir);
+/**
+ * Retain an open or closed artifact byte-for-byte under the hidden `.trash`
+ * directory. Active artifacts require completion or release before rotation.
+ * The shared mutation lock excludes cooperating lifecycle and edit operations.
+ * A bounded header read permits rotation of oversized bodies. A private hard
+ * link pins the verified inode before exclusive archive publication; source
+ * removal follows publication. Raw external writers do not honor the lock.
+ */
+export async function rotateStash(dir: string, idOrPrefix: string): Promise<StashRotateResult> {
+	return withArtifactMutation(dir, idOrPrefix, undefined, async (located) => {
+		const { prefix, state } = await readRotationSource(located);
+		if (state === "active") {
+			throw new Error(`stash ${located.id} is active; complete it before rotation (state: active)`);
+		}
 
-	const archivePath = join(archiveDir, `${located.id}.md`);
-	const current = await lstat(located.path);
-	if (current.isSymbolicLink() || !current.isFile()) throw new Error("stash target is no longer a regular file");
-	if (current.dev !== prefix.identity.dev || current.ino !== prefix.identity.ino) {
-		throw new Error("stash target changed before rotation; retry the operation");
-	}
-	// Pin and verify the inode under a private name before final publication.
-	// A source-path replacement must not reserve the archive name with an
-	// unverified inode. Cleanup owns only this temporary link, never the archive.
-	const temporary = join(archiveDir, `.${located.id}.${randomUUID()}.tmp`);
-	await publishArchive(located.id, located.path, archivePath, temporary, prefix.identity);
-	return { id: located.id, path: located.path, archivePath, state };
+		const archiveDir = await secureArchive(dir);
+
+		const archivePath = join(archiveDir, `${located.id}.md`);
+		const current = await lstat(located.path);
+		if (current.isSymbolicLink() || !current.isFile()) throw new Error("stash target is no longer a regular file");
+		if (current.dev !== prefix.identity.dev || current.ino !== prefix.identity.ino) {
+			throw new Error("stash target changed before rotation; retry the operation");
+		}
+		// Pin and verify the inode under a private name before final publication.
+		// A source-path replacement must not reserve the archive name with an
+		// unverified inode. Cleanup owns only this temporary link, never the archive.
+		const temporary = join(archiveDir, `.${located.id}.${randomUUID()}.tmp`);
+		await publishArchive(located.id, located.path, archivePath, temporary, prefix.identity);
+		return { id: located.id, path: located.path, archivePath, state };
+	});
 }

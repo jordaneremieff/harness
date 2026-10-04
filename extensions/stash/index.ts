@@ -4,8 +4,8 @@ import { mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	copyToClipboard,
 	type AgentToolResult,
+	copyToClipboard,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
@@ -22,10 +22,13 @@ import {
 	resolveDistillThinking,
 	startDistillJob,
 } from "./distill.ts";
+import { stashDurableContribution } from "./durable.ts";
 import { resumeCommand, stateLabel } from "./format.ts";
 import {
 	STASH_COMPLETE_DESCRIPTION,
 	STASH_COMPLETE_GUIDANCE,
+	STASH_EDIT_DESCRIPTION,
+	STASH_EDIT_GUIDANCE,
 	STASH_LIST_DESCRIPTION,
 	STASH_LIST_GUIDANCE,
 	STASH_READ_DESCRIPTION,
@@ -36,9 +39,13 @@ import {
 } from "./guidance.ts";
 import { emptyListText, ListOutputSchema, recentListResult } from "./list-result.ts";
 import { StashPanel, type StashPanelResult } from "./panel.ts";
+import { CompleteParams, EditParams, ListParams, ReadParams, RotateParams, WriteParams } from "./params.ts";
+import { buildPickupMessage } from "./pickup.ts";
 import {
 	renderCompleteCall,
 	renderCompleteResult,
+	renderEditCall,
+	renderEditResult,
 	renderListCall,
 	renderListResult,
 	renderReadCall,
@@ -48,17 +55,11 @@ import {
 	renderWriteCall,
 	renderWriteResult,
 } from "./presentation.ts";
-import {
-	CompleteParams,
-	ListParams,
-	ReadParams,
-	RotateParams,
-	WriteParams,
-} from "./params.ts";
-import { buildPickupMessage } from "./pickup.ts";
+import { readStashResult } from "./read-result.ts";
 import { redactPayload } from "./redact.ts";
 import { searchStashes } from "./search.ts";
 import {
+	editStash,
 	listStashes,
 	readStash,
 	resolveStash,
@@ -69,7 +70,6 @@ import {
 	writeStash,
 } from "./store.ts";
 import { boundedOutput, formatTokenCount, sanitizeTerminalText } from "./text.ts";
-import { stashDurableContribution } from "./durable.ts";
 
 type StashExecutionApi = Pick<ExtensionAPI, "exec">;
 type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
@@ -768,9 +768,7 @@ export default function (
 		label: "Stash Write",
 		description: STASH_WRITE_DESCRIPTION,
 		promptSnippet: "Distill the current effort into a durable, discoverable handover artifact",
-		promptGuidelines: [
-			STASH_WRITE_GUIDANCE,
-		],
+		promptGuidelines: [STASH_WRITE_GUIDANCE],
 		parameters: WriteParams,
 		renderCall: renderWriteCall,
 		renderResult: renderWriteResult,
@@ -821,9 +819,7 @@ export default function (
 		label: "Stash List",
 		description: STASH_LIST_DESCRIPTION,
 		promptSnippet: "List recent stashed handover artifacts",
-		promptGuidelines: [
-			STASH_LIST_GUIDANCE,
-		],
+		promptGuidelines: [STASH_LIST_GUIDANCE],
 		parameters: ListParams,
 		outputSchema: ListOutputSchema,
 		renderCall: renderListCall,
@@ -878,16 +874,41 @@ export default function (
 			if (signal?.aborted) throw new Error("stash_read cancelled");
 			const result = await readStash(storeDir(), params.id);
 			if ("error" in result) throw readFailure(result);
-			const sanitized = sanitizeTerminalText(result.content);
-			const bounded = boundedOutput(sanitized.text, `Full artifact: ${result.path}`);
+			return readStashResult(result);
+		},
+	});
+
+	pi.registerTool<typeof EditParams, Record<string, unknown>>({
+		name: "stash_edit",
+		label: "Stash Edit",
+		description: STASH_EDIT_DESCRIPTION,
+		promptSnippet: "Correct or amend a saved handover without changing its lifecycle",
+		promptGuidelines: [STASH_EDIT_GUIDANCE],
+		executionMode: "sequential",
+		parameters: EditParams,
+		renderCall: renderEditCall,
+		renderResult: renderEditResult,
+		async execute(_toolCallId, params, signal) {
+			const result = await withStashTarget(params.id, signal, (dir, targetId) =>
+				editStash(dir, targetId, params, signal),
+			);
 			return {
-				content: [{ type: "text" as const, text: bounded.text }],
+				content: [
+					{
+						type: "text" as const,
+						text: [
+							`${result.changed ? "Updated" : "Unchanged"} stash ${result.id}.`,
+							`State: ${result.meta.state} (unchanged).`,
+							`Digest: ${result.digest}`,
+						].join("\n"),
+					},
+				],
 				details: {
+					id: result.id,
 					path: result.path,
-					truncated: bounded.truncated,
-					controlsEscaped: sanitized.changed,
-					totalBytes: bounded.totalBytes,
-					totalLines: bounded.totalLines,
+					state: result.meta.state,
+					digest: result.digest,
+					changed: result.changed,
 				},
 			};
 		},
@@ -898,9 +919,7 @@ export default function (
 		label: "Stash Complete",
 		description: STASH_COMPLETE_DESCRIPTION,
 		promptSnippet: "Close an open or active stashed effort with its concrete outcome",
-		promptGuidelines: [
-			STASH_COMPLETE_GUIDANCE,
-		],
+		promptGuidelines: [STASH_COMPLETE_GUIDANCE],
 		executionMode: "sequential",
 		parameters: CompleteParams,
 		renderCall: renderCompleteCall,
@@ -930,9 +949,7 @@ export default function (
 		label: "Stash Rotate",
 		description: STASH_ROTATE_DESCRIPTION,
 		promptSnippet: "Archive a stale stashed effort so it stops appearing in listings",
-		promptGuidelines: [
-			STASH_ROTATE_GUIDANCE,
-		],
+		promptGuidelines: [STASH_ROTATE_GUIDANCE],
 		executionMode: "sequential",
 		parameters: RotateParams,
 		renderCall: renderRotateCall,

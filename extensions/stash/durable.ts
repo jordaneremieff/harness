@@ -28,6 +28,7 @@ import {
 import { resumeCommand } from "./format.ts";
 import {
 	STASH_COMPLETE_DESCRIPTION,
+	STASH_EDIT_DESCRIPTION,
 	STASH_LIST_DESCRIPTION,
 	STASH_READ_DESCRIPTION,
 	STASH_ROTATE_DESCRIPTION,
@@ -35,11 +36,13 @@ import {
 	STASH_WRITE_DESCRIPTION,
 } from "./guidance.ts";
 import { emptyListText, ListOutputSchema, recentListResult } from "./list-result.ts";
-import { CompleteParams, ListParams, ReadParams, RotateParams, WriteParams } from "./params.ts";
+import { CompleteParams, EditParams, ListParams, ReadParams, RotateParams, WriteParams } from "./params.ts";
 import { buildPickupMessage } from "./pickup.ts";
+import { readStashResult } from "./read-result.ts";
 import { redactPayload } from "./redact.ts";
 import { searchStashes } from "./search.ts";
 import {
+	editStash,
 	listStashes,
 	readStash,
 	resolveStash,
@@ -203,9 +206,7 @@ function usageContextTokens(usage: AssistantMessage["usage"] | undefined): numbe
 }
 
 /** Newest assistant usage Pi accepts: completed, non-error, and non-zero. */
-function reportedUsageFor(
-	messages: readonly Message[],
-): { message: AssistantMessage; index: number } | undefined {
+function reportedUsageFor(messages: readonly Message[]): { message: AssistantMessage; index: number } | undefined {
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index];
 		if (message?.role !== "assistant") continue;
@@ -254,15 +255,15 @@ function estimateContext(
 	contextWindow ??= modelContextWindow(agentModel, models);
 	for (let index = messages.length - 1; contextWindow === undefined && index >= 0; index--) {
 		const message = messages[index];
-		if (message?.role === "assistant")
-			contextWindow = providerContextWindow(message.provider, message.model, models);
+		if (message?.role === "assistant") contextWindow = providerContextWindow(message.provider, message.model, models);
 	}
 	const intakeTokens = Math.ceil(intakeChars / 4);
 	if (!reported) {
 		return { estimatedTokens: Math.ceil(totalChars / 4), intakeTokens, contextWindow, source: "request_text" };
 	}
 	let trailingChars = 0;
-	for (let index = reported.index + 1; index < messages.length; index++) trailingChars += contentText(messages[index]?.content).length;
+	for (let index = reported.index + 1; index < messages.length; index++)
+		trailingChars += contentText(messages[index]?.content).length;
 	return {
 		estimatedTokens: usageContextTokens(reported.message.usage) + Math.ceil(trailingChars / 4),
 		intakeTokens,
@@ -271,11 +272,7 @@ function estimateContext(
 	};
 }
 
-function scanCapacityNotices(
-	messages: readonly Message[],
-	episode: number,
-	conversation: string,
-): CapacityLatches {
+function scanCapacityNotices(messages: readonly Message[], episode: number, conversation: string): CapacityLatches {
 	const prefix = `[stash-capacity e=${episode} c=${conversation}`;
 	const latches: CapacityLatches = { checkpoint: false, decision: false };
 	for (const message of messages) {
@@ -414,13 +411,16 @@ function resolveDurableDistillModel(
 	if (raw) {
 		const slash = raw.indexOf("/");
 		const found =
-			slash > 0 ? models.getModel(raw.slice(0, slash), raw.slice(slash + 1)) : models.getModels().find((model) => model.id === raw);
+			slash > 0
+				? models.getModel(raw.slice(0, slash), raw.slice(slash + 1))
+				: models.getModels().find((model) => model.id === raw);
 		if (!found) {
 			return { ok: false, error: `model "${raw}" is not in the current registry. Check the id with: pi --list-models` };
 		}
 		return { ok: true, model: found };
 	}
-	if (!agentModel) return { ok: false, error: "No model is available for this session; cannot start a stash distillation." };
+	if (!agentModel)
+		return { ok: false, error: "No model is available for this session; cannot start a stash distillation." };
 	const found = models.getModel(agentModel.provider, agentModel.modelId);
 	if (!found) {
 		return { ok: false, error: `model "${agentModel.provider}/${agentModel.modelId}" is not in the current registry.` };
@@ -529,11 +529,7 @@ async function abortCommand(binding: StashBinding, call: StashDurableCommandCall
 }
 
 /** Activate one artifact and queue its pickup message as the next user input. */
-async function pickupCommand(
-	binding: StashBinding,
-	call: StashDurableCommandCall,
-	parts: string[],
-): Promise<string> {
+async function pickupCommand(binding: StashBinding, call: StashDurableCommandCall, parts: string[]): Promise<string> {
 	const { conversation, context, invocationId } = call;
 	const id = parts[1];
 	if (!id) throw new Error("Usage: /stash get <id> [note]");
@@ -584,9 +580,7 @@ async function lifecycleCommand(
 	const transitioned = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
 		transitionStash(dir, targetId, { action: verb }),
 	);
-	return verb === "release"
-		? `Released stash ${transitioned.id} back to open.`
-		: `Reopened stash ${transitioned.id}.`;
+	return verb === "release" ? `Released stash ${transitioned.id} back to open.` : `Reopened stash ${transitioned.id}.`;
 }
 
 async function capacityCommand(
@@ -628,9 +622,7 @@ async function capacityCommand(
 	return [
 		`Stash capacity: ${config.enabled ? "enabled" : "disabled"}.`,
 		`Thresholds: checkpoint ${config.checkpointPercent}%; continuity decision ${config.decisionPercent}%.`,
-		config.enabled
-			? `${capacityObservation(estimate)}`
-			: "Observation is disabled by PI_STASH_CAPACITY=0.",
+		config.enabled ? `${capacityObservation(estimate)}` : "Observation is disabled by PI_STASH_CAPACITY=0.",
 		`Episode ${episode} notices in the active context: checkpoint ${latches.checkpoint}; decision ${latches.decision}.`,
 		`Estimated text intake: ${formatCount(estimate.intakeTokens)} tokens; configured budget: ${config.intakeTokenBudget ?? "none"}.`,
 		"Requests do not prove a checkpoint was saved. /stash capacity reset explicitly starts a new episode.",
@@ -793,17 +785,38 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		execute: async (params, _api, _context) => {
 			const result = await readStash(storeDir, params.id);
 			if ("error" in result) throw readFailure(result);
-			// The same terminal-safe bound the ordinary tool applies.
-			const sanitized = sanitizeTerminalText(result.content);
-			const bounded = boundedOutput(sanitized.text, `Full artifact: ${result.path}`);
+			const read = readStashResult(result);
+			return { content: read.content, details: jsonDetails(read.details) };
+		},
+	});
+
+	const editTool = host.durable.defineTool<typeof EditParams, Durable.JsonObject>({
+		name: "stash_edit",
+		description: STASH_EDIT_DESCRIPTION,
+		parameters: EditParams,
+		replay: "unsafe",
+		executionMode: "sequential" as const,
+		execute: async (params, _api, context) => {
+			const result = await withStashTarget(storeDir, params.id, context.abortSignal, (dir, targetId) =>
+				editStash(dir, targetId, params, context.abortSignal),
+			);
 			return {
-				content: [{ type: "text" as const, text: bounded.text }],
+				content: [
+					{
+						type: "text" as const,
+						text: [
+							`${result.changed ? "Updated" : "Unchanged"} stash ${result.id}.`,
+							`State: ${result.meta.state} (unchanged).`,
+							`Digest: ${result.digest}`,
+						].join("\n"),
+					},
+				],
 				details: jsonDetails({
+					id: result.id,
 					path: result.path,
-					truncated: bounded.truncated,
-					controlsEscaped: sanitized.changed,
-					totalBytes: bounded.totalBytes,
-					totalLines: bounded.totalLines,
+					state: result.meta.state,
+					digest: result.digest,
+					changed: result.changed,
 				}),
 			};
 		},
@@ -917,34 +930,31 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 						},
 						new Date(state.createdAtMs),
 					);
-					await runtime.commit(
-						async (tx) => {
-							const receipt = await tx.doc(receiptDoc, runtime.conversationId);
-							receipt.last = {
-								at: new Date(runtime.now()).toISOString(),
-								status: "completed",
-								id: record.id,
-								path,
-								title: record.title,
-								usage: state.usage,
-							};
-							delete receipt.activeTaskId;
-							return {
-								status: "terminal" as const,
-								outcome: {
+					await runtime.commit(async (tx) => {
+						const receipt = await tx.doc(receiptDoc, runtime.conversationId);
+						receipt.last = {
+							at: new Date(runtime.now()).toISOString(),
+							status: "completed",
+							id: record.id,
+							path,
+							title: record.title,
+							usage: state.usage,
+						};
+						delete receipt.activeTaskId;
+						return {
+							status: "terminal" as const,
+							outcome: {
+								status: "completed" as const,
+								result: {
 									status: "completed" as const,
-									result: {
-										status: "completed" as const,
-										id: record.id,
-										path,
-										title: record.title,
-										usage: state.usage,
-									},
+									id: record.id,
+									path,
+									title: record.title,
+									usage: state.usage,
 								},
-							};
-						},
-						context,
-					);
+							},
+						};
+					}, context);
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					await finishDistill(runtime, receiptDoc, context, "failed", `stash write failed: ${message}`, state.usage, {
@@ -1054,13 +1064,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 	return host.durable.defineExtension({
 		name: "stash",
 		sections: [host.durable.section("stash", () => STASH_SECTION_TEXT)],
-		tools: [
-			writeTool,
-			{ ...listTool, outputSchema: ListOutputSchema },
-			readTool,
-			completeTool,
-			rotateTool,
-		],
+		tools: [writeTool, { ...listTool, outputSchema: ListOutputSchema }, readTool, editTool, completeTool, rotateTool],
 		hooks: [
 			host.durable.hook(host.durable.GenerationTask, {
 				beforeRequest: async (request, api, context) => {
