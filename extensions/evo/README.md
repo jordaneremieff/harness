@@ -5,9 +5,10 @@ with agents. It starts from operator purposes and plausible uses, not only broke
 contracts. Addition, enhancement, refinement, repair, and removal are legitimate
 contributions.
 
-The active session coordinates an integrated outcome through full ordinary Pi
-sessions. The extension supplies invocation and direction framing, not a
-scheduler, worker store, model loop, or fixed roster. The required package-level
+The active session coordinates an integrated outcome through full Pi agent
+sessions. The [agent extension](../agent/README.md) owns the execution host and
+controls. Evo supplies invocation and direction framing, not a scheduler,
+worker store, model loop, or fixed roster. The required package-level
 [delivery workflow](../../docs/agent-delivery.md) owns orientation, outcome
 development, collaboration, acceptance, continuity, and release checks.
 
@@ -136,13 +137,11 @@ supplies the current question and restrictions instead of repeating the corpus
 brief. Relevant expertise supports reuse; unrelated work, independent judgment,
 or conflicting ownership can require a fresh session.
 
-The coordinator resolves `@session-history` and tasks that expert through public
-controls. Agents whose history supplies evidence remain read-only subjects;
-that boundary does not prohibit work by the expert. Its native profile holds
-a short role and bounded sourced expertise, updated by the expert even when
-source records stay read-only. Explicit task restrictions still bind, and
-current evidence still outranks retained knowledge. The current request owns the
-reply route, not the agent's creator. The agent extension owns these mechanisms.
+When orientation needs session history, the kickoff directs the coordinator to
+resolve and task `@session-history` through the delivery workflow. The
+[agent extension](../agent/README.md) owns discovery, profiles, and request
+reply routes. The [corpus reference](../../docs/session-history.md) owns the
+read-only evidence boundary.
 
 Evo does not create an agent itself, pre-create a team, keep an expert running,
 or require history work on every invocation. It remains one request through the
@@ -250,9 +249,9 @@ selected slices' dedicated worktrees.
 
 Agent sessions that run on Pi Durable receive `/evo` through the native
 contribution contract. The ordinary factory emits one contribution on the
-`durable:contribution` channel before it registers the command. A Durable
-session host collects that contribution and installs its extension; an ordinary
-Pi session has no listener, so the emission has no effect.
+`durable:contribution` channel before it registers the command. The
+[agent extension](../agent/README.md) owns contribution discovery and host
+installation.
 
 The native form is a contribution command named `evo`. It uses the same
 direction parser, release intake, and kickoff builder as the ordinary command.
