@@ -333,9 +333,9 @@ for the exchange tail. At the exchange tail, new events stay visible. Frame
 and earlier-page reads keep their position. Esc returns through Threads to the roster and native
 primary. Drafts, agent selection, and focus stay intact. The view shows frame,
 contributions, attributed chronological exchange, revisions, and coverage.
-Event times default to the local date and clock time with an AM/PM suffix,
-without seconds or milliseconds. Press `i` in a thread to switch to exact UTC
-ISO timestamps with milliseconds or back to local time. The choice applies to
+Event times default to coarse relative ages such as `15m ago`, `3h ago`, or
+`1d ago`. Press `i` in a thread to switch to the absolute local date and time,
+such as `Oct 4, 2026, 12:01 PM`, or back to relative ages. The choice applies to
 the roster and all Threads views and survives close and reopen in the same Pi
 session and process; it is not saved to disk. Catalog publishers notify open
 roster subscribers, including readers with no attached host. Those notifications
@@ -612,16 +612,29 @@ focused entry and its neighbors visible and states the hidden count.
 Each view has a framed heading and one tinted hint bar at the bottom. Keys use
 an accent color; action words and metadata use a quieter color. Roster, thread,
 and action selections share a visible marker and highlight. Roster names also
-show the agent state glyph; the written state remains visible. Full update
-times keep their own row in the wide roster rather than displacing the names.
+show the agent state glyph; the written state remains visible. The roster
+widens with the terminal and shows activity, provider/model, thinking level,
+cost, and last-change time. Wide rows separate identity and activity, then
+combine model, thinking level, cost, and time. Tool activity uses a short plain
+string argument summary rather than raw JSON. Narrow terminals use compact single-line rows
+with each fact shortened to fit.
 Heading counters describe the loaded selection or the current thread page,
 not an unknown global total. A `+` marks incomplete loaded coverage. Conversation
 content uses Pi's native renderer. A blank row and a loaded-line position rule
 separate output from input. `End of loaded view` refers only to the loaded
 history, not the complete conversation. The position says `Approx. lines` while
 native message blocks outside the viewport still have estimated heights.
-Observation and coverage, model and
-reasoning, state and cost, and any receipt share one adjacent status block.
+The adjacent status block shows the selected state and activity, provider/model,
+thinking level, cost, compact context tokens/window and percentage, and delivery
+receipts. State appears only on the activity line. Model, thinking, context,
+cumulative tokens, and cost share one metadata line, wrapped on narrow screens.
+An unknown window shows only the known context count, such as `context 163k`.
+Context comes from the newest completed assistant usage and becomes unknown
+after a newer compaction or reset until another assistant reports usage. The
+primary model registry supplies the context window; an unknown model window
+stays unknown. A live frame adds cumulative input/output tokens from its usage
+ledger, including cached input. The conversation rule holds history-loading
+and position states, not the agent status block.
 The native editor has a captioned frame with the recipient and message mode.
 Headings and captions display metadata on one line; body text and drafts retain
 their line breaks. The frame preserves native keyboard input, text selection,
@@ -722,7 +735,8 @@ Observation attaches to an existing host and never starts one. If the same
 manager already owns a host launch, observation joins that pending open and
 attaches as soon as the host is ready, without a roster change. A storage file
 that does not exist yet reads as an empty conversation, not a file error.
-Retained or unavailable output stays labeled with its last observation time.
+An unavailable observation shows one plain warning. Stored messages remain
+readable without LIVE or RETAINED labels in the status block.
 A selected conversation whose stopped host restarts through another action
 attaches again and rereads when its roster row changes. Sending to an
 idle agent with a retired host starts that host through the normal send path.
@@ -831,18 +845,17 @@ instead.
 
 The roster reads bounded host-published metadata through `dashboard-types.ts`.
 It parses no ordinary JSONL, opens no conversation database, and starts no host.
-Rows show state, retained cost, and an `Updated` timestamp: the agent's last
-recorded change, not its work duration. The local date and clock time stay
-fixed until that recorded change advances, for active and inactive agents.
-Press `i` in the roster or a thread, or click a timestamp in fullscreen mode,
-to switch between local time and exact UTC timestamps with milliseconds.
+Rows show identity, state, current tool for active work or a latest-reply excerpt,
+attention reason, model and thinking level, cost, and the last recorded change.
+Times default to `just now`, `15m ago`, `3h ago`, or `1d ago`, with no seconds
+counter. These ages describe recorded changes, not current activity.
+Press `i` in the roster or a thread, or click a visible time in fullscreen mode,
+to switch every dashboard time to the absolute local date and time, such as
+`Oct 4, 2026, 12:01 PM`. Neither form has an `Updated` label or a local suffix.
 The same choice applies to thread event times. A retained `@handle` leads the
-label, followed by the display name when it fits. The wide roster adds one short
-role line when available. Model and reasoning stay separate. A historical first
-input is a labeled fallback, never a standing role. Names shorten before state,
-cost, and update fields; duplicate labels receive unique identity suffixes.
-The footer keeps the selected model, reasoning, cost, and state separate from
-the single hint line. Unknown cost stays unknown and partial cost stays a lower bound.
+label, followed by the display name when it fits. A historical first input is
+a labeled fallback, never a standing role. Duplicate labels receive unique
+identity suffixes. Unknown cost stays unknown and partial cost stays a lower bound.
 
 Working and Attention precede retained date groups. Attention names unavailable
 or conflicted storage, a host error, failed compaction, failed work with an
@@ -876,9 +889,17 @@ Host notifications coalesce roster refreshes. A bounded metadata reconciliation
 while the dashboard is visible discovers hosts created elsewhere and dead
 claims. Neither path repeatedly reads transcripts. Streaming paints coalesce;
 local input paints immediately. Closing releases observers and UI timers.
-The primary's native agents status retains cumulative cost independently of
-the dashboard. Repeated reads never add the same usage twice. Incomplete
-inventory qualifies the retained cost with ≥.
+A failed refresh keeps the last good roster. A transient failure stays quiet
+when rows remain available; repeated failures or an empty roster show a notice
+in the conversation rule. A successful refresh clears that notice.
+
+The primary status line and dashboard heading use the same session scope:
+agents created by the current primary session plus their descendants through
+catalog ownership. Other primary sessions and unrelated retained agents do not
+contribute. The status says `agents this session: <working> working · <total>
+total · <cost>` and disappears when the session has no agents. Each registered
+primary receives its own figures. Repeated reads never add the same usage twice.
+Incomplete inventory qualifies the known subtotal.
 
 ## Primary restart and continuity
 

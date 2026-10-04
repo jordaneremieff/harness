@@ -458,7 +458,7 @@ export class CollaborationView {
 		routes[this.screen]();
 	}
 	private eventTime(at: number): string {
-		return dashboardTime(at, this.options.exactTime()) + (this.options.exactTime() ? "" : " (local)");
+		return dashboardTime(at, this.options.exactTime());
 	}
 	private field(label: string, value: string): string {
 		return this.options.theme.fg("muted", `${label}: `) + plain(value);
@@ -619,7 +619,7 @@ export class CollaborationView {
 			thread: [
 				"p post",
 				"n notify",
-				this.options.exactTime() ? "i local time" : "i exact UTC",
+				this.options.exactTime() ? "i relative time" : "i date and time",
 				"PgUp/PgDn read",
 				"f frame",
 				"e exchange",

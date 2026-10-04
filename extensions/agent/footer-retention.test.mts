@@ -9,8 +9,8 @@ function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): Agent
 
 test("re-observing the same native totals is idempotent and never double-counts", () => {
 	const rows = [row("a", { state: "working", cost: 0.25 })];
-	assert.equal(formatDurableFooter(rows), "agents 1 · $0.25");
-	assert.equal(formatDurableFooter(rows), "agents 1 · $0.25", "a second observation adds no delta");
+	assert.equal(formatDurableFooter(rows), "agents this session: 1 working · 1 total · $0.25");
+	assert.equal(formatDurableFooter(rows), "agents this session: 1 working · 1 total · $0.25", "a second observation adds no delta");
 	const before = structuredClone(rows);
 	formatDurableFooter(rows);
 	assert.deepEqual(rows, before, "formatting does not mutate the observation");
@@ -19,8 +19,8 @@ test("re-observing the same native totals is idempotent and never double-counts"
 test("a later observation reports the native cumulative total, not a delta", () => {
 	const first = formatDurableFooter([row("a", { state: "working", cost: 0.25 })]);
 	const second = formatDurableFooter([row("a", { state: "working", cost: 0.4 })]);
-	assert.equal(first, "agents 1 · $0.25");
-	assert.equal(second, "agents 1 · $0.40");
+	assert.equal(first, "agents this session: 1 working · 1 total · $0.25");
+	assert.equal(second, "agents this session: 1 working · 1 total · $0.40");
 });
 
 test("reconnect re-reads the same Durable totals and restores the footer unchanged", () => {
@@ -29,12 +29,12 @@ test("reconnect re-reads the same Durable totals and restores the footer unchang
 	// A reconnect starts from the Durable usage documents, not from a retained local checkpoint.
 	const afterReconnect = formatDurableFooter(structuredClone(native));
 	assert.equal(afterReconnect, beforeDisconnect);
-	assert.equal(afterReconnect, "agents 1 · $0.35");
+	assert.equal(afterReconnect, "agents this session: 1 working · 2 total · $0.35");
 });
 
 test("partial cost follows the current Durable source instead of a sticky local flag", () => {
-	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: true })]), "agents 0 · $0.25+?");
-	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: false })]), "agents 0 · $0.25");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: true })]), "agents this session: 0 working · 1 total · $0.25+?");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: false })]), "agents this session: 0 working · 1 total · $0.25");
 });
 
 test("counts each conversation's native total once across forks and owners", () => {
@@ -42,5 +42,5 @@ test("counts each conversation's native total once across forks and owners", () 
 		row("root", { state: "working", cost: 0.25, owner: "here" }),
 		row("storage:2", { state: "idle", cost: 0.25, owner: "unknown" }),
 	];
-	assert.equal(formatDurableFooter(rows), "agents 1 · $0.50");
+	assert.equal(formatDurableFooter(rows), "agents this session: 1 working · 2 total · $0.50");
 });

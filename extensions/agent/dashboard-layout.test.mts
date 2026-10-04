@@ -131,12 +131,13 @@ for (const width of [80, 140]) {
 			assert.ok(boundary > 1);
 			assert.equal(lines[boundary - 1]?.trim(), "");
 			assert.match(lines[boundary] ?? "", /of \d+ loaded.*End of loaded view/);
-			assert.match(lines[boundary + 1] ?? "", /RETAINED.*partial history/);
-			assert.match(lines[boundary + 2] ?? "", /\$0\.42.*idle/);
+			assert.match(lines[boundary] ?? "", /Partial history/);
+			assert.match(lines[boundary + 1] ?? "", /idle/);
+			assert.match(lines[boundary + 2] ?? "", /context.*\$0\.42/);
 			assert.match(lines[boundary + 3] ?? "", /^╭─ Message to Recipient/);
 			assert.match(lines[boundary + 4] ?? "", /^│.*│$/);
 			assert.ok(lines.at(-2)?.startsWith("╰"));
-			assert.equal(lines.filter((line) => line.includes("RETAINED")).length, 1);
+			assert.equal(lines.filter((line) => line.includes("RETAINED")).length, 0);
 			assert.equal(lines.filter((line) => line.includes("Message to Recipient")).length, 1);
 			f.ui.handleInput("\x1b[5~");
 			assert.doesNotMatch(render().find((line) => line.startsWith("─ Lines ")) ?? "", /End of loaded view/);
@@ -172,7 +173,7 @@ for (const width of [80, 140]) {
 			const roster = render();
 			assert.match(roster[0] ?? "", /1\/2 ╮$/);
 			assert.match(roster.join("\n"), /› [○●] /);
-			assert.match(roster.join("\n"), /Updated /);
+			assert.match(roster.join("\n"), /d ago/);
 			f.ui.handleInput("\x1b[B");
 			assert.match(render()[0] ?? "", /2\/2 ╮$/);
 			f.ui.handleInput("\r");
@@ -201,7 +202,7 @@ it("a roster heading labels incomplete loaded coverage rather than a global tota
 	try {
 		await turn();
 		const header = f.ui.render(100)[0] ?? "";
-		assert.match(header, /loaded agents/);
+		assert.doesNotMatch(header, /retained|\$/);
 		assert.match(header, /1\/1\+ ╮$/);
 	} finally {
 		f.ui.dispose();

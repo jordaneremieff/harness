@@ -17,7 +17,7 @@ import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
 import { dashboardGeometry, dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
-import { dashboardRecords, rosterLines, coverageText, rosterTotals, attentionReason } from "./dashboard-roster.ts";
+import { dashboardRecords, rosterLines, coverageText, activityOf } from "./dashboard-roster.ts";
 import {
 	agentState,
 	dashboardSessionState,
@@ -38,6 +38,8 @@ export interface DashboardResult {
 	sessionId?: string;
 }
 export interface DashboardOperations {
+	sessionFigures?(): Promise<string>;
+	contextWindow?(provider: string, modelId: string): number | undefined;
 	collaborate?: Collaborate;
 	submit(input: { id: string; text: string; mode: "steer" | "followUp" }): Promise<DashboardResult>;
 	newAgent(input: { prompt: string; onCreated: (row: AgentConversationSummary) => void }): Promise<DashboardResult>;
@@ -51,8 +53,8 @@ const HELP = [
 	"a opens actions. / finds loaded agents. t opens Threads. ? opens help.",
 	"Threads shows the frame, peers, and exchange. p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
-	"i switches roster and Threads times between local time and exact UTC timestamps.",
-	"Updated means the agent's last recorded change, not an activity timer.",
+	"i switches all times between relative age and local date and time.",
+	"A time shows the agent's last recorded change, not an activity timer.",
 	"In fullscreen mode, click rows to select and visible hints to act.",
 	"Click a time to switch its format. Click a message field to write.",
 	"Use the wheel over a pane to scroll. Drag text to select it.",
@@ -74,7 +76,7 @@ const HELP = [
 	"Esc never stops work. Stop current work is in Actions.",
 	"The dashboard never changes the primary editor.",
 	"",
-	"Live means a current host observation. Retained means stored or stale data.",
+	"Context tokens come from the latest assistant usage; compaction makes them unknown.",
 	"A message starts a retired host. Reading never starts a host.",
 	"Actions > Reconnect addresses a host error.",
 ];
@@ -103,6 +105,9 @@ export class AgentDashboard implements Component, Focusable {
 	private helpOffset = 0;
 	private result = "";
 	private notice?: string;
+	private rosterNotice?: string;
+	private rosterFailures = 0;
+	private sessionFigures = "";
 	private closed = false;
 	private hidden = false;
 	private rosterPending = false;
@@ -204,14 +209,17 @@ export class AgentDashboard implements Component, Focusable {
 			if (this.closed) return;
 			this.page = this.reuseRoster(pages.reduce((previous, page) => this.mergeRoster(previous, page)));
 			this.loadMore = false;
+			this.rosterFailures = 0;
+			this.rosterNotice = undefined;
+			this.sessionFigures = await this.operations.sessionFigures?.() ?? "";
+			if (this.closed) return;
 			this.reconcile();
 			this.redraw();
 		} catch (error) {
-			this.notice = `Roster unavailable: ${error instanceof Error ? error.message : String(error)}`;
+			this.rosterFailed(error);
 			if (cursor) {
 				this.loadedPages = 1;
 				this.rosterAgain = true;
-				this.notice = "Catalog changed. Refreshing the roster.";
 			}
 			this.redraw();
 		} finally {
@@ -221,6 +229,13 @@ export class AgentDashboard implements Component, Focusable {
 				this.queueRoster();
 			}
 		}
+	}
+	private rosterFailed(error: unknown): void {
+		this.rosterFailures++;
+		const hasRows = Boolean(this.page?.rows.length);
+		this.rosterNotice = !hasRows || this.rosterFailures >= 3
+			? `Roster refresh unavailable${hasRows ? "; last roster shown" : ""}: ${error instanceof Error ? error.message : String(error)}`
+			: undefined;
 	}
 	private reuseRoster(page: AgentConversationPage): AgentConversationPage {
 		const next = new Map<string, { signature: string; row: AgentConversationSummary }>();
@@ -366,9 +381,9 @@ export class AgentDashboard implements Component, Focusable {
 				!this.snapshot.entries.some((entry) => entry.id === console.state.view.anchor?.id)
 			)
 				void this.readHistory(console.state.view.before);
-			console.status =
-				row.state === "starting" ? "STARTING" : snapshot.partial ? "RETAINED · partial history" : "RETAINED";
-			if (snapshot.nextBefore) console.status += " · Earlier messages available";
+			console.status = snapshot.partial ? "Partial history" : "";
+			console.warning = this.source.availability(row.id)?.state === "unavailable" ? "Conversation unavailable; stored messages shown" : undefined;
+			console.observeUsage(snapshot.entries);
 			this.redraw();
 		} catch (error) {
 			if (
@@ -377,7 +392,8 @@ export class AgentDashboard implements Component, Focusable {
 				this.console &&
 				this.source.availability(row.id)?.state !== "live"
 			) {
-				this.console.status = `Conversation unavailable: ${String(error)}`;
+				this.console.warning = `Conversation unavailable: ${String(error)}`;
+				this.console.status = "";
 				this.redraw();
 			}
 		}
@@ -429,13 +445,13 @@ export class AgentDashboard implements Component, Focusable {
 			};
 			this.setConversation(frame.live);
 			const availability = this.source.availability(console.row.id);
-			console.status =
-				availability?.state === "unavailable"
-					? `RETAINED · Last seen ${availability.at}`
-					: `LIVE${frame.nextBefore ? " · Earlier messages available" : ""}`;
+			console.status = frame.coverage.complete ? "" : "Partial history";
+			console.warning = availability?.state === "unavailable" ? "Conversation unavailable; last messages shown" : undefined;
+			console.observeUsage(frame.entries, availability?.state === "live" ? frame.status.usage : undefined);
 			this.updateObservedRow(console, frame);
-			if (console.row.state === "starting") console.status = "STARTING";
 		}
+		if (!frame && this.source.availability(console.row.id)?.state === "unavailable")
+			console.warning = "Conversation unavailable; stored messages shown";
 		const wait = Math.max(0, 50 - (Date.now() - this.lastStreamPaint));
 		if (!this.streamTimer)
 			this.streamTimer = setTimeout(() => {
@@ -598,13 +614,9 @@ export class AgentDashboard implements Component, Focusable {
 			};
 			this.setConversation(this.source.frame(console.row.id)?.live);
 			console.conversation.reanchor();
-			console.status = this.history.newer()
-				? "RETAINED · Newer range available"
-				: this.snapshot.nextBefore
-					? "Earlier messages available"
-					: "Start of history";
+			console.status = page.partial ? "Partial history" : "";
 		} catch (error) {
-			if (generation === this.sourceGeneration) console.status = `Messages unavailable: ${String(error)}`;
+			if (generation === this.sourceGeneration) { console.warning = `Conversation unavailable: ${String(error)}`; console.status = ""; }
 		} finally {
 			this.earlierPending = false;
 			this.redraw();
@@ -810,7 +822,7 @@ export class AgentDashboard implements Component, Focusable {
 	private rosterEnter(): void {
 		if (this.loadMore) {
 			const cursor = this.page?.coverage.nextCursor ?? undefined;
-			this.notice = "Loading more agents…";
+			this.rosterNotice = "Loading more agents…";
 			queueMicrotask(() => {
 				void this.refreshRoster(cursor);
 			});
@@ -979,7 +991,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (names[screen]) return names[screen];
 		if (screen === "console" || screen === "actions")
 			return `Agents > ${this.console ? agentDisplayName(this.console.row) : "Agent"}${screen === "actions" ? " > Actions" : ""}`;
-		return `Agents · ${this.page?.rows.length ?? 0} ${this.page?.coverage.complete ? "agents" : "loaded agents"} · ${rosterTotals(this.page ? { sessions: this.page.rows, observedAt: Date.parse(this.page.observedAt), coverage: this.page.coverage } : undefined)}`;
+		return this.sessionFigures ? this.sessionFigures.replace(/^agents/, "Agents") : "Agents";
 	}
 	private heading(width: number): string {
 		let position = "";
@@ -1082,8 +1094,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	private statusText(): string {
 		if (this.console) {
-			const reason = attentionReason(this.console.row);
-			return reason ? `${reason} · ${this.console.status}` : this.console.status;
+			return `${this.console.row.state} · ${activityOf(this.console.row)}`;
 		}
 		if (!this.page) return "Loading roster…";
 		if (this.state.filter) return `No agents match ${this.state.filter}`;
@@ -1106,7 +1117,7 @@ export class AgentDashboard implements Component, Focusable {
 						"Enter open",
 						"Tab message",
 						"t threads",
-						this.state.exactTime ? "i local time" : "i exact UTC",
+						this.state.exactTime ? "i relative time" : "i date and time",
 						"n new",
 						"a actions",
 						"/ find",
@@ -1194,12 +1205,12 @@ export class AgentDashboard implements Component, Focusable {
 	): string[] {
 		if (geometry.wide) {
 			const rosterHeight = Math.max(0, geometry.bodyHeight - (this.page?.coverage.nextCursor ? 1 : 0));
-			const roster = this.rosterViewport(38, rosterHeight, false, bodyY);
+			const roster = this.rosterViewport(geometry.rosterWidth, rosterHeight, false, bodyY);
 			if (this.page?.coverage.nextCursor && roster.length < geometry.bodyHeight)
-				roster.push(this.loadMoreLine(38, bodyY + roster.length));
+				roster.push(this.loadMoreLine(geometry.rosterWidth, bodyY + roster.length));
 			return conversation.map(
 				(line, index) =>
-					`${fitLine(roster[index] ?? "", 38)}${this.theme.fg("borderMuted", "│")}${fitLine(line, geometry.conversationWidth)}`,
+					`${fitLine(roster[index] ?? "", geometry.rosterWidth)}${this.theme.fg("borderMuted", "│")}${fitLine(line, geometry.conversationWidth)}`,
 			);
 		}
 		if (this.navigation.screen === "console") return conversation;
@@ -1210,8 +1221,9 @@ export class AgentDashboard implements Component, Focusable {
 		const isNew = this.navigation.screen === "new";
 		const lines = isNew
 			? ["New agent · primary model and directory"]
-			: [this.statusText(), ...(this.console ? [this.console.footer(width)] : [])];
-		const receipt = this.notice ?? (isNew ? undefined : this.console?.state.receipt);
+			: [this.statusText(), ...(this.console ? wrapTextWithAnsi(this.console.footer(width, this.console.row.model ? this.operations.contextWindow?.(this.console.row.model.provider, this.console.row.model.modelId) : undefined), width) : [])];
+		if (!isNew && this.console?.warning) lines.push(this.console.warning);
+		const receipt = isNew ? this.notice : this.console?.state.receipt;
 		if (receipt) lines.push(receipt);
 		return lines.map((line) => this.theme.bg("customMessageBg", fitLine(this.theme.fg("muted", line), width)));
 	}
@@ -1222,7 +1234,8 @@ export class AgentDashboard implements Component, Focusable {
 			label = position.first
 				? `${position.estimated ? "Approx. lines" : "Lines"} ${position.first}–${position.last} of ${position.total} loaded${position.end ? " · End of loaded view" : ""}`
 				: `${position.total} loaded lines · Expand the terminal to read`;
-		return dashboardRule(label, width, this.theme);
+		const history = this.console?.status || (this.history.newer() ? "Newer messages available" : this.snapshot?.nextBefore ? "PgUp for older messages" : "");
+		return dashboardRule(this.rosterNotice ?? this.notice ?? `${label}${history ? ` · ${history}` : ""}`, width, this.theme);
 	}
 	private renderDashboard(width: number, height: number): string[] {
 		const screen = this.navigation.screen;
@@ -1258,7 +1271,7 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		const conversationY = bodyY + geometry.rosterHeight;
 		this.mouse.add({
-			x: geometry.wide ? 39 : 0,
+			x: geometry.wide ? geometry.rosterWidth + 1 : 0,
 			y: conversationY,
 			width: geometry.conversationWidth,
 			height: geometry.bodyHeight,

@@ -20,7 +20,7 @@ for (const [width, height] of [
 		const f = fixture(width, height, observed);
 		try {
 			await turn();
-			assert.match(f.ui.render(width)[0] ?? "", /≥\$0.42 retained/);
+			assert.doesNotMatch(f.ui.render(width)[0] ?? "", /retained|\$/);
 		} finally {
 			f.ui.dispose();
 		}
@@ -275,12 +275,13 @@ for (const [width, height] of [
 		{ health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } } },
 		{ state: "failed" as const, error: "Work failure marker" },
 	]) {
-		it(`selected Attention reason appears once at ${width} (${JSON.stringify(patch)})`, async () => {
+		it(`selected Attention reason appears in the status at ${width} (${JSON.stringify(patch)})`, async () => {
 			const f = fixture(width, height, source([row("one", patch)]));
 			try {
 				await turn();
 				const screen = f.ui.render(width).join("\n");
-				assert.equal(screen.split("marker").length - 1, 1);
+				const status = screen.slice(screen.indexOf("─ Lines"));
+				assert.equal(status.split("marker").length - 1, 1);
 			} finally {
 				f.ui.dispose();
 			}
@@ -334,7 +335,7 @@ it("a created branch outside the published roster never retains the source as it
 		await turn();
 		assert.equal(f.ui.navigation.screen, "console");
 		assert.match(f.ui.render(80).join("\n"), /\$\?/);
-		assert.doesNotMatch(f.ui.render(80).join("\n"), /test\/model high/);
+		assert.doesNotMatch(f.ui.render(80).join("\n"), /test\/model · high/);
 		f.ui.handleInput("branch instruction");
 		f.ui.handleInput("\r");
 		await turn();
@@ -510,19 +511,19 @@ it("new agent selects its task and starting conversation before host readiness",
 		]) {
 			f.resize(width, height);
 			const screen = f.ui.render(width).join("\n");
-			assert.match(screen, /STARTING/);
+			assert.match(screen, /starting/);
 			assert.match(screen, /Starting/);
-			assert.match(screen, /2 working/);
+			assert.doesNotMatch(screen, /retained/);
 			assert.match(screen, /Write the startup note/);
 			assert.match(screen, /Message to Write the startup note/);
-			assert.match(screen, /test\/model high.*starting/);
+			assert.match(screen, /test\/model · high.*context/);
 			assert.doesNotMatch(
 				screen,
 				/Conversation unavailable|Unavailable|Attention|need attention|Message to two|model \?|reasoning \?/,
 			);
 		}
 		await turn();
-		assert.match(f.ui.render(140).join("\n"), /STARTING/);
+		assert.match(f.ui.render(140).join("\n"), /starting/);
 		assert.doesNotMatch(f.ui.render(140).join("\n"), /Conversation unavailable/);
 	} finally {
 		release.resolve();
@@ -547,12 +548,12 @@ it("a busy live frame updates the header, roster, and footer together", async ()
 		frame = conversationFrame();
 		changed();
 		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /1 working/);
+		assert.match(screen, /working ·/);
 		assert.match(screen, /Working/);
-		assert.match(screen, /test\/model high.*working/);
+		assert.match(screen, /test\/model · high.*context/);
 		assert.doesNotMatch(screen, /Done|0 working/);
 		f.ui.handleInput("/");
-		assert.match(f.ui.render(140).join("\n"), /1 working/);
+		assert.match(f.ui.render(140).join("\n"), /working ·/);
 	} finally {
 		f.ui.dispose();
 	}
@@ -583,7 +584,7 @@ it("a late cold snapshot error never replaces a live conversation", async () => 
 		fail(new Error("ENOENT: source was absent before the host started"));
 		await turn();
 		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /LIVE/);
+		assert.match(screen, /context/);
 		assert.match(screen, /Live task/);
 		assert.doesNotMatch(screen, /Conversation unavailable|ENOENT/);
 	} finally {
@@ -643,7 +644,7 @@ it("a retained conversation reattaches and rereads when a stopped host restarts"
 	const f = fixture(80, 24, observed);
 	await turn();
 	await turn();
-	assert.match(f.ui.render(80).join("\n"), /RETAINED/);
+	assert.match(f.ui.render(80).join("\n"), /context/);
 	assert.match(f.ui.render(80).join("\n"), /Stored task/);
 	rosterChange();
 	t.mock.timers.tick(250);
@@ -657,7 +658,8 @@ it("a retained conversation reattaches and rereads when a stopped host restarts"
 	assert.deepEqual(refreshed, ["new"]);
 	assert.equal(reads, 2);
 	const screen = f.ui.render(80).join("\n");
-	assert.doesNotMatch(screen, /Conversation unavailable/);
+	assert.match(screen, /Conversation unavailable; stored messages shown/);
+	assert.equal(screen.split("Conversation unavailable").length - 1, 1);
 	assert.match(screen, /Restarted task/);
 	f.ui.dispose();
 });
@@ -692,7 +694,7 @@ it("Load more is selected before admission and loaded coverage survives reconcil
 	f.ui.handleInput("\r");
 	await turn();
 	assert.deepEqual(calls, [undefined, "more"]);
-	assert.match(f.ui.render(80).join("\n"), /3 agents/);
+	assert.match(f.ui.render(80).join("\n"), /3 of 3 loaded agents/);
 	rosterChange();
 	t.mock.timers.tick(250);
 	await turn();

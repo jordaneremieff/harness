@@ -70,8 +70,8 @@ export function dashboardGeometry(
 	const bodyHeight = Math.max(0, height - 4 - statusRows - editorRows - rosterHeight - reservedRows);
 	return {
 		wide,
-		rosterWidth: wide ? 38 : width,
-		conversationWidth: wide ? width - 39 : width,
+		rosterWidth: wide ? Math.min(68, Math.max(44, Math.floor(width * 0.4))) : width,
+		conversationWidth: wide ? width - Math.min(68, Math.max(44, Math.floor(width * 0.4))) - 1 : width,
 		rosterHeight,
 		bodyHeight,
 		supported: width >= 60 && height >= 20,

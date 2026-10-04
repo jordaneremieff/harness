@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { dashboardTime } from "./dashboard-time.ts";
 import { it } from "node:test";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
@@ -176,7 +177,7 @@ for (const [width, height] of [
 		}
 	});
 }
-it("Threads shows local calendar dates and readable clock times without seconds or milliseconds", async () => {
+it("Threads shows absolute local dates without seconds or a suffix", async () => {
 	for (const [width, height] of [
 		[80, 24],
 		[140, 45],
@@ -190,9 +191,10 @@ it("Threads shows local calendar dates and readable clock times without seconds 
 		try {
 			await open(f);
 			f.ui.handleInput("e");
+			f.ui.handleInput("i");
 			const shown = text(f, width);
-			assert.match(shown, /Time: Oct 3, 2026, 12:04 AM \(local\)/);
-			assert.match(shown, /Time: Oct 4, 2026, 1:24 PM \(local\) · Reply to #2/);
+			assert.match(shown, /Time: Oct 3, 2026, 12:04 AM/);
+			assert.match(shown, /Time: Oct 4, 2026, 1:24 PM · Reply to #2/);
 			assert.doesNotMatch(shown, /Time: \d{4}-\d{2}-\d{2}T/);
 			assert.doesNotMatch(shown, /:19|\.951Z/);
 			assert.ok(f.ui.render(width).every((line) => visibleWidth(line) <= width));
@@ -201,20 +203,20 @@ it("Threads shows local calendar dates and readable clock times without seconds 
 		}
 	}
 });
-it("i toggles exact UTC times without a read and retains the choice across dashboard reopen", async () => {
+it("i toggles relative and absolute times without a read and retains the choice across reopen", async () => {
 	const f = setup();
 	try {
 		await open(f);
 		f.ui.handleInput("e");
-		assert.match(text(f), /\(local\)/);
-		assert.match(text(f), /i exact UTC/);
+		assert.match(text(f), /Time: \d+d ago/);
+		assert.match(text(f), /i date and time/);
 		const reads = f.calls.length;
 		f.ui.handleInput("i");
-		assert.match(text(f), /Time: 1970-01-01T00:00:00\.002Z/);
-		assert.match(text(f), /Time: 1970-01-01T00:00:00\.003Z · Reply to #2/);
-		assert.match(text(f), /i local time/);
+		assert.ok(text(f).includes(dashboardTime(2, true)));
+		assert.doesNotMatch(text(f), /\(local\)|\.003Z/);
+		assert.match(text(f), /i relative time/);
 		f.ui.handleInput("i");
-		assert.match(text(f), /\(local\)/);
+		assert.match(text(f), /Time: \d+d ago/);
 		assert.doesNotMatch(text(f), /Time: \d{4}-\d{2}-\d{2}T/);
 		assert.equal(f.calls.length, reads);
 		f.ui.handleInput("p");
@@ -239,7 +241,7 @@ it("i toggles exact UTC times without a read and retains the choice across dashb
 			await turn();
 			reopened.ui.handleInput("e");
 			const shown = stripVTControlCharacters(reopened.ui.render(100).join("\n"));
-			assert.match(shown, /Time: 1970-01-01T00:00:00\.002Z/);
+			assert.ok(shown.includes(dashboardTime(2, true)));
 			assert.equal(f.state.exactTime, true);
 		} finally {
 			reopened.ui.dispose();
@@ -248,7 +250,7 @@ it("i toggles exact UTC times without a read and retains the choice across dashb
 		try {
 			await open(fresh);
 			fresh.ui.handleInput("e");
-			assert.match(text(fresh), /\(local\)/);
+			assert.match(text(fresh), /Time: \d+d ago/);
 			assert.equal(fresh.state.exactTime, false);
 		} finally {
 			fresh.ui.dispose();
@@ -350,7 +352,7 @@ it("mouse follows thread rows, timestamps, notify choices and hints without cons
 		mouse("Boundary review");
 		await turn();
 		f.ui.handleInput("e");
-		assert.match(text(f), /\(local\)/);
+		assert.match(text(f), /Time: \d+d ago/);
 		const before = f.calls.length;
 		mouse("Time: forged message label");
 		assert.equal(f.state.exactTime, false);
@@ -362,7 +364,7 @@ it("mouse follows thread rows, timestamps, notify choices and hints without cons
 		mouse(stamp);
 		assert.equal(f.state.exactTime, true);
 		assert.equal(f.calls.length, before);
-		mouse("i local time");
+		mouse("i relative time");
 		assert.equal(f.state.exactTime, false);
 		mouse("n notify");
 		mouse("[ ] Reviewer");
@@ -720,7 +722,7 @@ it("dashboard help distinguishes a silent post from passive notification deliver
 		await turn();
 		f.ui.handleInput("?");
 		assert.match(text(f, 120), /p posts without a model wake\./);
-		assert.match(text(f, 120), /i switches roster and Threads times between local time and exact UTC timestamps\./);
+		assert.match(text(f, 120), /i switches all times between relative age and local date and time\./);
 		assert.doesNotMatch(text(f, 120), /p posts without notification\./);
 	} finally {
 		f.ui.dispose();

@@ -181,6 +181,26 @@ function uniqueTitle(row: AgentConversationSummary, rows: readonly AgentConversa
 	const suffix = ` ${row.id.slice(-length)}`;
 	return truncateToWidth(name, Math.max(1, width - visibleWidth(suffix))) + suffix;
 }
+/** Published arguments can end mid-JSON; extract a string value without displaying the serialized object. */
+export function argumentSummary(argument: string): string {
+	let value: unknown;
+	try {
+		const parsed = JSON.parse(argument);
+		value = typeof parsed === "string" ? parsed : parsed && typeof parsed === "object" ? Object.values(parsed).find((item) => typeof item === "string") : undefined;
+	} catch {
+		const match = argument.match(/"(?:\\.|[^"\\])*"\s*:\s*"((?:\\.|[^"\\])*)/);
+		if (match) {
+			try { value = JSON.parse(`"${match[1].replace(/\\$/, "")}"`); } catch { value = undefined; }
+		} else if (!argument.trim().startsWith("{") && !argument.trim().startsWith("[")) value = argument;
+	}
+	return typeof value === "string" ? truncateToWidth(oneLine(value), 60) : "";
+}
+export function activityOf(row: AgentConversationSummary): string {
+	const reason = attentionReason(row);
+	if (reason) return reason;
+	if (row.state === "working") return row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding";
+	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
+}
 function rosterRow(
 	row: AgentConversationSummary,
 	rows: readonly AgentConversationSummary[],
@@ -189,48 +209,70 @@ function rosterRow(
 	theme: Theme,
 	compact: boolean,
 	exactTime: boolean,
+	now: number,
 ): { lines: string[]; timeX: number; timeWidth: number; timeLine: number } {
 	const appearance = sessionAppearance[row.state];
-	const updated = `Updated ${dashboardTime(row.modifiedAt, exactTime)}`;
-	const detail = `${appearance.label}  ${costOf(row)}  ${updated}`;
-	const titleWidth = compact ? Math.max(1, width - 5 - visibleWidth(detail)) : width - 5;
-	const title = pad(uniqueTitle(row, rows, titleWidth), titleWidth);
-	let text =
-		(row.id === selected ? theme.fg("accent", "› ") : "  ") +
-		theme.fg(appearance.color, `${appearance.glyph} `) +
-		(row.id === selected ? theme.bold(theme.fg("accent", title)) : title);
-	if (compact)
-		text += ` ${theme.fg(appearance.color, appearance.label)}  ${theme.fg("muted", `${costOf(row)}  ${updated}`)}`;
-	text = pad(text, width);
-	const lines = [row.id === selected ? theme.bg("selectedBg", text) : text];
-	if (!compact) {
-		lines.push(theme.fg(appearance.color, truncateToWidth(`  ${appearance.label}  ${costOf(row)}`, width)));
-		lines.push(theme.fg("muted", truncateToWidth(`  ${updated}`, width)));
-		if (row.profile?.role) lines.push(theme.fg("muted", truncateToWidth(`  Role: ${oneLine(row.profile.role)}`, width)));
-	}
-	const timeX = compact ? 5 + titleWidth + visibleWidth(`${appearance.label}  ${costOf(row)}  `) : 2;
-	return {
-		lines: lines.map((line) => truncateToWidth(line, width)),
-		timeX,
-		timeWidth: Math.max(0, Math.min(visibleWidth(updated), width - timeX)),
-		timeLine: compact ? 0 : 2,
+	const time = dashboardTime(row.modifiedAt, exactTime, now);
+	const spendTime = `${costOf(row)} · ${time}`;
+	const model = row.model ? `${row.model.modelId} ${row.model.thinkingLevel}` : "model ?";
+	const fitModel = (size: number, provider: boolean) => {
+		if (!row.model) return truncateToWidth(model, size);
+		const thinking = ` ${row.model.thinkingLevel}`;
+		const full = `${row.model.provider}/${row.model.modelId}`;
+		const identity = provider && visibleWidth(full + thinking) <= size ? full : row.model.modelId;
+		return truncateToWidth(identity, Math.max(1, size - visibleWidth(thinking))) + thinking;
 	};
+	const activity = `${appearance.label} · ${activityOf(row)}`;
+	const remaining = Math.max(3, width - 7 - visibleWidth(spendTime));
+	const titleWidth = compact ? Math.max(1, Math.floor(remaining * 0.3)) : width - 4;
+	const activityWidth = compact ? Math.max(1, Math.floor(remaining * 0.35)) : width - 2;
+	const modelWidth = Math.max(1, remaining - titleWidth - activityWidth);
+	const title = pad(uniqueTitle(row, rows, titleWidth), titleWidth);
+	let text = (row.id === selected ? theme.fg("accent", "› ") : "  ") + theme.fg(appearance.color, `${appearance.glyph} `) + (row.id === selected ? theme.bold(theme.fg("accent", title)) : title);
+	if (compact) text += ` ${theme.fg(appearance.color, pad(activity, activityWidth))} ${theme.fg("muted", pad(fitModel(modelWidth, false), modelWidth))} ${theme.fg("muted", spendTime)}`;
+	const lines = [row.id === selected ? theme.bg("selectedBg", pad(text, width)) : pad(text, width)];
+	if (!compact) {
+		lines.push(theme.fg(appearance.color, truncateToWidth(`  ${activity}`, width)));
+		lines.push(theme.fg("muted", truncateToWidth(`  ${fitModel(width - 5 - visibleWidth(spendTime), true)} · ${spendTime}`, width)));
+	}
+	const timeX = compact ? 7 + titleWidth + activityWidth + modelWidth + visibleWidth(`${costOf(row)} · `) : 2 + visibleWidth(`${fitModel(width - 5 - visibleWidth(spendTime), true)} · ${costOf(row)} · `);
+	return { lines: lines.map((line) => truncateToWidth(line, width)), timeX, timeWidth: Math.max(0, Math.min(visibleWidth(time), width - timeX)), timeLine: compact ? 0 : 2 };
 }
 function rosterWindow(
 	rows: readonly AgentConversationSummary[],
 	selected: string | undefined,
 	height: number,
 	compact: boolean,
+	now: number,
 	requested?: number,
 ): { capacity: number; start: number; maxStart: number } {
 	const index = Math.max(
 		0,
 		rows.findIndex((row) => row.id === selected),
 	);
-	const rowHeight = rows.some((row) => row.profile?.role) ? 5 : 4;
-	const capacity = compact ? 3 : Math.max(1, Math.floor((height - 2) / rowHeight));
-	const maxStart = Math.max(0, rows.length - capacity);
-	return { capacity, maxStart, start: Math.min(maxStart, Math.max(0, requested ?? index - Math.floor(capacity / 2))) };
+	if (compact) {
+		const maxStart = Math.max(0, rows.length - 3);
+		return { capacity: 3, maxStart, start: Math.min(maxStart, Math.max(0, requested ?? index - 1)) };
+	}
+	const capacityAt = (start: number) => {
+		let used = 2;
+		let capacity = 0;
+		let section = "";
+		for (const row of rows.slice(start)) {
+			const next = sectionOf(row, now);
+			const cost = 3 + (next !== section ? 1 : 0);
+			if (used + cost > height) break;
+			used += cost;
+			section = next;
+			capacity++;
+		}
+		return Math.max(1, capacity);
+	};
+	let maxStart = rows.length;
+	while (maxStart > 0 && capacityAt(maxStart - 1) >= rows.length - maxStart + 1) maxStart--;
+	let start = Math.min(maxStart, Math.max(0, requested ?? index - Math.floor((height - 3) / 6)));
+	if (requested === undefined && index >= start + capacityAt(start)) start = Math.min(maxStart, index);
+	return { capacity: capacityAt(start), maxStart, start };
 }
 interface RosterViewport {
 	start?: number;
@@ -263,7 +305,7 @@ export function rosterLines(
 	compact: boolean,
 	viewport?: RosterViewport,
 ): string[] {
-	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, viewport?.start);
+	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, now, viewport?.start);
 	viewport?.range?.(start, maxStart);
 	const lines: string[] = compact ? [] : [theme.fg("muted", "Roster")];
 	let section = "";
@@ -273,7 +315,7 @@ export function rosterLines(
 			lines.push(theme.fg("accent", group));
 			section = group;
 		}
-		const block = rosterRow(row, rows, selected, width, theme, compact, viewport?.exactTime ?? false);
+		const block = rosterRow(row, rows, selected, width, theme, compact, viewport?.exactTime ?? false, now);
 		rosterHit(viewport, row, block, lines.length, width, height);
 		lines.push(...block.lines);
 	}

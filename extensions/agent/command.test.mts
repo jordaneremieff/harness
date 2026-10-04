@@ -67,6 +67,37 @@ async function suggest(native: CombinedAutocompleteProvider, line: string, col =
 	return native.getSuggestions([line], 0, col, { signal });
 }
 
+it("the dashboard gets its context window and session figures from the current primary context", async () => {
+	const observed = source([row("one")]);
+	observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160000, output: 3300, cacheRead: 0, cacheWrite: 0, totalTokens: 163300, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
+	const lookups: Array<[string, string]> = [];
+	let dashboard: AgentDashboard | undefined;
+	let finish = () => {};
+	const ctx = {
+		mode: "tui",
+		hasUI: true,
+		sessionManager: { getSessionId: () => "current-primary" },
+		modelRegistry: { find: (provider: string, id: string) => { lookups.push([provider, id]); return { contextWindow: 1000000 }; } },
+		ui: { custom: async (factory: (tui: TUI, currentTheme: typeof theme, currentKeys: typeof keys, done: () => void) => AgentDashboard) => new Promise<void>((resolve) => {
+			finish = resolve;
+			dashboard = factory({ terminal: { rows: 45, columns: 160 }, requestRender() {} } as unknown as TUI, theme, keys, resolve);
+		}), notify() {} },
+	} as unknown as ExtensionCommandContext;
+	const command = createAgentCommand([], observed, extras, undefined, async (primary) => {
+		assert.equal(primary, ctx);
+		assert.equal(primary.sessionManager.getSessionId(), "current-primary");
+		return "agents this session: 1 working · 1 total · $0.42";
+	});
+	const opened = command.openDashboard(ctx);
+	try {
+		await turn();
+		assert.ok(dashboard);
+		const text = stripVTControlCharacters(dashboard.render(160).join("\n"));
+		assert.deepEqual(lookups, [["test", "model"]]);
+		assert.match(text, /context 163k\/1.0M \(16%\)/);
+		assert.match(text, /Agents this session: 1 working · 1 total · \$0.42/);
+	} finally { dashboard?.dispose(); finish(); await opened; }
+});
 it("the dashboard collaboration adapter carries its primary context and structured read", async () => {
 	const calls: Array<{ input: Record<string, unknown>; ctx: unknown }> = [];
 	const command = createAgentCommand([], source(), extras, async (input, ctx) => {

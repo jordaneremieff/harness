@@ -75,26 +75,27 @@ it("narrow roster includes selection, cost, state, last-change time, and shown c
 	const lines = rosterLines(rows, "50", 80, 4, 60000, theme, true);
 	assert.equal(lines.length, 4);
 	assert.ok(lines.some((line) => line.startsWith("›")));
-	assert.match(lines.join("\n"), /Working.*\$0.42.*Updated/);
+	assert.match(lines.join("\n"), /Working.*\$0.42.*1m ago/);
 	assert.match(lines[3], /3 of 100 loaded agents shown/);
 	assert.ok(lines.every((line) => visibleWidth(line) <= 80));
 });
-it("roster last-change times stay fixed across clock advances for active and inactive states", () => {
+it("roster ages use coarse minutes and absolute dates stay fixed for every state", () => {
 	const at = new Date(2026, 9, 3, 13, 24, 19, 951).getTime();
 	for (const state of ["working", "idle", "done", "stopped"] as const) {
 		const rows = [row("one", { state, modifiedAt: at })];
 		for (const [width, height, compact] of [
-			[38, 12, false],
+			[64, 12, false],
 			[60, 4, true],
 			[80, 4, true],
 		] as const) {
 			const first = rosterLines(rows, "one", width, height, at + 1000, theme, compact);
 			const later = rosterLines(rows, "one", width, height, at + 3700000, theme, compact);
-			assert.deepEqual(first, later);
-			assert.match(first.join("\n"), /Updated Oct 3, 2026, 1:24 PM/);
+			assert.match(first.join("\n"), /just now/);
+			assert.match(later.join("\n"), /1h ago/);
 			assert.ok(first.every((line) => visibleWidth(line) <= width));
 			const exact = rosterLines(rows, "one", width, height, at, theme, compact, { exactTime: true });
-			assert.ok(exact.join("\n").includes(new Date(at).toISOString()));
+			assert.match(exact.join("\n"), /Oct 3, 2026, 1:24 PM/);
+			assert.doesNotMatch(exact.join("\n"), /Updated|\(local\)|\.951Z/);
 		}
 	}
 });
@@ -107,11 +108,11 @@ it("wide roster budgets every group header and timestamp before it clips the sel
 		row("yesterday", { state: "done", modifiedAt: now - 86400000 }),
 		row("earlier", { state: "done", modifiedAt: 0 }),
 	];
-	const lines = rosterLines(rows, "earlier", 38, 18, now, theme, false);
+	const lines = rosterLines(rows, "earlier", 64, 18, now, theme, false);
 	assert.match(lines.join("\n"), /› ✓ earlier/);
 	assert.match(lines.join("\n"), /yesterday/);
 	assert.match(lines.join("\n"), /\+1 more/);
-	assert.equal(lines.filter((line) => line.includes("Updated ")).length, 4);
+	assert.equal(lines.filter((line) => /\$0.42 · /.test(line)).length, 4);
 });
 it("timestamp hit areas do not use a name that impersonates an Updated label", () => {
 	let timeX = -1;
@@ -125,7 +126,7 @@ it("timestamp hit areas do not use a name that impersonates an Updated label", (
 });
 it("duplicate titles receive distinct shortest suffixes and coverage remains explicit", () => {
 	const rows = [row("same-prefix-one", { name: "Audit" }), row("same-prefix-two", { name: "Audit" })];
-	const lines = rosterLines(rows, rows[0].id, 38, 10, 0, theme, false);
+	const lines = rosterLines(rows, rows[0].id, 38, 12, 0, theme, false);
 	assert.match(lines.join("\n"), /Audit -one/);
 	assert.match(lines.join("\n"), /Audit -two/);
 	assert.match(
@@ -139,7 +140,7 @@ it("roster identifies handles and roles separately from the historical first inp
 		const lines = rosterLines([expert], expert.id, width, height, 0, theme, compact);
 		assert.match(lines.join("\n"), /@history/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
-		if (!compact) assert.match(lines.join("\n"), /Role: Review operator decisions/);
+		if (!compact) assert.match(lines.join("\n"), /test\/model high/);
 		assert.doesNotMatch(lines.join("\n"), /One old task/);
 	}
 	for (const query of ["@history", "operator decisions", "History", "old task"]) assert.equal(dashboardRecords({ observedAt: 0, sessions: [expert] }, query).length, 1);

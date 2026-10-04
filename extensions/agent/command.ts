@@ -156,6 +156,7 @@ export function createAgentCommand(
 	sources: AgentObservationSource,
 	options: ActionDialogExtras,
 	collaborate?: (input: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>,
+	sessionFigures?: (ctx: ExtensionContext) => Promise<string>,
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
@@ -204,6 +205,8 @@ export function createAgentCommand(
 				state,
 				source: sources,
 				operations: {
+					sessionFigures: sessionFigures ? () => sessionFigures(ctx) : undefined,
+					contextWindow: (provider, modelId) => ctx.modelRegistry.find(provider, modelId)?.contextWindow,
 					collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
 					chooseConversation: async (labels, surface) =>
 						hideAround(surface, async () => {

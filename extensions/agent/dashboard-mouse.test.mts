@@ -174,9 +174,9 @@ for (const width of [80, 140]) {
 			await turn();
 			assert.equal(f.state.selected, "bravo");
 			assert.equal(f.ui.navigation.screen, "roster");
-			click("Updated ");
+			click("d ago");
 			assert.equal(f.state.exactTime, true);
-			assert.match(lines().join("\n"), /Updated 1970-01-01T00:00:00\.000Z/);
+			assert.ok(lines().join("\n").includes(new Date(0).toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })));
 			f.ui.handleInput("i");
 			assert.equal(f.state.exactTime, false);
 			click("Enter open");
@@ -187,7 +187,7 @@ for (const width of [80, 140]) {
 			assert.equal(f.ui.navigation.screen, "message");
 			f.ui.handleInput("draft retained");
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");
-			const p = point(lines(), "Updated ");
+			const p = point(lines(), "d ago");
 			assert.equal(f.ui.handleMouse(event(p.x, p.y, width, 30, { type: "drag" })), undefined);
 			assert.equal(f.state.exactTime, false);
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");

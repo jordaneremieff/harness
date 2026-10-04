@@ -8,7 +8,7 @@ import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
 import { subscribeCatalogChanges } from "./catalog-events.ts";
-import { formatDurableFooter } from "./footer.ts";
+import { sessionFigures } from "./footer.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
@@ -837,6 +837,15 @@ export class AgentManager {
 		else this.subscriptions.set(storageId, unsubscribe);
 	}
 
+	/** UI-local session totals from a bounded dashboard page and creating-owner metadata. */
+	async sessionFigures(ownerId: string, page?: AgentConversationPage): Promise<string> {
+		const observed = page ?? await this.dashboardPage();
+		return sessionFigures(observed.rows, ownerId, (storageId) => {
+			try { return this.catalog.read(storageId).ownerId; }
+			catch { return undefined; }
+		}, observed.coverage);
+	}
+
 	private async refreshFooter(): Promise<void> {
 		this.rosterChanged();
 		if (this.shuttingDown || !this.primaries.size) return;
@@ -846,8 +855,10 @@ export class AgentManager {
 			do {
 				this.refreshAgain = false;
 				const page = await this.dashboardPage();
-				const text = formatDurableFooter(page.rows, page.coverage);
-				for (const primary of this.primaries.values()) if (!primary.signal.aborted) primary.status?.(text);
+				for (const [ownerId, primary] of this.primaries) {
+					const text = await this.sessionFigures(ownerId, page);
+					if (!primary.signal.aborted) primary.status?.(text || undefined);
+				}
 			} while (this.refreshAgain && !this.shuttingDown && this.primaries.size);
 		} catch (error) { this.failures.set("footer", errorText(error)); }
 		finally { this.refreshing = false; }

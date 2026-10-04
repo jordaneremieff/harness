@@ -4,14 +4,25 @@ import type { AgentConversationSummary, AgentConversationEntry } from "./dashboa
 import { updateDraft, subscribeAgentState, type AgentDraftState } from "./dashboard-state.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { ConversationView } from "./conversation-view.ts";
-import { fitLine } from "./dashboard-layout.ts";
 import { footerText } from "./agent-footer.ts";
 import { agentDisplayName } from "./action-outcome.ts";
+import type { UsageState } from "@earendil-works/pi-durable";
+import { contextTokens, usageText } from "./agent-usage.ts";
 export class AgentConsole {
 	readonly composer: AgentComposer;
 	readonly conversation: ConversationView;
 	row: AgentConversationSummary;
 	status = "Loading conversation…";
+	warning?: string;
+	context?: number;
+	usage?: UsageState;
+	observeUsage(entries: readonly AgentConversationEntry[], usage?: UsageState): void {
+		this.context = contextTokens(entries);
+		this.usage = usage;
+	}
+	usageLine(window?: number): string {
+		return usageText(this.context, window, this.usage);
+	}
 	readonly state: AgentDraftState;
 	private readonly unsubscribe: () => void;
 	private historyCount: number;
@@ -61,8 +72,8 @@ export class AgentConsole {
 				: "Send · starts a turn";
 		return `${truncateToWidth(target, Math.max(12, width - visibleWidth(mode) - 3))} · ${mode}`;
 	}
-	footer(width: number): string {
-		return fitLine(footerText(this.row, width), width);
+	footer(width: number, window?: number): string {
+		return footerText(this.row, width, this.usageLine(window));
 	}
 	save(): void {
 		updateDraft(this.state, this.composer.getText());

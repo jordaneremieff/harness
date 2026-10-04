@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
@@ -38,9 +38,12 @@ async function fixture(t: TestContext) {
 	t.mock.method(DurableHost, "open", async (...args: Parameters<typeof open>) => { native = await open(...args); return native; });
 	const ownerId = randomUUID();
 	const metadata = { ...f.metadata, ownerId };
+	const catalog = new AgentCatalog(f.root);
+	const record = catalog.read(metadata.storageId);
+	writeFileSync(catalog.path(metadata.storageId), JSON.stringify({ ...record, ownerId }), { mode: 0o600 });
 	runtime = await createDurableRuntime(metadata);
 	assert.equal(typeof runtime.tryRetire, "function");
-	return { ...f, metadata, ownerId, runtime, native, catalog: new AgentCatalog(f.root) };
+	return { ...f, metadata, ownerId, runtime, native, catalog };
 }
 
 async function eligible(runtime: Awaited<ReturnType<typeof createDurableRuntime>>): Promise<boolean> {
