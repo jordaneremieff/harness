@@ -149,7 +149,11 @@ thread through `agent_intent`. Read the related efforts in its result or in
 `agent_status`. Update or clear intent when integration completes; a completed
 plan must not remain the declared next action. Host facts and session intent
 claims are different evidence; unknown liveness and incomplete coverage do not
-prove absence.
+prove absence. Awareness appears in per-run context, explicit tool reads, and
+`/agent`'s Related efforts view only. Registration and intent changes do not
+create unsolicited transcript messages. Endpoint records and local roster
+refresh still expose the current view. This excludes automatic effort notices,
+not direct messages, check-ins, or peer-thread notices.
 
 Use `agent_send` for direct contact with a live effort primary. The operator
 also sends direct messages from `/agent`'s Related efforts view. A delivery receipt

@@ -13,7 +13,7 @@ import { buildStatusOverview } from "./status-overview.ts";
 import { purposeExcerpt } from "./effort-purpose.ts";
 import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
 import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel, type PrimaryInfo, type PrimaryIntentClaim } from "./primary-channel.ts";
-import { discoverPrimaryLocation, readRelatedEfforts, formatEffortSummary, pushEffortNotice, type EffortPresencePage } from "./effort-presence.ts";
+import { discoverPrimaryLocation, readRelatedEfforts, type EffortPresencePage } from "./effort-presence.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, type HostConnection, type HostObservationListener } from "./host-client.ts";
@@ -668,7 +668,6 @@ export class AgentManager {
 				if (this.delivered.has(key)) return;
 				primary.send(message.text, message.details);
 				this.delivered.set(key, true);
-				if (record(message.details).effortNotice === true) this.rosterChanged();
 			},
 		});
 		if (this.stopping(primary)) { await channel.close(); return; }
@@ -685,7 +684,7 @@ export class AgentManager {
 			this.closingPrimaries.set(ownerId, closing);
 			if (!this.primaries.size) this.releaseClients();
 		}, { once: true });
-		await this.announcePrimary(ownerId, "started");
+		this.rosterChanged();
 		await this.refreshFooter();
 		const due: CatalogRecord[] = [];
 		let cursor: string | undefined;
@@ -719,23 +718,10 @@ export class AgentManager {
 		const channel = this.primaryChannels.get(ownerId);
 		if (!channel) throw new Error("Intent publication requires this live ordinary primary session");
 		channel.publishIntent(input === undefined ? undefined : { ...input, updatedAt: new Date().toISOString() });
-		await this.announcePrimary(ownerId, "intent");
+		this.rosterChanged();
 		return { published: channel.info(), awareness: await this.awareness(ownerId) };
 	}
 
-	private async announcePrimary(ownerId: string, reason: "started" | "intent"): Promise<EffortPresencePage> {
-		const channel = this.primaryChannels.get(ownerId);
-		const page = await this.efforts(ownerId);
-		if (!channel || this.primaryChannels.get(ownerId) !== channel) return page;
-		if (reason === "started" && page.efforts.some((effort) => effort.liveness === "live")) {
-			this.primaries.get(ownerId)?.send(`Effort snapshot at ${new Date().toISOString()}. Read the current effort section or agent_status for present state.\n${formatEffortSummary(page)}`, { wake: false, effortNotice: true });
-		}
-		void pushEffortNotice(this.options.root, channel.info(), page, reason).catch((error) => {
-			this.failures.set(`efforts:${ownerId}`, errorText(error));
-		});
-		this.rosterChanged();
-		return page;
-	}
 
 	private observedPurpose(primary: PrimaryClient): PrimaryInfo["observedPurpose"] {
 		const name = purposeExcerpt(primary.name ?? "");
@@ -749,7 +735,7 @@ export class AgentManager {
 		if (!primary || primary.observedInputComplete === false || primary.observedInput || !excerpt) return false;
 		primary.observedInput = excerpt;
 		this.primaryChannels.get(ownerId)?.setObservedPurpose(this.observedPurpose(primary));
-		void this.announcePrimary(ownerId, "intent").catch((error) => this.failures.set(`efforts:${ownerId}`, errorText(error)));
+		this.rosterChanged();
 		return true;
 	}
 
@@ -774,7 +760,7 @@ export class AgentManager {
 			this.primaryChannels.get(ownerId)?.update({ name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel });
 			if ("name" in info) {
 				this.primaryChannels.get(ownerId)?.setObservedPurpose(this.observedPurpose(primary));
-				void this.announcePrimary(ownerId, "intent").catch((error) => this.failures.set(`efforts:${ownerId}`, errorText(error)));
+				this.rosterChanged();
 			}
 		} catch (error) {
 			this.failures.set(`primary:${ownerId}`, errorText(error));

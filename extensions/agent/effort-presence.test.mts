@@ -4,10 +4,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, type Socket } from "node:net";
 import { it } from "node:test";
-import { createPrimaryChannel, PRIMARY_ENDPOINT_VERSION, primaryEndpointPath, type PrimaryDelivery } from "./primary-channel.ts";
-import { discoverPrimaryLocation, formatEffortSummary, readRelatedEfforts, pushEffortNotice, type PrimaryIntentClaim } from "./effort-presence.ts";
+import { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } from "./primary-channel.ts";
+import { discoverPrimaryLocation, readRelatedEfforts, type PrimaryIntentClaim } from "./effort-presence.ts";
 
 function rootFor(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "efforts-"));
@@ -105,13 +104,9 @@ it("bounds visits and results and reports exact visited omissions", async (t) =>
 	assert.equal(page.coverage.complete, false);
 	assert.deepEqual(page.coverage.reasons, ["result-limit", "visit-limit"]);
 	assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 16384);
-	const summary = formatEffortSummary(page);
-	assert.ok(Buffer.byteLength(summary) <= 4096);
-	assert.match(summary, /Summary omitted: \d+/u);
-	assert.match(summary, /Coverage:.*"complete":false/u);
 });
 
-it("bounds serialized page and summary bytes without losing claim labels", async (t) => {
+it("bounds serialized pages with large intent claims", async (t) => {
 	const root = rootFor(t);
 	const large = { ...intent(), purpose: "界".repeat(1024), integration: "i".repeat(2048), authority: "a".repeat(2048) };
 	for (let index = 0; index < 8; index += 1) record(root, { intentClaim: large });
@@ -119,10 +114,6 @@ it("bounds serialized page and summary bytes without losing claim labels", async
 	assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 16384);
 	assert.ok(page.coverage.omitted > 0);
 	assert.ok(page.coverage.reasons.includes("byte-limit"));
-	const summary = formatEffortSummary(page);
-	assert.ok(Buffer.byteLength(summary) <= 4096);
-	assert.match(summary, /"intentClaim":\{"purpose"/u);
-	assert.match(summary, /descriptorOmitted/u);
 });
 
 it("reports missing roots as complete empty pages and unreadable roots as incomplete", async (t) => {
@@ -135,61 +126,7 @@ it("reports missing roots as complete empty pages and unreadable roots as incomp
 	const page = await readRelatedEfforts(blocked, self());
 	assert.equal(page.coverage.complete, false);
 	assert.deepEqual(page.coverage.reasons, ["directory-unreadable"]);
-	assert.match(formatEffortSummary(page), /Coverage:/u);
 });
-
-it("pushes quiet notices to live efforts only and isolates an unreachable recipient", async (t) => {
-	const root = rootFor(t);
-	const delivered: PrimaryDelivery[] = [];
-	const channel = await createPrimaryChannel({ id: randomUUID(), cwd: "/work/topic", sessionsRoot: root, deliver: (message) => { delivered.push(message); }, promptTrust: async () => undefined });
-	t.after(async () => { await channel.close(); });
-	const missing = record(root);
-	record(root, { hostname: "foreign" });
-	record(root, { version: "incompatible" });
-	const reader = self();
-	const page = await readRelatedEfforts(root, reader);
-	const result = await pushEffortNotice(root, reader, page, "intent");
-	assert.deepEqual(result, { attempted: 2, delivered: 1, failed: 1 });
-	assert.equal(delivered.length, 1);
-	const details = delivered[0]?.details as Record<string, unknown>;
-	assert.equal(typeof details.eventAt, "string");
-	assert.deepEqual(details, { kind: "related-effort", ambientEffort: true, effortNotice: true, quiet: true, wake: false, senderIdentity: reader.id, reason: "intent", eventAt: details.eventAt });
-	assert.match(delivered[0]?.text ?? "", /dated event is not a current presence snapshot/u);
-	assert.match(delivered[0]?.text ?? "", /intentClaim.*purpose/u);
-	assert.match(delivered[0]?.text ?? "", /Coverage:/u);
-	assert.ok(existsSync(primaryEndpointPath(root, missing)));
-});
-
-it("bounds notice delivery when a live recipient accepts but never acknowledges", async (t) => {
-	const root = rootFor(t);
-	let release = () => {};
-	const held = new Promise<void>((done) => { release = done; });
-	const received: PrimaryDelivery[] = [];
-	const channel = await createPrimaryChannel({ id: randomUUID(), cwd: "/work/topic", sessionsRoot: root, deliver: async (message) => { received.push(message); await held; }, promptTrust: async () => undefined });
-	t.after(async () => { release(); await channel.close(); });
-	const reader = self();
-	const page = await readRelatedEfforts(root, reader);
-	const started = Date.now();
-	assert.deepEqual(await pushEffortNotice(root, reader, page, "started"), { attempted: 1, delivered: 0, failed: 1 });
-	assert.ok(Date.now() - started < 2500);
-	assert.equal(received.length, 1);
-});
-
-it("bounds notice handshake when a live recipient stays silent", async (t) => {
-	const root = rootFor(t);
-	const socketPath = join(root, "silent.sock");
-	const sockets = new Set<Socket>();
-	const server = createServer((socket) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
-	await new Promise<void>((done) => server.listen(socketPath, done));
-	t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
-	record(root, { socketPath });
-	const reader = self();
-	const page = await readRelatedEfforts(root, reader);
-	const started = Date.now();
-	assert.deepEqual(await pushEffortNotice(root, reader, page, "started"), { attempted: 1, delivered: 0, failed: 1 });
-	assert.ok(Date.now() - started < 2500);
-});
-
 
 it("reports failed Git discovery explicitly instead of outside-git or unrelated", async (t) => {
 	const root = rootFor(t);
@@ -218,10 +155,7 @@ it("retains observed purpose separately from intent claims in reader forms", asy
 	record(root, { observedPurpose, intentClaim: intent() });
 	const page = await readRelatedEfforts(root, self());
 	assert.deepEqual(page.efforts[0]?.observedPurpose, observedPurpose);
-	const summary = formatEffortSummary(page);
-	assert.match(summary, /observedPurpose is host-observed/u);
-	assert.ok(summary.includes('"observedPurpose":{"source":"interactive-input"'));
-	assert.match(summary, /"intentClaim":/u);
+	assert.deepEqual(page.efforts[0]?.intentClaim, intent());
 });
 
 
@@ -246,63 +180,6 @@ it("lists all local efforts, exposes machine purpose only, and marks declared ga
 	assert.deepEqual(shared?.intentClaim, claim);
 	assert.equal(page.coverage.unrelated, 1);
 	assert.equal(page.efforts.length, 2);
-});
-
-it("projects outbound claims for each recipient and keeps notices bounded", async (t) => {
-	const root = rootFor(t);
-	const same: PrimaryDelivery[] = [];
-	const other: PrimaryDelivery[] = [];
-	const channels = await Promise.all([[
-		"/work/topic", same,
-	], [
-		"/other/project", other,
-	]].map(async ([cwd, messages]) => createPrimaryChannel({ id: randomUUID(), cwd: cwd as string, sessionsRoot: root, deliver: (message) => { (messages as PrimaryDelivery[]).push(message); }, promptTrust: async () => undefined })));
-	t.after(async () => { await Promise.all(channels.map((channel) => channel.close())); });
-	const claim = { ...intent(), integration: "secret-integration-marker", authority: "secret-authority-marker", scope: { ...intent().scope, fullGate: true } };
-	const reader = { ...self(), intentClaim: claim };
-	const page = await readRelatedEfforts(root, reader);
-	assert.deepEqual(await pushEffortNotice(root, reader, page, "intent"), { attempted: 2, delivered: 2, failed: 0 });
-	assert.ok((same[0]?.text ?? "").includes('"intentClaim":'));
-	assert.ok((same[0]?.text ?? "").includes(claim.authority));
-	assert.ok((other[0]?.text ?? "").includes('"purposeClaim":'));
-	assert.ok((other[0]?.text ?? "").includes('"contactThreadClaim":'));
-	assert.ok((other[0]?.text ?? "").includes("machine-gates"));
-	assert.equal((other[0]?.text ?? "").includes(claim.authority), false);
-	assert.equal((other[0]?.text ?? "").includes(claim.integration), false);
-	for (const message of [...same, ...other]) assert.ok(Buffer.byteLength(message.text) <= 4096);
-});
-
-
-it("enforces notice byte bounds even for fully escaped claim fields", async (t) => {
-	const root = rootFor(t);
-	const received: PrimaryDelivery[] = [];
-	const channel = await createPrimaryChannel({ id: randomUUID(), cwd: "/other/project", sessionsRoot: root, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
-	t.after(async () => { await channel.close(); });
-	const reader = { ...self(), observedPurpose: { source: "interactive-input" as const, text: "\u0001".repeat(512) }, intentClaim: { ...intent(), purpose: "\u0001".repeat(1024), contactThread: "\u0001".repeat(256), updatedAt: "\u0001".repeat(64) } };
-	const page = await readRelatedEfforts(root, reader);
-	assert.deepEqual(await pushEffortNotice(root, reader, page, "intent"), { attempted: 1, delivered: 1, failed: 0 });
-	assert.ok(Buffer.byteLength(received[0]?.text ?? "") <= 4096);
-	assert.ok((received[0]?.text ?? "").includes("descriptorOmitted"));
-});
-
-
-it("keeps notices distinct when intent changes share the same timestamp", async (t) => {
-	const root = rootFor(t);
-	const received: PrimaryDelivery[] = [];
-	const channel = await createPrimaryChannel({ id: randomUUID(), cwd: "/work/topic", sessionsRoot: root, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
-	t.after(async () => { await channel.close(); });
-	t.mock.timers.enable({ apis: ["Date"], now: 1791111600000 });
-	t.mock.method(Date, "now", () => 1791111600000);
-	const reader = self();
-	const page = await readRelatedEfforts(root, reader);
-	await pushEffortNotice(root, reader, page, "intent");
-	await pushEffortNotice(root, { ...reader, intentClaim: { ...reader.intentClaim, purpose: "Changed purpose" } }, page, "intent");
-	assert.equal(received.length, 2);
-	const first = received[0];
-	const second = received[1];
-	assert.ok(first && second);
-	assert.notEqual(first.sourceId, second.sourceId);
-	assert.equal((first.details as Record<string, unknown>).eventAt, (second.details as Record<string, unknown>).eventAt);
 });
 
 it("does not claim a shared machine gate for foreign-host records", async (t) => {

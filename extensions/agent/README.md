@@ -143,11 +143,14 @@ Ordinary primaries and Durable agents read this view through untargeted
 at natural run boundaries. The section contains no relative ages or render-time
 clock, so unchanged source state gives unchanged text. If no other live effort
 appears, one line reports the empty or partial view and points to `agent_status`
-when thread hints or unknown sources need detail. Registration and changed
-intent also send dated quiet notices through the existing primary channel.
-Those transcript entries record events, not the current view. Failed pushes do
-not block the publisher. There is no presence polling, file watcher, model wake,
-or new store. Every view reports its finite coverage and omissions.
+when thread hints or unknown sources need detail. Awareness is available only
+through this per-run context, explicit tool reads, and the Related efforts view.
+Registration, intent publication, and intent clearing do not append unsolicited
+transcript entries or send automatic effort notices. Endpoint publication and
+local roster refresh remain independent of transcript delivery. Direct messages,
+check-ins, and thread notices retain their existing delivery behavior. There is
+no presence polling, file watcher, automatic model wake, or new store. Every view
+reports its finite coverage and omissions.
 
 Fleet and selected-session status do not read caller identity. An ordinary
 overview uses it only for the optional effort-awareness section. If identity

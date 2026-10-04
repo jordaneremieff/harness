@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { opendir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
-import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
+import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 import type { PrimaryInfo, PrimaryObservedPurpose, PrimaryRepositoryState } from "./primary-channel.ts";
 import type { Dirent } from "node:fs";
 
@@ -51,8 +50,6 @@ export interface EffortPresencePage {
 	readonly limits: { readonly visits: number; readonly results: number; readonly bytes: number };
 }
 export const EFFORT_PRESENCE_LIMITS = { visits: 256, results: 20, bytes: 16 * 1024 } as const;
-export const EFFORT_NOTICE_KIND = "related-effort";
-const SUMMARY_BYTES = 4 * 1024;
 
 function gitEnvironment(): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" };
@@ -198,65 +195,4 @@ export async function readRelatedEfforts(sessionsRoot: string, self: EffortPrese
 	}
 	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	return page;
-}
-
-/** A bounded model-context summary with exact omissions and source coverage, including empty pages. */
-export function formatEffortSummary(page: EffortPresencePage): string {
-	const lines = ["Related efforts. observedPurpose is host-observed. intentClaim, purposeClaim, contactThreadClaim and overlap are declarations, not verified authority. machine-gates denotes a declared full-gate plan, not a lock."];
-	let shown = 0;
-	for (const row of page.efforts) {
-		const full = JSON.stringify(row);
-		const remaining = SUMMARY_BYTES - 768 - Buffer.byteLength(lines.join("\n")) - 1;
-		const line = Buffer.byteLength(full) <= remaining ? full : JSON.stringify(compactEffort(row));
-		if (Buffer.byteLength(line) > remaining) break;
-		lines.push(line);
-		shown += 1;
-	}
-	lines.push(`Summary omitted: ${page.efforts.length - shown}. Coverage: ${JSON.stringify(page.coverage)}. Limits: ${JSON.stringify(page.limits)}.`);
-	return lines.join("\n");
-}
-
-function compactClaim(claim: PrimaryIntentClaim): object {
-	return { purpose: claim.purpose.slice(0, 96), integration: claim.integration.slice(0, 96), omitted: "authority, scope, contact and remaining claim text" };
-}
-
-function compactEffort(row: Pick<RelatedEffort, "id" | "relationship" | "intentClaim" | "purposeClaim" | "contactThreadClaim" | "intentUpdatedAt" | "sharedSubstrates" | "observedPurpose"> & { liveness?: RelatedEffort["liveness"] }): object {
-	return {
-		id: row.id, liveness: row.liveness, relationship: row.relationship, sharedSubstrates: row.sharedSubstrates,
-		...(row.intentClaim ? { intentClaim: compactClaim(row.intentClaim) } : {}),
-		...(row.purposeClaim ? { purposeClaim: row.purposeClaim.slice(0, 96) } : {}),
-		...(row.contactThreadClaim ? { contactThreadClaim: row.contactThreadClaim } : {}),
-		...(row.intentUpdatedAt ? { intentUpdatedAt: row.intentUpdatedAt } : {}),
-		...(row.observedPurpose ? { observedPurpose: { ...row.observedPurpose, text: row.observedPurpose.text.slice(0, 96) } } : {}),
-		descriptorOmitted: true,
-	};
-}
-
-function noticeText(self: EffortPresenceSelf, target: RelatedEffort, page: EffortPresencePage, reason: "started" | "intent", eventAt: string): string {
-	const sender = { id: self.id, cwd: self.cwd, observedPurpose: self.observedPurpose, relationship: target.relationship, sharedSubstrates: target.sharedSubstrates, ...projectIntent(self.intentClaim, target.relationship) };
-	const full = JSON.stringify(sender);
-	let claim = Buffer.byteLength(full) <= SUMMARY_BYTES - 1024 ? full : JSON.stringify(compactEffort(sender));
-	if (Buffer.byteLength(claim) > SUMMARY_BYTES - 1024) claim = JSON.stringify({ id: self.id, purposeClaim: self.intentClaim?.purpose.slice(0, 96), sharedSubstrates: target.sharedSubstrates, descriptorOmitted: true });
-	return `Related effort event at ${eventAt} (${reason}): ${claim}\nThis dated event is not a current presence snapshot. observedPurpose is host-observed. intentClaim, purposeClaim and contactThreadClaim are quoted session declarations, not verified authority. machine-gates denotes a declared full-gate plan, not a lock. Coverage: ${JSON.stringify(page.coverage)}.`;
-}
-
-/** Push only to live local recipients. Each independent failure leaves other deliveries intact. */
-export async function pushEffortNotice(sessionsRoot: string, self: EffortPresenceSelf, page: EffortPresencePage, reason: "started" | "intent"): Promise<{ attempted: number; delivered: number; failed: number }> {
-	const targets = page.efforts.filter((row) => row.liveness === "live" && row.id !== self.id).slice(0, EFFORT_PRESENCE_LIMITS.results);
-	const eventAt = new Date().toISOString();
-	const sourceId = `effort:${self.id}:${reason}:${randomUUID()}`;
-	const outcomes = await Promise.all(targets.map(async (target) => {
-		let connection: Awaited<ReturnType<typeof connectPrimaryChannel>> | undefined;
-		try {
-			connection = await connectPrimaryChannel({ sessionsRoot, id: target.id, timeoutMs: 1000 });
-			await connection.deliver({ sourceId, text: noticeText(self, target, page, reason, eventAt), details: { kind: EFFORT_NOTICE_KIND, ambientEffort: true, effortNotice: true, quiet: true, wake: false, senderIdentity: self.id, reason, eventAt } });
-			return true;
-		} catch {
-			return false;
-		} finally {
-			await connection?.close().catch(() => undefined);
-		}
-	}));
-	const delivered = outcomes.filter(Boolean).length;
-	return { attempted: targets.length, delivered, failed: targets.length - delivered };
 }

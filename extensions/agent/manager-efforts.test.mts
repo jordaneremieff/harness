@@ -86,7 +86,7 @@ async function waitForEvent(fixture: ChildFixture, label: string, predicate: (ev
 	catch (error) { throw new Error(`Missing ${label}. Events: ${JSON.stringify(fixture.events)}. ${String(error)}`); }
 }
 
-it("discovers related ordinary sessions and publishes quiet intent across processes", { timeout: 90000 }, async (t) => {
+it("keeps discovery and intent out of ordinary transcripts across processes", { timeout: 90000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-efforts-"));
 	const sessionsRoot = join(root, "sessions");
 	const sharedCwd = join(root, "shared-work");
@@ -108,17 +108,15 @@ it("discovers related ordinary sessions and publishes quiet intent across proces
 	assert.notEqual(first.pid, second.pid, "each primary runs in a distinct ordinary Pi process");
 	assert.notEqual(first.id, second.id);
 
-	assert.equal(first.events.filter((event) => event.type === "provider-request").length, 0, "the first process does not call its provider for a quiet notice");
+	assert.equal(first.events.filter((event) => event.type === "provider-request").length, 0, "the first process stays idle during discovery");
 	assert.equal(second.events.filter((event) => event.type === "provider-request").length, 0, "the second process starts without a provider call");
 	const secondAwareness = await second.command("inspect");
 	const secondView = secondAwareness.awareness as { presence: { efforts: Array<{ id: string; liveness?: string }> }; threads: { items: unknown[] } };
 	const initialPage = secondView.presence;
-	assert.ok(initialPage.efforts.some((effort) => effort.id === first.id), `the second process discovers the existing primary: ${JSON.stringify(initialPage)}`);
-	try {
-		await first.events.waitFor((items) => items.some((event) => event.type === "custom-message" && event.details !== null && typeof event.details === "object" && (event.details as Record<string, unknown>).effortNotice === true), DEADLINE_MS);
-	} catch (error) {
-		throw new Error(`No startup awareness arrived. Presence: ${JSON.stringify(initialPage)}. First events: ${JSON.stringify(first.events)}. ${String(error)}`);
-	}
+	assert.ok(initialPage.efforts.some((effort) => effort.id === first.id && effort.liveness === "live"), `the second process discovers the existing live primary: ${JSON.stringify(initialPage)}`);
+	assert.deepEqual(entriesFor(second), [], "a fresh session with a live related effort has no transcript message");
+	assert.deepEqual(secondAwareness.customEntries, []);
+	assert.deepEqual((await first.command("snapshot")).customEntries, [], "a new related session does not send a transcript notice");
 	await second.command("prompt");
 	const injectedContext = second.events.find((event) => event.type === "provider-request");
 	assert.ok(textOf(injectedContext?.effortSections).includes(first.id), "the stable before-agent-start context names the existing related primary");
@@ -129,9 +127,10 @@ it("discovers related ordinary sessions and publishes quiet intent across proces
 
 	const publish = await second.command("prompt-intent", { action: "publish" });
 	assert.equal(publish.totalRequests, 3, "the synthetic provider returns one tool call and one completion after the context probe");
-	await waitForEvent(first, "published intent notice", (items) => items.some((event) => event.type === "custom-message" && event.details !== null && typeof event.details === "object" && (event.details as Record<string, unknown>).effortNotice === true && textOf(event.content).includes("Review the shared parser")));
+	assert.deepEqual(publish.customEntries, [], "intent publication does not append a transcript message");
 	assert.equal(first.events.filter((event) => event.type === "provider-request").length, 0, "publishing intent does not wake the receiving process");
 	const firstView = await first.command("inspect");
+	assert.deepEqual(firstView.customEntries, [], "a related intent update does not append a transcript message");
 	const firstPage = (firstView.awareness as { presence: { efforts: Array<{ id: string; intentClaim?: { purpose?: string; integration?: string; authority?: string; contactThread?: string } }> } }).presence;
 	const claim = firstPage.efforts.find((item) => item.id === second.id)?.intentClaim;
 	assert.equal(claim?.purpose, "Review the shared parser");
@@ -161,15 +160,15 @@ it("discovers related ordinary sessions and publishes quiet intent across proces
 	assert.equal(isolatedRow?.authority, undefined);
 	assert.equal(isolatedRow?.integration, undefined);
 	assert.ok(isolatedRow?.sharedSubstrates?.includes("machine-gates"), "a declared full-gate plan marks the shared machine gate substrate");
-	assert.equal(textOf(entriesFor(unrelated)).includes(first.id), true, "startup context includes local efforts from other cwds");
-	await waitForEvent(first, "quiet local effort notice", (items) => items.some((event) => event.type === "custom-message" && event.details !== null && typeof event.details === "object" && (event.details as Record<string, unknown>).effortNotice === true && textOf(event.content).includes(unrelated.id)));
-	await waitForEvent(second, "quiet local effort notice", (items) => items.some((event) => event.type === "custom-message" && event.details !== null && typeof event.details === "object" && (event.details as Record<string, unknown>).effortNotice === true && textOf(event.content).includes(unrelated.id)));
+	assert.deepEqual(entriesFor(unrelated), [], "local efforts from other directories do not create startup transcript messages");
 	assert.equal(first.events.filter((event) => event.type === "provider-request").length, 0, "all-local awareness stays quiet in the first process");
 	assert.equal(second.events.filter((event) => event.type === "provider-request").length, 4, "all-local awareness stays quiet in the second process");
 
 	const clear = await second.command("prompt-intent", { action: "clear" });
 	assert.equal(clear.totalRequests, 6);
 	const cleared = await first.command("inspect");
+	assert.deepEqual(cleared.customEntries, [], "start, publish and clear leave the other transcript untouched");
+	assert.equal((clear.customEntries as unknown[]).length, 2, "only the explicit operator and model messages enter the receiving transcript");
 	const clearedPage = (cleared.awareness as { presence: { efforts: Array<{ id: string; intentClaim?: unknown }> } }).presence;
 	assert.equal(clearedPage.efforts.find((item) => item.id === second.id)?.intentClaim, undefined, "clear removes the session claim for readers");
 
