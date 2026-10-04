@@ -244,7 +244,7 @@ const OBSERVED_AT = "2026-10-02T00:00:00.000Z";
 
 function statusObservation(params: Record<string, unknown>): Record<string, unknown> {
 	const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
-	if (sessionId === undefined) return { sessions: [], failures: [], observedAt: OBSERVED_AT };
+	if (sessionId === undefined) return { conversations: [], inventory: { contributions: [], ordinaryOnly: [] }, pid: 123, storageId };
 	return {
 		conversation: conversationStatus(sessionConversation(sessionId)),
 		inventory: { contributions: [], ordinaryOnly: [] },
@@ -967,6 +967,39 @@ it("spawns a child in a new storage when the cwd differs", async (t) => {
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
 	assert.ok(outcome && !outcome.isError, "the spawn result is not an error");
 	assert.equal(outcome.text, "Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was delivered and the answer will report back.");
+});
+
+it("appends only the caller's retained children to the storage status text", async (t) => {
+	const route = createRoute();
+	const holder: DispatchHolder = { spawnSessionId: "foreign-child" };
+	const calls: DispatchCalls = [];
+	const { registry } = buildRegistry(createDispatch(holder, calls));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	holder.harness = harness;
+	t.after(async () => { await harness.close(context); });
+	const status = async (caller = root, args: Durable.JsonObject = {}) => {
+		route.script.push({ tool: "agent_status", args });
+		await say(caller, "STATUS");
+		const outcome = (await toolOutcomes(harness, caller.id)).find((result) => result.name === "agent_status");
+		assert.ok(outcome && !outcome.isError, outcome?.text);
+		return outcome;
+	};
+	const empty = await status();
+	assert.ok(!empty.text.includes("Your agents"));
+	route.script.push({ tool: "agent_spawn", args: { name: "native" } });
+	await say(root, "SPAWN");
+	route.script.push({ tool: "agent_spawn", args: { name: "foreign", cwd: "/elsewhere" } });
+	await say(root, "SPAWN");
+	const local = (await harness.snapshot(TestChildren, root.id, context))?.children[0];
+	assert.ok(local?.conversationId !== undefined);
+	const populated = await status();
+	assert.equal(populated.text, `${empty.text}\n\nYour agents (newest first):\n- foreign-child "foreign": storage with own host\n- ${storageId}:${local.conversationId} "native": native child conversation`);
+	assert.deepEqual(populated.details, empty.details, "lineage changes no host observation fields");
+	assert.deepEqual(calls.filter((call) => call.method === "status").map((call) => call.params), [{}, {}]);
+	const child = await harness.conversation(local.conversationId, context);
+	assert.ok(child);
+	assert.ok(!(await status(child)).text.includes("Your agents"), "a childless caller does not inherit its owner's registry");
+	assert.ok(!(await status(root, { sessionId: storageId })).text.includes("Your agents"), "selected status stays unchanged");
 });
 
 it("refuses a self abort and continues the run", async (t) => {
