@@ -37,7 +37,7 @@ export const RegistryParams = Type.Object(
 			}),
 		),
 		kind: Type.Optional(
-			StringEnum(QUERY_KINDS, { description: "Resource kind. model queries the model catalog; context_file returns prior observed paths only." }),
+			StringEnum(QUERY_KINDS, { description: "Resource kind. model queries chat models only, not classifiers or image models; context_file returns prior observed paths only." }),
 		),
 		search: Type.Optional(Type.String({ minLength: 1, maxLength: NAME_MAX,
 			description: "Literal case-insensitive search over names, descriptions, and tool usage guidelines, not file contents." })),
@@ -72,9 +72,9 @@ export const RegistryParams = Type.Object(
 );
 
 export const REGISTRY_DESCRIPTION =
-	"Look up session tools, commands, skills, prompt templates, model catalog, and prior observed context-file paths. Use search for purpose discovery across names, descriptions, and tool usage guidelines, kind model with canonical provider/id name for model selection facts, health true with kind model for an offline catalog review, and detail true with kind tool and an exact name for its parameters and guidelines. With no arguments it returns current model, thinking level, live context-usage estimate, host facts, and observation boundaries. Context usage is not a safe remaining budget; unknown remains unknown after compaction. name is case-sensitive; a skill also answers to its skill:<name> invocation form and results keep both names. contains runs one literal, case-insensitive content search over a single uniquely resolved file-backed skill or prompt and returns matching lines with context. Lists are compact; exact name queries return full model metadata or resource provenance, and detail true adds tool schemas/guidelines. Structured records retain every sourceInfo field. Results state observation time and evidence type; tool records separate configured presence from active status. Complete results are bounded to 50 KiB and 2000 lines; scans read at most 256 KiB. Read-only: it accepts no file path, crawls no directory, and mutates nothing.";
+	"Look up session tools, commands, skills, prompt templates, chat model catalog, and prior observed context-file paths. Use search for purpose discovery across names, descriptions, and tool usage guidelines, kind model with canonical provider/id name for model selection facts, health true with kind model for an offline catalog review, and detail true with kind tool and an exact name for its parameters and guidelines. With no arguments it returns current model, thinking level, live context-usage estimate, host facts, and observation boundaries. Context usage is not a safe remaining budget; unknown remains unknown after compaction. name is case-sensitive; a skill also answers to its skill:<name> invocation form and results keep both names. contains runs one literal, case-insensitive content search over a single uniquely resolved file-backed skill or prompt and returns matching lines with context. Lists are compact; exact name queries return full model metadata or resource provenance, and detail true adds tool schemas/guidelines. Structured records retain every sourceInfo field. Results state observation time and evidence type; tool records separate configured presence from active status. Complete results are bounded to 50 KiB and 2000 lines; scans read at most 256 KiB. Read-only: it accepts no file path, crawls no directory, and mutates nothing.";
 
-export const REGISTRY_PROMPT_SNIPPET = "Discover session resources, models, tool schemas, and observed context paths";
+export const REGISTRY_PROMPT_SNIPPET = "Discover session resources, chat models, tool schemas, and observed context paths";
 
 export const REGISTRY_PROMPT_GUIDELINES = [
 	"Use an already-visible tool directly when its purpose and arguments fit the task. Use registry when the needed resource, model capability, tool arguments, or instruction source is uncertain. Use search with a short task phrase when the name is unknown.",

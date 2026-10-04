@@ -275,11 +275,12 @@ function listingSummary(details: Record<string, unknown>): Summary {
 	const records = Array.isArray(details.records) ? details.records : [];
 	const total = numberField(details.total, records.length);
 	const shown = numberField(details.returnedRecords, records.length);
+	const chatOnly = typeof details.catalogBoundary === "string";
 	const tally = singleRecordFacts(records) || kindTally(records);
 	return {
-		line: `${outcomeWord(details)} · ${shown} shown of ${total}`,
-		second: joined([tally, boundsOf(details), continuationOf(details)]),
-		hint: total > 0,
+		line: `${outcomeWord(details)} · ${shown} shown of ${total}${chatOnly ? " · chat models only" : ""}`,
+		second: joined([tally, chatOnly && total === 0 ? "Classifier/image discovery: codemode models.*" : "", boundsOf(details), continuationOf(details)]),
+		hint: total > 0 || chatOnly,
 	};
 }
 

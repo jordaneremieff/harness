@@ -118,6 +118,22 @@ describe("registry result card", () => {
 		assert.match(screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })), /no match · 0 shown of 0/);
 	});
 
+	it("keeps the chat-only boundary visible on a missing model card", async () => {
+		const modelContext = { ...context, model: undefined, scopedModels: [], modelRegistry: {
+			getAll: () => [], getAvailable: () => [], getError: () => undefined, getRegisteredProviderIds: () => [],
+		} } as unknown as ExtensionToolContext;
+		const result = await registryTool().execute("model", { kind: "model", name: "cloudflare-workers-ai/@cf/cloudflare/clef" }, undefined, undefined, modelContext);
+		assert.equal(result.details?.outcome, "missing");
+		const card = renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false });
+		const shown = screen(card);
+		assert.match(shown, /no match · 0 shown of 0 · chat models only/);
+		assert.match(shown, /Classifier\/image discovery: codemode models\.\*/);
+		assert.match(shown, /(?:to expand result|expand for result)/i);
+		assert.equal(rows(card, 140).length, 2);
+		const expanded = screen(renderRegistryResult(result, { expanded: true, isPartial: false }, theme, { isError: false }));
+		assert.match(expanded, /missing here does not establish their absence/);
+		assert.match(expanded, /models\.getModelsOfType\("classifier"\)/);
+	});
 	it("summarizes a scanned file result with counts, scan coverage, and bounds", () => {
 		const scanned = resultOf("registry outcome=ok", {
 			outcome: "ok",

@@ -70,6 +70,7 @@ export const RegistryOutputSchema = Type.Object({
 	host: Type.Optional(Type.Boolean()), context: Type.Optional(context),
 	counts: Type.Optional(Type.Object({ tool: count, command: count, skill: count, prompt: count }, closed)),
 	activeToolCount: Type.Optional(Type.Union([count, Type.Null()])),
+	catalogBoundary: Type.Optional(text),
 	catalogAvailable: Type.Optional(Type.Boolean()), availableSnapshot: Type.Optional(Type.Boolean()),
 	catalogError: Type.Optional(nullableBoolean), scopeConfigured: Type.Optional(nullableBoolean), health: Type.Optional(health),
 	scanned: Type.Optional(Type.Boolean()), cancelled: Type.Optional(Type.Boolean()), staleCursor: Type.Optional(Type.Boolean()),
@@ -79,4 +80,4 @@ export const RegistryOutputSchema = Type.Object({
 	partialScan: Type.Optional(Type.Boolean()), modelInvocable: Type.Optional(attestedBoolean),
 	frontmatter: Type.Optional(Type.Object({ state: StringEnum(["absent", "incomplete", "invalid", "non_object", "valid", "unknown"]),
 		disableModelInvocation: Type.Optional(Type.Boolean()) }, closed)),
-}, { ...closed, description: "Bounded registry page. Check outcome, source coverage, resultBounded and pageBlocked before treating an empty records array as absence. Continue with cursor alone. Tool callable is ctx.tools membership, not permission or model declaration." });
+}, { ...closed, description: "Bounded registry page. Model queries cover chat models only. Check outcome, source coverage, resultBounded and pageBlocked before treating an empty records array as absence. Continue with cursor alone. Tool callable is ctx.tools membership, not permission or model declaration." });

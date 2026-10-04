@@ -62,6 +62,32 @@ describe("model discovery", () => {
 		assert.deepEqual(b.supportedThinkingLevels, ["off"]);
 		assert.doesNotMatch(JSON.stringify(result), /secret-url|secret-header|baseUrl|Authorization|sourceInfo/);
 	});
+	it("qualifies non-chat misses in text and structured evidence without changing chat records", async () => {
+		const { ctx } = context();
+		const models = readModels(ctx, 1);
+		for (const name of ["cloudflare-workers-ai/@cf/cloudflare/clef", "fixture/image-model"]) {
+			const result = await run({ kind: "model", name }, host(), models);
+			assert.equal(result.outcome, "missing");
+			assert.equal(result.details.catalogAvailable, true);
+			assert.deepEqual(records(result), []);
+			assert.match(result.text, /Chat models only/);
+			assert.match(result.text, /missing here does not establish their absence/);
+			const boundary = result.details.catalogBoundary;
+			assert.equal(typeof boundary, "string");
+			assert.ok(result.text.includes(String(boundary)));
+			assert.match(String(boundary), /models\.getModelsOfType\("classifier"\)/);
+			assert.match(String(boundary), /models\.getModelsOfType\("image"\)/);
+			assert.match(String(boundary), /models\.getAvailableOfType\(type\)/);
+			assert.equal(result.structuredContent.catalogBoundary, boundary);
+		}
+		const chat = await run({ kind: "model", name: "fixture/a" }, host(), models);
+		assert.equal(chat.outcome, "ok");
+		assert.match(String(chat.details.catalogBoundary), /Chat models only/);
+		assert.deepEqual(records(chat), [models.records[0]]);
+		const tool = await run({ kind: "tool" });
+		assert.equal(tool.details.catalogBoundary, undefined);
+		assert.doesNotMatch(tool.text, /Chat models only/);
+	});
 	it("filters canonical names, provider, display purpose and availability", async () => {
 		const { ctx } = context(); const models = readModels(ctx, 1);
 		assert.equal(records(await run({ kind: "model", name: "fixture/a" }, host(), models)).length, 1);
@@ -77,6 +103,7 @@ describe("model discovery", () => {
 		ctx.modelRegistry.hasConfiguredAuth = () => { throw new Error("secret-auth"); };
 		let result = await run({ kind: "model" }, host(), readModels(ctx, 1));
 		assert.equal(result.outcome, "unavailable");
+		assert.match(String(result.structuredContent.catalogBoundary), /Classifier and image models are not queried/);
 		assert.equal(records(result)[0].catalog, false);
 		assert.equal(records(result)[0].available, null);
 		assert.equal(records(result)[0].configuredAuth, null);
@@ -84,6 +111,7 @@ describe("model discovery", () => {
 		ctx.modelRegistry.getAll = () => [];
 		result = await run({ kind: "model", name: "none" }, host(), readModels(ctx, 2));
 		assert.equal(result.outcome, "partial");
+		assert.match(String(result.details.catalogBoundary), /Chat models only/);
 		assert.equal((await run({ kind: "model", available: true }, host(), readModels(ctx, 2))).outcome, "unavailable");
 	});
 	it("resumes across read timestamps and rejects model-state changes", async () => {
@@ -93,9 +121,12 @@ describe("model discovery", () => {
 		assert.equal(records(first)[0].at, 1);
 		const second = await run({ cursor }, { ...host(), at: 2000 }, readModels(ctx, 2));
 		assert.equal(second.outcome, "ok"); assert.equal(records(second)[0].id, "b");
+		assert.equal(second.details.catalogBoundary, first.details.catalogBoundary);
 		assert.equal(records(second)[0].at, 2);
 		ctx.modelRegistry.getAvailable = () => [];
-		assert.equal((await run({ cursor }, host(), readModels(ctx, 3))).outcome, "stale_cursor");
+		const stale = await run({ cursor }, host(), readModels(ctx, 3));
+		assert.equal(stale.outcome, "stale_cursor");
+		assert.equal(stale.details.catalogBoundary, first.details.catalogBoundary);
 	});
 	it("rejects a continuation after scope reorder with identical membership", async () => {
 		const { ctx, catalog } = context();

@@ -58,6 +58,16 @@ describe("native structured registry output", () => {
 		}
 		assert.deepEqual([...outcomes].sort(), ["ambiguous", "cancelled", "host_summary", "invalid_arguments", "io_error", "missing", "ok", "partial", "stale_cursor", "unavailable"]);
 	});
+	it("retains the chat-only evidence for model misses, health reviews and bounded pages", async () => {
+		for (const params of [{ kind: "model", name: "cloudflare-workers-ai/@cf/cloudflare/clef" }, { kind: "model", health: true }]) {
+			const result = validate(await run(params));
+			assert.match(String(result.structuredContent.catalogBoundary), /Classifier and image models are not queried/);
+		}
+		const oversized = { ...models, records: [{ ...models.records[0], displayName: "x".repeat(50000) }] };
+		const blocked = validate(await run({ kind: "model" }, { models: oversized }));
+		assert.equal(blocked.details.pageBlocked, true);
+		assert.match(String(blocked.structuredContent.catalogBoundary), /models\.getModelsOfType/);
+	});
 	it("counts both structured copies before dropping whole records and advancing", async () => {
 		const large = snapshot();
 		large.tools = Array.from({ length: 30 }, (_, i) => ({ name: `tool-${String(i).padStart(2, "0")}`, sourceInfo, description: "漢".repeat(800) }));

@@ -56,6 +56,9 @@ describe("Pi adapter", () => {
 		assert.ok(tool.promptSnippet?.trim().length);
 		assert.ok(tool.promptGuidelines?.length);
 		assert.ok(tool.promptGuidelines?.every((guideline) => guideline.includes("registry")));
+		assert.match(tool.description, /chat model catalog/);
+		assert.match(tool.promptSnippet, /chat models/);
+		assert.match(JSON.stringify(RegistryParams.properties.kind), /"description":"Resource kind\. model queries chat models only/);
 		const result = await tool.execute("lookup", {}, undefined, undefined, { ...context, hasUI: false });
 		assert.equal(result.details?.outcome, "host_summary");
 		assert.equal(result.content[0].type, "text");

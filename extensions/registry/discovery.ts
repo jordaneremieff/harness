@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { BOUNDARY_LINES, MODEL_SCOPE_BOUNDARY, boundResult, fullRecordQuery, isoTime, oneLine, type Block, type Outcome } from "./format.ts";
+import { BOUNDARY_LINES, MODEL_CATALOG_BOUNDARY, MODEL_SCOPE_BOUNDARY, boundResult, fullRecordQuery, isoTime, oneLine, type Block, type Outcome } from "./format.ts";
 import type { ModelSnapshot } from "./models.ts";
 import { catalogHealth, HEALTH_BOUNDARIES, healthCoverage, type HealthFinding } from "./health.ts";
 import { encodeCursor, paginate, type Page, type Query } from "./query.ts";
@@ -126,6 +126,7 @@ function discoveryHeader(
 	if (partial) lines.push("The source is incomplete. This is not absence.");
 	if (modelQuery) {
 		lines.push(
+			MODEL_CATALOG_BOUNDARY,
 			"Model metadata and cached availability are synchronous local snapshots, not remote health. configuredAuth is presence, not credential validity; no refresh, auth resolution, or probe.",
 			MODEL_SCOPE_BOUNDARY,
 			...(compactModelQuery(request.query) ? ["Compact models; use kind:model + exact provider/id name for full metadata."] : []),
@@ -162,6 +163,7 @@ function discoveryDetails(
 		offset: page.offset,
 		...(modelQuery
 			? {
+					catalogBoundary: MODEL_CATALOG_BOUNDARY,
 					catalogAvailable: models?.catalogAvailable ?? false,
 					availableSnapshot: models?.availableSnapshot ?? false,
 					catalogError: models?.catalogError ?? null,

@@ -8,7 +8,7 @@ store.
 
 | Surface | Kind | Purpose |
 |---|---|---|
-| `registry` | tool | Discover resources, model capabilities, tool parameters, and observed context paths with explicit evidence boundaries. |
+| `registry` | tool | Discover resources, chat model capabilities, tool parameters, and observed context paths with explicit evidence boundaries. |
 
 With no arguments, the tool returns the current model, thinking level, context
 usage, cwd, mode, trust, installed-version, package, documentation-location,
@@ -34,6 +34,10 @@ hints appear only when the collapsed view hides or clips content, and each
 rides the row it belongs to. An expanded card shows the full arguments or the
 bounded result text.
 
+Model-result cards state `chat models only`, including no-match cards. An empty
+model page also points to native codemode `models.*` discovery; expansion shows
+the complete catalog boundary and API names.
+
 The card never repeats the requested name, search, or content phrase in the
 result unless the result resolves a different resource. Counts are page
 counts, not an inventory; the result text carries the evidence and observation
@@ -46,7 +50,7 @@ Terminal controls are escaped and long values are clipped.
 |---|---|
 | `name` | Optional text, 1–256 characters. Name comparisons are case-sensitive. Skill names also match their `skill:<name>` and `/skill:<name>` invocation forms. |
 | `match` | `exact` or `substring`; default `exact`. |
-| `kind` | Optional `tool`, `command`, `skill`, `prompt`, `model`, or `context_file`. Without it, name/search queries cover only tools and slash-command resources. |
+| `kind` | Optional `tool`, `command`, `skill`, `prompt`, `model`, or `context_file`. `model` covers chat models only, not classifier or image models. Without it, name/search queries cover only tools and slash-command resources. |
 | `search` | Optional literal text, 1–256 characters. Case-insensitive substring within resource names, descriptions, or registered tool usage guidelines; models use canonical name and display name; context files use path. No file reads, index, or semantic ranking. |
 | `detail` | Optional boolean. Requires `kind: "tool"` and an exact name, without `search` or `contains`. `true` returns that tool's complete parameters and prompt guidelines as bounded data. Lists omit them. |
 | `provider` | Optional exact provider ID, 1–256 characters. Requires `kind: "model"`. |
@@ -81,7 +85,7 @@ field and the record's evidence time. Exact resource queries also retain the
 observer summary that resource lists omit. `detail: true` with an exact tool name and
 `kind: "tool"` additionally returns its parameters and prompt guidelines.
 
-Model lists show canonical and display names, input modalities, selected state,
+Chat model lists show canonical and display names, input modalities, selected state,
 catalog membership, cached availability, configured-auth presence, scope
 membership and position when present, reasoning capability, context window,
 supported thinking levels, and current thinking level when present. Scope
@@ -89,6 +93,27 @@ position is session cycle order, not operator preference. Each record retains
 its evidence time. Use exact `name: "provider/id"` with `kind: "model"` for
 provider, ID, output limit, extension-provider registration, and scope thinking pin.
 Offline health reports retain full records beside their findings.
+
+### Non-chat model discovery
+
+`kind: "model"` projects Pi's chat catalog only. Classifier and image models are
+not queried, so a `missing` result does not establish their absence. Model pages
+carry `catalogBoundary` in both `details` and `structuredContent`, including
+no-match, incomplete, stale, health, and continued pages. The same boundary
+appears in result text. Invalid or cancelled queries do not
+claim a catalog read; oversized outer metadata retains the explicit no-absence
+bound instead.
+
+Use native codemode `models.getModelsOfType("classifier")` or
+`models.getModelsOfType("image")` for catalog discovery. Use
+`models.getAvailableOfType(type)` for availability, or
+`models.getModelOfType(type, provider, id)` for an exact entry. Those helpers
+require an active codemode tool. Registry neither activates it nor calls the
+helpers. Read the installed Pi `docs/codemode.md` for `models.classify()` and
+`models.generateImages()`, their credentials, usage, and result-error contracts.
+Registry adds no non-chat catalog, inference, routing policy, or credential check.
+
+### Structured results
 
 The tool declares `outputSchema` and returns `structuredContent` on every outcome.
 Native codemode scripts receive this object rather than the human text. Its
@@ -191,7 +216,7 @@ its schema and registered guidance without activating it.
 
 ## Evidence and observation
 
-- Model records project `ctx.modelRegistry.getAll()`, `getAvailable()`,
+- Chat model records project `ctx.modelRegistry.getAll()`, `getAvailable()`,
   `hasConfiguredAuth()`, `getError()`, `getRegisteredProviderIds()`, `ctx.model`,
   `ctx.thinkingLevel`, and `ctx.scopedModels`. Names are canonical `provider/id`;
   display names are separate. Records state catalog membership, selected state,
@@ -281,7 +306,7 @@ its schema and registered guidance without activating it.
 |---|---|
 | `host_summary` | No selectors were supplied; host facts and observation boundaries follow. |
 | `ok` | Matching registration records or source lines are available. |
-| `missing` | All required registry accessors answered and no record matched, or a complete file scan found no matching line. |
+| `missing` | All required registry accessors answered and no record matched within the queried source, or a complete file scan found no matching line. Model queries establish no absence outside the chat catalog. |
 | `ambiguous` | More than one file-backed resource matched a content query. No file was opened. |
 | `unavailable` | A required host accessor failed, a matched resource has only a synthetic/non-absolute source, or current frontmatter is invalid/non-object. This is not absence. |
 | `partial` | A model catalog reports an error, a retained observation overflowed, or a content read stopped or changed. No absence is established. |
@@ -379,7 +404,7 @@ The native form reads Durable facts instead of a Pi session:
   alias and reports model-invocability from the loader's disable flag as an
   observation at call time. Content queries read the resolved source file the
   same way as the ordinary tool.
-- Model records come from the host's model runtime: catalog, cached
+- Chat model records come from the host's model runtime: catalog, cached
   availability snapshot, configured-auth presence, and registered providers.
   The conversation's selected model and thinking level come from the resolved
   agent. A Durable conversation has no Pi model scope, so scope fields stay
@@ -434,6 +459,9 @@ Colocated tests cover projection, complete source identity, observer privacy and
 bounds, argument validation, host facts, lifecycle resets, session-specific
 cursors, bounded paging, full-result limits, frontmatter semantics, literal
 search, non-regular sources, active cancellation, and explicit failure outcomes.
+Model-scope tests retain chat-only evidence and the native non-chat discovery
+route through ordinary and Durable delivery, schema checks, bounded pages,
+continuations, incomplete sources, health reviews, and collapsed result cards.
 Model, metadata-search, exact-schema, and context-path tests also cover safe
 field projection, zero-based scope positions, scope order, extension-provider
 registration, selection/scope distinctions, unavailable surfaces, stale

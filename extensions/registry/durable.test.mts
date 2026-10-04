@@ -207,7 +207,7 @@ test("durable registry answers model-issued queries from native Durable facts", 
 	assert.ok(guidance);
 	assert.match(
 		(await guidance.render({ agent: { tools: [{ name: "registry" }] } } as never, BACKGROUND_CONTEXT)) as string,
-		/Discover session resources/,
+		/Discover session resources, chat models/,
 	);
 	assert.equal(await guidance.render({ agent: { tools: [{ name: "other" }] } } as never, BACKGROUND_CONTEXT), undefined);
 
@@ -222,6 +222,7 @@ test("durable registry answers model-issued queries from native Durable facts", 
 					fauxToolCall("registry", { kind: "prompt" }, { id: "prompt" }),
 					fauxToolCall("registry", { kind: "skill", name: "example-skill", contains: PHRASE }, { id: "contains" }),
 					fauxToolCall("registry", { kind: "model", name: "faux/faux-1" }, { id: "model" }),
+					fauxToolCall("registry", { kind: "model", name: "cloudflare-workers-ai/@cf/cloudflare/clef" }, { id: "non-chat" }),
 					fauxToolCall("registry", { kind: "context_file" }, { id: "context" }),
 					fauxToolCall("registry", {}, { id: "summary" }),
 				],
@@ -297,6 +298,16 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		assert.equal(selected.extensionProvider, true);
 		assert.equal(selected.inScope, null);
 		assert.equal(typeof selected.currentThinkingLevel, "string");
+		assert.match(String(objectOf(model.details).catalogBoundary), /Chat models only/);
+
+		const nonChat = toolResult(messages, "non-chat");
+		const nonChatDetails = objectOf(nonChat.details);
+		assert.equal(nonChatDetails.outcome, "missing");
+		assert.deepEqual(recordsOf(nonChat), []);
+		assert.match(textOf(nonChat), /missing here does not establish their absence/);
+		assert.match(String(nonChatDetails.catalogBoundary), /models\.getModelsOfType\("classifier"\)/);
+		const scriptValue = objectOf(nonChatDetails.structuredContent);
+		assert.equal(scriptValue.catalogBoundary, nonChatDetails.catalogBoundary);
 
 		const context = toolResult(messages, "context");
 		assert.equal(context.isError, false, textOf(context));
