@@ -10,8 +10,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, getCurrentTools, type AssistantMessage, type ToolResultMessage, type TranscriptContext } from "@earendil-works/pi-ai";
-import { Harness, MemoryStorage, type Conversation } from "@earendil-works/pi-durable";
-import { createDurableServices, type DurableServices } from "./durable-services.ts";
+import { Harness, MemoryStorage, type Conversation, type Extension } from "@earendil-works/pi-durable";
+import { createDurableServices, type DurableContributionHost, type DurableServices } from "./durable-services.ts";
 import { reconcileDeliveries } from "./durable-controls.ts";
 import { createDurableExecution, type DurableExecution } from "./durable-execution.ts";
 import { DurableHost } from "./durable-host.ts";
@@ -216,6 +216,7 @@ export interface ExecutionFixtureOptions {
 	readonly readyTimeoutMs?: number;
 	/** Await the execution's bounded `ready` before resuming the Harness. */
 	readonly awaitReady?: boolean;
+	readonly builtinExtensions?: (host: DurableContributionHost) => readonly Extension[];
 }
 
 export interface ExecutionFixture {
@@ -272,7 +273,7 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 		trusted: options.trusted ?? true,
 		buildBuiltin: (host) => {
 			execution = createDurableExecution(host, options.readyTimeoutMs === undefined ? undefined : { readyTimeoutMs: options.readyTimeoutMs });
-			return execution;
+			return { ...execution, extensions: [...execution.extensions, ...(options.builtinExtensions?.(host) ?? [])] };
 		},
 		modelRuntime: runtime,
 		onReport: (error) => errors.push(error),

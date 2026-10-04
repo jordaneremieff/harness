@@ -164,7 +164,10 @@ The host supplies:
   retained results. Scripts remain unsafe after interruption.
 
 Structured tool objects use `details.structuredContent` and an `outputSchema`
-registration. Direct image reads retain image blocks. Script discovery uses
+registration. A tool with an output schema returns explicitly supplied structured
+data to scripts even when its result marks an error. A failed call without that
+data throws its diagnostic text to the script. Direct image reads retain image
+blocks. Script discovery uses
 `searchTools`, `describeTool`, `describeNamespace`, and `ALL_TOOLS`. Tool
 selection and MCP server configuration follow the current Pi settings.
 

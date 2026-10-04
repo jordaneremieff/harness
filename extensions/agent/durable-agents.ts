@@ -243,9 +243,9 @@ function textResult(
 
 function errorResult(
 	text: string,
-	structuredContent: Record<string, JsonValue> = {},
+	structuredContent?: Record<string, JsonValue>,
 ): Durable.ToolExecutionResult<ControlDetails> {
-	return { content: [{ type: "text", text }], isError: true, details: { structuredContent } };
+	return { content: [{ type: "text", text }], isError: true, ...(structuredContent === undefined ? {} : { details: { structuredContent } }) };
 }
 
 /** Render a host control result for the model without losing structure. */

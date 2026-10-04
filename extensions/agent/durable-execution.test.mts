@@ -7,11 +7,13 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { Type } from "typebox";
 import { createDurableExecution, checkClassifierContext, checkImagesContext, loadMcpConfig } from "./durable-execution.ts";
 import { reconcileDeliveries } from "./durable-controls.ts";
 import { answerRuntime, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
 import { createDurableServices } from "./durable-services.ts";
 import { DurableHost } from "./durable-host.ts";
+import { createAgentContribution } from "./durable-agents.ts";
 
 const fixturePath = fileURLToPath(new URL("./durable-execution-fixture.mts", import.meta.url));
 const READY = Buffer.from("READY\n");
@@ -94,6 +96,44 @@ it("hands a structured result to the script through details.structuredContent", 
 	const result = await f.submit("call the structured tool");
 	const text = result.toolResults.map(toolResultText).join("\n");
 	assert.match(text, /"answer":"42"/u);
+});
+
+it("throws a native agent error without data to codemode with its text", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `try {
+			return { caught: false, value: await tools.agent_status({ sessionId: "target" }) };
+		} catch (error) {
+			return { caught: true, error: error.message };
+		}`,
+		builtinExtensions: (host) => [createAgentContribution({
+			source: fileURLToPath(new URL("./index.ts", import.meta.url)),
+			dispatch: async () => { throw new Error("target stream unavailable"); },
+		}).create(host)],
+	});
+	const result = await f.submit("read the target status");
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { caught: boolean; error?: string; value?: unknown };
+	assert.equal(output.caught, true, "the agent failure rejects the nested script call");
+	assert.match(output.error ?? "", /Status of target failed: target stream unavailable/u);
+	assert.equal(output.value, undefined, "the error is not an empty structured value");
+});
+
+it("keeps a data-bearing native tool error as a codemode result", { timeout: 30000 }, async (t) => {
+	const failure = { outcome: "failed", error: "target is busy" };
+	const f = await executionFixture(t, {
+		code: `return await tools.data_error({});`,
+		builtinExtensions: (host) => [host.durable.defineExtension({
+			name: "fixture.data-error",
+			tools: [{
+				...host.durable.defineTool({
+					name: "data_error", description: "Return an error with structured data.", parameters: Type.Object({}), replay: "safe",
+					execute: async () => ({ content: [{ type: "text" as const, text: "target is busy" }], isError: true, details: { structuredContent: failure } }),
+				}),
+				outputSchema: Type.Object({ outcome: Type.String(), error: Type.String() }),
+			}],
+		})],
+	});
+	const result = await f.submit("read the structured error");
+	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))), failure);
 });
 
 it("applies an afterTool ToolTask hook to a nested codemode result", { timeout: 30000 }, async (t) => {
