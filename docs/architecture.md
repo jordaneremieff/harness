@@ -96,21 +96,23 @@ The harness is a Pi package. `package.json` declares the resources under the
   tests through `node --test` over the glob in the `test` script.
 - `package.json` declares wildcard peers for `@earendil-works/pi-ai`,
   `@earendil-works/pi-agent-core`, `@earendil-works/pi-coding-agent`,
-  `@earendil-works/pi-tui`, `typebox`, and `@earendil-works/pi-server`.
-  Runtime dependencies include `htmlparser2` for static HTML parsing and
-  `@earendil-works/chord` with `@earendil-works/pi-client` for typed services
-  and connections to detached agent owners. Policy checks registered tool
-  arguments through TypeBox. Read the manifest for the complete current
-  dependency set.
+  `@earendil-works/pi-tui`, and `typebox`. Runtime dependencies include
+  `htmlparser2` for static HTML parsing; Chord, Pi Client, and Pi Server for
+  typed services and Unix control connections; and Pi Durable, Codemode, and
+  MCP for native agent execution. Policy checks registered tool arguments
+  through TypeBox. Read the manifest for the complete current dependency set.
 - Pi's extension loader binds the core AI, agent, coding-agent, TUI,
-  and typebox imports to its running installation. It does not bind Chord,
-  Pi Client, or Pi Server. The [agent slice](../extensions/agent/README.md)
-  uses these public packages for its private Unix control socket and uses
-  coding-agent's ordinary session services, `AgentSessionRuntime`, and
-  `SessionManager` for execution and native history.
-  A peer declaration alone does not establish loader binding. See
-  [the durable-harness track](pi-durable-harness.md) before selecting a
-  remote integration surface.
+  and TypeBox imports to its running installation. It does not bind Chord,
+  Pi Client, Pi Server, Pi Durable, Codemode, or MCP. The
+  [agent slice](../extensions/agent/README.md) uses the public client/server
+  packages for its private Unix control socket. Public coding-agent session
+  services supply cwd-bound resources, trust, settings, and configured
+  providers; native contributions supply capabilities. Pi Durable owns agent
+  execution, retained entries, submissions, and task outcomes inside independent
+  storage hosts. The ordinary primary retains its terminal host and ordinary
+  session history. A peer declaration alone does not establish loader binding.
+  See [the durable-harness track](pi-durable-harness.md) before selecting a
+  runtime or remote integration surface.
 - `package-lock.json` pins the development dependency snapshot for reproducible
   standalone checks. Refresh it with the Pi release used to validate the harness.
 - Every change is validated against the installed Pi declarations, not only
