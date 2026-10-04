@@ -195,11 +195,10 @@ extraction reached a limit; URL-policy omissions remain separately visible.
 ## Durable agents
 
 The extension has a native Pi Durable form beside its ordinary entrypoint. The
-factory emits one contribution on the `durable:contribution` channel; the agent
-session host installs it into the session registry. An ordinary Pi session has
-no listener on that channel, so the emission has no effect there. The
-contribution names `extensions/brave/index.ts` as its source, so the host can
-match it to the resolved path of the loaded extension.
+factory emits its contribution on the `durable:contribution` channel with the
+absolute `index.ts` entrypoint path as its source. The
+[agent extension](../agent/README.md) owns contribution discovery and host
+installation.
 
 `extensions/brave/durable.ts` builds the native extension from the shared
 `capability.ts` surface: parameter schemas, descriptions, model guidance, and
