@@ -27,15 +27,20 @@ export function compactTokens(tokens: number): string {
 	const value = tokens / unit;
 	return `${value < 10 ? value.toFixed(1) : Math.round(value)}${million ? "M" : "k"}`;
 }
-export function usageText(tokens: number | undefined, window: number | undefined, usage?: UsageState): string {
-	const knownWindow = window !== undefined && window > 0 && Number.isFinite(window);
-	const context = `context ${tokens === undefined ? "?" : compactTokens(tokens)}${knownWindow ? `/${compactTokens(window)}` : ""}${tokens !== undefined && knownWindow ? ` (${Math.round(tokens / window * 100)}%)` : ""}`;
-	if (!usage) return context;
+export interface AgentUsageFacts {
+	context?: number;
+	window?: number;
+	input?: number;
+	output?: number;
+}
+export function usageFacts(context: number | undefined, window: number | undefined, usage?: UsageState): AgentUsageFacts {
+	const facts: AgentUsageFacts = { context, window: window !== undefined && window > 0 && Number.isFinite(window) ? window : undefined };
+	if (!usage) return facts;
 	let input = 0;
 	let output = 0;
 	for (const value of [...Object.values(usage.models), ...Object.values(usage.tools)]) {
 		input += value.input + value.cacheRead + value.cacheWrite;
 		output += value.output;
 	}
-	return `${context} · tokens ${compactTokens(input)} in/${compactTokens(output)} out`;
+	return { ...facts, input, output };
 }

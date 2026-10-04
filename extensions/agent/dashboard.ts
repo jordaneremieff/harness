@@ -1,6 +1,8 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	Input,
+	visibleWidth,
+	truncateToWidth,
 	matchesKey,
 	wrapTextWithAnsi,
 	type Component,
@@ -17,7 +19,7 @@ import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
 import { dashboardGeometry, dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
-import { dashboardRecords, rosterLines, coverageText, activityOf, sessionAppearance } from "./dashboard-roster.ts";
+import { dashboardRecords, rosterLines, activityOf, sessionAppearance, titleOf, attentionReason, needsAttention } from "./dashboard-roster.ts";
 import {
 	agentState,
 	dashboardSessionState,
@@ -28,7 +30,7 @@ import {
 } from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import type { TaskLabel, ConversationFrame } from "./live-frames.ts";
-import { firstTaskEntry } from "./dashboard-conversation.ts";
+import { firstTaskEntry, cleanDashboardText } from "./dashboard-conversation.ts";
 import { ConversationHistory } from "./conversation-view.ts";
 import type { NativeSurface } from "./action-dialogs.ts";
 import { CollaborationView, createCollaborationViewState, type Collaborate } from "./collaboration-view.ts";
@@ -54,6 +56,7 @@ const HELP = [
 	"Threads shows the frame, peers, and exchange. p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
 	"i switches all times between relative age and local date and time.",
+	"This time toggle stays available when it is absent from the hint line.",
 	"A time shows the agent's last recorded change, not an activity timer.",
 	"In fullscreen mode, click rows to select and visible hints to act.",
 	"Click a time to switch its format. Click a message field to write.",
@@ -1078,7 +1081,7 @@ export class AgentDashboard implements Component, Focusable {
 		const hints =
 			screen === "help" || screen === "result"
 				? ["↑↓ scroll", "PgUp/PgDn read"]
-				: ["↑↓ select", "Enter choose", "PgUp/PgDn read"];
+				: ["PgUp/PgDn read", "↑↓ select", "Enter choose"];
 		return [
 			this.heading(width),
 			...Array.from({ length: this.bodyHeight }, (_, index) => body[index] ?? ""),
@@ -1086,11 +1089,11 @@ export class AgentDashboard implements Component, Focusable {
 			mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), this.theme),
 		];
 	}
-	private messageLabel(width: number, focused: boolean): string {
+	private messageLabel(): string {
 		if (this.navigation.screen === "new") return `New agent · Enter starts · ${this.creating ? "Starting…" : "Task"}`;
 		if (this.navigation.screen === "find") return "Find loaded agents · Enter keeps filter · Esc cancels";
 		return (
-			this.console?.messageLabel(focused, width) ??
+			this.console?.messageLabel() ??
 			(this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent")
 		);
 	}
@@ -1107,8 +1110,8 @@ export class AgentDashboard implements Component, Focusable {
 	private hintLine(width: number): string {
 		const screen = this.navigation.screen;
 		const hints: Partial<Record<typeof screen, [string[], string]>> = {
-			console: [["Enter send", "Tab steer/follow-up", "PgUp/PgDn read"], "Esc dashboard"],
-			message: [["Enter send", "Tab steer/follow-up", "Ctrl+J newline", "PgUp/PgDn read"], "Esc roster"],
+			console: [["PgUp/PgDn read", "Enter send", "Tab steer/follow-up", "Ctrl+J newline"], "Esc dashboard"],
+			message: [["PgUp/PgDn read", "Enter send", "Tab steer/follow-up", "Ctrl+J newline"], "Esc roster"],
 			new: [["Enter start", "Ctrl+J newline"], "Esc roster"],
 			find: [["↑↓ select", "Enter keep filter"], "Esc cancel find"],
 		};
@@ -1119,7 +1122,6 @@ export class AgentDashboard implements Component, Focusable {
 						"Enter open",
 						"Tab message",
 						"t threads",
-						this.state.exactTime ? "i relative time" : "i date and time",
 						"n new",
 						"a actions",
 						"/ find",
@@ -1186,7 +1188,7 @@ export class AgentDashboard implements Component, Focusable {
 		return lines;
 	}
 	private loadMoreLine(width: number, y: number): string {
-		if (!this.page?.coverage.nextCursor) return coverageText(this.page?.coverage);
+		if (!this.page?.coverage.nextCursor) return "";
 		this.mouse.add({
 			x: 0,
 			y,
@@ -1197,101 +1199,90 @@ export class AgentDashboard implements Component, Focusable {
 				this.rosterEnter();
 			},
 		});
-		return this.loadMore ? "› Load more agents · Enter" : "  Load more agents";
+		return this.loadMore ? "› Load more agents" : "Load more agents";
 	}
-	private dashboardBody(
-		width: number,
-		geometry: ReturnType<typeof dashboardGeometry>,
-		conversation: string[],
-		bodyY: number,
-	): string[] {
-		if (geometry.wide) {
-			const rosterHeight = Math.max(0, geometry.bodyHeight - (this.page?.coverage.nextCursor ? 1 : 0));
-			const roster = this.rosterViewport(geometry.rosterWidth, rosterHeight, false, bodyY);
-			if (this.page?.coverage.nextCursor && roster.length < geometry.bodyHeight)
-				roster.push(this.loadMoreLine(geometry.rosterWidth, bodyY + roster.length));
-			return conversation.map(
-				(line, index) =>
-					`${fitLine(roster[index] ?? "", geometry.rosterWidth)}${this.theme.fg("borderMuted", "│")}${fitLine(line, geometry.conversationWidth)}`,
-			);
+	private rosterFooter(summary: string, width: number, y: number): string {
+		const action = this.loadMoreLine(width, y);
+		if (this.rosterNotice) return this.theme.fg("muted", fitLine(cleanDashboardText(this.rosterNotice).replace(/\s+/g, " "), width));
+		const coverage = this.page?.coverage;
+		const facts: string[] = [];
+		if (coverage?.skipped) facts.push(`${coverage.skipped} unreadable`);
+		if (coverage?.omitted) facts.push(`${coverage.omitted} omitted`);
+		if (coverage && !coverage.complete && !coverage.nextCursor && !facts.length) facts.push("Incomplete");
+		const loaded = cleanDashboardText(summary);
+		let parts = [loaded, ...facts, action].filter(Boolean);
+		if (visibleWidth(parts.join(" · ")) > width) {
+			parts = [loaded, ...facts, action ? this.loadMore ? "› More" : "More" : ""].filter(Boolean);
 		}
-		if (this.navigation.screen === "console") return conversation;
-		const roster = this.rosterViewport(width, 4, true, bodyY);
-		return [...roster, this.loadMoreLine(width, bodyY + 4), ...conversation];
+		const text = parts.join(" · ");
+		return this.theme.fg("muted", fitLine(visibleWidth(text) <= width ? text : parts.join("  "), width));
 	}
-	private selectedStatus(width: number): string[] {
-		const isNew = this.navigation.screen === "new";
-		const lines = isNew
-			? ["New agent · primary model and directory"]
-			: [this.statusText(), ...(this.console ? wrapTextWithAnsi(this.console.footer(width, this.console.row.model ? this.operations.contextWindow?.(this.console.row.model.provider, this.console.row.model.modelId) : undefined), width) : [])];
-		if (!isNew && this.console?.warning) lines.push(this.console.warning);
-		const receipt = isNew ? this.notice : this.console?.state.receipt;
-		if (receipt) lines.push(receipt);
-		return lines.map((line) => this.theme.bg("customMessageBg", fitLine(this.theme.fg("muted", line), width)));
+	private selectedHeader(width: number): string[] {
+		if (this.navigation.screen === "new") return [this.theme.bold("New agent"), this.theme.fg("muted", "Primary model and directory")];
+		const console = this.console;
+		if (!console) return [this.statusText(), this.notice].filter((line): line is string => Boolean(line)).map((line) => this.theme.fg("muted", line));
+		const row = console.row;
+		const appearance = sessionAppearance[row.state];
+		const activity = this.navigation.screen === "console" && row.state === "working" && !needsAttention(row) ? ` · ${activityOf(row)}` : "";
+		const state = truncateToWidth(`${appearance.glyph} ${appearance.label}${activity}`, Math.floor(width / 2), "…");
+		const name = this.theme.bold(this.theme.fg("text", titleOf(row)));
+		const lines = [`${fitLine(name, Math.max(1, width - visibleWidth(state) - 2))}  ${this.theme.fg(appearance.color, state)}`];
+		const window = row.model ? this.operations.contextWindow?.(row.model.provider, row.model.modelId) : undefined;
+		lines.push(...console.footer(width, window).split("\n"));
+		const reason = attentionReason(row);
+		if (reason) lines.push(this.theme.fg("error", reason));
+		if (console.warning) lines.push(this.theme.fg("warning", console.warning));
+		if (this.notice) lines.push(this.theme.fg("warning", this.notice));
+		return lines.map((line) => fitLine(line, width));
 	}
 	private conversationBoundary(width: number): string {
-		const position = this.console?.conversation.position();
-		let label = "Conversation · No loaded messages";
-		if (position?.total)
-			label = position.first
-				? `${position.estimated ? "Approx. lines" : "Lines"} ${position.first}–${position.last} of ${position.total} loaded${position.end ? " · End of loaded view" : ""}`
-				: `${position.total} loaded lines · Expand the terminal to read`;
-		const history = this.console?.status || (this.history.newer() ? "Newer messages available" : this.snapshot?.nextBefore ? "PgUp for older messages" : "");
-		return dashboardRule(this.rosterNotice ?? this.notice ?? `${label}${history ? ` · ${history}` : ""}`, width, this.theme);
+		const console = this.console;
+		const position = console?.conversation.position();
+		let label = "";
+		if (console?.status && console.status !== "Partial history") label = console.status;
+		else if (position && !position.end) {
+			label = position.first <= 1 && (this.history.earlier() || console?.status === "Partial history")
+				? "Partial history · PgUp loads earlier"
+				: `↓ ${position.estimated ? "about " : ""}${position.total - position.last} lines below`;
+		} else if (this.history.newer()) label = "Newer messages available · PgDn loads more";
+		return dashboardRule(label, width, this.theme);
+	}
+	private transcriptLines(width: number, height: number): string[] {
+		const conversation = this.console?.conversation;
+		const lines = conversation?.render(Math.max(1, width - 1), height) ?? Array.from({ length: height }, () => "");
+		const position = conversation?.position();
+		if (!position || position.total <= height) return lines.map((line) => fitLine(line, width));
+		const thumb = Math.max(1, Math.round(height * height / position.total));
+		const top = Math.round((height - thumb) * (position.first - 1) / Math.max(1, position.total - height));
+		return lines.map((line, index) => fitLine(line, width - 1) + this.theme.fg(index >= top && index < top + thumb ? "scrollbarThumb" : "scrollbarTrack", index >= top && index < top + thumb ? "┃" : "│"));
 	}
 	private renderDashboard(width: number, height: number): string[] {
 		const screen = this.navigation.screen;
 		const focused = screen === "message" || screen === "console";
 		const composer = screen === "new" ? this.newComposer : this.console?.composer;
-		const editor = composer?.render(width, this.messageLabel(width - 6, focused)) ?? [];
-		const status = this.selectedStatus(width);
-		const geometry = dashboardGeometry(
-			width,
-			height,
-			editor.length,
-			screen === "console",
-			screen === "find" ? 1 : 0,
-			status.length,
-		);
+		const reserved = screen === "find" ? 1 : 0;
+		const shape = dashboardGeometry(width, height, 0, screen === "console", reserved);
+		const paneWidth = shape.conversationWidth;
+		const header = this.selectedHeader(paneWidth - 2).map((line) => ` ${line} `);
+		const editor = composer?.render(paneWidth, this.messageLabel(), focused ? this.console?.messageMode() : "", screen === "new" ? this.notice : this.console?.state.receipt) ?? [];
+		const geometry = dashboardGeometry(width, height, editor.length, screen === "console", reserved, header.length + 2);
 		this.bodyHeight = geometry.bodyHeight;
-		const conversation =
-			this.console?.conversation.render(geometry.conversationWidth, geometry.bodyHeight) ??
-			Array.from({ length: geometry.bodyHeight }, (_, index) =>
-				index === Math.floor(geometry.bodyHeight / 2) ? this.statusText() : "",
-			);
-		const bodyY = screen === "find" ? 2 : 1;
-		const body = this.dashboardBody(width, geometry, conversation, bodyY);
-		if (screen === "find") {
-			body.unshift(this.find.render(width)[0] ?? "");
-			this.mouse.add({
-				x: 0,
-				y: 1,
-				width,
-				height: 1,
-				click: (event) => this.find.handleMouse({ ...event, type: "press" }),
-			});
-		}
-		const conversationY = bodyY + geometry.rosterHeight;
+		const transcript = this.transcriptLines(paneWidth, geometry.bodyHeight);
+		const pane = [...header, this.conversationBoundary(paneWidth), ...transcript, "", ...editor];
+		const bodyY = 1 + reserved;
+		const paneX = geometry.wide ? geometry.rosterWidth + 1 : 0;
+		const paneY = bodyY + geometry.rosterHeight;
 		this.mouse.add({
-			x: geometry.wide ? geometry.rosterWidth + 1 : 0,
-			y: conversationY,
-			width: geometry.conversationWidth,
-			height: geometry.bodyHeight,
+			x: paneX, y: paneY + header.length, width: paneWidth, height: geometry.bodyHeight + 1,
 			click: () => {
 				if (!this.console || screen === "new" || screen === "find") return false;
 				if (screen !== "console") this.navigation.enter("console", this.console.row.id);
 			},
 			wheel: (delta) => this.wheelConversation(delta),
 		});
-		this.mouse.add({ x: 0, y: 1 + body.length, width, height: 2, wheel: (delta) => this.wheelConversation(delta) });
-		const composerY = 3 + body.length + status.length;
 		this.mouse.add({
-			x: 0,
-			y: composerY,
-			width,
-			height: editor.length,
+			x: paneX, y: paneY + header.length + geometry.bodyHeight + 2, width: paneWidth, height: editor.length,
 			click: (event) => {
-				const composer = screen === "new" ? this.newComposer : this.console?.composer;
 				if (!composer) return false;
 				if (screen !== "new" && screen !== "console" && screen !== "message" && this.console)
 					this.navigation.enter("message", this.console.row.id);
@@ -1299,15 +1290,23 @@ export class AgentDashboard implements Component, Focusable {
 				return composer.handleMouse(event);
 			},
 		});
-		return [
-			this.heading(width),
-			...body,
-			"",
-			this.conversationBoundary(width),
-			...status,
-			...editor,
-			this.hintLine(width),
-		];
+		let body: string[];
+		if (geometry.wide) {
+			const roster = this.rosterViewport(geometry.rosterWidth - 1, geometry.paneHeight, false, bodyY);
+			const last = Math.max(0, roster.length - 1);
+			roster[last] = this.rosterFooter(roster[last] ?? "", geometry.rosterWidth, bodyY + last);
+			body = pane.map((line, index) => fitLine(roster[index] ?? "", geometry.rosterWidth) + this.theme.fg("borderMuted", "│") + fitLine(line, paneWidth));
+		} else if (screen === "console") body = pane;
+		else {
+			const roster = this.rosterViewport(width, 4, true, bodyY);
+			roster[3] = this.rosterFooter(roster[3] ?? "", width, bodyY + 3);
+			body = [...roster, ...pane];
+		}
+		if (reserved) {
+			body.unshift(this.find.render(width)[0] ?? "");
+			this.mouse.add({ x: 0, y: 1, width, height: 1, click: (event) => this.find.handleMouse({ ...event, type: "press" }) });
+		}
+		return [this.heading(width), ...body, this.hintLine(width)];
 	}
 	render(width: number): string[] {
 		const height = this.tui.terminal.rows;

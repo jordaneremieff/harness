@@ -652,37 +652,47 @@ admission clears only the submitted draft revision, including after the
 dashboard reopens; newer text stays. Every truncated dashboard list keeps the
 focused entry and its neighbors visible and states the hidden count.
 
-Each view has a framed heading and one tinted hint bar at the bottom. Keys use
-an accent color; action words and metadata use a quieter color. Roster, thread,
-and action selections share a visible marker and highlight. Roster names also
-show the agent state glyph; the written state remains visible. The roster
-widens with the terminal and shows activity, model, thinking level, cost, and
-last-change time. Wide rows separate identity and activity, then combine model,
-thinking level, cost, and time. The provider prefix appears on wide rows when
-it fits. Tool activity uses a short plain string argument summary rather than
-raw JSON. Narrow terminals use compact single-line rows with each fact shortened
-to fit.
-Heading counters describe the loaded selection or the current thread page,
-not an unknown global total. A `+` marks incomplete loaded coverage. Conversation
-content uses Pi's native renderer. A blank row and a loaded-line position rule
-separate output from input. `End of loaded view` refers only to the loaded
-history, not the complete conversation. The position says `Approx. lines` while
-native message blocks outside the viewport still have estimated heights.
-The adjacent status block shows the selected state and activity, provider/model,
-thinking level, cost, compact context tokens/window and percentage, and delivery
-receipts. State appears only on the activity line. Model, thinking, context,
-cumulative tokens, and cost share one metadata line, wrapped on narrow screens.
-An unknown window shows only the known context count, such as `context 163k`.
+Each view has a framed heading and one plain hint line at the bottom. Keys use
+an accent color; action words and metadata use a quieter color. Scroll controls
+come first and Esc comes last. Time format remains available through `i`, a
+click on a time, and Help. The roster omits the time-format hint.
+
+At side-by-side widths, the narrow roster occupies the full body height. The
+selected agent's name and state lead the conversation header. A compact grid
+groups model, provider and thinking level with context, cumulative tokens, and
+cost. Content-sized columns keep these facts together instead of spreading them
+across the pane. The Tokens label stays fixed; narrower panes shorten its value.
+The console also shows the current activity beside the state. An attention reason or
+conversation warning appears under the facts. No status band separates the
+transcript from the composer.
+
+Heading counters describe the loaded selection or current thread page, not an
+unknown global total. A `+` marks incomplete loaded coverage. A scrollbar shows
+the position within loaded conversation content. The header rule stays blank
+at the live tail; away from it, the rule states the distance below or the action
+to load an earlier or newer range. Estimated heights say `about`. The transcript
+keeps blank space above the composer, including at the tail.
+
+Conversation content uses Pi's native renderer. Built-in tools retain native
+cards. Other tools use an inert display definition owned by this extension,
+with a single-line call summary and an output preview bounded by visual rows.
+A quiet hidden-line count marks omitted output. Ctrl+O expands arguments and
+output; Ctrl+T controls thinking. Stored tools never load another extension's
+renderer or execute through the display definition.
+
 Context comes from the newest completed assistant usage and becomes unknown
 after a newer compaction or reset until another assistant reports usage. The
 primary model registry supplies the context window; an unknown model window
 stays unknown. A live frame adds cumulative input/output tokens from its usage
-ledger, including cached input. The conversation rule holds history-loading
-and position states, not the agent status block.
-The native editor has a captioned frame with the recipient and message mode.
+ledger, including cached input. An unknown window shows only the known context
+count. The header keeps unknown values explicit.
+
+The native editor has a captioned frame with the recipient. The message mode
+appears on the right when focused; the delivery receipt uses the bottom border.
 Headings and captions display metadata on one line; body text and drafts retain
 their line breaks. The frame preserves native keyboard input, text selection,
-and caret placement.
+and caret placement. Below side-by-side widths, compact roster rows sit above
+the same header, transcript, and composer.
 
 In Pi fullscreen mode, click a roster or task row to select it, then click the
 `Enter` hint to open it. In Threads, click a row to select it; click the selected
@@ -890,14 +900,22 @@ instead.
 
 The roster reads bounded host-published metadata through `dashboard-types.ts`.
 It parses no ordinary JSONL, opens no conversation database, and starts no host.
-Rows show identity, state, current tool for active work or a latest-reply excerpt,
-attention reason, model and thinking level, cost, and the last recorded change.
+Roster blocks show a bold name and state glyph with the last-change time at the
+right, the activity below, then model and thinking level with cost at the right.
+The provider belongs in the selected header, not in each roster block. Quiet
+section labels include their loaded counts. A continuous marker identifies the
+selected block. Working activity uses normal text; finished excerpts use muted
+text. State glyphs and written state words retain their state colors. Attention
+reasons stay prominent and use the plain background for readable error text.
+Working and Done labels do not repeat the group or glyph. A footer distinguishes
+more loaded rows outside the viewport from the Load more agents catalog action.
 Times default to `just now`, `15m ago`, `3h ago`, or `1d ago`, with no seconds
 counter. These ages describe recorded changes, not current activity.
 Press `i` in the roster or a thread, or click a visible time in fullscreen mode,
 to switch every dashboard time to the absolute local date and time, such as
 `Oct 4, 2026, 12:01 PM`. Neither form has an `Updated` label or a local suffix.
-The same choice applies to thread event times and survives close and reopen
+Exact time adds a line to each wide roster block so the full date does not
+consume the name. The same choice applies to thread event times and survives close and reopen
 in the same Pi session and process; it is not saved to disk. A retained
 `@handle` leads the label, followed by the display name when it fits. A historical
 first input is a labeled fallback, never a standing role. Duplicate labels receive unique
@@ -915,7 +933,11 @@ fixed during an arrow sequence. Text entry locks its recipient even while
 published metadata changes.
 
 Coverage carries `complete`, `storagesVisited`, `skipped`, `omitted`, and
-`nextCursor`. Load more agents continues that cursor. Find searches loaded
+`nextCursor`. The roster footer shows short muted counts such as `18 unreadable`
+or `2 omitted`; an incomplete page also keeps the title’s `+` marker. These are
+roster facts, not selected-agent warnings. Unreadable or missing views remain
+unknown, not absent. Load more agents continues the cursor; narrow footers
+shorten the action to More. Find searches loaded
 handle, role hint, name, historical first input, path, model, state, and identity,
 not transcript text. Find
 previews the selected match before the filter is committed; Esc restores the
@@ -940,7 +962,7 @@ claims. Neither path repeatedly reads transcripts. Streaming paints coalesce;
 local input paints immediately. Closing releases observers and UI timers.
 A failed refresh keeps the last good roster. A transient failure stays quiet
 when rows remain available; repeated failures or an empty roster show a notice
-in the conversation rule. A successful refresh clears that notice.
+on the roster’s last line. A successful refresh clears that notice.
 
 The primary status line and dashboard heading use the same session scope:
 agents created by the current primary session plus their descendants through

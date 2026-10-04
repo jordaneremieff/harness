@@ -122,17 +122,17 @@ export class AgentComposer implements Component, Focusable {
 		return this.editor.handleMouse({ ...event, x: event.x - 1, width: event.width - 2 });
 	}
 
-	render(width: number, caption = "Message"): string[] {
+	render(width: number, caption = "Message", mode = "", receipt = ""): string[] {
 		const lines = this.editor.render(Math.max(1, width - 2));
 		const theme = this.options.theme;
 		const border = (text: string) => theme.fg(this.focused ? "accent" : "borderMuted", text);
 		return lines.map((line, index) => {
 			if (index === 0)
-				return dashboardHeading(caption, this.editor.topHidden ? `↑ ${this.editor.topHidden} lines` : "", width, theme);
+				return dashboardHeading(caption, [mode, this.editor.topHidden ? `↑ ${this.editor.topHidden} lines` : ""].filter(Boolean).join(" · "), width, theme);
 			// Native text and autocomplete rows are padded; only our border hooks emit empty rows.
 			if (line === "")
 				return dashboardHeading(
-					"",
+					receipt,
 					this.editor.bottomHidden ? `↓ ${this.editor.bottomHidden} lines` : "",
 					width,
 					theme,

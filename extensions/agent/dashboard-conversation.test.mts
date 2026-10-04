@@ -84,6 +84,27 @@ it("uses native built-in tools, generic unknown tools and unmatched results with
 	assert.ok(conversation.render(50).lines.every((line) => visibleWidth(line) <= 50));
 });
 
+it("unknown tool previews bound visual rows and expansion retains arguments and output", () => {
+	for (const width of [40, 80, 125]) {
+		const output = `${"界🙂".repeat(200)} output-end`;
+		const entries = [
+			assistant("call", [{ type: "toolCall", id: "unknown", name: "extension_tool", arguments: { query: "first line\nsecond line", count: 23 } }]),
+			result("result", "unknown", "extension_tool", output),
+			assistant("reply", [{ type: "text", text: "The agent answer leads." }]),
+		];
+		const collapsed = new AgentConversation(entries, "/work", tui, false, false).render(width).lines.map(stripVTControlCharacters);
+		assert.ok(collapsed.every((line) => visibleWidth(line) <= width));
+		assert.match(collapsed.join("\n"), /extension_tool first line second line/);
+		assert.match(collapsed.join("\n"), /… \d+ more lines/);
+		assert.doesNotMatch(collapsed.join("\n"), /ctrl\+o|output-end|"count"/i);
+		assert.ok(collapsed.findIndex((line) => line.includes("The agent answer")) <= 7);
+		const expanded = screen(new AgentConversation(entries, "/work", tui, true, false), width);
+		assert.match(expanded, /"count": 23/);
+		assert.match(expanded, /output-end/);
+		assert.doesNotMatch(expanded, /… \d+ more lines/);
+	}
+});
+
 it("renders tool-call-only and thinking-only assistant entries and attaches their results", () => {
 	const entries: AgentConversationEntry[] = [
 		assistant("a", [

@@ -1,5 +1,5 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentConversationEntry } from "./dashboard-types.ts";
 import { updateDraft, subscribeAgentState, type AgentDraftState } from "./dashboard-state.ts";
 import { AgentComposer } from "./agent-composer.ts";
@@ -7,7 +7,7 @@ import { ConversationView } from "./conversation-view.ts";
 import { footerText } from "./agent-footer.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import type { UsageState } from "@earendil-works/pi-durable";
-import { contextTokens, usageText } from "./agent-usage.ts";
+import { contextTokens, usageFacts } from "./agent-usage.ts";
 export class AgentConsole {
 	readonly composer: AgentComposer;
 	readonly conversation: ConversationView;
@@ -20,12 +20,10 @@ export class AgentConsole {
 		this.context = contextTokens(entries);
 		this.usage = usage;
 	}
-	usageLine(window?: number): string {
-		return usageText(this.context, window, this.usage);
-	}
 	readonly state: AgentDraftState;
 	private readonly unsubscribe: () => void;
 	private historyCount: number;
+	private readonly theme: Theme;
 	constructor(
 		row: AgentConversationSummary,
 		state: AgentDraftState,
@@ -35,6 +33,7 @@ export class AgentConsole {
 		submit: (text: string) => void,
 		onBack: () => void,
 	) {
+		this.theme = theme;
 		this.state = state;
 		this.row = row;
 		this.composer = new AgentComposer({
@@ -61,19 +60,16 @@ export class AgentConsole {
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[] = []): void {
 		this.conversation.setContent(entries, live, this.row.cwd);
 	}
-	messageLabel(focused: boolean, width: number): string {
-		const target = `Message to ${agentDisplayName(this.row)}`;
-		if (!focused) return `${target} · Tab or m to write`;
-		const mode =
-			this.row.state === "working"
-				? this.state.mode === "steer"
-					? "Steer at next step · Tab follow-up"
-					: "Follow-up after answer · Tab steer"
-				: "Send · starts a turn";
-		return `${truncateToWidth(target, Math.max(12, width - visibleWidth(mode) - 3))} · ${mode}`;
+	messageLabel(): string {
+		return `Message ${agentDisplayName(this.row)}`;
+	}
+	messageMode(): string {
+		return this.row.state === "working"
+			? this.state.mode === "steer" ? "Steer at next step" : "Follow-up after answer"
+			: "Send";
 	}
 	footer(width: number, window?: number): string {
-		return footerText(this.row, width, this.usageLine(window));
+		return footerText(this.row, width, usageFacts(this.context, window, this.usage), this.theme);
 	}
 	save(): void {
 		updateDraft(this.state, this.composer.getText());

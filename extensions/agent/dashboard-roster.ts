@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { dashboardTime } from "./dashboard-time.ts";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, sliceByColumn } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { formatCost } from "./agent-footer.ts";
@@ -21,7 +21,7 @@ export const sessionAppearance: Record<AgentConversationSummary["state"], StateA
 	failed: { label: "Failed", glyph: "!", color: "error" },
 	stopped: { label: "Stopped", glyph: "■", color: "warning" },
 	interrupted: { label: "Interrupted", glyph: "↯", color: "warning" },
-	new: { label: "New", glyph: "·", color: "dim" },
+	new: { label: "New", glyph: "·", color: "muted" },
 	unavailable: { label: "Unavailable", glyph: "?", color: "error" },
 };
 const oneLine = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
@@ -29,8 +29,9 @@ export const titleOf = (row: AgentConversationSummary) =>
 	oneLine(row.profile?.handle
 		? `${row.profile.handle}${row.name ? ` · ${row.name}` : ""}`
 		: row.name || (row.firstMessage ? `Historical: ${row.firstMessage}` : basename(row.cwd) || row.id));
+const clip = (text: string, width: number) => cleanDashboardText(truncateToWidth(text, Math.max(0, width), "…"));
 const pad = (text: string, width: number) => {
-	const clipped = truncateToWidth(text, Math.max(0, width));
+	const clipped = truncateToWidth(text, Math.max(0, width), "…");
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 };
 export function elapsed(ms: number): string {
@@ -171,7 +172,7 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 function uniqueTitle(row: AgentConversationSummary, rows: readonly AgentConversationSummary[], width: number): string {
 	const name = titleOf(row);
 	const duplicates = rows.filter((other) => titleOf(other) === name);
-	if (duplicates.length < 2) return truncateToWidth(name, width);
+	if (duplicates.length < 2) return clip(name, width);
 	let length = 4;
 	while (
 		length < row.id.length &&
@@ -179,7 +180,7 @@ function uniqueTitle(row: AgentConversationSummary, rows: readonly AgentConversa
 	)
 		length++;
 	const suffix = ` ${row.id.slice(-length)}`;
-	return truncateToWidth(name, Math.max(1, width - visibleWidth(suffix))) + suffix;
+	return clip(name, Math.max(1, width - visibleWidth(suffix))) + suffix;
 }
 /** Published arguments can end mid-JSON; extract a string value without displaying the serialized object. */
 export function argumentSummary(argument: string): string {
@@ -201,6 +202,32 @@ export function activityOf(row: AgentConversationSummary): string {
 	if (row.state === "working") return row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding";
 	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
 }
+function rosterActivity(row: AgentConversationSummary, size: number, theme: Theme): string {
+	const reason = attentionReason(row);
+	if (reason) return theme.fg("error", clip(reason, size));
+	const activity = activityOf(row);
+	if (row.state === "working") return theme.fg("text", clip(activity, size));
+	if (["starting", "done"].includes(row.state)) return theme.fg("muted", clip(activity, size));
+	const state = sessionAppearance[row.state];
+	const rest = activity.toLowerCase().startsWith(state.label.toLowerCase()) ? activity.slice(state.label.length) : ` · ${activity}`;
+	return theme.fg(state.color, state.label) + theme.fg("muted", clip(rest, Math.max(0, size - visibleWidth(state.label))));
+}
+function rosterModel(row: AgentConversationSummary, size: number): string {
+	if (!row.model) return clip("model ?", size);
+	const thinking = ` ${oneLine(row.model.thinkingLevel)}`;
+	return clip(oneLine(row.model.modelId), Math.max(1, size - visibleWidth(thinking))) + thinking;
+}
+function highlightRow(line: string, width: number, prefix: number, theme: Theme): string {
+	// Column slices can omit closing SGR codes at the right edge.
+	const background = theme.bg("selectedBg", pad(sliceByColumn(line, prefix, width - prefix), width - prefix));
+	return `${sliceByColumn(line, 0, prefix)}${background}\x1b[0m`;
+}
+function paintRosterBlock(lines: string[], row: AgentConversationSummary, selected: boolean, width: number, theme: Theme): string[] {
+	return lines.map((line, index) => {
+		if (!selected || ((index === 1 || lines.length === 1) && (needsAttention(row) || row.state === "failed"))) return pad(line, width);
+		return highlightRow(line, width, index === 0 ? 4 : 2, theme);
+	});
+}
 function rosterRow(
 	row: AgentConversationSummary,
 	rows: readonly AgentConversationSummary[],
@@ -213,30 +240,35 @@ function rosterRow(
 ): { lines: string[]; timeX: number; timeWidth: number; timeLine: number } {
 	const appearance = sessionAppearance[row.state];
 	const time = dashboardTime(row.modifiedAt, exactTime, now);
-	const spendTime = `${costOf(row)} · ${time}`;
-	const model = row.model ? `${row.model.modelId} ${row.model.thinkingLevel}` : "model ?";
-	const fitModel = (size: number, provider: boolean) => {
-		if (!row.model) return truncateToWidth(model, size);
-		const thinking = ` ${row.model.thinkingLevel}`;
-		const full = `${row.model.provider}/${row.model.modelId}`;
-		const identity = provider && visibleWidth(full + thinking) <= size ? full : row.model.modelId;
-		return truncateToWidth(identity, Math.max(1, size - visibleWidth(thinking))) + thinking;
-	};
-	const activity = `${appearance.label} · ${activityOf(row)}`;
-	const remaining = Math.max(3, width - 7 - visibleWidth(spendTime));
-	const titleWidth = compact ? Math.max(1, Math.floor(remaining * 0.3)) : width - 4;
-	const activityWidth = compact ? Math.max(1, Math.floor(remaining * 0.35)) : width - 2;
-	const modelWidth = Math.max(1, remaining - titleWidth - activityWidth);
-	const title = pad(uniqueTitle(row, rows, titleWidth), titleWidth);
-	let text = (row.id === selected ? theme.fg("accent", "› ") : "  ") + theme.fg(appearance.color, `${appearance.glyph} `) + (row.id === selected ? theme.bold(theme.fg("accent", title)) : title);
-	if (compact) text += ` ${theme.fg(appearance.color, pad(activity, activityWidth))} ${theme.fg("muted", pad(fitModel(modelWidth, false), modelWidth))} ${theme.fg("muted", spendTime)}`;
-	const lines = [row.id === selected ? theme.bg("selectedBg", pad(text, width)) : pad(text, width)];
-	if (!compact) {
-		lines.push(theme.fg(appearance.color, truncateToWidth(`  ${activity}`, width)));
-		lines.push(theme.fg("muted", truncateToWidth(`  ${fitModel(width - 5 - visibleWidth(spendTime), true)} · ${spendTime}`, width)));
+	const chosen = row.id === selected;
+	const rail = chosen ? theme.fg("accent", "▌ ") : "  ";
+	const glyph = theme.fg(appearance.color, `${appearance.glyph} `);
+	const exactRow = exactTime && !compact;
+	const timeWidth = Math.min(visibleWidth(time), width - 4);
+	const timeX = width - timeWidth;
+	const titleWidth = compact ? Math.max(8, Math.floor((width - timeWidth - 10) * 0.3)) : Math.max(1, width - 4 - (exactRow ? 0 : timeWidth + 1));
+	const title = theme.bold(theme.fg("text", pad(uniqueTitle(row, rows, titleWidth), titleWidth)));
+	let lines: string[];
+	if (compact) {
+		const cost = costOf(row);
+		const modelWidth = Math.max(6, Math.floor((width - titleWidth - timeWidth - visibleWidth(cost) - 9) / 2));
+		const activityWidth = Math.max(1, width - titleWidth - timeWidth - visibleWidth(cost) - modelWidth - 8);
+		lines = [`${rail + glyph + title} ${pad(rosterActivity(row, activityWidth, theme), activityWidth)} ${theme.fg("muted", `${pad(rosterModel(row, modelWidth), modelWidth)} ${cost} ${time}`)}`];
+	} else {
+		const identity = rail + glyph + title;
+		const cost = costOf(row);
+		const modelWidth = Math.max(1, width - visibleWidth(cost) - 3);
+		lines = [
+			exactRow ? identity : pad(identity, timeX) + theme.fg("muted", time),
+			rail + rosterActivity(row, width - 2, theme),
+			rail + theme.fg("muted", `${pad(rosterModel(row, modelWidth), modelWidth)} ${cost}`),
+		];
+		if (exactRow) lines.push(rail + theme.fg("muted", pad("", timeX - 2) + time));
 	}
-	const timeX = compact ? 7 + titleWidth + activityWidth + modelWidth + visibleWidth(`${costOf(row)} · `) : 2 + visibleWidth(`${fitModel(width - 5 - visibleWidth(spendTime), true)} · ${costOf(row)} · `);
-	return { lines: lines.map((line) => truncateToWidth(line, width)), timeX, timeWidth: Math.max(0, Math.min(visibleWidth(time), width - timeX)), timeLine: compact ? 0 : 2 };
+	return {
+		lines: paintRosterBlock(lines, row, chosen, width, theme),
+		timeX, timeWidth, timeLine: exactRow ? 3 : 0,
+	};
 }
 function rosterWindow(
 	rows: readonly AgentConversationSummary[],
@@ -245,6 +277,7 @@ function rosterWindow(
 	compact: boolean,
 	now: number,
 	requested?: number,
+	exactTime = false,
 ): { capacity: number; start: number; maxStart: number } {
 	const index = Math.max(
 		0,
@@ -255,12 +288,12 @@ function rosterWindow(
 		return { capacity: 3, maxStart, start: Math.min(maxStart, Math.max(0, requested ?? index - 1)) };
 	}
 	const capacityAt = (start: number) => {
-		let used = 2;
+		let used = 1;
 		let capacity = 0;
 		let section = "";
 		for (const row of rows.slice(start)) {
 			const next = sectionOf(row, now);
-			const cost = 3 + (next !== section ? 1 : 0);
+			const cost = (exactTime ? 4 : 3) + (next !== section ? 1 : 0);
 			if (used + cost > height) break;
 			used += cost;
 			section = next;
@@ -305,14 +338,14 @@ export function rosterLines(
 	compact: boolean,
 	viewport?: RosterViewport,
 ): string[] {
-	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, now, viewport?.start);
+	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, now, viewport?.start, viewport?.exactTime);
 	viewport?.range?.(start, maxStart);
-	const lines: string[] = compact ? [] : [theme.fg("muted", "Roster")];
+	const lines: string[] = [];
 	let section = "";
 	for (const row of rows.slice(start, start + capacity)) {
 		const group = sectionOf(row, now);
 		if (!compact && group !== section) {
-			lines.push(theme.fg("accent", group));
+			lines.push(theme.fg("muted", `${group} · ${rows.filter((item) => sectionOf(item, now) === group).length}`));
 			section = group;
 		}
 		const block = rosterRow(row, rows, selected, width, theme, compact, viewport?.exactTime ?? false, now);
@@ -322,10 +355,7 @@ export function rosterLines(
 	while (compact && lines.length < 3) lines.push("");
 	const shown = rows.slice(start, start + capacity).length;
 	const hidden = rows.length - shown;
-	lines.push(
-		hidden && !compact
-			? `${shown}/${rows.length} loaded · +${hidden} more`
-			: `${shown} of ${rows.length} loaded agents shown${hidden ? ` · +${hidden} more` : ""}`,
-	);
+	const direction = start === 0 ? "↓" : start + shown === rows.length ? "↑" : "↕";
+	lines.push(theme.fg("muted", hidden ? `${direction} ${hidden} more` : `${rows.length} loaded`));
 	return lines.slice(0, height);
 }

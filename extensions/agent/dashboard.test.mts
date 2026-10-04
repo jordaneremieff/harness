@@ -60,7 +60,7 @@ for (const [width, height] of [
 				frame = { ...frame, revision: frame.revision + 1, status: { ...frame.status, busy } };
 				notify();
 				f.ui.handleInput("\t");
-				assert.match(f.ui.render(width).join("\n"), busy ? /Steer at next step/ : /Send · starts a turn/);
+				assert.match(f.ui.render(width).join("\n"), busy ? /Steer at next step/ : /Send/);
 				f.ui.handleInput("\x1b");
 				f.ui.handleInput("a");
 				const screen = f.ui.render(width).join("\n");
@@ -164,7 +164,7 @@ for (const [width, height] of [
 				f.ui.handleInput("Build");
 				const lines = f.ui.render(width);
 				assert.equal(lines.length, height);
-				assert.match(lines.join("\n"), /› ● Build/);
+				assert.match(lines.join("\n"), /▌ ● Build/);
 				assert.match(lines.join("\n"), /FIRST-CONVERSATION-LINE/);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			} finally {
@@ -235,7 +235,7 @@ for (const [width, height] of [
 				await turn();
 				assert.equal(f.ui.navigation.screen, "console");
 				assert.equal(f.state.selected, "branch");
-				assert.match(f.ui.render(width).join("\n"), /Message to New branch.*Send · starts a turn/);
+				assert.match(f.ui.render(width).join("\n"), /Message New branch.*Send/);
 				assert.equal(agentState(f.state, "one").draft, "source draft");
 			} finally {
 				f.ui.dispose();
@@ -280,8 +280,8 @@ for (const [width, height] of [
 			const f = fixture(width, height, source([row("one", patch)]));
 			try {
 				await turn();
-				const screen = f.ui.render(width).join("\n");
-				const status = screen.slice(screen.indexOf("─ Lines"));
+				f.ui.handleInput("\r");
+				const status = f.ui.render(width).slice(1, 8).join("\n");
 				assert.equal(status.split("marker").length - 1, 1);
 			} finally {
 				f.ui.dispose();
@@ -512,14 +512,14 @@ it("new agent selects its task and starting conversation before host readiness",
 		]) {
 			f.resize(width, height);
 			const screen = f.ui.render(width).join("\n");
-			assert.match(screen, /Starting · Starting agent/);
+			assert.match(screen, /◌ Starting/);
 			assert.doesNotMatch(screen, /retained/);
 			assert.match(screen, /Write the startup note/);
-			assert.match(screen, /Message to Write the startup note/);
-			assert.match(screen, /test\/model · high.*context/);
+			assert.match(screen, /Message Write the startup note/);
+			assert.match(screen, /Model +model · high · test[\s\S]*Context/);
 			assert.doesNotMatch(
 				screen,
-				/Conversation unavailable|Unavailable|Attention|need attention|Message to two|model \?|reasoning \?/,
+				/Conversation unavailable|Unavailable|Attention|need attention|Message two|model \?|reasoning \?/,
 			);
 		}
 		await turn();
@@ -550,7 +550,7 @@ it("a busy live frame updates the header, roster, and footer together", async ()
 		const screen = f.ui.render(140).join("\n");
 		assert.match(screen, /Working ·/);
 		assert.match(screen, /Working/);
-		assert.match(screen, /test\/model · high.*context/);
+		assert.match(screen, /Model +model · high · test[\s\S]*Context/);
 		assert.doesNotMatch(screen, /Done|0 working/);
 		f.ui.handleInput("/");
 		assert.match(f.ui.render(140).join("\n"), /Working ·/);
@@ -584,7 +584,7 @@ it("a late cold snapshot error never replaces a live conversation", async () => 
 		fail(new Error("ENOENT: source was absent before the host started"));
 		await turn();
 		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /context/);
+		assert.match(screen, /Context/);
 		assert.match(screen, /Live task/);
 		assert.doesNotMatch(screen, /Conversation unavailable|ENOENT/);
 	} finally {
@@ -644,7 +644,7 @@ it("a retained conversation reattaches and rereads when a stopped host restarts"
 	const f = fixture(80, 24, observed);
 	await turn();
 	await turn();
-	assert.match(f.ui.render(80).join("\n"), /context/);
+	assert.match(f.ui.render(80).join("\n"), /Context/);
 	assert.match(f.ui.render(80).join("\n"), /Stored task/);
 	rosterChange();
 	t.mock.timers.tick(250);
@@ -690,18 +690,18 @@ it("Load more is selected before admission and loaded coverage survives reconcil
 	f.ui.handleInput("\x1b[B");
 	f.ui.handleInput("\x1b[B");
 	assert.deepEqual(calls, [undefined]);
-	assert.match(f.ui.render(80).join("\n"), /› Load more agents/);
+	assert.match(f.ui.render(80).join("\n"), /› Load more/);
 	f.ui.handleInput("\r");
 	await turn();
 	assert.deepEqual(calls, [undefined, "more"]);
 	assert.match(f.ui.render(80)[0], /Agents: 3\/3 active · ~\$1\.26/);
-	assert.match(f.ui.render(80).join("\n"), /3 of 3 loaded agents/);
+	assert.match(f.ui.render(80).join("\n"), /3 loaded/);
 	rosterChange();
 	t.mock.timers.tick(250);
 	await turn();
 	assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
 	assert.match(f.ui.render(80)[0], /Agents: 3\/3 active · ~\$1\.26/);
-	assert.match(f.ui.render(80).join("\n"), /3 stores skipped/);
+	assert.match(f.ui.render(80).join("\n"), /3 unreadable/);
 	f.ui.dispose();
 });
 

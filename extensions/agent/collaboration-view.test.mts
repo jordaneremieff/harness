@@ -170,7 +170,7 @@ for (const [width, height] of [
 			assert.match(f.ui.render(width)[0] ?? "", /^╭─ Agents > Threads/);
 			assert.match(f.ui.render(width)[0] ?? "", /Frame 2 ╮$/);
 			assert.match(text(f, width), /Lines \d+–\d+ of \d+ loaded/);
-			assert.match(f.ui.render(width).at(-1) ?? "", /p post.*Esc back/);
+			assert.match(f.ui.render(width).at(-1) ?? "", /^PgUp\/PgDn read.*p post.*Esc back/);
 			assert.ok(f.ui.render(width).every((line) => visibleWidth(line) <= width));
 		} finally {
 			f.ui.dispose();

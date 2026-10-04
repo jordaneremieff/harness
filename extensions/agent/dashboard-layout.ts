@@ -6,27 +6,27 @@ export function fitLine(text: string, width: number): string {
 	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
 }
 export function dashboardHeading(title: string, position: string, width: number, theme: Paint, bottom = false): string {
-	const right = position ? ` ${position} ` : "";
-	const label = truncateToWidth(title.replace(/\s+/g, " ").trim(), Math.max(1, width - visibleWidth(right) - 6));
-	const fill = "─".repeat(Math.max(0, width - visibleWidth(label) - visibleWidth(right) - 5));
+	const right = position ? ` ${position.replace(/\s+/g, " ").trim()} ` : "";
+	const label = title ? ` ${truncateToWidth(title.replace(/\s+/g, " ").trim(), Math.max(1, width - visibleWidth(right) - 6))} ` : "";
+	const fill = "─".repeat(Math.max(0, width - visibleWidth(label) - visibleWidth(right) - 3));
 	return fitLine(
-		theme.fg("borderMuted", bottom ? "╰─ " : "╭─ ") +
+		theme.fg("borderMuted", bottom ? "╰─" : "╭─") +
 			theme.bold(theme.fg("accent", label)) +
-			theme.fg("borderMuted", ` ${fill}`) +
+			theme.fg("borderMuted", fill) +
 			theme.fg("muted", right) +
 			theme.fg("borderMuted", bottom ? "╯" : "╮"),
 		width,
 	);
 }
 export function dashboardRule(label: string, width: number, theme: Paint): string {
-	const text = `─ ${truncateToWidth(label, Math.max(1, width - 4))} `;
+	const text = label ? `─ ${truncateToWidth(label, Math.max(1, width - 4))} ` : "";
 	return fitLine(
 		theme.fg("muted", text) + theme.fg("borderMuted", "─".repeat(Math.max(0, width - visibleWidth(text)))),
 		width,
 	);
 }
 export function dashboardSelection(text: string, width: number, selected: boolean, theme: Paint): string {
-	return selected ? theme.bg("selectedBg", fitLine(theme.fg("accent", theme.bold(text)), width)) : text;
+	return selected ? theme.bg("selectedBg", fitLine(theme.fg("text", theme.bold(text)), width)) : text;
 }
 function paintHint(hint: string, theme: Paint): string {
 	const split = hint.indexOf(" ");
@@ -51,11 +51,7 @@ export function fitHints(
 		x += size + 3;
 	}
 	const shown = [...kept, backHint];
-	if (!theme) return fitLine(shown.join(" · "), width);
-	return theme.bg(
-		"customMessageBg",
-		fitLine(shown.map((hint) => paintHint(hint, theme)).join(theme.fg("dim", " · ")), width),
-	);
+	return fitLine(theme ? shown.map((hint) => paintHint(hint, theme)).join(theme.fg("muted", " · ")) : shown.join(" · "), width);
 }
 export function dashboardGeometry(
 	width: number,
@@ -63,17 +59,19 @@ export function dashboardGeometry(
 	editorRows: number,
 	console = false,
 	reservedRows = 0,
-	statusRows = 2,
+	headerRows = 4,
 ) {
-	const wide = width >= 110 && !console;
-	const rosterHeight = console || wide ? 0 : 5;
-	const bodyHeight = Math.max(0, height - 4 - statusRows - editorRows - rosterHeight - reservedRows);
+	const wide = width >= 100 && !console;
+	const rosterHeight = console || wide ? 0 : 4;
+	const rosterWidth = wide ? Math.min(40, Math.max(30, Math.floor(width * 0.22))) : width;
+	const paneHeight = Math.max(0, height - 2 - rosterHeight - reservedRows);
 	return {
 		wide,
-		rosterWidth: wide ? Math.min(68, Math.max(44, Math.floor(width * 0.4))) : width,
-		conversationWidth: wide ? width - Math.min(68, Math.max(44, Math.floor(width * 0.4))) - 1 : width,
+		rosterWidth,
+		conversationWidth: wide ? width - rosterWidth - 1 : width,
 		rosterHeight,
-		bodyHeight,
+		paneHeight,
+		bodyHeight: Math.max(0, paneHeight - headerRows - editorRows),
 		supported: width >= 60 && height >= 20,
 	};
 }

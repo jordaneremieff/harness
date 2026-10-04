@@ -209,7 +209,7 @@ for (const width of [80, 140]) {
 			assert.equal(f.ui.navigation.screen, "console");
 			f.ui.handleInput("\x1b");
 			lines();
-			click("Message to");
+			click("Message");
 			assert.equal(f.ui.navigation.screen, "message");
 			f.ui.handleInput("draft retained");
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");
@@ -217,7 +217,7 @@ for (const width of [80, 140]) {
 			assert.equal(f.ui.handleMouse(event(p.x, p.y, width, 30, { type: "drag" })), undefined);
 			assert.equal(f.state.exactTime, false);
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");
-			click("Message to");
+			click("Message");
 			click("draft retained");
 			f.ui.handleInput("\x1b");
 			assert.equal(f.ui.navigation.screen, "roster");
@@ -262,7 +262,7 @@ for (const width of [80, 140]) {
 			assert.equal(f.state.agents.get(recipient)?.view.follow, false);
 			f.ui.handleInput("\x1b");
 			f.ui.handleInput("\x1b[B");
-			assert.ok(f.ui.render(width).join("\n").includes("›"));
+			assert.ok(f.ui.render(width).join("\n").includes("▌"));
 		} finally {
 			f.ui.dispose();
 		}

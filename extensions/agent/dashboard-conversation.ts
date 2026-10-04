@@ -14,8 +14,10 @@ import {
 	createReadToolDefinition,
 	createWriteToolDefinition,
 	getMarkdownTheme,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
 
 export function cleanDashboardText(text: string): string {
@@ -64,6 +66,36 @@ const nativeTools = (cwd: string) => [
 	createLsToolDefinition(cwd),
 	createPowerShellToolDefinition(cwd),
 ];
+
+/** Display-only definition: stored tools never acquire an executable renderer from another extension. */
+function transcriptTool(name: string): ToolDefinition {
+	return {
+		name, label: name, description: "Retained tool display", parameters: Type.Object({}),
+		execute: async () => { throw new Error("Transcript tools cannot execute"); },
+		renderCall: (args, theme, context) => ({
+			render: (width) => {
+				const values = args && typeof args === "object" ? Object.values(args) : [args];
+				const summary = values.find((value) => typeof value === "string");
+				const title = theme.bold(theme.fg("toolTitle", cleanDashboardText(truncateToWidth(name, width, "…"))));
+				if (context.expanded && args !== undefined)
+					return [title, ...wrapTextWithAnsi(theme.fg("text", JSON.stringify(args, null, 2)), width)];
+				const shown = cleanDashboardText(truncateToWidth(typeof summary === "string" ? summary.replace(/\s+/g, " ").trim() : "", Math.max(0, width - visibleWidth(name) - 1), "…"));
+				return [title + (shown ? ` ${theme.fg("text", shown)}` : "")];
+			},
+			invalidate() {},
+		}),
+		renderResult: (result, options, theme) => ({
+			render: (width) => {
+				const text = result.content.flatMap((part) => part.type === "text" ? [part.text] : part.type === "image" ? ["[Image]"] : []).join("\n").trimEnd();
+				if (!text) return [];
+				const lines = wrapTextWithAnsi(theme.fg("text", text), width);
+				if (options.expanded || lines.length <= 3) return lines;
+				return [...lines.slice(0, 3), theme.fg("text", `… ${lines.length - 3} more lines`)];
+			},
+			invalidate() {},
+		}),
+	};
+}
 
 function contentText(content: Message["content"], includeImageLabels = true): string {
 	if (typeof content === "string") return content;
@@ -275,8 +307,8 @@ export class AgentConversation {
 		this.blocks.push({ id: entry.id, component });
 	}
 	private tool(name: string, id: string, args: unknown, known = true): ToolExecutionComponent {
-		const definition = known ? this.definitions.find((item) => item.name === name) : undefined;
-		// Pi's generic card prints a JSON object; an empty one renders as a bare `{}`.
+		const definition = (known ? this.definitions.find((item) => item.name === name) : undefined) ?? transcriptTool(name);
+		// An absent call or empty arguments need no argument object in the display.
 		const shown =
 			args !== null && typeof args === "object" && !Array.isArray(args) && Object.keys(args).length === 0
 				? undefined

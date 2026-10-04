@@ -3,14 +3,43 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { dashboardHeading, fitHints } from "./dashboard-layout.ts";
+import { dashboardGeometry, dashboardHeading, fitHints } from "./dashboard-layout.ts";
 import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 
+it("the roster stays narrow and owns the full body beside the conversation", () => {
+	for (const [width, expected] of [[100, 30], [120, 30], [164, 36], [240, 40]]) {
+		const geometry = dashboardGeometry(width, 44, 3);
+		assert.equal(geometry.rosterWidth, expected);
+		assert.equal(geometry.wide, true);
+		assert.equal(geometry.paneHeight, 42);
+		assert.equal(geometry.rosterWidth + geometry.conversationWidth + 1, width);
+	}
+	assert.equal(dashboardGeometry(99, 30, 3).wide, false);
+	assert.equal(dashboardGeometry(164, 44, 3, true).conversationWidth, 164);
+});
+
+it("console activity leaves room for the selected identity", async () => {
+	const observed = source([row("one", { name: "Selected recipient", state: "working", currentTool: { name: "read", argument: JSON.stringify({ path: `/${"long-path/".repeat(40)}` }) } })]);
+	const f = fixture(60, 20, observed);
+	try {
+		await turn();
+		f.ui.handleInput("\r");
+		const lines = f.ui.render(60).map(stripVTControlCharacters);
+		assert.match(lines[1], /Selected recipient/);
+		assert.match(lines[1], /Working · read/);
+		assert.match(lines[1], /…/);
+		assert.equal(visibleWidth(lines[1]), 60);
+	} finally { f.ui.dispose(); }
+});
+
 it("each surface occupies the exact terminal rectangle and keeps Esc last", async () => {
 	for (const [width, height] of [
-		[140, 45],
+		[164, 44],
+		[120, 40],
+		[100, 30],
 		[80, 24],
+		[60, 20],
 	]) {
 		const f = fixture(
 			width,
@@ -68,7 +97,7 @@ it("framed headings keep multiline metadata within one physical row", () => {
 		}
 	}
 });
-it("tinted hint bars decorate keys after hit geometry and preserve the escape destination", () => {
+it("plain hint bars decorate keys after hit geometry and preserve the escape destination", () => {
 	const regions: Array<[string, number, number]> = [];
 	const line = fitHints(["Enter open", "r refresh"], "Esc back", 25, (...area) => regions.push(area), painted);
 	assert.equal(visibleWidth(line), 25);
@@ -77,7 +106,7 @@ it("tinted hint bars decorate keys after hit geometry and preserve the escape de
 		["Enter open", 0, 10],
 		["Esc back", 13, 8],
 	]);
-	assert.match(line, /\x1b\[45m/);
+	assert.doesNotMatch(line, /\x1b\[45m/);
 	assert.match(line, /\x1b\[36mEnter\x1b\[39m/);
 	assert.match(line, /\x1b\[90m open/);
 	const mouse = new DashboardMouse();
@@ -102,7 +131,7 @@ it("tinted hint bars decorate keys after hit geometry and preserve the escape de
 	assert.deepEqual(keys, ["\r"]);
 });
 for (const width of [80, 140]) {
-	it(`conversation end, status and composer form one ordered bottom region at ${width}`, async () => {
+	it(`selected header, scroll position and padded composer share a conversation pane at ${width}`, async () => {
 		const observed = source([row("one", { name: "Recipient", state: "idle" })]);
 		observed.snapshot = async () => ({
 			entries: [
@@ -126,28 +155,25 @@ for (const width of [80, 140]) {
 		const render = () => f.ui.render(width).map(stripVTControlCharacters);
 		try {
 			await turn();
-			const lines = render();
-			const boundary = lines.findIndex((line) => line.startsWith("─ Lines "));
-			assert.ok(boundary > 1);
-			assert.equal(lines[boundary - 1]?.trim(), "");
-			assert.match(lines[boundary] ?? "", /of \d+ loaded.*End of loaded view/);
-			assert.match(lines[boundary] ?? "", /Partial history/);
-			assert.match(lines[boundary + 1] ?? "", /Idle/);
-			assert.match(lines[boundary + 2] ?? "", /context.*\$0\.42/);
-			assert.match(lines[boundary + 3] ?? "", /^╭─ Message to Recipient/);
-			assert.match(lines[boundary + 4] ?? "", /^│.*│$/);
-			assert.ok(lines.at(-2)?.startsWith("╰"));
-			assert.equal(lines.filter((line) => line.includes("RETAINED")).length, 0);
-			assert.equal(lines.filter((line) => line.includes("Message to Recipient")).length, 1);
+			const paneX = width >= 100 ? dashboardGeometry(width, 32, 3).rosterWidth + 1 : 0;
+			const pane = () => render().map((line) => line.slice(paneX));
+			const lines = pane();
+			const model = lines.findIndex((line) => /Model +model/.test(line));
+			const composer = lines.findIndex((line) => line.includes("╭─ Message Recipient"));
+			assert.ok(model > 0 && model < composer);
+			assert.match(lines[model + 1] ?? "", /Context/);
+			assert.equal(lines[composer - 1]?.trim(), "", "output has bottom padding");
+			assert.match(lines[composer + 1] ?? "", /^│.*│$/);
+			assert.match(lines.at(-2) ?? "", /^╰─+╯$/);
+			assert.doesNotMatch(lines.join("\n"), /Lines \d|End of loaded view|Partial history/);
+			assert.ok(lines.some((line) => line.endsWith("┃")), "long output has a scroll thumb");
 			f.ui.handleInput("\x1b[5~");
-			assert.doesNotMatch(render().find((line) => line.startsWith("─ Lines ")) ?? "", /End of loaded view/);
+			assert.match(pane().join("\n"), /↓ \d+ lines below/);
 			const state = f.state.agents.get("one");
 			assert.ok(state);
 			state.receipt = "Delivery receipt";
-			const updated = render();
-			const receipt = updated.findIndex((line) => line.includes("Delivery receipt"));
-			assert.ok(receipt > 0);
-			assert.ok(updated[receipt + 1]?.startsWith("╭─ Message to"));
+			const updated = pane();
+			assert.match(updated.at(-2) ?? "", /^╰─ Delivery receipt/);
 			assert.equal(updated.length, 32);
 		} finally {
 			f.ui.dispose();
@@ -164,7 +190,7 @@ for (const width of [80, 140]) {
 			assert.equal(lines.length, 32);
 			assert.ok(lines.every((line) => visibleWidth(line) === width));
 			assert.match(stripVTControlCharacters(lines[0] ?? ""), /^╭─ Agents/);
-			assert.match(lines.at(-1) ?? "", /\x1b\[45m/);
+			assert.doesNotMatch(lines.at(-1) ?? "", /\x1b\[45m/);
 			assert.match(stripVTControlCharacters(lines.at(-1) ?? ""), /Esc /);
 			return lines.map(stripVTControlCharacters);
 		};
@@ -172,7 +198,7 @@ for (const width of [80, 140]) {
 			await turn();
 			const roster = render();
 			assert.match(roster[0] ?? "", /1\/2 ╮$/);
-			assert.match(roster.join("\n"), /› [○●] /);
+			assert.match(roster.join("\n"), /▌ [○●] /);
 			assert.match(roster.join("\n"), /d ago/);
 			f.ui.handleInput("\x1b[B");
 			assert.match(render()[0] ?? "", /2\/2 ╮$/);
@@ -181,6 +207,7 @@ for (const width of [80, 140]) {
 			f.ui.handleInput("\x1b");
 			f.ui.handleInput("a");
 			assert.match(render()[0] ?? "", /1\/\d+ actions ╮$/);
+			assert.match(render().at(-1) ?? "", /^PgUp\/PgDn read/);
 			assert.match(f.ui.render(width).join("\n"), /\x1b\[44m/);
 			f.ui.handleInput("\x1b");
 			f.ui.handleInput("?");

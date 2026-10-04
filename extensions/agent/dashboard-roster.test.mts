@@ -12,14 +12,23 @@ for (const [width, height, compact] of [
 		for (const selected of [0, 50, 99]) {
 			const lines = rosterLines(rows, String(selected), width, height, 0, theme, compact);
 			const text = lines.join("\n");
-			assert.match(text, new RegExp(`› ● Agent${selected}`));
-			assert.match(text, /\+\d+ more/);
+			assert.match(text, new RegExp(`▌ ● Agent${selected}`));
+			assert.match(text, /[↑↓↕] \d+ more/);
 			if (selected > 0) assert.match(text, new RegExp(`Agent${selected - 1}`));
 			if (selected < 99) assert.match(text, new RegExp(`Agent${selected + 1}`));
 			assert.ok(lines.every((line) => visibleWidth(line) <= width));
 		}
 	});
 }
+it("selected exact-time blocks close their styles before the adjacent pane", () => {
+	const colored = Object.create(theme) as typeof theme;
+	colored.bold = (text: string) => `\x1b[1m${text}\x1b[22m`;
+	const lines = rosterLines([row("one", { name: "Recipient" })], "one", 29, 10, 0, colored, false, { exactTime: true });
+	const selected = lines.filter((line) => line.includes("▌"));
+	assert.equal(selected.length, 4);
+	assert.ok(selected.every((line) => line.endsWith("\x1b[0m")));
+});
+
 it("starting agents show their launch state in the Working group", () => {
 	const starting = row("starting", { state: "starting", owner: "unknown" });
 	const snapshot = { observedAt: 0, sessions: [row("done", { state: "done" }), starting] };
@@ -74,9 +83,9 @@ it("narrow roster includes selection, cost, state, last-change time, and shown c
 	const rows = Array.from({ length: 100 }, (_, index) => row(String(index), { name: "界".repeat(100) }));
 	const lines = rosterLines(rows, "50", 80, 4, 60000, theme, true);
 	assert.equal(lines.length, 4);
-	assert.ok(lines.some((line) => line.startsWith("›")));
-	assert.match(lines.join("\n"), /Working.*\$0.42.*1m ago/);
-	assert.match(lines[3], /3 of 100 loaded agents shown/);
+	assert.ok(lines.some((line) => line.startsWith("▌")));
+	assert.match(lines.join("\n"), /Responding.*\$0.42.*1m ago/);
+	assert.match(lines[3], /↕ 97 more/);
 	assert.ok(lines.every((line) => visibleWidth(line) <= 80));
 });
 it("roster ages use coarse minutes and absolute dates stay fixed for every state", () => {
@@ -109,10 +118,10 @@ it("wide roster budgets every group header and timestamp before it clips the sel
 		row("earlier", { state: "done", modifiedAt: 0 }),
 	];
 	const lines = rosterLines(rows, "earlier", 64, 18, now, theme, false);
-	assert.match(lines.join("\n"), /› ✓ earlier/);
+	assert.match(lines.join("\n"), /▌ ✓ earlier/);
 	assert.match(lines.join("\n"), /yesterday/);
-	assert.match(lines.join("\n"), /\+1 more/);
-	assert.equal(lines.filter((line) => /\$0.42 · /.test(line)).length, 4);
+	assert.match(lines.join("\n"), /↑ 1 more/);
+	assert.equal(lines.filter((line) => /\$0.42/.test(line)).length, 4);
 });
 it("timestamp hit areas do not use a name that impersonates an Updated label", () => {
 	let timeX = -1;
@@ -140,7 +149,7 @@ it("roster identifies handles and roles separately from the historical first inp
 		const lines = rosterLines([expert], expert.id, width, height, 0, theme, compact);
 		assert.match(lines.join("\n"), /@history/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
-		if (!compact) assert.match(lines.join("\n"), /test\/model high/);
+		if (!compact) assert.match(lines.join("\n"), /model high/);
 		assert.doesNotMatch(lines.join("\n"), /One old task/);
 	}
 	for (const query of ["@history", "operator decisions", "History", "old task"]) assert.equal(dashboardRecords({ observedAt: 0, sessions: [expert] }, query).length, 1);

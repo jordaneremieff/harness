@@ -7,6 +7,7 @@ import { AgentManager } from "./manager.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 
 it("activity summarizes string arguments without raw JSON, including published partial arguments", () => {
 	assert.equal(argumentSummary('{"count":1,"path":"notes.md","text":"other"}'), "notes.md");
@@ -20,9 +21,9 @@ it("activity summarizes string arguments without raw JSON, including published p
 it("roster rows show identity, state, activity, model, thinking, cost and relative time", () => {
 	const agent = row("worker", { name: "Research", modifiedAt: 0, currentTool: { name: "read", argument: "notes.md" }, profile: { identity: "worker", role: "Research", handle: "@research", revision: "1", hasExpertise: false, updatedAt: 0 } });
 	const text = rosterLines([agent], agent.id, 64, 12, 15 * 60000, theme, false).join("\n");
-	for (const fact of ["@research · Research", "Working", "read notes.md", "test/model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
-	assert.ok(dashboardGeometry(160, 45, 3).rosterWidth > 38);
-	assert.match(rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme, true).join("\n"), /Work.*Working · read.*model high.*\$0.42.*just now/);
+	for (const fact of ["@research · Research", "Working", "read notes.md", "model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
+	assert.ok(dashboardGeometry(160, 45, 3).rosterWidth <= 40);
+	assert.match(rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme, true).join("\n"), /Work.*read.*model high.*\$0.42.*just now/);
 });
 it("selected status uses the same state labels as the roster", async () => {
 	for (const state of Object.keys(sessionAppearance) as Array<keyof typeof sessionAppearance>) {
@@ -30,11 +31,38 @@ it("selected status uses the same state labels as the roster", async () => {
 		try {
 			await turn();
 			const lines = f.ui.render(100);
-			const boundary = lines.findIndex((line) => line.startsWith("─ "));
-			assert.ok(lines[boundary + 1].startsWith(`${sessionAppearance[state].label} · `));
+			assert.ok(lines[1].includes(`${sessionAppearance[state].glyph} ${sessionAppearance[state].label}`));
 		} finally { f.ui.dispose(); }
 	}
 });
+for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 18], [80, 0]]) {
+	it(`roster coverage stays out of the selected header at ${width} with ${skipped} unreadable`, async () => {
+		const observed = source(Array.from({ length: 31 }, (_, index) => row(String(index))));
+		const list = observed.list;
+		observed.list = async (input) => {
+			const result = await list(input);
+			return { ...result, coverage: { ...result.coverage, complete: false, skipped, nextCursor: skipped ? "more" : null } };
+		};
+		const f = fixture(width, 30, observed);
+		try {
+			await turn();
+			const lines = f.ui.render(width).map(stripVTControlCharacters);
+			const wide = width >= 100;
+			const paneX = wide ? dashboardGeometry(width, 30, 3).rosterWidth + 1 : 0;
+			const headerY = wide ? 1 : 5;
+			const header = lines.slice(headerY, headerY + 4).map((line) => line.slice(paneX));
+			assert.doesNotMatch(header.join("\n"), /Coverage|unreadable|omitted|Incomplete/);
+			assert.match(header[3], /^─+$/);
+			const roster = wide ? lines.slice(1, -1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 5);
+			assert.match(roster.join("\n"), skipped ? /18 unreadable/ : /Incomplete/);
+			assert.match(lines[0], /1\/31\+ ╮$/);
+			if (skipped) assert.match(roster.join("\n"), /More|Load more/);
+			f.ui.handleInput("\r");
+			assert.doesNotMatch(f.ui.render(width).map(stripVTControlCharacters).slice(1, 5).join("\n"), /Coverage|unreadable|Incomplete/);
+		} finally { f.ui.dispose(); }
+	});
+}
+
 it("selected status keeps live usage and receipts separate from conversation and roster notices", async () => {
 	const usage = { input: 100, output: 20, cacheRead: 30, cacheWrite: 10, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 	const initial = conversationFrame();
@@ -50,13 +78,14 @@ it("selected status keeps live usage and receipts separate from conversation and
 		state.receipt = "Message admitted";
 		const lines = f.ui.render(160);
 		assert.match(lines[0], /Agents: 1\/1 active · ~\$0.42/);
-		const boundary = lines.findIndex((line) => line.startsWith("─ "));
-		const status = lines.slice(boundary + 1, lines.findIndex((line) => line.startsWith("╭─ Message to"))).join("\n");
+		const status = lines.slice(1, 5).map((line) => line.slice(dashboardGeometry(160, 45, 3).rosterWidth + 1)).join("\n");
 		assert.doesNotMatch(status, /LIVE|RETAINED|Earlier messages available|Roster/);
-		assert.match(status, /Working · Responding/);
-		assert.match(status, /test\/model · high/);
-		assert.match(status, /context 160\/1.0k \(16%\) · tokens 140 in\/20 out/);
-		assert.match(status, /Message admitted/);
+		assert.match(status, /● Working/);
+		assert.match(status, /Model +model · high · test/);
+		assert.match(status, /Context +160\/1.0k \(16%\)/);
+		assert.match(status, /Tokens +140 in · 20 out/);
+		assert.doesNotMatch(status, /Message admitted/);
+		assert.match(lines.at(-2) ?? "", /╰─ Message admitted/);
 	} finally { f.ui.dispose(); }
 });
 it("dashboard reconciliation and roster events reuse the scanned page for session figures", async (t) => {
@@ -109,7 +138,9 @@ it("failed roster refresh keeps rows, suppresses transient errors and clears a p
 		assert.match(f.ui.render(100).join("\n"), /good/);
 		assert.doesNotMatch(f.ui.render(100).join("\n"), /refresh failure/);
 		await refresh(); await refresh();
-		assert.match(f.ui.render(100).join("\n"), /Roster refresh unavailable; last roster shown/);
+		const lines = f.ui.render(100).map(stripVTControlCharacters);
+		assert.match(lines.map((line) => line.slice(0, 30)).join("\n"), /Roster refresh unavailable/);
+		assert.doesNotMatch(lines.slice(1, 5).map((line) => line.slice(31)).join("\n"), /Roster refresh|refresh failure/);
 		fail = false;
 		await refresh();
 		assert.doesNotMatch(f.ui.render(100).join("\n"), /Roster refresh unavailable|refresh failure/);

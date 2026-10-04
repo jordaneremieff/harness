@@ -617,10 +617,10 @@ export class CollaborationView {
 			notify: ["↑↓ select", "Space/Enter toggle", "Tab write"],
 			compose: ["Enter post", "Tab notify", "Ctrl+J newline"],
 			thread: [
+				"PgUp/PgDn read",
 				"p post",
 				"n notify",
 				this.options.exactTime() ? "i relative time" : "i date and time",
-				"PgUp/PgDn read",
 				"f frame",
 				"e exchange",
 				"b earlier",
