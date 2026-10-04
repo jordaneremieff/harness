@@ -25,6 +25,19 @@ export function readSettingsScope(cwd: string, agentDir: string, at: number, pro
 	}
 }
 
+/** Literal settings evidence only: no glob expansion, fuzzy matching, or model resolution. */
+function settingsProviders(scope: SettingsScopeEvidence): Set<string> | null {
+	if (scope.status !== "available" || scope.patterns === null) return null;
+	const providers = new Set<string>();
+	for (const pattern of scope.patterns) {
+		const slash = pattern.indexOf("/");
+		if (slash <= 0) continue;
+		const provider = pattern.slice(0, slash);
+		if (!/[\s*?[\]{}()!+@~^$|\\:]/.test(provider)) providers.add(provider);
+	}
+	return providers;
+}
+
 function readBoolean(read: () => boolean): boolean | null {
 	try {
 		const value = read();
@@ -88,6 +101,7 @@ export interface ModelRecord {
 	catalogCost: ModelCost | null;
 	catalogCostHasTiers: boolean | null;
 	providerHasScopedModels: boolean | null;
+	providerNamedInSettings: boolean | null;
 	extensionProvider: boolean | null;
 	inScope: boolean | null;
 	scopeIndex?: number;
@@ -189,6 +203,7 @@ interface ModelBuildInput {
 	catalogError: boolean | null;
 	extensionProviders: Set<string> | null;
 	scopedModels: ScopedModels | undefined;
+	settingsProviders: Set<string> | null;
 	scopeConfigured: boolean | null;
 	scopeOrder: string[] | null;
 	selectedRef: { provider: string; modelId: string } | undefined;
@@ -229,6 +244,7 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 		catalogCostHasTiers: cost === null ? null : (cost.tiers?.length ?? 0) > 0,
 		providerHasScopedModels: input.scopeConfigured === true
 			? input.scopedModels?.some((entry) => entry.model.provider === model.provider) ?? null : null,
+		providerNamedInSettings: input.settingsProviders?.has(model.provider) ?? null,
 		extensionProvider: input.extensionProviders === null ? null : input.extensionProviders.has(model.provider),
 		inScope: input.scopeConfigured === null ? null : !input.scopeConfigured || scope !== undefined,
 		...(scopeIndex < 0 ? {} : { scopeIndex }),
@@ -237,6 +253,13 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 		evidence: "registration",
 		at: input.at,
 	};
+}
+
+function modelGroup(record: ModelRecord): number {
+	if (record.available === true) {
+		return record.providerHasScopedModels === true || record.providerNamedInSettings === true ? 0 : 1;
+	}
+	return record.configuredAuth === true ? 2 : 3;
 }
 
 function buildModelSnapshot(input: ModelBuildInput): ModelSnapshot {
@@ -250,8 +273,7 @@ function buildModelSnapshot(input: ModelBuildInput): ModelSnapshot {
 		...(input.settingsScope === undefined ? {} : { settingsScope: input.settingsScope }),
 	};
 	for (const model of input.models) result.records.push(buildModelRecord(model, input));
-	const group = (record: ModelRecord) => record.available === true ? 0 : record.configuredAuth === true ? 1 : 2;
-	result.records.sort((a, b) => group(a) - group(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	result.records.sort((a, b) => modelGroup(a) - modelGroup(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return result;
 }
 
@@ -274,6 +296,7 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 		catalogError: readCatalogError(registry),
 		extensionProviders: readExtensionProviders(registry),
 		scopedModels,
+		settingsProviders: null,
 		scopeConfigured,
 		scopeOrder: scopeConfigured ? scopedModels.map(({ model }) => `${model.provider}/${model.id}`) : null,
 		selectedRef: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
@@ -359,6 +382,7 @@ export function readDurableModels(reader: DurableModelReader, agent: DurableAgen
 		catalogError,
 		extensionProviders,
 		scopedModels: undefined,
+		settingsProviders: settingsProviders(settingsScope),
 		scopeConfigured: null,
 		scopeOrder: null,
 		settingsScope,

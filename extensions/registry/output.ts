@@ -44,7 +44,7 @@ const model = Type.Object({
 	contextWindow: Type.Number(), maxTokens: Type.Number(), supportedThinkingLevels: strings,
 	available: nullableBoolean, configuredAuth: nullableBoolean, extensionProvider: nullableBoolean, inScope: nullableBoolean,
 	oauth: nullableBoolean, subscriptionRecognized: nullableBoolean, authSource: Type.Union([StringEnum(AUTH_SOURCES), Type.Null()]),
-	catalogCost, catalogCostHasTiers: nullableBoolean, providerHasScopedModels: nullableBoolean,
+	catalogCost, catalogCostHasTiers: nullableBoolean, providerHasScopedModels: nullableBoolean, providerNamedInSettings: nullableBoolean,
 	scopeIndex: Type.Optional(count), scopeThinkingLevel: Type.Optional(text), currentThinkingLevel: Type.Optional(text),
 	evidence: Type.Literal("registration"), at: Type.Number(), findings: Type.Optional(Type.Array(finding, { maxItems: 4 })),
 }, closed);

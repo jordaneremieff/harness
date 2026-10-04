@@ -53,7 +53,7 @@ function durableReader(catalog: Model<Api>[]): DurableModelReader {
 }
 
 describe("portable model selection evidence", () => {
-	it("orders availability groups alphabetically and keeps selection and scope out of ranking", async () => {
+	it("keeps availability ahead of configuration evidence and selection", async () => {
 		const { catalog, ctx } = fixture();
 		ctx.scopedModels = [{ model: catalog[1] }];
 		const snapshot = readModels(ctx, 1);
@@ -61,14 +61,16 @@ describe("portable model selection evidence", () => {
 		assert.equal(snapshot.records.find((row) => row.id === catalog[0].id)?.selected, true);
 		assert.deepEqual(snapshot.records.map((row) => row.providerHasScopedModels), [false, false, false, false, false, true]);
 		const result = await run(snapshot);
-		assert.equal(result.text.match(/Order: available first/g)?.length, 1);
+		assert.equal(result.text.match(/Order: available with provider configuration evidence first/g)?.length, 1);
 		assert.match(result.text, /Configured access and scope do not establish operator preference/);
 		assert.match(result.text, /Quota, balance, and remote health remain unchecked/);
 		assert.doesNotMatch(JSON.stringify(result), /private-auth-label/);
 	});
 	it("does not turn an empty or unavailable scope into provider preference", () => {
-		const { ctx } = fixture();
-		assert.ok(readModels(ctx, 1).records.every((row) => row.providerHasScopedModels === null && row.inScope === true));
+		const { catalog, ctx } = fixture();
+		const unscoped = readModels(ctx, 1);
+		assert.ok(unscoped.records.every((row) => row.providerHasScopedModels === null && row.providerNamedInSettings === null && row.inScope === true));
+		assert.deepEqual(unscoped.records.map((row) => row.id), [4, 5, 2, 3, 0, 1].map((index) => catalog[index].id));
 		ctx.scopedModels = undefined as unknown as ExtensionContext["scopedModels"];
 		assert.ok(readModels(ctx, 1).records.every((row) => row.providerHasScopedModels === null && row.inScope === null));
 	});
@@ -184,6 +186,103 @@ describe("portable model selection evidence", () => {
 		const exact = await run(snapshot, { kind: "model", name: `${catalog[0].provider}/${catalog[0].id}` });
 		assert.equal(exact.details.pageBlocked, true);
 		assert.match(exact.text, /page cannot advance/);
+	});
+});
+
+describe("provider configuration order", () => {
+	for (const host of ["ordinary", "durable"] as const) {
+		it(`${host}: a large unscoped provider does not bury configured-provider search results`, async () => {
+			const { catalog, available, configured, ctx } = fixture();
+			const target = catalog[5];
+			const variants = Array.from({ length: 40 }, (_, index) => ({ ...catalog[0],
+				id: `variant-${String(index).padStart(2, "0")}`, name: `Sample variant ${index}` }));
+			catalog.push(...variants);
+			for (const model of variants) available.add(model);
+			const anchor = { ...target, id: "scope-anchor", name: "Unrelated anchor" };
+			catalog.push(anchor);
+			ctx.scopedModels = [{ model: anchor }];
+			const scope: SettingsScopeEvidence = { status: "available", patterns: [`${target.provider}/unmatched-*:high`], observedAt: 1 };
+			const reader = { ...durableReader(catalog), getAvailableSnapshot: () => [...available],
+				hasConfiguredAuth: (provider: string) => [...configured].some((model) => model.provider === provider) };
+			const read = (at: number) => host === "ordinary" ? readModels(ctx, at)
+				: readDurableModels(reader, {}, at, { ...scope, observedAt: at });
+			const snapshot = read(1);
+			let page = await run(snapshot, { kind: "model", search: "sample" });
+			const firstCursor = page.details.cursor as string;
+			assert.deepEqual(page.details.query, { match: "exact", limit: 20, kind: "model", search: "sample" });
+			assert.equal(records(page)[0].name, `${target.provider}/${target.id}`);
+			const { inScope, providerHasScopedModels, providerNamedInSettings } = records(page)[0];
+			assert.deepEqual({ inScope, providerHasScopedModels, providerNamedInSettings }, host === "ordinary"
+				? { inScope: false, providerHasScopedModels: true, providerNamedInSettings: null }
+				: { inScope: null, providerHasScopedModels: null, providerNamedInSettings: true });
+			assert.equal(records(page)[1].provider, variants[0].provider);
+			assert.match(page.text, /alphabetical provider\/id within each group/);
+			assert.match(page.text, /Neither filters the catalog nor establishes operator preference/);
+			const seen = records(page).map((row) => row.name);
+			for (let at = 2; page.details.cursor && at <= catalog.length; at++) {
+				page = await run(read(at), { cursor: page.details.cursor as string });
+				assert.equal(page.outcome, "ok");
+				seen.push(...records(page).map((row) => row.name));
+			}
+			assert.equal(page.details.cursor, undefined);
+			const expected = snapshot.records.filter((row) => row.displayName.startsWith("Sample"));
+			assert.deepEqual(seen, expected.map((row) => row.name));
+			assert.equal(new Set(seen).size, catalog.length - 1);
+			assert.deepEqual(expected.slice(1, 41).map((row) => row.id), variants.map((model) => model.id));
+			ctx.scopedModels = [{ model: catalog[4] }];
+			scope.patterns = [`${catalog[4].provider}/*`];
+			assert.equal((await run(read(100), { cursor: firstCursor })).outcome, "stale_cursor");
+		});
+	}
+	it("keeps alphabetical ties rather than scope order and does not prioritize unavailable scoped providers", () => {
+		const { catalog, ctx } = fixture();
+		ctx.scopedModels = [5, 1, 4, 3].map((index) => ({ model: catalog[index] }));
+		assert.deepEqual(readModels(ctx, 1).records.map((row) => row.id), [4, 5, 2, 3, 0, 1].map((index) => catalog[index].id));
+	});
+	it("extracts literal provider prefixes without resolving model IDs or thinking suffixes", () => {
+		const { catalog } = fixture();
+		const target = catalog[5];
+		for (const suffix of ["", "absent-id", "*:high", "nested/absent-id:batch:high", "[abc]?", "~fuzzy"]) {
+			const snapshot = readDurableModels(durableReader(catalog), {}, 1,
+				{ status: "available", patterns: [`${target.provider}/${suffix}`], observedAt: 1 });
+			assert.equal(snapshot.records[0].provider, target.provider);
+			assert.deepEqual(snapshot.records.map((row) => row.providerNamedInSettings), [true, false, false, false, false, false]);
+			assert.ok(snapshot.records.every((row) => row.inScope === null && row.providerHasScopedModels === null));
+		}
+	});
+	it("ignores glob, fuzzy, escaped, nonliteral and prefix-less provider patterns", () => {
+		const { catalog } = fixture();
+		const target = catalog[5];
+		for (const character of ["*", "?", "[", "]", "{", "}", "(", ")", "!", "+", "@", "~", "^", "$", "|", "\\", ":", " ", "\t"]) {
+			const provider = `${target.provider}${character}`;
+			const snapshot = readDurableModels(durableReader([{ ...target, provider }]), {}, 1,
+				{ status: "available", patterns: [`${provider}/*`], observedAt: 1 });
+			assert.equal(snapshot.records[0].providerNamedInSettings, false, character);
+		}
+		for (const pattern of [target.id, `${target.id}:high`, "*", "*/sample", "/sample", ` ${target.provider}/*`,
+			`${target.provider.toUpperCase()}/*`, `${target.provider.slice(0, -1)}/*`, `~${target.provider}/*`]) {
+			const snapshot = readDurableModels(durableReader(catalog), {}, 1,
+				{ status: "available", patterns: [pattern], observedAt: 1 });
+			assert.ok(snapshot.records.every((row) => row.providerNamedInSettings === false), pattern);
+			assert.deepEqual(snapshot.records.map((row) => row.id), catalog.map((model) => model.id));
+		}
+	});
+	it("distinguishes known empty settings from absent or unavailable evidence without reordering", () => {
+		const { catalog } = fixture();
+		for (const status of ["available", "absent", "unavailable"] as const) {
+			const snapshot = readDurableModels(durableReader(catalog), {}, 1,
+				{ status, patterns: status === "available" ? [] : null, observedAt: 1 });
+			assert.ok(snapshot.records.every((row) => row.providerNamedInSettings === (status === "available" ? false : null)));
+			assert.deepEqual(snapshot.records.map((row) => row.id), catalog.map((model) => model.id));
+		}
+	});
+	it("invalidates a cursor when patterns change without changing the named provider", async () => {
+		const { catalog } = fixture();
+		const reader = durableReader(catalog);
+		const scope: SettingsScopeEvidence = { status: "available", patterns: [`${catalog[5].provider}/*`], observedAt: 1 };
+		const first = await run(readDurableModels(reader, {}, 1, scope), { kind: "model", limit: 1 });
+		scope.patterns = [`${catalog[5].provider}/absent-id:high`];
+		assert.equal((await run(readDurableModels(reader, {}, 2, scope), { cursor: first.details.cursor as string })).outcome, "stale_cursor");
 	});
 });
 

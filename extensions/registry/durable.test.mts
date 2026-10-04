@@ -379,6 +379,8 @@ test("Durable model pages carry present, absent, and unreadable settings evidenc
 			assert.equal(typeof scope.observedAt, "number");
 			assert.deepEqual(objectOf(details.structuredContent).settingsScope, scope);
 			assert.ok(recordsOf(result).every((record) => record.inScope === null && record.providerHasScopedModels === null));
+			assert.ok(recordsOf(result).every((record) => record.providerNamedInSettings ===
+				(state === "available" ? record.provider === selected.provider : null)));
 			assert.doesNotMatch(JSON.stringify(result), /private-invalid-settings/);
 		} finally {
 			await harness.close(BACKGROUND_CONTEXT);

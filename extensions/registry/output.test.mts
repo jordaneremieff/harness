@@ -19,7 +19,7 @@ const models: ModelSnapshot = { catalogAvailable: true, availableSnapshot: true,
 	records: [{ kind: "model", name: "fixture/a", provider: "fixture", id: "a", displayName: "A", catalog: true, selected: true,
 		reasoning: true, input: ["text"], contextWindow: 1000, maxTokens: 100, supportedThinkingLevels: ["off", "high"],
 		available: true, configuredAuth: false, oauth: null, subscriptionRecognized: null, authSource: null,
-		catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: null,
+		catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: null, providerNamedInSettings: null,
 		extensionProvider: false, inScope: true, evidence: "registration", at: 1000 }] };
 const run = (params: LookupRequest["params"], overrides: Partial<LookupRequest> = {}) =>
 	lookup({ params, snapshot: snapshot(), models, session: {}, epoch: "fixture", ...overrides });

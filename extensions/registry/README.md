@@ -87,10 +87,20 @@ observer summary that resource lists omit. `detail: true` with an exact tool nam
 
 ### Chat model lists
 
-Model pages place available records first, then remaining configured-auth
-records, then the rest. Each group sorts alphabetically by canonical
-`provider/id`, independently of selection, scope, price, or past use. The result
-header states the ordering rule. Search tokens match across canonical and
+Model pages use these groups, in order:
+
+1. Available records with provider configuration evidence.
+2. Other available records.
+3. Remaining configured-auth records.
+4. The rest.
+
+Provider configuration evidence means `providerHasScopedModels === true` in
+ordinary sessions or `providerNamedInSettings === true` in Durable hosts. Each
+group sorts alphabetically by canonical `provider/id`, independently of selected
+model, scope position, price, or past use. Without provider configuration evidence,
+all available records remain one alphabetical group. No record is hidden or
+filtered by this order. Configuration does not establish operator preference.
+The result header states the rule. Search tokens match across canonical and
 display names without aliases or model-family rules.
 
 Lists show canonical and display names, input modalities, selected state,
@@ -104,8 +114,9 @@ Offline health reports retain records beside their findings.
 
 Model records also carry nullable `oauth`, `subscriptionRecognized`,
 `authSource`, `catalogCost`, `catalogCostHasTiers`, and
-`providerHasScopedModels`. Compact text labels these as `oauth`, `subscription`,
-`authSource`, `price`, `tiers`, and `providerScoped`. Price text uses
+`providerHasScopedModels`, plus `providerNamedInSettings`. Compact text labels
+these as `oauth`, `subscription`, `authSource`, `price`, `tiers`, `providerScoped`,
+and `providerSettings`. Price text uses
 input/output/cache-read/cache-write rates in USD per million tokens. Structured
 `catalogCost` preserves those named base-rate fields; only exact-name lookups
 include its optional `tiers` array with `inputTokensAbove` thresholds.
@@ -255,8 +266,11 @@ its schema and registered guidance without activating it.
   `scopeIndex` is the model's zero-based position in `ctx.scopedModels`; it is
   omitted for models outside the scope and when no scope is configured.
   `providerHasScopedModels` reports whether the provider has any entry in a
-  resolved, nonempty scope; otherwise it is null. Scope never changes the
-  availability-first page order.
+  resolved, nonempty scope; otherwise it is null. A true value moves available
+  records from that provider ahead of other available records, even when the
+  individual model is outside the scope. It never moves unavailable records
+  ahead of available ones. `providerNamedInSettings` stays null in ordinary
+  sessions because they use resolved scope, not raw settings-prefix evidence.
   `extensionProvider` is true when `getRegisteredProviderIds()` includes the
   model's provider, false otherwise, and null when the accessor fails. The tool
   reads provider registration once per model snapshot.
@@ -456,6 +470,15 @@ The native form reads Durable facts instead of a Pi session:
   is `available` when the key contains a string array, `absent` when the key is
   absent, and `unavailable` after load errors or a malformed value. An explicitly
   empty array remains available; absent and unavailable patterns are null.
+  `providerNamedInSettings` reports whether a raw pattern starts with the exact
+  literal `<provider>/` prefix. It rejects whitespace and glob, fuzzy, or escape
+  punctuation in the provider segment: `* ? [ ] { } ( ) ! + @ ~ ^ $ | \ :`. It
+  does not trim, fold case, expand patterns, or inspect the model-ID suffix. A
+  literal provider prefix counts even if no model matches its suffix. Prefix-less
+  patterns do not count. An available array with no qualifying prefix yields
+  false; absent or unavailable patterns yield null. This field is separate from
+  `providerHasScopedModels` because naming a provider does not prove resolved
+  scope membership. Only true changes the available-record order.
   These patterns are configuration evidence, not resolved session scope or
   preference. No resolver runs: the public scope resolver refreshes availability.
   The read uses Pi's settings lock but calls no setter and changes no settings.

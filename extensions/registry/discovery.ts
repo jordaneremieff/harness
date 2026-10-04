@@ -92,9 +92,9 @@ function compactModelQuery(query: Query): boolean {
 	return query.kind === "model" && !fullRecordQuery(query) && !query.health;
 }
 
-const MODEL_LIST_FIELDS = ["displayName", "input", "selected", "catalog", "available", "configuredAuth", "oauth", "subscriptionRecognized", "authSource", "catalogCost", "catalogCostHasTiers", "inScope", "scopeIndex", "providerHasScopedModels", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
+const MODEL_LIST_FIELDS = ["displayName", "input", "selected", "catalog", "available", "configuredAuth", "oauth", "subscriptionRecognized", "authSource", "catalogCost", "catalogCostHasTiers", "inScope", "scopeIndex", "providerHasScopedModels", "providerNamedInSettings", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
 
-const MODEL_LIST_LABELS: Record<string, string> = { subscriptionRecognized: "subscription", catalogCost: "price", catalogCostHasTiers: "tiers", providerHasScopedModels: "providerScoped" };
+const MODEL_LIST_LABELS: Record<string, string> = { subscriptionRecognized: "subscription", catalogCost: "price", catalogCostHasTiers: "tiers", providerHasScopedModels: "providerScoped", providerNamedInSettings: "providerSettings" };
 
 function compactModelValue(key: string, value: unknown): string {
 	if (key !== "catalogCost" || value === null) return oneLine(JSON.stringify(value));
@@ -140,7 +140,7 @@ function settingsScopeLines(models: ModelSnapshot | undefined): string[] {
 	if (scope === undefined) return [];
 	return [
 		`Settings scope configuration: ${scope.status}; enabledModels=${oneLine(JSON.stringify(scope.patterns))}`,
-		"Raw settings patterns are not effective session scope or operator preference; Durable inScope remains unknown.",
+		"Raw settings patterns are not effective session scope or operator preference; Durable inScope and providerScoped remain unknown. providerSettings reports a literal provider/ prefix, without model matching.",
 	];
 }
 
@@ -160,7 +160,8 @@ function discoveryHeader(
 	if (modelQuery) {
 		lines.push(
 			MODEL_CATALOG_BOUNDARY,
-			"Order: available first, then remaining configured-auth records, then the rest; alphabetical provider/id within each group.",
+			"Order: available with provider configuration evidence first, then other available, then remaining configured-auth records, then the rest; alphabetical provider/id within each group.",
+			"Provider configuration evidence: providerScoped=true from resolved scope in ordinary sessions; providerSettings=true from literal settings prefixes in Durable. Neither filters the catalog nor establishes operator preference.",
 			"Model metadata and cached availability are synchronous local snapshots. configuredAuth is presence, not credential validity; no refresh, auth resolution, or probe. Quota, balance, and remote health remain unchecked.",
 			MODEL_SCOPE_BOUNDARY,
 			"price: catalog USD/Mtok, input/output/cacheRead/cacheWrite; not billed spend. subscription means Pi-recognized, not inferred from OAuth; false does not imply metered billing. tiers marks price tiers; exact model lookup returns them.",

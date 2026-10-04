@@ -33,7 +33,7 @@ function model(): ModelRecord {
 	return { kind: "model", name: "fixture/model", provider: "fixture", id: "model", displayName: "Fixture Model",
 		catalog: true, selected: true, reasoning: true, input: ["text", "image"], contextWindow: 10000, maxTokens: 1000,
 		supportedThinkingLevels: ["off", "high"], available: true, configuredAuth: true, extensionProvider: false,
-		oauth: null, subscriptionRecognized: null, authSource: null, catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: true,
+		oauth: null, subscriptionRecognized: null, authSource: null, catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: true, providerNamedInSettings: null,
 		inScope: true, scopeIndex: 0, scopeThinkingLevel: "off", currentThinkingLevel: "high", evidence: "registration", at };
 }
 function models(records = [model()]): ModelSnapshot {
