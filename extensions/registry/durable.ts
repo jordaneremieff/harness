@@ -261,7 +261,7 @@ function durableContext(agent: Durable.Agent | undefined, at: number): ContextSn
 }
 
 const DURABLE_CONTEXT_BOUNDARY =
-	"The estimate converts the newest assistant entry's reported usage into tokens against the model's context window and adds no later entries. Unknown usage can follow a reset or compaction without a later response. This is not a safe remaining budget, a final provider payload count, or a compaction threshold.";
+	"The estimate converts the newest usable assistant usage in the active context into tokens against the model's context window, skips zero-usage, aborted, and error responses, and adds no trailing entries. Usage can remain unknown after a reset or compaction without a later usable response; the estimate is not a safe remaining budget, a final provider payload count, or a compaction threshold.";
 
 /** Entries one context-estimate scan visits. The tool runs after an assistant response, so the bound is generous. */
 const CONTEXT_SCAN_PAGE = 50;
