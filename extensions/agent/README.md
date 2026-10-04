@@ -222,8 +222,8 @@ of that page's sorted directory listing was reached, not that all pages observed
 one instant. Dashboard and cross-storage thread discovery use the same catalog
 continuations.
 
-All agents have independent process lifetimes. There is no separate detach
-operation or detached-run registry.
+Agent hosts have process lifetimes independent of the primary. There is no
+separate detach operation or detached-run registry.
 
 `/agent` exposes `new`, `list`, `status`, `send`, `steer`, `abort`, `attach`,
 `fork`, `compact`, `inspect`, `rewind`, `configure`, `profile`, `command`, `place`, `places`,
@@ -245,10 +245,13 @@ There are no F-key controls, Alt controls, or typed dashboard commands.
 `/agent unbind <area>` removes only the directory binding. It does not delete
 storage or abort work.
 
-A blank configure name clears the stored name. An exact `provider/model` is
-validated against the configured catalog, and the requested reasoning level is
-clamped by Pi. Configuration requires an idle conversation, starts no task, and
-changes no global defaults. A mutation result carries a compact status:
+A blank configure name clears the stored name. Spawn and configure accept
+`thinkingLevel` values `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and
+`max`. Native attach accepts the same levels alongside an explicit model.
+An exact `provider/model` is validated against the configured catalog, and the
+requested reasoning level is clamped by Pi to the model's supported levels.
+Configuration requires an idle conversation, starts no task, and changes no
+global defaults. A mutation result carries a compact status:
 identity, conversation, name, cwd, busy state, model, and the capability limits
 that matter. The full status stays available through `agent_status`. If the
 post-mutation status read fails, the result carries `snapshotError` and the
@@ -276,9 +279,12 @@ Use `agent_collaborate` with `action: "list"` and an optional literal `query` to
 find purpose across storages. Global discovery reads published hints, not hosts.
 It visits a bounded catalog batch and returns `nextCursor`, explicit coverage,
 and omitted or unavailable source storages. Follow the cursor even after an
-empty page. Use `sessionId` for a storage's full retained thread list. A changed
-catalog or publication refuses a stale continuation rather than imply complete
-coverage. There is no background relevance search or polling loop.
+empty page and repeat the same query. Use `sessionId` for a storage's retained
+thread list. Catalog changes follow the filename continuation rules in
+[Controls](#controls). A continuation within one storage's published thread
+hints refuses if that storage's thread publication changed:
+`Thread discovery changed; restart the query`. There is no background relevance
+search or polling loop.
 
 `create` needs `title`, `purpose`, `authority`, `source`, `restrictions`, and
 `acceptance`; `integrator` defaults to the caller. An ordinary primary also
@@ -333,13 +339,10 @@ for the exchange tail. At the exchange tail, new events stay visible. Frame
 and earlier-page reads keep their position. Esc returns through Threads to the roster and native
 primary. Drafts, agent selection, and focus stay intact. The view shows frame,
 contributions, attributed chronological exchange, revisions, and coverage.
-Event times default to coarse relative ages such as `15m ago`, `3h ago`, or
-`1d ago`. Press `i` in a thread to switch to the absolute local date and time,
-such as `Oct 4, 2026, 12:01 PM`, or back to relative ages. The choice applies to
-the roster and all Threads views and survives close and reopen in the same Pi
-session and process; it is not saved to disk. Catalog publishers notify open
-roster subscribers, including readers with no attached host. Those notifications
-refresh the open Threads view after an external process publishes a change.
+Thread event times share the [roster's time display](#roster-and-coverage).
+Catalog publishers notify open roster subscribers, including readers with no
+attached host. Those notifications refresh the open Threads view after an
+external process publishes a change.
 Observation starts no host or model turn and adds no polling loop. The observer
 closes with its last subscriber. A refreshed thread list or peer list rejects
 old mouse positions until the new rows render.
@@ -613,11 +616,12 @@ Each view has a framed heading and one tinted hint bar at the bottom. Keys use
 an accent color; action words and metadata use a quieter color. Roster, thread,
 and action selections share a visible marker and highlight. Roster names also
 show the agent state glyph; the written state remains visible. The roster
-widens with the terminal and shows activity, provider/model, thinking level,
-cost, and last-change time. Wide rows separate identity and activity, then
-combine model, thinking level, cost, and time. Tool activity uses a short plain
-string argument summary rather than raw JSON. Narrow terminals use compact single-line rows
-with each fact shortened to fit.
+widens with the terminal and shows activity, model, thinking level, cost, and
+last-change time. Wide rows separate identity and activity, then combine model,
+thinking level, cost, and time. The provider prefix appears on wide rows when
+it fits. Tool activity uses a short plain string argument summary rather than
+raw JSON. Narrow terminals use compact single-line rows with each fact shortened
+to fit.
 Heading counters describe the loaded selection or the current thread page,
 not an unknown global total. A `+` marks incomplete loaded coverage. Conversation
 content uses Pi's native renderer. A blank row and a loaded-line position rule
@@ -780,7 +784,8 @@ storage's conversation state rather than the primary's fleet overview.
 and native tools. It scans bounded catalog pages without opening hosts or
 reading transcripts. Model rows sort by exact provider/model identity and show
 reported model costs, sampled last-response times, current selections grouped
-by thinking level, and active conversation counts. Tool costs stay separate.
+by thinking level, and active conversation counts. Active means a published
+Starting or Working state, not a live host check. Tool costs stay separate.
 The latest retained attributed failure per provider sorts newest first, with
 stable identity tie-breakers. Warning samples describe observed conversation
 state, not proven provider faults. The response bounds rows, samples, and
@@ -852,9 +857,10 @@ counter. These ages describe recorded changes, not current activity.
 Press `i` in the roster or a thread, or click a visible time in fullscreen mode,
 to switch every dashboard time to the absolute local date and time, such as
 `Oct 4, 2026, 12:01 PM`. Neither form has an `Updated` label or a local suffix.
-The same choice applies to thread event times. A retained `@handle` leads the
-label, followed by the display name when it fits. A historical first input is
-a labeled fallback, never a standing role. Duplicate labels receive unique
+The same choice applies to thread event times and survives close and reopen
+in the same Pi session and process; it is not saved to disk. A retained
+`@handle` leads the label, followed by the display name when it fits. A historical
+first input is a labeled fallback, never a standing role. Duplicate labels receive unique
 identity suffixes. Unknown cost stays unknown and partial cost stays a lower bound.
 
 Working and Attention precede retained date groups. Attention names unavailable
@@ -896,12 +902,14 @@ in the conversation rule. A successful refresh clears that notice.
 The primary status line and dashboard heading use the same session scope:
 agents created by the current primary session plus their descendants through
 catalog ownership. Other primary sessions and unrelated retained agents do not
-contribute. The status says `agents this session: <working> working · <total>
-total · <cost>` and disappears when the session has no agents. Each registered
+contribute to these figures. The roster still lists discovered agents across
+sessions. The status says `agents this session: <working> working · <total>
+total · <cost>` and disappears when no session-scoped rows are found. Working
+counts only `working` rows; total includes all states in scope. Each registered
 primary receives its own figures. The dashboard reuses its scanned roster page
 for these figures without another catalog scan. Repeated reads never add the
-same usage twice.
-Incomplete inventory qualifies the known subtotal.
+same usage twice. Incomplete inventory prefixes the known cost subtotal with
+`≥`; missing or partial cost adds `+?`.
 
 ## Primary restart and continuity
 
@@ -977,8 +985,11 @@ The standing-profile process tests use independent requester processes and the
 production host runner with a socket-controlled faux provider. They exercise
 profile tool use, compaction/reset/retirement continuity, alternate recipients,
 report disposition, concurrent handle creation, replay, and operation-scoped
-old/new process compatibility. Their stale-source correction is a scripted
-mechanical path, not evidence of autonomous model judgment. Test-only
+compatibility with a base-only process. `profile-base-contract-fixture.mts`
+keeps fixed base operation identities but reads the installed coding-agent and
+Durable versions, so feature-contract checks do not depend on a pinned upstream
+release. Their stale-source correction is a scripted mechanical path, not
+evidence of autonomous model judgment. Test-only
 `PROFILE_TEST_ROOT` selects the isolated fixture directory; its default is
 the OS temporary directory. Each fixture creates and removes its own temporary
 subdirectory. The fixtures set their own `PI_AGENT_DIR` and
