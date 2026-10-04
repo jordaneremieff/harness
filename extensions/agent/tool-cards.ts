@@ -1,13 +1,17 @@
 /**
  * Agent cards render tool call arguments and retained results from native
  * Durable observation values, plus the `agent.peer` message notices the
- * manager returns to the primary. Cards read only the values the owner
- * returned; rendering opens no storage and changes no execution behavior.
+ * manager returns to the primary. Target labels use roster facts already
+ * observed by the primary footer. Rendering opens no storage and changes
+ * no execution behavior.
  */
 import { stripVTControlCharacters } from "node:util";
+import type { AgentConversationSummary } from "./dashboard-types.ts";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, keyText } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+
+export type AgentCardLookup = () => readonly AgentConversationSummary[];
 
 /** Bytes/units bounds for one expanded display block. */
 export const SOURCE_DISPLAY_LIMIT = 32_000;
@@ -19,6 +23,10 @@ const PREVIEW_CHARS = 600;
 /** Card context: the subset of `ToolRenderContext` these renderers read. */
 export interface AgentCardContext {
 	readonly args?: unknown;
+	readonly lookup?: AgentCardLookup;
+	readonly state?: { callHint?: boolean };
+	readonly executionStarted?: boolean;
+	readonly isPartial?: boolean;
 	readonly expanded: boolean;
 	readonly argsComplete?: boolean;
 	readonly isError?: boolean;
@@ -65,14 +73,59 @@ function textComponent(text: string, previous?: Component): Text {
 	return component;
 }
 
-function expansionHint(subject: string): string {
+function expansionHint(): string {
 	const key = keyText("app.tools.expand");
-	return key ? `${key} to expand ${subject}` : `Expand for full ${subject}`;
+	return key ? `... (${key} to expand)` : "... (expand for full details)";
 }
 
-function messageHint(): string {
-	const key = keyText("app.tools.expand");
-	return key ? `${key} to expand message` : "Full message is in the tool-call arguments.";
+/** Calls own the hint before execution; results own it after execution starts. */
+function cardHint(context: AgentCardContext, part: "call" | "result", _subject: string): string {
+	if (context.expanded) return "";
+	if (part === "call") {
+		const shown = context.executionStarted !== true && context.argsComplete !== false;
+		if (context.state) context.state.callHint = shown;
+		return shown ? expansionHint() : "";
+	}
+	if (context.state?.callHint && context.executionStarted !== true) return "";
+	return expansionHint();
+}
+
+function appendCardHint(lines: string[], theme: Theme, context: AgentCardContext, part: "call" | "result", subject: string): void {
+	const hint = cardHint(context, part, subject);
+	if (hint) lines.push(theme.fg("dim", hint));
+}
+
+function shortIdentity(identity: string): string {
+	if (identity.startsWith("@")) return displayPreview(identity, 64);
+	const [storage, conversation] = identity.split(":");
+	return `${displayPreview(storage ?? identity, 8)}${conversation ? `:${displayPreview(conversation, 16)}` : ""}`;
+}
+
+function modelCaption(model: AgentConversationSummary["model"]): string {
+	return model ? `${model.provider}/${model.modelId}${model.thinkingLevel && model.thinkingLevel !== "off" ? ` · ${model.thinkingLevel}` : ""}` : "model unknown";
+}
+
+function findTarget(identity: string, rows: readonly AgentConversationSummary[]): AgentConversationSummary | undefined {
+	return rows.find((item) => item.id === identity || (identity.startsWith("@") && item.profile?.handle === identity));
+}
+
+function appendExpandedTarget(lines: string[], args: Record<string, unknown>, theme: Theme, context: AgentCardContext): void {
+	if (!context.expanded) return;
+	const identity = text(args.sessionId) || (text(args.handle) ? `@${text(args.handle).replace(/^@/u, "")}` : "");
+	if (!identity) return;
+	const fullIdentity = findTarget(identity, context.lookup?.() ?? [])?.id ?? identity;
+	lines.push(theme.fg("dim", `Target: ${displayText(fullIdentity)}`));
+}
+
+function targetLabel(identity: string, context: AgentCardContext): string {
+	if (!identity) return "(target pending)";
+	const rows = context.lookup?.() ?? [];
+	const row = findTarget(identity, rows);
+	if (!row) return shortIdentity(identity);
+	const label = row.profile?.handle || row.name || shortIdentity(row.id);
+	const configuration = modelCaption(row.model);
+	const duplicate = !row.profile?.handle && row.name && rows.some((other) => other.id !== row.id && other.name === row.name && !other.profile?.handle && modelCaption(other.model) === configuration);
+	return `${displayPreview(label, 80)}${duplicate ? ` [${shortIdentity(row.id)}]` : ""} · ${displayPreview(configuration, 160)}`;
 }
 
 export function record(value: unknown): Record<string, unknown> {
@@ -114,23 +167,71 @@ function resultDetails(result: AgentToolResult<unknown>): Record<string, unknown
 function resultPreview(value: string, limit = PREVIEW_UNITS): string {
 	const prefix = displayPrefix(value, limit);
 	const lines = prefix.split("\n").slice(0, 3).join("\n");
-	return displayText(lines) + (lines.length < value.length ? "\n…" : "");
+	return displayText(lines).replace(/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}(?::[1-9][0-9]*)?/giu, shortIdentity) + (lines.length < value.length ? "\n…" : "");
+}
+
+function callIdentity(context: AgentCardContext): string {
+	const args = record(context.args);
+	return text(args.sessionId) || (text(args.handle) ? `@${text(args.handle).replace(/^@/u, "")}` : "");
+}
+
+function sameTarget(identity: string, context: AgentCardContext): boolean {
+	const requested = callIdentity(context);
+	return identity !== "" && (identity === requested || identity === findTarget(requested, context.lookup?.() ?? [])?.id);
+}
+
+function targetSuffix(identity: string, context: AgentCardContext): string {
+	const name = findTarget(identity, context.lookup?.() ?? [])?.name ?? "";
+	return !context.expanded && (sameTarget(identity, context) || headerHasName(identity, name, context)) ? "" : ` · ${targetLabel(identity, context)}`;
+}
+
+function snapshotFacts(context: AgentCardContext, snapshot: Record<string, unknown> | undefined): AgentCardContext {
+	if (!snapshot) return context;
+	const identity = text(snapshot.identity) || text(snapshot.sessionId);
+	if (!identity) return context;
+	const agent = record(snapshot.agent);
+	const model = record(agent.model);
+	const previous = context.lookup?.() ?? [];
+	const known = previous.find((row) => row.id === identity);
+	const row: AgentConversationSummary = {
+		id: identity, storageId: identity.split(":")[0], name: text(snapshot.name) || known?.name,
+		profile: known?.profile, cwd: text(snapshot.cwd), modifiedAt: 0, owner: "unknown", state: "unavailable", cost: 0, partial: false,
+		model: text(model.provider) && text(model.modelId) ? { provider: text(model.provider), modelId: text(model.modelId), thinkingLevel: text(agent.thinkingLevel) || "unknown" } : known?.model,
+	};
+	return { ...context, lookup: () => [row, ...previous.filter((item) => item.id !== identity)] };
+}
+
+function headerHasName(identity: string, name: string, context: AgentCardContext): boolean {
+	const args = record(context.args);
+	const observed = findTarget(callIdentity(context), context.lookup?.() ?? []);
+	if (sameTarget(identity, context) && observed?.name === name) return true;
+	return !callIdentity(context) && name !== "" && (args.name === name || args.topic === name);
+}
+
+function headerHasModel(identity: string, provider: string, modelId: string, thinking: string, context: AgentCardContext): boolean {
+	if (!sameTarget(identity, context)) return false;
+	const observed = findTarget(callIdentity(context), context.lookup?.() ?? [])?.model;
+	const args = record(context.args);
+	const expectedModel = text(args.model) || `${observed?.provider}/${observed?.modelId}`;
+	const expectedThinking = text(args.thinkingLevel) || observed?.thinkingLevel;
+	return expectedModel === `${provider}/${modelId}` && expectedThinking === thinking;
 }
 
 // --- Call cards ------------------------------------------------------------------
 
 const SUBJECT_KEYS = ["handle", "name", "topic", "area", "prompt", "correction", "sessionId"] as const;
 const MODEL_CALLS = new Set(["agent_spawn", "agent_attach", "agent_place", "agent_fork", "agent_rewind", "agent_configure"]);
-const RETAINED_MODEL_CALLS = new Set(["agent_attach", "agent_fork", "agent_rewind", "agent_configure"]);
 
 /** Requested configuration stays distinct from a resolved session snapshot. */
-function requestedConfiguration(name: string, args: Record<string, unknown>): string | undefined {
+function requestedConfiguration(name: string, args: Record<string, unknown>, context: AgentCardContext): string | undefined {
 	if (!MODEL_CALLS.has(name)) return undefined;
-	const unresolved = name === "agent_place" ? "bound session or inherited" : RETAINED_MODEL_CALLS.has(name) ? "retained session" : "inherited";
+	const observed = findTarget(text(args.sessionId), context.lookup?.() ?? [])?.model;
 	const model = text(args.model);
 	const thinking = text(args.thinkingLevel);
-	if (!model && !thinking) return `Requested model and thinking: ${unresolved} (unresolved)`;
-	return `Requested: ${model ? displayPreview(model, 240) : `${unresolved} (unresolved)`} · thinking ${thinking ? displayPreview(thinking, 40) : "unresolved"}`;
+	const parts: string[] = [];
+	if (model && model !== `${observed?.provider}/${observed?.modelId}`) parts.push(displayPreview(model, 240));
+	if (thinking && thinking !== observed?.thinkingLevel) parts.push(displayPreview(thinking, 40));
+	return parts.length ? `Requested: ${parts.join(" · ")}` : undefined;
 }
 
 /** True when a collapsed call hides or clips an argument. */
@@ -143,37 +244,42 @@ function argsHidden(args: Record<string, unknown>, subjectKey: string, subjectVa
 function argumentCard(name: string, subject: string, qualifier: string | undefined, args: Record<string, unknown>, theme: Theme, context: AgentCardContext, hidden: boolean): Component {
 	const lines = [theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${subject}`) : "")];
 	if (qualifier) lines.push(theme.fg("muted", qualifier));
+	appendExpandedTarget(lines, args, theme, context);
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	else if (hidden) lines.push(theme.fg("dim", expansionHint("arguments")));
+	else if (hidden) appendCardHint(lines, theme, context, "call", "arguments");
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
 /** Generic call card for snapshot and control tools. */
 export function renderAgentCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
-	const subjectKey = SUBJECT_KEYS.find((key) => text(args[key]) !== "") ?? "";
+	const subjectKey = text(args.sessionId) ? "sessionId" : SUBJECT_KEYS.find((key) => text(args[key]) !== "") ?? "";
 	const subjectValue = subjectKey ? text(args[subjectKey]) : "";
-	const lines = [theme.fg("toolTitle", theme.bold(name)) + (subjectValue ? theme.fg("accent", ` · ${displayPreview(subjectValue, 120)}`) : "")];
-	const configuration = requestedConfiguration(name, args);
+	const lines = [theme.fg("toolTitle", theme.bold(name)) + (subjectValue ? theme.fg("accent", ` · ${subjectKey === "sessionId" || subjectKey === "handle" ? targetLabel(subjectKey === "handle" ? `@${subjectValue.replace(/^@/u, "")}` : subjectValue, context) : displayPreview(subjectValue, 120)}`) : "")];
+	const configuration = requestedConfiguration(name, args, context);
 	if (configuration) lines.push(theme.fg("muted", configuration));
+	appendExpandedTarget(lines, args, theme, context);
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	else if (argsHidden(args, subjectKey, subjectValue)) lines.push(theme.fg("dim", expansionHint("arguments")));
+	else if (argsHidden(args, subjectKey, subjectValue) || subjectKey === "sessionId" && shortIdentity(subjectValue) !== subjectValue) appendCardHint(lines, theme, context, "call", "arguments");
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
 function renderMessageCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
-	const target = text(args.sessionId) ? displayPreview(text(args.sessionId), 300) : "(target pending)";
+	const target = targetLabel(text(args.sessionId), context);
 	const message = text(args.message);
-	const reply = text(args.replyTo) ? displayPreview(text(args.replyTo), 300) : "";
+	const reply = text(args.replyTo) ? targetLabel(text(args.replyTo), context) : "";
 	const lines = [theme.fg("toolTitle", theme.bold(name)) + theme.fg("accent", ` → ${target}`) + (reply ? theme.fg("muted", ` · reply to ${reply}`) : "")];
+	appendExpandedTarget(lines, args, theme, context);
 	if (context.expanded) {
-		lines.push(theme.fg("muted", context.argsComplete === false ? "Message so far (controls escaped):" : "Submitted message (controls escaped):"));
+		lines.push(theme.fg("muted", context.argsComplete === false ? "Message so far:" : "Message:"));
 		lines.push(theme.fg("toolOutput", boundedSource(message, MESSAGE_DISPLAY_LIMIT)));
+		const metadata = { ...args, sessionId: undefined, message: undefined };
+		if (Object.values(metadata).some((item) => item !== undefined)) lines.push(theme.fg("dim", boundedSource(JSON.stringify(metadata, null, 2))));
 	} else {
 		const preview = displayPreview(message, 180);
 		lines.push(theme.fg("toolOutput", preview || (context.argsComplete === false ? "(message pending)" : "(empty or whitespace-only message)")));
-		if (preview !== message && message !== "") lines.push(theme.fg("dim", messageHint()));
+		if ((preview !== message && message !== "") || target !== text(args.sessionId)) appendCardHint(lines, theme, context, "call", "message");
 	}
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
@@ -189,16 +295,17 @@ export function renderSteerCall(value: unknown, theme: Theme, context: AgentCard
 /** The summary argument selects the self path; execution refuses a mismatched session ID. */
 export function renderCompactCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
-	const target = text(args.sessionId) ? displayPreview(text(args.sessionId), 300) : "(target pending)";
+	const target = text(args.sessionId) ? targetLabel(text(args.sessionId), context) : "(target pending)";
 	const summary = text(args.summary);
 	const lines = [theme.fg("toolTitle", theme.bold("agent_compact")) + theme.fg("accent", summary ? ` · self · ${target}` : ` · ${target}`)];
-	if (summary) lines.push(theme.fg("muted", `Native compaction entry with the agent-authored summary (${summary.length} chars) at this tool batch's end`));
+	if (summary) lines.push(theme.fg("muted", context.expanded ? `Native compaction entry with the agent-authored summary (${summary.length} chars) at this tool batch's end` : `Summary: ${summary.length} chars`));
 	else {
-		lines.push(theme.fg("muted", "Native summarization of the named conversation; it aborts active work and does not resume"));
+		lines.push(theme.fg("muted", context.expanded ? "Native summarization of the named conversation; it aborts active work and does not resume" : "Compacts after abort; leaves the agent idle"));
 		lines.push(theme.fg("muted", `Summarizer instructions: ${text(args.instructions) ? "present" : "none"}`));
 	}
+	appendExpandedTarget(lines, args, theme, context);
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	else if (summary || text(args.instructions)) lines.push(theme.fg("dim", expansionHint("arguments")));
+	else if (summary || text(args.instructions)) appendCardHint(lines, theme, context, "call", "arguments");
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
@@ -218,14 +325,15 @@ export function renderListCall(value: unknown, theme: Theme, context: AgentCardC
 export function renderAbortCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
 	const target = text(args.sessionId);
-	return argumentCard("agent_abort", target ? displayPreview(target, 300) : "(target pending)", undefined, args, theme, context, target.length > 300 || args.trust !== undefined);
+	const qualifier = count(args.timerId) !== undefined ? `timer ${args.timerId}` : args.background === true ? "background tasks" : undefined;
+	return argumentCard("agent_abort", target ? targetLabel(target, context) : "(target pending)", qualifier, args, theme, context, target.length > 300 || args.trust !== undefined);
 }
 
 export function renderCommandCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
 	const name = text(args.name);
 	const target = text(args.sessionId);
-	const subject = `${name ? displayPreview(name, 120) : "(command pending)"} → ${target ? displayPreview(target, 300) : "(target pending)"}`;
+	const subject = `${name ? displayPreview(name, 120) : "(command pending)"} → ${target ? targetLabel(target, context) : "(target pending)"}`;
 	const commandArgs = text(args.args);
 	return argumentCard("agent_command", subject, commandArgs ? `args ${displayPreview(commandArgs, 200)}` : undefined, args, theme, context, name.length > 120 || target.length > 300 || commandArgs.length > 200);
 }
@@ -236,7 +344,7 @@ function inspectQualifier(args: Record<string, unknown>): { qualifier: string; h
 	const push = (label: string, key: string, limit: number) => {
 		const value = text(args[key]);
 		if (!value) return;
-		parts.push(`${label} ${displayPreview(value, limit)}`);
+		parts.push(`${label} ${key === "operationId" ? shortIdentity(value) : displayPreview(value, limit)}`);
 		hidden ||= value.length > limit;
 	};
 	push("entry", "entryId", 120);
@@ -258,12 +366,12 @@ export function renderInspectCall(value: unknown, theme: Theme, context: AgentCa
 	const args = record(value);
 	const target = text(args.sessionId);
 	const { qualifier, hidden } = inspectQualifier(args);
-	return argumentCard("agent_inspect", target ? displayPreview(target, 300) : "(target pending)", qualifier, args, theme, context, hidden || target.length > 300);
+	return argumentCard("agent_inspect", target ? targetLabel(target, context) : "(target pending)", qualifier, args, theme, context, hidden || target.length > 300);
 }
 
 // --- Result cards ----------------------------------------------------------------
 
-function outcomeCard(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext, labels: { error: string; partial: string }, summarize: (details: Record<string, unknown>, theme: Theme) => string[] | undefined): Component {
+function outcomeCard(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext, labels: { error: string; partial: string }, summarize: (details: Record<string, unknown>, theme: Theme, context: AgentCardContext) => string[] | undefined): Component {
 	const details = resultDetails(result);
 	const output = resultText(result);
 	const lines: string[] = [];
@@ -271,10 +379,10 @@ function outcomeCard(result: AgentToolResult<unknown>, options: ToolRenderResult
 	else if (options.isPartial) lines.push(theme.fg("muted", labels.partial));
 	if (options.expanded) lines.push(theme.fg("toolOutput", boundedSource(output)));
 	else {
-		const summary = summarize(details, theme);
+		const summary = summarize(details, theme, context);
 		if (summary) lines.push(...summary);
 		else lines.push(theme.fg(context.isError === true ? "error" : "toolOutput", resultPreview(output)));
-		if (summary || output.length > PREVIEW_UNITS || output.includes("\n")) lines.push(theme.fg("dim", expansionHint("result")));
+		if (summary || output.length > PREVIEW_UNITS || output.includes("\n")) appendCardHint(lines, theme, context, "result", context.isPartial ? "partial result" : "result");
 	}
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
@@ -283,48 +391,65 @@ function muted(theme: Theme, value: string): string {
 	return theme.fg("muted", value);
 }
 
-function controlReceiptLines(details: Record<string, unknown>, theme: Theme, subject: string): string[] | undefined {
+function controlReceiptLines(details: Record<string, unknown>, theme: Theme, subject: string, context: AgentCardContext): string[] | undefined {
 	const identity = text(details.identity);
 	const conversationId = count(details.conversationId);
 	if (!identity && conversationId === undefined) return undefined;
-	const lines = [theme.fg("toolOutput", `${subject}${identity ? ` · ${displayPreview(identity, 300)}` : conversationId !== undefined ? ` · conversation ${conversationId}` : ""}`)];
+	const lines = [theme.fg("toolOutput", `${subject}${identity ? targetSuffix(identity, context) : conversationId !== undefined ? ` · conversation ${conversationId}` : ""}`)];
 	const submission = count(details.submissionId);
-	if (submission !== undefined) lines.push(muted(theme, `submission ${submission}`));
-	if (details.deduped === true) lines.push(muted(theme, "Deduplicated against the retained request ID"));
+	if (submission !== undefined) lines[0] += muted(theme, ` · submission ${submission}`);
+	if (details.deduped === true) lines.push(muted(theme, "Already admitted"));
 	return lines;
 }
 
-function receiptLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function receiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (count(details.submissionId) === undefined || text(details.identity) === "") return undefined;
-	return controlReceiptLines(details, theme, "Admission receipt");
+	return controlReceiptLines(details, theme, "Admitted", context);
 }
 
-function forkLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function forkLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (text(details.identity) === "" || details.deduped === undefined || count(details.conversationId) === undefined || count(details.submissionId) !== undefined) return undefined;
-	return controlReceiptLines(details, theme, "Fork created");
+	return controlReceiptLines(details, theme, "Fork created", context);
 }
 
-function rewindLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function rewindLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (count(details.predecessorEntryId) === undefined || text(details.identity) === "") return undefined;
-	const lines = controlReceiptLines(details, theme, "Rewind submitted") ?? [];
+	const lines = controlReceiptLines(details, theme, "Rewind submitted", context) ?? [];
 	const predecessor = count(details.predecessorEntryId);
 	if (predecessor !== undefined) lines.push(muted(theme, `forked before entry ${predecessor}`));
 	return lines;
 }
 
-function configureLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function configureLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (text(details.identity) === "" || count(details.conversationId) === undefined) return undefined;
-	return [theme.fg("toolOutput", `Configuration applied · ${displayPreview(text(details.identity), 300)}`)];
+	return [theme.fg("toolOutput", `Configuration applied${targetSuffix(text(details.identity), context)}`)];
 }
 
-function abortLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function timerLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	const timer = count(details.timerId);
+	if (timer === undefined) return undefined;
+	const deadline = count(details.deadline);
+	if (deadline !== undefined) {
+		const date = new Date(deadline);
+		const when = Number.isFinite(date.getTime()) ? date.toISOString() : "deadline unavailable";
+		return [muted(theme, `Scheduled${text(details.identity) ? targetSuffix(text(details.identity), context) : ""} · timer ${timer} · ${when}`)];
+	}
+	const status = text(details.status);
+	if (!status) return undefined;
+	const label = record(context.args).timerId === timer ? "Timer" : `Timer ${timer}`;
+	return [muted(theme, `${label} ${displayPreview(status, 40)}${details.outcome === "unchanged" ? " · unchanged" : ""}`)];
+}
+
+function abortLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	const timer = timerLines(details, theme, context);
+	if (timer) return timer;
 	if (text(details.identity) === "" || details.background === undefined) return undefined;
-	const lines = [theme.fg("toolOutput", `Abort requested · ${displayPreview(text(details.identity), 300)}`)];
-	if (details.background === true) lines.push(muted(theme, "Includes background task trees"));
+	const lines = [theme.fg("toolOutput", `Abort requested${targetSuffix(text(details.identity), context)}`)];
+	if (details.background === true && record(context.args).background !== true) lines.push(muted(theme, "Includes background task trees"));
 	return lines;
 }
 
-function commandLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function commandLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	const reloaded = details.reloaded === true;
 	const textValue = text(details.text);
 	const identity = text(details.identity);
@@ -334,8 +459,8 @@ function commandLines(details: Record<string, unknown>, theme: Theme): string[] 
 	const inventory = record(details.inventory);
 	const capabilities = array(inventory.contributions).length;
 	if (reloaded && capabilities > 0) lines.push(muted(theme, `${capabilities} native contribution${capabilities === 1 ? "" : "s"} installed`));
-	if (name) lines.push(muted(theme, `command ${displayPreview(name, 120)}${identity ? ` · ${displayPreview(identity, 300)}` : ""}`));
-	else if (identity) lines.push(muted(theme, displayPreview(identity, 300)));
+	if (name && name !== record(context.args).name) lines.push(muted(theme, `command ${displayPreview(name, 120)}`));
+	if (identity && !sameTarget(identity, context)) lines.push(muted(theme, targetLabel(identity, context)));
 	return lines;
 }
 
@@ -343,17 +468,17 @@ function sessionSummaryLines(sessions: Record<string, unknown>[], theme: Theme):
 	const working = sessions.filter((row) => row.state === "working").length;
 	const cost = sessions.reduce((sum, row) => sum + (count(row.cost) ?? 0), 0);
 	const partial = sessions.some((row) => row.partial === true);
-	const lines = [theme.fg("toolOutput", `${sessions.length} conversation${sessions.length === 1 ? "" : "s"} · ${working} working · $${cost.toFixed(2)}${partial ? "+?" : ""}`)];
-	for (const row of sessions.slice(0, 4)) lines.push(muted(theme, `${displayPreview(text(row.name) || text(row.id), 120) || "conversation"} · ${text(row.state) || "unknown state"}`));
-	if (sessions.length > 4) lines.push(muted(theme, `${sessions.length - 4} more conversation records; expand for details`));
+	const lines = [theme.fg("toolOutput", `${sessions.length} conversation${sessions.length === 1 ? "" : "s"} · ${working} working · $${cost.toFixed(2)}${partial ? "+" : ""}`)];
+	for (const row of sessions.slice(0, 4)) lines.push(muted(theme, `${displayPreview(text(row.name) || shortIdentity(text(row.id)), 120) || "conversation"} · ${text(row.state) || "unknown state"}`));
+	if (sessions.length > 4) lines.push(muted(theme, `${sessions.length - 4} more conversation records`));
 	return lines;
 }
 
 function conversationListLines(conversations: Record<string, unknown>[], theme: Theme): string[] {
 	const busy = conversations.filter((row) => row.busy === true || Object.keys(record(record(row.live).run)).length > 0).length;
 	const lines = [theme.fg("toolOutput", `${conversations.length} conversation${conversations.length === 1 ? "" : "s"} · ${busy} working`)];
-	for (const row of conversations.slice(0, 4)) lines.push(muted(theme, `${displayPreview(text(row.name) || text(row.identity), 120) || "conversation"} · ${row.busy === true ? "working" : "idle"}`));
-	if (conversations.length > 4) lines.push(muted(theme, `${conversations.length - 4} more conversation records; expand for details`));
+	for (const row of conversations.slice(0, 4)) lines.push(muted(theme, `${displayPreview(text(row.name) || shortIdentity(text(row.identity)), 120) || "conversation"} · ${row.busy === true ? "working" : "idle"}`));
+	if (conversations.length > 4) lines.push(muted(theme, `${conversations.length - 4} more conversation records`));
 	return lines;
 }
 
@@ -373,15 +498,15 @@ function statusOverviewLines(details: Record<string, unknown>, theme: Theme): st
 	return undefined;
 }
 
-function summarizeGeneric(details: Record<string, unknown>, theme: Theme): string[] | undefined {
-	return resolveProfileLines(details, theme)
+function summarizeGeneric(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	return resolveProfileLines(details, theme, context)
 		?? statusOverviewLines(details, theme)
-		?? rewindLines(details, theme)
-		?? forkLines(details, theme)
-		?? receiptLines(details, theme)
-		?? abortLines(details, theme)
-		?? configureLines(details, theme)
-		?? commandLines(details, theme);
+		?? rewindLines(details, theme, context)
+		?? forkLines(details, theme, context)
+		?? receiptLines(details, theme, context)
+		?? abortLines(details, theme, context)
+		?? configureLines(details, theme, context)
+		?? commandLines(details, theme, context);
 }
 
 function snapshotStatus(details: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -402,7 +527,7 @@ function runningSlots(live: Record<string, unknown>): Record<string, unknown>[] 
 }
 
 function runningSlotLine(slot: Record<string, unknown>): string {
-	const parts = [`Running: ${displayPreview(text(slot.name) || "tool", 100)}`, `call ${displayPreview(text(slot.callId) || "unknown", 160)}`];
+	const parts = [`Running: ${displayPreview(text(slot.name) || "tool", 100)}`, `call ${shortIdentity(text(slot.callId) || "unknown")}`];
 	if (slot.status === "pending") parts.push("pending");
 	return parts.join(" · ");
 }
@@ -412,7 +537,7 @@ function latestSavedResult(submissions: unknown): string | undefined {
 	const last = rows.at(-1);
 	if (!last) return undefined;
 	const id = count(last.id);
-	return `Last saved result: ${text(last.status)}${id === undefined ? "" : ` · submission ${id}`} · not task acceptance`;
+	return `Saved: ${text(last.status)}${id === undefined ? "" : ` · submission ${id}`}`;
 }
 
 function retryLines(live: Record<string, unknown>, theme: Theme): string[] {
@@ -444,7 +569,7 @@ function activityLines(status: Record<string, unknown>, readOnly: boolean, theme
 	const lines = [muted(theme, parts.filter(Boolean).join(" · "))];
 	if (readOnly) lines.unshift(theme.fg("muted", "Read-only snapshot; live owner state unavailable"));
 	for (const slot of running.slice(0, 4)) lines.push(muted(theme, runningSlotLine(slot)));
-	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more running tools; expand for details`));
+	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more running tools`));
 	// The status contract carries no role for this text, so the label reports the state only.
 	const lastText = text(status.lastText);
 	if (lastText) lines.push(theme.fg("toolOutput", `${newestTextLabel(working, text(status.lastTextRole))}: ${displayPreview(lastText, 240)}`));
@@ -454,7 +579,15 @@ function activityLines(status: Record<string, unknown>, readOnly: boolean, theme
 	return lines;
 }
 
-function snapshotLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme): string[] {
+function snapshotLabel(identity: string, name: string, context: AgentCardContext): string {
+	return name ? displayPreview(name, 120) : targetLabel(identity, context);
+}
+
+function resolvedModelLine(provider: string, modelId: string, thinking: string, term = "thinking"): string {
+	return `Model: ${provider && modelId ? displayPreview(`${provider}/${modelId}`, 300) : "model unknown"} · ${term} ${thinking ? displayPreview(thinking, 40) : "unknown"}`;
+}
+
+function snapshotIdentityLines(status: Record<string, unknown>, theme: Theme, context: AgentCardContext, namedByReceipt: boolean): string[] {
 	const agent = record(status.agent);
 	const model = record(agent.model);
 	const provider = text(model.provider);
@@ -463,8 +596,15 @@ function snapshotLines(status: Record<string, unknown>, details: Record<string, 
 	const name = text(status.name);
 	const identity = text(status.identity) || text(status.sessionId);
 	const lines: string[] = [];
-	if (name || identity) lines.push(theme.fg("accent", displayPreview(name || identity, 120)));
-	lines.push(muted(theme, `Model: ${provider && modelId ? displayPreview(`${provider}/${modelId}`, 300) : "model unknown"} · thinking ${thinking ? displayPreview(thinking, 40) : "unknown"}`));
+	const hideName = !context.expanded && (namedByReceipt || headerHasName(identity, name, context));
+	const hideModel = !context.expanded && (namedByReceipt || headerHasModel(identity, provider, modelId, thinking, context));
+	if ((name || identity) && !hideName) lines.push(theme.fg("accent", snapshotLabel(identity, name, context)));
+	if (!hideModel) lines.push(muted(theme, resolvedModelLine(provider, modelId, thinking)));
+	return lines;
+}
+
+function snapshotLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme, context: AgentCardContext, namedByReceipt = false): string[] {
+	const lines = snapshotIdentityLines(status, theme, context, namedByReceipt);
 	if (status.live === undefined && typeof status.state === "string") lines.push(muted(theme, `State: ${displayPreview(status.state, 40)}`));
 	else lines.push(...activityLines(status, readOnlySnapshot(details), theme));
 	const limits = record(details.inventory ?? record(details.status).inventory ?? record(status.limits));
@@ -474,6 +614,28 @@ function snapshotLines(status: Record<string, unknown>, details: Record<string, 
 }
 
 /** Snapshot and control result card for spawn, attach, place, status, fork, rewind, and configure. */
+function nestedReceiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	const admission = record(details.admission);
+	if (count(admission.submissionId) === undefined) return undefined;
+	const snapshot = snapshotStatus(details);
+	const identity = text(admission.identity) || text(details.sessionId) || text(snapshot?.identity);
+	const receiptContext = identity === text(snapshot?.identity) ? { ...context, args: { ...record(context.args), sessionId: identity } } : context;
+	return controlReceiptLines({ ...admission, identity }, theme, "Admitted", receiptContext);
+}
+
+function collapsedAgentLines(details: Record<string, unknown>, output: string, theme: Theme, context: AgentCardContext): string[] {
+	const snapshot = snapshotStatus(details);
+	const observed = snapshotFacts(context, snapshot);
+	const summary = summarizeGeneric(details, theme, observed) ?? nestedReceiptLines(details, theme, observed);
+	const identity = text(details.identity);
+	const snapshotIdentity = text(snapshot?.identity) || text(snapshot?.sessionId);
+	const namedByReceipt = summary !== undefined && identity !== "" && identity === snapshotIdentity && !sameTarget(identity, context) && !headerHasName(identity, text(snapshot?.name), context);
+	const lines = snapshot ? snapshotLines(snapshot, details, theme, context, namedByReceipt) : [];
+	if (summary) lines.push(...summary);
+	else if (!snapshot) lines.push(theme.fg(context.isError === true ? "error" : "toolOutput", resultPreview(output)));
+	if (snapshot || summary || output.length > PREVIEW_CHARS || output.includes("\n")) appendCardHint(lines, theme, context, "result", "details");
+	return lines;
+}
 export function renderAgentResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
 	const details = resultDetails(result);
 	const output = resultText(result);
@@ -485,16 +647,13 @@ export function renderAgentResult(result: AgentToolResult<unknown>, options: Too
 	if (snapshotError) lines.push(theme.fg("warning", `Snapshot unavailable: ${displayPreview(snapshotError, 240)}`));
 	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
 	if (deliveryError) lines.push(theme.fg("warning", `Delivery paused: ${displayPreview(deliveryError, 240)}`));
-	if (snapshot) lines.push(...snapshotLines(snapshot, details, theme));
 	if (options.expanded) {
+		if (snapshot) lines.push(...snapshotLines(snapshot, details, theme, { ...context, expanded: true }));
 		lines.push(theme.fg("toolOutput", boundedSource(output)));
 		if (snapshot) lines.push(theme.fg("dim", boundedSource(JSON.stringify(snapshot, null, 2))));
 		return textComponent(lines.join("\n"), context.lastComponent);
 	}
-	const summary = summarizeGeneric(details, theme);
-	if (summary) lines.push(...summary);
-	else lines.push(theme.fg(context.isError === true ? "error" : "toolOutput", resultPreview(output)));
-	if (snapshot || summary || output.length > PREVIEW_CHARS || output.includes("\n")) lines.push(theme.fg("dim", expansionHint("result and identifiers")));
+	lines.push(...collapsedAgentLines(details, output, theme, context));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
@@ -504,23 +663,22 @@ function messageResult(result: AgentToolResult<unknown>, options: ToolRenderResu
 	const lines: string[] = [];
 	if (context.isError === true) lines.push(theme.fg("error", labels.error));
 	else if (options.isPartial) lines.push(theme.fg("muted", labels.partial));
-	else lines.push(muted(theme, labels.receipt));
-	const summary = controlReceiptLines(details, theme, "submitted");
+	const summary = timerLines(details, theme, context) ?? controlReceiptLines(details, theme, labels.receipt, context);
 	if (summary) lines.push(...summary);
 	if (options.expanded) lines.push(theme.fg("toolOutput", boundedSource(output)));
 	else {
 		if (!summary) lines.push(theme.fg("toolOutput", resultPreview(output, 300)));
-		if (!summary || output.length > 300 || output.includes("\n")) lines.push(theme.fg("dim", expansionHint("result")));
+		appendCardHint(lines, theme, context, "result", options.isPartial ? "partial result" : "result");
 	}
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
 export function renderSendResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
-	return messageResult(result, options, theme, context, { error: "Send error", partial: "Admission pending", receipt: "Admission receipt (not proof of delivery or action)" });
+	return messageResult(result, options, theme, context, { error: "Send error", partial: "Admission pending", receipt: "Admitted" });
 }
 
 export function renderSteerResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
-	return messageResult(result, options, theme, context, { error: "Steer error", partial: "Steering disposition pending", receipt: "Steering disposition (not proof of action or crash recovery)" });
+	return messageResult(result, options, theme, context, { error: "Steer error", partial: "Steering disposition pending", receipt: "Steer admitted" });
 }
 
 function compactSummary(details: Record<string, unknown>, context: AgentCardContext): string[] | undefined {
@@ -531,10 +689,8 @@ function compactSummary(details: Record<string, unknown>, context: AgentCardCont
 	const submissionId = count(details.submissionId);
 	const error = text(details.error);
 	if (!status && !taskId && !error) return undefined;
-	const lines = [self ? "Self-compaction request receipt (does not establish that compaction occurred)" : "Native compaction result"];
-	if (status) lines.push(`status ${displayPreview(status, 40)}${taskId !== undefined ? ` · task ${taskId}` : ""}`);
+	const lines = [`${self ? "Summary" : "Compaction"} ${displayPreview(status === "task" ? "admitted" : status || "pending", 40)}${taskId !== undefined ? ` · task ${taskId}` : ""}${submissionId !== undefined ? ` · submission ${submissionId}` : ""}`];
 	if (entryId !== undefined) lines.push(`summary entry ${entryId}`);
-	if (submissionId !== undefined) lines.push(`summary submission ${submissionId}`);
 	if (error) lines.push(displayPreview(error, 240));
 	return lines;
 }
@@ -542,18 +698,16 @@ function compactSummary(details: Record<string, unknown>, context: AgentCardCont
 export function renderCompactResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
 	const details = resultDetails(result);
 	const output = resultText(result);
-	const self = text(record(context.args).summary) !== "";
 	const lines: string[] = [];
 	if (context.isError === true) lines.push(theme.fg("error", "Compact error"));
 	else if (options.isPartial) lines.push(theme.fg("muted", "Compaction pending"));
 	if (options.expanded) lines.push(theme.fg("toolOutput", boundedSource(output)));
 	else {
-		const summary = compactSummary(details, context);
+		const summary = output === "Continuity summary queued for this completed tool batch." ? ["Summary queued"] : compactSummary(details, context);
 		if (summary) lines.push(...summary);
 		else lines.push(theme.fg("toolOutput", resultPreview(output, 300)));
-		if (!summary || output.length > 300) lines.push(theme.fg("dim", expansionHint("result")));
+		if (summary || output.length > 300 || text(record(context.args).summary)) appendCardHint(lines, theme, context, "result", context.isPartial ? "partial result" : "result");
 	}
-	if (!options.expanded && self && !context.isError) lines.push(theme.fg("dim", "The summary text stays in the native tool-call arguments."));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
@@ -561,11 +715,11 @@ function listedProfiles(rows: unknown[], theme: Theme): string[] {
 	const lines = rows.slice(0, 4).flatMap((value) => {
 		const row = record(value);
 		return [
-			theme.fg("accent", displayPreview([text(row.handle), text(row.name)].filter(Boolean).join(" · ") || text(row.identity), 160)),
+			theme.fg("accent", displayPreview([text(row.handle), text(row.name)].filter(Boolean).join(" · ") || shortIdentity(text(row.identity)), 160)),
 			muted(theme, typeof row.role === "string" ? `Role: ${displayPreview(row.role, 180) || "(empty)"}` : "Role: unknown profile coverage"),
 		];
 	});
-	if (rows.length > 4) lines.push(muted(theme, `${rows.length - 4} more rows; expand for identities and roles`));
+	if (rows.length > 4) lines.push(muted(theme, `${rows.length - 4} more rows`));
 	return lines;
 }
 function listSummary(details: Record<string, unknown>, theme: Theme): string[] | undefined {
@@ -586,26 +740,35 @@ function listSummary(details: Record<string, unknown>, theme: Theme): string[] |
 function profileRouteLines(profile: Record<string, unknown>, theme: Theme): string[] {
 	const omitted = count(profile.requestsOmitted) ?? 0;
 	return [
-		muted(theme, `Expertise: ${text(profile.expertise) ? "saved; expand to read" : "empty"} · ${array(profile.requests).length} ${omitted > 0 ? "shown" : "active"} request routes`),
+		muted(theme, `Expertise: ${text(profile.expertise) ? "saved" : "empty"} · ${array(profile.requests).length} ${omitted > 0 ? "shown" : "active"} request routes`),
 		...(omitted > 0 ? [theme.fg("warning", `Request routes omitted: ${omitted}`)] : []),
 	];
 }
-function profileLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function profileIdentityLines(details: Record<string, unknown>, profile: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
+	const model = record(profile.model);
+	const identity = text(profile.identity);
+	const sameName = headerHasName(identity, text(profile.name), context);
+	const sameModel = headerHasModel(identity, text(model.provider), text(model.modelId), text(profile.thinkingLevel), context);
+	return [
+		...(!sameName || details.outcome ? [theme.fg(details.outcome === "conflict" ? "warning" : "accent", `${details.outcome === "conflict" ? "Profile conflict; no change" : details.outcome === "applied" ? "Profile saved" : "Profile"} · ${displayPreview(text(profile.handle) || text(profile.name) || shortIdentity(text(profile.identity)), 160)}`)] : []),
+		...(!sameModel ? [muted(theme, resolvedModelLine(text(model.provider), text(model.modelId), text(profile.thinkingLevel), "reasoning"))] : []),
+	];
+}
+
+function profileLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	const profile = typeof details.outcome === "string" ? record(details.profile) : details;
 	if (typeof profile.revision !== "string" || typeof profile.role !== "string") return undefined;
-	const model = record(profile.model);
 	return [
-		theme.fg(details.outcome === "conflict" ? "warning" : "accent", `${details.outcome === "conflict" ? "Profile conflict; no change" : details.outcome === "applied" ? "Profile saved" : "Profile"} · ${displayPreview(text(profile.handle) || text(profile.name) || text(profile.identity), 160)}`),
+		...profileIdentityLines(details, profile, theme, context),
 		muted(theme, `Role: ${displayPreview(text(profile.role), 240) || "(empty)"}`),
-		muted(theme, `Model: ${text(model.provider) && text(model.modelId) ? displayPreview(`${text(model.provider)}/${text(model.modelId)}`, 180) : "unknown"} · reasoning ${displayPreview(text(profile.thinkingLevel), 40) || "unknown"}`),
-		muted(theme, `Revision: ${displayPreview(text(profile.revision), 80)} · ${profile.live === true ? "live host" : "retained"}`),
+		muted(theme, `Revision: ${displayPreview(text(profile.revision), 12)} · ${profile.live === true ? "live host" : "retained"}`),
 		...profileRouteLines(profile, theme),
 	];
 }
-function resolveProfileLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function resolveProfileLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (typeof details.created !== "boolean") return undefined;
-	const lines = profileLines(record(details.profile), theme) ?? profileLines(details, theme);
-	return lines ? [theme.fg("toolOutput", details.created ? "Agent created" : "Existing agent reused; creation defaults unchanged"), ...lines] : undefined;
+	const lines = profileLines(record(details.profile), theme, context) ?? profileLines(details, theme, context);
+	return lines ? [theme.fg("toolOutput", details.created ? "Agent created" : "Agent reused"), ...lines] : undefined;
 }
 export function renderProfileResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
 	return outcomeCard(result, options, theme, context, { error: "Profile error", partial: "Profile pending" }, profileLines);
@@ -615,9 +778,9 @@ export function renderListResult(result: AgentToolResult<unknown>, options: Tool
 	return outcomeCard(result, options, theme, context, { error: "List error", partial: "Discovery pending" }, listSummary);
 }
 
-function inspectSummary(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function inspectSummary(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	const view = text(details.view);
-	if (view === "result") return inspectResultSummary(details, theme);
+	if (view === "result") return inspectResultSummary(details, theme, context);
 	if (view === "exact" || (count(details.nextOffset) !== undefined && identifier(details.entryId) !== "")) return inspectEntrySummary(details, theme);
 	if (view === "search") return inspectSearchSummary(details, theme);
 	if (view === "activity") return inspectActivitySummary(details, theme);
@@ -625,15 +788,16 @@ function inspectSummary(details: Record<string, unknown>, theme: Theme): string[
 	return undefined;
 }
 
-function inspectResultSummary(details: Record<string, unknown>, theme: Theme): string[] {
+function inspectResultSummary(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
 	const status = text(details.status);
-	const submission = count(details.submissionId);
-	const operation = text(details.operationId);
+	const args = record(context.args);
+	const submission = identifier(args.submissionId) === identifier(details.submissionId) ? undefined : count(details.submissionId);
+	const operation = args.operationId === details.operationId ? "" : text(details.operationId);
 	const reason = text(details.reason);
 	const hasAnswer = text(details.answer) !== "";
-	const headline = `saved result${status ? ` · ${displayPreview(status, 40)}` : ""}${operation ? ` · operation ${displayPreview(operation, 120)}` : submission !== undefined ? ` · submission ${submission}` : ""}`;
+	const headline = `saved result${status ? ` · ${displayPreview(status, 40)}` : ""}${operation ? ` · operation ${shortIdentity(operation)}` : submission !== undefined ? ` · submission ${submission}` : ""}`;
 	const lines = [theme.fg("toolOutput", headline)];
-	lines.push(muted(theme, `${hasAnswer ? "assistant answer retained" : "no assistant answer"}${reason ? ` · ${displayPreview(reason, 160)}` : ""} · outcome is not task acceptance`));
+	lines.push(muted(theme, `${hasAnswer ? "assistant answer retained" : "no assistant answer"}${reason ? ` · ${displayPreview(reason, 160)}` : ""}`));
 	return lines;
 }
 
@@ -655,7 +819,7 @@ function inspectSearchSummary(details: Record<string, unknown>, theme: Theme): s
 	const complete = coverage.complete === true;
 	const scanned = count(coverage.scannedEntries);
 	const lines = [theme.fg("toolOutput", `search · ${matches} ${matches === 1 ? "match" : "matches"}${complete ? " · ancestry covered" : scanned !== undefined ? ` · ${scanned} entries scanned` : ""}`)];
-	lines.push(muted(theme, details.nextCursor === null ? "An empty page is not proof of absence; the scan stopped where reported" : "Continuation available; repeat query and nextCursor"));
+	lines.push(muted(theme, details.nextCursor === null ? "No continuation" : "Continuation available"));
 	return lines;
 }
 
@@ -677,6 +841,65 @@ function inspectHistorySummary(details: Record<string, unknown>, view: string, t
 
 export function renderInspectResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
 	return outcomeCard(result, options, theme, context, { error: "Inspect error", partial: "Inspection pending" }, inspectSummary);
+}
+
+function shortThread(value: string): string {
+	return displayPreview(value.split("/").at(-1) ?? value, 8);
+}
+
+function renderCollaborateCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
+	const args = record(value);
+	const thread = text(args.threadId);
+	const source = text(args.sessionId) || thread.split("/")[0];
+	const topic = text(args.title) ? displayPreview(text(args.title), 100) : thread ? `thread ${shortThread(thread)}` : "";
+	const subject = [text(args.action), topic, source ? targetLabel(source, context) : ""].filter(Boolean).join(" · ");
+	const message = text(args.message);
+	return argumentCard("agent_collaborate", subject, message ? displayPreview(message, 180) : undefined, args, theme, context, true);
+}
+
+function collaborationReceiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	const args = record(context.args);
+	const threadId = text(details.threadId);
+	if (threadId) {
+		const actions: Record<string, string> = { create: "Thread created", join: "Joined", leave: "Left", post: "Posted", revise: "Frame revised", close: "Thread closed" };
+		const sequence = count(details.sequence);
+		return [muted(theme, `${actions[text(args.action)] || "Recorded"}${sequence !== undefined ? ` · event ${sequence}` : ""}${args.threadId === threadId ? "" : ` · thread ${shortThread(threadId)}`}${details.deduped === true ? " · replay" : ""}`)];
+	}
+	return undefined;
+}
+
+function collaborationLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	const receipt = collaborationReceiptLines(details, theme, context);
+	if (receipt) return receipt;
+	const thread = record(details.thread);
+	if (text(thread.title)) return [
+		muted(theme, `${displayPreview(text(thread.title), 100)} · ${thread.closed === true ? "closed" : "open"} · ${array(thread.members).length} members`),
+		muted(theme, `${array(details.events).length} events · ${count(details.pending) ?? "?"} pending notices${record(details.coverage).complete === false ? " · bounded page" : ""}`),
+	];
+	if (!Array.isArray(details.items)) return undefined;
+	return [
+		muted(theme, `${details.items.length} threads${record(details.coverage).complete === false ? " · incomplete coverage" : ""}`),
+		...details.items.slice(0, 3).map((value) => muted(theme, displayPreview(text(record(value).title), 100))),
+		...(details.nextCursor ? [muted(theme, "Next page available")] : []),
+	];
+}
+
+function renderResetCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
+	const args = record(value);
+	const handoff = text(args.handoff);
+	return argumentCard("agent_reset", targetLabel(text(args.sessionId), context), handoff ? `Handoff: ${displayPreview(handoff, 180)}` : undefined, args, theme, context, true);
+}
+
+function resetLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	const source = text(details.text);
+	if (!source) return undefined;
+	const placed = /^Reset (placed|queued) for “(.*?)”[;.]/u.exec(source);
+	if (placed) {
+		const known = findTarget(callIdentity(context), context.lookup?.() ?? []);
+		return [muted(theme, `Reset ${placed[1]}${known?.name === placed[2] ? "" : ` · ${displayPreview(placed[2], 100)}`}`)];
+	}
+	const failure = /^Reset did not place for “.*?”: (.*).$/u.exec(source);
+	return [muted(theme, failure ? `Reset not placed: ${displayPreview(failure[1], 240)}` : displayPreview(source, 240))];
 }
 
 // --- Peer message card ----------------------------------------------------------
@@ -862,12 +1085,12 @@ function bindCall(name: string): AgentToolCard["renderCall"] {
 }
 
 /** Call and result renderers for every native agent tool, keyed by tool name. */
-export function createAgentToolCards(): Readonly<Record<string, AgentToolCard>> {
-	return {
+export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
+	const cards: Record<string, AgentToolCard> = {
 		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult },
 		agent_attach: { renderCall: bindCall("agent_attach"), renderResult: renderAgentResult },
 		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult },
-		agent_collaborate: { renderCall: bindCall("agent_collaborate"), renderResult: renderAgentResult },
+		agent_collaborate: { renderCall: renderCollaborateCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Collaboration error", partial: "Collaboration pending" }, collaborationLines) },
 		agent_status: { renderCall: bindCall("agent_status"), renderResult: renderAgentResult },
 		agent_fork: { renderCall: bindCall("agent_fork"), renderResult: renderAgentResult },
 		agent_rewind: { renderCall: bindCall("agent_rewind"), renderResult: renderAgentResult },
@@ -880,5 +1103,15 @@ export function createAgentToolCards(): Readonly<Record<string, AgentToolCard>> 
 		agent_command: { renderCall: renderCommandCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Command error", partial: "Command pending" }, commandLines) },
 		agent_inspect: { renderCall: renderInspectCall, renderResult: renderInspectResult },
 		agent_compact: { renderCall: renderCompactCall, renderResult: renderCompactResult },
+		agent_reset: { renderCall: renderResetCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Reset error", partial: "Reset pending" }, resetLines) },
 	};
+	return Object.fromEntries(Object.entries(cards).map(([name, card]) => [name, {
+		renderCall(args: unknown, theme: Theme, context: AgentCardContext) {
+			if (context.state) context.state.callHint = false;
+			return card.renderCall(args, theme, { ...context, lookup });
+		},
+		renderResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext) {
+			return card.renderResult(result, options, theme, { ...context, lookup });
+		},
+	}]));
 }

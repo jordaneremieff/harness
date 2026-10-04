@@ -37,12 +37,14 @@ function surface(calls: ControlCall[]) {
 
 it("registers the separate reset tool and leaves timers to agent_status and agent_abort", async () => {
 	const calls: ControlCall[] = [];
-	const tools = new Map<string, { execute: (callId: string, params: Record<string, unknown>, signal: undefined, update: undefined, ctx: unknown) => Promise<unknown> }>();
+	const tools = new Map<string, { execute: (callId: string, params: Record<string, unknown>, signal: undefined, update: undefined, ctx: unknown) => Promise<unknown>; renderCall?: unknown; renderResult?: unknown }>();
 	const pi = { registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never) } as unknown as ExtensionAPI;
 	registerResetTimerTools(pi, () => surface(calls));
 	assert.deepEqual([...tools.keys()], ["agent_reset"]);
 	const tool = tools.get("agent_reset");
 	assert.ok(tool);
+	assert.equal(typeof tool.renderCall, "function");
+	assert.equal(typeof tool.renderResult, "function");
 	await tool.execute("call-1", { sessionId: "storage-a", handoff: "new start" }, undefined, undefined, {});
 	assert.deepEqual(calls.at(-1), { method: "reset", input: { sessionId: "storage-a", handoff: "new start" } });
 });

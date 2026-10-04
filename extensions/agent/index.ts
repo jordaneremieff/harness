@@ -175,7 +175,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		}),
 	);
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
-	const cards = createAgentToolCards();
+	let observedManager: AgentManager | undefined;
+	const cards = createAgentToolCards(() => observedManager?.observedToolCardRows() ?? []);
 	const primaries = new Map<string, AbortController>();
 	const getManager = (): AgentManager => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
@@ -186,10 +187,12 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		if (existing) {
 			if (existing.managerProtocol !== MANAGER_PROTOCOL)
 				throw new Error(`The retained agent manager uses ${existing.managerProtocol}; this code requires ${MANAGER_PROTOCOL}. Restart Pi before agent controls.`);
+			observedManager = existing;
 			return existing;
 		}
 		const manager = new AgentManager({ root, agentDir, packageDir: getPackageDir() });
 		owners.managers.set(root, manager);
+		observedManager = manager;
 		return manager;
 	};
 	const control = (method: string, input: Record<string, unknown>, ctx: ExtensionContext) =>
@@ -668,7 +671,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	registerResetTimerTools(pi, (ctx) => ({
 		control: (method, input) => control(method, input, ctx),
 		label: agentLabel,
-	}));
+	}), cards.agent_reset);
 	const command = createAgentCommand(
 		actions,
 		createAgentObservationSource({

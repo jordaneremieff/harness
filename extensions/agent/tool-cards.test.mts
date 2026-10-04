@@ -49,15 +49,15 @@ const conversationStatus = (overrides: Record<string, unknown> = {}) => ({
 const snapshotResult = (status: Record<string, unknown>, outer: Record<string, unknown> = {}) => result({ sessionId: "storage-a", cwd: "/work", status: { conversation: status, inventory: { contributions: [], ordinaryOnly: ["/ext/ordinary.ts"] }, ...outer }, admission: { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" }, lifetime: "independent host process" });
 
 describe("agent call cards", () => {
-	it("keeps requested, retained, and unresolved configuration distinct", () => {
+	it("shows explicit requests without unresolved default chatter", () => {
 		const spawn = screen(renderAgentCall("agent_spawn", { name: "Parser review", model: "provider/model", thinkingLevel: "high" }, theme, context()), 160);
 		assert.match(spawn, /agent_spawn · Parser review/);
-		assert.match(spawn, /Requested: provider\/model · thinking high/);
+		assert.match(spawn, /Requested: provider\/model · high/);
 		assert.doesNotMatch(spawn, /Model: |snapshot/);
-		assert.match(screen(renderAgentCall("agent_spawn", {}, theme, context())), /inherited \(unresolved\)/);
-		assert.match(screen(renderAgentCall("agent_place", { area: "project" }, theme, context())), /bound session or inherited/);
-		assert.match(screen(renderAgentCall("agent_configure", { sessionId: "target", name: "" }, theme, context())), /retained session \(unresolved\)/);
-		assert.match(screen(renderAgentCall("agent_configure", { sessionId: "target", model: "provider/model" }, theme, context())), /Requested: provider\/model · thinking unresolved/);
+		assert.doesNotMatch(screen(renderAgentCall("agent_spawn", {}, theme, context())), /Requested:|unresolved/);
+		assert.doesNotMatch(screen(renderAgentCall("agent_place", { area: "project" }, theme, context())), /Requested:|unresolved/);
+		assert.doesNotMatch(screen(renderAgentCall("agent_configure", { sessionId: "target", name: "" }, theme, context())), /Requested:|unresolved/);
+		assert.match(screen(renderAgentCall("agent_configure", { sessionId: "target", model: "provider/model" }, theme, context())), /Requested: provider\/model/);
 		assert.doesNotMatch(screen(renderAgentCall("agent_status", {}, theme, context())), /Requested:/);
 	});
 
@@ -71,10 +71,10 @@ describe("agent call cards", () => {
 
 	it("shows an argument hint only when a collapsed call hides or clips content", () => {
 		assert.equal(screen(renderAgentCall("agent_status", { sessionId: "s" }, theme, context())), "agent_status · s");
-		assert.doesNotMatch(screen(renderAgentCall("agent_attach", { sessionId: "s" }, theme, context())), /Expand for full arguments/);
+		assert.doesNotMatch(screen(renderAgentCall("agent_attach", { sessionId: "s" }, theme, context())), /expand for full details/);
 		assert.match(screen(renderAgentCall("agent_attach", { sessionId: "s", model: "p/m" }, theme, context())), /Requested: p\/m/);
-		assert.match(screen(renderAgentCall("agent_spawn", { prompt: "p".repeat(400) }, theme, context())), /Expand for full arguments/);
-		assert.match(screen(renderListCall({ query: "q".repeat(400) }, theme, context())), /Expand for full arguments/);
+		assert.match(screen(renderAgentCall("agent_spawn", { prompt: "p".repeat(400) }, theme, context())), /expand for full details/);
+		assert.match(screen(renderListCall({ query: "q".repeat(400) }, theme, context())), /expand for full details/);
 	});
 
 	it("escapes controls and fits narrow widths", () => {
@@ -93,10 +93,10 @@ describe("agent call cards", () => {
 			const args = { sessionId: "target-session", message: "First line\n\n**literal Markdown** and `code`\nLast line", replyTo: "message-reference" };
 			const before = structuredClone(args);
 			const collapsed = renderer(args, theme, context());
-			assert.match(screen(collapsed), new RegExp(`${name} → target-session`));
-			assert.match(screen(collapsed), /reply to message-reference/);
+			assert.match(screen(collapsed), new RegExp(`${name} → target-s…`));
+			assert.match(screen(collapsed), /reply to message-…/);
 			assert.match(screen(collapsed), /First line \*\*literal Markdown\*\*/);
-			assert.match(screen(collapsed), /Full message is in the tool-call arguments/);
+			assert.match(screen(collapsed), /expand for full details/);
 			const expanded = renderer(args, theme, context({ expanded: true, lastComponent: collapsed }));
 			assert.equal(expanded, collapsed);
 			assert.ok(screen(expanded).includes(args.message));
@@ -117,11 +117,11 @@ describe("agent call cards", () => {
 	it("marks a compact summary call as self and keeps the summary text hidden", () => {
 		const summary = "Objective: hand over the slice. Next: run the checks.";
 		const text = screen(renderCompactCall({ sessionId: "current-session", summary }, theme, context()));
-		assert.match(text, /agent_compact · self · current-session/);
-		assert.match(text, new RegExp(`summary \\(${summary.length} chars\\)`));
+		assert.match(text, /agent_compact · self · current-…/);
+		assert.match(text, new RegExp(`Summary: ${summary.length} chars`));
 		assert.doesNotMatch(text, /Objective: hand over/);
 		const plain = screen(renderCompactCall({ sessionId: "worker-session" }, theme, context()));
-		assert.match(plain, /Native summarization/);
+		assert.match(plain, /Compacts after abort/);
 		assert.match(plain, /[Ii]nstructions: none/);
 		assert.match(screen(renderCompactCall({ sessionId: "w", instructions: "Keep the API section" }, theme, context())), /[Ii]nstructions: present/);
 		assert.doesNotMatch(screen(renderCompactCall({ sessionId: "w", instructions: "Keep the API section" }, theme, context())), /Keep the API section/);
@@ -153,7 +153,7 @@ describe("agent result cards", () => {
 		assert.match(text, /Running: read · call call-7/);
 		assert.match(text, /Running: bash · call call-8 · pending/);
 		assert.match(text, /Working on the task: Check the source\\u\{1b\}/);
-		assert.match(text, /Last saved result: done · submission 3 · not task acceptance/);
+		assert.match(text, /Saved: done · submission 3/);
 		assert.match(text, /Capability limits: 1 configured extension without a native form/);
 		assert.deepEqual(resultValue, before);
 		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
@@ -202,7 +202,7 @@ describe("agent result cards", () => {
 		const fork = result({ conversationId: 2, identity: "storage-a:2", deduped: false, status: { conversation: conversationStatus({ name: "Forked review" }) } });
 		const text = screen(renderAgentResult(fork, { expanded: false, isPartial: false }, theme, context()), 180);
 		assert.match(text, /Model: provider\/model · thinking high/);
-		assert.match(text, /Fork created · storage-a:2/);
+		assert.match(text, /Fork created · storage-…:2/);
 	});
 
 	it("keeps a successful mutation receipt when the post-mutation snapshot failed", () => {
@@ -210,7 +210,7 @@ describe("agent result cards", () => {
 		const card = renderAgentResult(fork, { expanded: false, isPartial: false }, theme, context());
 		const text = screen(card, 180);
 		assert.match(text, /Snapshot unavailable: claim refused after mutation/);
-		assert.match(text, /Fork created · storage-a:2/);
+		assert.match(text, /Fork created · storage-…:2/);
 		assert.doesNotMatch(text, /Model: |Activity:/);
 		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 	});
@@ -235,9 +235,12 @@ describe("agent result cards", () => {
 			failures: [{ storageId: "broken", error: "unreadable" }],
 		};
 		const text = screen(renderAgentResult(result(details), { expanded: false, isPartial: false }, theme, context()), 180);
-		assert.match(text, /5 conversations · 1 working · \$0\.75\+\?/);
+		assert.match(text, /5 conversations · 1 working · \$0\.75\+\n/);
 		assert.match(text, /Parser review · working/);
-		assert.match(text, /1 more conversation records; expand for details/);
+		assert.match(text, /1 more conversation records/);
+		assert.doesNotMatch(text, /≥|\+\?/);
+		const complete = { ...details, sessions: details.sessions.map((row) => ({ ...row, partial: false })) };
+		assert.match(screen(renderAgentResult(result(complete), { expanded: false, isPartial: false }, theme, context()), 180), /\$0\.75\n/);
 		assert.match(text, /1 storage unavailable \(unknown, not absent\)/);
 		assert.doesNotMatch(text, /· new/);
 	});
@@ -269,7 +272,7 @@ describe("agent result cards", () => {
 		const saved = { view: "result", sessionId: "s", conversationId: 1, submissionId: 9, status: "done", entryId: 1, answerEntryId: 2, answer: "Final", usage: {} };
 		const savedText = screen(renderInspectResult(result(saved), { expanded: false, isPartial: false }, theme, context()));
 		assert.match(savedText, /saved result · done · submission 9/);
-		assert.match(savedText, /assistant answer retained · outcome is not task acceptance/);
+		assert.match(savedText, /assistant answer retained/);
 	});
 
 	it("keeps an empty or bounded page calibrated to the covered ancestry", () => {
@@ -282,21 +285,21 @@ describe("agent result cards", () => {
 	it("shows admission receipts, fork, rewind, configure, abort, and command outcomes", () => {
 		const receipt = { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" };
 		const send = screen(renderSendResult(result(receipt), { expanded: false, isPartial: false }, theme, context()));
-		assert.match(send, /Admission receipt \(not proof of delivery or action\)/);
-		assert.match(send, /submitted · storage-a/);
+		assert.match(send, /Admitted/);
+		assert.match(send, /Admitted · storage-…/);
 		assert.match(send, /submission 9/);
-		assert.match(screen(renderSteerResult(result(receipt), { expanded: false, isPartial: false }, theme, context())), /Steering disposition \(not proof of action or crash recovery\)/);
-		assert.match(screen(renderAgentResult(result({ conversationId: 2, identity: "storage-a:2", deduped: false }), { expanded: false, isPartial: false }, theme, context())), /Fork created · storage-a:2/);
+		assert.match(screen(renderSteerResult(result(receipt), { expanded: false, isPartial: false }, theme, context())), /Steer admitted/);
+		assert.match(screen(renderAgentResult(result({ conversationId: 2, identity: "storage-…:2", deduped: false }), { expanded: false, isPartial: false }, theme, context())), /Fork created · storage-…:2/);
 		const rewind = screen(renderAgentResult(result({ conversationId: 3, identity: "storage-a:3", predecessorEntryId: 5, submissionId: 11, deduped: false }), { expanded: false, isPartial: false }, theme, context()));
-		assert.match(rewind, /Rewind submitted · storage-a:3/);
+		assert.match(rewind, /Rewind submitted · storage-…:3/);
 		assert.match(rewind, /forked before entry 5/);
 		assert.match(rewind, /submission 11/);
-		assert.match(screen(renderAgentResult(result({ conversationId: 1, identity: "storage-a" }), { expanded: false, isPartial: false }, theme, context())), /Configuration applied · storage-a/);
+		assert.match(screen(renderAgentResult(result({ conversationId: 1, identity: "storage-…" }), { expanded: false, isPartial: false }, theme, context())), /Configuration applied · storage-…/);
 		const abort = createAgentToolCards().agent_abort.renderResult(result({ conversationId: 1, identity: "storage-a", background: false }), { expanded: false, isPartial: false }, theme, context());
-		assert.match(screen(abort), /Abort requested · storage-a/);
+		assert.match(screen(abort), /Abort requested · storage-…/);
 		const command = createAgentToolCards().agent_command.renderResult(result({ name: "reload", conversationId: 1, identity: "storage-a", text: "Reloaded 3 extensions" }), { expanded: false, isPartial: false }, theme, context());
 		assert.match(screen(command), /Reloaded 3 extensions/);
-		assert.match(screen(command), /command reload · storage-a/);
+		assert.match(screen(command), /command reload\nstorage-…/);
 		const reload = createAgentToolCards().agent_command.renderResult(result({ sessionId: "storage-a", inventory: { contributions: [{}, {}] }, reloaded: true }), { expanded: false, isPartial: false }, theme, context());
 		assert.match(screen(reload), /Host registrations reloaded/);
 		assert.match(screen(reload), /2 native contributions installed/);
@@ -304,10 +307,10 @@ describe("agent result cards", () => {
 
 	it("labels compact receipts, native results, partial, and error states", () => {
 		const self = screen(renderCompactResult(result({ taskId: 5, status: "task" }), { expanded: false, isPartial: false }, theme, context({ args: { sessionId: "s", summary: "s" } })));
-		assert.match(self, /Self-compaction request receipt \(does not establish that compaction occurred\)/);
-		assert.match(self, /status task · task 5/);
+		assert.match(self, /Summary admitted · task 5/);
+		assert.match(self, /Summary admitted · task 5/);
 		const native = screen(renderCompactResult(result({ taskId: 6, status: "completed", entryId: 7 }), { expanded: false, isPartial: false }, theme, context({ args: { sessionId: "s" } })));
-		assert.match(native, /Native compaction result/);
+		assert.match(native, /Compaction completed · task 6/);
 		assert.match(native, /summary entry 7/);
 		assert.match(screen(renderCompactResult(result("queued"), { expanded: false, isPartial: true }, theme, context({ args: { summary: "s" } }))), /Compaction pending/);
 		const error = renderCompactResult(result("refused"), { expanded: true, isPartial: false }, theme, context({ args: { summary: "s" }, isError: true }));
@@ -529,7 +532,7 @@ describe("agent result notice card", () => {
 describe("agent tool card factory", () => {
 	it("binds call and result renderers for every native tool", () => {
 		const cards = createAgentToolCards();
-		assert.deepEqual(Object.keys(cards).sort(), ["agent_abort", "agent_attach", "agent_collaborate", "agent_command", "agent_compact", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_profile", "agent_rewind", "agent_send", "agent_spawn", "agent_status", "agent_steer"]);
+		assert.deepEqual(Object.keys(cards).sort(), ["agent_abort", "agent_attach", "agent_collaborate", "agent_command", "agent_compact", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind", "agent_send", "agent_spawn", "agent_status", "agent_steer"]);
 		for (const [name, card] of Object.entries(cards)) {
 			assert.equal(typeof card.renderCall, "function", `${name} renderCall`);
 			assert.equal(typeof card.renderResult, "function", `${name} renderResult`);

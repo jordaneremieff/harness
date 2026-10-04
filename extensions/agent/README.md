@@ -237,6 +237,34 @@ continuations.
 Agent hosts have process lifetimes independent of the primary. There is no
 separate detach operation or detached-run registry.
 
+### Tool cards
+
+Targeted tool cards show the retained `@handle` or display name, followed by
+provider/model and a non-off thinking level. Duplicate display names add a short
+ID only when neither handles nor model settings distinguish them. The synchronous
+lookup uses the latest roster facts already observed by the primary footer; it opens no storage and
+starts no host. Unobserved targets use a short ID or the supplied `@handle`.
+The manager contract is `manager/1.2.0`; a reload over an older retained manager
+refuses agent controls and requires a Pi restart.
+Expanded cards retain full IDs and the complete result within the display bound.
+
+A collapsed card has at most one expansion hint across its call and result.
+Before execution, the call owns the hint; after execution starts, the result
+owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole
+card, not just its result. Expanded cards show no expansion hint. Expanded
+messages use the plain `Message:` label.
+
+Message receipts use `Admitted` or `Steer admitted` and the submission number.
+Receipts omit target facts already visible in the call or snapshot. A different
+conversation or a newly resolved target retains its label. Snapshots show changed
+model facts without repeating unchanged header facts. Collaboration and context
+reset use the same card layout. Scheduled inputs show their timer and deadline;
+timer cancellation shows whether it changed the timer.
+
+Admission does not establish delivery, action, or task completion. Model-visible
+results remain unchanged. Status totals mark partial costs with a trailing `+`, such as
+`$0.25+`: at least that amount is known; some data was not fully readable.
+
 `/agent` exposes `new`, `list`, `status`, `send`, `steer`, `abort`, `attach`,
 `fork`, `compact`, `inspect`, `rewind`, `configure`, `profile`, `command`, `place`, `places`,
 `unbind`, `reset`, `schedule`, `timers`, and `timer-cancel`. `help` shows action

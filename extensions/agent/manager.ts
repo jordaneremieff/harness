@@ -155,6 +155,12 @@ class BoundedMap<V> {
 /** A primary owns client connections, never a Durable scheduler or storage writer. */
 export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
+	private toolCardRows: readonly AgentConversationSummary[] = [];
+
+	/** Latest roster facts already observed for the primary footer; this lookup performs no I/O. */
+	observedToolCardRows(): readonly AgentConversationSummary[] { return this.toolCardRows; }
+
+	private observeToolCardRows(page: AgentConversationPage): void { this.toolCardRows = page.rows; }
 	private readonly rosterListeners = new Set<() => void>();
 	private stopCatalogObservation?: () => void;
 	subscribeRoster(listener: () => void): () => void {
@@ -855,6 +861,7 @@ export class AgentManager {
 			do {
 				this.refreshAgain = false;
 				const page = await this.dashboardPage();
+				this.observeToolCardRows(page);
 				for (const [ownerId, primary] of this.primaries) {
 					const text = await this.sessionFigures(ownerId, page);
 					if (!primary.signal.aborted) primary.status?.(text || undefined);
