@@ -19,7 +19,7 @@
  */
 
 import { realpathSync } from "node:fs";
-import { renderAgentLineage } from "./agent-lineage.ts";
+import { readAgentLineage, renderAgentLineage } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile } from "./profile.ts";
 import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
@@ -1420,15 +1420,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			replay: "safe",
 			execute: async (args: StatusInput, api, context) => {
 				if (args.view === "fleet") return fleetObservation(host.catalogRoot, args.sessionId);
-				let result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusOutputSchema);
+				const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusOutputSchema);
 				if (args.sessionId !== undefined || result.isError) return result;
-				const lineage = await renderAgentLineage(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
-				if (lineage.length > 0) result = { ...result, content: result.content?.map((part) => part.type === "text" ? { ...part, text: `${part.text}\n\n${lineage}` } : part) };
-				if (host.catalogRoot === undefined) return result;
-				const agent = await api.agent(context);
-				const awareness = await readEffortAwareness(dirname(host.catalogRoot), { id: identity(api.conversationId), cwd: agent.cwd ?? host.cwd });
-				const structured = structuredObservation(StatusToolOutputSchema, { ...result.details?.structuredContent, awareness }) as Record<string, JsonValue>;
-				return { ...result, content: [{ type: "text" as const, text: `${controlText(structured)}${lineage.length === 0 ? "" : `\n\n${lineage}`}` }], details: { structuredContent: structured } };
+				const lineage = await readAgentLineage(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
+				const agent = host.catalogRoot === undefined ? undefined : await api.agent(context);
+				const awareness = host.catalogRoot === undefined ? undefined : await readEffortAwareness(dirname(host.catalogRoot), { id: identity(api.conversationId), cwd: agent?.cwd ?? host.cwd });
+				if (lineage === undefined && awareness === undefined) return result;
+				const observed = { ...result.details?.structuredContent, ...(awareness === undefined ? {} : { awareness }) };
+				const structured = structuredObservation(StatusToolOutputSchema, { ...observed, ...(lineage === undefined ? {} : { lineage }) }) as Record<string, JsonValue>;
+				const text = `${controlText(observed)}${lineage === undefined ? "" : `\n\n${renderAgentLineage(lineage)}`}`;
+				return { ...result, content: [{ type: "text" as const, text }], details: { ...result.details, structuredContent: structured } };
 			},
 		}),
 		outputSchema: StatusToolOutputSchema,

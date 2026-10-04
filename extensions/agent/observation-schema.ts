@@ -18,6 +18,7 @@ import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { FleetStatusSchema } from "./fleet-status.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
+import { AgentLineageSchema } from "./agent-lineage.ts";
 
 const object = <T extends Record<string, TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const string = Type.String();
@@ -290,8 +291,13 @@ export const StatusOutputSchema = union([
 export type StatusOutput = Static<typeof StatusOutputSchema>;
 
 /** Tool-only local observations extend status without changing the host response contract. */
-const AwarenessStatusSchema = Type.Union(StatusOutputSchema.anyOf.map((schema) => object({ ...(schema as TSchema & { properties: Record<string, TSchema> }).properties, awareness: EffortAwarenessSchema })));
-export const StatusToolOutputSchema = union([StatusOutputSchema, FleetStatusSchema, AwarenessStatusSchema]);
+const ToolStatusSchema = Type.Union(StatusOutputSchema.anyOf.map((schema) => {
+	const properties = (schema as TSchema & { properties: Record<string, TSchema> }).properties;
+	return object({ ...properties, awareness: Type.Optional(EffortAwarenessSchema),
+		...("conversations" in properties ? { lineage: Type.Optional(AgentLineageSchema) } : {}),
+	});
+}));
+export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema]);
 
 const entrySource = union([literal("user"), literal("assistant"), literal("toolResult"), literal("summary"), literal("custom")]);
 const messageRole = union([literal("system"), literal("user"), literal("assistant"), literal("toolResult")]);

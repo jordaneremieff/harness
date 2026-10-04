@@ -969,7 +969,7 @@ it("spawns a child in a new storage when the cwd differs", async (t) => {
 	assert.equal(outcome.text, "Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was delivered and the answer will report back.");
 });
 
-it("appends only the caller's retained children to the storage status text", async (t) => {
+it("adds only the caller's retained children to storage status text and structured data", async (t) => {
 	const route = createRoute();
 	const holder: DispatchHolder = { spawnSessionId: "foreign-child" };
 	const calls: DispatchCalls = [];
@@ -993,8 +993,10 @@ it("appends only the caller's retained children to the storage status text", asy
 	const local = (await harness.snapshot(TestChildren, root.id, context))?.children[0];
 	assert.ok(local?.conversationId !== undefined);
 	const populated = await status();
-	assert.equal(populated.text, `${empty.text}\n\nYour agents (newest first):\n- foreign-child "foreign": storage with own host\n- ${storageId}:${local.conversationId} "native": native child conversation`);
-	assert.deepEqual(populated.details, empty.details, "lineage changes no host observation fields");
+	assert.equal(populated.text, `${empty.text}\n\nYour agents (direct children, newest first; retained creation labels):\n- foreign-child "foreign": storage with own host\n- ${storageId}:${local.conversationId} "native": native child conversation`);
+	assert.deepEqual(populated.details, { ...(empty.details as object), structuredContent: { ...(empty.details as { structuredContent: object }).structuredContent, lineage: {
+		children: [{ identity: "foreign-child", name: "foreign", kind: "storage" }, { identity: `${storageId}:${local.conversationId}`, name: "native", kind: "native-child" }], omitted: 0,
+	} } }, "lineage is available to structured tool consumers without changing host fields");
 	assert.deepEqual(calls.filter((call) => call.method === "status").map((call) => call.params), [{}, {}]);
 	const child = await harness.conversation(local.conversationId, context);
 	assert.ok(child);

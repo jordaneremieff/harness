@@ -3,9 +3,13 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import * as Durable from "@earendil-works/pi-durable";
-import { renderAgentLineage } from "./agent-lineage.ts";
+import { readAgentLineage, renderAgentLineage } from "./agent-lineage.ts";
 
 const context = BACKGROUND_CONTEXT;
+async function lineageText(harness: Durable.Harness, caller: { storageId: string; conversationId: Durable.ConversationId }): Promise<string> {
+	const lineage = await readAgentLineage(harness, Children, caller, context);
+	return lineage === undefined ? "" : renderAgentLineage(lineage);
+}
 type Child = { name?: string; conversationId?: Durable.ConversationId; foreignSessionId?: string };
 const Children = Durable.defineDoc<{ children: Child[] }>({
 	kind: "agent.children", version: 1, scope: "conversation", history: "latest", fork: "initial",
@@ -21,9 +25,9 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
 
 it("omits lineage for an absent or empty child document", async (t) => {
 	const { harness, root, caller } = await fixture(t);
-	assert.equal(await renderAgentLineage(harness, Children, caller, context), "");
+	assert.equal(await lineageText(harness, caller), "");
 	await harness.commit(async (tx) => { await tx.doc(Children, root.id); }, context);
-	assert.equal(await renderAgentLineage(harness, Children, caller, context), "");
+	assert.equal(await lineageText(harness, caller), "");
 });
 
 it("renders native and foreign children newest first with retained names", async (t) => {
@@ -35,8 +39,8 @@ it("renders native and foreign children newest first with retained names", async
 			{ conversationId: 3 as Durable.ConversationId },
 		);
 	}, context);
-	assert.equal(await renderAgentLineage(harness, Children, caller, context), [
-		"Your agents (newest first):",
+	assert.equal(await lineageText(harness, caller), [
+		"Your agents (direct children, newest first; retained creation labels):",
 		"- lineage-storage:3: native child conversation",
 		'- foreign-storage "writer": storage with own host',
 		'- lineage-storage:2 "reader": native child conversation',
@@ -51,7 +55,7 @@ it("caps lineage rows and reports the exact omitted count", async (t) => {
 			foreignSessionId: `foreign-${index}`, name: "repeat",
 		}));
 	}, context);
-	const block = await renderAgentLineage(harness, Children, caller, context);
+	const block = await lineageText(harness, caller);
 	const rows = block.split("\n");
 	assert.equal(rows.length, 22);
 	assert.equal(rows[1], '- foreign-22 "repeat": storage with own host');
@@ -64,9 +68,10 @@ it("bounds and escapes retained names without creating extra rows", async (t) =>
 	await harness.commit(async (tx) => {
 		(await tx.doc(Children, root.id)).children.push({ foreignSessionId: "foreign", name: `line\nbreak${"x".repeat(200)}` });
 	}, context);
-	const block = await renderAgentLineage(harness, Children, caller, context);
+	const block = await lineageText(harness, caller);
 	assert.equal(block.split("\n").length, 2);
 	assert.ok(block.includes("line\\nbreak"));
 	assert.ok(block.includes("…"));
-	assert.ok(block.length < 260);
+	assert.equal((await readAgentLineage(harness, Children, caller, context))?.children[0]?.name?.length, 161);
+	assert.ok((block.split("\n")[1]?.length ?? 0) < 220);
 });
