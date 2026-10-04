@@ -393,9 +393,10 @@ as a tool result or included in the tool-result reference section.
 
 System prompts (including compaction checkpoints), non-context state, thinking,
 provider signatures, and image payloads are excluded. Images retain a text
-placeholder. Raw history stays unchanged and remains available through history
-tools. This is a persisted-context snapshot, not a promise of parity with later
-transient context hooks or the final provider input. A synchronous projection
+placeholder. Raw history stays unchanged. The
+[history extension](../history/README.md) owns raw evidence retrieval. This is a
+persisted-context snapshot, not a promise of parity with later transient context
+hooks or the final provider input. A synchronous projection
 failure reports a capture error before a job starts; it never falls back to raw
 entries.
 
@@ -422,7 +423,7 @@ the live agent and does not read these variables.
 
 The selected distiller identity is surfaced at both ends of the job: the start
 notification and the running footer status name the model and thinking level in
-statusline form (`claude-sonnet-4-5 [medium]`, the thinking bracket only for
+statusline form (`<model> [medium]`, the thinking bracket only for
 reasoning models), and the settled notification plus the `stash: done` status
 report the run's token and cost totals (`35k in · 2.0k out · ~$0.12`, with `in`
 counting input, cache-read, and cache-write tokens). Totals sum the final
@@ -464,9 +465,8 @@ under its own status key through `ctx.ui.setStatus` and animates it on a 120 ms
 interval it owns. On settle it holds `stash: done <id> · <usage>`,
 `stash: skipped`, or `stash: failed` for three seconds, then clears the key;
 abort clears it immediately. Every terminal path stops the interval and clears
-pending timers. The statusline extension renders this text generically through
-`footerData.getExtensionStatuses()`; there is no direct code sharing between
-the two extensions, and the status also appears in Pi's default footer.
+pending timers. The [statusline extension](../statusline/README.md) owns custom
+footer presentation; Pi's default footer also displays the status.
 
 In RPC mode the write and notifications still happen; the spinner is TUI-only.
 In JSON/print the write still happens and the artifact appears in
@@ -491,9 +491,8 @@ as open. Unrecognized values stay visible in unfiltered listings and read as
 Agents that run on Pi Durable (`@earendil-works/pi-durable`) receive the same
 stash capability as a primary session. The ordinary factory emits one
 `durable:contribution` event carrying the extension's absolute entrypoint path
-(`source`); the agent session host matches that path to Pi's loaded extensions
-and installs the native extension built by `create(host)`. An ordinary Pi
-session has no listener on the channel, so the emission has no effect there.
+(`source`). The [agent extension](../agent/README.md) owns contribution
+discovery and host installation.
 
 The native extension supplies `stash_write`, `stash_list`, `stash_read`,
 `stash_complete`, and `stash_rotate` with the same parameter schemas, tool
