@@ -14,6 +14,7 @@ import { answerRuntime, CRASH_STORAGE_ID, declaredTool, declaredTools, execution
 import { createDurableServices } from "./durable-services.ts";
 import { DurableHost } from "./durable-host.ts";
 import { createAgentContribution } from "./durable-agents.ts";
+import { testModel } from "./test-runtime.mts";
 
 const fixturePath = fileURLToPath(new URL("./durable-execution-fixture.mts", import.meta.url));
 const READY = Buffer.from("READY\n");
@@ -96,6 +97,41 @@ it("hands a structured result to the script through details.structuredContent", 
 	const result = await f.submit("call the structured tool");
 	const text = result.toolResults.map(toolResultText).join("\n");
 	assert.match(text, /"answer":"42"/u);
+});
+
+it("omits model headers from every codemode catalog lookup and retains sampling metadata", { timeout: 30000 }, async (t) => {
+	const provider = "catalog-fixture";
+	const id = "catalog-model";
+	const samplingParamsByThinkingLevel = { off: { temperature: 0.2 }, high: { topP: 0.8 } };
+	const headers = { "X-Fixture-Auth": "synthetic-header-value" };
+	const f = await executionFixture(t, {
+		code: `return {
+			listed: await models.getModelsOfType("chat", "${provider}"),
+			available: await models.getAvailableOfType("chat", "${provider}"),
+			exact: await models.getModelOfType("chat", "${provider}", "${id}"),
+			missing: (await models.getModelOfType("chat", "${provider}", "absent")) === undefined,
+		};`,
+	});
+	const runtime = f.services.services.modelRuntime;
+	const stream = () => { throw new Error("Catalog lookup must not request model output"); };
+	runtime.registerNativeProvider({
+		id: provider, name: "Catalog fixture", getModels: () => [{ ...testModel, provider, id, headers, samplingParamsByThinkingLevel }],
+		auth: { apiKey: { name: "Fixture", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream, streamSimple: stream,
+	});
+	const result = await f.submit("inspect the model catalog");
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { listed: Record<string, unknown>[]; available: Record<string, unknown>[]; exact: Record<string, unknown>; missing: boolean };
+	assert.equal(output.listed.length, 1);
+	assert.equal(output.available.length, 1);
+	assert.equal(output.missing, true, "an unknown model remains undefined in the script");
+	for (const model of [...output.listed, ...output.available, output.exact]) {
+		assert.equal(Object.hasOwn(model, "headers"), false, "scripts receive no model headers");
+		assert.equal(model.provider, provider);
+		assert.equal(model.id, id);
+		assert.equal(model.api, testModel.api);
+		assert.deepEqual(model.samplingParamsByThinkingLevel, samplingParamsByThinkingLevel);
+	}
+	assert.deepEqual(runtime.getModel(provider, id)?.headers, headers, "catalog projection leaves provider headers intact");
 });
 
 it("throws a native agent error without data to codemode with its text", { timeout: 30000 }, async (t) => {

@@ -1895,7 +1895,8 @@ class DurableExecutionRuntime implements DurableExecution {
 					if (typeof provider !== "string" || typeof id !== "string") {
 						throw new Error(`models.getModelOfType(type, provider, id) expects three strings, got (${[type, provider, id].map(describeValue).join(", ")}). The provider and the id are separate arguments.`);
 					}
-					return models.getModelOfType(toModelKind(type), provider, id);
+					const model = models.getModelOfType(toModelKind(type), provider, id);
+					return model === undefined ? undefined : toModelInfo(model);
 				},
 			},
 			{
