@@ -168,6 +168,23 @@ registration. Direct image reads retain image blocks. Script discovery uses
 `searchTools`, `describeTool`, `describeNamespace`, and `ALL_TOOLS`. Tool
 selection and MCP server configuration follow the current Pi settings.
 
+MCP configuration is read at host startup or native host reload. In a trusted
+project, an entry in `.pi/mcp.json` without `command`, `url`, or `type` overrides
+only `enabled`, `exposure`, and `toolExposure` of the same-named user server.
+The override keeps the user server's transport, environment, headers, and
+provider authentication. A `toolExposure` map replaces the user map; it does
+not merge individual entries. An empty override keeps the user configuration.
+A project entry with a transport replaces the user entry instead. Project
+entries never introduce provider authentication. Invalid overrides are reported
+and leave the user entry unchanged; untrusted projects contribute no overrides.
+
+A primary `/reload` does not reconfigure retained agent hosts. Use the idle
+agent host's native reload after an MCP configuration change. OAuth sign-in,
+including Client ID Metadata Documents (`oauth.clientRegistration: "cimd"`),
+remains on Pi's interactive or shell MCP controls. Native agents use the stored
+OAuth client identity and tokens, including token refresh. Required sign-in
+returns guidance for Pi's MCP controls rather than an interactive agent prompt.
+
 ## Controls
 
 | Tool | Effect |

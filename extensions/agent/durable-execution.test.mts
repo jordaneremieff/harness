@@ -275,6 +275,197 @@ it("keeps fixture registration pending until the server supplies its tools", { t
 	assert.ok(f.services.registry.snapshot().tools().some(({ tool }) => tool.name === "mcp__held_docs__echo"));
 });
 
+function mcpConfigFixture(t: { after(fn: () => void): void }, globalServers: Record<string, unknown>, projectServers: Record<string, unknown>) {
+	const root = mkdtempSync(join(tmpdir(), "durable-mcp-config-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const agentDir = join(root, "agent");
+	const cwd = join(root, "work");
+	mkdirSync(agentDir);
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	const source = join(agentDir, "mcp.json");
+	const override = join(cwd, ".pi", "mcp.json");
+	writeFileSync(source, JSON.stringify({ mcpServers: globalServers }));
+	writeFileSync(override, JSON.stringify({ mcpServers: projectServers }));
+	return { agentDir, cwd, source, override };
+}
+
+it("applies trusted project selection without replacing global transport and auth", (t) => {
+	const base = {
+		url: "https://example.com/mcp",
+		headers: { "X-Account": "synthetic-account" },
+		auth: { provider: "synthetic-provider" },
+		description: "Project documentation",
+		exposure: "direct",
+		toolExposure: { "write-*": "hidden" },
+	};
+	const f = mcpConfigFixture(t, { docs: base }, { docs: { enabled: false, exposure: "codemode", toolExposure: { read: "deferred" } } });
+	const config = loadMcpConfig({ ...f, projectTrusted: true });
+	assert.deepEqual(config.errors, []);
+	assert.deepEqual(config.servers, [{ name: "docs", source: f.source, override: f.override, config: { ...base, enabled: false, exposure: "codemode", toolExposure: { read: "deferred" } } }]);
+});
+
+it("enables a global server and treats an empty project override as an inherited no-op", (t) => {
+	const base = { command: "synthetic-server", args: ["--docs"], env: { DOCS_ACCOUNT: "synthetic-account" }, cwd: "docs", enabled: false };
+	const f = mcpConfigFixture(t, { enabled: base, unchanged: base }, { enabled: { enabled: true }, unchanged: {} });
+	const config = loadMcpConfig({ ...f, projectTrusted: true });
+	assert.deepEqual(config.errors, []);
+	assert.deepEqual(config.servers, [
+		{ name: "enabled", source: f.source, override: f.override, config: { ...base, enabled: true } },
+		{ name: "unchanged", source: f.source, override: f.override, config: base },
+	]);
+});
+
+it("replaces the toolExposure map rather than merging its entries", (t) => {
+	const f = mcpConfigFixture(t, { docs: { command: "synthetic-server", toolExposure: { "*": "hidden" } } }, { docs: { toolExposure: {} } });
+	const config = loadMcpConfig({ ...f, projectTrusted: true });
+	assert.deepEqual(config.errors, []);
+	assert.deepEqual(config.servers[0]?.config.toolExposure, {});
+});
+
+it("ignores project selection when the project is not trusted", (t) => {
+	const base = { command: "synthetic-server", exposure: "direct" };
+	const f = mcpConfigFixture(t, { docs: base }, { docs: { enabled: false } });
+	const config = loadMcpConfig({ ...f, projectTrusted: false });
+	assert.deepEqual(config.errors, []);
+	assert.deepEqual(config.servers, [{ name: "docs", source: f.source, config: base }]);
+});
+
+it("rejects nonselection and invalid project overrides without changing the global entry", (t) => {
+	const base = { command: "synthetic-server" };
+	const patches: readonly [string, Record<string, unknown>, RegExp][] = [
+		["auth", { auth: { provider: "synthetic-provider" } }, /an override can only set enabled, exposure, toolExposure/u],
+		["env", { env: { ACCOUNT: "injected" } }, /an override can only set/u],
+		["args", { args: ["injected"] }, /an override can only set/u],
+		["oauth", { oauth: { clientId: "injected" } }, /an override can only set/u],
+		["enabled", { enabled: "false" }, /enabled must be a boolean/u],
+		["exposure", { exposure: "invalid" }, /invalid exposure/u],
+		["toolExposure", { toolExposure: { read: "invalid" } }, /invalid toolExposure/u],
+		["typed", { type: "stdio", enabled: false }, /set "command"/u],
+	];
+	const f = mcpConfigFixture(t, Object.fromEntries(patches.map(([name]) => [name, base])), Object.fromEntries(patches.map(([name, patch]) => [name, patch])));
+	const config = loadMcpConfig({ ...f, projectTrusted: true });
+	assert.deepEqual(config.servers, patches.map(([name]) => ({ name, source: f.source, config: base })));
+	assert.equal(config.errors.length, patches.length);
+	for (const [index, [name, , expected]] of patches.entries()) {
+		assert.match(config.errors[index] ?? "", expected, name);
+		assert.ok(config.errors[index]?.includes(`server "${name}"`));
+	}
+});
+
+it("requires an exact global server name for a project override", (t) => {
+	const base = { command: "synthetic-server" };
+	const f = mcpConfigFixture(t, { "dev-docs": base }, { dev_docs: { enabled: false }, missing: {} });
+	const config = loadMcpConfig({ ...f, projectTrusted: true });
+	assert.deepEqual(config.servers, [{ name: "dev-docs", source: f.source, config: base }]);
+	assert.equal(config.errors.length, 2);
+	for (const error of config.errors) assert.match(error, /a global server to override/u);
+});
+
+it("replaces a global server when the project supplies a transport", (t) => {
+	const f = mcpConfigFixture(t, { docs: { url: "https://example.com/mcp", auth: { provider: "synthetic-provider" } } }, { docs: { command: "project-server", args: ["docs"] } });
+	const config = loadMcpConfig({ ...f, projectTrusted: true });
+	assert.deepEqual(config.errors, []);
+	assert.deepEqual(config.servers, [{ name: "docs", source: f.override, config: { command: "project-server", args: ["docs"] } }]);
+});
+
+it("does not start or expose a global MCP server disabled by a trusted project", { timeout: 30000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "durable-mcp-startup-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const eventsFile = join(root, "server-events.txt");
+	const f = await executionFixture(t, {
+		code: `return { callable: "mcp__dev_docs__list_topics" in tools, matches: await searchTools("documentation", { namespace: "dev-docs" }) };`,
+		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: eventsFile }, exposure: "direct" } },
+		projectMcpServers: { "dev-docs": { enabled: false } },
+	});
+	const result = await f.submit("Use only this project's selected tools.");
+	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))), { callable: false, matches: [] });
+	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+	assert.equal(existsSync(eventsFile), false, "the disabled server never started");
+	assert.deepEqual(f.services.services.diagnostics, []);
+});
+
+it("keeps the global MCP selection in an untrusted project", { timeout: 30000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "durable-mcp-startup-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const eventsFile = join(root, "server-events.txt");
+	const f = await executionFixture(t, {
+		code: `return (await tools.mcp__dev_docs__list_topics({})).content[0].text;`,
+		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: eventsFile }, exposure: "direct" } },
+		projectMcpServers: { "dev-docs": { enabled: false } },
+		trusted: false,
+	});
+	const result = await f.submit("Use the global tools without project trust.");
+	assert.equal(toolResultBody(result.toolResults.at(-1)), "called list-topics {}");
+	assert.match(readFileSync(eventsFile, "utf8"), /^started \d+\ninitialize\n$/u);
+	assert.ok(declaredTools(f.requests[0]).includes("mcp__dev_docs__list_topics"));
+});
+
+it("starts a global MCP server enabled by a trusted project", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `return (await tools.mcp__dev_docs__list_topics({})).content[0].text;`,
+		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], exposure: "direct", enabled: false } },
+		projectMcpServers: { "dev-docs": { enabled: true } },
+	});
+	const result = await f.submit("Use the documentation server selected by the project.");
+	assert.equal(toolResultBody(result.toolResults.at(-1)), "called list-topics {}");
+	assert.ok(declaredTools(f.requests[0]).includes("mcp__dev_docs__list_topics"));
+	assert.deepEqual(f.services.services.diagnostics, []);
+});
+
+it("discovers and calls MCP tools through a trusted project codemode override", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `const info = await describeNamespace("dev-docs"); return { info, called: (await tools.mcp__dev_docs__list_topics({})).content[0].text };`,
+		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], exposure: "direct" } },
+		projectMcpServers: { "dev-docs": { exposure: "codemode" } },
+	});
+	const result = await f.submit("Use the project documentation tools through a script.");
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { info: { name: string; tools: string[] }; called: string };
+	assert.equal(output.info.name, "mcp__dev_docs");
+	assert.ok(output.info.tools.includes("mcp__dev_docs__list_topics"));
+	assert.equal(output.called, "called list-topics {}");
+	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+});
+
+it("loads MCP tools after search through a trusted project deferred override", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		stream: toolSearchStream("documentation"),
+		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], exposure: "direct" } },
+		projectMcpServers: { "dev-docs": { exposure: "deferred" } },
+	});
+	const result = await f.submit("Find the project documentation tools.");
+	assert.match(toolResultText(result.toolResults.at(-1)), /mcp__dev_docs__lookup_doc/u);
+	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+	assert.ok(declaredTools(f.requests[1]).some((name) => name.startsWith("mcp__dev_docs__lookup_doc")));
+});
+
+it("hides one project tool and discards the global toolExposure map", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `return { info: await describeNamespace("dev-docs"), callable: "mcp__dev_docs__list_topics" in tools };`,
+		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], exposure: "codemode", toolExposure: { "*": "hidden" } } },
+		projectMcpServers: { "dev-docs": { toolExposure: { "list-topics": "hidden" } } },
+	});
+	const result = await f.submit("Use only the documentation tools selected by the project.");
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { info: { tools: string[] }; callable: boolean };
+	assert.equal(output.callable, false);
+	assert.ok(output.info.tools.some((name) => name.startsWith("mcp__dev_docs__lookup_doc")));
+	assert.ok(output.info.tools.every((name) => name !== "mcp__dev_docs__list_topics"));
+});
+
+it("uses stored CIMD OAuth state through a project selection override", { timeout: 30000 }, async (t) => {
+	const token = `synthetic-${randomUUID()}`;
+	const server = await httpMcpServer(token);
+	t.after(() => server.close());
+	const f = await executionFixture(t, {
+		code: `return (await tools.mcp__remote_docs__echo({ value: "selected" })).content[0].text;`,
+		mcpServers: { "remote-docs": { url: server.url, exposure: "direct", oauth: { clientRegistration: "cimd" } } },
+		projectMcpServers: { "remote-docs": { exposure: "codemode" } },
+		mcpAuth: { [`mcp__remote_docs|${server.url}`]: { serverUrl: server.url, clientInformation: { client_id: "https://pi.dev/oauth/client.json" }, tokens: { access_token: token, token_type: "Bearer" } } },
+	});
+	const result = await f.submit("Use the project's authenticated documentation tools.");
+	assert.equal(toolResultBody(result.toolResults.at(-1)), "echo selected");
+	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+});
+
 it("rejects auth in a trusted project's mcp.json", () => {
 	const root = mkdtempSync(join(tmpdir(), "durable-execution-auth-"));
 	try {

@@ -157,8 +157,10 @@ export interface McpServerConfig {
 export interface McpServerEntry {
 	readonly name: string;
 	readonly config: McpServerConfig;
-	/** File that defined the entry. */
+	/** File that defined the connection and authentication. */
 	readonly source: string;
+	/** Trusted project file that overrides tool selection, without replacing the connection. */
+	readonly override?: string;
 }
 
 export interface LoadedMcpConfig {
@@ -280,6 +282,48 @@ interface McpConfigState {
 	autoEnableCodemode?: boolean;
 }
 
+const PROJECT_MCP_OVERRIDE_KEYS = ["enabled", "exposure", "toolExposure"];
+
+function isMcpSelectionOverride(value: unknown): value is Record<string, unknown> {
+	return isRecord(value) && value.command === undefined && value.url === undefined && value.type === undefined;
+}
+
+function applyProjectMcpOverride(name: string, patch: Record<string, unknown>, path: string, state: McpConfigState): void {
+	const base = state.servers.get(name);
+	if (base === undefined) {
+		state.errors.push(`${path}: server "${name}" needs "command" or "url", or a global server to override`);
+		return;
+	}
+	if (Object.keys(patch).some((key) => !PROJECT_MCP_OVERRIDE_KEYS.includes(key))) {
+		state.errors.push(`${path}: server "${name}": an override can only set ${PROJECT_MCP_OVERRIDE_KEYS.join(", ")}`);
+		return;
+	}
+	// The project changes only selection. Connection and provider auth keep their global authority.
+	const config = validateServerConfig(name, { ...base.config, ...patch }, "global");
+	if (typeof config === "string") state.errors.push(`${path}: ${config}`);
+	else state.servers.set(name, { ...base, config, override: path });
+}
+
+function readMcpConfigServers(servers: Record<string, unknown>, path: string, scope: "global" | "project", state: McpConfigState): void {
+	for (const [name, raw] of Object.entries(servers)) {
+		if (scope === "project" && isMcpSelectionOverride(raw)) {
+			applyProjectMcpOverride(name, raw, path, state);
+			continue;
+		}
+		const config = validateServerConfig(name, raw, scope);
+		if (typeof config === "string") {
+			state.errors.push(`${path}: ${config}`);
+			continue;
+		}
+		const clash = [...state.servers.keys()].find((other) => other !== name && mcpNamespace(other) === mcpNamespace(name));
+		if (clash !== undefined) {
+			state.errors.push(`${path}: server "${name}" conflicts with "${clash}"`);
+			continue;
+		}
+		state.servers.set(name, { name, config, source: path });
+	}
+}
+
 function readConfigFile(path: string, scope: "global" | "project", state: McpConfigState): void {
 	if (!existsSync(path)) return;
 	let parsed: unknown;
@@ -295,19 +339,7 @@ function readConfigFile(path: string, scope: "global" | "project", state: McpCon
 	}
 	if (typeof parsed.autoEnableCodemode === "boolean") state.autoEnableCodemode = parsed.autoEnableCodemode;
 	else if (parsed.autoEnableCodemode !== undefined) state.errors.push(`${path}: autoEnableCodemode must be a boolean`);
-	for (const [name, raw] of Object.entries(parsed.mcpServers ?? {})) {
-		const config = validateServerConfig(name, raw, scope);
-		if (typeof config === "string") {
-			state.errors.push(`${path}: ${config}`);
-			continue;
-		}
-		const clash = [...state.servers.keys()].find((other) => other !== name && mcpNamespace(other) === mcpNamespace(name));
-		if (clash !== undefined) {
-			state.errors.push(`${path}: server "${name}" conflicts with "${clash}"`);
-			continue;
-		}
-		state.servers.set(name, { name, config, source: path });
-	}
+	readMcpConfigServers(parsed.mcpServers ?? {}, path, scope, state);
 }
 
 /** Read the user `mcp.json` and, for a trusted project, the project `mcp.json`. */

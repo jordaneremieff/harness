@@ -209,6 +209,8 @@ export interface ExecutionFixtureOptions {
 	readonly stream?: FixtureStream;
 	readonly settings?: FixtureSettings;
 	readonly mcpServers?: Record<string, unknown>;
+	readonly projectMcpServers?: Record<string, unknown>;
+	readonly trusted?: boolean;
 	readonly mcpAuth?: Record<string, unknown>;
 	readonly autoEnableCodemode?: boolean;
 	readonly readyTimeoutMs?: number;
@@ -253,6 +255,10 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 	if (options.mcpServers !== undefined) {
 		writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: options.mcpServers, ...(options.autoEnableCodemode === undefined ? {} : { autoEnableCodemode: options.autoEnableCodemode }) }));
 	}
+	if (options.projectMcpServers !== undefined) {
+		mkdirSync(join(cwd, ".pi"));
+		writeFileSync(join(cwd, ".pi", "mcp.json"), JSON.stringify({ mcpServers: options.projectMcpServers }));
+	}
 	if (options.mcpAuth !== undefined) writeFileSync(join(agentDir, "mcp-auth.json"), JSON.stringify(options.mcpAuth, null, 2));
 	const extensionPath = writeExecutionExtension(join(root, "extension"));
 	const errors: unknown[] = [];
@@ -263,7 +269,7 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 		agentDir,
 		storageId: "fixture-execution",
 		extensionPaths: [extensionPath],
-		trusted: true,
+		trusted: options.trusted ?? true,
 		buildBuiltin: (host) => {
 			execution = createDurableExecution(host, options.readyTimeoutMs === undefined ? undefined : { readyTimeoutMs: options.readyTimeoutMs });
 			return execution;

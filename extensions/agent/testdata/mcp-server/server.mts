@@ -7,6 +7,8 @@
  * so a test observes start, handshake, and exit through socket events instead
  * of polling. The kernel closes the socket when the process exits.
  *
+ * MCP_FIXTURE_EVENTS_FILE records the same events in a fixture-owned file for startup checks.
+ *
  * MCP_FIXTURE_MODE=silent reads every request and never answers. Any other
  * value answers `initialize` (with instructions), `tools/list`, and `tools/call`.
  *
@@ -14,6 +16,7 @@
  * collide after normalization, and one name that does not.
  */
 
+import { appendFileSync } from "node:fs";
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
 
@@ -21,7 +24,11 @@ const silent = process.env.MCP_FIXTURE_MODE === "silent";
 const port = Number(process.env.MCP_FIXTURE_EVENTS_PORT);
 const events = Number.isInteger(port) && port > 0 ? connect(port, "127.0.0.1") : undefined;
 events?.on("error", () => undefined);
-const report = (line: string) => events?.write(`${line}\n`);
+const eventsFile = process.env.MCP_FIXTURE_EVENTS_FILE;
+const report = (line: string) => {
+	events?.write(`${line}\n`);
+	if (eventsFile !== undefined) appendFileSync(eventsFile, `${line}\n`);
+};
 report(`started ${process.pid}`);
 
 const send = (message: Record<string, unknown>) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
