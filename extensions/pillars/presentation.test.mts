@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getMarkdownTheme, initTheme, type Theme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { defineTool, getMarkdownTheme, initTheme, type Theme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Markdown, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import type { AccessPage } from "./access.ts";
 import { emptyShard, zero } from "./capacity.ts";
 import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
@@ -231,7 +232,16 @@ test("tool renderers name the call, hide result bodies by default, and expand on
 
 test("the host tool row renders collapsed by default and toggles with setExpanded", () => {
 	initTheme("dark", false);
-	const access = accessRenderers();
+	const tool = defineTool({
+		name: "pillars",
+		label: "Pillars",
+		description: "Read Pillars source.",
+		parameters: Type.Object({ resource: Type.Optional(Type.String()) }),
+		...accessRenderers(),
+		async execute() {
+			throw new Error("Renderer fixtures must not execute.");
+		},
+	});
 	const page: AccessPage = {
 		schema: "pillars-source",
 		resource: "governance",
@@ -246,7 +256,7 @@ test("the host tool row renders collapsed by default and toggles with setExpande
 		"source-call",
 		{ resource: "governance" },
 		undefined,
-		access,
+		tool,
 		{ requestRender() {} } as unknown as TUI,
 		".",
 	);

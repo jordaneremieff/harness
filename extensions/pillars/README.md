@@ -585,7 +585,10 @@ transcript helpers to resolve the effective prompt and tools from system
 messages. Event mocks return the host's unsubscribe function shape.
 Command integration covers operator-only
 help, model-visible check/derive/review requests, and delivery during an active turn.
-It uses no paid model calls or real telemetry exports.
+It uses no paid model calls or real telemetry exports. Presentation tests pass a
+complete typed tool definition through Pi's public `defineTool` helper to
+`ToolExecutionComponent` and verify default collapse and expansion without
+executing the tool.
 Full repository gates remain defined in
 [repository instructions](../../AGENTS.md).
 
