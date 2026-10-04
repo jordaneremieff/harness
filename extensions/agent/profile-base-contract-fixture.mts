@@ -1,18 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
+import { VERSION as CODING_AGENT_VERSION } from "@earendil-works/pi-coding-agent";
 import { ServerError, type ServerHost } from "@earendil-works/pi-server";
 import { createUnixServer } from "@earendil-works/pi-server/unix";
 import { connectHost } from "./host-client.ts";
 import { hostPaths, parseHostMetadata } from "./host-protocol.ts";
 import { parseOperationContract, type OperationContract, type RuntimeContract } from "./version-contract.ts";
 
-/** Fixed public contracts let additions prove that base clients need no restart. */
+const require = createRequire(import.meta.url);
+const DURABLE_VERSION: string = JSON.parse(readFileSync(require.resolve("@earendil-works/pi-durable/package.json"), "utf8")).version;
+
+/** Fixed operation identities isolate feature additions from upstream release changes. */
 export const BASE_OPERATIONS: Readonly<Record<string, OperationContract>> = {
-	status: { request: "status/1.0.0", response: "04082e4c23cf4ca78ca4529658060f615a4bfdeeb4d019cf3ed6c409e7fa84ae", durable: "1.0.0" },
+	status: { request: "status/1.0.0", response: "04082e4c23cf4ca78ca4529658060f615a4bfdeeb4d019cf3ed6c409e7fa84ae", durable: DURABLE_VERSION },
 	submit: { request: "submit/1.0.0", response: "submit/1.0.0" },
 	configure: { request: "configure/1.0.0", response: "configure/1.0.0" },
 	reset: { request: "reset/1.0.0", response: "reset/1.0.0" },
@@ -20,7 +25,7 @@ export const BASE_OPERATIONS: Readonly<Record<string, OperationContract>> = {
 	dashboard: { request: "dashboard/1.0.0", response: "9b3b0eba7308aa7d031cf8bf86d1ad5cbfdecf0e2d9b8971186b842f8feea8f8" },
 };
 const baseContract: RuntimeContract = {
-	format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: "1.0.0", durable: "1.0.0" },
+	format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: CODING_AGENT_VERSION, durable: DURABLE_VERSION },
 	requires: { codingAgent: "1.0.0", durable: "1.0.0" }, operations: BASE_OPERATIONS,
 };
 
