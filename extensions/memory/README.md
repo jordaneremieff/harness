@@ -93,9 +93,10 @@ or improved answer quality.
 
 Agent sessions on Pi Durable receive the memory corpus through the native
 contribution in `durable.ts`. The ordinary factory in `index.ts` emits it on the
-`durable:contribution` channel with the entrypoint path as its source, and the
-agent host installs it. The corpus and its revision history stay external; no
-note content enters a Durable document.
+`durable:contribution` channel with the entrypoint path as its source. The
+[agent extension](../agent/README.md) owns contribution discovery and host
+installation. The corpus and its revision history stay external; no note content
+enters a Durable document.
 
 The contribution offers the same tools as the ordinary form, with the same
 names, parameter schemas, descriptions, and execution against `PI_MEMORY_DIR`.
