@@ -39,6 +39,7 @@ export class EffortView {
 	private offset = 0;
 	private observedAt = Date.now();
 	private exactTime = false;
+	private scanOpen = false;
 	private readonly options: EffortViewOptions;
 	constructor(options: EffortViewOptions) {
 		this.options = options;
@@ -76,8 +77,10 @@ export class EffortView {
 	}
 	private row(): RelatedEffort | undefined { return this.view?.presence.efforts.find((row) => row.id === (this.composing ? this.target : this.selected)); }
 	private threads() { return (this.view?.threads.items ?? []).filter((row) => !row.closed).toSorted((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)); }
+	private toggleScan(): void { this.scanOpen = !this.scanOpen; this.offset = 0; }
 	private back(): void {
-		if (this.composing) { this.composing = false; this.composer.focused = false; }
+		if (this.scanOpen) this.toggleScan();
+		else if (this.composing) { this.composing = false; this.composer.focused = false; }
 		else this.options.onBack();
 	}
 	private message(): void {
@@ -87,6 +90,7 @@ export class EffortView {
 			return;
 		}
 		this.target = row.id;
+		this.scanOpen = false;
 		this.composing = true;
 		this.composer.setText(this.drafts.get(row.id)?.text ?? "");
 	}
@@ -138,6 +142,7 @@ export class EffortView {
 		else if (matchesKey(data, "enter")) this.contact();
 		else if (data === "t") this.notice = this.options.openThreads() ?? "";
 		else if (data === "i") this.exactTime = !this.exactTime;
+		else if (data === "c") this.toggleScan();
 		else if (data === "m" || matchesKey(data, "tab")) this.message();
 		else if (matchesKey(data, "pageDown")) this.offset += 5;
 		else if (matchesKey(data, "pageUp")) this.offset = Math.max(0, this.offset - 5);
@@ -150,20 +155,22 @@ export class EffortView {
 	}
 	private claimLines(claim: PrimaryIntentClaim): string[] {
 		return [
-			`Purpose claim: ${plain(claim.purpose)}`,
-			`Integration intent claim: ${plain(claim.integration)}`,
-			`Quoted scoped authority claim: ${JSON.stringify(plain(claim.authority))}`,
-			`Scope claim: ${claim.scope.paths.map(plain).join(", ") || "no paths"} · ${claim.scope.branches.map(plain).join(", ") || "no branches"} · full machine gates: ${claim.scope.fullGate ? "declared" : "not declared"}`,
-			...(claim.contactThread ? [`Contact thread claim: ${plain(claim.contactThread)}`] : []),
+			this.options.theme.fg("muted", "Stated by this effort"),
+			`Purpose: ${plain(claim.purpose)}`,
+			`Integration: ${plain(claim.integration)}`,
+			`Operator direction (quoted): ${JSON.stringify(plain(claim.authority))}`,
+			`Scope: ${claim.scope.paths.map(plain).join(", ") || "no paths"} · ${claim.scope.branches.map(plain).join(", ") || "no branches"} · full machine gates: ${claim.scope.fullGate ? "declared" : "not declared"}`,
+			...(claim.contactThread ? [`Contact thread: ${plain(claim.contactThread)}`] : []),
 			this.time(claim.updatedAt),
 		];
 	}
 	private limitedClaimLines(row: RelatedEffort): string[] {
 		return [
-			...(row.purposeClaim ? [`Purpose claim: ${plain(row.purposeClaim)}`] : ["No purpose claim"]),
-			...(row.contactThreadClaim ? [`Contact thread claim: ${plain(row.contactThreadClaim)}`] : []),
+			this.options.theme.fg("muted", "Stated by this effort"),
+			...(row.purposeClaim ? [`Purpose: ${plain(row.purposeClaim)}`] : ["No stated purpose"]),
+			...(row.contactThreadClaim ? [`Contact thread: ${plain(row.contactThreadClaim)}`] : []),
 			...(row.intentUpdatedAt ? [this.time(row.intentUpdatedAt)] : []),
-			row.relationship === "machine" ? "Purpose-only view: no shared repository or cwd" : "No integration intent claim",
+			row.relationship === "machine" ? "Purpose-only view: no shared repository or cwd" : "No stated integration plan",
 		];
 	}
 	private threadDetails(): string[] {
@@ -177,7 +184,7 @@ export class EffortView {
 	}
 	private hostFacts(row: RelatedEffort): string[] {
 		return [
-			`${plain(row.id)} · Liveness: ${row.liveness} · Related by ${row.relationship}`,
+			`Status: ${row.liveness} · Related by ${row.relationship}`,
 			`Shared substrates: ${row.sharedSubstrates?.map(plain).join(", ") || "none declared"}`,
 			`Directory: ${plain(row.cwd)}`,
 			...(row.observedPurpose ? [`Observed purpose (${row.observedPurpose.source}): ${plain(row.observedPurpose.text)}`] : []),
@@ -187,6 +194,7 @@ export class EffortView {
 		return (row.relationship === "machine" ? row.purposeClaim : row.intentClaim?.purpose) || row.observedPurpose?.text || "No purpose claim";
 	}
 	private details(wide = false): string[] {
+		if (this.scanOpen) return ["Scan details", "", ...this.coverageLines()];
 		if (this.selectedThread && !this.composing) return this.threadDetails();
 		const row = this.row();
 		if (!row) return [this.composing ? `Message target ${plain(this.target ?? "")}: not in the current presence page` : this.view ? "No efforts in this page. See coverage below." : "Reading efforts…"];
@@ -201,7 +209,7 @@ export class EffortView {
 		const theme = this.options.theme;
 		return [
 			theme.bold(plain(row.name || row.id)), "",
-			...intent.map((line) => /^(Purpose claim|Integration intent claim):/.test(line) ? theme.bold(line) : line), "",
+			...intent.map((line) => /^(Purpose|Integration):/.test(line) ? theme.bold(line) : line), "",
 			...facts.map((line) => theme.fg("muted", line)),
 			...times.map((line) => theme.fg("muted", line)),
 		];
@@ -233,6 +241,18 @@ export class EffortView {
 			}
 		}
 		return lines;
+	}
+	private coverageSummary(): string[] {
+		if (!this.view || this.scanOpen) return [];
+		const p = this.view.presence.coverage;
+		const t = this.view.threads.coverage;
+		if (p.complete && t.complete) return [];
+		const unreadable = p.unreadable + t.unreadable;
+		const reasons: string[] = [];
+		if (unreadable) reasons.push(`${unreadable} unreadable record${unreadable === 1 ? "" : "s"}`);
+		else if (!p.complete) reasons.push("efforts partly scanned");
+		if (!t.complete) reasons.push(t.unvisited ? "threads partly unvisited" : "thread hints partial");
+		return [`Scan incomplete: ${reasons.join("; ")}`];
 	}
 	private coverageLines(): string[] {
 		if (!this.view) return ["Presence coverage: not read", "Thread coverage: not read"];
@@ -296,8 +316,7 @@ export class EffortView {
 		const paneHeight = height - 4;
 		const list = this.list(listWidth, paneHeight, 2);
 		const editor = this.composing ? this.composer.render(rightWidth, `Operator message to ${plain(this.target ?? "")} · Enter sends`) : [];
-		const coverage = this.coverageLines();
-		const footer = (this.composing ? coverage.filter((line) => /^(Presence:|Threads:)/.test(line)) : coverage).map((line) => theme.fg("muted", line));
+		const footer = this.coverageSummary().map((line) => theme.fg("muted", line));
 		const bodyHeight = Math.max(0, paneHeight - editor.length - footer.length);
 		const detail = this.details(true).flatMap((line) => wrapTextWithAnsi(line, Math.min(88, rightWidth)));
 		this.offset = Math.max(0, Math.min(this.offset, detail.length - bodyHeight));
@@ -314,9 +333,10 @@ export class EffortView {
 			}
 		}
 		if (this.composing) this.mouse.add({ x, y: 2 + bodyHeight, width: rightWidth, height: editor.length, click: (event) => this.composer.handleMouse(event) });
+		if (footer.length && !this.composing) this.mouse.add({ x, y: 2 + bodyHeight + editor.length, width: rightWidth, height: 1, click: () => this.toggleScan() });
 		const right = [...body, ...editor, ...footer];
 		const panes = Array.from({ length: paneHeight }, (_, index) => fitLine(list[index] ?? "", listWidth) + theme.fg("borderMuted", " │ ") + fitLine(right[index] ?? "", rightWidth));
-		const hints = this.composing ? ["Enter send", "Ctrl+J newline"] : ["↑↓ select", "Enter thread", "m message", "t threads", "i time", "PgUp/PgDn read"];
+		const hints = this.composing ? ["Enter send", "Ctrl+J newline"] : ["↑↓ select", "Enter thread", "m message", "c scan", "i time", "t threads", "PgUp/PgDn read"];
 		return [dashboardHeading("Agents > Related efforts", "", width, theme), theme.fg("muted", this.selfLine()), ...panes, plain(this.notice), mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), theme)].map((line) => fitLine(line, width));
 	}
 	render(width: number, height: number): string[] {
@@ -326,8 +346,7 @@ export class EffortView {
 		if (width >= 100) return this.renderWide(width, height);
 		const rows = this.rows(width, 2);
 		const editor = this.composing ? this.composer.render(width, `Operator message to ${plain(this.target ?? "")} · Enter sends`) : [];
-		const coverage = this.coverageLines();
-		const footer = (this.composing ? coverage.filter((line) => /^(Presence:|Threads:)/.test(line)) : coverage).map((line) => fitLine(this.options.theme.fg("muted", line), width));
+		const footer = this.coverageSummary().map((line) => fitLine(this.options.theme.fg("muted", line), width));
 		const bodyHeight = Math.max(0, height - rows.length - editor.length - footer.length - 4);
 		const detail = this.details().flatMap((line) => wrapTextWithAnsi(line, width));
 		this.offset = Math.max(0, Math.min(this.offset, detail.length - bodyHeight));
@@ -335,7 +354,8 @@ export class EffortView {
 		this.mouse.add({ x: 0, y: rows.length + 2, width, height: bodyHeight, wheel: (delta) => { this.offset = Math.max(0, this.offset + delta); this.options.redraw(); } });
 		const editorY = 2 + rows.length + bodyHeight;
 		if (this.composing) this.mouse.add({ x: 0, y: editorY, width, height: editor.length, click: (event) => this.composer.handleMouse(event) });
-		const hints = this.composing ? ["Enter send", "Ctrl+J newline"] : ["↑↓ select", "Enter thread", "m message", "t threads", "i time", "PgUp/PgDn read"];
+		if (footer.length && !this.composing) this.mouse.add({ x: 0, y: editorY + editor.length, width, height: 1, click: () => this.toggleScan() });
+		const hints = this.composing ? ["Enter send", "Ctrl+J newline"] : ["↑↓ select", "Enter thread", "m message", "c scan", "i time", "t threads", "PgUp/PgDn read"];
 		return [dashboardHeading("Agents > Related efforts", "", width, this.options.theme), this.selfLine(), ...rows, ...body, ...editor, ...footer, plain(this.notice), mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), this.options.theme)].slice(0, height).map((line) => fitLine(line, width));
 	}
 	invalidate(): void { this.mouse.reset(); this.composer.invalidate(); }

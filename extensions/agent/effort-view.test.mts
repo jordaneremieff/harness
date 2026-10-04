@@ -64,19 +64,25 @@ it("effort entry is event-driven and renders claims and finite coverage at narro
 		assert.equal(lines.length, 30);
 		assert.ok(lines.every((line) => visibleWidth(line) <= 60));
 		const text = lines.join("\n");
-		assert.match(text, /Purpose claim: Review the overlap/);
+		assert.match(text, /Stated by this effort/);
+		assert.match(text, /Purpose: Review the overlap/);
 		assert.match(text, /Observed purpose \(session-name\): Observed work/);
-		assert.match(text, /Integration intent claim: Wait for shared checks/);
-		assert.match(text, /Quoted scoped authority claim: "Operator brief"/);
-		assert.match(text, /Scope claim:/);
+		assert.match(text, /Integration: Wait for shared checks/);
+		assert.match(text, /Operator direction \(quoted\): "Operator brief"/);
+		assert.match(text, /Scope:/);
 		assert.match(text, /full machine gates:\s+declared/);
-		const authorityLine = lines.findIndex((line) => line.includes("Quoted scoped authority claim"));
-		assert.match(lines[authorityLine + 1], /Scope claim:/);
+		const authorityLine = lines.findIndex((line) => line.includes("Operator direction (quoted)"));
+		assert.match(lines[authorityLine + 1], /Scope:/);
 		assert.match(text, /Shared substrates: repository, machine-gates/);
 		assert.match(text, /unknown/);
-		assert.match(text, /7\/256 visits/);
-		assert.match(text, /1 omitted · 1 unreadable · 1 dead · 2 excluded entries/);
-		assert.match(text, /result-limit/);
+		assert.match(text, /Scan incomplete: 1 unreadable record/);
+		assert.doesNotMatch(text, /7\/256 visits|excluded entries|result-limit/);
+		f.ui.handleInput("c");
+		const breakdown = f.ui.render(60).join("\n");
+		assert.match(breakdown, /7\/256 visits/);
+		assert.match(breakdown, /1 omitted · 1 unreadable · 1 dead · 2 excluded entries/);
+		assert.match(breakdown, /result-limit/);
+		f.ui.handleInput("c");
 		f.ui.render(60);
 		assert.equal(f.reads(), 1);
 		f.notify();
@@ -206,7 +212,7 @@ it("observed purpose stays visible without an intent claim", async () => {
 		await turn(); f.ui.handleInput("b"); await turn();
 		const text = f.ui.render(60).join("\n");
 		assert.match(text, /Observed purpose \(interactive-input\): Compare this change/);
-		assert.match(text, /No integration intent claim/);
+		assert.match(text, /No stated integration plan/);
 	} finally { f.ui.dispose(); }
 });
 it("a late message receipt preserves edits and does not retarget an omitted effort", async () => {
@@ -239,10 +245,11 @@ it("all-local machine efforts show purpose and contact without full intent leaka
 	try {
 		await turn(); f.ui.handleInput("b"); await turn();
 		const text = f.ui.render(80).join("\n");
-		assert.match(text, /Purpose claim: Review another project/);
+		assert.match(text, /Stated by this effort/);
+		assert.match(text, /Purpose: Review another project/);
 		assert.match(text, /Shared substrates: machine-gates/);
 		assert.match(text, /Purpose-only view/);
-		assert.doesNotMatch(text, /PRIVATE_|Integration intent claim|authority claim|Scope claim/);
+		assert.doesNotMatch(text, /PRIVATE_|Integration:|Operator direction|Scope:/);
 		f.ui.handleInput("\r"); await turn();
 		assert.deepEqual(calls, [{ action: "read", threadId: "store/thread" }]);
 	} finally { f.ui.dispose(); }
@@ -263,10 +270,15 @@ it("inline active threads show covered recency and open through keyboard or mous
 			const text = lines.join("\n");
 			assert.match(text, /Your observed purpose \(interactive-input\): Current own work/);
 			assert.ok(text.indexOf("Newest active") < text.indexOf("Older active"));
-			assert.match(text, /Threads: 3\/256 visits · 2\/12 rows · incomplete/);
-			assert.match(text, /2 omitted hints · 3 omitted rows/);
-			assert.match(text, /1 missing hints · unvisited records: yes/);
-			assert.match(text, /visit-limit/);
+			assert.match(text, /Scan incomplete:/);
+			assert.doesNotMatch(text, /visits|omitted hints|visit-limit/);
+			f.ui.handleInput("c");
+			const breakdown = f.ui.render(60).join("\n");
+			assert.match(breakdown, /Threads: 3\/256 visits · 2\/12 rows · incomplete/);
+			assert.match(breakdown, /2 omitted hints · 3 omitted rows/);
+			assert.match(breakdown, /1 missing hints · unvisited records: yes/);
+			assert.match(breakdown, /visit-limit/);
+			f.ui.handleInput("c"); f.ui.render(60);
 			if (mouse) {
 				const y = lines.findIndex((line) => line.includes("Newest active"));
 				f.ui.handleMouse(click(lines[y].indexOf("Newest active"), y, 60, 30));
@@ -334,13 +346,13 @@ it("wide effort panes separate discovery from claim-first details and quiet cove
 			assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			assert.ok(text.includes("Efforts · 2/2 loaded"));
 			assert.match(text, /uncertain/);
-			assert.ok(lines.some((line) => line.includes("\x1b[1mPurpose claim: Review the overlap")));
-			assert.ok(lines.some((line) => line.includes("\x1b[90mPresence: 7/256 visits")));
-			assert.ok(text.indexOf("Purpose claim:") < text.indexOf("Shared substrates:"));
+			assert.ok(lines.some((line) => line.includes("\x1b[1mPurpose: Review the overlap")));
+			assert.ok(lines.some((line) => line.includes("\x1b[90mScan incomplete: 1 unreadable record")));
+			assert.ok(text.indexOf("Purpose:") < text.indexOf("Shared substrates:"));
 			const selected = stripVTControlCharacters(lines.find((line) => line.includes("› Related effort")) ?? "");
 			assert.equal(selected.indexOf("│"), width === 164 ? 37 : 31);
-			const authority = lines.findIndex((line) => line.includes("Quoted scoped authority claim"));
-			assert.match(lines[authority + 1], /Scope claim:/);
+			const authority = lines.findIndex((line) => line.includes("Operator direction (quoted)"));
+			assert.match(lines[authority + 1], /Scope:/);
 		} finally { f.ui.dispose(); }
 	}
 });
@@ -413,6 +425,41 @@ it("thread detail timestamps use the same label-free mouse toggle as claims", as
 		assert.equal(f.ui.handleMouse(click(34, y, 100, 44))?.handled, true);
 		assert.ok(f.ui.render(100).some((line) => line.split("│")[1]?.trim() === dashboardTime(at, true)));
 	} finally { f.ui.dispose(); }
+});
+
+for (const [width, height] of [[60, 30], [100, 32], [164, 44]]) for (const complete of [false, true]) it(`scan coverage is on demand at ${width} columns with ${complete ? "complete" : "partial"} sources`, async () => {
+		const initial = awareness();
+		const current = { ...initial,
+			presence: { ...initial.presence,
+				efforts: [{ ...initial.presence.efforts[0], id: "peer-primary" }, initial.presence.efforts[1]],
+				coverage: { ...initial.presence.coverage, complete, unreadable: complete ? 0 : 1, omitted: complete ? 0 : 1, reasons: complete ? [] : ["result-limit"] },
+			},
+			threads: { ...initial.threads, coverage: { ...initial.threads.coverage, complete, unvisited: !complete, missingHints: complete ? 0 : 1, reasons: complete ? [] : ["visit-limit"] } },
+		};
+		const f = fixture(width, height, source(), { efforts: async () => current });
+		try {
+			await turn(); f.ui.handleInput("b"); await turn();
+			const lines = f.ui.render(width);
+			const text = lines.join("\n");
+			assert.equal(lines.filter((line) => line.includes("Scan incomplete:")).length, complete ? 0 : 1);
+			assert.doesNotMatch(text, /visits|excluded entries|omitted hints|reasons:|peer-primary/);
+			assert.equal(text.match(/Stated by this effort/g)?.length, 1);
+			assert.doesNotMatch(text, /Purpose claim:|Integration intent claim:|Scope claim:|Contact thread claim:|authority claim:/);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			if (complete) f.ui.handleInput("c");
+			else {
+				const y = lines.findIndex((line) => line.includes("Scan incomplete:"));
+				assert.equal(f.ui.handleMouse(click(lines[y].indexOf("Scan incomplete:"), y, width, height))?.handled, true);
+			}
+			const expanded = f.ui.render(width).join("\n");
+			assert.match(expanded, /Scan details/);
+			assert.match(expanded, /7\/256 visits/);
+			assert.match(expanded, /unvisited records: (yes|no)/);
+			f.ui.handleInput("\x1b");
+			assert.equal(f.ui.render(width).join("\n"), text);
+			f.ui.handleInput("c"); f.ui.render(width); f.ui.handleInput("c");
+			assert.equal(f.ui.render(width).join("\n"), text);
+		} finally { f.ui.dispose(); }
 });
 
 it("wide effort discovery keeps the selected loaded row visible on bounded pages", async () => {
