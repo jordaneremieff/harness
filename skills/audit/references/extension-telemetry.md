@@ -5,7 +5,7 @@ general collection discipline, and report. Read this reference only when the
 selected scope includes extension telemetry. It defines extension-specific
 source contracts, windowed collection, and reconciliation. Complete collection
 before applying the dispositions in
-`../harness/references/extension-audit.md`.
+`../../harness/references/extension-audit.md`.
 Counts describe observations, not usefulness, correct application, or reasons
 to retain an extension.
 
