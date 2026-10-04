@@ -83,6 +83,7 @@ it("includes unrelated local purpose claims without full authority or integratio
 
 it("preserves repository state and declared full gates in the current self view", async (t) => {
 	const { root, self } = fixture(t);
+	publish(root, randomUUID());
 	const intentClaim = { ...claim(), scope: { ...claim().scope, fullGate: true } };
 	const view = await readEffortAwareness(root, { ...self, repository: "/repository/common", repositoryState: "git", intentClaim });
 	assert.equal(view.self.repositoryState, "git");
@@ -118,6 +119,23 @@ it("reserves prompt space for active threads and marks shortened claim text and 
 	assert.ok(prompt.includes("Claim text or scope shortened"), prompt);
 	assert.match(prompt, /Prompt omissions: self 0, related efforts [1-9][0-9]*, active threads 0/u);
 	assert.equal(formatEffortAwareness(view), prompt);
+});
+
+it("keeps zero-live-effort context to one line without losing unknown coverage", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const view = await readEffortAwareness(root, { ...self, intentClaim: claim("Do not repeat my whole claim") }, catalog);
+	assert.equal(formatEffortAwareness(view), "No other live efforts or active thread hints in the covered sources.");
+	publishThread(catalog, root);
+	const withThread = await readEffortAwareness(root, self, catalog);
+	const unknownView = { ...withThread, self: { ...self, omitted: true }, presence: { ...withThread.presence, efforts: [
+		{ id: "unknown", cwd: root, startedAt: "now", relationship: "cwd" as const, liveness: "unknown" as const },
+		{ id: "incompatible", cwd: root, startedAt: "now", relationship: "cwd" as const, liveness: "incompatible" as const },
+	], coverage: { ...withThread.presence.coverage, complete: false, omitted: 2, unreadable: 3 } } };
+	unknownView.threads.coverage = { ...unknownView.threads.coverage, complete: false, omittedHints: 2, omittedResults: 1, missingHints: 1, unreadable: 4, unvisited: true };
+	const line = formatEffortAwareness(unknownView);
+	assert.equal(line.split("\n").length, 1);
+	assert.ok(Buffer.byteLength(line) < 512);
+	for (const label of ["1 unknown", "1 incompatible", "2 omitted", "3 unreadable", "Active thread hints: 1", "2 source omissions", "1 result omissions", "1 missing", "4 unreadable", "unvisited yes", "Own detail incomplete", "agent_status"]) assert.ok(line.includes(label), label);
 });
 
 it("refreshes native root and child sections at model requests while stable state emits no new section patch", async (t) => {
@@ -159,6 +177,17 @@ it("refreshes native root and child sections at model requests while stable stat
 	await say(child);
 	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("AFTER-PURPOSE"));
 	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("Active shared work"));
+	rmSync(primaryEndpointPath(sessionsRoot, peer));
+	await say(child);
+	const emptyPrompt = getCurrentSystemPrompt(requests.at(-1) ?? []);
+	assert.equal(emptyPrompt.includes("AFTER-PURPOSE"), false);
+	const body = emptyPrompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
+	assert.ok(body);
+	assert.equal(body.split("\n").length, 1);
+	assert.ok(body.includes("Active thread hints: 1"));
+	rmSync(join(sessionsRoot, "durable"), { recursive: true, force: true });
+	await say(root);
+	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("No other live efforts or active thread hints in the covered sources."));
 });
 
 it("adds awareness only to native untargeted status and preserves host fields and selected status", async (t) => {

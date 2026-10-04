@@ -15,11 +15,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
-import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { eventLog, type EventLog } from "./host-fixture.mts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
-import { connectPrimaryChannel } from "./primary-channel.ts";
+import { connectPrimaryChannel, createPrimaryChannel } from "./primary-channel.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import registerAgentExtension from "./index.ts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
@@ -286,6 +286,20 @@ it("defers a wake-false notice to the turn boundary while the primary streams", 
 	const entries = fixture.customEntries();
 	assert.equal(entries.length, 1);
 	assert.equal(entries[0]?.content, "streamed operator notice");
+});
+
+it("keeps ordinary effort context to one line after the last live peer closes", { timeout: 30000 }, async (t) => {
+	const fixture = await noticeFixture(t);
+	const channel = await createPrimaryChannel({ id: randomUUID(), sessionsRoot: fixture.sessionsRoot, cwd: fixture.sessionManager.getCwd(), observedPurpose: { source: "session-name", text: "PEER-PURPOSE" }, deliver: () => {}, promptTrust: async () => undefined });
+	try {
+		await fixture.session.prompt("Read current efforts");
+		assert.ok(getCurrentSystemPrompt(fixture.requests.at(-1)?.messages ?? []).includes("PEER-PURPOSE"));
+	} finally { await channel.close(); }
+	await fixture.session.prompt("Read current efforts again");
+	const prompt = getCurrentSystemPrompt(fixture.requests.at(-1)?.messages ?? []);
+	assert.equal(prompt.includes("PEER-PURPOSE"), false);
+	const body = prompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
+	assert.equal(body, "No other live efforts or active thread hints in the covered sources.");
 });
 
 it("refreshes the registered primary identity on model, thinking, and name changes", async (t) => {

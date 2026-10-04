@@ -229,7 +229,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "agent_intent",
 		label: "Agent intent",
-		description: "Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Publish at kickoff and before promotion; use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
+		description: "Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Publish at kickoff and before promotion; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
 		parameters: IntentParams,
 		outputSchema: Type.Unknown(),
 		async execute(_callId, input, _signal, _update, ctx) {
@@ -281,7 +281,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_send",
-		"Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Idle agents start; busy agents receive durable steering. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
+		"Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Coordinate with one concise proposal containing its conditions and one answer, not repeated acknowledgments. Put agreements that others must see in a thread when a participant storage exists. Idle agents start; busy agents receive durable steering. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
 		send,
 		(input, ctx, callId) => {
 			if (input.mode === "report") {
@@ -724,7 +724,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		primaries.get(sessionId)?.abort();
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
-		const purpose = retainedPurpose(ctx.sessionManager.getBranch());
+		const purpose = retainedPurpose(ctx.sessionManager);
 		await getManager().registerPrimary(sessionId, {
 			signal: abort.signal,
 			cwd: ctx.cwd,

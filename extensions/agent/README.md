@@ -108,7 +108,9 @@ remain explicit. Discovery never removes primary endpoint records.
 
 A primary without declared intent still has an observed purpose: its Pi session
 name, otherwise an excerpt of its first interactive input. The extension retains
-its own attributed input projection in the session, rather than interpreting
+its own attributed input projection in the session. Resume discovery walks a
+chain of at most 256 entries from the public leaf ID, without first materializing
+the branch or full session. It does not interpret
 another extension's prompts or entry formats. RPC and extension-generated input
 do not become an operator-typed purpose. A resumed session with no name or retained
 projection has an unknown purpose. If the bounded branch scan is complete, the
@@ -123,7 +125,8 @@ claim's update time. Repository-relative paths use exact or component-prefix
 matching, not globs. `scope.fullGate` declares a planned full-gate run; it is not
 a reservation or lock. The endpoint's total byte bound still applies to a claim.
 Publishing returns the recorded host facts, the labeled claim, and current effort
-awareness. Clearing removes the declared claim, not the observed purpose.
+awareness. Clearing removes the declared claim, not the observed purpose. Update
+or clear intent when integration completes so a finished plan does not remain current.
 
 The bounded view lists live efforts on this machine within the configured
 `PI_AGENT_SESSIONS_DIR`, including efforts in other repositories. It shows
@@ -138,7 +141,9 @@ store records. Missing hints and unvisited records leave global recency unknown.
 Ordinary primaries and Durable agents read this view through untargeted
 `agent_status`. Their model context receives a separate current-effort section
 at natural run boundaries. The section contains no relative ages or render-time
-clock, so unchanged source state gives unchanged text. Registration and changed
+clock, so unchanged source state gives unchanged text. If no other live effort
+appears, one line reports the empty or partial view and points to `agent_status`
+when thread hints or unknown sources need detail. Registration and changed
 intent also send dated quiet notices through the existing primary channel.
 Those transcript entries record events, not the current view. Failed pushes do
 not block the publisher. There is no presence polling, file watcher, model wake,
@@ -315,7 +320,7 @@ provider/model and a non-off thinking level. Duplicate display names add a short
 ID only when neither handles nor model settings distinguish them. The synchronous
 lookup uses the latest roster facts already observed by the primary footer; it opens no storage and
 starts no host. Unobserved targets use a short ID or the supplied `@handle`.
-The manager contract is `manager/1.2.0`; a reload over an older retained manager
+The manager contract is `manager/1.3.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 

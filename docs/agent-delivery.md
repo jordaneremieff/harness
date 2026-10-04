@@ -146,15 +146,24 @@ only the act that requires a missing decision.
 At kickoff and before each promotion, publish the ordinary primary's purpose,
 integration intent, declared scope, carried operator direction, and contact
 thread through `agent_intent`. Read the related efforts in its result or in
-`agent_status`. Host facts and session intent claims are different evidence;
-unknown liveness and incomplete coverage do not prove absence.
+`agent_status`. Update or clear intent when integration completes; a completed
+plan must not remain the declared next action. Host facts and session intent
+claims are different evidence; unknown liveness and incomplete coverage do not
+prove absence.
 
 Use `agent_send` for direct contact with a live effort primary. The operator
 also sends direct messages from `/agent`'s Related efforts view. A delivery receipt
-proves admission, not action or agreement. Open or join one peer thread for a
-real overlap, record the governing frame there, and agree the order of shared
-mutations without operator relay. A contact-thread claim links the effort to
-that retained exchange.
+proves admission, not action or agreement. Model-origin direct contact can start
+a full model turn. Coordinate with one concise proposal that states the order
+and its conditions, and one answer that accepts or corrects it. Avoid repeated
+acknowledgments; send another message only for a changed condition or a handoff
+the agreement requires.
+
+When a participant storage exists, put an agreement that others must see in one
+peer thread for the real overlap. Record the governing frame and the order of
+shared mutations there. Ordinary primaries alone have no thread storage; use
+direct agreement rather than start an unnecessary agent just to hold a thread.
+A contact-thread claim links the effort to that retained exchange.
 
 Declare full-gate runs in integration intent with `scope.fullGate` set to `true`.
 Check related efforts before a full suite and run one full gate per machine at a time.

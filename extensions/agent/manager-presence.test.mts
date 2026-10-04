@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { AgentManager } from "./manager.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPrimaryChannel, type PrimaryChannel } from "./primary-channel.ts";
 import { EFFORT_PURPOSE_ENTRY, retainedPurpose } from "./effort-purpose.ts";
 
@@ -55,7 +56,10 @@ it("does not replace unvisited first-input provenance after resume", async (t) =
 		return channel;
 	} });
 	t.after(async () => { manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
-	const purpose = retainedPurpose([...Array.from({ length: 256 }, () => null), { type: "custom", customType: EFFORT_PURPOSE_ENTRY, data: { source: "interactive", text: "Original task" } }]);
+	const session = SessionManager.inMemory(root);
+	session.appendCustomEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: "Original task" });
+	for (let i = 0; i < 256; i++) session.appendCustomEntry("other");
+	const purpose = retainedPurpose(session);
 	const id = randomUUID();
 	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send: () => {}, observedInput: purpose.text, observedInputComplete: purpose.complete });
 	assert.equal(manager.recordPrimaryInput(id, "A later task"), false);
