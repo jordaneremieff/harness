@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { dashboardTime } from "./dashboard-time.ts";
 import { it } from "node:test";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { EffortAwareness } from "./effort-awareness.ts";
@@ -307,10 +309,122 @@ it("malformed recorded dates render unknown without a viewport failure", async (
 			const text = lines.join("\n");
 			assert.match(text, /Started: unknown \(invalid time\)/);
 			assert.match(text, /Last recorded activity: unknown \(invalid time\)/);
-			assert.match(text, /Claim updated: unknown \(invalid time\)/);
+			assert.match(text, /^unknown \(invalid time\)/m);
+			assert.doesNotMatch(text, /updated:/i);
 			assert.match(text, /Invalid dated hint · unknown \(invalid time\)/);
 			f.ui.handleInput("\x1b[B"); f.ui.handleInput("\x1b[B");
-			assert.match(f.ui.render(80).join("\n"), /Published update: unknown \(invalid time\)/);
+			const threadText = f.ui.render(80).join("\n");
+			assert.match(threadText, /^unknown \(invalid time\)/m);
+			assert.doesNotMatch(threadText, /[Uu]pdate/);
 		} finally { f.ui.dispose(); }
 	}
+});
+
+it("wide effort panes separate discovery from claim-first details and quiet coverage", async () => {
+	const colored = Object.create(theme) as typeof theme;
+	colored.fg = (color, text) => `\x1b[${color === "muted" ? 90 : 37}m${text}\x1b[39m`;
+	colored.bold = (text) => `\x1b[1m${text}\x1b[22m`;
+	for (const [width, height] of [[164, 44], [100, 32]]) {
+		const f = fixture(width, height, source(), { efforts: async () => awareness() }, undefined, colored);
+		try {
+			await turn(); f.ui.handleInput("b"); await turn();
+			const lines = f.ui.render(width);
+			const text = lines.map(stripVTControlCharacters).join("\n");
+			assert.equal(lines.length, height);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			assert.ok(text.includes("Efforts · 2/2 loaded"));
+			assert.match(text, /uncertain/);
+			assert.ok(lines.some((line) => line.includes("\x1b[1mPurpose claim: Review the overlap")));
+			assert.ok(lines.some((line) => line.includes("\x1b[90mPresence: 7/256 visits")));
+			assert.ok(text.indexOf("Purpose claim:") < text.indexOf("Shared substrates:"));
+			const selected = stripVTControlCharacters(lines.find((line) => line.includes("› Related effort")) ?? "");
+			assert.equal(selected.indexOf("│"), width === 164 ? 37 : 31);
+			const authority = lines.findIndex((line) => line.includes("Quoted scoped authority claim"));
+			assert.match(lines[authority + 1], /Scope claim:/);
+		} finally { f.ui.dispose(); }
+	}
+});
+it("wide discovery clicks select efforts and open inline threads through existing routes", async () => {
+	for (const width of [100, 164]) {
+		const current = awareness();
+		current.threads.items = [{ id: "store/thread", title: "Inline contact", purpose: "Read its current frame", updatedAt: Date.now(), closed: false, members: 2 }];
+		const calls: Record<string, unknown>[] = [];
+		const f = fixture(width, 44, source(), { efforts: async () => current, collaborate: async (input) => { calls.push(input); return contactPage(); } });
+		try {
+			await turn(); f.ui.handleInput("b"); await turn();
+			let lines = f.ui.render(width);
+			const uncertainY = lines.findIndex((line) => line.startsWith("  uncertain"));
+			assert.ok(uncertainY >= 0);
+			assert.equal(f.ui.handleMouse(click(2, uncertainY, width, 44))?.handled, true);
+			f.ui.handleInput("m");
+			assert.match(f.ui.render(width).join("\n"), /need a live compatible effort/);
+			lines = f.ui.render(width);
+			const threadY = lines.findIndex((line) => line.includes("Inline contact"));
+			assert.equal(f.ui.handleMouse(click(2, threadY, width, 44))?.handled, true);
+			await turn();
+			assert.deepEqual(calls, [{ action: "read", threadId: "store/thread" }]);
+		} finally { f.ui.dispose(); }
+	}
+});
+it("effort ages stay fixed between observations and keyboard or mouse reveals only local dates", async (t) => {
+	let now = Date.parse("2026-10-04T12:00:00.000Z");
+	t.mock.method(Date, "now", () => now);
+	const current = awareness();
+	const at = new Date(now - 15 * 60000).toISOString();
+	const claim = current.presence.efforts[0].intentClaim;
+	assert.ok(claim);
+	current.presence.efforts[0] = { ...current.presence.efforts[0], startedAt: at, lastActivityAt: at, intentClaim: { ...claim, updatedAt: at } };
+	let reads = 0;
+	const f = fixture(100, 44, source(), { efforts: async () => { reads++; return current; } });
+	try {
+		await turn(); f.ui.handleInput("b"); await turn();
+		const before = f.ui.render(100);
+		assert.match(before.join("\n"), /Started: 15m ago/);
+		assert.ok(before.some((line) => line.split("│")[1]?.trim() === "15m ago"));
+		assert.doesNotMatch(before.join("\n"), /updated:/i);
+		now += 60 * 60000;
+		assert.deepEqual(f.ui.render(100), before);
+		f.ui.handleInput("i");
+		const exact = f.ui.render(100);
+		assert.ok(exact.some((line) => line.includes(`Started: ${dashboardTime(Date.parse(at), true)}`)));
+		assert.doesNotMatch(exact.join("\n"), /2026-10-04T|updated:/i);
+		const y = exact.findIndex((line) => line.split("│")[1]?.trim() === dashboardTime(Date.parse(at), true));
+		assert.ok(y >= 0);
+		assert.equal(f.ui.handleMouse(click(34, y, 100, 44))?.handled, true);
+		assert.match(f.ui.render(100).join("\n"), /Started: 15m ago/);
+		assert.equal(reads, 1);
+	} finally { f.ui.dispose(); }
+});
+it("thread detail timestamps use the same label-free mouse toggle as claims", async (t) => {
+	const now = Date.parse("2026-10-04T12:00:00.000Z");
+	t.mock.method(Date, "now", () => now);
+	const at = now - 15 * 60000;
+	const current = awareness();
+	current.threads.items = [{ id: "store/thread", title: "Shared work", purpose: "Agree the order", updatedAt: at, closed: false, members: 2 }];
+	const f = fixture(100, 44, source(), { efforts: async () => current });
+	try {
+		await turn(); f.ui.handleInput("b"); await turn();
+		f.ui.handleInput("\x1b[B"); f.ui.handleInput("\x1b[B");
+		const before = f.ui.render(100);
+		assert.match(before.join("\n"), /Active thread: Shared work/);
+		assert.doesNotMatch(before.join("\n"), /[Uu]pdate/);
+		const y = before.findIndex((line) => line.split("│")[1]?.trim() === "15m ago");
+		assert.ok(y >= 0);
+		assert.equal(f.ui.handleMouse(click(34, y, 100, 44))?.handled, true);
+		assert.ok(f.ui.render(100).some((line) => line.split("│")[1]?.trim() === dashboardTime(at, true)));
+	} finally { f.ui.dispose(); }
+});
+
+it("wide effort discovery keeps the selected loaded row visible on bounded pages", async () => {
+	const initial = awareness();
+	const current = { ...initial, presence: { ...initial.presence, efforts: Array.from({ length: 20 }, (_, index) => ({ ...initial.presence.efforts[0], id: `effort-${index}`, name: `Loaded effort ${index}` })) } };
+	const f = fixture(100, 32, source(), { efforts: async () => current });
+	try {
+		await turn(); f.ui.handleInput("b"); await turn();
+		for (let index = 0; index < 19; index++) f.ui.handleInput("\x1b[B");
+		const lines = f.ui.render(100);
+		assert.match(lines.join("\n"), /› Loaded effort 19/);
+		assert.ok(lines.some((line) => line.includes("Efforts · 4/20 loaded")));
+		assert.equal(lines.length, 32);
+	} finally { f.ui.dispose(); }
 });

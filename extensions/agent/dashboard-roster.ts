@@ -169,10 +169,6 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 	].join("\n");
 }
 
-function uniqueTitle(row: AgentConversationSummary, rows: readonly AgentConversationSummary[], width: number, primaryId?: string): string {
-	const marker = primaryId && row.creatingOwnerId && row.creatingOwnerId !== primaryId ? "[other] " : "";
-	return marker + uniqueName(row, rows, Math.max(0, width - visibleWidth(marker)));
-}
 function uniqueName(row: AgentConversationSummary, rows: readonly AgentConversationSummary[], width: number): string {
 	const name = titleOf(row);
 	const duplicates = rows.filter((other) => titleOf(other) === name);
@@ -252,7 +248,9 @@ function rosterRow(
 	const timeWidth = Math.min(visibleWidth(time), width - 4);
 	const timeX = width - timeWidth;
 	const titleWidth = compact ? Math.max(8, Math.floor((width - timeWidth - 10) * 0.3)) : Math.max(1, width - 4 - (exactRow ? 0 : timeWidth + 1));
-	const title = theme.bold(theme.fg("text", pad(uniqueTitle(row, rows, titleWidth, primaryId), titleWidth)));
+	const marker = primaryId && row.creatingOwnerId && row.creatingOwnerId !== primaryId ? "[other] " : "";
+	const nameWidth = Math.max(0, titleWidth - visibleWidth(marker));
+	const title = pad(theme.fg("muted", marker) + theme.bold(theme.fg("text", uniqueName(row, rows, nameWidth))), titleWidth);
 	let lines: string[];
 	if (compact) {
 		const cost = costOf(row);

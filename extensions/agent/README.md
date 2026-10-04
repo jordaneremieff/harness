@@ -158,6 +158,10 @@ Delivery proves admission, not action, agreement, or a Durable task result. Use
 one peer thread for a real overlap or agreement. Threads remain in a participant's
 existing agent storage. The dashboard marks agents created by another session;
 that marker describes provenance, not their current requester or task owner.
+At 100 columns or wider, a narrow list sits beside the selected effort's details.
+Press `i` to toggle coarse ages and local dates. In this side-by-side view,
+clicking a detail timestamp uses the same toggle. Ages stay fixed until the next
+presence observation; they do not tick during inactivity.
 
 The ordinary manager interface changes independently of the primary delivery
 interface. A retained manager with a different interface requires a Pi restart.

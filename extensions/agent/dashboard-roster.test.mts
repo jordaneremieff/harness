@@ -156,3 +156,17 @@ it("roster identifies handles and roles separately from the historical first inp
 	const historical = row("plain", { name: undefined, firstMessage: "Original request" });
 	assert.match(dashboardText({ observedAt: 0, sessions: [historical] }), /Historical: Original request/);
 });
+
+it("creating-session provenance stays muted while roster names retain bold emphasis", () => {
+	const colored = Object.create(theme) as typeof theme;
+	colored.fg = (color, text) => `\x1b[${color === "muted" ? 90 : 37}m${text}\x1b[39m`;
+	colored.bold = (text) => `\x1b[1m${text}\x1b[22m`;
+	for (const compact of [false, true]) {
+		const lines = rosterLines([row("other", { name: "Recipient", creatingOwnerId: "peer" })], "other", 60, 20, 0, colored, compact, { primaryId: "primary" });
+		const title = lines.find((line) => line.includes("[other]"));
+		assert.ok(title);
+		assert.ok(title.includes("\x1b[90m[other] \x1b[39m\x1b[1m"));
+		assert.ok(title.indexOf("[other]") < title.indexOf("\x1b[1m"));
+		assert.ok(lines.every((line) => visibleWidth(line) <= 60));
+	}
+});
