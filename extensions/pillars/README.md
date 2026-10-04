@@ -364,9 +364,10 @@ The lock wait is limited to 100 milliseconds; contention is a reported error.
 ## Durable agents
 
 Agents that run on Pi Durable receive a native form of this extension. The
-ordinary factory emits one contribution on the `durable:contribution`
-channel; the agent session host installs it beside its built-in tools. In an
-ordinary Pi session no host listens, and the emission has no effect.
+ordinary factory emits its contribution on the `durable:contribution`
+channel with the absolute entrypoint path as its source. The
+[agent extension](../agent/README.md) owns contribution discovery and host
+installation.
 
 The native form speaks the host's vocabulary directly. It contributes the
 same `pillars` and `pillars_usage` tools, a prompt section with the usage
@@ -403,7 +404,7 @@ Documented differences from the ordinary entrypoint:
   judgment prompt to the conversation as a steer. The ordinary browse, read,
   usage, and help paths render through the terminal UI, which a Durable
   command has no view for; `export` writes an operator filesystem path that
-  the calling session may not share. The two tools remain the model-facing
+  the calling session may not share. The tools remain the model-facing
   form for source reads and access evidence.
 
 ## Privacy and configuration
