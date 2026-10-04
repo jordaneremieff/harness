@@ -168,6 +168,42 @@ interface. A retained manager with a different interface requires a Pi restart.
 Effort awareness is a tool-only status addition; native host observation response
 contracts and the primary channel's delivery contract remain unchanged.
 
+## Agents that run their own agents
+
+Agent controls reach every native conversation whose effective selection
+includes them, so an agent can run its own agents to any depth. Placement is
+decided at spawn time and stated in the result. An omitted cwd selects the
+caller's cwd. The same canonical directory (compared by real path, with a
+lexical fallback for paths that do not exist yet) creates a native child
+conversation in the caller's storage: `Spawned <name> as native child
+conversation <id> in your storage.` A different cwd creates a new storage
+with its own host: `Spawned <name> in <cwd> as <sessionId> with its own
+storage and host.` A native child inherits its parent's stored agent
+configuration and a fresh profile; there is no generation-depth gate in the
+creation paths.
+
+A no-target `agent_status` inside an agent appends a bounded newest-first
+`Your agents` section read from the caller's retained child record, with each
+child's identity, name, and kind, and an explicit omitted count. The section
+covers native children and storages created through the caller alike; it is
+absent when the caller has none. Live state of a listed child still comes
+from selecting that identity.
+
+Lifecycle boundaries stay with the spawning conversation. A parent's reset or
+ordinary abort does not reach background child work or its reporters; a
+background abort crosses those boundaries within the storage. Compacting
+another conversation aborts its reached native children first; self-compaction
+does not. Idle host retirement cannot proceed while same-storage descendants
+hold live work, and a foreign child's detached host survives the spawning
+host's retirement. Result delivery reacquires a retired owner host. Answers,
+reports, and check-ins follow each task's retained request route; the
+creating owner is provenance and the default route only when no request
+context exists.
+
+The operator's roster lists every conversation regardless of nesting depth,
+and the operator can steer, abort, or reset any of them by canonical identity
+without routing through the parent agent.
+
 ## Standing agents and expertise
 
 `agent_spawn({handle, name, role, model?, thinkingLevel?, prompt?})` resolves or
