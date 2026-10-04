@@ -1061,8 +1061,10 @@ export class AgentDashboard implements Component, Focusable {
 			height: this.bodyHeight,
 			wheel: (delta) => {
 				if (screen === "tasks") this.tasks?.scroll(delta);
-				else if (screen === "actions") this.actionIndex = Math.max(0, Math.min(11, this.actionIndex + delta));
-				else this.helpOffset = Math.max(0, this.helpOffset + delta);
+				else if (screen === "actions") {
+					const last = this.console ? dashboardActions(this.console.row).length - 1 : 0;
+					this.actionIndex = Math.max(0, Math.min(last, this.actionIndex + delta));
+				} else this.helpOffset = Math.max(0, this.helpOffset + delta);
 			},
 		});
 		if (screen === "tasks")

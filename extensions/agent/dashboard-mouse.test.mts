@@ -153,6 +153,32 @@ it("action clicks select before execution and help wheel preserves the native ba
 		f.ui.dispose();
 	}
 });
+it("the Actions wheel reaches Details after scrolling past the last action", async () => {
+	const actions: string[] = [];
+	const f = fixture(140, 24, source([row("one", { state: "idle" })]), {
+		action: async (name) => {
+			actions.push(name);
+			return undefined;
+		},
+	});
+	const lines = () => f.ui.render(140).map(stripVTControlCharacters);
+	const click = (needle: string) => {
+		const p = point(lines(), needle);
+		return f.ui.handleMouse(event(p.x, p.y, 140, 24));
+	};
+	try {
+		await turn();
+		click("a actions");
+		const p = point(lines(), "Configure");
+		assert.equal(f.ui.handleMouse(event(p.x, p.y, 140, 24, { type: "wheel", wheelDelta: 100 }))?.handled, true);
+		assert.deepEqual(actions, []);
+		click("Enter choose");
+		await turn();
+		assert.deepEqual(actions, ["status"]);
+	} finally {
+		f.ui.dispose();
+	}
+});
 for (const width of [80, 140]) {
 	it(`roster mouse selects, opens, focuses and toggles shared static times at ${width}`, async () => {
 		const f = fixture(
