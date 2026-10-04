@@ -63,6 +63,8 @@ it("keeps the contract, reporting, polling, live-work, and authority guidance", 
 	assert.match(all, /continue useful work, redirect changed work, or abort superseded work/u);
 	assert.match(all, /interim reports, blocking questions, and corrections/u);
 	assert.match(all, /Do not replace the terminal result with an interim report/u);
+	assert.match(all, /A terminal answer settles the current request/u);
+	assert.match(all, /substantive result or exact blocker, not a waiting note/u);
 	assert.match(all, /Never poll with sleeps or repeated status\/inspection calls/u);
 	assert.match(all, /Settlement notices arrive automatically/u);
 });
@@ -88,10 +90,10 @@ it("describes retained delivery and automatic unfinished-task check-ins", () => 
 
 it("teaches nested spawn placement and lineage status", () => {
 	const spawn = AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "";
-	assert.match(spawn, /native child conversation in your storage/u);
-	assert.match(spawn, /new storage with its own host/u);
-	assert.match(spawn, /run their own agents in turn/u);
-	assert.match(spawn, /regardless of nesting depth/u);
+	assert.match(spawn, /without a handle in the same cwd creates a native child conversation in your storage/u);
+	assert.match(spawn, /a storage with its own host/u);
+	assert.match(spawn, /selected controls permit further delegation/u);
+	assert.ok(spawn.includes("bounded /agent roster"));
 	const status = AGENT_CONTROL_GUIDANCE.agent_status.guidelines?.join("\n") ?? "";
 	assert.match(status, /Your agents section/u);
 });

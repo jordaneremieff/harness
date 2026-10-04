@@ -170,8 +170,8 @@ contracts and the primary channel's delivery contract remain unchanged.
 
 ## Agents that run their own agents
 
-Agent controls reach every native conversation whose effective selection
-includes them, so an agent can run its own agents to any depth. Placement is
+Agent controls reach native conversations whose effective selection includes
+them, so an agent can run its own agents. Placement without a handle is
 decided at spawn time and stated in the result. An omitted cwd selects the
 caller's cwd. The same canonical directory (compared by real path, with a
 lexical fallback for paths that do not exist yet) creates a native child
@@ -183,11 +183,14 @@ configuration and a fresh profile; there is no generation-depth gate in the
 creation paths.
 
 A no-target `agent_status` inside an agent appends a bounded newest-first
-`Your agents` section read from the caller's retained child record, with each
-child's identity, name, and kind, and an explicit omitted count. The section
-covers native children and storages created through the caller alike; it is
-absent when the caller has none. Live state of a listed child still comes
-from selecting that identity.
+`Your agents` section and structured `lineage` read from the caller's retained
+child record, with each direct child's identity, creation label, and kind,
+and an explicit omitted count. This includes native spawns, recorded forks
+and rewinds, and foreign spawns, not handles resolved as independent roots.
+It is absent when the caller has none. It is not a recursive descendant tree
+or a current task roster. Live state and current names come from selecting
+that identity. The public snapshot reads the retained document before the
+projection bounds its output; it is not a bounded storage scan.
 
 Lifecycle boundaries stay with the spawning conversation. A parent's reset or
 ordinary abort does not reach background child work or its reporters; a
@@ -197,12 +200,20 @@ does not. Idle host retirement cannot proceed while same-storage descendants
 hold live work, and a foreign child's detached host survives the spawning
 host's retirement. Result delivery reacquires a retired owner host. Answers,
 reports, and check-ins follow each task's retained request route; the
-creating owner is provenance and the default route only when no request
-context exists.
+creating owner is provenance, not a substitute when request routing is
+unavailable.
 
-The operator's roster lists every conversation regardless of nesting depth,
-and the operator can steer, abort, or reset any of them by canonical identity
-without routing through the parent agent.
+Descendants are eligible for the operator's bounded roster, without a
+depth-based exclusion. Catalog, storage-scan, and display limits still apply.
+The operator can steer, abort, or reset a retained descendant by canonical
+identity without routing through the parent agent.
+
+An answer settles a request; it does not represent a pause for later work.
+Use report mode for interim progress. Put the substantive result or exact
+blocker in the terminal answer, not a waiting note or a closing message that
+points to an earlier answer. Settlement alone does not establish task
+acceptance. This guidance does not hold a parent run open or stop independent
+background agents; native submissions and tasks retain their normal lifecycle.
 
 ## Standing agents and expertise
 

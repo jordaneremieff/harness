@@ -163,6 +163,8 @@ it("collects contributions, matches sources, and installs the built-in registry"
 		assert.ok(ordinaryOnly?.includes(f.silentPath));
 		const preamble = await sections.get("preamble")?.render({} as never, BACKGROUND_CONTEXT);
 		assert.ok(preamble?.includes("expert coding assistant"));
+		assert.match(preamble ?? "", /Creating ownership is provenance, not a substitute when request routing is unavailable/u);
+		assert.doesNotMatch(preamble ?? "", /owning session is the default requester/u);
 		assert.ok(preamble?.includes(localDate()));
 		assert.equal(sections.has("cwd"), true);
 	} finally {

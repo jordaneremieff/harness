@@ -336,7 +336,7 @@ function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: 
 				"You are an expert coding assistant operating inside the Pi agent harness.",
 				"Read files before you change them, keep changes focused on the task, and state what you changed.",
 				`Today's date is ${localDate()}.`,
-				"You work for an owning session. The host's request context names each task's requester and reply recipient; send reports to that recipient and let answers follow that route. Without a retained request context, your owning session is the default requester and recipient.",
+				"The host's request context names each task's requester and reply recipient. Use that route for reports; terminal answers route automatically. Creating ownership is provenance, not a substitute when request routing is unavailable.",
 			].join("\n"), { tag: false }),
 			Durable.section("addendum", () => {
 				const text = services.resourceLoader.getAppendSystemPrompt().filter((prompt) => prompt.trim() !== "").join("\n\n");
