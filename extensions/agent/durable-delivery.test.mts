@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -10,6 +10,7 @@ import type { SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { AgentDeliveryDoc, ThreadDeliveryDoc, type AgentDeliveryState, recordReport, richSubmitConversation, settleDeliveries } from "./durable-controls.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
+import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import type { HostConnection } from "./host-client.ts";
@@ -18,7 +19,7 @@ import { StatusOutputSchema, structuredObservation } from "./observation-schema.
 import type { HostMetadata } from "./host-protocol.ts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
-import { createPrimaryChannel, primaryEndpointPath, type PrimaryDelivery } from "./primary-channel.ts";
+import { createPrimaryChannel, primaryEndpointPath, readPrimaryEndpointDescriptor, type PrimaryDelivery } from "./primary-channel.ts";
 
 function fixtureRoot(t: { after(fn: () => void | Promise<void>): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "durable-delivery-"));
@@ -261,7 +262,7 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	assert.deepEqual(details.submissions.map((member) => member.origin), ["operator", "model"]);
 	const own = details.submissions.filter((member) => member.ownerId === details.deliveryRecipient);
 	assert.equal(details.wake, own.some((member) => member.origin === "model"), "wake follows the recipient's own admissions");
-	assert.match(received[0]?.text ?? "", /^Agent “run” finished\./u);
+	assert.match(received[0]?.text ?? "", /^Agent “source-storage” finished\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	releaseDelivery();
 	await waitForDelivery(source, async () => ids.every((id) => revisions.at(-1)?.receipts[String(id)]?.acknowledged === true));
@@ -572,7 +573,8 @@ for (const route of ["catalog", "same-storage"] as const) it(`routes a check-in 
 	assert.equal(call.params.ownerId, undefined);
 	assert.equal(call.params.requestId, `deliver:source-storage:report:${createHash("sha256").update("checkin:task:2").digest("hex").slice(0, 32)}`);
 	assert.match(String(call.params.message), /Check-in from source-storage.*source checkin:task:2/u);
-	assert.match(String(call.params.message), /still working.*not finished.*30m.*conversation total unavailable/u);
+	assert.match(String(call.params.message), /still working.*not finished.*30m/u);
+	assert.doesNotMatch(String(call.params.message), /conversation total unavailable/u);
 	assert.match(String(call.params.message), /Task is active/u);
 	assert.match(String(call.params.message), /Assess.*report progress.*let.*run.*steer.*abort/u);
 });
@@ -816,9 +818,9 @@ it("delivers a noncatalog owner to its registered primary channel with source me
 	assert.equal(details.metadataUnknown, undefined);
 	assert.equal(details.textTruncated, undefined, "a short body carries no truncation flag");
 	assert.equal(typeof details.thinkingLevel, "string");
-	assert.equal(details.label, "do the task");
+	assert.equal(details.label, "source-storage");
 	assert.equal(details.wake, true, "a model-origin admission wakes its owner");
-	assert.match(message.text, /^Agent “do the task” finished\./u);
+	assert.match(message.text, /^Agent “source-storage” finished\./u);
 	assert.match(message.text, /Results do not establish task acceptance/u);
 	assert.doesNotMatch(message.text, /no live owning session/u);
 	assert.doesNotMatch(message.text, /submissions/u);
@@ -869,7 +871,7 @@ it("delivers an operator-only answer group without waking the primary", { timeou
 	const details = received[0]?.details as { wake?: unknown; submissions?: Array<{ origin?: string }> };
 	assert.equal(details.wake, false, "an operator-only answer group does not start a primary turn");
 	assert.deepEqual(details.submissions?.map((member) => member.origin), ["operator"]);
-	assert.match(received[0]?.text ?? "", /^Agent “board task” finished\./u);
+	assert.match(received[0]?.text ?? "", /^Agent “source-storage” finished\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	await watcher.close();
 	assert.deepEqual(errors, [], "delivery completes without errors");
@@ -1217,7 +1219,7 @@ it("falls back to one registered live primary when the owning endpoint is absent
 	const details = message.details as Record<string, unknown>;
 	assert.equal(details.fallback, true);
 	assert.equal(details.fallbackLabel, "no live owning session");
-	assert.equal(details.label, "do the task");
+	assert.equal(details.label, "source-storage");
 	assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
 	assert.equal(details.originalOwnerId, absentOwner);
 	assert.equal(details.liveOwner, false);
@@ -1889,16 +1891,17 @@ it("bounds the native catalog follow-up body", { timeout: 30000 }, async (t) => 
 	await watcher.close();
 });
 
-for (const evidence of ["handle", "name", "missing"] as const) it(`labels a foreign thread sender from ${evidence} evidence without host acquisition`, { timeout: 10000 }, async (t) => {
+for (const evidence of ["handle", "name", "missing", "unresolved"] as const) it(`labels a foreign thread sender from ${evidence} evidence without host acquisition`, { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");
 	const catalog = new AgentCatalog(root);
 	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "bootstrap", modelId: "not-current" }, thinkingLevel: "off" });
-	const senderIdentity = `${record.storageId}:7`;
+	const senderIdentity = `${evidence === "unresolved" ? randomUUID() : record.storageId}:7`;
+	const known = evidence === "handle" || evidence === "name";
 	const publishedAt = "2026-01-01T00:00:00.000Z";
 	catalog.updateView(record.storageId, {
 		updatedAt: publishedAt, storageId: record.storageId, coverage: { complete: true, omitted: 0 },
-		rows: [{ id: evidence === "missing" ? record.storageId : senderIdentity, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false, name: "Actual sender", model: { provider: fixtureProvider, modelId: fixtureModelId, thinkingLevel: "high" } }],
+		rows: [{ id: known ? senderIdentity : record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false, name: "Actual sender", model: { provider: fixtureProvider, modelId: fixtureModelId, thinkingLevel: "high" } }],
 		...(evidence === "handle" ? { profiles: { rows: [{ identity: senderIdentity, handle: "@expert", role: "Research", revision: "a".repeat(64), hasExpertise: false, updatedAt: 1 }], coverage: { complete: true, omitted: 0 } } } : {}),
 	});
 	const owner = randomUUID();
@@ -1911,7 +1914,7 @@ for (const evidence of ["handle", "name", "missing"] as const) it(`labels a fore
 	const report = await recordReport(source.harness, { ownerId: owner, senderIdentity, message: "A peer contributed evidence", requestId: "thread-event" }, BACKGROUND_CONTEXT);
 	await source.harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
-		state.reports[0] = { ...report, threadId: "purpose-thread", direct: true, passive: true };
+		state.reports[0] = { ...report, threadId: "purpose-thread", threadTitle: "Shared review", operatorMessage: "A peer contributed evidence", direct: true, passive: true };
 		(await tx.doc(ThreadDeliveryDoc, "purpose-thread", null)).pending = 1;
 	}, BACKGROUND_CONTEXT);
 	const status = t.mock.method(source, "request", source.request.bind(source));
@@ -1923,17 +1926,72 @@ for (const evidence of ["handle", "name", "missing"] as const) it(`labels a fore
 	const message = received[0];
 	const details = message.details as Record<string, unknown>;
 	assert.equal(details.identity, senderIdentity);
-	assert.equal(details.label, evidence === "handle" ? "@expert" : evidence === "name" ? "Actual sender" : "7");
+	assert.equal(details.label, evidence === "handle" ? "@expert" : evidence === "name" ? "Actual sender" : senderIdentity);
 	assert.equal(details.threadId, "purpose-thread");
+	assert.equal(details.threadTitle, "Shared review");
+	assert.equal(details.operatorMessage, "A peer contributed evidence");
+	assert.equal(details.senderKind, known ? "agent" : undefined);
+	assert.equal(Object.hasOwn(details, "senderKind"), known, "unresolved reports carry no inferred sender kind");
 	assert.equal(details.wake, false);
 	assert.match(message.text, /^Thread notice from agent/u);
 	assert.doesNotMatch(message.text, /sent a report/u);
-	assert.equal(details.metadataSource, evidence === "missing" ? undefined : "retained-catalog");
-	assert.equal(details.metadataObservedAt, evidence === "missing" ? undefined : publishedAt);
+	assert.equal(details.metadataSource, known ? "retained-catalog" : undefined);
+	assert.equal(details.metadataObservedAt, known ? publishedAt : undefined);
 	assert.equal(details.sourceOwner, undefined, "catalog ownership visibility is not a creator identity");
-	assert.equal(details.modelId, evidence === "missing" ? undefined : fixtureModelId);
-	assert.equal(details.metadataUnknown, evidence === "missing" ? true : undefined);
+	assert.equal(details.modelId, known ? fixtureModelId : undefined);
+	assert.equal(details.metadataUnknown, known ? undefined : true);
 	assert.equal(status.mock.calls.some((call) => call.arguments[0] === "status" && call.arguments[1]?.sessionId === senderIdentity), false);
+	assert.deepEqual(errors, []);
+});
+
+for (const evidence of ["name", "purpose", "identity", "dead"] as const) it(`carries a primary thread sender's ${evidence} from its exact published endpoint`, { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), sessionsRoot = join(root, "sessions");
+	const senderIdentity = randomUUID(), owner = randomUUID();
+	const named = evidence === "name" || evidence === "dead";
+	const sender = await createPrimaryChannel({ id: senderIdentity, cwd: root, sessionsRoot,
+		...(named ? { name: "Parser session", model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "high" } : {}),
+		...(evidence === "purpose" ? { observedPurpose: { source: "interactive-input" as const, text: "Review the parser" } } : {}),
+		deliver: () => { assert.fail("source metadata reads never deliver to the sender"); }, promptTrust: async () => undefined });
+	t.after(() => sender.close());
+	if (evidence === "dead") {
+		const exited = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+		await waitForProcessExit(exited, 5000);
+		assert.ok(exited.pid);
+		const path = primaryEndpointPath(sessionsRoot, senderIdentity);
+		const descriptor = JSON.parse(readFileSync(path, "utf8"));
+		writeFileSync(path, JSON.stringify({ ...descriptor, pid: exited.pid }));
+		assert.equal(readPrimaryEndpointDescriptor(sessionsRoot, senderIdentity).state, "dead");
+	}
+	const received = eventLog<PrimaryDelivery>();
+	const recipient = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => recipient.close());
+	const sourcePath = join(root, "thread.sqlite");
+	const source = await openHost(sourcePath, randomUUID(), root);
+	t.after(() => source.close());
+	const catalog = new AgentCatalog(root);
+	const thread = await mutateCollaboration(source.harness, source.storageId, { action: "create", requestId: "primary-frame", senderIdentity, origin: "operator", title: "Parser contract", purpose: "Agree on the parser boundary", authority: "Operator task", source: "Current request", restrictions: "No publication", acceptance: "Review the boundary", notify: [owner] }, BACKGROUND_CONTEXT);
+	const calls = t.mock.method(source, "request", source.request.bind(source));
+	const errors = eventLog<Error>();
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog, sessionsRoot, signal: new AbortController().signal,
+		acquire: async () => { assert.fail("source metadata reads never acquire a host"); },
+		listPrimaryChannels: async () => { assert.fail("a direct thread notice never discovers primary channels"); }, onError: (error) => errors.push(error) });
+	t.after(() => watcher.close());
+	await received.waitForCount(1);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
+	const details = received[0]?.details as Record<string, unknown>;
+	assert.equal(details.identity, senderIdentity);
+	assert.equal(details.senderIdentity, senderIdentity);
+	assert.equal(details.label, named ? "Parser session" : evidence === "purpose" ? "Review the parser" : senderIdentity.slice(0, 8));
+	assert.equal(details.senderKind, "session");
+	assert.equal(details.metadataSource, "primary-endpoint");
+	assert.equal(details.threadId, thread.threadId);
+	assert.equal(details.threadTitle, "Parser contract");
+	assert.match(String(details.operatorMessage), /"restrictions":"No publication"/u);
+	assert.equal(details.wake, true);
+	assert.equal(details.provider, named ? fixtureProvider : undefined);
+	assert.equal(details.modelId, named ? fixtureModelId : undefined);
+	assert.equal(details.thinkingLevel, named ? "high" : undefined);
+	assert.equal(calls.mock.calls.some((call) => call.arguments[0] === "status" && call.arguments[1]?.sessionId === senderIdentity), false);
 	assert.deepEqual(errors, []);
 });
 

@@ -43,6 +43,7 @@ import {
 	connectPrimaryChannel,
 	primaryEndpointIncompatibleError,
 	primaryEndpointStatus,
+	readPrimaryEndpointDescriptor,
 	type PrimaryChannelConnection,
 	type PrimaryDelivery,
 } from "./primary-channel.ts";
@@ -142,10 +143,12 @@ function submissionLabel(row: ReceiptRow): string {
 }
 
 interface SourceStatus {
+	readonly senderKind?: "agent" | "session";
+	readonly observedPurpose?: string;
+	readonly metadataSource?: "primary-endpoint";
 	readonly handle?: string | null;
 	readonly retainedAt?: string;
 	readonly name?: string | null;
-	readonly firstMessage?: string | null;
 	readonly owner?: string | null;
 	readonly agent?: {
 		readonly model?: { readonly provider?: string; readonly modelId?: string };
@@ -161,11 +164,20 @@ function retainedSourceStatus(catalog: AgentCatalog, identity: string): SourceSt
 		const row = view?.rows.find((candidate) => candidate.id === identity);
 		if (view === undefined || (row === undefined && hint === undefined)) return undefined;
 		return {
+			senderKind: "agent",
 			retainedAt: view.updatedAt,
 			...(hint === undefined ? {} : { handle: hint.handle }),
-			...(row === undefined ? {} : { name: row.name, firstMessage: row.firstMessage, agent: { model: row.model, thinkingLevel: row.model?.thinkingLevel } }),
+			...(row === undefined ? {} : { name: row.name, agent: { model: row.model, thinkingLevel: row.model?.thinkingLevel } }),
 		};
 	} catch { return undefined; }
+}
+
+/** Read one canonical sender endpoint without discovery or connection side effects. */
+function primarySourceStatus(sessionsRoot: string, identity: string): SourceStatus | undefined {
+	const endpoint = readPrimaryEndpointDescriptor(sessionsRoot, identity);
+	const info = endpoint.info;
+	if (!info || endpoint.state === "incompatible") return undefined;
+	return { senderKind: "session", name: info.name, observedPurpose: info.observedPurpose?.text, agent: { model: info.model, thinkingLevel: info.thinkingLevel }, metadataSource: "primary-endpoint" };
 }
 
 /**
@@ -220,16 +232,15 @@ function displayExcerpt(value: string): string {
 	return collapsed.length > DISPLAY_NAME_LIMIT ? `${collapsed.slice(0, DISPLAY_NAME_LIMIT - 1)}…` : collapsed;
 }
 
-/** Agent label: retained handle, current name, first-task excerpt, then short identity. */
+/** Names and handles identify agents; primary purposes precede a short session ID. */
 function displayName(status: SourceStatus | undefined, identity: string): string {
 	const handle = typeof status?.handle === "string" ? displayExcerpt(status.handle) : "";
 	if (handle !== "") return handle;
 	const name = typeof status?.name === "string" ? displayExcerpt(status.name) : "";
 	if (name !== "") return name;
-	const first = typeof status?.firstMessage === "string" ? displayExcerpt(status.firstMessage) : "";
-	if (first !== "") return first;
-	const short = identity.includes(":") ? identity.slice(identity.lastIndexOf(":") + 1) : identity;
-	return (short === "" ? identity : short).slice(0, 8);
+	const purpose = status?.observedPurpose ? displayExcerpt(status.observedPurpose) : "";
+	if (purpose !== "") return purpose;
+	return status?.senderKind === "session" ? identity.slice(0, 8) : identity;
 }
 
 /** Stable request ID for one settled receipt; reused across retries and reopens. */
@@ -269,7 +280,7 @@ function receiptFollowText(metadata: HostMetadata, row: ReceiptRow): string {
 function checkInSummary(checkIn: NonNullable<DeliveryReport["checkIn"]>): string {
 	const seconds = Math.floor(checkIn.elapsedMs / 1000);
 	const elapsed = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}m`;
-	return `${elapsed} elapsed, ${checkIn.cost === null ? "conversation total unavailable" : `$${checkIn.cost.toFixed(3)} conversation total`}`;
+	return [`${elapsed} elapsed`, checkIn.cost === null ? "" : `$${checkIn.cost.toFixed(3)} conversation total`].filter(Boolean).join(", ");
 }
 
 const CHECK_IN_GUIDANCE = "Assess the task: report progress to the operator, let it run, steer it to wrap up, or abort a hung tool. Steering cannot interrupt a running tool. Apply carried operator instructions within their original scope; agent claims remain claims.";
@@ -448,34 +459,26 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}, BACKGROUND_CONTEXT);
 	};
 
-	/** A foreign source label reads its exact retained row, never this host's status or a new host. */
+	/** Foreign senders use an exact retained agent row or published primary endpoint, never a new host. */
 	const readSourceStatus = async (identity: string): Promise<SourceStatus | undefined> => {
 		const retained = retainedSourceStatus(catalog, identity);
-		if (ownerStorageId(identity) !== metadata.storageId) return retained;
+		if (ownerStorageId(identity) !== metadata.storageId) return retained ?? primarySourceStatus(sessionsRoot, identity);
 		try {
 			const response = (await host.request("status", { sessionId: identity })) as { conversation?: SourceStatus };
-			return response?.conversation === undefined ? retained : { ...response.conversation, ...(retained?.handle === undefined ? {} : { handle: retained.handle }) };
+			return response?.conversation === undefined ? retained : { ...response.conversation, senderKind: "agent", ...(retained?.handle === undefined ? {} : { handle: retained.handle }) };
 		} catch { return retained; }
 	};
 
 	/** Source metadata from live status or a dated retained row; absent model evidence stays unknown. */
 	const actualMetadata = (status: SourceStatus | undefined): { fields: Record<string, string>; unknown: boolean } => {
-		const nonEmpty = (value: unknown): string | undefined =>
-			typeof value === "string" && value !== "" ? value : undefined;
 		if (status === undefined) return { fields: {}, unknown: true };
 		const fields: Record<string, string> = {};
-		const provider = nonEmpty(status.agent?.model?.provider);
-		const modelId = nonEmpty(status.agent?.model?.modelId);
-		const thinkingLevel = nonEmpty(status.agent?.thinkingLevel);
-		const name = nonEmpty(status.name);
-		const sourceOwner = nonEmpty(status.owner);
-		if (provider !== undefined) fields.provider = provider;
-		if (modelId !== undefined) fields.modelId = modelId;
-		if (thinkingLevel !== undefined) fields.thinkingLevel = thinkingLevel;
-		if (name !== undefined) fields.name = name;
-		if (sourceOwner !== undefined) fields.sourceOwner = sourceOwner;
+		const observed = { provider: status.agent?.model?.provider, modelId: status.agent?.model?.modelId, thinkingLevel: status.agent?.thinkingLevel, name: status.name, sourceOwner: status.owner, handle: status.handle, observedPurpose: status.observedPurpose, metadataSource: status.metadataSource };
+		for (const [key, value] of Object.entries(observed)) {
+			if (typeof value === "string" && value !== "") fields[key] = value;
+		}
 		if (status.retainedAt !== undefined) { fields.metadataSource = "retained-catalog"; fields.metadataObservedAt = status.retainedAt; }
-		return { fields, unknown: provider === undefined || modelId === undefined };
+		return { fields, unknown: fields.provider === undefined || fields.modelId === undefined };
 	};
 
 	/** Fields shared by receipt and report delivery details. */
@@ -492,8 +495,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const actual = actualMetadata(status);
 		const sourceId = rowSourceId(metadata, row);
 		const saved = row.kind === "receipt" ? row.receipt.entryId !== null || row.receipt.answerEntryId !== null : true;
+		const senderKind = row.kind === "receipt" ? "agent" : status?.senderKind;
 		return {
 			kind: row.kind,
+			...(senderKind === undefined ? {} : { senderKind }),
 			storageId: metadata.storageId,
 			sourceId,
 			source: sourceId,
@@ -552,6 +557,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			message: body.text,
 			...(report.checkIn === undefined ? {} : { checkIn: report.checkIn }),
 			...(report.threadId === undefined ? {} : { threadId: report.threadId }),
+			...(report.threadTitle === undefined ? {} : { threadTitle: report.threadTitle }),
+			...(report.operatorMessage === undefined ? {} : { operatorMessage: boundedPeerText(report.operatorMessage).text }),
 			replyTo: report.replyTo,
 			acknowledged: report.acknowledged,
 			createdAt: report.createdAt,

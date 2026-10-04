@@ -88,7 +88,8 @@ describe("human-readable agent targets", () => {
 		const ctx = context({ args, state });
 		const call = screen(cards.agent_send.renderCall(args, theme, ctx));
 		const output = screen(cards.agent_send.renderResult(receipt, { expanded: false, isPartial: false }, theme, ctx));
-		assert.match(call, /Parser review · model unknown/u);
+		assert.match(call, /Parser review/u);
+		assert.doesNotMatch(call, /unknown|unavailable/u);
 		assert.equal(hintCount(call) + hintCount(output), 1);
 		const off = createAgentToolCards(() => [{ ...row, model: { ...model, thinkingLevel: "off" } }]);
 		assert.doesNotMatch(screen(off.agent_send.renderCall(args, theme, context())), / · off/u);

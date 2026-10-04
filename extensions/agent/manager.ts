@@ -32,6 +32,8 @@ export const MANAGER_PROTOCOL = MANAGER_CONTRACT;
 export interface AgentCaller {
 	id: string;
 	cwd: string;
+	name?: string;
+	observedPurpose?: PrimaryInfo["observedPurpose"];
 	model?: { provider: string; modelId: string };
 	thinkingLevel?: string;
 	validateModel?: AgentManagerOptions["validateModel"];
@@ -442,7 +444,10 @@ export class AgentManager {
 			if (method !== "submit" && method !== "report") throw new Error("A registered primary accepts messages, not Durable session controls");
 			const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
 			const origin: DeliveryOrigin = input.origin === "operator" ? "operator" : "model";
-			await channel.deliver({ sourceId, text: String(input.message ?? ""), details: { senderIdentity: caller.id, source: sourceId, liveOwner: true, saved: false, origin, wake: origin !== "operator", provider: caller.model?.provider ?? null, modelId: caller.model?.modelId ?? null, thinkingLevel: caller.thinkingLevel ?? null }, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) });
+			const sender = this.primaryChannels.get(caller.id)?.info();
+			const name = "name" in caller ? caller.name : sender?.name;
+			const observedPurpose = caller.observedPurpose ?? sender?.observedPurpose;
+			await channel.deliver({ sourceId, text: String(input.message ?? ""), details: { kind: method === "report" ? "report" : "message", senderKind: "session", senderIdentity: caller.id, source: sourceId, liveOwner: true, saved: false, origin, wake: origin !== "operator", ...(name === undefined ? {} : { name }), ...(observedPurpose === undefined ? {} : { observedPurpose: observedPurpose.text }), ...(caller.model === undefined ? {} : { provider: caller.model.provider, modelId: caller.model.modelId }), ...(caller.thinkingLevel === undefined ? {} : { thinkingLevel: caller.thinkingLevel }) }, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) });
 			return { sessionId, admitted: true, sourceId, boundary: "Delivery does not prove action or task acceptance" };
 		} finally { await channel.close(); }
 	}

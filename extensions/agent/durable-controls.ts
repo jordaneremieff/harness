@@ -137,6 +137,9 @@ export type DeliveryReport = {
 	readonly passive?: boolean;
 	/** Thread-keyed pending projection updated in the acknowledgment transaction. */
 	readonly threadId?: string;
+	/** Title and display body from the defining thread event, not parsed notice text. */
+	readonly threadTitle?: string;
+	readonly operatorMessage?: string;
 	readonly acknowledged: boolean;
 	readonly createdAt: number;
 	readonly checkIn?: { readonly origin: DeliveryOrigin; readonly elapsedMs: number; readonly cost: number | null; readonly conversationId: number; readonly requestId: string; readonly fallbackBroadcast?: boolean };

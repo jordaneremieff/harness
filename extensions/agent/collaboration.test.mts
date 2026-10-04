@@ -75,12 +75,16 @@ it("writes notification intents with the event and retains source-qualified dedu
 	assert.equal(ledger?.reports[0].ownerId, peer);
 	assert.equal(ledger?.reports[0].direct, true);
 	assert.equal(ledger?.reports[0].steer, true);
+	assert.equal(ledger?.reports[0].threadTitle, frame.title);
+	assert.equal(ledger?.reports[0].operatorMessage, "Please challenge this boundary.");
 	assert.ok(ledger);
 	assert.match(ledger.reports[0].requestId, new RegExp(f.storageId));
 	await f.reopen();
 	assert.equal((await mutateCollaboration(f.host.harness, f.storageId, post, context)).deduped, true);
 	ledger = await f.host.harness.snapshot(AgentDeliveryDoc, context);
 	assert.equal(ledger?.reports.length, 1);
+	assert.equal(ledger?.reports[0].threadTitle, frame.title);
+	assert.equal(ledger?.reports[0].operatorMessage, "Please challenge this boundary.");
 	const page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
 	assert.equal(page.pending, 1);
 	assert.equal(page.events.at(-1)?.sequence, receipt.sequence);

@@ -102,7 +102,7 @@ function shortIdentity(identity: string): string {
 }
 
 function modelCaption(model: AgentConversationSummary["model"]): string {
-	return model ? `${model.provider}/${model.modelId}${model.thinkingLevel && model.thinkingLevel !== "off" ? ` · ${model.thinkingLevel}` : ""}` : "model unknown";
+	return model ? `${model.provider}/${model.modelId}${model.thinkingLevel && model.thinkingLevel !== "off" ? ` · ${model.thinkingLevel}` : ""}` : "";
 }
 
 function findTarget(identity: string, rows: readonly AgentConversationSummary[]): AgentConversationSummary | undefined {
@@ -125,7 +125,7 @@ function targetLabel(identity: string, context: AgentCardContext): string {
 	const label = row.profile?.handle || row.name || shortIdentity(row.id);
 	const configuration = modelCaption(row.model);
 	const duplicate = !row.profile?.handle && row.name && rows.some((other) => other.id !== row.id && other.name === row.name && !other.profile?.handle && modelCaption(other.model) === configuration);
-	return `${displayPreview(label, 80)}${duplicate ? ` [${shortIdentity(row.id)}]` : ""} · ${displayPreview(configuration, 160)}`;
+	return `${displayPreview(label, 80)}${duplicate ? ` [${shortIdentity(row.id)}]` : ""}${configuration ? ` · ${displayPreview(configuration, 160)}` : ""}`;
 }
 
 export function record(value: unknown): Record<string, unknown> {
@@ -584,7 +584,8 @@ function snapshotLabel(identity: string, name: string, context: AgentCardContext
 }
 
 function resolvedModelLine(provider: string, modelId: string, thinking: string, term = "thinking"): string {
-	return `Model: ${provider && modelId ? displayPreview(`${provider}/${modelId}`, 300) : "model unknown"} · ${term} ${thinking ? displayPreview(thinking, 40) : "unknown"}`;
+	const model = provider && modelId ? `Model: ${displayPreview(`${provider}/${modelId}`, 300)}` : provider ? `Provider: ${displayPreview(provider, 128)}` : modelId ? `Model: ${displayPreview(modelId, 200)}` : "";
+	return [model, thinking ? `${term} ${displayPreview(thinking, 40)}` : ""].filter(Boolean).join(" · ");
 }
 
 function snapshotIdentityLines(status: Record<string, unknown>, theme: Theme, context: AgentCardContext, namedByReceipt: boolean): string[] {
@@ -599,7 +600,8 @@ function snapshotIdentityLines(status: Record<string, unknown>, theme: Theme, co
 	const hideName = !context.expanded && (namedByReceipt || headerHasName(identity, name, context));
 	const hideModel = !context.expanded && (namedByReceipt || headerHasModel(identity, provider, modelId, thinking, context));
 	if ((name || identity) && !hideName) lines.push(theme.fg("accent", snapshotLabel(identity, name, context)));
-	if (!hideModel) lines.push(muted(theme, resolvedModelLine(provider, modelId, thinking)));
+	const configuration = resolvedModelLine(provider, modelId, thinking);
+	if (!hideModel && configuration) lines.push(muted(theme, configuration));
 	return lines;
 }
 
@@ -749,9 +751,10 @@ function profileIdentityLines(details: Record<string, unknown>, profile: Record<
 	const identity = text(profile.identity);
 	const sameName = headerHasName(identity, text(profile.name), context);
 	const sameModel = headerHasModel(identity, text(model.provider), text(model.modelId), text(profile.thinkingLevel), context);
+	const configuration = resolvedModelLine(text(model.provider), text(model.modelId), text(profile.thinkingLevel), "reasoning");
 	return [
 		...(!sameName || details.outcome ? [theme.fg(details.outcome === "conflict" ? "warning" : "accent", `${details.outcome === "conflict" ? "Profile conflict; no change" : details.outcome === "applied" ? "Profile saved" : "Profile"} · ${displayPreview(text(profile.handle) || text(profile.name) || shortIdentity(text(profile.identity)), 160)}`)] : []),
-		...(!sameModel ? [muted(theme, resolvedModelLine(text(model.provider), text(model.modelId), text(profile.thinkingLevel), "reasoning"))] : []),
+		...(!sameModel && configuration ? [muted(theme, configuration)] : []),
 	];
 }
 
@@ -907,8 +910,8 @@ function resetLines(details: Record<string, unknown>, theme: Theme, context: Age
 function peerScalarFields(details: Record<string, unknown>): string[] {
 	const lines: string[] = [];
 	for (const [key, value] of Object.entries(details)) {
-		if (key === "usage" || key === "message" || value === undefined || value === null) continue;
-		if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") lines.push(`${key}: ${key.endsWith("Id") || key.endsWith("identity") ? displayPreview(String(value), 300) : displayPreview(String(value), 160)}`);
+		if (key === "usage" || key === "message" || key === "operatorMessage" || value === undefined || value === null) continue;
+		if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") lines.push(`${key}: ${/(?:Id|identity)$/iu.test(key) ? displayText(String(value)) : displayPreview(String(value), 160)}`);
 	}
 	return lines;
 }
@@ -931,15 +934,17 @@ function peerConfiguration(details: Record<string, unknown>): string[] {
 function peerOutcome(details: Record<string, unknown>): { label: string; failed: boolean } {
 	if (details.checkIn !== undefined) return { label: "still working", failed: false };
 	const status = text(details.status);
-	if (status === "done") return { label: "finished", failed: false };
-	if (status === "unanswered") return { label: details.reason === "aborted" ? "stopped" : "failed", failed: true };
-	if (status !== "") return { label: displayPreview(status, 40), failed: status === "failed" };
-	return { label: details.senderIdentity !== undefined ? "report" : "notice", failed: false };
+	if (details.threadId !== undefined) return { label: "thread notice", failed: false };
+	if (status !== "" || details.kind === "receipt") return { label: "result", failed: status === "unanswered" || status === "failed" };
+	return { label: details.kind === "report" || (details.senderIdentity !== undefined && details.senderKind !== "session") ? "report" : "message from another session", failed: false };
 }
 
-/** Display label for one peer notice: resolved label, stored name, then sender identity. */
+/** Source names and observed session purposes precede identity-only labels. */
 function peerLabel(details: Record<string, unknown>): string {
-	return text(details.label) || text(details.name) || text(details.identity) || text(details.senderIdentity) || "source unavailable";
+	const named = text(details.handle) || text(details.name) || text(details.label) || text(details.observedPurpose);
+	if (named) return named;
+	const identity = text(details.identity) || text(details.senderIdentity);
+	return details.senderKind === "session" ? identity.slice(0, 8) : identity;
 }
 
 /** Model-facing caveat sentences that the operator card keeps in model context but not in view. */
@@ -981,7 +986,7 @@ function peerWarnings(details: Record<string, unknown>, failed: boolean): string
 /** Check-in elapsed time keeps minutes below an hour and pads the remainder above it. */
 function checkInElapsed(value: unknown): string {
 	const milliseconds = count(value);
-	if (milliseconds === undefined) return "elapsed unavailable";
+	if (milliseconds === undefined || milliseconds < 0) return "";
 	const seconds = Math.floor(milliseconds / 1000);
 	if (seconds < 60) return `${seconds}s elapsed`;
 	const minutes = Math.floor(seconds / 60);
@@ -994,18 +999,19 @@ function noticeHeading(details: Record<string, unknown>, theme: Theme): Componen
 	const { label: outcome, failed } = peerOutcome(details);
 	const provider = text(details.provider);
 	const modelId = text(details.modelId);
-	const model = displayPreview(provider && modelId ? `${provider}/${modelId}` : modelId || "model unknown", 512);
-	const reasoning = displayPreview(text(details.thinkingLevel) || "reasoning unknown", 40);
-	const label = displayPreview(peerLabel(details), 300);
+	const model = displayPreview(provider && modelId ? `${provider}/${modelId}` : modelId || (provider ? `provider: ${provider}` : ""), 512);
+	const reasoning = displayPreview(text(details.thinkingLevel), 40);
+	const sender = peerLabel(details);
+	const label = displayPreview([text(details.threadTitle), sender].filter(Boolean).join(" · "), 300);
 	if (details.checkIn !== undefined) {
 		const checkIn = record(details.checkIn);
 		const elapsed = checkInElapsed(checkIn.elapsedMs);
 		const cost = count(checkIn.cost);
-		const metrics = `${elapsed} · ${cost === undefined ? "conversation total unavailable" : `$${cost.toFixed(3)} conversation total`}`;
+		const metrics = [elapsed, cost === undefined ? "" : `$${cost.toFixed(3)} conversation total`].filter(Boolean).join(" · ");
 		return {
 			render(width) {
 				const prefix = "[agent] ";
-				const suffix = ` · still working · ${metrics}`;
+				const suffix = ` · still working${metrics ? ` · ${metrics}` : ""}`;
 				const labelWidth = Math.max(1, width - visibleWidth(prefix) - visibleWidth(suffix));
 				return [truncateToWidth(theme.fg("customMessageLabel", theme.bold(prefix + truncateToWidth(label, labelWidth)))
 					+ theme.fg("muted", suffix), width)];
@@ -1016,13 +1022,14 @@ function noticeHeading(details: Record<string, unknown>, theme: Theme): Componen
 	return {
 		render(width) {
 			const prefix = "[agent] ";
-			const fixed = visibleWidth(prefix) + visibleWidth(outcome) + visibleWidth(reasoning) + 7;
-			const modelWidth = Math.max(1, width - fixed - Math.min(12, visibleWidth(label)));
-			const shownModel = truncateToWidth(model, modelWidth);
-			const labelWidth = Math.max(1, width - fixed - visibleWidth(shownModel));
+			const configuration = [model, reasoning].filter(Boolean).join(" ");
+			const fixed = visibleWidth(prefix) + visibleWidth(outcome) + (label ? 3 : 0) + (configuration ? 3 : 0);
+			const configurationWidth = Math.max(1, width - fixed - Math.min(12, visibleWidth(label)));
+			const shownConfiguration = truncateToWidth(configuration, configurationWidth);
+			const labelWidth = Math.max(1, width - fixed - visibleWidth(shownConfiguration));
 			const heading = theme.fg("customMessageLabel", theme.bold(prefix + truncateToWidth(label, labelWidth)))
-				+ theme.fg("muted", " · ") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(outcome))
-				+ theme.fg("muted", ` · ${shownModel} ${reasoning}`);
+				+ (label ? theme.fg("muted", " · ") : "") + theme.fg(failed ? "error" : "customMessageLabel", theme.bold(outcome))
+				+ (shownConfiguration ? theme.fg("muted", ` · ${shownConfiguration}`) : "");
 			return [truncateToWidth(heading, width)];
 		},
 		invalidate() {},
@@ -1066,7 +1073,7 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 	const reason = text(details.reason);
 	if (reason) box.addChild(new Text(theme.fg("muted", displayPreview(reason, 240)), 0, 0));
 	const checkIn = details.checkIn === undefined ? undefined : record(details.checkIn);
-	box.addChild(noticeBody(checkIn === undefined ? operatorNoticeBody(content) : boundedSource(text(details.message)), theme, options.expanded));
+	box.addChild(noticeBody(checkIn === undefined ? (typeof details.operatorMessage === "string" ? details.operatorMessage : operatorNoticeBody(content)) : boundedSource(text(details.message)), theme, options.expanded));
 	if (options.expanded) {
 		box.addChild(new Spacer(1));
 		box.addChild(new Text(theme.fg("muted", theme.bold("Source details")), 0, 0));

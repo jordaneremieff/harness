@@ -611,9 +611,21 @@ group: one recipient's model-origin submission never wakes another recipient
 whose submissions were operator-only. A fallback broadcast never wakes a
 recipient's model. A receipt whose stored origin is missing or malformed is
 reported and held pending; the watcher never defaults it to a model admission.
-The notice
-names the agent by stored name, first-task excerpt, or short identity. Its
-single-line headline shows that label, the outcome, model, and reasoning level.
+A notice names an agent by its display name or handle, with its full identity
+as the unnamed fallback. An ordinary session uses its session name, observed
+purpose excerpt, or short session ID. Direct messages carry the sender's
+current name and published purpose. Foreign thread senders use their exact
+retained agent row or published primary endpoint without a host launch or
+discovery scan. A dead primary descriptor retains its parsed sender metadata;
+its published configuration is not a live-state observation. Missing source
+evidence does not classify a report sender as an agent. Thread notices show
+the thread title and sender; their display
+body comes from the defining event, while stored model content stays unchanged.
+The headline uses plain kinds: result, still working, report, thread notice,
+or message from another session. Model, provider, reasoning, check-in elapsed
+time, and cost appear only when known. Missing optional facts produce no
+unknown or unavailable headline fields; real failure warnings remain in the
+body.
 The collapsed answer uses a short visual-line preview, with Pi's expansion hint
 only when text is hidden. It adds no navigation instructions or trailing blank
 rows beyond native message spacing. Expanding the notice shows the full

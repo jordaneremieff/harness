@@ -46,7 +46,7 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 	const notices: string[] = [];
 	const ctx = {
 		cwd: root,
-		sessionManager: { getSessionId: () => "primary" },
+		sessionManager: { getSessionId: () => "primary", getSessionName: () => "Primary" },
 		ui: { notify: (text: string) => notices.push(text) },
 	} as unknown as ExtensionCommandContext;
 	const command = commands.get("agent");

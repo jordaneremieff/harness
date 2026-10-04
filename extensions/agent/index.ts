@@ -161,6 +161,7 @@ const observationSchemas: Partial<Record<AgentControlToolName, TSchema>> = {
 const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	id: ctx.sessionManager.getSessionId(),
 	cwd: ctx.cwd,
+	name: ctx.sessionManager.getSessionName(),
 	...(ctx.model ? { model: { provider: ctx.model.provider, modelId: ctx.model.id } } : {}),
 	thinkingLevel: pi.getThinkingLevel(),
 	validateModel: (model) => {

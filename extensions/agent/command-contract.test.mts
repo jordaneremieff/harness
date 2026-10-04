@@ -111,7 +111,7 @@ it("native agent commands retain their complete multiline result", async (t) => 
 	const notices: string[] = [];
 	const ctx = {
 		cwd: root,
-		sessionManager: { getSessionId: () => "command-result-primary" },
+		sessionManager: { getSessionId: () => "command-result-primary", getSessionName: () => "Command source" },
 		ui: { notify: (value: string) => notices.push(value) },
 	} as unknown as ExtensionCommandContext;
 	assert.ok(command);
@@ -161,7 +161,7 @@ it("preserves optional command inputs and resolves directory commands at the pri
 	const notices: string[] = [];
 	const ctx = {
 		cwd: join(root, "work"),
-		sessionManager: { getSessionId: () => "primary" },
+		sessionManager: { getSessionId: () => "primary", getSessionName: () => "Primary" },
 		ui: { notify: (text: string) => notices.push(text) },
 	} as unknown as ExtensionCommandContext;
 	const command = commands.get("agent");

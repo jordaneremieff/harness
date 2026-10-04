@@ -37,6 +37,7 @@ for (const tool of ["agent_send", "agent_place"] as const) it(`admits a model-is
 	let now = epoch;
 	const worker = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, storageId: randomUUID(), now: () => now });
 	const primary = await noticeFixture(t, worker.storageId, tool);
+	primary.sessionManager.appendSessionInfo("Delegating primary");
 	t.mock.method(Date, "now", () => epoch);
 	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
 	delete process.env.PI_AGENT_CHECK_IN_MINUTES;
@@ -46,6 +47,7 @@ for (const tool of ["agent_send", "agent_place"] as const) it(`admits a model-is
 	assert.ok(manager);
 	const bridge = (input: Record<string, unknown>, caller: AgentCaller) => {
 		assert.equal(input.checkInMinutes, 30, "the real primary tool preserves its selected interval");
+		assert.equal(caller.name, "Delegating primary", "the real primary tool carries the current session name");
 		return worker.host.request("submit", { ...input, message: input.message ?? input.prompt, sessionId: worker.storageId, ownerId: caller.id, requestId: "primary-check-in" });
 	};
 	if (tool === "agent_place") t.mock.method(manager, "place", (input: Record<string, unknown>, caller: AgentCaller) => bridge(input, caller));

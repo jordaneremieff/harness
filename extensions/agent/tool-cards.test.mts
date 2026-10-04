@@ -339,11 +339,59 @@ describe("agent result cards", () => {
 });
 
 describe("agent result notice card", () => {
+	it("shows sourced sender names and plain kinds without optional-fact placeholders", () => {
+		const id = "12345678-1234-4234-8234-123456789abc";
+		const cases = [
+			{ details: { identity: id, name: "Catalog reader", kind: "receipt", status: "done", provider: "provider", modelId: "model", thinkingLevel: "high" }, heading: "Catalog reader · result · provider/model high" },
+			{ details: { identity: id, handle: "@reader", kind: "report" }, heading: "@reader · report" },
+			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "message" }, heading: "Parser session · message from another session" },
+			{ details: { senderIdentity: id, senderKind: "session", observedPurpose: "Review the parser", kind: "message", provider: "provider" }, heading: "Review the parser · message from another session · provider: provider" },
+			{ details: { senderIdentity: id, senderKind: "session", kind: "message" }, heading: "12345678 · message from another session" },
+			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "report", threadId: "retained-thread", threadTitle: "Parser contract", operatorMessage: "The sourced event body" }, heading: "Parser contract · Parser session · thread notice" },
+			{ details: { identity: id, name: "Fallback reader", kind: "receipt", status: "done", liveOwner: false, fallback: true }, heading: "Fallback reader · result" },
+			{ details: {}, heading: "message from another session" },
+		];
+		for (const { details, heading } of cases) {
+			const card = renderPeerNoticeCard({ content: "Stored model body", details }, theme, false);
+			assert.ok(card);
+			const lines = screen(card, 240).split("\n");
+			assert.equal(lines[0]?.trim(), `[agent] ${heading}`);
+			assert.doesNotMatch(lines[0] ?? "", /unknown|unavailable/u);
+			if ("threadId" in details) {
+				assert.match(lines.join("\n"), /The sourced event body/u);
+				assert.doesNotMatch(lines.join("\n"), /Stored model body/u);
+			}
+			if (details.liveOwner === false) assert.match(lines.join("\n"), /No live owner; retained result only/u);
+			const expanded = renderPeerNoticeCard({ content: "Stored model body", details }, theme, true);
+			assert.ok(expanded);
+			if (Object.keys(details).length) assert.ok(screen(expanded, 240).includes(id));
+			for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+		}
+	});
+
+	it("preserves full source identities in expanded details", () => {
+		const sourceId = `report:${"r".repeat(400)}`;
+		const senderIdentity = "12345678-1234-4234-8234-123456789abc";
+		const card = renderPeerNoticeCard({ content: "Report body", details: { name: "Reader", kind: "report", senderIdentity, sourceId } }, theme, true);
+		assert.ok(card);
+		const text = screen(card, 600);
+		assert.ok(text.includes(`sourceId: ${sourceId}`));
+		assert.ok(text.includes(`senderIdentity: ${senderIdentity}`));
+	});
+
+	it("keeps a check-in headline when elapsed time, cost and configuration are absent", () => {
+		const card = renderPeerNoticeCard({ content: "Stored guidance", details: { name: "Reader", message: "Current step: review", checkIn: {} } }, theme, false);
+		assert.ok(card);
+		const lines = screen(card, 160).split("\n");
+		assert.equal(lines[0]?.trim(), "[agent] Reader · still working");
+		assert.match(lines.join("\n"), /Current step: review/u);
+		assert.doesNotMatch(lines[0] ?? "", /unknown|unavailable|elapsed|conversation total/u);
+	});
 	it("renders a receipt heading, Markdown body, and expanded source details", () => {
 		const collapsed = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "**Review:** fix the token.\n\nKeep the identifier.", details: { submissionId: 9, identity: "storage-a", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(collapsed);
 		const text = screen(collapsed);
-		assert.match(text, /\[agent\] storage-a · finished/);
+		assert.match(text, /\[agent\] storage-a · result/);
 		assert.doesNotMatch(text, /Open:|Source details:|\/agent opens|to expand/);
 		assert.match(text, /Review: fix the token\./);
 		assert.match(text, /Keep the identifier\./);
@@ -360,7 +408,7 @@ describe("agent result notice card", () => {
 		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "Done", details: { submissionId: 9, identity: "6de48f73-1111-4111-8111-111111111111", label: "poem task", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(card);
 		const text = screen(card);
-		assert.match(text, /\[agent\] poem task · finished/);
+		assert.match(text, /\[agent\] poem task · result/);
 		assert.doesNotMatch(text, /6de48f73/);
 	});
 
@@ -376,7 +424,8 @@ describe("agent result notice card", () => {
 			assert.ok(card);
 			const text = screen(card, 180);
 			assert.match(text, /\[agent\] reader · still working · 30m/u);
-			assert.match(text, cost === null ? /conversation total unavailable/u : new RegExp(`\\$${cost.toFixed(3).replace(".", "\\.")} conversation total`, "u"));
+			if (cost === null) assert.doesNotMatch(text, /conversation total|unavailable/u);
+			else assert.match(text, new RegExp(`\\$${cost.toFixed(3).replace(".", "\\.")} conversation total`, "u"));
 			assert.match(text, /Tool calls: 4/u);
 			assert.doesNotMatch(text, /Unrelated report body|· report|· finished|Reported result/u);
 			for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
@@ -412,7 +461,7 @@ describe("agent result notice card", () => {
 		const unansweredCard = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: "No answer", details: { identity: "storage-a", status: "unanswered", reason: "aborted" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(unansweredCard);
 		const unanswered = screen(unansweredCard);
-		assert.match(unanswered, /\[agent\] storage-a · stopped/);
+		assert.match(unanswered, /\[agent\] storage-a · result/);
 		assert.match(unanswered, /Result unavailable or unanswered/);
 		assert.match(unanswered, /aborted/);
 	});
@@ -422,7 +471,7 @@ describe("agent result notice card", () => {
 		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content: hostile, details: { submissionId: 9, entryId: 4, answerEntryId: 5, requestId: "req-1", identity: "storage-a", status: "done", name: "Message reviewer", provider: "SelectedProvider", modelId: "MixedCase-Model", thinkingLevel: "high", liveOwner: false, saved: false } }, { expanded: true, outputPad: 1 }, theme);
 		assert.ok(card);
 		const text = screen(card, 180);
-		assert.match(text, /\[agent\] Message reviewer · finished/);
+		assert.match(text, /\[agent\] Message reviewer · result/);
 		assert.match(text, /name: Message reviewer/);
 		assert.match(text, /SelectedProvider\/MixedCase-Model · thinking: high/);
 		assert.match(text, /No live owner; retained result only/);
@@ -442,7 +491,7 @@ describe("agent result notice card", () => {
 		const card = renderAgentPeerMessage({ role: "custom", customType: "agent.peer", display: true, timestamp: 1, content, details: { label: "reader", status: "done" } }, { expanded: false, outputPad: 1 }, theme);
 		assert.ok(card);
 		const text = screen(card);
-		assert.match(text, /\[agent\] reader · finished/);
+		assert.match(text, /\[agent\] reader · result/);
 		assert.match(text, /SECOND READY/);
 		assert.doesNotMatch(text, /Open:|Source details:|\/agent opens|to expand/);
 		assert.doesNotMatch(text, /Results do not establish/);
@@ -467,7 +516,7 @@ describe("agent result notice card", () => {
 		for (const width of [80, 140]) {
 			const lines: string[] = card.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
 			assert.equal(lines.length, 2);
-			assert.match(lines[0] ?? "", /\[agent\] A very long.* · finished · provider\/model high/);
+			assert.match(lines[0] ?? "", /\[agent\] A very long.* · result · provider\/model high/);
 			assert.equal(lines[1]?.trim(), "A short answer.");
 			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 			assert.doesNotMatch(lines.join("\n"), /Open:|Source details|to expand|opens the dashboard/);
@@ -524,7 +573,7 @@ describe("agent result notice card", () => {
 	it("builds the same card from stored entry data for an agent conversation", () => {
 		const card = renderPeerNoticeCard({ content: "Body text", details: { label: "reader", status: "done" } }, theme, false);
 		assert.ok(card);
-		assert.match(screen(card), /\[agent\] reader · finished/);
+		assert.match(screen(card), /\[agent\] reader · result/);
 		assert.match(screen(card), /Body text/);
 	});
 });
