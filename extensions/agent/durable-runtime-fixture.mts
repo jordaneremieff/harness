@@ -32,13 +32,13 @@ export interface RuntimeFixture {
 	/** Unix socket that is accepting marker names before a host starts. */
 	readonly notifyPath: string;
 	/** Child environment for one fixture mode. */
-	env(mode: "request" | "effect" | "answer" | "spawn"): Record<string, string>;
+	env(mode: "request" | "effect" | "answer" | "spawn" | "tool-round"): Record<string, string>;
 	/** Resolve when the host publishes this marker name. The file is not the signal. */
 	marker(name: string): Promise<void>;
 }
 
 /** Build an isolated agent home for one durable runtime test. */
-export function runtimeFixture(t: { after(fn: () => void): void }, options: { withAgentExtension?: boolean } = {}): RuntimeFixture {
+export function runtimeFixture(t: { after(fn: () => void): void }, options: { withAgentExtension?: boolean; transport?: "sse" | "auto" } = {}): RuntimeFixture {
 	const root = mkdtempSync(join(tmpdir(), "durable-runtime-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const cwd = join(root, "work");
@@ -52,7 +52,7 @@ export function runtimeFixture(t: { after(fn: () => void): void }, options: { wi
 	const extensionPath = fileURLToPath(new URL("./testdata/durable-runtime/index.ts", import.meta.url));
 	const extensions = [extensionPath];
 	if (options.withAgentExtension === true) extensions.push(fileURLToPath(new URL("./index.ts", import.meta.url)));
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, transport: options.transport ?? "auto", cacheWarming: { mode: "off" }, retry: { enabled: false } }));
 	const ownerId = "primary-owner";
 	const record = new AgentCatalog(root).create({
 		cwd,

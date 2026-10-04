@@ -68,7 +68,6 @@ it("retains a standing profile across native boundaries and routes reused work b
 	const observation = await a.raw<{ token: string }>(identity, "observe-open", { scope: "conversation", token: randomUUID() });
 	const first = await send(a, "@archive-guide", "first-question");
 	let request = await f.next();
-	assert.equal(request.sessionId, identity);
 	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Question first-question"), "native task content remains the caller's words");
 	const self = instructions(request);
 	for (const value of [identity, "@archive-guide", "Archive guide", "Explain archive evidence with sources.", "agent_profile"]) assert.ok(self.includes(value), value);

@@ -13,13 +13,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
-import type { Models } from "@earendil-works/pi-ai";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { observeClaim } from "./claims.ts";
 import { hostPaths } from "./host-protocol.ts";
-import { acquireHost, waitForHostRelease } from "./host-client.ts";
+import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
-import { observeDurableStorage, sessionKeyedModels } from "./durable-runtime.ts";
+import { observeDurableStorage } from "./durable-runtime.ts";
 import { childCatalogRecord, killHost, markerFixture, runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
 
@@ -553,54 +552,43 @@ it("repairs an unavailable retained model through attach on an idle host", { tim
 	}
 });
 
-it("keys streaming requests to the storage identity without changing other model calls", () => {
-	const calls: Array<{ method: string; options: Record<string, unknown> | undefined }> = [];
-	const fake = {
-		tag: "base",
-		getModel(this: unknown) {
-			if (this !== fake) throw new Error("a model method lost its binding");
-			return "base";
-		},
-		stream(_model: unknown, _context: unknown, options?: Record<string, unknown>) {
-			calls.push({ method: "stream", options });
-			return "stream";
-		},
-		streamSimple(_model: unknown, _context: unknown, options?: Record<string, unknown>) {
-			calls.push({ method: "streamSimple", options });
-			return "simple";
-		},
-	};
-	const models = sessionKeyedModels(fake as unknown as Models, "storage-7") as unknown as typeof fake;
-	assert.equal(models.tag, "base", "non-method properties pass through");
-	assert.equal(models.getModel(), "base", "other model methods keep their binding");
-	assert.equal(models.stream({}, {}, { reasoning: "low" }), "stream");
-	assert.deepEqual(calls.at(-1)?.options, { reasoning: "low", sessionId: "storage-7" });
-	assert.equal(models.streamSimple({}, {}, { sessionId: "caller", cacheRetention: "long" }), "simple");
-	assert.deepEqual(calls.at(-1)?.options, { sessionId: "caller", cacheRetention: "long" }, "a caller session ID wins and cacheRetention passes through");
-	const caller = { cacheRetention: "short" };
-	models.streamSimple({}, {}, caller);
-	assert.deepEqual(calls.at(-1)?.options, { cacheRetention: "short", sessionId: "storage-7" });
-	assert.deepEqual(caller, { cacheRetention: "short" }, "the caller's options object is not mutated");
-	models.streamSimple({}, {}, undefined);
-	assert.deepEqual(calls.at(-1)?.options, { sessionId: "storage-7" }, "an absent options object gains the session ID");
-});
-
-it("carries the storage identity into every provider stream request", { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t);
-	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
-	trackHost(t, primary.pid);
-	try {
-		const submitted = await primary.request("submit", { message: "CACHE_AFFINITY", requestId: "cache-affinity", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
-		const receipt = await waitForReceipt(primary, f.ownerId, submitted.submissionId);
+it("preserves a conversation's provider session and request options across turns, tool rounds, and host restart", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t, { transport: "sse" });
+	writeFileSync(join(f.testDir, "input.txt"), "Provider request fixture input\n");
+	const recorded = () => readFileSync(join(f.testDir, "session-options.jsonl"), "utf8").trim().split("\n")
+		.map((line) => JSON.parse(line) as { sessionId: string; transport: string; reasoning?: string });
+	let providerSessionId: string | undefined;
+	let requestCount = 0;
+	const turn = async (host: HostConnection, requestId: string, reasoning?: string): Promise<void> => {
+		const submitted = await host.request("submit", { message: requestId, requestId, ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+		const receipt = await waitForReceipt(host, f.ownerId, submitted.submissionId);
 		assert.equal(receipt.status, "done");
-	} finally {
-		await primary.close().catch(() => undefined);
-	}
-	const recorded = readFileSync(join(f.testDir, "session-options.jsonl"), "utf8").trim().split("\n");
-	assert.ok(recorded.length >= 1, "the provider recorded its stream options");
-	for (const line of recorded) {
-		const options = JSON.parse(line) as { sessionId: string | null; transport: string | null };
-		assert.equal(options.sessionId, f.metadata.storageId, "the stream request carries the storage session key");
-		assert.equal(options.transport, "auto", "the stream request carries the configured transport");
-	}
+		const requests = recorded();
+		assert.equal(requests.length, requestCount + 2, "each turn reaches the provider before and after its tool round");
+		for (const options of requests.slice(requestCount)) {
+			assert.match(options.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu, "the provider session ID is a UUID");
+			assert.notEqual(options.sessionId, f.metadata.storageId, "provider identity is distinct from storage identity");
+			providerSessionId ??= options.sessionId;
+			assert.deepEqual(options, { sessionId: providerSessionId, transport: "sse", ...(reasoning === undefined ? {} : { reasoning }) });
+		}
+		requestCount = requests.length;
+		await host.request("acknowledge", { ownerId: f.ownerId, submissionIds: [submitted.submissionId] });
+	};
+	const first = await acquireHost(f.metadata, { env: f.env("tool-round") });
+	trackHost(t, first.pid);
+	try {
+		await turn(first, "thinking-off");
+		await first.request("configure", { thinkingLevel: "high" });
+		await turn(first, "thinking-high", "high");
+		process.kill(first.pid, "SIGTERM");
+		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	} finally { await first.close(); }
+	const second = await acquireHost(f.metadata, { env: f.env("tool-round") });
+	trackHost(t, second.pid);
+	try {
+		assert.notEqual(second.pid, first.pid, "the next turn uses a new host process");
+		await turn(second, "thinking-high-after-restart", "high");
+		await second.request("configure", { thinkingLevel: "off" });
+		await turn(second, "thinking-off-after-restart");
+	} finally { await second.close(); }
 });

@@ -146,10 +146,17 @@ does not substitute ordinary execution for that missing capability. An extension
 that fails to import or whose factory throws is named in the same places as
 `failed`, with its path and a one-line error of at most 240 characters.
 
-Model requests carry the storage identity as their session ID and the
-configured transport, as an ordinary session's requests do. Providers that key
-prompt caches by session, such as OpenAI Codex, therefore reuse cached context
-across an agent's turns; forks in one storage share that key and their prefix.
+Each conversation has its own persisted provider session ID, separate from the
+storage identity. Durable supplies this UUID on model requests. It stays stable
+across turns, tool rounds, host restarts, reset, compaction, and model changes.
+A fork or child receives a fresh ID, so its first request does not reuse the
+parent's provider session key. Providers such as OpenAI Codex derive prompt-cache
+keys and session headers from this ID; cache reuse remains provider-dependent.
+
+Requests also carry the configured transport and thinking level as `reasoning`,
+with `reasoning` absent when the level is `off`. Pi AI resolves the model's
+`samplingParamsByThinkingLevel` overrides for `openai-completions`,
+`openai-responses`, and `azure-openai-responses` requests.
 
 The host supplies:
 

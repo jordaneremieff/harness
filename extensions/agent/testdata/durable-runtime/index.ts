@@ -14,6 +14,7 @@
  *   - `effect`: request `fixture-effect`, which appends the effect file and
  *     then blocks. The test kills the host after the effect.
  *   - `answer`: answer every model request with final text and mark `answered`.
+ *   - `tool-round`: read the fixture input before the final answer on each turn.
  *   - `spawn`: the owner calls `agent_spawn` for `DURABLE_TEST_CHILD_CWD`, the
  *     child answers `CHILD_RESULT`, and the owner marks `delivered` when the
  *     routed follow-up arrives.
@@ -42,7 +43,7 @@ const fixtureModel: Model<"openai-completions"> = {
 	name: "Durable runtime fixture model",
 	api: "openai-completions",
 	baseUrl: "https://invalid.test",
-	reasoning: false,
+	reasoning: true,
 	input: ["text"],
 	contextWindow: 128000,
 	maxTokens: 4096,
@@ -63,9 +64,16 @@ function mark(name: string): void {
 	});
 }
 
-/** Append one provider request's session options, for the prompt-cache affinity test. */
-function recordSessionOptions(options: { readonly sessionId?: string; readonly transport?: string } | undefined): void {
-	appendFileSync(join(controlDir(), "session-options.jsonl"), `${JSON.stringify({ sessionId: options?.sessionId ?? null, transport: options?.transport ?? null })}\n`);
+interface RequestOptions {
+	readonly sessionId?: string;
+	readonly transport?: string;
+	readonly reasoning?: unknown;
+	readonly signal?: AbortSignal;
+}
+
+/** Record provider-boundary options without credentials or abort signals. */
+function recordSessionOptions(options: RequestOptions | undefined): void {
+	appendFileSync(join(controlDir(), "session-options.jsonl"), `${JSON.stringify({ sessionId: options?.sessionId ?? null, transport: options?.transport ?? null, reasoning: options?.reasoning })}\n`);
 }
 
 function message(content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]): AssistantMessage {
@@ -125,11 +133,14 @@ function spawn(context: TranscriptContext) {
 	return completed([{ type: "text", text: "PRIMARY_DONE" }], "stop");
 }
 
-function stream(_model: unknown, context: TranscriptContext, options?: { readonly sessionId?: string; readonly transport?: string; readonly signal?: AbortSignal }) {
+function stream(_model: unknown, context: TranscriptContext, options?: RequestOptions) {
 	recordSessionOptions(options);
 	const mode = process.env.DURABLE_TEST_MODE ?? "answer";
 	if (mode === "request") return pending(options?.signal);
 	if (mode === "spawn") return spawn(context);
+	if (mode === "tool-round" && context.messages.at(-1)?.role !== "toolResult") {
+		return completed([{ type: "toolCall", id: `read-${context.messages.length}`, name: "read", arguments: { path: join(controlDir(), "input.txt") } }], "toolUse");
+	}
 	if (mode === "effect" && !context.messages.some((item) => item.role === "toolResult")) {
 		mark("tool-called");
 		return completed([{ type: "toolCall", id: "fixture-effect-call", name: "fixture-effect", arguments: { tag: "one" } }], "toolUse");
