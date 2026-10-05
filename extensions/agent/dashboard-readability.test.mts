@@ -81,9 +81,9 @@ it("selected status keeps live usage and receipts separate from conversation and
 		const status = lines.slice(1, 5).map((line) => line.slice(dashboardGeometry(160, 45, 3).rosterWidth + 1)).join("\n");
 		assert.doesNotMatch(status, /LIVE|RETAINED|Earlier messages available|Roster/);
 		assert.match(status, /● Working/);
-		assert.match(status, /Model +model · high · test/);
-		assert.match(status, /Context +160\/1.0k \(16%\)/);
-		assert.match(status, /Tokens +140 in · 20 out/);
+		assert.match(status, /test\/model · high/);
+		assert.match(status, /160\/1.0k \(16%\) ctx/);
+		assert.match(status, /140 in · 20 out/);
 		assert.doesNotMatch(status, /Message admitted/);
 		assert.match(lines.at(-2) ?? "", /╰─ Message admitted/);
 	} finally { f.ui.dispose(); }

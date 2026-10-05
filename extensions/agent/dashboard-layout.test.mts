@@ -158,10 +158,10 @@ for (const width of [80, 140]) {
 			const paneX = width >= 100 ? dashboardGeometry(width, 32, 3).rosterWidth + 1 : 0;
 			const pane = () => render().map((line) => line.slice(paneX));
 			const lines = pane();
-			const model = lines.findIndex((line) => /Model +model/.test(line));
+			const model = lines.findIndex((line) => /test\/model · high/.test(line));
 			const composer = lines.findIndex((line) => line.includes("╭─ idle · send"));
 			assert.ok(model > 0 && model < composer);
-			assert.match(lines[model + 1] ?? "", /Context/);
+			assert.match(lines[model + 1] ?? "", /\$0\.42/);
 			assert.equal(lines[composer - 1]?.trim(), "", "output has bottom padding");
 			assert.match(lines[composer + 1] ?? "", /^│.*│$/);
 			assert.match(lines.at(-2) ?? "", /^╰─+╯$/);

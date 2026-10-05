@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { fixture, source, row, page, turn, deferred, conversationFrame } from "./dashboard-test-fixture.mts";
 import { agentState } from "./dashboard-state.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
+import { dashboardGeometry } from "./dashboard-layout.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -335,7 +336,7 @@ it("a created branch outside the published roster never retains the source as it
 		f.ui.handleInput("\r");
 		await turn();
 		assert.equal(f.ui.navigation.screen, "console");
-		assert.match(f.ui.render(80).join("\n"), /\$\?/);
+		assert.doesNotMatch(f.ui.render(80).join("\n"), /\$\?/);
 		assert.doesNotMatch(f.ui.render(80).join("\n"), /test\/model · high/);
 		f.ui.handleInput("branch instruction");
 		f.ui.handleInput("\r");
@@ -516,7 +517,7 @@ it("new agent selects its task and starting conversation before host readiness",
 			assert.doesNotMatch(screen, /retained/);
 			assert.match(screen, /Write the startup note/);
 			assert.match(screen, /starting · send · test\/model · high/);
-			assert.match(screen, /Model +model · high · test[\s\S]*Context/);
+			assert.match(screen, /test\/model · high/);
 			assert.doesNotMatch(
 				screen,
 				/Conversation unavailable|Unavailable|Attention|need attention|Message two|model \?|reasoning \?/,
@@ -550,7 +551,7 @@ it("a busy live frame updates the header, roster, and footer together", async ()
 		const screen = f.ui.render(140).join("\n");
 		assert.match(screen, /working · steer at next step/);
 		assert.match(screen, /Working/);
-		assert.match(screen, /Model +model · high · test[\s\S]*Context/);
+		assert.match(screen, /test\/model · high/);
 		assert.doesNotMatch(screen, /Done|0 working/);
 		f.ui.handleInput("/");
 		assert.match(f.ui.render(140).join("\n"), /● Working/);
@@ -584,7 +585,7 @@ it("a late cold snapshot error never replaces a live conversation", async () => 
 		fail(new Error("ENOENT: source was absent before the host started"));
 		await turn();
 		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /Context/);
+		assert.match(screen, /test\/model · high/);
 		assert.match(screen, /Live task/);
 		assert.doesNotMatch(screen, /Conversation unavailable|ENOENT/);
 	} finally {
@@ -644,7 +645,7 @@ it("a retained conversation reattaches and rereads when a stopped host restarts"
 	const f = fixture(80, 24, observed);
 	await turn();
 	await turn();
-	assert.match(f.ui.render(80).join("\n"), /Context/);
+	assert.match(f.ui.render(80).join("\n"), /test\/model · high/);
 	assert.match(f.ui.render(80).join("\n"), /Stored task/);
 	rosterChange();
 	t.mock.timers.tick(250);
@@ -756,7 +757,7 @@ it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc re
 	assert.equal(releases, 1);
 	const screen = f.ui.render(80).join("\n");
 	assert.match(screen, /Child/);
-	assert.match(screen, /\$\?/);
+	assert.doesNotMatch(screen, /\$\?/);
 	f.ui.handleInput("\x1b");
 	assert.equal(f.ui.navigation.screen, "roster");
 	f.ui.dispose();
@@ -787,6 +788,21 @@ for (const width of [80, 164]) {
 			assert.equal(lookups.length, 3);
 			assert.match(screen, /160 ctx/);
 			assert.doesNotMatch(screen, /8% ctx|2.0k/);
+		} finally { f.ui.dispose(); }
+	});
+}
+
+for (const width of [80, 164]) {
+	it(`detail header omits empty fact lines at ${width}`, async () => {
+		const f = fixture(width, 30, source([row("one", { state: "idle", model: undefined, cost: undefined })]));
+		try {
+			await turn();
+			const lines = f.ui.render(width).map(stripVTControlCharacters);
+			const paneX = width >= 100 ? dashboardGeometry(width, 30, 3).rosterWidth + 1 : 0;
+			const titleY = width >= 100 ? 1 : 5;
+			assert.match(lines[titleY], /one.*Idle/);
+			assert.match(lines[titleY + 1].slice(paneX), /^─+$/);
+			assert.doesNotMatch(lines.slice(titleY, titleY + 2).map((line) => line.slice(paneX)).join("\n"), /Model|Tokens|Context|Cost|\?/);
 		} finally { f.ui.dispose(); }
 	});
 }

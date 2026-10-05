@@ -1269,7 +1269,8 @@ export class AgentDashboard implements Component, Focusable {
 		const state = truncateToWidth(`${appearance.glyph} ${appearance.label}${activity}`, Math.floor(width / 2), "…");
 		const name = this.theme.bold(this.theme.fg("text", titleOf(row)));
 		const lines = [`${fitLine(name, Math.max(1, width - visibleWidth(state) - 2))}  ${this.theme.fg(appearance.color, state)}`];
-		lines.push(...console.footer(width, window).split("\n"));
+		const facts = console.footer(width, window);
+		if (facts) lines.push(...facts.split("\n"));
 		const reason = attentionReason(row);
 		if (reason) lines.push(this.theme.fg("error", reason));
 		if (console.warning) lines.push(this.theme.fg("warning", console.warning));

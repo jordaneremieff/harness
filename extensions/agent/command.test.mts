@@ -100,7 +100,7 @@ it("the dashboard gets its context window and session figures from the current p
 		const text = stripVTControlCharacters(dashboard.render(160).join("\n"));
 		assert.deepEqual(lookups, [["test", "model"]]);
 		assert.equal(reads, 1);
-		assert.match(text, /Context +163k\/1.0M \(16%\)/);
+		assert.match(text, /163k\/1.0M \(16%\) ctx/);
 		assert.match(text, /Agents: 1\/1 active · ~\$0.42/);
 	} finally { dashboard?.dispose(); finish(); await opened; }
 });

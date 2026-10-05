@@ -888,7 +888,10 @@ primary model registry supplies the context window once per render; the detail
 header and editor caption share that value. An unknown model window stays
 unknown. A live frame adds cumulative input/output tokens from its usage
 ledger, including cached input. An unknown window shows only the known context
-count. The header keeps unknown values explicit.
+count. The detail header shows a muted `provider/model · level` subheading,
+then known context, input/output, and dollar cost. It omits unknown facts,
+placeholder values, and redundant `Model`, `Tokens`, `Context`, or `Cost` prefixes.
+Identifiers shorten only at the available render width.
 
 The native editor caption shows the target's state and delivery mode, followed
 by known provider/model, thinking level, context use, and cost. It omits absent
