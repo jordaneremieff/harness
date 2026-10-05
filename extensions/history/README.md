@@ -1,10 +1,14 @@
 # History
 
-`history_search` and `history_read` retrieve raw evidence from the current Pi
-session through its read-only session manager. They do not rebuild model
-context, edit entries, open session files, or search other sessions.
+In ordinary Pi sessions, `history_search` and `history_read` retrieve raw
+evidence through the current session's read-only session manager. They do not
+rebuild model context, edit entries, open session files, or search other sessions.
 
 ## Use
+
+The examples below use ordinary Pi session records. For native Pi Durable
+sessions, see [Durable agents](#durable-agents) for committed ancestry, entry
+schemas, and visibility differences.
 
 1. Call `history_search` with a literal, case-sensitive `query`. Omit `query`
    for a bounded entry listing, including summary navigation IDs.
@@ -282,8 +286,8 @@ model-issued call for each tool, checks the declared replay class, and compares
 repeated pinned pages across growing entries. Repository gates remain a
 separate evidence layer.
 
-The adapter uses the public `ExtensionAPI` and `ExtensionContext` contracts.
-The implementation uses only `getSessionId`, `getLeafId`, and `getEntry`.
+The ordinary adapter uses the public `ExtensionAPI` and `ExtensionContext` contracts.
+Its session-manager access uses only `getSessionId`, `getLeafId`, and `getEntry`.
 Current installed Pi declarations and implementation define the entry shape
 and lookup behavior; the extension does not read raw session JSONL or implement
 another session format.
