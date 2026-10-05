@@ -112,6 +112,27 @@ it("clears a native retry after the next attempt settles the same exact input", 
 	} finally { await host.close(); }
 });
 
+it("recovers through explicit abort, idle configuration, and a new exact input without changing the old result", { timeout: 15000 }, async (t) => {
+	const storagePath = join(fixtureRoot(t), "manual-recovery.sqlite");
+	const error = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "429 Weekly/Monthly Limit Exhausted" };
+	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([error, answerMessage("continued task")]), fixtureRegistry()), settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } } }, BACKGROUND_CONTEXT);
+	try {
+		let ready!: () => void; const retryReady = new Promise<void>((resolve) => { ready = resolve; });
+		const stop = host.harness.subscribeCommits(() => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
+		const original = await host.submit({ message: "ordinary task", requestId: "original-task" });
+		await retryReady; stop();
+		await assert.rejects(host.request("configure", { thinkingLevel: "high" }), /busy/u);
+		await host.request("abort", {});
+		assert.equal((await host.wait(original.submissionId, BACKGROUND_CONTEXT)).status, "unanswered");
+		await host.request("configure", { model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "high" });
+		const continued = await host.submit({ message: "Continue the original task with the retained brief.", requestId: "continued-task" });
+		assert.notEqual(continued.submissionId, original.submissionId);
+		assert.equal((await host.wait(continued.submissionId, BACKGROUND_CONTEXT)).status, "done");
+		assert.equal((await host.wait(original.submissionId, BACKGROUND_CONTEXT)).status, "unanswered");
+		assert.deepEqual(await host.request("await-state", { results: [{ sessionId: host.storageId, submissionId: continued.submissionId, requestId: "continued-task" }] }), {});
+	} finally { await host.close(); }
+});
+
 it("runs a durable task and retains its answer, source IDs, and usage across reopen", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const first = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
