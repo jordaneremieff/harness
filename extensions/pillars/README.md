@@ -1,10 +1,15 @@
 # Pillars access
 
-The extension makes the existing Pillars corpus directly accessible to agents
-and the operator. It also records bounded read-callback evidence. The `pillars`
-tool is the single consultation surface: it carries the WHEN triggers that tell
-the model when to consult the corpus, and it reads the
-[corpus governance](../../pillars/GOVERNANCE.md) directly.
+The extension makes the Pillars corpus directly accessible to agents and the
+operator. The `pillars` tool is the single consultation surface: it reads current
+source and carries the conditions that tell the model when to consult the corpus.
+It reads [corpus governance](../../pillars/GOVERNANCE.md) directly rather than
+adding a separate doctrine procedure.
+
+`pillars_usage` reports bounded access evidence: recorded source requests and
+results, not proof that an agent applied the guidance or that it was effective.
+The `/pillars` command provides source reads, access-evidence inspection, and
+judgment tasks for the operator.
 
 ## Check work, derive candidates, or review guidance
 
@@ -163,13 +168,12 @@ text exactly and rejects invalid input without echoing it.
 After a successful source read, the extension sends a native assessment task for
 the ordinary model continuation. Pi delivers that task after the tool results
 in the current batch. The source JSON, digest, pagination, and error contract
-remain unchanged; the task is a separate message. It asks the agent to apply
-relevant Pillars to the proposal, correct affected work, and complete the
-already-authorized task. Existing consultation rules still apply, including use
-of relevant bodies already in context when sufficient. The task requests no
-separate verdict or doctrine recital unless the operator asks for one. It labels
-the draft as agent-authored data, not an operator request, new doctrine, or
-permission. The shared correction and authority text also serves `/pillars check`.
+remain unchanged; the task is a separate message. It applies the same
+[correction and authority boundaries](#check-work-derive-candidates-or-review-guidance)
+as `/pillars check`. Existing consultation rules still apply, including use of
+relevant bodies already in context when sufficient. The task requests no separate
+verdict or doctrine recital unless the operator asks for one. It labels the draft
+as agent-authored data, not an operator request, new doctrine, or permission.
 
 The task uses `sendMessage` with `triggerTurn:false`; the extension starts no
 additional model turn and owns no assessment queue, pending state, or context
@@ -203,10 +207,6 @@ with an absolute path; a relative value fails closed rather than resolving
 against the session directory. The extension does not guess a corpus directory,
 depend on the registry extension, or scan session history. It loads the bounded
 inventory and canonical targets, with no full-corpus body cache.
-
-The `pillars` tool is the single consultation surface. It carries the WHEN
-triggers in its description and prompt guidelines, and it points to governance.
-It removes manual path navigation; it does not add another doctrine procedure.
 
 The extension has a persistent worktree and an explicit local entrypoint.
 Follow [the worktree procedure](../../docs/conventions/worktrees.md) for local
