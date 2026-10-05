@@ -1165,6 +1165,22 @@ Ordinary records retain no raw argument or result payload by default. Command ca
 keeps its separately bounded best-effort secret redaction. Preview and explicit
 control artifacts are not telemetry payload capture.
 
+[redact.ts](redact.ts) removes recognized credentials from recorded command text
+before persistence. Sensitive assignments, quoted JSON fields, credential flags,
+and recognizable token shapes remain redacted. Colon labels require a structural
+text boundary: an optionally indented physical line start, or the start of a
+`-H`/`--header` argument. Header arguments support separate and attached short
+forms, separate and equals long forms, and quoted or unquoted values. Inline
+prose such as `On authorization: send the task to the worker` and
+`The secret: use small batches for review` remains unchanged unless another
+recognized credential shape occurs in it.
+
+These are text patterns, not shell parsing or changes to execution policy.
+Whole-line prose beginning with a sensitive colon label, or prose containing
+explicit header-argument syntax, remains ambiguous and receives conservative
+redaction. Arbitrary unlabelled secrets and unsupported syntax are not guaranteed
+to be removed.
+
 Telemetry failure stops persistence and reports health without stopping approved
 rules, corrections, or counters. A successful policy decision does not prove its
 record reached disk. Rule-authority health remains a separate boundary.

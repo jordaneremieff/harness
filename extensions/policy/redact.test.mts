@@ -20,6 +20,36 @@ describe("redactCommand", () => {
 		for (const command of commands) assert.equal(redactCommand(command), command);
 	});
 
+	it("keeps colon labels inside recorded prose unchanged", () => {
+		const commands = [
+			"printf 'On authorization: send the task to the worker'",
+			"printf 'The secret: use small batches for review'",
+			'printf "Use password: follow the documented setup"',
+			"printf 'authorization: send the task to the worker'",
+			"echo The token: use the next step",
+			"curl -H 'On authorization: send the task to the worker' https://host",
+			"tool --header-note 'The secret: use small batches for review'",
+		];
+		for (const command of commands) assert.equal(redactCommand(command), command);
+	});
+
+	it("does not extend a colon field across physical lines", () => {
+		const commands = [
+			"password:\nKeep the source intact.",
+			"password\n: Keep the source intact.",
+			"curl -H 'Authorization:\nKeep the source intact.' https://host",
+		];
+		for (const command of commands) assert.equal(redactCommand(command), command);
+	});
+
+	it("still removes recognizable tokens inside prose", () => {
+		const token = `ghp_${"ABCDEFGHIJKLMNOPQRST"}`;
+		assert.equal(
+			redactCommand(`printf 'On authorization: send ${token} to the worker'`),
+			`printf 'On authorization: send ${REDACTED} to the worker'`,
+		);
+	});
+
 	it("redacts sensitive assignments without swallowing later query fields or quotes", () => {
 		assert.equal(
 			redactCommand("API_TOKEN=fake-value curl https://host/x"),
@@ -68,6 +98,20 @@ describe("redactCommand", () => {
 			redactCommand("curl -H 'Cookie: foo=fake-value' https://host"),
 			`curl -H 'Cookie: ${REDACTED}' https://host`,
 		);
+	});
+
+	it("redacts colon fields at structural boundaries", () => {
+		const cases = new Map([
+			["  password: fake-value\n\tapi_key: fake-value", `  password: ${REDACTED}\n\tapi_key: ${REDACTED}`],
+			["curl -H'Cookie: foo=fake-value' https://host", `curl -H'Cookie: ${REDACTED}' https://host`],
+			["curl --header 'X-Api-Key: fake-value' https://host", `curl --header 'X-Api-Key: ${REDACTED}' https://host`],
+			[
+				'curl --header="Authorization: fake-value" https://host',
+				`curl --header="Authorization: ${REDACTED}" https://host`,
+			],
+			["curl -H X-Api-Key:fake-value https://host", `curl -H X-Api-Key:${REDACTED} https://host`],
+		]);
+		for (const [command, expected] of cases) assert.equal(redactCommand(command), expected);
 	});
 
 	it("redacts URL credentials and keeps a present user", () => {

@@ -26,6 +26,19 @@ describe("startCall", () => {
 		assert.equal(call.at, "2026-09-01T10:00:00.000Z");
 	});
 
+	it("retains prose and removes credentials in the completed telemetry record", () => {
+		const command =
+			"printf 'On authorization: send the task to the worker; The secret: use small batches for review'; API_TOKEN=fake-value curl -H 'X-Api-Key: fake-value' https://host";
+		const expected =
+			"printf 'On authorization: send the task to the worker; The secret: use small batches for review'; API_TOKEN=[redacted] curl -H 'X-Api-Key: [redacted]' https://host";
+		const pending = startCall("bash", "prose", { command });
+		assert.equal(pending.sourceText, command);
+		assert.equal(pending.captured, expected);
+		const record = finishCall(pending, {}, facts, "observe");
+		assert.equal(record.captured, expected);
+		assert.equal("sourceText" in record, false);
+	});
+
 	it("stores no input for a tool without a declared capture", () => {
 		const call = startCall("read", "c2", { path: "/etc/hosts" });
 		assert.equal(call.captured, undefined);

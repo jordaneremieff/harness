@@ -71,9 +71,11 @@ function redactJsonValues(text: string): string {
 }
 
 function redactHeaders(text: string): string {
-	const pattern = /(\b([A-Za-z_][A-Za-z0-9_.-]*)\s*:\s*)((?:[^"'\n]*)(?=["'])|[^\s"';&|]+)/g;
-	return text.replace(pattern, (match, label: string, name: string) =>
-		isSensitiveName(name) ? `${label}${PLACEHOLDER}` : match,
+	// Colon labels need a field or header-argument boundary, not a word inside prose.
+	const pattern =
+		/(^[ \t]*|(?:^|[ \t])(?:-H[ \t]*|--header(?:[ \t]+|=))["']?)(\b([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*:[ \t]*)((?:[^"'\n]*)(?=["'])|[^\s"';&|]+)/gm;
+	return text.replace(pattern, (match, prefix: string, label: string, name: string) =>
+		isSensitiveName(name) ? `${prefix}${label}${PLACEHOLDER}` : match,
 	);
 }
 
