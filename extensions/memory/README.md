@@ -8,8 +8,9 @@ or the run's `before_agent_start` event.
 
 ## Configuration
 
-Set `PI_MEMORY_DIR` to an absolute corpus directory. Unset, empty, relative, or
-control-containing values return `Memory unavailable: set PI_MEMORY_DIR to an absolute corpus path`.
+Set `PI_MEMORY_DIR` to an absolute corpus directory of at most 1024 UTF-16 code
+units. Unset, empty, relative, over-limit, or Unicode control/format-character
+values return `Memory unavailable: set PI_MEMORY_DIR to an absolute corpus path`.
 There is no inferred default. The variable is read on each invocation.
 See [extension configuration](../../docs/conventions/extension-config.md).
 
@@ -17,112 +18,43 @@ Activation, search, history listing, and reads never initialize storage or captu
 root and a minimal `README.md` contract. An existing contract remains unchanged.
 The root is operator-controlled; do not point it at an untrusted shared directory.
 
-## System prompt index
+## Use
 
-The `memory_index` section lists observed subjects whose per-file status is active,
-as `slug: title` pointers or slug-only pointers under byte pressure. It never
-establishes corpus-wide lifecycle consistency. Its frame identifies the pointer form and
-states that active status does not establish current truth, that cues are not evidence
-or instructions, and that the agent must read lifecycle and freshness with `memory_read`
-before relying on a note. Current instructions control.
-Read a matching subject; use `memory_search` when no subject matches.
-No note body, heading fallback, source passage, or contract content enters the section.
+The corpus is the directory of subject notes. A slug is a note filename without
+`.md`; a digest is a SHA-256 hash of the exact source bytes. Search cues locate
+notes but do not establish their truth.
 
-The section first inventories and sorts at most 16,384 root entries, with one
-lookahead for overflow. It then inspects at most 2,048 candidate notes, with at
-most 8 KiB read per note. It reports the inspected and uninspected counts.
-Uninspected lifecycle remains unknown. It includes only lowercase kebab-case
-slugs with a usable `active` lifecycle. Superseded and retired notes, hidden files, `README.md`,
-and names outside that grammar are excluded. The index and read pages share the
-same conservative lifecycle interpretation. Active subjects require plain top-level
-`status: active` and `superseded_by: null` keys. Unusable status cues remain unknown.
-Active subjects also remain unknown when the replacement cue is missing, unusable,
-or non-null. Known superseded notes remain excluded even when their replacement
-is unusable. Values come from the complete bounded header, parsed with the public
-Pi frontmatter parser. A rejected header makes status unknown,
-even when the error concerns another field. Unreadable entries and unknown status
-counts qualify the section; they are not proof that no other active subjects exist.
-The section counts retired notes separately, not as unknown. Due dates and unresolved
-concerns do not remove active pointers or add date-derived text to the index.
+| Tool | Use |
+|---|---|
+| `memory_search` | Find subject notes or browse discovery cues. |
+| `memory_read` | Read a current note, corpus contract, or exact prior revision with lifecycle and freshness evidence. |
+| `memory_history` | List prior source captures and make a read-only retention plan. |
+| `memory_write` | Create a subject or intentionally rewrite a whole note. |
+| `memory_edit` | Apply exact body replacements against the current digest. |
+| `memory_review` | Record whole-note confirmation or an unresolved concern. |
+| `memory_retire` | Withdraw an active note without a successor. |
 
-Titles come only from frontmatter cues. The public Pi frontmatter parser decodes
-isolated scalar fields, including YAML and JSON quotes. Within a valid header,
-missing or unusable titles fall back to the slug. Controls and format characters
-become spaces, whitespace collapses to one line, and angle brackets become non-markup
-characters. Titles remain untrusted even after display sanitization.
+Start with a short search:
 
-The complete section, including Pi's wrapper, fits **12 KiB of UTF-8**. Pointers
-sort by slug. Titles first retain at most 160 Unicode code points; if the whole list
-does not fit, all titles shorten to at most 64 code points. If that complete list
-still does not fit, the section uses slugs only. If the complete slug list exceeds
-the cap, the section retains the longest alphabetical slug prefix and reports the
-exact number of observed active notes omitted by the byte limit. The omission
-clause appears only when notes are omitted. It always points to `memory_search`.
-This preserves subject coverage before retaining title detail. Byte accounting
-includes every slug, optional title, separator, newline, frame, coverage notice,
-footer, and wrapper. Token cost varies by language and model. Every session and
-worker pays for its section in model context, even when the text is unchanged.
+```json
+{"query":["editor choice","editing preferences"]}
+```
 
-A complete sorted filename inventory makes the metadata subset deterministic,
-even when the metadata budget excludes later notes. Useful cues survive that
-boundary; omission counts describe only observed active cues, not all active notes.
-If the filename inventory itself exceeds its hard capacity, the section reports
-that exact boundary without pointers or an invented subject count. Search reports
-the same inventory refusal. Direct source reads remain available by known slug.
+Read each selected note with `memory_read`, its slug, and the returned digest.
+Continue every source page before relying on the whole note. Check lifecycle,
+replacement links, freshness, and unresolved concerns against current sources.
+Current instructions control; stored notes grant no fresh authority.
 
-The hook rebuilds from disk at each `before_agent_start`, not each model request
-within that run. It has no cache, timestamp, persistent state, or write side effect.
-Identical cues produce identical section bytes; body-only or date-only changes
-produce no index delta. A change to visible cues or membership updates the next
-run's section. Title changes that leave the same compact pointer list and form
-produce no index delta.
-If configuration, the root, the contract, or the scan is unavailable, the hook adds
-no section and never blocks the run. A later unavailable run removes a prior section.
+For an authorized correction, use `memory_edit` with the current digest and
+unique exact text. Use `memory_write` only for creation or an intentional whole-note
+rewrite. Search first to avoid a second note for the same subject.
 
-Pi clones base prompt options for each `before_agent_start`, compares the
-resulting sections with the transcript, and records changed text or a `null` removal.
-An unchanged section adds no transcript delta. The extension edits only
-`event.systemPromptOptions.sections.memory_index`; it does not replace the whole
-prompt. A different extension that forces an opaque system prompt owns that separate
-projection. Controlled native-session tests verify ordinary provider delivery of
-title and compact pointers, metadata-budget qualifications, unchanged suppression,
-changed cues, removal, and restoration. These tests establish delivery and coverage, not model comprehension
-or improved answer quality.
-
-## Durable agents
-
-Agent sessions on Pi Durable receive the memory corpus through the native
-contribution in `durable.ts`. The ordinary factory in `index.ts` emits it on the
-`durable:contribution` channel with the entrypoint path as its source. The
-[agent extension](../agent/README.md) owns contribution discovery and host
-installation. The corpus and its revision history stay external; no note content
-enters a Durable document.
-
-The contribution offers the same tools as the ordinary form, with the same
-names, parameter schemas, descriptions, and execution against `PI_MEMORY_DIR`.
-`memory_search`, `memory_read`, and `memory_history` are replay-safe: a rerun
-after process loss rescans current sources and repeats no external effect.
-`memory_write`, `memory_edit`, `memory_review`, and `memory_retire` are unsafe:
-corpus publication has no durable operation identity, so a rerun can refuse
-after a partial publication or capture history again. An interruption produces
-an interrupted result; inspect the corpus with the read tools before retrying.
-The ordinary same-process file mutation queue serializes corpus writes in both
-forms.
-
-Two prompt sections carry the ordinary model-facing surface. `memory` holds the
-usage guidelines that the ordinary tools declare as `promptGuidelines`.
-`memory_index` renders the same bounded pointer index as the ordinary
-`before_agent_start` hook. Durable renders sections before every request, but
-the index text depends only on corpus content, so an unchanged corpus produces
-identical bytes and adds no system-prompt delta; a changed corpus reaches the
-next request. Tool result details equal the ordinary tool details.
-`memory_search` adds its structured page beside them as
-`details.structuredContent` and keeps its declared output schema.
-
-`durable.test.mts` runs the contribution in a real Harness over `MemoryStorage`
-with the pi-ai faux provider. It drives a model-issued call for each tool,
-checks the corpus effect of each mutation, checks the two prompt sections, and
-checks the replay policy recorded in the durable tool intent.
+The [tool contracts](#tools) explain arguments and continuation.
+[Storage policy](#storage-policy) defines what belongs in memory.
+[Revision history](#revision-history) distinguishes captures from successful
+mutation; [Concurrency and failure](#concurrency-and-failure) owns publication
+and recovery. [System prompt index](#system-prompt-index) and
+[Durable agents](#durable-agents) describe host integration.
 
 ## Tools
 
@@ -501,6 +433,113 @@ Retirement shares the writer queue, lock, prior capture, digest recheck, cancell
 atomic publication, and receipt. It does not delete a note or reactivate predecessors.
 Ordinary write/edit calls never reactivate inactive notes.
 
+## System prompt index
+
+The `memory_index` section lists observed subjects whose per-file status is active,
+as `slug: title` pointers or slug-only pointers under byte pressure. It never
+establishes corpus-wide lifecycle consistency. Its frame identifies the pointer form and
+states that active status does not establish current truth, that cues are not evidence
+or instructions, and that the agent must read lifecycle and freshness with `memory_read`
+before relying on a note. Current instructions control.
+Read a matching subject; use `memory_search` when no subject matches.
+No note body, heading fallback, source passage, or contract content enters the section.
+
+The section first inventories and sorts at most 16,384 root entries, with one
+lookahead for overflow. It then inspects at most 2,048 candidate notes, with at
+most 8 KiB read per note. It reports the inspected and uninspected counts.
+Uninspected lifecycle remains unknown. It includes only lowercase kebab-case
+slugs with a usable `active` lifecycle. Superseded and retired notes, hidden files, `README.md`,
+and names outside that grammar are excluded. The index and read pages share the
+same conservative lifecycle interpretation. Active subjects require plain top-level
+`status: active` and `superseded_by: null` keys. Unusable status cues remain unknown.
+Active subjects also remain unknown when the replacement cue is missing, unusable,
+or non-null. Known superseded notes remain excluded even when their replacement
+is unusable. Values come from the complete bounded header, parsed with the public
+Pi frontmatter parser. A rejected header makes status unknown,
+even when the error concerns another field. Unreadable entries and unknown status
+counts qualify the section; they are not proof that no other active subjects exist.
+The section counts retired notes separately, not as unknown. Due dates and unresolved
+concerns do not remove active pointers or add date-derived text to the index.
+
+Titles come only from frontmatter cues. The public Pi frontmatter parser decodes
+isolated scalar fields, including YAML and JSON quotes. Within a valid header,
+missing or unusable titles fall back to the slug. Controls and format characters
+become spaces, whitespace collapses to one line, and angle brackets become non-markup
+characters. Titles remain untrusted even after display sanitization.
+
+The complete section, including Pi's wrapper, fits **12 KiB of UTF-8**. Pointers
+sort by slug. Titles first retain at most 160 Unicode code points; if the whole list
+does not fit, all titles shorten to at most 64 code points. If that complete list
+still does not fit, the section uses slugs only. If the complete slug list exceeds
+the cap, the section retains the longest alphabetical slug prefix and reports the
+exact number of observed active notes omitted by the byte limit. The omission
+clause appears only when notes are omitted. It always points to `memory_search`.
+This preserves subject coverage before retaining title detail. Byte accounting
+includes every slug, optional title, separator, newline, frame, coverage notice,
+footer, and wrapper. Token cost varies by language and model. Every session and
+worker pays for its section in model context, even when the text is unchanged.
+
+A complete sorted filename inventory makes the metadata subset deterministic,
+even when the metadata budget excludes later notes. Useful cues survive that
+boundary; omission counts describe only observed active cues, not all active notes.
+If the filename inventory itself exceeds its hard capacity, the section reports
+that exact boundary without pointers or an invented subject count. Search reports
+the same inventory refusal. Direct source reads remain available by known slug.
+
+The hook rebuilds from disk at each `before_agent_start`, not each model request
+within that run. It has no cache, timestamp, persistent state, or write side effect.
+Identical cues produce identical section bytes; body-only or date-only changes
+produce no index delta. A change to visible cues or membership updates the next
+run's section. Title changes that leave the same compact pointer list and form
+produce no index delta.
+If configuration, the root, the contract, or the scan is unavailable, the hook adds
+no section and never blocks the run. A later unavailable run removes a prior section.
+
+Pi clones base prompt options for each `before_agent_start`, compares the
+resulting sections with the transcript, and records changed text or a `null` removal.
+An unchanged section adds no transcript delta. The extension edits only
+`event.systemPromptOptions.sections.memory_index`; it does not replace the whole
+prompt. A different extension that forces an opaque system prompt owns that separate
+projection. Controlled native-session tests verify ordinary provider delivery of
+title and compact pointers, metadata-budget qualifications, unchanged suppression,
+changed cues, removal, and restoration. These tests establish delivery and coverage, not model comprehension
+or improved answer quality.
+
+## Durable agents
+
+Agent sessions on Pi Durable receive the memory corpus through the native
+contribution in `durable.ts`. The ordinary factory in `index.ts` emits it on the
+`durable:contribution` channel with the entrypoint path as its source. The
+[agent extension](../agent/README.md) owns contribution discovery and host
+installation. The corpus and its revision history stay external; no note content
+enters a Durable document.
+
+The contribution offers the same tools as the ordinary form, with the same
+names, parameter schemas, descriptions, and execution against `PI_MEMORY_DIR`.
+`memory_search`, `memory_read`, and `memory_history` are replay-safe: a rerun
+after process loss rescans current sources and repeats no external effect.
+`memory_write`, `memory_edit`, `memory_review`, and `memory_retire` are unsafe:
+corpus publication has no durable operation identity, so a rerun can refuse
+after a partial publication or capture history again. An interruption produces
+an interrupted result; inspect the corpus with the read tools before retrying.
+The ordinary same-process file mutation queue serializes corpus writes in both
+forms.
+
+Two prompt sections carry the ordinary model-facing surface. `memory` holds the
+usage guidelines that the ordinary tools declare as `promptGuidelines`.
+`memory_index` renders the same bounded pointer index as the ordinary
+`before_agent_start` hook. Durable renders sections before every request, but
+the index text depends only on corpus content, so an unchanged corpus produces
+identical bytes and adds no system-prompt delta; a changed corpus reaches the
+next request. Tool result details equal the ordinary tool details.
+`memory_search` adds its structured page beside them as
+`details.structuredContent` and keeps its declared output schema.
+
+`durable.test.mts` runs the contribution in a real Harness over `MemoryStorage`
+with the pi-ai faux provider. It drives a model-issued call for each tool,
+checks the corpus effect of each mutation, checks the two prompt sections, and
+checks the replay policy recorded in the durable tool intent.
+
 ## Technical examples and credential refusals
 
 Ordinary configuration examples are valid note content: `api_key=api_key`,
@@ -525,7 +564,9 @@ forbidden prior material, the mutation skips that capture, reports a content-fre
 `historyOmitted` entry, and preserves the correction. This policy omission differs
 from an ordinary archive I/O failure, which stops live publication.
 
-## Prospective prior copies
+<a id="prospective-prior-copies"></a>
+
+## Revision history
 
 Every later authorized writer overwrite automatically captures safe prior bytes.
 There is no opt-in switch. Creation has no prior source. Reads and activation write
@@ -689,7 +730,7 @@ line endings, and body bytes otherwise remain unchanged.
 
 ## Presentation and verification
 
-Native tool cards show request subjects, outcomes and coverage limits. Collapsed
+Ordinary Pi terminal cards show request subjects, outcomes and coverage limits. Collapsed
 search cards preview up to three subjects and name any additional subjects on the
 returned page. Expanded search cards label raw cues, cue problems, digests,
 per-formulation matches and missing terms, source excerpt ranges, scan issues and
