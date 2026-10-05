@@ -160,7 +160,7 @@ export class DashboardResize {
 			return;
 		}
 		if (!Number.isSafeInteger(event.x) || !Number.isSafeInteger(event.y)) return;
-		if (this.gesture && (event.type === "move" || event.type === "press")) {
+		if (this.gesture && !this.keyboard && (event.type === "move" || event.type === "press")) {
 			this.cancel();
 			// A new press is evaluated only after the committed layout is rendered again.
 			return { handled: true, render: true };

@@ -110,6 +110,54 @@ function rawDispatcher(component: Component, width: number, height: number, sele
 	if (selection) runtime.handleSelectionMouseEvent = (raw) => { selection.push(raw); };
 	return Object.assign((button: number, x: number, y: number, release = false) => runtime.handleViewportInput(`\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`), { input: (data: string) => runtime.handleViewportInput(data) });
 }
+it("raw pointer motion preserves keyboard resize and its keep click commits", async () => {
+	const saved: DashboardLayout[] = [];
+	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
+	try {
+		await turn(); f.ui.render(164); f.ui.handleInput("r"); f.ui.handleInput("\x1b[C"); f.ui.render(164);
+		const ratio = f.state.layout.rosterRatio;
+		const send = rawDispatcher(f.ui, 164, 44);
+		send(35, 5, 0); f.ui.render(164);
+		assert.equal(f.state.layout.rosterRatio, ratio);
+		send(35, 36, 8); let lines = f.ui.render(164).map(stripVTControlCharacters);
+		assert.match(lines[43] ?? "", /esc cancel/);
+		assert.equal(f.state.layout.rosterRatio, ratio);
+		const x = (lines[43] ?? "").indexOf("enter keep"); assert.ok(x >= 0);
+		send(0, x, 43); lines = f.ui.render(164).map(stripVTControlCharacters);
+		assert.match(lines[43] ?? "", /esc cancel/); assert.equal(f.state.layout.rosterRatio, ratio);
+		send(0, x, 43, true); lines = f.ui.render(164).map(stripVTControlCharacters);
+		assert.deepEqual(saved, [{ rosterRatio: ratio }]); assert.equal(f.state.layout.rosterRatio, ratio);
+		assert.match(lines[43] ?? "", /esc close/); assert.equal(f.ui.navigation.screen, "roster");
+	} finally { f.ui.dispose(); }
+});
+it("raw keyboard footer clicks select, adjust, reset and cancel without ending mode on press", async (t) => {
+	const saved: DashboardLayout[] = [];
+	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
+	try {
+		await turn(); let now = 0;
+		// Distinct single clicks are independent of Pi's double-click time window.
+		t.mock.method(Date, "now", () => { now += 1000; return now; });
+		f.ui.render(164); f.ui.handleInput("r"); f.ui.render(164);
+		const send = rawDispatcher(f.ui, 164, 44);
+		const click = (needle: string) => {
+			const footer = stripVTControlCharacters(f.ui.render(164)[43] ?? "");
+			const x = footer.indexOf(needle); assert.ok(x >= 0, footer);
+			send(35, x, 43); send(0, x, 43); f.ui.render(164); send(0, x, 43, true);
+			f.ui.render(164);
+		};
+		click("→"); assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 37);
+		click("←"); assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 36);
+		click("0 auto"); assert.equal(f.state.layout.rosterRatio, undefined);
+		click("→"); assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 37);
+		click("tab divider"); assert.match(stripVTControlCharacters(f.ui.render(164)[43] ?? ""), /↑↓ height/);
+		click("↑"); assert.equal(f.state.layout.composerRows, 6);
+		click("↓"); assert.equal(f.state.layout.composerRows, 5);
+		click("0 auto"); assert.equal(f.state.layout.composerRows, undefined);
+		click("↑"); assert.equal(f.state.layout.composerRows, 6);
+		click("esc cancel"); assert.deepEqual(f.state.layout, {}); assert.deepEqual(saved, []);
+		assert.equal(f.ui.navigation.screen, "roster"); assert.match(stripVTControlCharacters(f.ui.render(164)[43] ?? ""), /esc close/);
+	} finally { f.ui.dispose(); }
+});
 it("raw SGR drag dispatch reaches the dashboard across rerenders without changing drafts or focus", async () => {
 	const saved: DashboardLayout[] = [];
 	const f = fixture(164, 44, source([row("one"), row("two")]), { saveLayout: (value) => saved.push(value) });
