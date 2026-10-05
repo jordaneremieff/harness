@@ -17,6 +17,7 @@ import { Type, type TSchema } from "typebox";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
+import { dashboardPreferences } from "./dashboard-preferences.ts";
 import { configurationWithApply } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, parseConfigurationArguments } from "./configuration.ts";
 import { createAgentContribution, resolveAgentControlDispatch } from "./durable-agents.ts";
@@ -730,6 +731,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 				return { text: "Message delivered to the effort's primary. Delivery does not prove action." };
 			},
 		},
+		dashboardPreferences(process.env.PI_AGENT_DIR ?? getAgentDir()),
 	);
 	pi.registerCommand("agent", command);
 	pi.registerShortcut("ctrl+alt+g", {

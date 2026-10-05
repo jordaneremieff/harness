@@ -115,14 +115,14 @@ function addHint(
 	input: (data: string) => void,
 ): void {
 	const keys = hint.split(" ", 1)[0];
-	if (keys === "↑↓") {
+	if (keys === "↑↓" || keys === "←→") {
 		mouse.add({
 			x,
 			y,
 			width: 1,
 			height: 1,
 			click: () => {
-				input("\x1b[A");
+				input(keys === "↑↓" ? "\x1b[A" : "\x1b[D");
 			},
 		});
 		mouse.add({
@@ -131,7 +131,7 @@ function addHint(
 			width: 1,
 			height: 1,
 			click: () => {
-				input("\x1b[B");
+				input(keys === "↑↓" ? "\x1b[B" : "\x1b[C");
 			},
 		});
 		return;

@@ -12,13 +12,14 @@ import {
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
+import { DashboardResize } from "./dashboard-resize.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
-import { dashboardGeometry, dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
+import { clamp, MIN_COMPOSER_ROWS, dashboardGeometry, dashboardPaneGeometry, dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
 import { dashboardRecords, rosterLines, activityOf, sessionAppearance, titleOf, attentionReason, needsAttention } from "./dashboard-roster.ts";
 import {
 	agentState,
@@ -27,6 +28,7 @@ import {
 	updateDraft,
 	notifyAgentState,
 	type DashboardState,
+	type DashboardLayout,
 } from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import type { TaskLabel, ConversationFrame } from "./live-frames.ts";
@@ -42,6 +44,7 @@ export interface DashboardResult {
 	sessionId?: string;
 }
 export interface DashboardOperations {
+	saveLayout?(layout: DashboardLayout): void;
 	efforts?(): Promise<EffortAwareness>;
 	messageEffort?(id: string, text: string): Promise<DashboardResult>;
 	sessionFigures?(page: AgentConversationPage): Promise<string>;
@@ -67,6 +70,10 @@ const HELP = [
 	"In fullscreen mode, click rows to select and visible hints to act.",
 	"Click a time to switch its format. Click a message field to write.",
 	"Use the wheel over a pane to scroll. Drag text to select it.",
+	"Drag the roster divider or the composer's small top-right grip to resize.",
+	"Double-click a handle to reset it. Other borders remain decorative.",
+	"r resizes from the roster: Tab chooses a divider, arrows adjust, 0 resets.",
+	"Enter keeps the split. Esc cancels. The split stays across Pi restarts.",
 	"Published omissions have storage rows. Enter reads their full thread directory.",
 	"",
 	"Messages",
@@ -108,6 +115,8 @@ export class AgentDashboard implements Component, Focusable {
 	private efforts?: EffortView;
 	private effortsOpen = false;
 	private readonly mouse = new DashboardMouse();
+	private readonly resize: DashboardResize;
+	private resizeColumns = { roster: 0, detail: 0 };
 	private mouseScreen?: string;
 	private rosterScroll?: number;
 	private rosterStart = 0;
@@ -165,6 +174,10 @@ export class AgentDashboard implements Component, Focusable {
 		this.keys = keys;
 		this.done = done;
 		this.state = state;
+		this.resize = new DashboardResize(state.layout, () => {
+			try { this.operations.saveLayout?.({ ...this.state.layout }); }
+			catch { this.notice = "Layout kept here; restart persistence failed"; }
+		});
 		this.source = source;
 		this.operations = operations;
 		this.surface = surface;
@@ -674,6 +687,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	private async chooseTaskConversation(labels: readonly TaskLabel[]): Promise<void> {
 		const generation = this.navigation.generation;
+		this.resize.clear();
 		this.hidden = true;
 		try {
 			const id = await this.operations.chooseConversation(labels, this.surface);
@@ -758,6 +772,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.notice = undefined;
 		console.state.receipt = undefined;
 		try {
+			this.resize.clear();
 			this.hidden = true;
 			const result = await Promise.resolve().then(() => this.operations.action(choice.name, console.row, this.surface));
 			if (!result) return;
@@ -900,6 +915,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.notice = undefined;
 		if (!matchesKey(data, "up") && !matchesKey(data, "down")) this.rosterOrderLocked = false;
 		const actions: Record<string, () => void> = {
+			r: () => { this.resize.startKeyboard(); },
 			n: () => this.navigation.enter("new"),
 			t: () => this.openThreads(),
 			b: () => this.openEfforts(),
@@ -972,6 +988,8 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	handleInput(data: string): void {
 		if (this.closed) return;
+		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeScreen());
+		if (this.resize.input(data)) { this.redraw(); return; }
 		if (this.effortsOpen) { this.effortInput(data); return; }
 		if (this.navigation.screen === "threads") {
 			if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
@@ -998,7 +1016,9 @@ export class AgentDashboard implements Component, Focusable {
 		if (this.closed || this.hidden || this.mouseScreen !== this.navigation.screen) return;
 		if (this.effortsOpen) return this.efforts?.handleMouse(event);
 		if (this.navigation.screen === "threads") return this.threads?.handleMouse(event);
-		return this.mouse.handle(event);
+		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeScreen());
+		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows) return;
+		return this.resize.handle(event) ?? this.mouse.handle(event);
 	}
 	private mouseSelect(id: string): false | undefined {
 		if (!this.rows.some((row) => row.id === id)) return false;
@@ -1147,7 +1167,14 @@ export class AgentDashboard implements Component, Focusable {
 			? "No agents yet. Start an agent with a task in your own words."
 			: "Roster coverage incomplete";
 	}
+	private resizeValue(): string {
+		return this.resize.selected === "roster" ? `roster ${this.resizeColumns.roster} · detail ${this.resizeColumns.detail}` : `draft ${this.state.layout.composerRows ?? "auto"}`;
+	}
+	private resizeHints(width: number): string {
+		return mouseHints(this.mouse, this.tui.terminal.rows - 1, ["enter keep", "tab divider", this.resize.selected === "roster" ? "←→ width" : "↑↓ height", "0 auto", this.resizeValue()], "esc cancel", width, (data) => this.handleInput(data), this.theme);
+	}
 	private hintLine(width: number): string {
+		if (this.resize.keyboard) return this.resizeHints(width);
 		const screen = this.navigation.screen;
 		const hints: Partial<Record<typeof screen, [string[], string]>> = {
 			console: [["PgUp/PgDn read", "Enter send", "Tab steer/follow-up", "Ctrl+J newline"], "Esc dashboard"],
@@ -1160,6 +1187,7 @@ export class AgentDashboard implements Component, Focusable {
 					[
 						"↑↓ select",
 						"Enter open",
+						...(this.resize.available ? ["r resize"] : []),
 						"b efforts",
 						"Tab message",
 						"t threads",
@@ -1174,6 +1202,7 @@ export class AgentDashboard implements Component, Focusable {
 				? [["b efforts", "Enter new agent", "n new", "t threads", "/ find", "? help"], "Esc close"]
 				: [["b efforts", "n new", "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
 		const [items, back] = hints[screen] ?? normal;
+		if (this.resize.selected) items.unshift(this.resizeValue());
 		return mouseHints(
 			this.mouse,
 			this.tui.terminal.rows - 1,
@@ -1298,23 +1327,49 @@ export class AgentDashboard implements Component, Focusable {
 		const top = Math.round((height - thumb) * (position.first - 1) / Math.max(1, position.total - height));
 		return lines.map((line, index) => fitLine(line, width - 1) + this.theme.fg(index >= top && index < top + thumb ? "scrollbarThumb" : "scrollbarTrack", index >= top && index < top + thumb ? "┃" : "│"));
 	}
+	private sizeComposer(composer: AgentComposer | undefined, maxRows: number): void {
+		if (!composer) return;
+		if (maxRows < MIN_COMPOSER_ROWS) { composer.setViewportRows(); composer.grip = undefined; return; }
+		const requested = this.state.layout.composerRows;
+		composer.setViewportRows(requested === undefined ? undefined : clamp(requested, MIN_COMPOSER_ROWS, maxRows));
+		composer.grip = this.resize.active("composer") ? "active" : this.resize.hover === "composer" ? "hover" : "normal";
+	}
+	private renderComposer(composer: AgentComposer | undefined, width: number, maxRows: number, window?: number): { editor: string[]; maxRows: number } {
+		if (!composer) return { editor: [], maxRows };
+		const render = () => composer.render(width, this.messageLabel(window), "", this.navigation.screen === "new" ? this.notice : this.console?.state.receipt);
+		this.sizeComposer(composer, maxRows);
+		let editor = render();
+		if (composer.autocompleteRows) { maxRows -= composer.autocompleteRows; this.sizeComposer(composer, maxRows); editor = render(); }
+		return { editor, maxRows };
+	}
+	private composerHandle(composer: AgentComposer | undefined, geometry: ReturnType<typeof dashboardGeometry>, paneX: number, paneY: number, headerRows: number, editorRows: number, maxRows: number): void {
+		if (!composer || maxRows < MIN_COMPOSER_ROWS) return;
+		const requested = this.state.layout.composerRows;
+		const value = requested === undefined ? Math.max(MIN_COMPOSER_ROWS, editorRows - 2 - composer.autocompleteRows) : clamp(requested, MIN_COMPOSER_ROWS, maxRows);
+		this.resize.add({ kind: "composer", x: paneX + geometry.conversationWidth - 4, y: paneY + headerRows + geometry.bodyHeight + 2, width: 3, height: 1, value, min: MIN_COMPOSER_ROWS, max: maxRows });
+	}
 	private renderDashboard(width: number, height: number): string[] {
 		const screen = this.navigation.screen;
 		const composer = screen === "new" ? this.newComposer : this.console?.composer;
 		const reserved = screen === "find" ? 1 : 0;
-		const shape = dashboardGeometry(width, height, 0, screen === "console", reserved);
+		const shape = dashboardGeometry(width, height, 0, screen === "console", reserved, 4, this.state.layout);
 		const paneWidth = shape.conversationWidth;
 		const model = screen === "new" ? undefined : this.console?.row.model;
 		const window = model ? this.operations.contextWindow?.(model.provider, model.modelId) : undefined;
 		const header = this.selectedHeader(paneWidth - 2, window).map((line) => ` ${line} `);
-		const editor = composer?.render(paneWidth, this.messageLabel(window), "", screen === "new" ? this.notice : this.console?.state.receipt) ?? [];
-		const geometry = dashboardGeometry(width, height, editor.length, screen === "console", reserved, header.length + 2);
+		const budget = dashboardPaneGeometry(shape.paneHeight, header.length + 2, 0);
+		const { editor, maxRows } = this.renderComposer(composer, paneWidth, budget.composerMaxRows, window);
+		const geometry = { ...shape, ...dashboardPaneGeometry(shape.paneHeight, header.length + 2, editor.length) };
+		this.resizeColumns = { roster: geometry.rosterWidth, detail: geometry.conversationWidth };
 		this.bodyHeight = geometry.bodyHeight;
 		const transcript = this.transcriptLines(paneWidth, geometry.bodyHeight);
 		const pane = [...header, this.conversationBoundary(paneWidth), ...transcript, "", ...editor];
 		const bodyY = 1 + reserved;
 		const paneX = geometry.wide ? geometry.rosterWidth + 1 : 0;
 		const paneY = bodyY + geometry.rosterHeight;
+		if (geometry.wide) this.resize.add({ kind: "roster", x: geometry.rosterWidth - 1, y: bodyY, width: 2, height: geometry.paneHeight, value: geometry.rosterWidth, min: 24, max: width - 1 - 60 });
+		this.composerHandle(composer, geometry, paneX, paneY, header.length, editor.length, maxRows);
+		this.resize.end();
 		this.mouse.add({
 			x: paneX, y: paneY + header.length, width: paneWidth, height: geometry.bodyHeight + 1,
 			click: () => {
@@ -1338,7 +1393,7 @@ export class AgentDashboard implements Component, Focusable {
 			const roster = this.rosterViewport(geometry.rosterWidth - 1, geometry.paneHeight, false, bodyY);
 			const last = Math.max(0, roster.length - 1);
 			roster[last] = this.rosterFooter(roster[last] ?? "", geometry.rosterWidth, bodyY + last);
-			body = pane.map((line, index) => fitLine(roster[index] ?? "", geometry.rosterWidth) + this.theme.fg("borderMuted", "│") + fitLine(line, paneWidth));
+			body = pane.map((line, index) => fitLine(roster[index] ?? "", geometry.rosterWidth) + this.theme.fg(this.resize.active("roster") || this.resize.hover === "roster" ? "accent" : "borderMuted", this.resize.active("roster") ? "┃" : this.resize.hover === "roster" && index === Math.floor(geometry.paneHeight / 2) ? "┇" : "│") + fitLine(line, paneWidth));
 		} else if (screen === "console") body = pane;
 		else {
 			const roster = this.rosterViewport(width, 4, true, bodyY);
@@ -1351,8 +1406,10 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		return [this.heading(width), ...body, this.hintLine(width)];
 	}
+	private resizeScreen(): string { return `${this.navigation.screen}:${this.effortsOpen}:${this.hidden}`; }
 	render(width: number): string[] {
 		const height = this.tui.terminal.rows;
+		this.resize.begin(width, height, this.resizeScreen());
 		this.mouse.reset(width, height);
 		this.mouseScreen = this.navigation.screen;
 		if (width < 60 || height < 20)
@@ -1381,6 +1438,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	dispose(): void {
 		if (this.closed) return;
+		this.resize.clear();
 		this.saveConsole();
 		this.closed = true;
 		this.console?.dispose();

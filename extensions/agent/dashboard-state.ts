@@ -36,7 +36,12 @@ export interface AgentDraftState {
 	receipt?: string;
 	pending?: { text: string; mode: "steer" | "followUp"; revision: number };
 }
+export interface DashboardLayout {
+	rosterRatio?: number;
+	composerRows?: number;
+}
 export interface DashboardState {
+	layout: DashboardLayout;
 	selected?: string;
 	exactTime: boolean;
 	filter: string;
@@ -45,7 +50,7 @@ export interface DashboardState {
 	threads?: CollaborationViewState;
 }
 export function createDashboardState(): DashboardState {
-	return { filter: "", newTask: "", agents: new Map(), exactTime: false };
+	return { filter: "", newTask: "", agents: new Map(), exactTime: false, layout: {} };
 }
 export function agentState(state: DashboardState, id: string): AgentDraftState {
 	let value = state.agents.get(id);
@@ -123,10 +128,11 @@ export class DashboardNavigation {
 	}
 }
 const sessions = new Map<string, DashboardState>();
-export function dashboardSessionState(id: string): DashboardState {
+export function dashboardSessionState(id: string, load?: () => DashboardLayout): DashboardState {
 	let state = sessions.get(id);
 	if (!state) {
 		state = createDashboardState();
+		state.layout = { ...load?.() };
 		sessions.set(id, state);
 	}
 	return state;

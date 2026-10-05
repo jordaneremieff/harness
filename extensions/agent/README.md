@@ -872,8 +872,14 @@ stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 The dashboard is one full-screen overlay. It observes agents and effort presence,
 not primary conversations. It reads no primary draft and writes no primary editor
 text. Selection, drafts, successful-message history, reading positions, and
-Steer/Follow-up disposition survive closing and reopening in the same primary
-process. Different primary sessions have independent UI state. A successful
+Steer/Follow-up disposition and pane layout survive closing and reopening in
+the same primary process. Different primary sessions have independent UI state.
+Stable pane preferences also survive Pi restarts in the agent-owned
+`agent-dashboard-layout.json` file under `PI_AGENT_DIR` or Pi's agent directory.
+Only completed resize gestures, keyboard commits, and resets write this private
+file through an adjacent temporary file and atomic rename. A failed save keeps
+the local split and shows a restart-persistence notice. Fresh primaries load the
+last completed save; existing windows keep their own split. A successful
 admission clears only the submitted draft revision, including after the
 dashboard reopens; newer text stays. Every truncated dashboard list keeps the
 focused entry and nearby entries visible and states the hidden count.
@@ -884,11 +890,31 @@ use lowercase text, including subviews, and retain their click actions. Scroll
 controls come first and `esc` comes last. Time format remains available through
 `i`, a click on a time, and Help. The roster omits the time-format hint.
 
-At side-by-side widths, the narrow roster occupies the full body height. The
-selected agent's name and state lead the conversation header. A compact grid
-groups model, provider and thinking level with context, cumulative tokens, and
-cost. Content-sized columns keep these facts together instead of spreading them
-across the pane. The Tokens label stays fixed; narrower panes shorten its value.
+At side-by-side widths (100 columns or more), the roster occupies the full body
+height. Drag its border or the blank gutter immediately to its left to exchange
+width with the detail pane. The roster keeps at least 24 columns and the detail
+keeps at least 60. The default roster remains narrow; an explicit split saves a
+ratio. Narrow stacked windows suspend this handle and retain the ratio for a
+wider window. Temporary clamps never replace the saved preference.
+
+Where height permits, drag the small three-cell grip at the composer's top-right
+corner upward for more draft rows or downward for more transcript rows. Explicit
+height reserves at least five draft rows and six transcript rows, plus the
+native frames and blank separator. Short windows use compact automatic height
+without discarding the saved row preference. The useful caption and native
+editor remain intact. Double-click either handle to reset only that split.
+Other rules and borders remain decorative.
+
+From roster navigation, `r resize` enters keyboard resize mode. `tab` selects an
+available divider. Left/right adjust roster columns; up/down adjust draft rows.
+`0` resets the selected divider, `enter` commits, and `esc` restores the starting
+split. Message fields keep `r` literal. Escape first returns from a full console
+to the roster. Resize cancels on terminal dimensions or screen changes, hiding,
+or disposal. After a lost release, subsequent input clears the local gesture.
+
+The selected agent's name and state lead the conversation header. Known model,
+provider, thinking level, context, cumulative tokens, and cost stay together.
+Identifiers shorten only when they overflow the actual pane width.
 The console also shows the current activity beside the state. An attention reason or
 conversation warning appears under the facts. No status band separates the
 transcript from the composer.
@@ -939,9 +965,11 @@ notify checkbox row to change the recipient selection.
 
 The wheel scrolls the pane under the pointer. Roster scroll does not change
 the selected agent or the message recipient. Conversation and thread scroll
-leave the editor focus and drafts intact. Press, drag, release, modified clicks,
-and multiple clicks remain available to Pi's native text selection; dashboard
-actions use completed unmodified single clicks. A drag does not activate a
+leave the editor focus and drafts intact. Outside the two-cell roster handle
+and small composer grip, press, drag, release, modified clicks, and multiple
+clicks remain available to Pi's native text selection. Handles capture only
+unmodified left-button resize gestures, without changing editor focus.
+Dashboard actions use completed unmodified single clicks. A drag does not activate a
 row, timestamp, or hint. Pi retains control of copy-on-select and links.
 Regular terminal mode leaves mouse input to the terminal. All actions retain
 a keyboard path; no mouse setting or global shortcut is added.

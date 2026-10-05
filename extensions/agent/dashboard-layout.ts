@@ -1,6 +1,14 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { DashboardLayout } from "./dashboard-state.ts";
 type Paint = Pick<Theme, "fg" | "bg" | "bold">;
+export const MIN_ROSTER_COLUMNS = 24;
+export const MIN_DETAIL_COLUMNS = 60;
+export const MIN_COMPOSER_ROWS = 5;
+export const MIN_TRANSCRIPT_ROWS = 6;
+export function clamp(value: number, min: number, max: number): number {
+	return Math.max(min, Math.min(max, Math.round(value)));
+}
 export function fitLine(text: string, width: number): string {
 	const value = truncateToWidth(text, Math.max(1, width));
 	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
@@ -54,6 +62,12 @@ export function fitHints(
 	const shown = [...kept, backHint];
 	return fitLine(theme ? shown.map((hint) => paintHint(hint, theme)).join(theme.fg("muted", " · ")) : shown.join(" · "), width);
 }
+export function dashboardPaneGeometry(paneHeight: number, headerRows: number, editorRows: number) {
+	return {
+		composerMaxRows: Math.max(0, paneHeight - headerRows - 2 - MIN_TRANSCRIPT_ROWS),
+		bodyHeight: Math.max(0, paneHeight - headerRows - editorRows),
+	};
+}
 export function dashboardGeometry(
 	width: number,
 	height: number,
@@ -61,10 +75,16 @@ export function dashboardGeometry(
 	console = false,
 	reservedRows = 0,
 	headerRows = 4,
+	layout: DashboardLayout = {},
 ) {
 	const wide = width >= 100 && !console;
 	const rosterHeight = console || wide ? 0 : 4;
-	const rosterWidth = wide ? Math.min(40, Math.max(30, Math.floor(width * 0.22))) : width;
+	const ratio = layout.rosterRatio;
+	const rosterWidth = wide
+		? typeof ratio === "number" && Number.isFinite(ratio) && ratio > 0 && ratio < 1
+			? clamp(ratio * (width - 1), MIN_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS)
+			: Math.min(40, Math.max(30, Math.floor(width * 0.22)))
+		: width;
 	const paneHeight = Math.max(0, height - 2 - rosterHeight - reservedRows);
 	return {
 		wide,
@@ -72,7 +92,7 @@ export function dashboardGeometry(
 		conversationWidth: wide ? width - rosterWidth - 1 : width,
 		rosterHeight,
 		paneHeight,
-		bodyHeight: Math.max(0, paneHeight - headerRows - editorRows),
+		...dashboardPaneGeometry(paneHeight, headerRows, editorRows),
 		supported: width >= 60 && height >= 20,
 	};
 }

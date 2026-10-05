@@ -3,6 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { dashboardSessionState } from "./dashboard-state.ts";
+import type { DashboardPreferences } from "./dashboard-preferences.ts";
 import { showAgentDashboard, type DashboardResult } from "./dashboard.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
@@ -162,6 +163,7 @@ export function createAgentCommand(
 		efforts(ctx: ExtensionContext): Promise<EffortAwareness>;
 		messageEffort(id: string, text: string, ctx: ExtensionContext): Promise<DashboardResult>;
 	},
+	preferences?: DashboardPreferences,
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
@@ -203,13 +205,14 @@ export function createAgentCommand(
 	const openDashboard = async (ctx: ExtensionContext): Promise<void> => {
 		if (!ctx.hasUI || dashboardOpen) return;
 		dashboardOpen = true;
-		const state = dashboardSessionState(ctx.sessionManager.getSessionId());
+		const state = dashboardSessionState(ctx.sessionManager.getSessionId(), preferences?.load);
 		try {
 			await showAgentDashboard({
 				ctx,
 				state,
 				source: sources,
 				operations: {
+					saveLayout: preferences ? (layout) => preferences.save(layout) : undefined,
 					efforts: effortWiring ? () => effortWiring.efforts(ctx) : undefined,
 					messageEffort: effortWiring ? (id, text) => effortWiring.messageEffort(id, text, ctx) : undefined,
 					sessionFigures: sessionFigures ? (page) => sessionFigures(ctx, page) : undefined,

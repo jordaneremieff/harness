@@ -8,6 +8,7 @@ import { CustomEditor, getSelectListTheme, type KeybindingsManager, type Theme }
 import {
 	matchesKey,
 	parseKey,
+	sliceByColumn,
 	type Component,
 	type Focusable,
 	type TUI,
@@ -44,15 +45,22 @@ export interface AgentComposerOptions {
 export class AgentComposer implements Component, Focusable {
 	private readonly editor: ComposerEditor;
 	private readonly options: AgentComposerOptions;
+	private viewportRows?: number;
+	private paddingRows = 0;
+	private bottomRow = 0;
+	private textRows = 1;
+	autocompleteRows = 0;
+	grip?: "normal" | "hover" | "active";
 
 	constructor(options: AgentComposerOptions) {
 		this.options = options;
+		const rows = () => this.viewportRows === undefined ? 20 : Math.ceil(this.viewportRows / 0.3);
 		const tui = new Proxy(options.tui, {
 			get(target, key) {
 				if (key === "terminal")
 					return new Proxy(target.terminal, {
 						get(terminal, name) {
-							return name === "rows" ? 20 : Reflect.get(terminal, name);
+							return name === "rows" ? rows() : Reflect.get(terminal, name);
 						},
 					});
 				const value = Reflect.get(target, key);
@@ -117,18 +125,38 @@ export class AgentComposer implements Component, Focusable {
 		this.options.onChange?.(this.getText());
 	}
 
+	setViewportRows(rows?: number): void {
+		this.viewportRows = rows === undefined ? undefined : Math.max(5, Math.trunc(rows));
+	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.x < 1 || event.x >= event.width - 1) return;
-		return this.editor.handleMouse({ ...event, x: event.x - 1, width: event.width - 2 });
+		if (event.y > this.textRows && event.y < this.bottomRow) {
+			if (event.type === "click" && event.button === "left") return { handled: true, focus: true };
+			return;
+		}
+		const y = event.y >= this.bottomRow ? event.y - this.paddingRows : event.y;
+		return this.editor.handleMouse({ ...event, x: event.x - 1, y, width: event.width - 2, height: event.height - this.paddingRows });
 	}
 
+	private topFrame(width: number, caption: string, mode: string): string {
+		const theme = this.options.theme;
+		const position = [mode, this.editor.topHidden ? `↑ ${this.editor.topHidden} lines` : ""].filter(Boolean).join(" · ");
+		const top = dashboardHeading(caption, position, this.grip ? width - 4 : width, theme);
+		if (!this.grip) return top;
+		return sliceByColumn(top, 0, width - 5, true) + theme.fg(this.grip === "normal" ? "borderMuted" : "accent", `─${this.grip === "active" ? "━━━" : "┄┄┄"}╮`);
+	}
 	render(width: number, caption = "Message", mode = "", receipt = ""): string[] {
 		const lines = this.editor.render(Math.max(1, width - 2));
+		const bottom = lines.findIndex((line, index) => index > 0 && line === "");
+		this.autocompleteRows = Math.max(0, lines.length - bottom - 1);
+		this.textRows = Math.max(1, bottom - 1);
+		this.paddingRows = Math.max(0, (this.viewportRows ?? this.textRows) - this.textRows);
+		this.bottomRow = bottom + this.paddingRows;
+		if (this.paddingRows) lines.splice(bottom, 0, ...Array.from({ length: this.paddingRows }, () => " ".repeat(Math.max(1, width - 2))));
 		const theme = this.options.theme;
 		const border = (text: string) => theme.fg(this.focused ? "accent" : "borderMuted", text);
 		return lines.map((line, index) => {
-			if (index === 0)
-				return dashboardHeading(caption, [mode, this.editor.topHidden ? `↑ ${this.editor.topHidden} lines` : ""].filter(Boolean).join(" · "), width, theme);
+			if (index === 0) return this.topFrame(width, caption, mode);
 			// Native text and autocomplete rows are padded; only our border hooks emit empty rows.
 			if (line === "")
 				return dashboardHeading(
