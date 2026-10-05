@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,15 +49,19 @@ it("recovers every input in a pre-profile process queue above the explicit-route
 	await new Promise<void>((resolve, reject) => { keepAlive.once("error", reject); keepAlive.listen(0, "127.0.0.1", resolve); });
 	const archive = execFileSync("git", ["archive", BASE_SOURCE, "package.json", "extensions/agent"], { cwd: checkout, maxBuffer: 16 * 1024 * 1024 });
 	execFileSync("tar", ["-x", "-C", original], { input: archive });
-	const launch = (source: string) => acquireHost(metadata, {
-		runner: fileURLToPath(new URL("./queue-recovery-runner.mts", import.meta.url)), runnerArgs: [source],
-		env: { ...process.env, NODE_PATH: join(checkout, "node_modules"), PI_AGENT_DIR: metadata.agentDir, PI_AGENT_SESSIONS_DIR: join(root, "sessions"), PI_AGENT_IDLE_MINUTES: "0" },
-	});
-	client = await launch(join(original, "extensions/agent"));
-	assert.equal(client.runtimeContract.operations["profile-read"], undefined, "the producer runs the source before profiles");
 	const messages = Array.from({ length: 129 }, (_, index) => `Retained base task ${index}`);
 	const requestIds = messages.map((_, index) => index === messages.length - 1 ? "r".repeat(1025) : `queued-${index}`);
-	const seeded = await client.request("command", { sessionId: metadata.storageId, name: "seed", messages, requestIds }) as Receipts;
+	const launch = (source: string, seed?: { messages: string[]; requestIds: string[] }) => acquireHost(metadata, {
+		runner: fileURLToPath(new URL("./queue-recovery-runner.mts", import.meta.url)), runnerArgs: [source, JSON.stringify(seed ?? null)],
+		env: { ...process.env, NODE_PATH: join(checkout, "node_modules"), PI_AGENT_DIR: metadata.agentDir, PI_AGENT_SESSIONS_DIR: join(root, "sessions"), PI_AGENT_IDLE_MINUTES: "0" },
+	});
+	client = await launch(join(original, "extensions/agent"), { messages, requestIds });
+	assert.equal(client.runtimeContract.operations["profile-read"], undefined, "the producer runs the source before profiles");
+	await assert.rejects(client.request("command", { sessionId: metadata.storageId, name: "seed", messages, requestIds }),
+		(error: Error & { code?: string }) => error.code === "unavailable" && error.message.includes("command request contract"));
+	await assert.rejects(client.request("receipts", { ownerId: metadata.ownerId, wait: false }),
+		(error: Error & { code?: string }) => error.code === "unavailable" && error.message.includes("receipts request contract"));
+	const seeded = JSON.parse(readFileSync(`${metadata.storagePath}.seed.json`, "utf8")) as Receipts;
 	assert.equal(seeded.pending, messages.length, "the producer seeds its own storage without crossing a changed submit or receipt contract");
 	await stop();
 	client = await launch(fileURLToPath(new URL("./", import.meta.url)));

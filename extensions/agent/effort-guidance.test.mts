@@ -6,7 +6,7 @@ import register from "./index.ts";
 it("gives ordinary coordination tools completion and low-message guidance", () => {
 	const descriptions = new Map<string, string>();
 	register({
-		events: { emit() {} },
+		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
 		registerTool: (tool: { name: string; description: string }) => descriptions.set(tool.name, tool.description),
 		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {},

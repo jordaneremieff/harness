@@ -13,7 +13,7 @@ interface ToolDeclaration { name: string; parameters: TSchema; outputSchema?: TS
 function declarations(): Map<string, ToolDeclaration> {
 	const tools = new Map<string, ToolDeclaration>();
 	register({
-		events: { emit() {} }, on: () => () => {},
+		events: { emit() {}, on: () => () => {} }, on: () => () => {},
 		registerTool: (tool: ToolDeclaration) => tools.set(tool.name, tool),
 		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {},
 	} as unknown as ExtensionAPI);

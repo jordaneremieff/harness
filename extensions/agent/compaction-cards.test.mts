@@ -18,7 +18,7 @@ const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext =>
 
 it("captures self context once at execution and keeps it stable through native row rerenders", async () => {
 	const tools = new Map<string, ToolDefinition>();
-	register({ events: { emit() {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "high" } as unknown as ExtensionAPI);
+	register({ events: { emit() {}, on: () => () => {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "high" } as unknown as ExtensionAPI);
 	const registered = tools.get("agent_compact");
 	assert.ok(registered?.execute);
 	let reads = 0;

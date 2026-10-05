@@ -42,7 +42,7 @@ it("the production observation adapter forwards cancellation and releases late a
 	);
 	let command: Omit<RegisteredCommand, "name" | "sourceInfo"> | undefined;
 	register({
-		events: { emit() {} },
+		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
 		registerTool() {},
 		registerShortcut() {},
@@ -98,7 +98,7 @@ it("native agent commands retain their complete multiline result", async (t) => 
 	t.mock.method(AgentManager.prototype, "status", async () => ({ conversation: { name: "Agent" } }));
 	let command: Omit<RegisteredCommand, "name" | "sourceInfo"> | undefined;
 	register({
-		events: { emit() {} },
+		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
 		registerTool() {},
 		registerShortcut() {},
@@ -149,7 +149,7 @@ it("preserves optional command inputs and resolves directory commands at the pri
 	};
 	const commands = new Map<string, Omit<RegisteredCommand, "name" | "sourceInfo">>();
 	register({
-		events: { emit() {} },
+		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
 		registerTool() {},
 		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) =>

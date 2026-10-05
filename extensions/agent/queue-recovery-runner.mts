@@ -1,4 +1,5 @@
 /** Process fixture: run selected repository source with a producer-controlled model. */
+import { writeFileSync } from "node:fs";
 import { isBuiltin, registerHooks } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,8 +10,8 @@ import { createTestRuntime, testModel } from "./test-runtime.mts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { DurableHost as DurableHostType } from "./durable-host.ts";
 
-const [source, encoded] = process.argv.slice(2);
-if (!source || !encoded) throw new Error("Expected source directory and host metadata");
+const [source, seedInput, encoded] = process.argv.slice(2);
+if (!source || !seedInput || !encoded) throw new Error("Expected source directory, queue seed, and host metadata");
 const metadata = JSON.parse(encoded) as HostMetadata;
 // An archived tree uses the same installed public packages, without node_modules copies or links.
 const packageParent = new URL("../../package.json", import.meta.url).href;
@@ -44,10 +45,11 @@ async function seedQueue(host: DurableHostType, input: Record<string, unknown>):
 }
 const running = await runHost(async () => {
 	const host = await DurableHost.open({ ...hostOptions(metadata.storagePath, models, fixtureRegistry(), metadata.cwd), storageId: metadata.storageId, meta: { owner: metadata.ownerId } }, context);
+	const seed = JSON.parse(seedInput) as Record<string, unknown> | null;
+	if (seed !== null) writeFileSync(`${metadata.storagePath}.seed.json`, JSON.stringify(await seedQueue(host, seed)));
 	return {
 		request: async (method, params) => {
 			const input = params as Record<string, unknown> | undefined;
-			if (method === "command" && input?.name === "seed") return seedQueue(host, input);
 			if (method !== "command" || input?.name !== "drain") return host.request(method, input);
 			released = true;
 			for (const stream of streams.splice(0)) {

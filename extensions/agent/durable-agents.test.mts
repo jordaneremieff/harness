@@ -532,7 +532,7 @@ it("accepts every shared thinking level in native spawn, configure, and attach s
 
 it("forwards native await cancellation through the registered entrypoint contribution", { timeout: 30000 }, async (t) => {
 	let contribution: ReturnType<typeof createAgentContribution> | undefined;
-	registerAgentExtension({ events: { emit(event: string, value: unknown) { if (event === "durable:contribution") contribution = value as ReturnType<typeof createAgentContribution>; } }, on() {}, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	registerAgentExtension({ events: { on: () => () => {}, emit(event: string, value: unknown) { if (event === "durable:contribution") contribution = value as ReturnType<typeof createAgentContribution>; } }, on() {}, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	assert.ok(contribution);
 	let observed!: () => void;
 	const observing = new Promise<void>((resolve) => { observed = resolve; });

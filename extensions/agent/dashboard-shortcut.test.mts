@@ -56,7 +56,7 @@ it("the sole entry shortcut names the dashboard and registers no primary observe
 	const shortcuts: Array<{ key: string; description: string }> = [];
 	const events: string[] = [];
 	register({
-		events: { emit() {} },
+		events: { emit() {}, on: () => () => {} },
 		registerTool() {},
 		registerMessageRenderer() {}, registerToolRenderer() {},
 		registerCommand(_name: string, _value: RegisteredCommand) {},

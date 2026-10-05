@@ -53,7 +53,7 @@ for (const retained of ["manager/1.3.0", "manager/2.0.0"]) it(`refuses a retaine
 		rmSync(root, { recursive: true, force: true });
 	});
 	const tools = new Map<string, ToolDefinition>();
-	const pi = { events: { emit: () => {} }, on: () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand: () => {}, registerShortcut: () => {}, registerMessageRenderer: () => {}, registerToolRenderer: () => {} } as unknown as ExtensionAPI;
+	const pi = { events: { emit: () => {}, on: () => () => {} }, on: () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand: () => {}, registerShortcut: () => {}, registerMessageRenderer: () => {}, registerToolRenderer: () => {} } as unknown as ExtensionAPI;
 	registerAgentExtension(pi);
 	const status = tools.get("agent_status");
 	assert.ok(status);

@@ -134,7 +134,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/1.5.0`; a reload over an older retained manager
+The manager contract is `manager/1.6.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -1312,8 +1312,9 @@ discovery report the identity the operator runs.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/1.5.0` includes exact admitted result references and releases recovery links when
-only parked delivery remains. Restart Pi windows to load that manager behavior.
+clearance. `manager/1.6.0` supports independent command admission and exact admitted
+result references. It releases recovery links when only parked delivery remains.
+Restart Pi windows to load that manager behavior.
 The recovery-state request and primary-delivery contracts are unchanged.
 
 `version-contract.ts` separates source release, actual loaded upstream releases,

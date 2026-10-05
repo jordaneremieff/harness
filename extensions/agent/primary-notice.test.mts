@@ -340,7 +340,7 @@ it("refreshes the registered primary identity on model, thinking, and name chang
 	});
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	registerAgentExtension({
-		events: { emit() {} },
+		events: { emit() {}, on: () => () => {} },
 		registerTool() {},
 		registerMessageRenderer() {}, registerToolRenderer() {},
 		registerShortcut() {},

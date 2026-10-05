@@ -35,7 +35,7 @@ const extras: ActionDialogExtras = { timers: async () => [], schedule: async () 
 function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
 	registerAgentExtension({
-		events: { emit() {} },
+		events: { emit() {}, on: () => () => {} },
 		registerShortcut() {},
 		registerTool() {},
 		registerMessageRenderer() {}, registerToolRenderer() {},
@@ -319,7 +319,7 @@ describe("agent command discovery and help", () => {
 		const commands = new Map<string, unknown>();
 		const listeners = process.listenerCount("exit");
 		registerAgentExtension({
-			events: { emit() {} },
+			events: { emit() {}, on: () => () => {} },
 			registerShortcut() {},
 			registerTool() {},
 			registerMessageRenderer() {}, registerToolRenderer() {},
