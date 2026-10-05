@@ -728,3 +728,48 @@ it("dashboard help distinguishes a silent post from passive notification deliver
 		f.ui.dispose();
 	}
 });
+
+it("member declarations replace on a fresh read without a revision time or agreement claim", async () => {
+	let current = page();
+	current.thread.members = [
+		{ identity: "one", contribution: "Policy gate released. Source: #2", joinedAt: 1 },
+		{ identity: "two", contribution: "Hold my gate for the dependency release. Source: #3", joinedAt: 2 },
+	];
+	const f = setup(100, 48, async (input) => input.action === "list" ? list() : structuredClone(current));
+	try {
+		await open(f);
+		const initial = text(f);
+		assert.match(initial, /Member declarations, not agreement/);
+		assert.match(initial, /Designer \[one\]: Policy gate released/);
+		assert.match(initial, /Reviewer \[two\]: Hold my gate/);
+		assert.match(initial, /Authority source: Source brief/);
+		assert.match(initial, /Membership dates do not date declaration changes/);
+		assert.doesNotMatch(initial, /machine free|declaration updated|joinedAt/i);
+		current = { ...current, thread: { ...current.thread, members: [{ ...current.thread.members[0], contribution: "Renewed hold. Source: #4" }, current.thread.members[1]] } };
+		f.notify(); await turn();
+		assert.match(text(f), /Renewed hold/);
+		assert.doesNotMatch(text(f), /Policy gate released/);
+		assert.equal(current.thread.members[0].joinedAt, 1);
+		f.ui.handleInput("e");
+		assert.match(text(f), /Source: Source brief/);
+		assert.match(text(f), /b earlier/);
+		assert.ok(f.calls.every((input) => input.action === "read" || input.action === "list"));
+	} finally { f.ui.dispose(); }
+});
+it("bounded member declarations stay truthful and width-safe in the thread frame", async () => {
+	const current = page();
+	current.thread.members = Array.from({ length: 17 }, (_, i) => ({ identity: `peer-${i}`, contribution: `Hold ${i}`, joinedAt: 1 }));
+	const f = setup(80, 24, async (input) => input.action === "list" ? list() : current);
+	try {
+		await open(f);
+		let shown = "";
+		for (let i = 0; i < 12; i++) {
+			const lines = f.ui.render(80);
+			assert.equal(lines.length, 24); assert.ok(lines.every((line) => visibleWidth(line) <= 80));
+			shown += lines.join("\n");
+			f.ui.handleInput("\x1b[6~");
+		}
+		assert.match(shown, /1 member declarations omitted by display bound/);
+		assert.doesNotMatch(shown, /peer-16|machine free|agreement reached/i);
+	} finally { f.ui.dispose(); }
+});

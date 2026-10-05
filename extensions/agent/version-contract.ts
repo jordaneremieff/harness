@@ -61,8 +61,8 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 });
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
-export const MANAGER_CONTRACT = "manager/1.6.0";
-export const CONTROL_BINDING_CONTRACT = `native-controls/1.2.0;durable=${durableVersion}`;
+export const MANAGER_CONTRACT = "manager/1.7.0";
+export const CONTROL_BINDING_CONTRACT = `native-controls/1.3.0;durable=${durableVersion}`;
 export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.0.0";
 
 function record(value: unknown): value is Record<string, unknown> {

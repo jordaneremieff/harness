@@ -218,11 +218,17 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		publishTimer.unref?.();
 	}
 	async function primaryControl(method: string, params: Record<string, unknown>, sessionId: string): Promise<unknown> {
+		if (method === "status" || method === "inspect") {
+			const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+			try { return await manager.observePrimary(sessionId, method === "status" ? { view: "status" } : params); }
+			finally { await manager.close(); }
+		}
 		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: dirname(dirname(metadata.storagePath)) });
 		try {
 			if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
 			markRecoveryDue(true);
-			return await host.request("report", { ...params, ownerId: sessionId });
+			const report = await host.request("report", { ...params, ownerId: sessionId }) as { sourceId: string };
+			return { sessionId, admitted: true, sourceId: report.sourceId, boundary: "Retained for delivery; does not prove action or task acceptance" };
 		} finally { await channel.close(); }
 	}
 	async function attachForeign(client: import("./host-client.ts").HostConnection, params: Record<string, unknown>, sessionId: string): Promise<unknown> {
@@ -250,12 +256,13 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 		try { return await manager.collaborate({ ...params, action: method === "collaboration-list" ? "list" : "read" }, { id: String(params.senderIdentity ?? metadata.storageId), cwd: metadata.cwd }); } finally { await manager.close(); }
 	}
-	async function resolveSelectors(input: Readonly<Record<string, unknown>>): Promise<Record<string, unknown>> {
+	async function resolveSelectors(input: Readonly<Record<string, unknown>>, collaboration: boolean): Promise<Record<string, unknown>> {
 		const params = { ...input };
 		const selectors = ["sessionId", "replyTo", "integrator"] as const;
-		if (!selectors.some((key) => typeof params[key] === "string" && (params[key] as string).startsWith("@")) && !Array.isArray(params.notify)) return params;
+		if (!collaboration && !selectors.some((key) => typeof params[key] === "string" && (params[key] as string).startsWith("@")) && !Array.isArray(params.notify)) return params;
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 		try {
+			if (collaboration) return await manager.collaborationTargets(params);
 			for (const key of selectors) if (typeof params[key] === "string") params[key] = await manager.resolveTarget(params[key] as string);
 			if (Array.isArray(params.notify)) params.notify = await Promise.all(params.notify.map((id) => manager.resolveTarget(String(id))));
 		} finally { await manager.close(); }
@@ -282,7 +289,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		} finally { await client.close(); }
 	}
 	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {
-		const params = await resolveSelectors(input);
+		const params = await resolveSelectors(input, method.startsWith("collaboration-"));
 		if (method === "await-native") return nativeResult(host, params.result as ResultReference, context);
 		if (method === "observe-producer-await") return observeAwaitProducer(params, context);
 		if (method === "report") return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));

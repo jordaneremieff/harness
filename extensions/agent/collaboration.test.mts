@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, ROOT_CONVERSATION_ID, type LiveState } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
-import { type CollaborationPage, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
+import { type CollaborationPage, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
 import { AgentDeliveryDoc, acknowledgeReports } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation, readConversationStatus } from "./durable-observation.ts";
@@ -62,6 +62,101 @@ it("keeps request IDs distinct across peer storages and permits self-chosen cont
 	page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
 	assert.deepEqual(page.thread.members.map((member) => member.identity), [actor]);
 	assert.deepEqual(page.events.map((event) => event.kind), ["create", "join", "join", "leave"]);
+});
+
+it("rejoin replaces only the caller contribution and retains independent holds and normal join events", async (t) => {
+	const f = await fixture(t);
+	const hold = "Hold heavy tests until the verification release. Source: verification-window exchange.";
+	const peerHold = "Hold my gate until the dependency release. Source: dependency exchange.";
+	const release = "Verification released; publication needs a separate window. Source: release event.";
+	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", { ...frame, contribution: hold }), context);
+	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "peer-hold", { threadId: created.threadId, senderIdentity: peer, contribution: peerHold }), context);
+	const before = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
+	const receipt = await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "actor-release", { threadId: created.threadId, contribution: release, source: "Verification release event" }), context);
+	let page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
+	assert.deepEqual(page.thread.members, before.thread.members.map((member) => member.identity === actor ? { ...member, contribution: release } : member));
+	assert.equal(page.thread.revision, before.thread.revision);
+	assert.equal(page.thread.acceptance, frame.acceptance);
+	assert.equal(page.thread.closed, false);
+	assert.deepEqual(page.events.slice(0, 2), before.events);
+	assert.deepEqual(page.events.at(-1), { threadId: created.threadId, sequence: receipt.sequence, at: page.thread.updatedAt, sender: actor, origin: "model", kind: "join", message: release, source: "Verification release event", replyTo: null, revision: 1, notify: [] });
+	const ledger = await f.host.harness.snapshot(AgentDeliveryDoc, context);
+	const notice = ledger?.reports.find((report) => report.senderIdentity === actor && report.ownerId === peer);
+	assert.equal(notice?.passive, true);
+	assert.equal(notice?.steer, false);
+	assert.equal(notice?.operatorMessage, release);
+	await f.reopen();
+	assert.deepEqual(await readCollaboration(f.host.harness, { threadId: created.threadId }, context), page);
+	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "peer-release", { threadId: created.threadId, senderIdentity: peer, contribution: "Dependency released. Source: dependency release event." }), context);
+	page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
+	assert.equal(page.thread.members[0].contribution, release);
+	assert.equal(page.thread.members[1].contribution, "Dependency released. Source: dependency release event.");
+	assert.deepEqual(page.thread.members.map((member) => member.joinedAt), before.thread.members.map((member) => member.joinedAt));
+	assert.deepEqual(page.events.map((event) => [event.kind, event.sender]), [["create", actor], ["join", peer], ["join", actor], ["join", peer]]);
+});
+
+it("names each identity field and states the accepted canonical root and nonroot forms", () => {
+	const uuid = "abcdefab-1234-5678-90ab-abcdefabcdef";
+	const invalid = [undefined, null, 2, "", " ", "not-an-identity", uuid.toUpperCase(), `${uuid}:${ROOT_CONVERSATION_ID}`, `${uuid}:0`, `${uuid}:-2`, `${uuid}:02`, `${uuid}:2.5`, `${uuid}:9007199254740992`];
+	for (const field of ["sessionId", "integrator", "notify[1]", "senderIdentity"]) {
+		for (const value of invalid) assert.throws(() => collaborationIdentity(value, field), (error: unknown) => {
+			assert.ok(error instanceof Error);
+			assert.ok(error.message.startsWith(`${field} requires an exact discovered identity:`));
+			assert.match(error.message, /canonical lowercase UUID for a bare root/u);
+			assert.match(error.message, /UUID:positive nonroot conversation ID/u);
+			assert.match(error.message, new RegExp(`safe integer greater than ${ROOT_CONVERSATION_ID}`, "u"));
+			return true;
+		});
+		for (const value of [uuid, `${uuid}:${ROOT_CONVERSATION_ID + 1}`, `${uuid}:9007199254740991`]) assert.equal(collaborationIdentity(value, field), value);
+	}
+});
+
+it("rejects invalid integrator, senderIdentity and indexed notify values without changing retained state", async (t) => {
+	const f = await fixture(t);
+	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
+	const before = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
+	const cases = [
+		{ action: "create", fields: { ...frame, integrator: "not-an-identity" }, prefix: "integrator" },
+		{ action: "revise", fields: { ...frame, integrator: " " }, prefix: "integrator" },
+		{ action: "post", fields: { senderIdentity: `${actor}:${ROOT_CONVERSATION_ID}` }, prefix: "senderIdentity" },
+		{ action: "post", fields: { senderIdentity: undefined }, prefix: "senderIdentity" },
+		{ action: "post", fields: { notify: [peer, "not-an-identity"] }, prefix: "notify[1]" },
+		{ action: "post", fields: { notify: [peer, 2] }, prefix: "notify[1]" },
+		{ action: "post", fields: { notify: [peer, `${peer}:9007199254740992`] }, prefix: "notify[1]" },
+	];
+	for (const [index, test] of cases.entries()) {
+		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(test.action, `invalid-${index}`, { threadId: created.threadId, message: "No write", ...test.fields }), context), (error: unknown) => {
+			assert.ok(error instanceof Error);
+			assert.ok(error.message.startsWith(`${test.prefix} requires an exact discovered identity:`));
+			assert.match(error.message, /canonical lowercase UUID for a bare root/u);
+			assert.match(error.message, /UUID:positive nonroot conversation ID/u);
+			return true;
+		});
+	}
+	assert.deepEqual(await readCollaboration(f.host.harness, { threadId: created.threadId }, context), before);
+	assert.equal((await listCollaboration(f.host.harness, {}, context)).items.length, 1);
+	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, context))?.reports.length ?? 0, 0);
+	await mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "valid-integrator", { ...frame, threadId: created.threadId, integrator: `${peer}:${ROOT_CONVERSATION_ID + 1}` }), context);
+	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.integrator, `${peer}:${ROOT_CONVERSATION_ID + 1}`);
+});
+
+it("distinguishes required source text from excessive length and preserves optional-source behavior", async (t) => {
+	const f = await fixture(t);
+	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
+	for (const action of ["create", "revise", "post"]) {
+		for (const [index, source] of [undefined, "", " ", "x".repeat(2001)].entries()) {
+			const message = index === 3 ? "source exceeds the maximum length of 2000 characters" : "source is required and must be nonblank text";
+			await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(action, `${action}-source-${index}`, { ...frame, threadId: created.threadId, message: "Carried direction", kind: "carried-authority", source }), context), { message });
+		}
+	}
+	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.sequence, 1);
+	assert.equal((await listCollaboration(f.host.harness, {}, context)).items.length, 1);
+	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "optional-source", { threadId: created.threadId, message: "Contribution without a source" }), context);
+	const source = ` ${"x".repeat(1998)} `;
+	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "boundary-source", { threadId: created.threadId, message: "Carried direction", kind: "carried-authority", source }), context);
+	const page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
+	assert.equal(page.events[1].source, "");
+	assert.equal(page.events[2].source, source);
 });
 
 it("writes notification intents with the event and retains source-qualified deduplication after reopen", async (t) => {

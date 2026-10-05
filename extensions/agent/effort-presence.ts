@@ -51,6 +51,11 @@ export interface EffortPresencePage {
 }
 export const EFFORT_PRESENCE_LIMITS = { visits: 256, results: 20, bytes: 16 * 1024 } as const;
 
+/** Observed origin text is a fallback, never a competing declared purpose. */
+export function observedPurposeFallback(value: { intentClaim?: PrimaryIntentClaim; purposeClaim?: string; observedPurpose?: PrimaryObservedPurpose }): Pick<RelatedEffort, "observedPurpose"> {
+	return value.intentClaim !== undefined || value.purposeClaim !== undefined || value.observedPurpose === undefined ? {} : { observedPurpose: value.observedPurpose };
+}
+
 function gitEnvironment(): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" };
 	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) delete env[key];
@@ -133,7 +138,7 @@ function effortRow(info: PrimaryInfo, self: EffortPresenceSelf, liveness: Relate
 		...(lastActivityAt === undefined ? {} : { lastActivityAt }),
 		...projectIntent(intentClaim, relationship),
 		sharedSubstrates: sharedSubstrates(self, info),
-		...(observedPurpose === undefined ? {} : { observedPurpose }),
+		...observedPurposeFallback({ intentClaim, observedPurpose }),
 		...(overlap === undefined ? {} : { overlap }),
 	};
 }

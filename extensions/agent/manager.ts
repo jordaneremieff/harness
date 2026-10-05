@@ -13,9 +13,10 @@ import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./c
 import { subscribeCatalogChanges } from "./catalog-events.ts";
 import { sessionFigures } from "./footer.ts";
 import { buildStatusOverview } from "./status-overview.ts";
-import { purposeExcerpt } from "./effort-purpose.ts";
+import { firstInteractivePurpose, purposeExcerpt } from "./effort-purpose.ts";
 import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
-import { createPrimaryChannel, connectPrimaryChannel, type PrimaryChannel, type PrimaryInfo, type PrimaryIntentClaim } from "./primary-channel.ts";
+import { createPrimaryChannel, connectPrimaryChannel, readPrimaryEndpointDescriptor, type PrimaryChannel, type PrimaryInfo, type PrimaryIntentClaim } from "./primary-channel.ts";
+import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { discoverPrimaryLocation, readRelatedEfforts, type EffortPresencePage } from "./effort-presence.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
@@ -28,7 +29,7 @@ import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./dura
 import type { HostObservationScope } from "./host-client.ts";
 
 import { MANAGER_CONTRACT, operationContractMismatch } from "./version-contract.ts";
-import { collaborationStorage } from "./collaboration.ts";
+import { collaborationIdentity, collaborationStorage } from "./collaboration.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
 export const MANAGER_PROTOCOL = MANAGER_CONTRACT;
@@ -68,7 +69,7 @@ export interface AgentManagerOptions {
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
 }
-interface PrimaryClient { send(text: string, details: unknown): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
+interface PrimaryClient { send(text: string, details: unknown): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
 interface ListRecordStep { record: CatalogRecord; catalog?: string }
@@ -412,7 +413,7 @@ export class AgentManager {
 		try { record = this.catalog.read(sessionId); }
 		catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			return this.primaryMessage(method, input, sessionId, caller);
+			return this.primaryControl(method, input, sessionId, caller);
 		}
 		const params: Record<string, unknown> = { ...input, sessionId, ownerId: caller.id };
 		if (method === "task-submit") { params.requester = caller.id; params.origin ??= "operator"; params.requestId ??= randomUUID(); }
@@ -457,6 +458,23 @@ export class AgentManager {
 			if ((outcome as { outcome?: string })?.outcome === "failed") return outcome;
 		}
 		return { sessionId, status: compactStatus(await client.request("status", { sessionId })), recovery: "retained work resumes; no new input was submitted" };
+	}
+
+	/** Retained ordinary evidence never connects to a peer or acquires a Durable host. */
+	async observePrimary(sessionId: string, input: Record<string, unknown> = {}): Promise<OrdinaryPrimaryObservation> {
+		const view = input.view ?? "activity";
+		if (view !== "status" && view !== "activity" && view !== "history") throw new Error("Ordinary primary inspection supports activity and history only; native branch, search, exact and result views are unavailable.");
+		for (const key of ["entryId", "fromId", "offset", "query", "source", "submissionId", "operationId"]) {
+			if (input[key] !== undefined) throw new Error(`Ordinary primary inspection does not support ${key}; use its returned cursor for retained ancestry.`);
+		}
+		const descriptor = readPrimaryEndpointDescriptor(this.options.root, sessionId);
+		if (!descriptor.info) throw new Error(`Ordinary primary observation is unavailable: ${descriptor.unreadable ? "endpoint unreadable" : descriptor.state}. No peer was contacted.`);
+		return readPrimaryObservation(descriptor.info, { view, limit: input.limit as number | undefined, cursor: input.cursor });
+	}
+
+	private async primaryControl(method: string, input: Record<string, unknown>, sessionId: string, caller: AgentCaller): Promise<unknown> {
+		if (method === "status" || method === "inspect") return this.observePrimary(sessionId, method === "status" ? { view: "status" } : input);
+		return this.primaryMessage(method, input, sessionId, caller);
 	}
 
 	private async primaryMessage(method: string, input: Record<string, unknown>, sessionId: string, caller: AgentCaller): Promise<unknown> {
@@ -649,10 +667,18 @@ export class AgentManager {
 		})();
 	}
 
-	private async collaborationTargets(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+	async collaborationTargets(input: Record<string, unknown>): Promise<Record<string, unknown>> {
 		const params = { ...input };
-		for (const key of ["sessionId", "integrator"]) if (typeof params[key] === "string") params[key] = await this.resolveTarget(params[key] as string);
-		if (Array.isArray(params.notify)) params.notify = await Promise.all(params.notify.map((id) => this.resolveTarget(String(id))));
+		const resolveIdentity = async (value: unknown, field: string): Promise<string> => {
+			let resolved = value;
+			if (typeof value === "string" && value.startsWith("@")) {
+				try { resolved = await this.resolveTarget(value); }
+				catch (error) { throw new Error(`${field}: handle resolution failed: ${errorText(error)}`); }
+			}
+			return collaborationIdentity(resolved, field);
+		};
+		for (const key of ["sessionId", "integrator"]) if (params[key] !== undefined) params[key] = await resolveIdentity(params[key], key);
+		if (Array.isArray(params.notify)) params.notify = await Promise.all(params.notify.map((id, index) => resolveIdentity(id, `notify[${index}]`)));
 		return params;
 	}
 
@@ -673,7 +699,16 @@ export class AgentManager {
 			if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
 			return readFleetStatus(this.catalog);
 		}
-		if (sessionId) { sessionId = await this.resolveTarget(sessionId); return this.observe(this.catalog.read(sessionId), "status", { sessionId }); }
+		if (sessionId) {
+			sessionId = await this.resolveTarget(sessionId);
+			let record: CatalogRecord;
+			try { record = this.catalog.read(sessionId); }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				return this.observePrimary(sessionId, { view: "status" });
+			}
+			return this.observe(record, "status", { sessionId });
+		}
 		const page = await this.dashboardPage();
 		const failures = [
 			[...this.failures.entries].map(([storageId, error]) => ({ storageId, error })),
@@ -688,7 +723,7 @@ export class AgentManager {
 		await this.primaryChannels.get(ownerId)?.close();
 		const location = await discoverPrimaryLocation(primary.cwd ?? this.options.root);
 		if (this.stopping(primary)) return;
-		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({ id: ownerId, ...location, lastActivityAt: new Date().toISOString(), observedPurpose: this.observedPurpose(primary), name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel, sessionsRoot: this.options.root, signal: primary.signal,
+		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({ id: ownerId, ...location, lastActivityAt: new Date().toISOString(), observedPurpose: this.observedPurpose(primary), sessionFile: primary.sessionFile, name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel, sessionsRoot: this.options.root, signal: primary.signal,
 			promptTrust: (cwd) => primary.promptTrust?.(cwd) ?? Promise.resolve(undefined),
 			deliver: (message) => {
 				if (this.stopping(primary)) throw new Error("Primary session is closed");
@@ -737,7 +772,7 @@ export class AgentManager {
 	async awareness(ownerId: string, cwd?: string): Promise<EffortAwareness> {
 		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, cwd: cwd ?? this.options.root };
 		const awareness = await readEffortAwareness(this.options.root, self, this.catalog);
-		if (this.primaries.get(ownerId)?.observedInputComplete === false && !awareness.self.observedPurpose && !awareness.self.intentClaim) awareness.self.omitted = true;
+		if ((this.primaries.get(ownerId)?.observedInputComplete === false || this.primaries.get(ownerId)?.observedInputCanCapture === false) && !awareness.self.observedPurpose && !awareness.self.intentClaim) awareness.self.omitted = true;
 		return awareness;
 	}
 
@@ -757,10 +792,12 @@ export class AgentManager {
 	}
 
 	/** Only interactive input supplies an observed fallback; extension-generated text never does. */
-	recordPrimaryInput(ownerId: string, text: string): boolean {
+	recordPrimaryInput(ownerId: string, text: string, source: string): boolean {
 		const primary = this.primaries.get(ownerId);
-		const excerpt = purposeExcerpt(text);
-		if (!primary || primary.observedInputComplete === false || primary.observedInput || !excerpt) return false;
+		if (!primary) return false;
+		const excerpt = firstInteractivePurpose({ text: primary.observedInput, complete: primary.observedInputComplete === true, canCapture: primary.observedInputCanCapture === true }, { source, text });
+		if (source === "interactive") primary.observedInputCanCapture = false;
+		if (!excerpt) return false;
 		primary.observedInput = excerpt;
 		this.primaryChannels.get(ownerId)?.setObservedPurpose(this.observedPurpose(primary));
 		this.rosterChanged();

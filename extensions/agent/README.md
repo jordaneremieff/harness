@@ -43,13 +43,15 @@ ordinary-primary dispatch expose the same reference in text and structured
 Codemode output. Dispatch stays in the background; admission is not settlement.
 
 Creation-only spawn, reports, scheduled inputs, thread posts, and messages
-between ordinary primary sessions do not produce native result references.
+to ordinary primary sessions do not produce native result references. A Durable
+sender receives a source receipt after the ordinary message is retained for
+delivery; that receipt does not prove receiver action or task acceptance.
 An ordinary primary remains responsive and receives normal routed results.
 
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
-| `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries refuse this native-only operation. |
+| `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries use one Durable lead for answer-bearing fan-out and refuse this native-only operation. |
 | `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default; for Durable agents, `mode: "followUp"` and `mode: "report"` wait for the current run to end. Model-origin reports to ordinary primaries use steer. Report receipts state this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. |
@@ -64,7 +66,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths; optional `checkInMinutes` overrides it and 0 disables it. |
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
-| `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results. |
+| `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. |
 
 Each `agent_list` call collects one bounded catalog batch before it observes
@@ -955,17 +957,24 @@ process death. Only the existing local PID and host checks classify liveness.
 Dead records do not appear as live efforts. Unknown and incompatible ownership
 remain explicit. Discovery never removes primary endpoint records.
 
-A primary without declared intent still has an observed purpose: its Pi session
-name, otherwise an excerpt of its first interactive input. The extension retains
-its own attributed input projection in the session. Resume discovery walks a
-chain of at most 256 entries from the public leaf ID, without first materializing
-the branch or full session. It does not interpret
-another extension's prompts or entry formats. RPC and extension-generated input
-do not become an operator-typed purpose. A resumed session with no name or retained
-projection has an unknown purpose. If the bounded branch scan is complete, the
-next interactive input supplies the fallback. If the scan leaves entries unread,
-the current view marks the purpose unavailable instead of calling a later input
-the first. A session name or declared purpose still supplies useful context.
+Declared intent leads presence and awareness. When it exists, those views omit
+the observed-purpose fallback rather than show a competing description. Without
+intent, the fallback is the Pi session name, otherwise an excerpt of the first
+proven interactive input. Its origin stays labeled `session-name` or
+`interactive-input`; it is not a declaration.
+
+The extension retains its own attributed first-input projection in the session.
+Resume discovery follows a bounded parent chain from the public leaf ID, without
+materializing the branch or full session. A complete scan is not proof that the
+next input is the first. Prior message, compaction or branch-summary history
+without a valid earlier projection leaves purpose unknown. Explicit resume,
+reload and fork do not reopen capture. A projection after earlier message history
+is not a valid first-input source. Incomplete ancestry also leaves it unknown.
+Only a fresh session with proven input-free history captures its first interactive
+input; an empty first input closes capture without inventing a description.
+RPC and extension-generated input do not supply the fallback. The extension does
+not interpret another extension's prompts or entry formats. A session name or
+declared purpose still supplies useful context.
 
 `agent_intent` is an ordinary-primary tool. Publish with `action: "publish"`,
 `purpose`, `integration`, `authority`, `scope: { paths, branches, fullGate? }`, and
@@ -978,7 +987,9 @@ matching, not globs. `scope.fullGate` declares a planned full-gate run; it is no
 a reservation or lock. The endpoint's total byte bound still applies to a claim.
 Publishing returns the recorded host facts, the labeled claim, and current effort
 awareness. Clearing removes the declared claim, not the observed purpose. Update
-or clear intent when integration completes so a finished plan does not remain current.
+or clear intent when integration completes, before the terminal report, so a
+finished plan does not remain current. A settled model turn is not proof of
+integration completion, so the host does not infer that transition.
 
 The bounded view lists live efforts on this machine within the configured
 `PI_AGENT_SESSIONS_DIR`, including efforts in other repositories. It shows
@@ -1008,9 +1019,18 @@ Fleet and selected-session status do not read caller identity. An ordinary
 overview uses it only for the optional effort-awareness section. If identity
 is unavailable, that section is omitted and the agent overview remains available.
 
-`/agent` opens Related efforts with `b` or its mouse hint. The view shows observed
-purpose, declared purpose and integration claims, quoted operator direction with
-scope, and active threads. A contact-thread link opens the existing Threads view.
+`/agent` opens Related efforts with `b` or its mouse hint. The view leads with
+declared purpose and integration claims, or a source-labeled observed fallback
+when no intent exists. It also shows quoted operator direction with scope and
+active threads. A contact-thread read displays its frame and current member
+contributions as declarations, not agreement or permission. Rejoin a thread to
+replace your contribution with a current hold, release or continuing condition
+and cite its source exchange. A release by one member does not clear another
+member's hold. A contact-thread link opens the existing Threads view.
+
+Press `o` for one read-only observation of the selected ordinary effort. This
+reads retained evidence without a model turn or message. Selection changes and
+closing the view discard late responses; there is no observation polling.
 The operator sends a direct quiet message to a live effort's primary from this
 view. `agent_send` already supports direct model contact with that primary.
 Delivery proves admission, not action, agreement, or a Durable task result. Use
@@ -1021,6 +1041,40 @@ At 100 columns or wider, a narrow list sits beside the selected effort's details
 Press `i` to toggle coarse ages and local dates. In this side-by-side view,
 clicking a detail timestamp uses the same toggle. Ages stay fixed until the next
 presence observation; they do not tick during inactivity.
+
+### Ordinary retained observation
+
+Target an ordinary primary with `agent_status`, or use `agent_inspect` with
+`view: "activity"` or `view: "history"`. Both ordinary and Durable callers use the
+same bounded reader as Related efforts. The primary publishes the public Pi
+session-file path in its existing endpoint record. Reading needs no peer socket,
+host launch, message admission or control. Primary delivery stays independent.
+
+The output is tagged `ordinary-primary`. It combines sampled endpoint presence
+with entries from one **latest-retained ancestry**: the newest complete retained
+entry and its parent chain in the public current session format. Entry IDs,
+timestamps and byte offsets identify evidence. This is not proof of the live
+selected leaf or effective model context. Live idle state, tasks, timers and
+unretained activity remain unknown. A recorded error is evidence, not a diagnosed
+cause. Native-only branch, search, exact and result views refuse ordinary targets.
+
+The reader checks a regular, non-symlink file and matching session header. It
+bounds bytes, lines, line size, parent visits, text scanning, items and output
+before processing. `PRIMARY_OBSERVATION_LIMITS` in `primary-observation.ts` owns
+those bounds; its output budget covers the compact projected observation, not
+the enclosing Pi tool result. Coverage reports partial writes, corruption, missing ancestry,
+unknown sources and budget stops. A returned cursor pins the file identity and
+metadata; changed evidence requires a fresh read. It does not splice branches or
+promise access beyond its retained byte window.
+
+Only allowed text and locator fields appear. Thinking, signatures, images,
+system prompts, arbitrary details and raw tool arguments stay omitted. Recognized
+credentials are omitted with safe counts; ordinary prose and non-secret identity
+references remain readable. Compaction and context-edit records remain raw
+locators, not a reconstruction of the model's effective context.
+
+For quiet coordination and Durable-lead fan-out, see
+[agent delivery](../../docs/agent-delivery.md#coordinate-with-related-efforts).
 
 The ordinary manager interface changes independently of the primary delivery
 interface. A retained manager with a different interface requires a Pi restart.
@@ -1400,9 +1454,13 @@ discovery report the identity the operator runs.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/1.6.0` supports independent command admission and exact admitted
-result references. It releases recovery links when only parked delivery remains.
-Restart Pi windows to load that manager behavior.
+clearance. `manager/1.7.0` includes ordinary retained observation and proven
+first-input origin, independent command admission, exact admitted result references,
+and parked-delivery recovery behavior. `native-controls/1.3.0` adds ordinary-target
+observation to the native tools. Restart Pi windows to load the changed manager.
+Let idle Durable hosts retire, then attach to load the changed runtime routing
+and native tool bindings in a fresh host. An extension reload alone does not
+replace the running host module. Keep active work intact.
 The recovery-state request and primary-delivery contracts are unchanged.
 
 `version-contract.ts` separates source release, actual loaded upstream releases,

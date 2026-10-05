@@ -70,31 +70,31 @@ function receiptSequence(value: unknown, threadId: string): number {
 		throw new Error("The host returned an invalid post receipt. Read the thread before retry.");
 	return value.sequence;
 }
-function threadPage(value: unknown): value is CollaborationPage {
-	if (!object(value) || !object(value.thread) || !Array.isArray(value.events) || !object(value.coverage)) return false;
+export function threadPage(value: unknown): value is CollaborationPage {
+	if (!object(value) || !object(value.thread) || !Array.isArray(value.events) || value.events.length > 20 || !object(value.coverage)) return false;
 	const thread = value.thread;
 	return (
 		["id", "title", "purpose", "authority", "source", "restrictions", "acceptance", "integrator", "creator"].every(
-			(key) => typeof thread[key] === "string",
+			(key) => typeof thread[key] === "string" && thread[key].length <= 4000,
 		) &&
 		["revision", "sequence", "createdAt", "updatedAt"].every((key) => number(thread[key])) &&
 		typeof thread.closed === "boolean" &&
-		Array.isArray(thread.members) &&
+		Array.isArray(thread.members) && thread.members.length <= 64 &&
 		thread.members.every(
 			(item) =>
 				object(item) &&
-				typeof item.identity === "string" &&
-				typeof item.contribution === "string" &&
+				typeof item.identity === "string" && item.identity.length <= 256 &&
+				typeof item.contribution === "string" && item.contribution.length <= 256 &&
 				number(item.joinedAt),
 		) &&
 		value.events.every(
 			(event) =>
 				object(event) &&
-				["threadId", "sender", "kind", "message", "source"].every((key) => typeof event[key] === "string") &&
+				["threadId", "sender", "kind", "message", "source"].every((key) => typeof event[key] === "string" && event[key].length <= 48 * 1024) &&
 				(event.origin === "operator" || event.origin === "model") &&
 				["sequence", "at", "revision"].every((key) => number(event[key])) &&
 				(event.replyTo === null || number(event.replyTo)) &&
-				strings(event.notify),
+				Array.isArray(event.notify) && event.notify.length <= 16 && strings(event.notify),
 		) &&
 		(value.nextBefore === null || number(value.nextBefore)) &&
 		number(value.pending) &&
@@ -105,6 +105,17 @@ function threadPage(value: unknown): value is CollaborationPage {
 /** Treat thread text as text, not terminal control sequences. */
 function plain(value: string): string {
 	return stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === "\n" ? char : " "));
+}
+
+/** Membership dates do not date contribution changes; the exchange retains their source events. */
+export function memberDeclarationLines(thread: CollaborationPage["thread"], nameFor: (id: string) => string): string[] {
+	const visible = thread.members.slice(0, 16);
+	return [
+		"Member declarations, not agreement",
+		...visible.map((member) => `${plain(nameFor(member.identity).slice(0, 512)).replace(/\s+/g, " ")} [${plain(member.identity)}]: ${plain(member.contribution).replace(/\s+/g, " ").trim() || "No contribution declared"}`),
+		...(thread.members.length > visible.length ? [`${thread.members.length - visible.length} member declarations omitted by display bound. Read the thread with agent_collaborate.`] : []),
+		...(visible.length ? [] : ["No member declarations in this read"]),
+	];
 }
 
 interface CollaborationViewOptions {
@@ -488,11 +499,8 @@ export class CollaborationView {
 			this.field("Acceptance", t.acceptance),
 			this.field("Integrator", this.nameFor(t.integrator)),
 			"",
-			this.options.theme.bold(this.options.theme.fg("accent", "Peers")),
-			...t.members.map(
-				(member) =>
-					`${this.nameFor(member.identity)} [${member.identity}] · ${plain(member.contribution) || "No current contribution"}`,
-			),
+			...memberDeclarationLines(t, (id) => this.nameFor(id)),
+			"Membership dates do not date declaration changes. e reads the retained exchange; b reads earlier events.",
 			"",
 			this.options.theme.bold(this.options.theme.fg("accent", "Exchange (chronological)")),
 			...(this.before ? ["Earlier page. r reads latest."] : []),

@@ -17,6 +17,7 @@
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { FleetStatusSchema } from "./fleet-status.ts";
+import { OrdinaryPrimaryObservationSchema } from "./primary-observation.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
 import { CreatedAgentsSchema } from "./agent-lineage.ts";
 import { AwaitFactSchema } from "./await-facts.ts";
@@ -300,7 +301,7 @@ const ToolStatusSchema = Type.Union(StatusOutputSchema.anyOf.map((schema) => {
 		...("conversations" in properties ? { createdAgents: Type.Optional(CreatedAgentsSchema) } : {}),
 	});
 }));
-export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema]);
+export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema, OrdinaryPrimaryObservationSchema]);
 
 const entrySource = union([literal("user"), literal("assistant"), literal("toolResult"), literal("summary"), literal("custom")]);
 const messageRole = union([literal("system"), literal("user"), literal("assistant"), literal("toolResult")]);
@@ -425,6 +426,8 @@ export const ResultOutputSchema = object({
 /** `agent_inspect` output: one shape per view, selected by the `view` property. */
 export const InspectOutputSchema = union([HistoryOutputSchema, SearchOutputSchema, ExactOutputSchema, ActivityOutputSchema, ResultOutputSchema]);
 export type InspectOutput = Static<typeof InspectOutputSchema>;
+/** Tool routing also accepts ordinary retained evidence; the native host contract stays separate. */
+export const InspectToolOutputSchema = union([InspectOutputSchema, OrdinaryPrimaryObservationSchema]);
 
 /** The schema for one observation method, for `outputSchema` registration. */
 export function observationSchema(method: "list" | "status" | "inspect"): TSchema {

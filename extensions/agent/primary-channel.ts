@@ -84,6 +84,8 @@ export interface PrimaryInfo {
 	/** Session-written declaration, not verified host state. */
 	readonly intentClaim?: PrimaryIntentClaim;
 	readonly observedPurpose?: PrimaryObservedPurpose;
+	/** Public Pi retained session file; it does not identify the live selected leaf. */
+	readonly sessionFile?: string;
 }
 
 interface PrimaryEndpoint extends PrimaryInfo {
@@ -137,6 +139,7 @@ export interface PrimaryChannelOptions {
 	readonly lastActivityAt?: string;
 	readonly intentClaim?: PrimaryIntentClaim;
 	readonly observedPurpose?: PrimaryObservedPurpose;
+	readonly sessionFile?: string;
 }
 
 export interface PrimaryChannel {
@@ -273,7 +276,7 @@ function endpointPid(record: Record<string, unknown>): number {
 	return record.pid;
 }
 
-type EndpointDescriptor = Pick<PrimaryInfo, "repository" | "repositoryState" | "lastActivityAt" | "intentClaim" | "observedPurpose">;
+type EndpointDescriptor = Pick<PrimaryInfo, "repository" | "repositoryState" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "sessionFile">;
 
 function endpointDescriptor(record: Record<string, unknown>): EndpointDescriptor {
 	const repository = optionalString(record, "repository");
@@ -281,10 +284,12 @@ function endpointDescriptor(record: Record<string, unknown>): EndpointDescriptor
 	if (repositoryState !== undefined && repositoryState !== "git" && repositoryState !== "outside-git" && repositoryState !== "unknown") throw new TypeError("repositoryState is invalid");
 	if (repositoryState === "git" && !repository) throw new TypeError("Git repository identity is missing");
 	if (repositoryState === "outside-git" && repository) throw new TypeError("outside-git repository identity is invalid");
+	const sessionFile = optionalString(record, "sessionFile");
 	const lastActivityAt = optionalString(record, "lastActivityAt");
 	const intentClaim = record.intentClaim === undefined ? undefined : validatePrimaryIntentClaim(record.intentClaim);
 	const observedPurpose = record.observedPurpose === undefined ? undefined : validateObservedPurpose(record.observedPurpose);
 	return {
+		...(sessionFile === undefined ? {} : { sessionFile }),
 		...(observedPurpose === undefined ? {} : { observedPurpose }),
 		...(repositoryState === undefined ? {} : { repositoryState }),
 		...(repository === undefined ? {} : { repository }),
@@ -559,6 +564,7 @@ function endpointRecord(options: PrimaryChannelOptions, serverId: string, socket
 		id: options.id,
 		serverId,
 		cwd: options.cwd,
+		...(options.sessionFile === undefined ? {} : { sessionFile: options.sessionFile }),
 		...(options.observedPurpose === undefined ? {} : { observedPurpose: validateObservedPurpose(options.observedPurpose) }),
 		...(options.repository === undefined ? {} : { repository: options.repository }),
 		...(options.repositoryState === undefined ? {} : { repositoryState: options.repositoryState }),

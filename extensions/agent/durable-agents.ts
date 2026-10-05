@@ -47,8 +47,7 @@ import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
 import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
-	InspectOutputSchema,
-	StatusOutputSchema,
+	InspectToolOutputSchema,
 	StatusToolOutputSchema,
 	structuredObservation,
 } from "./observation-schema.ts";
@@ -1461,12 +1460,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_status",
 			description:
-				"Read conversation state and tools through the host observation. A selected session lists bounded pending timers with IDs and deadlines. Without a target, read this storage's conversations, effort presence and intent claims, and recent active thread hints with explicit coverage. Fleet overviews use compact excerpts and summary coverage.",
+				"Read conversation state and tools through the host observation. A selected Durable session lists bounded pending timers with IDs and deadlines. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. Without a target, read this storage's conversations, effort presence and intent claims, and recent active thread hints with explicit coverage. Fleet overviews use compact excerpts and summary coverage.",
 			parameters: StatusParams,
 			replay: "safe",
 			execute: async (args: StatusInput, api, context) => {
 				if (args.view === "fleet") return fleetObservation(host.catalogRoot, args.sessionId);
-				const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusOutputSchema);
+				const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusToolOutputSchema);
 				if (args.sessionId !== undefined || result.isError) return result;
 				const createdAgents = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
 				if (createdAgents === undefined && host.catalogRoot === undefined) return result;
@@ -1508,7 +1507,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_inspect",
 			description:
-				"Read compact history or activity: role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
+				"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
 			parameters: InspectParams,
 			replay: "safe",
 			execute: async (args: InspectInput) =>
@@ -1530,10 +1529,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 						]),
 					},
 					`Inspect of ${args.sessionId ?? "the calling conversation"} failed`,
-					InspectOutputSchema,
+					InspectToolOutputSchema,
 				),
 		}),
-		outputSchema: InspectOutputSchema,
+		outputSchema: InspectToolOutputSchema,
 	};
 
 	const attachTool = durable.defineTool({

@@ -163,6 +163,7 @@ export function createAgentCommand(
 	effortWiring?: {
 		efforts(ctx: ExtensionContext): Promise<EffortAwareness>;
 		messageEffort(id: string, text: string, ctx: ExtensionContext): Promise<DashboardResult>;
+		observeEffort?(id: string, ctx?: ExtensionContext): Promise<string>;
 	},
 	preferences?: DashboardPreferences,
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
@@ -203,6 +204,10 @@ export function createAgentCommand(
 		if (!action) throw new Error(`Agent action unavailable: ${name}`);
 		return action;
 	};
+	const observationFor = (ctx: ExtensionContext) => {
+		const observe = effortWiring?.observeEffort;
+		return observe ? (id: string) => observe(id, ctx) : undefined;
+	};
 	const openDashboard = async (ctx: ExtensionContext): Promise<void> => {
 		if (!ctx.hasUI || dashboardOpen) return;
 		dashboardOpen = true;
@@ -216,6 +221,7 @@ export function createAgentCommand(
 					saveLayout: preferences ? (layout) => preferences.save(layout) : undefined,
 					efforts: effortWiring ? () => effortWiring.efforts(ctx) : undefined,
 					messageEffort: effortWiring ? (id, text) => effortWiring.messageEffort(id, text, ctx) : undefined,
+					observeEffort: observationFor(ctx),
 					sessionFigures: sessionFigures ? (page) => sessionFigures(ctx, page) : undefined,
 					modelInfo: (provider, modelId) => ctx.modelRegistry.find(provider, modelId),
 					branch: readAgentBranch,

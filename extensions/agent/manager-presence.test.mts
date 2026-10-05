@@ -45,7 +45,7 @@ it("samples activity writes and keeps observed purpose separate from declared in
 	await manager.publishIntent(id, undefined);
 	assert.equal(channel.info().intentClaim, undefined);
 	assert.equal(channel.info().observedPurpose?.text, "Review the parser");
-	assert.equal(manager.recordPrimaryInput(id, "Second operator prompt"), false);
+	assert.equal(manager.recordPrimaryInput(id, "Second operator prompt", "interactive"), false);
 });
 
 it("does not replace unvisited first-input provenance after resume", async (t) => {
@@ -61,8 +61,8 @@ it("does not replace unvisited first-input provenance after resume", async (t) =
 	for (let i = 0; i < 256; i++) session.appendCustomEntry("other");
 	const purpose = retainedPurpose(session);
 	const id = randomUUID();
-	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send: () => {}, observedInput: purpose.text, observedInputComplete: purpose.complete });
-	assert.equal(manager.recordPrimaryInput(id, "A later task"), false);
+	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send: () => {}, observedInput: purpose.text, observedInputComplete: purpose.complete, observedInputCanCapture: purpose.canCapture });
+	assert.equal(manager.recordPrimaryInput(id, "A later task", "interactive"), false);
 	const view = await manager.awareness(id);
 	assert.equal(view.self.observedPurpose, undefined);
 	assert.equal(view.self.omitted, true);

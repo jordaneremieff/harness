@@ -167,10 +167,26 @@ When a participant storage exists, put an agreement that others must see in one
 peer thread for the real overlap. Record the governing frame and the order of
 shared mutations there. Ordinary primaries alone have no thread storage; use
 direct agreement rather than start an unnecessary agent just to hold a thread.
-A contact-thread claim links the effort to that retained exchange.
+A contact-thread claim links the effort to that retained exchange. Use the shared
+frame for the governing purpose and each member's `contribution` for its current
+hold, release, or continuing condition. Rejoin to replace your contribution and
+cite the source exchange. Threads and Related efforts display these declarations;
+a member's release is not consensus, permission, or proof of machine availability.
 
-Declare full-gate runs in integration intent with `scope.fullGate` set to `true`.
-Check related efforts before a full suite and run one full gate per machine at a time.
+Before a full suite, read untargeted `agent_status`. Declare the start of a full
+gate or promotion window in your own integration intent with `scope.fullGate`
+set to `true`, and clear that claim on release. Run one full gate per machine at
+a time. Notify only efforts that requested the release; do not broadcast routine
+starts or releases to every related primary. Each direct model-origin notice
+can start a primary turn. Intent and contributor statements are declarations,
+not locks.
+
+An ordinary primary routes answer-bearing fan-out through one Durable lead. The
+lead dispatches workers, waits natively with their exact `agent_await` references,
+and returns one composed answer. The primary stays responsive and receives that
+answer through normal delivery. Ordinary primaries do not support native await;
+separate direct lanes also produce separate result deliveries. Use native lead
+composition rather than a primary-side result buffer.
 
 Each coordinator controls only its own workers, checkouts, and branches. Never
 control another coordinator's resources or promote its unpublished commits.

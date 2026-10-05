@@ -53,6 +53,7 @@ export interface DashboardOperations {
 	saveLayout?(layout: DashboardLayout): void;
 	efforts?(): Promise<EffortAwareness>;
 	messageEffort?(id: string, text: string): Promise<DashboardResult>;
+	observeEffort?(id: string): Promise<string>;
 	sessionFigures?(page: AgentConversationPage): Promise<string>;
 	modelInfo?(provider: string, modelId: string): AgentModelInfo | undefined;
 	branch?: AgentBranchReader;
@@ -70,7 +71,7 @@ const HELP = [
 	"n starts a new agent.",
 	"a opens actions. / finds loaded agents. t opens Threads. b opens Related efforts. ? opens help.",
 	"[other] marks an agent created by another session, not its current task requester.",
-	"Related efforts shows presence and labeled intent claims. Enter opens a contact thread; m sends an operator message.",
+	"Related efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads observation; m sends an operator message.",
 	"Threads shows the frame, peers, and exchange. p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
 	"i switches all times between relative age and local date and time.",
@@ -900,6 +901,8 @@ export class AgentDashboard implements Component, Focusable {
 			tui: this.tui, theme: this.theme, keys: this.keys,
 			efforts: this.operations.efforts,
 			messageEffort: this.operations.messageEffort,
+			observeEffort: this.operations.observeEffort,
+			collaborate: this.operations.collaborate,
 			openContact: (threadId) => this.openThreads(threadId),
 			openThreads: () => this.openThreads(),
 			onBack: () => { this.effortsOpen = false; this.mouse.reset(); this.redraw(); },

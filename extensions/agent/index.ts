@@ -33,7 +33,7 @@ import {
 import { AGENT_CONTROL_GUIDANCE, MODEL_SELECTION_GUIDANCE, type AgentControlToolName } from "./control-guidance.ts";
 import {
 	StatusToolOutputSchema,
-	InspectOutputSchema,
+	InspectToolOutputSchema,
 	structuredObservation,
 } from "./observation-schema.ts";
 import { createAgentToolCards, renderAgentPeerMessage } from "./tool-cards.ts";
@@ -45,6 +45,7 @@ import { promptProjectTrust } from "./trust-support.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
 import { formatEffortAwareness } from "./effort-awareness.ts";
+import { formatPrimaryObservation } from "./primary-observation.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
 
 export { AgentManager } from "./manager.ts";
@@ -163,7 +164,7 @@ const observationSchemas: Partial<Record<AgentControlToolName, TSchema>> = {
 	agent_list: ProfiledListOutputSchema,
 	agent_profile: ProfileOutputSchema,
 	agent_status: StatusToolOutputSchema,
-	agent_inspect: InspectOutputSchema,
+	agent_inspect: InspectToolOutputSchema,
 };
 const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	id: ctx.sessionManager.getSessionId(),
@@ -257,7 +258,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		renderCall: cards.agent_intent.renderCall,
 		renderResult: cards.agent_intent.renderResult,
 	});
-	register("agent_await", "Await exact admitted results on an open native Durable request. Ordinary primary sessions keep asynchronous delivery and do not block.", AwaitParams, async () => { throw new Error("agent_await requires a native Durable conversation. This primary stays responsive and receives ordinary asynchronous results."); });
+	register("agent_await", "Await exact admitted results on an open native Durable request. Ordinary primary sessions keep asynchronous delivery and do not block.", AwaitParams, async () => { throw new Error("agent_await requires a native Durable conversation. For answer-bearing fan-out, delegate to one Durable lead that dispatches workers, awaits their exact results natively, and returns one composed answer. This primary stays responsive."); });
 	register(
 		"agent_collaborate",
 		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Join, leave and exchange sourced contributions. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read the frame and paged exchange without starting a host.",
@@ -290,7 +291,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_status",
-		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected agent returns full state and bounded pending timers.",
+		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state.",
 		Type.Object({ sessionId: Type.Optional(id), view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId." })) }, { additionalProperties: false }),
 		(input, ctx) => {
 			const sessionId = input.sessionId as string | undefined;
@@ -301,7 +302,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_inspect",
-		"Read compact history or activity: role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
+		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
 		inspect,
 		(input, ctx) => control("inspect", input, ctx),
 	);
@@ -748,6 +749,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		(ctx, page) => getManager().sessionFigures(ctx.sessionManager.getSessionId(), page),
 		{
 			efforts: (ctx) => getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd),
+			observeEffort: async (id) => formatPrimaryObservation(await getManager().observePrimary(id, { view: "activity" })),
 			messageEffort: async (id, text, ctx) => {
 				await control("submit", { sessionId: id, message: text, origin: "operator" }, ctx);
 				return { text: "Message delivered to the effort's primary. Delivery does not prove action." };
@@ -768,13 +770,15 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		primaries.get(sessionId)?.abort();
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
-		const purpose = retainedPurpose(ctx.sessionManager);
+		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
 		await getManager().registerPrimary(sessionId, {
 			signal: abort.signal,
 			cwd: ctx.cwd,
+			sessionFile: ctx.sessionManager.getSessionFile(),
 			name: ctx.sessionManager.getSessionName(),
 			observedInput: purpose.text,
 			observedInputComplete: purpose.complete,
+			observedInputCanCapture: purpose.canCapture,
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
 			send: (text, details) => {
@@ -812,7 +816,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	pi.on("input", (event, ctx) => {
 		const id = ctx.sessionManager.getSessionId();
 		getManager().touchPrimary(id);
-		if (event.source === "interactive" && getManager().recordPrimaryInput(id, event.text)) {
+		if (event.source === "interactive" && getManager().recordPrimaryInput(id, event.text, event.source)) {
 			pi.appendEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: purposeExcerpt(event.text) });
 		}
 	});

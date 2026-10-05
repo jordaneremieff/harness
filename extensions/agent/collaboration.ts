@@ -71,13 +71,15 @@ const CollaborationMutations = defineDocFamily<StoredMutation, null>({ kind: "ag
 function text(input: Record<string, unknown>, key: string, max: number, optional = false): string {
 	const value = input[key];
 	if (value === undefined && optional) return "";
-	if (typeof value !== "string" || value.trim() === "" || value.length > max) throw new Error(`${key} requires nonblank text of at most ${max} characters`);
+	if (typeof value !== "string" || value.trim() === "") throw new Error(`${key} is required and must be nonblank text`);
+	if (value.length > max) throw new Error(`${key} exceeds the maximum length of ${max} characters`);
 	return value;
 }
-function identity(value: string): string {
-	if (!ID.test(value)) throw new Error("A collaboration participant requires an exact agent or primary identity");
+export function collaborationIdentity(value: unknown, field: string): string {
+	const requirement = `${field} requires an exact discovered identity: a canonical lowercase UUID for a bare root, or UUID:positive nonroot conversation ID (a safe integer greater than ${ROOT_CONVERSATION_ID}); a root uses the bare storage ID`;
+	if (typeof value !== "string" || !ID.test(value)) throw new Error(requirement);
 	const suffix = value.split(":")[1];
-	if (suffix !== undefined && (!Number.isSafeInteger(Number(suffix)) || Number(suffix) <= ROOT_CONVERSATION_ID)) throw new Error("Use the exact discovered identity; a root uses the bare storage ID");
+	if (suffix !== undefined && (!Number.isSafeInteger(Number(suffix)) || Number(suffix) <= ROOT_CONVERSATION_ID)) throw new Error(requirement);
 	return value;
 }
 function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
@@ -87,12 +89,12 @@ export function collaborationStorage(threadId: string): string {
 	return match[1];
 }
 function frame(input: Record<string, unknown>, actor: string): CollaborationFrame {
-	return { title: text(input, "title", 160), purpose: text(input, "purpose", 4000), authority: text(input, "authority", 4000), source: text(input, "source", 2000), restrictions: text(input, "restrictions", 4000), acceptance: text(input, "acceptance", 4000), integrator: identity(text(input, "integrator", 256, true) || actor) };
+	return { title: text(input, "title", 160), purpose: text(input, "purpose", 4000), authority: text(input, "authority", 4000), source: text(input, "source", 2000), restrictions: text(input, "restrictions", 4000), acceptance: text(input, "acceptance", 4000), integrator: collaborationIdentity(input.integrator === undefined ? actor : input.integrator, "integrator") };
 }
 function recipients(input: Record<string, unknown>, actor: string): string[] {
 	if (input.notify === undefined) return [];
-	if (!Array.isArray(input.notify) || input.notify.length > 16 || input.notify.some((value) => typeof value !== "string")) throw new Error("notify requires at most 16 exact identities");
-	return [...new Set((input.notify as string[]).map(identity))].filter((value) => value !== actor);
+	if (!Array.isArray(input.notify) || input.notify.length > 16) throw new Error("notify requires an array of at most 16 exact identities");
+	return [...new Set(input.notify.map((value, index) => collaborationIdentity(value, `notify[${index}]`)))].filter((value) => value !== actor);
 }
 export function collaborationSummary(thread: CollaborationThread): CollaborationSummary {
 	return { id: thread.id, title: thread.title, purpose: thread.purpose.slice(0, 160), updatedAt: thread.updatedAt, closed: thread.closed, members: thread.members.length };
@@ -175,7 +177,7 @@ function replyReference(input: Record<string, unknown>, sequence: number): numbe
 
 /** Mutations use the actual caller identity supplied by the tool or operator adapter. */
 export async function mutateCollaboration(harness: Harness, storageId: string, input: Record<string, unknown>, context: Context): Promise<{ threadId: string; sequence: number; deduped: boolean }> {
-	const actor = identity(text(input, "senderIdentity", 256));
+	const actor = collaborationIdentity(input.senderIdentity, "senderIdentity");
 	const origin = input.origin;
 	if (origin !== "operator" && origin !== "model") throw new Error("Collaboration requires an explicit caller origin");
 	const requestId = text(input, "requestId", 512);

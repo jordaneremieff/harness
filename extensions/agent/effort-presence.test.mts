@@ -149,13 +149,39 @@ it("reports failed Git discovery explicitly instead of outside-git or unrelated"
 	assert.deepEqual((await readRelatedEfforts(unknownRecord, self())).coverage.reasons, ["repository-unknown"]);
 });
 
-it("retains observed purpose separately from intent claims in reader forms", async (t) => {
+it("uses declared intent alone for repository, cwd and machine purposes", async (t) => {
 	const root = rootFor(t);
-	const observedPurpose = { source: "interactive-input", text: "Add effort awareness" };
-	record(root, { observedPurpose, intentClaim: intent() });
-	const page = await readRelatedEfforts(root, self());
-	assert.deepEqual(page.efforts[0]?.observedPurpose, observedPurpose);
-	assert.deepEqual(page.efforts[0]?.intentClaim, intent());
+	const observedPurpose = { source: "interactive-input", text: "Later remark is not the work" };
+	const repository = record(root, { repository: "/work/common", observedPurpose, intentClaim: intent() });
+	const cwd = record(root, { observedPurpose, intentClaim: intent() });
+	const machine = record(root, { cwd: "/other/project", observedPurpose, intentClaim: intent() });
+	const page = await readRelatedEfforts(root, { ...self(), repository: "/work/common" });
+	assert.equal(page.efforts.length, 3);
+	for (const row of page.efforts) assert.equal(row.observedPurpose, undefined);
+	assert.deepEqual(page.efforts.find((row) => row.id === repository)?.intentClaim, intent());
+	assert.equal(page.efforts.find((row) => row.id === cwd)?.relationship, "cwd");
+	assert.equal(page.efforts.find((row) => row.id === machine)?.purposeClaim, intent().purpose);
+	assert.equal(JSON.stringify(page).includes(observedPurpose.text), false);
+});
+
+it("labels fallback origin only without intent and clears without retaining a stale declared competitor", async (t) => {
+	const root = rootFor(t);
+	const reader = self();
+	for (const source of ["session-name", "interactive-input"]) {
+		const observedPurpose = { source, text: `Known origin from ${source}` };
+		const id = record(root, { observedPurpose, intentClaim: intent() });
+		assert.equal((await readRelatedEfforts(root, reader)).efforts.find((row) => row.id === id)?.observedPurpose, undefined);
+		record(root, { id, observedPurpose });
+		const row = (await readRelatedEfforts(root, reader)).efforts.find((value) => value.id === id);
+		assert.deepEqual(row?.observedPurpose, observedPurpose);
+		assert.equal(row?.intentClaim, undefined);
+		assert.equal(row?.purposeClaim, undefined);
+	}
+	const unknown = record(root, { intentClaim: intent() });
+	record(root, { id: unknown });
+	const row = (await readRelatedEfforts(root, reader)).efforts.find((value) => value.id === unknown);
+	assert.equal(row?.intentClaim, undefined);
+	assert.equal(row?.observedPurpose, undefined);
 });
 
 

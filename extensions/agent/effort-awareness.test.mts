@@ -26,8 +26,8 @@ function fixture(t: { after(fn: () => void): void }) {
 function claim(purpose = "Own published purpose"): PrimaryIntentClaim {
 	return { purpose, integration: "Run focused checks before integration", authority: "Operator: edit only the agent slice", scope: { paths: ["extensions/agent"], branches: ["topic"] }, updatedAt: "2026-10-04T10:00:00.000Z" };
 }
-function publish(root: string, id: string, intentClaim = claim(), cwd = root): void {
-	writeFileSync(primaryEndpointPath(root, id), JSON.stringify({ id, version: PRIMARY_ENDPOINT_VERSION, serverId: randomUUID(), cwd, hostname: hostname(), pid: process.pid, socketPath: join(root, "missing.sock"), startedAt: "2026-10-04T09:00:00Z", intentClaim }));
+function publish(root: string, id: string, intentClaim: PrimaryIntentClaim | null = claim(), cwd = root, observedPurpose?: { source: "session-name" | "interactive-input"; text: string }): void {
+	writeFileSync(primaryEndpointPath(root, id), JSON.stringify({ id, version: PRIMARY_ENDPOINT_VERSION, serverId: randomUUID(), cwd, hostname: hostname(), pid: process.pid, socketPath: join(root, "missing.sock"), startedAt: "2026-10-04T09:00:00Z", ...(intentClaim === null ? {} : { intentClaim }), ...(observedPurpose === undefined ? {} : { observedPurpose }) }));
 }
 function publishThread(catalog: AgentCatalog, root: string): string {
 	const record = catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off", ownerId: "owner" });
@@ -46,7 +46,8 @@ it("unifies self-published purpose, related presence and active thread hints wit
 	const view = await readEffortAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog);
 	assert.equal(Value.Check(EffortAwarenessSchema, view), true, JSON.stringify([...Value.Errors(EffortAwarenessSchema, view)]));
 	assert.deepEqual(view.self.intentClaim, intentClaim);
-	assert.equal(view.self.observedPurpose?.text, "First interactive input");
+	assert.equal(view.self.observedPurpose, undefined);
+	assert.equal(JSON.stringify(view).includes("First interactive input"), false);
 	assert.deepEqual(view.presence.efforts.map((effort) => effort.id), [peer]);
 	assert.deepEqual(view.threads.items.map((thread) => thread.id), [threadId]);
 	const prompt = formatEffortAwareness(view);
@@ -56,6 +57,58 @@ it("unifies self-published purpose, related presence and active thread hints wit
 	assert.ok(prompt.includes("do not grant authority to the reader"));
 	assert.deepEqual(await readEffortAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog), view);
 	assert.equal(formatEffortAwareness(view), prompt);
+});
+
+it("never emits observed competitors with declared intent, including compact prompt rows", async (t) => {
+	const { root, self } = fixture(t);
+	const observedPurpose = { source: "interactive-input" as const, text: "UNRELATED-LATER-REMARK" };
+	const peer = randomUUID();
+	publish(root, peer, claim("PEER-DECLARED-PURPOSE"), root, observedPurpose);
+	const view = await readEffortAwareness(root, { ...self, intentClaim: claim("SELF-DECLARED-PURPOSE"), observedPurpose });
+	assert.equal(JSON.stringify(view).includes(observedPurpose.text), false);
+	const raw = { ...view, self: { ...view.self, observedPurpose }, presence: { ...view.presence, efforts: view.presence.efforts.map((row) => ({ ...row, observedPurpose })) } };
+	const prompt = formatEffortAwareness(raw);
+	assert.equal(prompt.includes(observedPurpose.text), false);
+	assert.ok(prompt.includes("SELF-DECLARED-PURPOSE"));
+	assert.ok(prompt.includes("PEER-DECLARED-PURPOSE"));
+	assert.ok(prompt.includes("Declared purpose takes precedence"));
+	const largeClaim = { ...claim("COMPACT-PURPOSE"), authority: "😀".repeat(512), integration: "😀".repeat(512), scope: { paths: Array.from({ length: 4 }, () => "😀".repeat(64)), branches: Array.from({ length: 4 }, () => "😀".repeat(64)) } };
+	const compact = { ...raw, self: { ...raw.self, intentClaim: largeClaim }, presence: { ...raw.presence, efforts: raw.presence.efforts.map((row) => ({ ...row, cwd: "x".repeat(7000), intentClaim: largeClaim })) } };
+	const shortPrompt = formatEffortAwareness(compact);
+	assert.ok(shortPrompt.includes("Self detail shortened"));
+	assert.ok(shortPrompt.includes("Effort detail shortened"));
+	assert.equal(shortPrompt.includes(observedPurpose.text), false);
+	assert.ok(Buffer.byteLength(shortPrompt) <= EFFORT_AWARENESS_PROMPT_BYTES);
+	const machine = { ...raw, presence: { ...raw.presence, efforts: raw.presence.efforts.map(({ intentClaim: _intent, ...row }) => ({ ...row, relationship: "machine" as const, purposeClaim: "MACHINE-DECLARED-PURPOSE" })) } };
+	assert.equal(formatEffortAwareness(machine).includes(observedPurpose.text), false);
+	assert.ok(formatEffortAwareness(machine).includes("MACHINE-DECLARED-PURPOSE"));
+});
+
+it("refreshes declared purpose and clear directly from current records without stale competitors", async (t) => {
+	const { root, self } = fixture(t);
+	const peer = randomUUID();
+	const observedPurpose = { source: "session-name" as const, text: "Named origin, not current intent" };
+	publish(root, peer, claim("OLD-PLAN"), root, observedPurpose);
+	assert.ok(formatEffortAwareness(await readEffortAwareness(root, self)).includes("OLD-PLAN"));
+	publish(root, peer, claim("NEW-PLAN"), root, observedPurpose);
+	const current = formatEffortAwareness(await readEffortAwareness(root, self));
+	assert.ok(current.includes("NEW-PLAN"));
+	assert.equal(current.includes("OLD-PLAN"), false);
+	assert.equal(current.includes(observedPurpose.text), false);
+	publish(root, peer, null, root, observedPurpose);
+	const cleared = await readEffortAwareness(root, { ...self, observedPurpose });
+	assert.equal(cleared.presence.efforts[0]?.intentClaim, undefined);
+	assert.deepEqual(cleared.presence.efforts[0]?.observedPurpose, observedPurpose);
+	assert.deepEqual(cleared.self.observedPurpose, observedPurpose);
+	const prompt = formatEffortAwareness(cleared);
+	assert.equal(prompt.includes("OLD-PLAN"), false);
+	assert.equal(prompt.includes("NEW-PLAN"), false);
+	assert.ok(prompt.includes('"source":"session-name"'));
+	assert.ok(prompt.includes("it is not current intent"));
+	publish(root, peer, null);
+	const unknown = await readEffortAwareness(root, self);
+	assert.equal(unknown.presence.efforts[0]?.observedPurpose, undefined);
+	assert.equal(formatEffortAwareness(unknown).includes(observedPurpose.text), false);
 });
 
 it("includes unrelated local purpose claims without full authority or integration detail", async (t) => {
