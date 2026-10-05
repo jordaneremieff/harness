@@ -832,6 +832,10 @@ export class AgentManager {
 		try {
 			const record = this.catalog.read(storageId);
 			if (record.recoveryDue !== true || this.crashes.get(storageId)?.stopped) return;
+			// Clean native shutdown releases the writer claim before the transport closes.
+			// A retained delivery marker alone is not evidence of an unexpected host loss.
+			const paths = hostPaths(record);
+			if (observeClaim(paths.claim, paths.identity).kind === "absent") return;
 			const now = Date.now();
 			const times = (this.crashes.get(storageId)?.times ?? []).filter((time) => now - time < CRASH_WINDOW_MS);
 			times.push(now);

@@ -40,7 +40,7 @@ it("serves only roster facts already observed by a footer refresh without lookup
 	assert.equal(manager.observedToolCardRows(), rows);
 });
 
-for (const retained of ["manager/1.2.0", "manager/1.4.0"]) it(`refuses a retained manager with a different interface (${retained}) before any control executes`, async (t) => {
+for (const retained of ["manager/1.3.0", "manager/2.0.0"]) it(`refuses a retained manager with a different interface (${retained}) before any control executes`, async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-card-reload-")));
 	const previousRoot = process.env.PI_AGENT_SESSIONS_DIR;
 	process.env.PI_AGENT_SESSIONS_DIR = root;
@@ -57,6 +57,6 @@ for (const retained of ["manager/1.2.0", "manager/1.4.0"]) it(`refuses a retaine
 	registerAgentExtension(pi);
 	const status = tools.get("agent_status");
 	assert.ok(status);
-	assert.equal(MANAGER_CONTRACT, "manager/1.3.0");
+	assert.notEqual(MANAGER_CONTRACT, retained);
 	await assert.rejects(status.execute("call", {}, new AbortController().signal, undefined, {} as ExtensionToolContext), (error: Error) => error.message.includes(retained) && error.message.includes(MANAGER_CONTRACT) && error.message.includes("Restart Pi before agent controls"));
 });

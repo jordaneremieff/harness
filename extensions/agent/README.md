@@ -845,8 +845,12 @@ keep their existing retry and retirement behavior. No row expiry or new catalog
 scan bound is introduced. The marker clears only on a clean
 close with nothing pending, after final catalog publication. Clean retirement
 closes cached manager and peer delivery links without a recovery acquisition or
-crash-budget charge. Footer totals remain in the catalog; later reads use cold
-storage without a writer, and later controls acquire a fresh host.
+crash-budget charge. Native shutdown releases the writer claim before the
+transport closes. A retained delivery marker with a released claim does not
+trigger automatic recovery. Busy native shutdown retains its claim until
+process death, so unexpected loss still recovers native work. Footer totals
+remain in the catalog; later reads use cold storage without a writer, and later
+controls acquire a fresh host.
 
 Cold `agent_status` returns retained conversation data with `live: false` and
 `storageId`. It omits `pid` and `inventory`: the reader loads no host, so its

@@ -572,6 +572,7 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
 	manager.catalog.markRecoveryDue(record.storageId, true);
+	writeClaim(record, claimFor(record, deadProcessId()));
 	for (let index = 0; index < 3; index++) {
 		await connections[index]?.close();
 		await connections.waitForCount(index + 2);

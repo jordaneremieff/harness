@@ -153,6 +153,65 @@ it("delivers a parked row when its owner registers before the source host retire
 	assert.equal(notices.length, 1);
 });
 
+it("keeps cached dead-owner delivery cold after clean retirement and resumes at owner registration", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t);
+	const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await waitForProcessExit(dead, 5000);
+	assert.ok(dead.pid);
+	const path = primaryEndpointPath(f.root, f.ownerId);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, JSON.stringify({ version: PRIMARY_DELIVERY_CONTRACT, id: f.ownerId, serverId: randomUUID(), startedAt: new Date().toISOString(), pid: dead.pid, hostname: hostname(), socketPath: join(f.root, "dead.sock"), cwd: f.cwd }));
+	const checks = eventLog<() => void>();
+	const host = await runHost(() => f.runtime, { metadata: f.metadata, idleMs: 10, announceReady: () => {}, scheduleIdleCheck: (check) => { checks.push(check); return () => {}; } });
+	t.after(() => host.close());
+	let returning = false;
+	let acquisitions = 0;
+	let reopened: Awaited<ReturnType<typeof runHost>> | undefined;
+	t.after(() => reopened?.close());
+	const lost = eventLog<void>();
+	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, acquire: async (metadata) => {
+		acquisitions++;
+		if (acquisitions > 1) {
+			assert.ok(returning, "clean retirement must not acquire a recovery host");
+			const runtime = await createDurableRuntime(metadata);
+			reopened = await runHost(() => runtime, { metadata, idleMs: 0, announceReady: () => {} });
+		}
+		const client = await connectHost(metadata, { retryAttempts: 0 });
+		client.onClose(() => lost.push(undefined));
+		return client;
+	} });
+	t.after(() => manager.close());
+	const other = randomUUID();
+	const fallback = eventLog<string>();
+	await manager.registerPrimary(other, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => fallback.push(text) });
+	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: other, cwd: f.cwd });
+	await f.runtime.request("report", { ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "retained result", requestId: "cold-cached-owner" }, "report");
+	await fallback.waitForCount(1);
+	const idle = deferred();
+	assert.ok(f.runtime.onActivity);
+	const stop = f.runtime.onActivity(() => { void eligible(f.runtime).then((ready) => { if (ready) idle.resolve(); }); });
+	if (!await eligible(f.runtime)) await idle.promise;
+	stop();
+	checks[checks.length - 1]();
+	await host.done;
+	await lost.waitForCount(1);
+	await (manager as unknown as { recoveryQueue: Promise<void> }).recoveryQueue;
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+	assert.equal(acquisitions, 1);
+	assert.equal((manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes.entries[Symbol.iterator]().next().done, true);
+	assert.equal((manager as unknown as { clients: Map<string, unknown> }).clients.size, 0);
+	returning = true;
+	const delivered = eventLog<string>();
+	await manager.registerPrimary(f.ownerId, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => delivered.push(text) });
+	await delivered.waitForCount(1);
+	assert.equal(acquisitions, 2, "owner registration, not clean retirement, reopens storage");
+	assert.equal(fallback.length, 1);
+	await lost.waitForCount(2);
+	await reopened?.close();
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
+	assert.equal((manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes.entries[Symbol.iterator]().next().done, true);
+});
+
 it("rechecks a commit and an admission at asynchronous retirement boundaries", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const inspected = deferred();
