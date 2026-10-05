@@ -1,6 +1,6 @@
 # stash: session continuity
 
-The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; a separate bounded model request can distill the live session on request through `/stash new <hint>`, which adds no turn to the live session.
+The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; `/stash new <hint>` starts independent Durable work from a captured session snapshot, without a turn or status update in the caller.
 
 ## Surfaces
 
@@ -14,11 +14,10 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
 | `/stash` | command | Browse and pick up efforts (TUI overlay); bare invocation opens the browser. |
 | `ctrl+alt+s` | shortcut | Open the same browser directly in TUI mode without submitting or replacing the editor draft. |
-| `/stash new <hint>` | command | Stream a separate model response to distill the live session plus the hint into a new stash. |
+| `/stash new <hint>` | command | Admit independent Durable creation from the current context snapshot and hint; find the artifact through normal discovery. |
 | `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
 | `/stash get <id> <note>` | command | Pick up with an operator note: material recalled after the stash was written, delivered ahead of the artifact and authoritative on conflict. The artifact itself is never rewritten. |
 | `/stash release <id>` | command | Return an active stash to open (dead-session cleanup). |
-| `/stash abort` | command | Cancel the in-flight creation job. |
 | `/stash capacity [reset]` | command | Inspect the last capacity observation and request latches, or explicitly start a new pressure episode. |
 
 Pickup is one system action. The command reads the selected artifact and sends it as the next user message through `pi.sendUserMessage()`. The agent does not need to orchestrate a second `stash_read` call. The current working directory is never changed implicitly; the pickup message names both the current workspace and the recorded project, and calls out a mismatch before edits begin. An optional operator note (`/stash get <id> <note…>`, or the browser's `a` key) rides along in the same message as a distinct amendment block placed ahead of the artifact, marked newer than it and authoritative on conflict; the note is trusted operator input, terminal-sanitized, capped at 20,000 characters, and never persisted — the stashed core material stays byte-identical. `stash_write` emits the equivalent fresh-session shortcut:
@@ -321,7 +320,6 @@ Command forms are:
 ```text
 /stash                         browse & pick up (TUI overlay)
 /stash new <hint>              distill the live session into a new stash
-/stash abort                   cancel an in-flight creation
 /stash get <id> [note]         pick up a stash, optionally with an operator note
 /stash complete <id> <outcome> close an open or active stash with a concrete outcome
 /stash release <id>            return an active stash to open
@@ -450,11 +448,16 @@ bounded dispatch and persistence, not real-model compliance or long-term utility
 
 ## Background distillation
 
-`/stash new <hint>` captures Pi's canonical persisted-context projection with
-`sessionManager.buildSessionProjection()`, then calls the current session's configured
-`modelRegistry.streamSimple()` with no tools. Registered providers and their
-request-time authentication remain available without a child session, resource
-loader, or separate model registry. The distiller receives the explicit system
+`/stash new <hint>` materializes Pi's canonical persisted-context projection
+with `sessionManager.buildSessionProjection()` before the first asynchronous
+boundary. It captures the source metadata and target store, then admits an
+independent Durable root through the documented
+[independent-command host contract](../../docs/conventions/durable-contributions.md).
+Exactly one synchronous launch provider must be available. Its receipt confirms
+native admission; it is not a model task with a reply destination. The worker
+has no tools or extension instructions beyond the distillation prompt.
+
+The distiller receives the explicit system
 instructions plus a single user message: the operator hint
 first as the sole effort the artifact may cover, then the bounded transcript
 (first quarter and last three quarters, marked at the cut). Concurrent or prior
@@ -499,86 +502,30 @@ entries.
 
 ### Distillation model and thinking
 
-By default the distiller inherits the live session model and thinking level.
-Override either with environment variables (empty or whitespace values count as
-unset):
+The independent host selects fresh Pi configuration defaults for the invocation
+workspace, with the host's resolved project trust. It does not inherit the
+caller's selected model or thinking level. Configured model scope, saved defaults,
+per-model thinking, global thinking, authentication, and capability clamping
+follow Pi's ordinary fresh-session selection. The host persists that pair before
+admission, so a restart does not reselect it. Stash has no separate model or
+thinking override. Selection does not change the caller or settings files.
 
-| Variable | Unset | Set |
-|---|---|---|
-| `PI_STASH_MODEL` | Parent session model | `provider/id` or bare id from the current registry with configured auth |
-| `PI_STASH_THINKING` | Parent thinking level (or `low` when the parent has none) | Explicit level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
+Generation uses native Durable conversation submissions with stable request IDs.
+The native host owns provider execution, retries, usage, and restart recovery;
+Stash adds no model loop or wall-clock job timeout. A completed response that
+fails parsing or validation gets one format-correction submission against the
+same captured source and hint in the worker's context. A second invalid payload,
+a skip response, or a generation failure writes no artifact. Only a complete
+text answer reaches publication.
 
-A set `PI_STASH_MODEL` that is missing from the registry or has no configured
-auth fails creation; the parent model is never used as a silent fallback. An
-explicit `PI_STASH_THINKING` level the selected model cannot run also fails
-creation and names the supported levels. An inherited thinking level the model
-cannot run is clamped. Prefer `provider/id` when bare ids collide across
-providers. Distillation still has a 180-second wall-clock bound; pin
-`PI_STASH_THINKING` (for example to `low`) when a high parent thinking level
-would make the one-shot distill too slow or costly. `stash_write` is authored by
-the live agent and does not read these variables.
-
-The selected distiller identity is surfaced at both ends of the job: the start
-notification and the running footer status name the model and thinking level in
-statusline form (`<model> [medium]`, the thinking bracket only for
-reasoning models), and the settled notification plus the `stash: done` status
-report the run's token and cost totals (`35k in · 2.0k out · ~$0.12`, with `in`
-counting input, cache-read, and cache-write tokens). Totals sum the final
-reported usage of every model attempt exactly once, including failed attempts
-before a successful retry. Skip and failure notifications carry the totals too.
-Cancellation retains usage received before the outcome settles; a provider that
-ignores cancellation can return usage too late to include. Provider-internal
-retries expose only the usage the provider reports, so these totals are not an
-invoice-completeness guarantee. The surfaced label is sanitized to a single control-free line:
-configured model names are free-form, and every string this module interpolates
-into a status or notification goes through the same sanitization.
-
-Transient retries use Pi's public `retryAssistantCall` with the on-disk global
-and project retry settings. Provider retry controls, transport, HTTP timeout,
-WebSocket timeout, and thinking budgets use the corresponding SettingsManager
-getters. Defaults permit three outer retries with exponential waits starting at
-two seconds; quota errors and context overflow do not retry. Transient retries
-retain identical input. Model adapters retain their default output-token limits;
-the extension adds no universal token cap.
-
-A completed response that fails JSON parsing or payload validation gets one
-format-correction request. It regenerates from the same captured source and hint
-with an explicit JSON instruction appended to the prompt. It does not replay the
-malformed response or save prose as a substitute handover. A second invalid
-payload fails without writing. Successful, skipped, incomplete, tool-request,
-and terminal provider-error responses do not start format correction. Both
-requests share the job's model, thinking level, separate request-cache identity,
-wall-clock deadline, cancellation signal, and cumulative usage totals. Transient
-retry settings apply to each request.
-
-The request does not run AgentSession compaction, length recovery, or cache
-warming. Context overflow fails without rewriting the transcript. Length-limited
-or tool-request responses fail validation even if their text contains valid JSON.
-Only a completed text response reaches the parser and store.
-
-The command handler returns immediately; the live agent receives no turn. The
-job uses zero tools, one captured source, a 180-second wall-clock auto-abort across
-requests and retry waits, and an AbortController that `/stash abort` and
-`session_shutdown` both trigger. Cancellation settles the job even if a provider
-ignores its signal; stopping the underlying request still requires provider
-cooperation. Late responses never write an artifact. At most one creation runs at a time; a second
-creation dispatch during a run reports the in-flight creation. A different session
-cannot abort that creation; the abort command requires the owning session. The result promise
-settles exactly once and never rejects, so a detached callback cannot crash
-the host session.
-
-While the job runs, the extension publishes `stash: running ⠋ · <distiller>`
-under its own status key through `ctx.ui.setStatus` and animates it on a 120 ms
-interval it owns. On settle it holds `stash: done <id> · <usage>`,
-`stash: skipped`, or `stash: failed` for three seconds, then clears the key;
-abort clears it immediately. Every terminal path stops the interval and clears
-pending timers. The [statusline extension](../statusline/README.md) owns custom
-footer presentation; Pi's default footer also displays the status.
-
-In RPC mode the write and notifications still happen; the spinner is TUI-only.
-In JSON/print the write still happens and the artifact appears in
-`stash_list`; the command itself is silent, matching the existing
-silent-success contract.
+The command returns after durable admission, not after generation or publication.
+Success is silent in TUI, RPC, print, JSON, and native Durable callers: no model
+acknowledgment, completion message, check-in, status key, or timer. Each invocation
+owns separate work. The caller neither tracks it nor cancels it on shutdown.
+Admission errors still use the command's normal error channel. The independent
+agent remains discoverable through the host's existing agent controls; use those
+controls for explicit inspection or cancellation, including background work.
+The artifact appears through `stash_list` discovery without a follow-up caller turn.
 
 Only TUI mode constructs the custom browser. Headless callers can use `stash_list`
 to discover ids; the explicit `get` and lifecycle verbs remain usable without the
@@ -658,19 +605,29 @@ ordinary hook.
 
 ### Command and distillation
 
-The contribution registers one `stash` command for agent controls. `/stash
-new <hint>` creates a background `stash.distill` task owned by the
-conversation and records its id in the `stash.distill` document; the command
-returns the task id immediately. `/stash abort` reads that recorded id and
-aborts exactly that task through the host's `abortTask()`, leaving other
-conversation work untouched; the task clears the recorded id when it becomes
-terminal. The task captures the conversation's committed model context as a
-bounded, redacted transcript plus observed references, resolves the model and
-thinking level (honoring `PI_STASH_MODEL` and `PI_STASH_THINKING`), streams one
-tool-free distillation request, and publishes through the replayable writer.
-Its terminal outcome and usage are committed to the same document, which
-records the last attempt's status, artifact id, path, title, message, and token
-and cost totals.
+The contribution registers one `stash` command for agent controls. A native
+caller captures its committed model context and source identity before launch,
+then uses the same independent-host contract as the ordinary command. The
+conversation-scoped `stash.launch` document family retains the first snapshot
+under its invocation ID, including after an uncertain admission response. A
+retry reuses that input despite later caller progress; a changed hint with the
+same ID refuses. This retained input is not job monitoring. Neither entrypoint
+creates a distillation task in the caller.
+
+The worker receives validated structured command data with the captured source,
+hint, project, branch, source session, and target store. In one native commit it
+sets tool-free distillation instructions and records a background
+`stash.distill` task in the `stash.distill` conversation document. Repeated
+admission with the same invocation ID returns that task; another invocation
+cannot replace its input. Generation and publication use the captured values,
+not the worker's live workspace or a model-selected destination.
+
+The task commits its validated payload and publication timestamp before the
+external write. The replayable writer reuses a byte-identical artifact after a
+restart between publication and receipt. The task stores its terminal outcome
+in the document and a passive `stash.creation` entry with status and any artifact
+id, path, title, or failure message. This entry has no model message and starts
+no follow-up turn. Native generation retains its normal usage evidence.
 
 The remaining command verbs operate directly on the external store: `get`
 activates an artifact and queues the pickup message as the next user input,
@@ -685,15 +642,15 @@ Durable differences from the ordinary entrypoint:
 
 - There is no TUI browser and no `ctrl+alt+s` shortcut. Discovery is
   `stash_list` and the explicit `get` and lifecycle verbs.
-- Distillation captures the committed Durable model context rather than Pi's
-  persisted-session projection, and its usage is reported through the
-  `stash.distill` document rather than session status and notifications.
+- The source snapshot is committed Durable model context rather than Pi's
+  persisted-session projection. Both paths publish through an independent
+  native worker with the same silence and ownership contract.
 - Capacity notices are delivered through the generation run's `onYield`
   continuation and re-armed by compaction or an explicit reset.
 
 ## Storage
 
-Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments. `PI_STASH_MODEL` and `PI_STASH_THINKING` configure `/stash new` distillation (see Background distillation). `PI_SESSION_ID` is read as a fallback when the session manager supplies no session id.
+Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments. `PI_SESSION_ID` is read as a fallback when the session manager supplies no session id.
 
 Flat files keep handovers independent of session lifetimes and project checkouts,
 with plain-text content available for direct inspection.
@@ -743,7 +700,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 
 ## Files
 
-- `index.ts`: tool registrations, `/stash` and shortcut host, capacity hook, the creation slot/status lifecycle, and the Durable contribution emission.
+- `index.ts`: tool registrations, `/stash` and shortcut host, capacity hook, silent independent creation admission, and the Durable contribution emission.
 - `durable.ts`: the native Durable extension: contribution, tools, capacity hooks and episode document, distillation task and receipt document, and agent commands.
 - `params.ts`: shared parameter schemas for both entrypoints.
 - `guidance.ts`: shared tool descriptions and model guidance for both entrypoints.
@@ -755,7 +712,8 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state and rendering.
 - `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.
-- `distill.ts`: projection serialization, prompt building, payload validation, configured model streaming, retry usage, and cancellation.
+- `distill.ts`: projection serialization, bounded redacted snapshots, prompt building, and payload validation.
+- `launch.ts`: structural independent-host contract, provider discovery, captured input validation, and launch requests.
 - `redact.ts`: deterministic credential redaction for transcript, references, payloads, and lifecycle outcomes.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
 - `test-fixtures.mts`: typed model and transcript fixtures, registration capture, and the partial host context for entrypoint tests.
@@ -774,19 +732,21 @@ printf '%s\n' '{"id":"commands","type":"get_commands"}' \
   | pi -e . --mode rpc --no-session --offline
 ```
 
-Controlled streams cover timeout, cancellation, late results, retry exhaustion,
-format correction and its attempt limit, usage totals, invalid responses, and
-byte-exact artifact output. An entrypoint
-test registers a synthetic provider in a real isolated ModelRuntime and invokes
-the command without a stream override. It checks registry binding, request-time
-authentication, tool-free input, storage, and no turn in the live session.
+Native faux-provider tests cover tool-free requests, captured publication
+metadata, correction limits, skip and failure receipts, replay-safe admission,
+and burst creation without cross-contaminated snapshots. The crash fixture
+kills native creation after publication and reopens the SQLite storage; recovery
+must preserve the exact artifact without a second generation or publication.
+Existing native tool, lifecycle, and capacity tests cover the unchanged paths.
 
-Native SessionManager regressions exercise context omissions and replacements,
-branch navigation, retained compaction and branch summaries, and unchanged raw
-history. Command-stream tests inspect the actual distiller request and its
-reference section; capture-failure tests cover TUI, RPC, print, and JSON modes.
-These tests use synthetic sessions and controlled replies, not provider-quality
-evaluation.
+Ordinary entrypoint tests cover silent admission in each mode, provider-discovery
+failures, snapshot immutability across an asynchronous boundary, independent
+concurrent calls, and absence of caller model selection, timers, or shutdown
+hooks. Native SessionManager tests exercise omissions and replacements, branch
+navigation, summaries, redaction, bounded references, and unchanged raw history.
+These controlled checks do not establish real provider quality, fresh host
+default selection, or independent host survival after a real caller exits.
+Those claims require the host's own checks and an integrated runtime drive.
 
 `npm run typecheck` checks TypeScript against the installed Pi declarations;
 it does not establish lifecycle execution. The runtime layer is declared by

@@ -21,7 +21,6 @@ key, and a consumer must not parse a sibling's status text.
 
 | Key | Publisher and presentation contract | Meaning | Cleared by |
 |---|---|---|---|
-| `stash` | [Stash](../../extensions/stash/README.md) | Distillation progress and a brief terminal result. The publisher owns the animation; consumers render its text generically. | Result expiry, abort, or session shutdown. |
 | `agent` | [Agent roster and coverage](../../extensions/agent/README.md#roster-and-coverage) | Working and total agents created by the current primary session, including agents they create, with observed native cost. Each primary receives its own figures. | No agents in that session scope, primary lifecycle cleanup, or manager close. Retained idle agents remain in scope. |
 
 ## Rules

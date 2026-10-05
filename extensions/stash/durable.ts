@@ -9,8 +9,8 @@
  */
 import { mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { Context } from "@earendil-works/chord";
-import type { Api, AssistantMessage, Message, Model, Models, Static } from "@earendil-works/pi-ai";
+import type { Context, JsonValue } from "@earendil-works/chord";
+import type { AssistantMessage, Message, Models, Static } from "@earendil-works/pi-ai";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -18,13 +18,18 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CAPACITY_NOTICE_HEADER, capacityConfig, capacityDirectiveLines } from "./capacity.ts";
 import {
 	type DistillPayload,
-	type DistillRequestOutcome,
-	type DistillUsage,
+	buildDistillPrompt,
+	DISTILL_SYSTEM_PROMPT,
+	parseDistillPayload,
 	prepareDistillSource,
-	readOptionalEnv,
-	resolveDistillThinking,
-	startPreparedDistill,
 } from "./distill.ts";
+import {
+	type DistillInput,
+	type IndependentCommandLaunch,
+	captureBranch,
+	creationRequest,
+	readDistillInput,
+} from "./launch.ts";
 import { resumeCommand } from "./format.ts";
 import {
 	STASH_COMPLETE_DESCRIPTION,
@@ -60,6 +65,7 @@ export interface StashDurableHost {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly storageId: string;
+	readonly launchIndependent: IndependentCommandLaunch;
 	readonly signal: AbortSignal;
 	/** Register a shutdown cleanup; the host awaits it after aborting the signal. */
 	onClose(dispose: () => void | Promise<void>): void;
@@ -83,6 +89,7 @@ export interface StashDurableCommand {
 
 export interface StashDurableCommandCall {
 	readonly args: string;
+	readonly data?: JsonValue;
 	readonly conversation: Durable.Conversation;
 	/** The host's open Harness, for task-level control such as abortTask(). */
 	readonly harness: Durable.Harness;
@@ -341,92 +348,22 @@ function capacityNoticeText(
 	].join("\n\n");
 }
 
-// ─── Distillation task ──────────────────────────────────────────────────────
+// ─── Independent creation ──────────────────────────────────────────────────
 
-type StashUsageRecord = {
-	inputTokens: number;
-	outputTokens: number;
-	cacheReadTokens: number;
-	cacheWriteTokens: number;
-	costUsd: number;
-};
-
-type DistillReceiptEntry = {
-	at: string;
+type DistillReceipt = {
 	status: "completed" | "failed" | "skipped" | "invalid" | "aborted";
 	id?: string;
 	path?: string;
 	title?: string;
 	message?: string;
-	usage?: StashUsageRecord;
 };
 
-type DistillReceiptState = { last?: DistillReceiptEntry; activeTaskId?: number };
-
-type DistillTaskInput = { hint: string };
+type DistillReceiptState = { invocationId?: string; taskId?: number; last?: DistillReceipt };
+type CapturedCreation = { input?: Durable.JsonObject };
 
 type DistillTaskState =
-	| { phase: "capture" }
-	| {
-			phase: "distill";
-			transcript: string;
-			artifacts: string[];
-			project?: string;
-			branch?: string;
-			sessionId?: string;
-	  }
-	| {
-			phase: "write";
-			payload: DistillPayload;
-			usage?: StashUsageRecord;
-			createdAtMs: number;
-			project?: string;
-			branch?: string;
-			sessionId?: string;
-	  };
-
-type DistillTaskResult =
-	| { status: "completed"; id: string; path: string; title: string; usage?: StashUsageRecord }
-	| { status: "skipped" | "invalid"; message?: string; usage?: StashUsageRecord };
-
-function usageRecord(usage: DistillUsage | undefined): StashUsageRecord | undefined {
-	if (!usage) return undefined;
-	return {
-		inputTokens: usage.inputTokens,
-		outputTokens: usage.outputTokens,
-		cacheReadTokens: usage.cacheReadTokens,
-		cacheWriteTokens: usage.cacheWriteTokens,
-		costUsd: usage.costUsd,
-	};
-}
-
-type ModelResolution = { ok: true; model: Model<Api> } | { ok: false; error: string };
-
-function resolveDurableDistillModel(
-	models: Models,
-	agentModel: { readonly provider: string; readonly modelId: string } | undefined,
-	envModel: string | undefined,
-): ModelResolution {
-	const raw = readOptionalEnv(envModel);
-	if (raw) {
-		const slash = raw.indexOf("/");
-		const found =
-			slash > 0
-				? models.getModel(raw.slice(0, slash), raw.slice(slash + 1))
-				: models.getModels().find((model) => model.id === raw);
-		if (!found) {
-			return { ok: false, error: `model "${raw}" is not in the current registry. Check the id with: pi --list-models` };
-		}
-		return { ok: true, model: found };
-	}
-	if (!agentModel)
-		return { ok: false, error: "No model is available for this session; cannot start a stash distillation." };
-	const found = models.getModel(agentModel.provider, agentModel.modelId);
-	if (!found) {
-		return { ok: false, error: `model "${agentModel.provider}/${agentModel.modelId}" is not in the current registry.` };
-	}
-	return { ok: true, model: found };
-}
+	| { phase: "generate"; attempt: number }
+	| { phase: "write"; payload: DistillPayload; createdAtMs: number };
 
 // ─── Commands ───────────────────────────────────────────────────────────────
 
@@ -434,7 +371,12 @@ interface StashBinding {
 	readonly storeDir: string;
 	readonly capacityDoc: Durable.ConversationDocToken<CapacityDocState>;
 	readonly receiptDoc: Durable.ConversationDocToken<DistillReceiptState>;
-	createDistillTask(tx: Durable.Tx, conversationId: Durable.ConversationId, hint: string): Promise<Durable.TaskId>;
+	readonly launchDoc: Durable.ConversationDocFamilyToken<CapturedCreation, null>;
+	createDistillTask(
+		tx: Durable.Tx,
+		conversationId: Durable.ConversationId,
+		input: DistillInput,
+	): Promise<Durable.TaskId>;
 }
 
 const bindings = new WeakMap<StashDurableHost, StashBinding>();
@@ -443,8 +385,7 @@ const STASH_DURABLE_USAGE = [
 	"/stash — session-continuity handovers (Durable)",
 	"",
 	"Create:",
-	"  /stash new <hint>           start a native distillation task; the artifact appears in stash_list",
-	"  /stash abort                stop the recorded distillation task",
+	"  /stash new <hint>           create an independent Durable handover; find it through stash_list",
 	"",
 	"Retrieve & manage:",
 	"  /stash get <id> [note]      activate a handover and queue it as the next message",
@@ -456,7 +397,6 @@ const STASH_DURABLE_USAGE = [
 	"  /stash help                 show this usage",
 	"",
 	"  <id> may be a full stash id or a unique prefix.",
-	"/stash abort stops one background task and leaves other conversation work untouched.",
 ].join("\n");
 
 function bindingOrThrow(host: StashDurableHost): StashBinding {
@@ -471,9 +411,7 @@ async function runStashCommand(call: StashDurableCommandCall): Promise<string> {
 	const verb = parts[0];
 	switch (verb) {
 		case "new":
-			return await startDistillCommand(binding, call.conversation, call.context, parts);
-		case "abort":
-			return await abortCommand(binding, call);
+			return await startDistillCommand(binding, call, parts);
 		case "get":
 			return await pickupCommand(binding, call, parts);
 		case "complete":
@@ -492,43 +430,75 @@ async function runStashCommand(call: StashDurableCommandCall): Promise<string> {
 	}
 }
 
-/** Create the background distillation task, record its id, and return immediately. */
+/** Capture on the caller; structured input admits work only in the independent root. */
 async function startDistillCommand(
 	binding: StashBinding,
-	conversation: Durable.Conversation,
-	context: Context,
+	call: StashDurableCommandCall,
 	parts: string[],
 ): Promise<string> {
+	if (call.data !== undefined) {
+		const input = readDistillInput(call.data);
+		const taskId = await call.conversation.commit(async (tx) => {
+			const receipt = await tx.doc(binding.receiptDoc, call.conversation.id);
+			if (receipt.invocationId !== undefined) {
+				if (receipt.invocationId !== call.invocationId)
+					throw new Error("This stash worker already owns another invocation.");
+				return receipt.taskId;
+			}
+			await call.host.durable.configure(tx, call.conversation.id, {
+				extensions: [],
+				tools: [],
+				instructions: DISTILL_SYSTEM_PROMPT,
+			});
+			const id = await binding.createDistillTask(tx, call.conversation.id, input);
+			receipt.invocationId = call.invocationId;
+			receipt.taskId = id;
+			return id;
+		}, call.context);
+		return `Stash creation admitted as task ${taskId}.`;
+	}
 	const hint = parts.slice(1).join(" ").trim();
 	if (!hint) throw new Error("Usage: /stash new <hint>");
-	const taskId = await conversation.commit(async (tx) => {
-		const id = await binding.createDistillTask(tx, conversation.id, hint);
-		const receipt = await tx.doc(binding.receiptDoc, conversation.id);
-		receipt.activeTaskId = id;
-		return id;
-	}, context);
-	return `Stash distillation started as task ${taskId}.\nThe artifact appears in stash_list when the task completes; the stash.distill receipt records its outcome and usage.`;
+	if (typeof call.host.launchIndependent !== "function")
+		throw new Error("Stash creation requires an independent Durable host provider.");
+	const input = await captureNativeCreation(binding, call, hint);
+	await call.host.launchIndependent(creationRequest(input, call.invocationId));
+	return "";
 }
 
-/** Abort the one recorded distillation task; other conversation work stays untouched. */
-async function abortCommand(binding: StashBinding, call: StashDurableCommandCall): Promise<string> {
-	const activeTaskId = await call.conversation.commit(async (tx) => {
-		const receipt = await tx.doc(binding.receiptDoc, call.conversation.id);
-		return receipt.activeTaskId ?? null;
+function matchingCreation(data: JsonValue, hint: string): DistillInput {
+	const input = readDistillInput(data);
+	if (input.hint !== hint) throw new Error("This stash invocation already owns a different hint.");
+	return input;
+}
+
+/** Command retries retain the first snapshot, including after an uncertain admission response. */
+async function captureNativeCreation(
+	binding: StashBinding,
+	call: StashDurableCommandCall,
+	hint: string,
+): Promise<DistillInput> {
+	const saved = await call.harness.snapshot(binding.launchDoc, call.conversation.id, call.invocationId, call.context);
+	if (saved?.input) return matchingCreation(saved.input, hint);
+	const source = prepareDistillSource({
+		entries: [{ messages: (await call.conversation.context(call.context)).messages }],
+	});
+	const agent = await call.conversation.agent(call.context);
+	const project = agent.cwd ?? call.host.cwd;
+	const sessionId =
+		call.conversation.id === call.host.durable.ROOT_CONVERSATION_ID
+			? call.host.storageId
+			: `${call.host.storageId}:${call.conversation.id}`;
+	const storeDir = resolve(project, binding.storeDir);
+	const branch = await captureBranch(project, call.context.abortSignal);
+	const input = jsonDetails({ ...source, hint, project, sessionId, storeDir, ...(branch ? { branch } : {}) });
+	return call.conversation.commit(async (tx) => {
+		const doc = await tx.doc(binding.launchDoc, call.conversation.id, call.invocationId, null);
+		doc.input ??= input;
+		return matchingCreation(doc.input, hint);
 	}, call.context);
-	if (activeTaskId === null) return "No stash distillation task is running.";
-	const result = await call.harness.abortTask(activeTaskId as Durable.TaskId, call.context);
-	if (result === "terminal") {
-		await call.conversation.commit(async (tx) => {
-			const receipt = await tx.doc(binding.receiptDoc, call.conversation.id);
-			delete receipt.activeTaskId;
-		}, call.context);
-		return `Stash distillation task ${activeTaskId} is already terminal; the recorded id was cleared.`;
-	}
-	return `Stash distillation task ${activeTaskId} is aborting.`;
 }
 
-/** Activate one artifact and queue its pickup message as the next user input. */
 async function pickupCommand(binding: StashBinding, call: StashDurableCommandCall, parts: string[]): Promise<string> {
 	const { conversation, context, invocationId } = call;
 	const id = parts[1];
@@ -704,9 +674,18 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		fork: "initial",
 		initial: () => ({ episode: 1 }),
 	});
+	const launchDoc = host.durable.defineDocFamily<CapturedCreation, null>({
+		kind: "stash.launch",
+		version: 1,
+		family: true,
+		scope: "conversation",
+		history: "latest",
+		fork: "initial",
+		initial: () => ({}),
+	});
 	const receiptDoc = host.durable.defineDoc<DistillReceiptState>({
 		kind: "stash.distill",
-		version: 1,
+		version: 2,
 		scope: "conversation",
 		history: "latest",
 		fork: "initial",
@@ -867,189 +846,119 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		},
 	});
 
-	const distillTask = host.durable.defineTask<DistillTaskInput, DistillTaskState, DistillTaskResult>({
+	async function distillAnswer(
+		runtime: Durable.TaskRuntime<DistillInput, DistillTaskState, DistillReceipt, object>,
+		context: Context,
+		content: string,
+		attempt: number,
+	): Promise<string> {
+		const conversation = await runtime.conversation(runtime.conversationId, context);
+		if (!conversation) throw new Error("The stash worker conversation is unavailable.");
+		const submission = await conversation.submit(
+			{ type: "input", content, requestId: `stash:${runtime.taskId}:${attempt}` },
+			context,
+		);
+		const settled = await submission.wait(context);
+		if (settled.status !== "done" || settled.type !== "input" || settled.answer === undefined)
+			throw new Error("Native stash generation ended without an answer.");
+		const entry = await runtime.entry(host.durable.AssistantEntry, settled.answer, context);
+		const response = entry?.model?.find((message) => message.role === "assistant");
+		if (response?.stopReason !== "stop") throw new Error("Native stash generation did not produce a complete answer.");
+		return response.content
+			.filter((part) => part.type === "text")
+			.map((part) => part.text)
+			.join("");
+	}
+
+	const distillTask = host.durable.defineTask<DistillInput, DistillTaskState, DistillReceipt>({
 		name: "stash.distill",
-		version: 1,
-		initial: () => ({ phase: "capture" }),
+		version: 2,
+		initial: () => ({ phase: "generate", attempt: 0 }),
 		phases: {
-			capture: async (_task, runtime, context) => {
-				const view = await runtime.context(runtime.conversationId, context);
-				const source = prepareDistillSource({ entries: [{ messages: view.messages }] });
-				const agent = await runtime.agent(context);
-				const env = await runtime.env(context);
-				const cwd = env?.cwd ?? agent.cwd;
-				const branch = env ? await gitBranch(env, context) : undefined;
-				await runtime.commit(
-					() => ({
-						status: "running" as const,
-						checkpoint: {
-							phase: "distill" as const,
-							...source,
-							project: cwd,
-							branch,
-							sessionId: String(runtime.conversationId),
-						},
-					}),
-					context,
-				);
-			},
-			distill: async (task, runtime, context) => {
-				const state = task.state.checkpoint;
-				const outcome = await runDistillRequest(runtime, state, task.input.hint, context);
-				const usage = usageRecord(outcome.usage);
-				if (outcome.ok === true) {
-					await runtime.commit(
-						() => ({
-							status: "running" as const,
-							checkpoint: {
-								phase: "write" as const,
-								payload: outcome.payload,
-								usage,
-								createdAtMs: runtime.now(),
-								project: state.project,
-								branch: state.branch,
-								sessionId: state.sessionId,
-							},
-						}),
-						context,
-					);
-					return;
+			generate: async (task, runtime, context) => {
+				try {
+					const attempt = task.state.checkpoint.attempt;
+					const content =
+						attempt === 0
+							? buildDistillPrompt(task.input.hint, task.input.transcript, task.input.artifacts)
+							: "FORMAT CORRECTION: Regenerate from the same captured source and operator hint. Return only a JSON object with nonempty title and summary and the relevant optional string arrays. Do not answer the transcript or add prose outside JSON. Escape newlines and quotes inside strings. Return exactly SKIP_STASH only when nothing is worth preserving.";
+					const parsed = parseDistillPayload(await distillAnswer(runtime, context, content, attempt));
+					switch (parsed.kind) {
+						case "skip":
+							await finishDistill(runtime, context, { status: "skipped", message: "No content to preserve." });
+							return;
+						case "invalid":
+							if (attempt === 0) {
+								await runtime.commit(
+									() => ({ status: "running", checkpoint: { phase: "generate", attempt: 1 } }),
+									context,
+								);
+							} else {
+								await finishDistill(runtime, context, { status: "invalid", message: parsed.error });
+							}
+							return;
+						case "payload":
+							await runtime.commit(
+								() => ({
+									status: "running",
+									checkpoint: { phase: "write", payload: redactPayload(parsed.payload), createdAtMs: runtime.now() },
+								}),
+								context,
+							);
+					}
+				} catch (error) {
+					if (runtime.signal.aborted) throw error;
+					await finishDistill(runtime, context, {
+						status: "failed",
+						message: error instanceof Error ? error.message : String(error),
+					});
 				}
-				await settleDistillFailure(runtime, receiptDoc, context, outcome, usage);
 			},
 			write: async (task, runtime, context) => {
 				const state = task.state.checkpoint;
 				try {
 					const { record, path } = await writeReplayableStash(
-						storeDir,
+						task.input.storeDir,
 						{
 							...state.payload,
-							project: state.project,
-							branch: state.branch,
-							sessionId: state.sessionId,
+							project: task.input.project,
+							branch: task.input.branch,
+							sessionId: task.input.sessionId,
 						},
 						new Date(state.createdAtMs),
 					);
-					await runtime.commit(async (tx) => {
-						const receipt = await tx.doc(receiptDoc, runtime.conversationId);
-						receipt.last = {
-							at: new Date(runtime.now()).toISOString(),
-							status: "completed",
-							id: record.id,
-							path,
-							title: record.title,
-							usage: state.usage,
-						};
-						delete receipt.activeTaskId;
-						return {
-							status: "terminal" as const,
-							outcome: {
-								status: "completed" as const,
-								result: {
-									status: "completed" as const,
-									id: record.id,
-									path,
-									title: record.title,
-									usage: state.usage,
-								},
-							},
-						};
-					}, context);
+					await finishDistill(runtime, context, { status: "completed", id: record.id, path, title: record.title });
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					await finishDistill(runtime, receiptDoc, context, "failed", `stash write failed: ${message}`, state.usage, {
-						status: "terminal",
-						outcome: { status: "failed", error: { message: `stash write failed: ${message}` } },
+					if (runtime.signal.aborted) throw error;
+					await finishDistill(runtime, context, {
+						status: "failed",
+						message: `Stash publication failed: ${error instanceof Error ? error.message : String(error)}`,
 					});
 				}
 			},
 		},
 		abort: async (_task, runtime, context) => {
-			await runtime.commit(async (tx) => {
-				const receipt = await tx.doc(receiptDoc, runtime.conversationId);
-				delete receipt.activeTaskId;
-				return { status: "terminal" as const, outcome: { status: "aborted" as const } };
-			}, context);
+			await finishDistill(runtime, context, { status: "aborted" });
 		},
 	});
 
-	async function runDistillRequest(
-		runtime: Durable.TaskRuntime<DistillTaskInput, DistillTaskState, DistillTaskResult, object>,
-		state: Extract<DistillTaskState, { phase: "distill" }>,
-		hint: string,
-		context: Context,
-	): Promise<DistillRequestOutcome> {
-		const agent = await runtime.agent(context);
-		const resolved = resolveDurableDistillModel(runtime.models, agent.model, process.env.PI_STASH_MODEL);
-		if (!resolved.ok) return { ok: false, reason: "failed", message: resolved.error };
-		const thinking = resolveDistillThinking({
-			envThinking: process.env.PI_STASH_THINKING,
-			parentThinking: agent.thinkingLevel,
-			model: resolved.model,
-		});
-		if (!thinking.ok) return { ok: false, reason: "failed", message: thinking.error };
-		const job = startPreparedDistill(
-			{
-				model: resolved.model,
-				cwd: state.project ?? host.cwd,
-				thinkingLevel: thinking.level,
-				hint,
-				transcript: state.transcript,
-				artifacts: state.artifacts,
-				project: state.project ?? host.cwd,
-				branch: state.branch,
-				sessionId: state.sessionId,
-				storeDir,
-				streamSimple: runtime.models.streamSimple.bind(runtime.models),
-			},
-			runtime.signal,
-		);
-		return await job.result;
-	}
-
-	async function settleDistillFailure(
-		runtime: Durable.TaskRuntime<DistillTaskInput, DistillTaskState, DistillTaskResult, object>,
-		doc: Durable.ConversationDocToken<DistillReceiptState>,
-		context: Context,
-		outcome: Extract<DistillRequestOutcome, { ok: false }>,
-		usage: StashUsageRecord | undefined,
-	): Promise<void> {
-		if (outcome.reason === "aborted") {
-			await finishDistill(runtime, doc, context, "aborted", outcome.message, usage, {
-				status: "terminal",
-				outcome: { status: "aborted" },
-			});
-			return;
-		}
-		if (outcome.reason === "failed") {
-			const message = outcome.message ?? "stash distillation failed";
-			await finishDistill(runtime, doc, context, "failed", message, usage, {
-				status: "terminal",
-				outcome: { status: "failed", error: { message } },
-			});
-			return;
-		}
-		const status = outcome.reason === "skip" ? "skipped" : "invalid";
-		await finishDistill(runtime, doc, context, status, outcome.message, usage, {
-			status: "terminal",
-			outcome: { status: "completed", result: { status, message: outcome.message, usage } },
-		});
-	}
-
 	async function finishDistill(
-		runtime: Durable.TaskRuntime<DistillTaskInput, DistillTaskState, DistillTaskResult, object>,
-		doc: Durable.ConversationDocToken<DistillReceiptState>,
+		runtime: Durable.TaskRuntime<DistillInput, DistillTaskState, DistillReceipt, object>,
 		context: Context,
-		status: DistillReceiptEntry["status"],
-		message: string | undefined,
-		usage: StashUsageRecord | undefined,
-		terminal: { status: "terminal"; outcome: Durable.TaskOutcome<DistillTaskResult> },
+		receipt: DistillReceipt,
 	): Promise<void> {
 		await runtime.commit(async (tx) => {
-			const receipt = await tx.doc(doc, runtime.conversationId);
-			receipt.last = { at: new Date(runtime.now()).toISOString(), status, message, usage };
-			delete receipt.activeTaskId;
-			return terminal;
+			(await tx.doc(receiptDoc, runtime.conversationId)).last = receipt;
+			await tx.appendEntry(runtime.conversationId, { kind: "stash.creation", data: jsonDetails(receipt) });
+			return {
+				status: "terminal",
+				outcome:
+					receipt.status === "aborted"
+						? { status: "aborted" }
+						: receipt.status === "failed"
+							? { status: "failed", error: { message: receipt.message ?? "Stash creation failed." } }
+							: { status: "completed", result: receipt },
+			};
 		}, context);
 	}
 
@@ -1057,8 +966,9 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		storeDir,
 		capacityDoc,
 		receiptDoc,
-		createDistillTask: (tx, conversationId, hint) =>
-			tx.createTask(distillTask, { hint }, { ownership: { kind: "conversation" }, conversationId, background: true }),
+		launchDoc,
+		createDistillTask: (tx, conversationId, input) =>
+			tx.createTask(distillTask, input, { ownership: { kind: "conversation" }, conversationId, background: true }),
 	});
 
 	return host.durable.defineExtension({

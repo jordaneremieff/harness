@@ -45,34 +45,38 @@ harness effects and opportunities. Assess superseded behavior against the curren
 host rather than recreating historical implementations. Only completed adoption
 establishes the first numeric declaration. No runtime command writes it.
 
-## Standalone distillation boundary
+## Independent Stash creation
 
-Verified 2026-10-05 against installed coding-agent 1.0.3.
-Installed `docs/extensions.md`,
-`dist/core/model-registry.{js,d.ts}`, and `dist/core/model-runtime.js` establish
-that `ModelRegistry.streamSimple()` uses the configured provider and resolves
-request-time authentication, including extension registrations. The shipped
-`examples/extensions/summarize.ts` uses the same registry for a standalone
-completion. Stash uses this ordinary extension interface rather than constructing
-an AgentSession for a fixed, tool-free request.
+Source-checked 2026-10-05 against installed coding-agent 1.0.3 and Durable 1.0.2.
+Stash captures a bounded, redacted context projection, the operator's hint, source
+metadata, and destination before independent work starts. Ordinary and native
+commands use the package-level
+[independent-command admission contract](conventions/durable-contributions.md).
+Successful admission adds no caller model input, Stash status key, or automatic
+result or check-in route. Setup failures remain command errors.
 
-Installed pi-ai `dist/utils/retry.{js,d.ts}` supplies `retryAssistantCall`;
-`dist/core/settings-manager.js` supplies the existing retry and request settings.
-Stash retains transient retries, excludes context overflow from that loop, and
-sums each attempt's reported usage once. Model adapters retain their output
-defaults. These controls do not establish a universal provider token cap or
-complete invoice accounting.
+The host resolves the model and thinking level from fresh cwd-bound Pi
+configuration under the normal project-trust decision, not from the caller's
+current selection. Public scope resolution preserves fresh CLI selection of a
+saved model within the enabled scope. Public SDK startup supplies fallback,
+per-model thinking, and capability clamping without a prompt. The selected pair
+is retained before native admission. Checked sources are
+`extensions/agent/{independent-launch,durable-services}.ts`, installed
+`dist/main.js`, and `dist/core/{sdk,agent-session-services,settings-manager}.js`.
 
-AgentSession also owns automatic overflow/length recovery and cache warming
-(`dist/core/agent-session.js`, `dist/core/compaction/compaction.js`, and
-`dist/core/sdk.js`). A registry stream does not supply those services. Stash
-keeps its captured transcript fixed and returns overflow or incomplete-output
-failure instead of inheriting session recovery. Its controlled stream tests and
-real-registry synthetic-provider command test establish the request, usage,
-cancellation, and storage boundaries, not live-model output quality. The
-real-registry synthetic-provider command trial was not repeated by this
-source comparison.
-Controlled stream tests establish only their exercised setup.
+The independent conversation owns tool-free generation through
+`Conversation.submit()`. Stash validates its answer and writes a normal handover
+through its replayable writer, using captured source metadata rather than worker
+metadata. The committed payload and timestamp let replay reuse a byte-identical
+artifact instead of adding a duplicate. Native entries retain the outcome for
+inspection; ordinary stash discovery exposes completed handovers
+(`extensions/stash/{index,launch,durable,distill,store}.ts`).
+
+Durable owns generation, provider identity, retries, and context recovery. Stash
+has no separate model loop, wall-clock job timeout, or caller-shutdown abort.
+Provider transport limits remain distinct from whole-job lifetime. The native
+request contract is in `pi-durable/dist/harness/{generation,provider}.js`; it
+does not establish exactly-once provider execution or universal handover quality.
 
 ## Policy pre-call guidance boundary
 
@@ -494,8 +498,9 @@ retries, reopen, reset, compaction, and model changes within that conversation.
 `ProviderState`. The provider session identity is distinct from the harness's
 storage, conversation, submission, and task identifiers. The agent host uses
 Durable's value; it must not replace it with a storage-keyed identity or make
-forks share that key. Stash's standalone request supplies its own UUIDv7 and
-stays outside this conversation identity contract.
+forks share that key. Stash creation uses the same native conversation identity
+contract through its independent worker (`extensions/stash/durable.ts`,
+source-checked 2026-10-05).
 
 The native host forwards configured transport, provider timeout, provider retry
 count, and maximum provider retry delay. Provider timeout overrides the HTTP
@@ -834,8 +839,8 @@ Shipped in 1.0.1:
   (`pi-ai/dist/api/anthropic-messages.js`). This is request construction, not a
   measured cache saving for every provider or agent.
 - `isRetryableAssistantError` recognizes model-capacity errors
-  (`pi-ai/dist/utils/retry.js`). Ordinary session retry, Stash's standalone retry,
-  and Durable generation/compaction retain their existing policies; the new
+  (`pi-ai/dist/utils/retry.js`). Ordinary session retry and Durable
+  generation/compaction retain their existing policies; the new
   classification does not enable retries when a policy disables them.
 - Cloudflare Clef and Clef Flash are classifier catalog entries, not chat models.
   Discover them through `models.getAvailableOfType("classifier")` and execute
@@ -883,10 +888,11 @@ Shipped in 1.0.2:
   selected through `getPackageDir()` and `loadPiRuntime()`
   (`extensions/agent/{index,durable-services}.ts`). Durable generation and
   compaction pass the conversation's non-off thinking level as `reasoning`;
-  off omits it, and the sampling resolver defaults to off. Stash distillation
-  passes the selected thinking level by the same convention and its own UUIDv7
-  session ID (`extensions/stash/distill.ts`). Both paths therefore inherit
-  per-level sampling on those APIs without a harness-owned merge.
+  off omits it, and the sampling resolver defaults to off. Stash creation uses
+  this native generation path and its conversation-scoped provider identity
+  (`extensions/stash/durable.ts`, source-checked 2026-10-05). Native requests
+  therefore inherit per-level sampling on those APIs without a harness-owned
+  merge.
 - Registry chat records intentionally project no sampling fields
   (`extensions/registry/models.ts`, `buildModelRecord`). They are capability,
   availability, scope, and price records, not complete model configuration.

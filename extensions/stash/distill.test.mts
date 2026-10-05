@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { describe, it } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	boundTranscript,
 	buildDistillPrompt,
@@ -12,33 +10,11 @@ import {
 	extractArtifacts,
 	isHintedDistill,
 	parseDistillPayload,
-	readOptionalEnv,
-	resolveDistillModel,
-	resolveDistillThinking,
-	startDistillJob,
+	prepareDistillSource,
 	validatePayload,
 	type DistillPayload,
-	type DistillStreamFunction,
 } from "./distill.ts";
-import { listStashes } from "./store.ts";
-import {
-	completedDistillStream,
-	controlledDistillStream,
-	testAssistantMessage,
-	testModel,
-	transcriptProjection,
-} from "./test-fixtures.mts";
-import {
-	createAssistantMessageEventStream,
-	getCurrentSystemPrompt,
-	getCurrentTools,
-	type Api,
-	type Model,
-	type Usage,
-} from "@earendil-works/pi-ai";
-import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-
-const NOW = new Date("2027-03-01T08:00:00Z");
+import { testAssistantMessage, transcriptProjection } from "./test-fixtures.mts";
 
 function sessionProjection() {
 	return transcriptProjection([
@@ -68,48 +44,6 @@ function sessionProjection() {
 	]);
 }
 
-function fakeFactory(reply: string) {
-	const calls: { prompted: string[] } = { prompted: [] };
-	const factory: DistillStreamFunction = (model, context, options) => {
-		const user = context.messages.find((message) => message.role === "user");
-		assert.ok(user && typeof user.content === "string");
-		calls.prompted.push(user.content);
-		return completedDistillStream(reply)(model, context, options);
-	};
-	return { factory, calls };
-}
-
-function withWatchdog<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
-	return new Promise<T>((resolve, reject) => {
-		const watchdog = setTimeout(() => reject(new Error("the asynchronous test did not settle")), timeoutMs);
-		void promise.then(
-			(value) => {
-				clearTimeout(watchdog);
-				resolve(value);
-			},
-			(error) => {
-				clearTimeout(watchdog);
-				reject(error);
-			},
-		);
-	});
-}
-
-let dir: string;
-let oldStore: string | undefined;
-
-before(async () => {
-	dir = await mkdtemp(join(tmpdir(), "stash-distill-test-"));
-	oldStore = process.env.PI_STASH_DIR;
-	process.env.PI_STASH_DIR = dir;
-});
-
-after(async () => {
-	if (oldStore === undefined) delete process.env.PI_STASH_DIR;
-	else process.env.PI_STASH_DIR = oldStore;
-	await rm(dir, { recursive: true, force: true });
-});
-
 const VALID_PAYLOAD: DistillPayload = {
 	title: "Tool migration",
 	summary: "The first tool ports cleanly; the wrapper template extracts itself.",
@@ -118,26 +52,6 @@ const VALID_PAYLOAD: DistillPayload = {
 	files: ["src/tools.ts"],
 	tags: ["migration"],
 };
-
-const baseOptions = (
-	factory: DistillStreamFunction,
-	extra: Partial<Parameters<typeof startDistillJob>[0]> = {},
-): Parameters<typeof startDistillJob>[0] => ({
-	model: testModel({ contextWindow: 100000 }),
-	cwd: "/workspace",
-	thinkingLevel: "low" as const,
-	hint: "port the first tool",
-	projection: sessionProjection(),
-	project: "/workspace",
-	branch: "main",
-	sessionId: "sess-9",
-	storeDir: dir,
-	timeoutMs: 60_000,
-	streamSimple: factory,
-	settings: SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } }),
-	now: () => NOW,
-	...extra,
-});
 
 describe("transcript serialization", () => {
 	it("renders roles, tool calls, tool results, and compaction notes", () => {
@@ -440,9 +354,74 @@ describe("payload validation", () => {
 	});
 });
 
-describe("distill job", () => {
-	it("preserves native summaries and text without checkpoints, state, signatures, or excluded shell output", async () => {
-		const manager = SessionManager.inMemory(dir);
+describe("snapshot preparation", () => {
+	it("redacts credential-shaped transcript content before the distiller", () => {
+		const secret = "sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwxyz123456";
+		const projection = transcriptProjection([
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "bash",
+					content: [{ type: "text", text: `export API_KEY=${secret}` }],
+					isError: false,
+				},
+			},
+			{ type: "message", message: { role: "user", content: "Keep going." } },
+		]);
+		const source = prepareDistillSource(projection);
+		const prompt = buildDistillPrompt("capture fixture", source.transcript, source.artifacts);
+		assert.ok(!prompt.includes(secret), "the secret must not reach the distiller");
+		assert.match(prompt, /\[REDACTED\]/);
+	});
+
+	it("redacts userinfo credentials from the observed references", () => {
+		const projection = transcriptProjection([
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "bash",
+					content: [{ type: "text", text: "Deployed from https://deployer:p4ssw0rd123@example.com/repo" }],
+					isError: false,
+				},
+			},
+		]);
+		const source = prepareDistillSource(projection);
+		const prompt = buildDistillPrompt("capture fixture", source.transcript, source.artifacts);
+		assert.ok(!prompt.includes("p4ssw0rd123"), "the userinfo password must not reach the distiller");
+		assert.match(prompt, /https:\/\/deployer:\[REDACTED\]@example\.com/);
+	});
+
+	it("redacts userinfo passwords that lossy reference extraction would truncate", () => {
+		// Parentheses are valid in userinfo per RFC 3986 and terminate the
+		// reference regex; the pre-extraction redaction must remove the password
+		// before the reference is cut.
+		const projection = transcriptProjection([
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "bash",
+					content: [{ type: "text", text: "Deployed from https://alice:longpassword(foo)@example.com/path" }],
+					isError: false,
+				},
+			},
+		]);
+		const source = prepareDistillSource(projection);
+		const prompt = buildDistillPrompt("capture fixture", source.transcript, source.artifacts);
+		assert.ok(!prompt.includes("longpassword"), "the password must be gone before extraction truncates the URL");
+	});
+
+	it("keeps the operator hint verbatim while redacting the transcript", () => {
+		const hint = "capture the auth setup for sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwxyz123456";
+		const source = prepareDistillSource(sessionProjection());
+		const prompt = buildDistillPrompt(hint, source.transcript, source.artifacts);
+		assert.ok(prompt.includes(hint), "the operator hint is trusted input and must stay verbatim");
+	});
+
+	it("preserves native summaries and text without checkpoints, state, signatures, or excluded shell output", () => {
+		const manager = SessionManager.inMemory("/workspace");
 		manager.appendMessage({ role: "system", content: "SYSTEM_CHECKPOINT", toolsAdded: [], timestamp: 0 });
 		const kept = manager.appendMessage({ role: "user", content: "RETAINED_USER", timestamp: 0 });
 		manager.appendMessage({ role: "user", content: "ABANDONED_BRANCH", timestamp: 0 });
@@ -478,12 +457,7 @@ describe("distill job", () => {
 		});
 		manager.appendCompaction("CURRENT_COMPACTION", kept, 0);
 		const rawBefore = JSON.stringify(manager.getEntries());
-		const { factory, calls } = fakeFactory("SKIP_STASH");
-		const outcome = await startDistillJob(baseOptions(factory, { projection: manager.buildSessionProjection() }))
-			.result;
-		assert.equal(outcome.ok, false);
-		assert.equal(calls.prompted.length, 1);
-		const prompt = calls.prompted[0];
+		const prompt = prepareDistillSource(manager.buildSessionProjection()).transcript;
 		assert.match(prompt, /\[compaction summary: CURRENT_COMPACTION\]/);
 		assert.match(prompt, /\[branch summary: BRANCH_SUMMARY\]/);
 		assert.match(prompt, /\[custom message\]\nCUSTOM_CONTEXT/);
@@ -501,8 +475,8 @@ describe("distill job", () => {
 		assert.equal(manager.buildSessionProjection().messages.filter((message) => message.role === "system").length, 1);
 	});
 
-	it("extracts only projected tool references even outside the retained transcript window", async () => {
-		const manager = SessionManager.inMemory(dir);
+	it("extracts only projected tool references even outside the retained transcript window", () => {
+		const manager = SessionManager.inMemory("/workspace");
 		manager.appendMessage({ role: "user", content: "a".repeat(80_000), timestamp: 0 });
 		const target = manager.appendMessage({
 			role: "toolResult",
@@ -514,678 +488,12 @@ describe("distill job", () => {
 		});
 		manager.appendContextEdit(target, { content: "/workspace/retained-reference.md" });
 		manager.appendMessage({ role: "user", content: "z".repeat(160_000), timestamp: 0 });
-		const { factory, calls } = fakeFactory("SKIP_STASH");
-		await startDistillJob(baseOptions(factory, { projection: manager.buildSessionProjection() })).result;
-		const [transcript, references] = calls.prompted[0].split("Observed references from tool results:");
+		const source = prepareDistillSource(manager.buildSessionProjection());
+		const transcript = source.transcript;
+		const references = source.artifacts.join("\n");
 		assert.match(transcript, /characters omitted/);
 		assert.doesNotMatch(transcript, /retained-reference.md|stale-middle.md/);
-		assert.match(references, /- \/workspace\/retained-reference.md/);
+		assert.match(references, /\/workspace\/retained-reference.md/);
 		assert.doesNotMatch(references, /stale-middle.md/);
-	});
-
-	it("writes a validated artifact with session metadata", async () => {
-		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		const job = startDistillJob(baseOptions(factory));
-		const outcome = await job.result;
-		assert.equal(outcome.ok, true);
-		if (!outcome.ok) return;
-		assert.match(outcome.record.id, /^20270301T080000Z-tool-migration/);
-		assert.equal(outcome.record.project, "/workspace");
-		assert.equal(outcome.record.branch, "main");
-		assert.equal(outcome.record.sessionId, "sess-9");
-		assert.equal(outcome.record.state, "open");
-		assert.equal(calls.prompted.length, 1);
-		assert.match(calls.prompted[0], /Operator hint: port the first tool/);
-		assert.match(calls.prompted[0], /\[USER\]\nStart the migration work/);
-		const listed = await listStashes(dir, { limit: 50 });
-		assert.ok(listed.some((entry) => entry.meta.id === outcome.record.id));
-	});
-
-	it("redacts credential-shaped transcript content before the distiller", async () => {
-		const secret = "sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwxyz123456";
-		const projection = transcriptProjection([
-			{
-				type: "message",
-				message: {
-					role: "toolResult",
-					toolName: "bash",
-					content: [{ type: "text", text: `export API_KEY=${secret}` }],
-					isError: false,
-				},
-			},
-			{ type: "message", message: { role: "user", content: "Keep going." } },
-		]);
-		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		await startDistillJob(baseOptions(factory, { projection })).result;
-		assert.equal(calls.prompted.length, 1);
-		assert.ok(!calls.prompted[0].includes(secret), "the secret must not reach the distiller");
-		assert.match(calls.prompted[0], /\[REDACTED\]/);
-	});
-
-	it("redacts userinfo credentials from the observed references", async () => {
-		const projection = transcriptProjection([
-			{
-				type: "message",
-				message: {
-					role: "toolResult",
-					toolName: "bash",
-					content: [{ type: "text", text: "Deployed from https://deployer:p4ssw0rd123@example.com/repo" }],
-					isError: false,
-				},
-			},
-		]);
-		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		await startDistillJob(baseOptions(factory, { projection })).result;
-		assert.equal(calls.prompted.length, 1);
-		assert.ok(!calls.prompted[0].includes("p4ssw0rd123"), "the userinfo password must not reach the distiller");
-		assert.match(calls.prompted[0], /https:\/\/deployer:\[REDACTED\]@example\.com/);
-	});
-
-	it("redacts userinfo passwords that lossy reference extraction would truncate", async () => {
-		// Parentheses are valid in userinfo per RFC 3986 and terminate the
-		// reference regex; the pre-extraction redaction must remove the password
-		// before the reference is cut.
-		const projection = transcriptProjection([
-			{
-				type: "message",
-				message: {
-					role: "toolResult",
-					toolName: "bash",
-					content: [{ type: "text", text: "Deployed from https://alice:longpassword(foo)@example.com/path" }],
-					isError: false,
-				},
-			},
-		]);
-		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		await startDistillJob(baseOptions(factory, { projection })).result;
-		assert.equal(calls.prompted.length, 1);
-		assert.ok(
-			!calls.prompted[0].includes("longpassword"),
-			"the password must be gone before extraction truncates the URL",
-		);
-	});
-
-	it("keeps the operator hint verbatim while redacting the transcript", async () => {
-		const hint = "capture the auth setup for sk-ant-oa" + "t01-abcdefghijklmnopqrstuvwxyz123456";
-		const { factory, calls } = fakeFactory(JSON.stringify(VALID_PAYLOAD));
-		await startDistillJob(baseOptions(factory, { hint })).result;
-		assert.equal(calls.prompted.length, 1);
-		assert.ok(calls.prompted[0].includes(hint), "the operator hint is trusted input and must stay verbatim");
-	});
-
-	it("redacts secrets from the written artifact", async () => {
-		const secret = "gsk_n4ABC" + "DEF1234567890abcdef1234567890abcdef";
-		const reply = JSON.stringify({
-			title: "Auth setup",
-			summary: `The provider key is ${secret}; rotate it soon.`,
-			decisions: [`Keep ${secret} out of the store`],
-		});
-		const outcome = await startDistillJob(baseOptions(fakeFactory(reply).factory)).result;
-		assert.equal(outcome.ok, true);
-		if (!outcome.ok) return;
-		const artifact = await readFile(outcome.path, "utf8");
-		assert.ok(!artifact.includes(secret), "the written artifact must not contain the secret");
-		assert.match(artifact, /\[REDACTED\]/);
-		assert.match(artifact, /rotate it soon/);
-	});
-
-	it("passes the selected model, exact instructions, no tools, and configured stream controls", async () => {
-		const model = testModel();
-		let received: Parameters<DistillStreamFunction> | undefined;
-		const streamSimple: DistillStreamFunction = (...args) => {
-			received = args;
-			return completedDistillStream(JSON.stringify(VALID_PAYLOAD))(...args);
-		};
-		const settings = SettingsManager.inMemory({
-			retry: { enabled: false, provider: { maxRetries: 2, timeoutMs: 1234, maxRetryDelayMs: 5678 } },
-			transport: "sse",
-			websocketConnectTimeoutMs: 2345,
-			thinkingBudgets: { high: 4567 },
-		});
-		const outcome = await startDistillJob(baseOptions(streamSimple, { model, settings, thinkingLevel: "high" })).result;
-		assert.equal(outcome.ok, true);
-		assert.ok(received);
-		assert.equal(received[0], model);
-		assert.equal(getCurrentSystemPrompt(received[1].messages), DISTILL_SYSTEM_PROMPT);
-		assert.deepEqual(getCurrentTools(received[1].messages), []);
-		assert.equal(received[1].messages.length, 2);
-		assert.equal(
-			received[1].messages[1].content,
-			buildDistillPrompt("port the first tool", projectionToTranscript(sessionProjection())),
-		);
-		assert.equal(received[2]?.reasoning, "high");
-		assert.equal(received[2]?.thinkingBudgets?.high, 4567);
-		assert.equal(received[2]?.transport, "sse");
-		assert.equal(received[2]?.timeoutMs, 1234);
-		assert.equal(received[2]?.maxRetries, 2);
-		assert.equal(received[2]?.maxRetryDelayMs, 5678);
-		assert.equal(received[2]?.websocketConnectTimeoutMs, 2345);
-		assert.equal(received[2]?.maxTokens, undefined, "the provider retains its model-specific output default");
-		assert.ok(received[2]?.signal instanceof AbortSignal);
-		assert.notEqual(received[2]?.sessionId, "sess-9", "the one-shot request owns a separate cache identity");
-	});
-
-	it("disables reasoning and preserves zero HTTP timeout semantics", async () => {
-		const streamSimple: DistillStreamFunction = (model, context, options) => {
-			assert.equal(options?.reasoning, undefined);
-			assert.equal(options?.timeoutMs, 2147483647);
-			return completedDistillStream("SKIP_STASH")(model, context, options);
-		};
-		const settings = SettingsManager.inMemory({ httpIdleTimeoutMs: 0 });
-		const outcome = await startDistillJob(baseOptions(streamSimple, { thinkingLevel: "off", settings })).result;
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) assert.equal(outcome.reason, "skip");
-	});
-
-	it("skips the write when the distiller says SKIP", async () => {
-		const { factory, calls } = fakeFactory("SKIP_STASH");
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const outcome = await startDistillJob(baseOptions(factory)).result;
-		assert.equal(outcome.ok, false);
-		if (outcome.ok) return;
-		assert.equal(outcome.reason, "skip");
-		assert.equal(calls.prompted.length, 1);
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before, "a skipped distillation must not write");
-	});
-
-	it("stops after one format correction and writes nothing for repeated invalid payloads", async () => {
-		for (const reply of ['{"title": 42}', "The change is ready for review."]) {
-			const { factory, calls } = fakeFactory(reply);
-			const before = (await listStashes(dir, { limit: 200 })).length;
-			const outcome = await startDistillJob(baseOptions(factory)).result;
-			assert.equal(outcome.ok, false);
-			if (outcome.ok) return;
-			assert.equal(outcome.reason, "invalid");
-			assert.equal(calls.prompted.length, 2);
-			assert.match(calls.prompted[1], /FORMAT CORRECTION/);
-			assert.equal((await listStashes(dir, { limit: 200 })).length, before);
-		}
-	});
-
-	const usage: Usage = {
-		input: 1000,
-		output: 2000,
-		cacheRead: 30000,
-		cacheWrite: 4000,
-		totalTokens: 37000,
-		cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.063, total: 0.123 },
-	};
-	const expectedUsage = {
-		inputTokens: 1000,
-		outputTokens: 2000,
-		cacheReadTokens: 30000,
-		cacheWriteTokens: 4000,
-		costUsd: 0.123,
-	};
-
-	it("regenerates prose as validated JSON with the same source and controls, then writes once", async () => {
-		const calls: Parameters<DistillStreamFunction>[] = [];
-		const prose = "The change is ready for review.";
-		const streamSimple: DistillStreamFunction = (...args) => {
-			calls.push(args);
-			return completedDistillStream(calls.length === 1 ? prose : JSON.stringify(VALID_PAYLOAD), usage)(...args);
-		};
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const outcome = await startDistillJob(baseOptions(streamSimple)).result;
-		assert.equal(outcome.ok, true);
-		if (!outcome.ok) return;
-		assert.equal(calls.length, 2);
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before + 1);
-		assert.match(await readFile(outcome.path, "utf8"), /The first tool ports cleanly/);
-		assert.equal(calls[0][0], calls[1][0]);
-		assert.deepEqual(calls[0][2], calls[1][2]);
-		assert.deepEqual(calls[0][1].messages[0], calls[1][1].messages[0]);
-		assert.equal(calls[1][1].messages.length, 2);
-		assert.deepEqual(getCurrentTools(calls[1][1].messages), []);
-		const original = calls[0][1].messages[1].content;
-		const corrected = calls[1][1].messages[1].content;
-		assert.equal(typeof original, "string");
-		assert.equal(typeof corrected, "string");
-		if (typeof original !== "string" || typeof corrected !== "string") return;
-		assert.ok(corrected.startsWith(original));
-		assert.match(corrected, /FORMAT CORRECTION/);
-		assert.ok(!corrected.includes(prose));
-		assert.deepEqual(outcome.usage, {
-			inputTokens: 2000,
-			outputTokens: 4000,
-			cacheReadTokens: 60000,
-			cacheWriteTokens: 8000,
-			costUsd: 0.246,
-		});
-	});
-
-	it("cancels an active format correction without writing or losing prior usage", async () => {
-		let attempts = 0;
-		let entered!: () => void;
-		const correctionStarted = new Promise<void>((resolve) => { entered = resolve; });
-		const streamSimple: DistillStreamFunction = (...args) => {
-			attempts++;
-			if (attempts === 1) return completedDistillStream("The change is ready.", usage)(...args);
-			const stream = controlledDistillStream()(...args);
-			entered();
-			return stream;
-		};
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const job = startDistillJob(baseOptions(streamSimple));
-		await withWatchdog(correctionStarted);
-		job.abort();
-		const outcome = await withWatchdog(job.result);
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) assert.equal(outcome.reason, "aborted");
-		assert.equal(attempts, 2);
-		assert.deepEqual(outcome.usage, expectedUsage);
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
-	});
-
-	it("times out a noncooperative format correction and discards its late payload", async () => {
-		let attempts = 0;
-		const lateStream = createAssistantMessageEventStream();
-		const streamSimple: DistillStreamFunction = (...args) => {
-			attempts++;
-			return attempts === 1 ? completedDistillStream("The change is ready.", usage)(...args) : lateStream;
-		};
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const outcome = await withWatchdog(startDistillJob(baseOptions(streamSimple, { timeoutMs: 20 })).result);
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) {
-			assert.equal(outcome.reason, "aborted");
-			assert.match(outcome.message ?? "", /timed out/);
-		}
-		assert.equal(attempts, 2);
-		assert.deepEqual(outcome.usage, expectedUsage);
-		const message = testAssistantMessage(JSON.stringify(VALID_PAYLOAD));
-		lateStream.push({ type: "done", reason: "stop", message });
-		lateStream.end();
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
-	});
-
-	it("reports final usage on successful, skipped, invalid, and failed writes", async () => {
-		for (const reply of [JSON.stringify(VALID_PAYLOAD), "SKIP_STASH", "not json"]) {
-			const outcome = await startDistillJob(baseOptions(completedDistillStream(reply, usage))).result;
-			const attempts = reply === "not json" ? 2 : 1;
-			assert.deepEqual(outcome.usage, {
-				inputTokens: expectedUsage.inputTokens * attempts,
-				outputTokens: expectedUsage.outputTokens * attempts,
-				cacheReadTokens: expectedUsage.cacheReadTokens * attempts,
-				cacheWriteTokens: expectedUsage.cacheWriteTokens * attempts,
-				costUsd: expectedUsage.costUsd * attempts,
-			});
-		}
-		const outcome = await startDistillJob(
-			baseOptions(completedDistillStream(JSON.stringify(VALID_PAYLOAD), usage), {
-				storeDir: join(dir, "absent", "\0invalid"),
-			}),
-		).result;
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) assert.match(outcome.message ?? "", /stash write failed/);
-		assert.deepEqual(outcome.usage, expectedUsage);
-	});
-
-	function failedStream(message: string, reportedUsage = usage): DistillStreamFunction {
-		return (model) => {
-			const stream = createAssistantMessageEventStream();
-			const response = {
-				...testAssistantMessage("", model, reportedUsage),
-				stopReason: "error" as const,
-				errorMessage: message,
-			};
-			stream.push({ type: "error", reason: "error", error: response });
-			stream.end();
-			return stream;
-		};
-	}
-
-	it("retries transient errors with identical input and sums each attempt exactly once", async () => {
-		let attempts = 0;
-		let first: Parameters<DistillStreamFunction> | undefined;
-		const streamSimple: DistillStreamFunction = (...args) => {
-			if (first) assert.deepEqual(args, first);
-			else first = args;
-			attempts++;
-			return (
-				attempts === 1
-					? failedStream("503 service unavailable")
-					: completedDistillStream(JSON.stringify(VALID_PAYLOAD), usage)
-			)(...args);
-		};
-		const outcome = await startDistillJob(baseOptions(streamSimple)).result;
-		assert.equal(outcome.ok, true);
-		assert.equal(attempts, 2);
-		assert.deepEqual(outcome.usage, {
-			inputTokens: 2000,
-			outputTokens: 4000,
-			cacheReadTokens: 60000,
-			cacheWriteTokens: 8000,
-			costUsd: 0.246,
-		});
-	});
-
-	it("enforces retry exhaustion and does not retry deterministic or overflow errors", async () => {
-		for (const [message, expectedCalls] of [
-			["503 service unavailable", 4],
-			["insufficient_quota", 1],
-			["maximum context length exceeded; 503", 1],
-		] as const) {
-			let attempts = 0;
-			const streamSimple: DistillStreamFunction = (...args) => {
-				attempts++;
-				return failedStream(message)(...args);
-			};
-			const outcome = await startDistillJob(baseOptions(streamSimple)).result;
-			assert.equal(outcome.ok, false);
-			if (!outcome.ok) assert.equal(outcome.reason, "failed");
-			assert.equal(attempts, expectedCalls);
-			assert.equal(outcome.usage?.inputTokens, 1000 * expectedCalls);
-		}
-	});
-
-	it("honors disabled outer retries", async () => {
-		let attempts = 0;
-		const streamSimple: DistillStreamFunction = (...args) => {
-			attempts++;
-			return failedStream("503")(...args);
-		};
-		await startDistillJob(
-			baseOptions(streamSimple, { settings: SettingsManager.inMemory({ retry: { enabled: false } }) }),
-		).result;
-		assert.equal(attempts, 1);
-	});
-
-	it("settles a synchronous stream setup exception without writing", async () => {
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const outcome = await startDistillJob(
-			baseOptions(() => {
-				throw new Error("stream setup failed");
-			}),
-		).result;
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) {
-			assert.equal(outcome.reason, "failed");
-			assert.match(outcome.message ?? "", /stream setup failed/);
-		}
-		assert.equal(outcome.usage, undefined);
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
-	});
-
-	it("rejects incomplete or tool-request output even when its text is valid JSON", async () => {
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		for (const stopReason of ["length", "toolUse"] as const) {
-			const streamSimple: DistillStreamFunction = (model) => {
-				const stream = createAssistantMessageEventStream();
-				const message = { ...testAssistantMessage(JSON.stringify(VALID_PAYLOAD), model, usage), stopReason };
-				stream.push({ type: "done", reason: stopReason, message });
-				stream.end();
-				return stream;
-			};
-			const outcome = await startDistillJob(baseOptions(streamSimple)).result;
-			assert.equal(outcome.ok, false);
-			if (!outcome.ok) assert.equal(outcome.reason, "invalid");
-			assert.deepEqual(outcome.usage, expectedUsage);
-		}
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
-	});
-
-	it("cancels an active stream, retains its terminal usage, and never writes", async () => {
-		let aborts = 0;
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const streamSimple: DistillStreamFunction = (model, _context, options) => {
-			const stream = createAssistantMessageEventStream();
-			const partial = testAssistantMessage("partial", model, usage);
-			stream.push({ type: "text_delta", contentIndex: 0, delta: "partial", partial });
-			options?.signal?.addEventListener(
-				"abort",
-				() => {
-					aborts++;
-					stream.push({ type: "error", reason: "aborted", error: { ...partial, stopReason: "aborted" } });
-					stream.end();
-				},
-				{ once: true },
-			);
-			return stream;
-		};
-		const job = startDistillJob(baseOptions(streamSimple));
-		await new Promise((resolve) => setImmediate(resolve));
-		job.abort();
-		job.abort();
-		const outcome = await withWatchdog(job.result);
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) assert.equal(outcome.reason, "aborted");
-		assert.equal(aborts, 1);
-		assert.deepEqual(outcome.usage, expectedUsage);
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
-	});
-
-	it("cancels during retry backoff without duplicating usage or starting another attempt", async () => {
-		let attempts = 0;
-		const streamSimple: DistillStreamFunction = (...args) => {
-			attempts++;
-			return failedStream("503")(...args);
-		};
-		const settings = SettingsManager.inMemory({ retry: { baseDelayMs: 60000 } });
-		const job = startDistillJob(baseOptions(streamSimple, { settings }));
-		await new Promise((resolve) => setImmediate(resolve));
-		job.abort();
-		const outcome = await withWatchdog(job.result);
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) assert.equal(outcome.reason, "aborted");
-		assert.equal(attempts, 1);
-		assert.deepEqual(outcome.usage, expectedUsage);
-	});
-
-	it("times out cooperative work and clears the provider signal", async () => {
-		let aborted = false;
-		const outcome = await withWatchdog(
-			startDistillJob(
-				baseOptions(
-					controlledDistillStream(() => {
-						aborted = true;
-					}),
-					{ timeoutMs: 20 },
-				),
-			).result,
-		);
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) {
-			assert.equal(outcome.reason, "aborted");
-			assert.match(outcome.message ?? "", /timed out/);
-		}
-		assert.equal(aborted, true);
-	});
-
-	it("settles a noncooperative stream and discards a late valid result", async () => {
-		const stream = createAssistantMessageEventStream();
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const outcome = await withWatchdog(startDistillJob(baseOptions(() => stream, { timeoutMs: 20 })).result);
-		assert.equal(outcome.ok, false);
-		if (!outcome.ok) assert.equal(outcome.reason, "aborted");
-		const message = testAssistantMessage(JSON.stringify(VALID_PAYLOAD));
-		stream.push({ type: "done", reason: "stop", message });
-		stream.end();
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
-	});
-
-	it("preserves artifact bytes and joins multiple text blocks without adding separators", async () => {
-		const streamSimple: DistillStreamFunction = (model) => {
-			const stream = createAssistantMessageEventStream();
-			const message = testAssistantMessage("", model);
-			message.content = [
-				{ type: "text", text: '{"title":"Byte parity",' },
-				{ type: "thinking", thinking: "not output" },
-				{ type: "text", text: '"summary":"Saved state.","files":["src/a.ts"]}' },
-			];
-			stream.push({ type: "done", reason: "stop", message });
-			stream.end();
-			return stream;
-		};
-		const outcome = await startDistillJob(baseOptions(streamSimple)).result;
-		assert.equal(outcome.ok, true);
-		if (!outcome.ok) return;
-		assert.equal(
-			await readFile(outcome.path, "utf8"),
-			[
-				"---",
-				'id: "20270301T080000Z-byte-parity"',
-				'title: "Byte parity"',
-				'created: "20270301T080000Z"',
-				'project: "/workspace"',
-				'branch: "main"',
-				'sessionId: "sess-9"',
-				"tags: []",
-				'state: "open"',
-				"---",
-				"",
-				"# Byte parity",
-				"",
-				"Saved state.",
-				"",
-				"## Files",
-				"",
-				"- src/a.ts",
-				"",
-			].join("\n"),
-		);
-	});
-});
-
-describe("distill model and thinking resolution", () => {
-	const parent = testModel({ id: "parent-model", provider: "parent", reasoning: true });
-	const override = testModel({ id: "cheap-model", provider: "cheap", reasoning: true });
-	const unauthed = testModel({ id: "locked-model", provider: "locked", reasoning: true });
-	const noReasoning = testModel({ id: "plain", provider: "plain", reasoning: false });
-
-	function registry(models: Model<Api>[], authed: Set<Model<Api>> = new Set(models)) {
-		return {
-			find(provider: string, id: string) {
-				return models.find((model) => model.provider === provider && model.id === id) ?? null;
-			},
-			getAvailable() {
-				return models;
-			},
-			hasConfiguredAuth(model: Model<Api>) {
-				return authed.has(model);
-			},
-		};
-	}
-
-	it("treats empty env values as unset", () => {
-		assert.equal(readOptionalEnv(undefined), undefined);
-		assert.equal(readOptionalEnv(""), undefined);
-		assert.equal(readOptionalEnv("   "), undefined);
-		assert.equal(readOptionalEnv(" cheap/model "), "cheap/model");
-	});
-
-	it("inherits the parent model when PI_STASH_MODEL is unset", () => {
-		const result = resolveDistillModel({
-			envModel: undefined,
-			parentModel: parent,
-			registry: registry([override]),
-		});
-		assert.equal(result.ok, true);
-		if (result.ok) assert.equal(result.model, parent);
-	});
-
-	it("resolves an explicit provider/id model without requiring a parent model", () => {
-		const result = resolveDistillModel({
-			envModel: "cheap/cheap-model",
-			parentModel: undefined,
-			registry: registry([override]),
-		});
-		assert.equal(result.ok, true);
-		if (result.ok) assert.equal(result.model, override);
-	});
-
-	it("prefers an authenticated bare-id match and rejects missing or unauthed models", () => {
-		const withAuth = resolveDistillModel({
-			envModel: "cheap-model",
-			parentModel: parent,
-			registry: registry([unauthed, override], new Set([override])),
-		});
-		assert.equal(withAuth.ok, true);
-		if (withAuth.ok) assert.equal(withAuth.model, override);
-
-		const missing = resolveDistillModel({
-			envModel: "missing/model",
-			parentModel: parent,
-			registry: registry([override]),
-		});
-		assert.equal(missing.ok, false);
-		if (!missing.ok) assert.match(missing.error, /not in the current registry/);
-
-		const locked = resolveDistillModel({
-			envModel: "locked/locked-model",
-			parentModel: parent,
-			registry: registry([unauthed], new Set()),
-		});
-		assert.equal(locked.ok, false);
-		if (!locked.ok) {
-			assert.match(locked.error, /no configured authentication/);
-			assert.doesNotMatch(locked.error, /parent-model/);
-		}
-	});
-
-	it("fails inheritance when no parent model exists", () => {
-		const result = resolveDistillModel({
-			envModel: undefined,
-			parentModel: undefined,
-			registry: registry([override]),
-		});
-		assert.equal(result.ok, false);
-		if (!result.ok) assert.match(result.error, /No model is available/);
-	});
-
-	it("inherits parent thinking and defaults to low when the parent has none", () => {
-		const inherited = resolveDistillThinking({
-			envThinking: undefined,
-			parentThinking: "high",
-			model: parent,
-		});
-		assert.equal(inherited.ok, true);
-		if (inherited.ok) assert.equal(inherited.level, "high");
-
-		const fallback = resolveDistillThinking({
-			envThinking: undefined,
-			parentThinking: undefined,
-			model: parent,
-		});
-		assert.equal(fallback.ok, true);
-		if (fallback.ok) assert.equal(fallback.level, "low");
-	});
-
-	it("accepts an explicit supported thinking level and fails invalid or unsupported levels", () => {
-		const ok = resolveDistillThinking({
-			envThinking: "medium",
-			parentThinking: "high",
-			model: parent,
-		});
-		assert.equal(ok.ok, true);
-		if (ok.ok) assert.equal(ok.level, "medium");
-
-		const invalid = resolveDistillThinking({
-			envThinking: "turbo",
-			parentThinking: "high",
-			model: parent,
-		});
-		assert.equal(invalid.ok, false);
-		if (!invalid.ok) assert.match(invalid.error, /not a valid level/);
-
-		const unsupported = resolveDistillThinking({
-			envThinking: "high",
-			parentThinking: "low",
-			model: noReasoning,
-		});
-		assert.equal(unsupported.ok, false);
-		if (!unsupported.ok) assert.match(unsupported.error, /not supported by plain\/plain/);
-	});
-
-	it("clamps an inherited thinking level the model cannot run", () => {
-		const result = resolveDistillThinking({
-			envThinking: undefined,
-			parentThinking: "high",
-			model: noReasoning,
-		});
-		assert.equal(result.ok, true);
-		if (result.ok) assert.equal(result.level, "off");
 	});
 });

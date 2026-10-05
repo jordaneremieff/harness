@@ -1,5 +1,6 @@
 /** Session continuity tools plus the interactive /stash pickup workflow. */
 
+import { randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,15 +14,8 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { CAPACITY_STATE, capacityConfig, capacityReset, capacityStatus, capacityTurnEnd } from "./capacity.ts";
-import {
-	type DistillJob,
-	type DistillOutcome,
-	type DistillStreamFunction,
-	type DistillUsage,
-	resolveDistillModel,
-	resolveDistillThinking,
-	startDistillJob,
-} from "./distill.ts";
+import { prepareDistillSource } from "./distill.ts";
+import { creationRequest, independentLauncher } from "./launch.ts";
 import { stashDurableContribution } from "./durable.ts";
 import { resumeCommand, stateLabel } from "./format.ts";
 import {
@@ -69,7 +63,7 @@ import {
 	transitionStash,
 	writeStash,
 } from "./store.ts";
-import { boundedOutput, formatTokenCount, sanitizeTerminalText } from "./text.ts";
+import { boundedOutput, sanitizeTerminalText } from "./text.ts";
 
 type StashExecutionApi = Pick<ExtensionAPI, "exec">;
 type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
@@ -99,186 +93,6 @@ async function checkpointDirectory(cwd: string): Promise<string> {
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
 
-/** Distiller identity in statusline form: model name, thinking bracketed for reasoning models. */
-function distillerLabel(model: { id: string; name?: string; reasoning?: boolean }, level: string): string {
-	// Configured model names are free-form: keep the surfaced label single-line and
-	// control-free like every other string this module interpolates.
-	const base = safeLine(model.name || model.id);
-	return model.reasoning === true ? `${base} [${level}]` : base;
-}
-
-/** Compact in/out/cost summary for a finished distillation, footer style. */
-function usageLine(usage: DistillUsage | undefined): string | undefined {
-	if (!usage) return undefined;
-	const inTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
-	return `${formatTokenCount(inTokens)} in · ${formatTokenCount(usage.outputTokens)} out · ~$${usage.costUsd.toFixed(2)}`;
-}
-
-// /stash new <hint> status indicator. The publishing extension owns the animation;
-// the footer and the statusline extension render the text generically.
-const STATUS_KEY = "stash";
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPINNER_INTERVAL_MS = 120;
-const RESULT_STATUS_MS = 3_000;
-
-interface InFlightJob {
-	/** Null while setup is in progress (before any await reserves the slot). */
-	job: DistillJob | null;
-	/** Aborts both the setup awaits and the running job. */
-	controller: AbortController;
-	/** True once the operator was told synchronously that this job was cancelled. */
-	cancelNoticeGiven: boolean;
-}
-
-let inFlight: InFlightJob | null = null;
-/**
- * Session that owns the in-flight job and its status timers. Pi loads one module
- * instance per path per process, so worker sessions in the same process share
- * these globals: a foreign session_shutdown must not abort another session's
- * work. Null while nothing is owned.
- */
-let ownerSessionId: string | null = null;
-let spinnerTimer: ReturnType<typeof setInterval> | null = null;
-let resultClearTimer: ReturnType<typeof setTimeout> | null = null;
-
-/** Minimal UI surface needed for status and notifications; both context types satisfy it. */
-interface StatusUi {
-	hasUI?: boolean;
-	ui?: {
-		setStatus?: (key: string, text: string | undefined) => void;
-		notify?: (message: string, level?: "info" | "warning" | "error") => void;
-	};
-}
-
-function stopSpinner(): void {
-	if (spinnerTimer) {
-		clearInterval(spinnerTimer);
-		spinnerTimer = null;
-	}
-}
-
-function clearResultStatus(): void {
-	if (resultClearTimer) {
-		clearTimeout(resultClearTimer);
-		resultClearTimer = null;
-	}
-}
-
-/** Session identity for ownership checks; empty when the runtime cannot answer. */
-function sessionKeyOf(ctx: Pick<ExtensionContext, "sessionManager">): string {
-	try {
-		return ctx.sessionManager.getSessionId();
-	} catch {
-		return process.env.PI_SESSION_ID ?? "";
-	}
-}
-
-function setStatus(ctx: StatusUi, text: string | undefined): void {
-	if (typeof ctx.ui?.setStatus === "function") {
-		try {
-			ctx.ui.setStatus(STATUS_KEY, text);
-		} catch {
-			// A status failure must never disrupt the job or the live session.
-		}
-	}
-}
-
-function notify(ctx: StatusUi, message: string, level: "info" | "warning" | "error"): void {
-	if (!ctx.hasUI) return;
-	try {
-		ctx.ui?.notify?.(message, level);
-	} catch {
-		// A notification failure must never surface as an unhandled rejection
-		// from the detached job callbacks.
-	}
-}
-
-function startSpinner(ctx: StatusUi, distiller: string): void {
-	let frame = 0;
-	spinnerTimer = setInterval(() => {
-		frame = (frame + 1) % SPINNER_FRAMES.length;
-		setStatus(ctx, `stash: running ${SPINNER_FRAMES[frame]} · ${distiller}`);
-	}, SPINNER_INTERVAL_MS);
-	spinnerTimer.unref?.();
-}
-
-function settleCancelled(slot: InFlightJob, outcome: DistillOutcome, ctx: StatusUi): void {
-	// The slot was released while the artifact was already committing: an abort
-	// can land after the distiller's last cancellation check. The file exists on
-	// disk, so report it. Silence here would leave an unannounced artifact after
-	// the operator was told the creation was cancelled.
-	if (outcome.ok === true) {
-		notify(
-			ctx,
-			`The stash artifact was already written when the creation was cancelled: ${outcome.record.id}\n${safeLine(outcome.path)}\n\nRotate it with /stash rotate ${outcome.record.id} if you do not want it.`,
-			"warning",
-		);
-		return;
-	}
-	// A cancelled job whose slot a session_shutdown already freed is the one
-	// cancellation path without a synchronous notice (/stash abort reports
-	// itself), so the aborted outcome is the last chance to tell the operator.
-	if (outcome.reason === "aborted" && !slot.cancelNoticeGiven) {
-		notify(ctx, "Stash creation cancelled by session shutdown.", "info");
-	}
-	return;
-}
-
-function settleDistill(slot: InFlightJob, outcome: DistillOutcome, ctx: StatusUi, distiller: string): void {
-	if (inFlight !== slot || slot.job === null) {
-		settleCancelled(slot, outcome, ctx);
-		return;
-	}
-	inFlight = null;
-	stopSpinner();
-	clearResultStatus();
-	const hold = (text: string | undefined) => {
-		setStatus(ctx, text);
-		resultClearTimer = setTimeout(() => setStatus(ctx, undefined), RESULT_STATUS_MS);
-		resultClearTimer.unref?.();
-	};
-	const usage = usageLine(outcome.usage);
-	if (outcome.ok === true) {
-		hold(usage ? `stash: done ${outcome.record.id} · ${usage}` : `stash: done ${outcome.record.id}`);
-		notify(
-			ctx,
-			[
-				`Stashed "${safeLine(outcome.record.title)}" as ${outcome.record.id}`,
-				safeLine(outcome.path),
-				"",
-				`Distilled by ${distiller}${usage ? ` · ${usage}` : ""}`,
-				"",
-				"Resume in a new session:",
-				`  ${resumeCommand(outcome.record.id)}`,
-			].join("\n"),
-			"info",
-		);
-		return;
-	}
-	if (outcome.reason === "skip") {
-		hold("stash: skipped");
-		notify(
-			ctx,
-			usage
-				? `Nothing worth stashing: the distiller found no content to preserve.\n\nDistiller: ${distiller} · ${usage}`
-				: "Nothing worth stashing: the distiller found no content to preserve.",
-			"info",
-		);
-		return;
-	}
-	hold("stash: failed");
-	notify(
-		ctx,
-		`Stash distillation failed: ${safeLine(outcome.message ?? outcome.reason)}${usage ? `\n\nDistiller: ${distiller} · ${usage}` : ""}`,
-		"error",
-	);
-}
-
-/** Release only this dispatch's slot; stale setup cleanup must not clear a replacement. */
-function releaseSlot(slot: InFlightJob): void {
-	if (inFlight === slot) inFlight = null;
-}
-
 async function currentBranch(pi: StashExecutionApi, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
 	try {
 		const result = await pi.exec("git", ["branch", "--show-current"], { cwd, signal });
@@ -296,118 +110,27 @@ function currentSessionId(ctx: Pick<ExtensionContext, "sessionManager">): string
 	}
 }
 
-async function startCreation(
-	pi: StashExecutionApi,
-	ctx: ExtensionCommandContext,
-	hint: string,
-	streamSimple: DistillStreamFunction | undefined,
-): Promise<void> {
-	// Synchronous failures must be visible in every mode: notify in TUI/RPC, throw in JSON/print.
-	const surface = (message: string, level: "info" | "warning" | "error"): void => {
-		if (!ctx.hasUI) throw new Error(message);
-		notify(ctx, message, level);
-	};
-	if (inFlight) {
-		surface("A stash creation is already in flight. Use /stash abort to cancel.", "warning");
-		return;
-	}
-	// Resolve model and thinking before reserving the single-flight slot so a bad
-	// PI_STASH_* value fails cleanly without wedging creation or starting a spinner.
-	const modelResult = resolveDistillModel({
-		envModel: process.env.PI_STASH_MODEL,
-		parentModel: ctx.model,
-		registry: ctx.modelRegistry,
-	});
-	if (!modelResult.ok) {
-		surface(modelResult.error, "error");
-		return;
-	}
-	const thinkingResult = resolveDistillThinking({
-		envThinking: process.env.PI_STASH_THINKING,
-		parentThinking: ctx.thinkingLevel,
-		model: modelResult.model,
-	});
-	if (!thinkingResult.ok) {
-		surface(thinkingResult.error, "error");
-		return;
-	}
-	const model = modelResult.model;
-	const thinkingLevel = thinkingResult.level;
-	const distiller = distillerLabel(model, thinkingLevel);
-	let projection: ReturnType<typeof ctx.sessionManager.buildSessionProjection>;
+async function startCreation(pi: StashExtensionApi, ctx: ExtensionCommandContext, hint: string): Promise<void> {
 	try {
-		// Pi's canonical persisted-context projection: compaction- and
-		// branch-aware, with the latest branch-relative context edits applied.
-		// There is deliberately no fallback to raw selected entries when this
-		// fails; the capture error is surfaced instead.
-		projection = ctx.sessionManager.buildSessionProjection();
-	} catch (error) {
-		surface(
-			`Could not read the session transcript: ${safeLine(error instanceof Error ? error.message : String(error))}`,
-			"error",
-		);
-		return;
-	}
-	// Reserve the single-flight slot BEFORE any await so concurrent dispatches serialize,
-	// and wire one AbortController to both the setup awaits and the eventual job.
-	const controller = new AbortController();
-	const slot: InFlightJob = { job: null, controller, cancelNoticeGiven: false };
-	inFlight = slot;
-	// The reserving session owns the job and its status UI; only its own shutdown
-	// may abort the work, even with worker sessions sharing this module instance.
-	ownerSessionId = sessionKeyOf(ctx);
-	try {
-		const branch = await currentBranch(pi, ctx.cwd, controller.signal);
-		if (controller.signal.aborted) {
-			releaseSlot(slot);
-			return;
-		}
+		// Materialize before the first await; subsequent caller turns cannot alter this source.
+		const source = prepareDistillSource(ctx.sessionManager.buildSessionProjection());
+		const project = ctx.cwd;
 		const sessionId = currentSessionId(ctx);
-		const job = startDistillJob({
-			model,
-			cwd: ctx.cwd,
-			thinkingLevel,
-			hint,
-			projection,
-			project: ctx.cwd,
-			branch,
-			sessionId,
-			storeDir: storeDir(),
-			streamSimple: streamSimple ?? ctx.modelRegistry.streamSimple.bind(ctx.modelRegistry),
-		});
-		slot.job = job;
-		controller.signal.addEventListener("abort", () => job.abort(), { once: true });
-		// A pre-existing abort (shutdown/abort during setup) won't re-fire the listener.
-		if (controller.signal.aborted) {
-			job.abort();
-			releaseSlot(slot);
-			return;
-		}
-		// A stale result timer from a previous settle must not wipe the new status.
-		stopSpinner();
-		clearResultStatus();
-		if (ctx.mode === "tui") {
-			setStatus(ctx, `stash: running ${SPINNER_FRAMES[0]} · ${distiller}`);
-			startSpinner(ctx, distiller);
-		}
-		notify(
-			ctx,
-			hint.trim()
-				? `Stash distillation started (${distiller}; hint: ${safeLine(hint.trim())}).`
-				: `Stash distillation started (${distiller}).`,
-			"info",
+		if (!sessionId) throw new Error("The source session identity is unavailable.");
+		const destination = resolve(project, storeDir());
+		const launch = independentLauncher(pi.events);
+		const invocationId = randomUUID();
+		const branch = await currentBranch(pi, project);
+		await launch(
+			creationRequest(
+				{ ...source, hint, project, sessionId, storeDir: destination, ...(branch ? { branch } : {}) },
+				invocationId,
+			),
 		);
-		void job.result.then((outcome) => settleDistill(slot, outcome, ctx, distiller));
 	} catch (error) {
-		controller.abort();
-		releaseSlot(slot);
-		stopSpinner();
-		clearResultStatus();
-		setStatus(ctx, undefined);
-		surface(
-			`Could not start stash distillation: ${safeLine(error instanceof Error ? error.message : String(error))}`,
-			"error",
-		);
+		const message = `Could not start stash creation: ${safeLine(error instanceof Error ? error.message : String(error))}`;
+		if (ctx.hasUI) ctx.ui.notify(message, "error");
+		else throw new Error(message);
 	}
 }
 
@@ -445,7 +168,6 @@ const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: st
 	{ value: "release", label: "release", description: "<id> · return an active stash to open" },
 	{ value: "reopen", label: "reopen", description: "<id> · return a closed stash to open" },
 	{ value: "rotate", label: "rotate", description: "<id> · archive a stale stash (recoverable)" },
-	{ value: "abort", label: "abort", description: "cancel an in-flight stash creation" },
 	{
 		value: "capacity",
 		label: "capacity",
@@ -467,7 +189,6 @@ const STASH_USAGE = [
 	"",
 	"Create:",
 	"  /stash new <hint>           distill the live session into a new stash (hint guides it)",
-	"  /stash abort                cancel an in-flight creation",
 	"",
 	"Retrieve & manage:",
 	"  /stash                      browse & pick up (TUI overlay)",
@@ -734,10 +455,7 @@ async function applyBrowserAction(ctx: ExtensionContext, id: string, action: str
 	return { kind: "continue" };
 }
 
-export default function (
-	pi: StashExtensionApi,
-	overrides?: { distillStream?: DistillStreamFunction; copyText?: (text: string) => Promise<void> },
-) {
+export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: string) => Promise<void> }) {
 	pi.events.emit("durable:contribution", stashDurableContribution(fileURLToPath(import.meta.url)));
 	let capacityErrorReported = false;
 	pi.on("turn_end", (event, ctx) => {
@@ -748,20 +466,6 @@ export default function (
 			capacityErrorReported = true;
 			throw error;
 		}
-	});
-	pi.on("session_shutdown", async (_event, ctx) => {
-		// Each session's shutdown fires this handler with that session's context,
-		// and worker sessions share this module instance: only the session that
-		// owns the in-flight work may abort it or clear its status UI.
-		if (ownerSessionId !== null && sessionKeyOf(ctx) !== ownerSessionId) return;
-		if (inFlight) {
-			inFlight.controller.abort();
-			inFlight = null;
-		}
-		stopSpinner();
-		clearResultStatus();
-		setStatus(ctx, undefined);
-		ownerSessionId = null;
 	});
 	pi.registerTool<typeof WriteParams, Record<string, unknown>>({
 		name: "stash_write",
@@ -985,7 +689,7 @@ export default function (
 	pi.registerCommand("stash", {
 		description: "Create, browse, get, complete, release, reopen, or rotate stashed efforts",
 		getArgumentCompletions: stashArgumentCompletions,
-		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, overrides),
+		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser),
 	});
 	pi.registerShortcut("ctrl+alt+s", {
 		description: "Open the stash browser",
@@ -1001,7 +705,6 @@ async function handleStashCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
 	openBrowser: (ctx: ExtensionContext) => Promise<void>,
-	overrides?: { distillStream?: DistillStreamFunction; copyText?: (text: string) => Promise<void> },
 ): Promise<void> {
 	const raw = args.trim();
 	const parts = raw.split(/\s+/).filter(Boolean);
@@ -1021,9 +724,7 @@ async function handleStashCommand(
 
 	switch (verb) {
 		case "new":
-			return createCommand(pi, ctx, parts, fail, overrides?.distillStream);
-		case "abort":
-			return abortCommand(ctx, parts, fail);
+			return createCommand(pi, ctx, parts, fail);
 		case "help":
 			return helpCommand(ctx, parts, fail);
 		case "capacity":
@@ -1071,40 +772,14 @@ function capacityCommand(
 }
 
 async function createCommand(
-	pi: StashExecutionApi,
+	pi: StashExtensionApi,
 	ctx: ExtensionCommandContext,
 	parts: string[],
 	fail: CommandFailure,
-	streamSimple?: DistillStreamFunction,
 ): Promise<void> {
 	const hint = parts.slice(1).join(" ");
 	if (!hint) return fail("Usage: /stash new <hint>");
-	await startCreation(pi, ctx, hint, streamSimple);
-}
-
-function abortCommand(ctx: ExtensionCommandContext, parts: string[], fail: CommandFailure): void {
-	if (parts.length !== 1) {
-		fail("Usage: /stash abort");
-		return;
-	}
-	if (!inFlight) {
-		notify(ctx, "No stash creation is in flight.", "info");
-		return;
-	}
-	if (ownerSessionId !== sessionKeyOf(ctx)) {
-		fail("The in-flight stash creation belongs to another session. Abort it from that session.");
-		return;
-	}
-	const current = inFlight;
-	inFlight = null;
-	stopSpinner();
-	clearResultStatus();
-	setStatus(ctx, undefined);
-	notify(ctx, "Stash creation cancelled.", "info");
-	// The synchronous notice above covers the eventual aborted outcome; the
-	// stale-slot branch must not repeat it when the job settles.
-	current.cancelNoticeGiven = true;
-	current.controller.abort();
+	await startCreation(pi, ctx, hint);
 }
 
 function helpCommand(ctx: ExtensionCommandContext, parts: string[], fail: CommandFailure): void {

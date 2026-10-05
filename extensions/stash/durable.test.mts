@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { JsonValue } from "@earendil-works/chord";
+import { type AssistantMessage, type Message, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
@@ -14,11 +15,14 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type StashDurableContribution, type StashDurableHost, stashDurableContribution } from "./durable.ts";
+import { DISTILL_SYSTEM_PROMPT } from "./distill.ts";
+import { type DistillInput, type IndependentCommandInput, readDistillInput } from "./launch.ts";
 import { listStashes, readStash, writeStash } from "./store.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 interface TestHarness {
+	readonly launches: IndependentCommandInput[];
 	readonly harness: Durable.Harness;
 	readonly root: Durable.Conversation;
 	readonly faux: ReturnType<typeof fauxProvider>;
@@ -33,6 +37,7 @@ async function startHarness(
 	t: { after(fn: () => void | Promise<void>): void },
 	contextWindow?: number,
 ): Promise<TestHarness> {
+	const launches: IndependentCommandInput[] = [];
 	const storeDir = await mkdtemp(join(tmpdir(), "stash-durable-store-"));
 	const workdir = await mkdtemp(join(tmpdir(), "stash-durable-work-"));
 	t.after(async () => {
@@ -50,6 +55,14 @@ async function startHarness(
 		cwd: workdir,
 		agentDir: workdir,
 		storageId: "stash-durable-test",
+		launchIndependent: async (input) => {
+			launches.push(input);
+			return {
+				sessionId: "worker",
+				cwd: input.cwd,
+				admission: { name: "stash", conversationId: 1, identity: "worker", text: "admitted" },
+			};
+		},
 		signal: new AbortController().signal,
 		onClose: () => {},
 		inventory: { contributions: [], ordinaryOnly: [] },
@@ -65,7 +78,7 @@ async function startHarness(
 	t.after(async () => {
 		await harness.close(context);
 	});
-	return { harness, root, faux, host, contribution, extension, storeDir, workdir };
+	return { harness, root, faux, host, contribution, extension, storeDir, workdir, launches };
 }
 
 function messageText(message: Message | undefined): string {
@@ -389,75 +402,274 @@ test("estimates context from reported assistant usage and labels the source", { 
 	assert.match(text, /\[stash-capacity e=2 c=\d+ checkpoint decision\]/u);
 });
 
-test("runs /stash new as a background distilling task with a receipt", { timeout: 30000 }, async (t) => {
-	const h = await startHarness(t);
-	capacityOff(t);
+function creationInput(h: TestHarness): DistillInput {
+	return {
+		hint: "focus on tests",
+		transcript: "[USER]\nCAPTURED_SOURCE",
+		artifacts: ["/source/reference.md"],
+		project: "/source/project",
+		branch: "source-branch",
+		sessionId: "source-session:7",
+		storeDir: h.storeDir,
+	};
+}
+
+async function admitCreation(h: TestHarness, invocationId = "creation-1", data: JsonValue = { ...creationInput(h) }) {
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	h.faux.setResponses([
-		fauxAssistantMessage(
-			'```json\n{"title":"Distilled focus","summary":"The command distilled the conversation context."}\n```',
-		),
-	]);
-	const started = await command.run({
-		args: "new focus on the tests",
+	const text = await command.run({
+		args: "new",
+		data,
 		conversation: h.root,
 		context,
 		host: h.host,
-		invocationId: "distill-1",
+		invocationId,
 		harness: h.harness,
 	});
-	const taskId = /task (\d+)/u.exec(started)?.[1];
-	assert.ok(taskId, started);
-	const settled = await h.harness.waitForTask(Number(taskId) as Durable.TaskId, context);
-	assert.equal(settled.state.status, "terminal");
-	assert.equal(settled.state.outcome?.status, "completed", JSON.stringify(settled.state.outcome));
-	const entries = await listStashes(h.storeDir, {});
-	assert.equal(entries.length, 1, "the task publishes one artifact");
-	assert.equal(entries[0]?.meta.title, "Distilled focus");
-	assert.equal(entries[0]?.meta.sessionId, String(h.root.id));
+	const taskId = Number(/task (\d+)/u.exec(text)?.[1]) as Durable.TaskId;
+	assert.ok(taskId, text);
+	return taskId;
+}
+
+async function creationReceipt(conversation: Durable.Conversation) {
+	const receipts = (await conversation.entries({}, 100, undefined, context)).items.filter(
+		(entry) => entry.kind === "stash.creation",
+	);
+	assert.equal(receipts.length, 1);
+	assert.equal(receipts[0].model, undefined, "a receipt is passive, not a follow-up model input");
+	return receipts[0].data as Durable.JsonObject;
+}
+
+test("native caller captures and silently launches without a caller task or response", async (t) => {
+	const h = await startHarness(t);
+	await h.root.commit(
+		(tx) =>
+			tx.appendEntry(h.root.id, { kind: "pi.user", model: [{ role: "user", content: "CALLER_SOURCE", timestamp: 0 }] }),
+		context,
+	);
+	const before = await modelText(h.root);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	const result = await command.run({
+		args: "new source focus",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "launch-1",
+		harness: h.harness,
+	});
+	assert.equal(result, "");
+	assert.equal(await modelText(h.root), before);
+	assert.equal(h.launches.length, 1);
+	const input = readDistillInput(h.launches[0].command.data);
+	assert.match(input.transcript, /CALLER_SOURCE/);
+	assert.equal(input.sessionId, h.host.storageId);
+	assert.equal(input.project, h.workdir);
+	assert.equal(input.storeDir, h.storeDir);
+	assert.equal(input.hint, "source focus");
+	assert.equal(h.launches[0].invocationId, "launch-1");
+	assert.equal(h.faux.state.callCount, 0);
+	assert.equal((await h.harness.commit((tx) => tx.scanTasks({ kind: "stash.distill" }, 10), context)).items.length, 0);
 });
 
-test("aborts only the recorded distillation task", { timeout: 30000 }, async (t) => {
+test("native command retries retain the first snapshot after caller progress and uncertain admission", async (t) => {
 	const h = await startHarness(t);
-	capacityOff(t);
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	h.faux.setResponses([fauxAssistantMessage("conversation still works")]);
-	const started = await command.run({
-		args: "new abort this one",
+	const launch = h.host.launchIndependent;
+	let attempts = 0;
+	t.mock.method(h.host, "launchIndependent", async (input: IndependentCommandInput) => {
+		const receipt = await launch(input);
+		if (++attempts === 1) throw new Error("admission response lost");
+		return receipt;
+	});
+	const call = {
+		args: "new original hint",
 		conversation: h.root,
 		context,
 		host: h.host,
-		invocationId: "abort-new",
+		invocationId: "retry-1",
 		harness: h.harness,
-	});
-	const taskId = Number(/task (\d+)/u.exec(started)?.[1]) as Durable.TaskId;
-	assert.ok(taskId, started);
-	const aborting = await command.run({
-		args: "abort",
-		conversation: h.root,
+	};
+	await assert.rejects(command.run(call), /admission response lost/);
+	await h.root.commit(
+		(tx) =>
+			tx.appendEntry(h.root.id, {
+				kind: "pi.user",
+				model: [{ role: "user", content: "LATER_CALLER_CONTEXT", timestamp: 1 }],
+			}),
 		context,
-		host: h.host,
-		invocationId: "abort-1",
-		harness: h.harness,
-	});
-	assert.match(aborting, new RegExp(`task ${String(taskId)} is aborting`, "u"));
+	);
+	await h.root.configure({ cwd: "/different-caller-workspace" }, context);
+	assert.equal(await command.run(call), "");
+	assert.deepEqual(h.launches[1], h.launches[0]);
+	assert.doesNotMatch(JSON.stringify(h.launches[1]), /LATER_CALLER_CONTEXT|different-caller-workspace/);
+	await assert.rejects(command.run({ ...call, args: "new conflicting hint" }), /different hint/);
+	assert.equal(h.launches.length, 2, "conflicts refuse before launch");
+	assert.equal(await command.run({ ...call, invocationId: "retry-2" }), "");
+	assert.match(JSON.stringify(h.launches[2]), /LATER_CALLER_CONTEXT/);
+	assert.equal(h.launches[2].cwd, "/different-caller-workspace");
+	assert.equal(h.faux.state.callCount, 0);
+});
+
+test("native creation uses tool-free generation and captured publication metadata exactly once", {
+	timeout: 30000,
+}, async (t) => {
+	const h = await startHarness(t);
+	await h.root.configure({ instructions: "WORKER_BOOTSTRAP", thinkingLevel: "off" }, context);
+	let system = "";
+	let text = "";
+	let tools: unknown;
+	h.faux.setResponses([
+		(request) => {
+			system = getCurrentSystemPrompt(request.messages);
+			tools = getCurrentTools(request.messages);
+			text = request.messages.map(messageText).join("\n");
+			return fauxAssistantMessage(
+				JSON.stringify({ title: "Distilled focus", summary: "Captured state.", files: ["/source/reference.md"] }),
+			);
+		},
+	]);
+	const taskId = await admitCreation(h);
+	assert.equal(await admitCreation(h), taskId, "repeated admission reuses one task");
 	const settled = await h.harness.waitForTask(taskId, context);
-	assert.equal(settled.state.outcome?.status, "aborted");
-	assert.equal((await listStashes(h.storeDir, {})).length, 0, "the aborted task writes no artifact");
-	// The task clears its recorded id, so a later abort reports nothing in flight.
-	const again = await command.run({
-		args: "abort",
-		conversation: h.root,
-		context,
-		host: h.host,
-		invocationId: "abort-2",
-		harness: h.harness,
+	assert.equal(settled.state.outcome.status, "completed", JSON.stringify(settled.state.outcome));
+	assert.ok(system.includes(DISTILL_SYSTEM_PROMPT));
+	assert.doesNotMatch(system, /WORKER_BOOTSTRAP/);
+	assert.deepEqual(tools, []);
+	assert.match(text, /CAPTURED_SOURCE/);
+	assert.match(text, /focus on tests/);
+	assert.doesNotMatch(text, /WORKER_BOOTSTRAP/);
+	const entries = await listStashes(h.storeDir, {});
+	assert.equal(entries.length, 1);
+	assert.equal(entries[0].meta.title, "Distilled focus");
+	assert.equal(entries[0].meta.sessionId, "source-session:7");
+	assert.equal(entries[0].meta.project, "/source/project");
+	assert.equal(entries[0].meta.branch, "source-branch");
+	assert.equal(entries[0].meta.state, "open");
+	assert.equal((await creationReceipt(h.root)).id, entries[0].meta.id);
+	assert.equal(await admitCreation(h), taskId, "completed admission stays idempotent");
+	assert.equal(h.faux.state.callCount, 1);
+	assert.equal((await h.root.agent(context)).thinkingLevel, "off");
+});
+
+test("native creation corrects malformed output once and redacts before publication", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t);
+	h.faux.setResponses([
+		fauxAssistantMessage("not JSON"),
+		(request) => {
+			assert.match(request.messages.map(messageText).join("\n"), /CAPTURED_SOURCE[\s\S]*FORMAT CORRECTION/);
+			assert.deepEqual(getCurrentTools(request.messages), []);
+			return fauxAssistantMessage(
+				JSON.stringify({ title: "Corrected", summary: "api_key=sk-test_12345678901234567890" }),
+			);
+		},
+	]);
+	const taskId = await admitCreation(h);
+	await h.harness.waitForTask(taskId, context);
+	const entries = await listStashes(h.storeDir, {});
+	assert.equal(entries.length, 1);
+	const read = await readStash(h.storeDir, entries[0].meta.id);
+	assert.ok(read.ok);
+	assert.doesNotMatch(read.content, /sk-test_/);
+	assert.equal(h.faux.state.callCount, 2);
+	assert.equal((await creationReceipt(h.root)).status, "completed");
+});
+
+for (const [name, responses, status] of [
+	["skip", [fauxAssistantMessage("SKIP_STASH")], "skipped"],
+	["invalid correction", [fauxAssistantMessage("not JSON"), fauxAssistantMessage("still not JSON")], "invalid"],
+	["provider failure", [fauxAssistantMessage("", { stopReason: "error", errorMessage: "invalid request" })], "failed"],
+] as const) {
+	test(`native creation records ${name} without an artifact`, { timeout: 30000 }, async (t) => {
+		const h = await startHarness(t);
+		h.faux.setResponses([...responses]);
+		await h.harness.waitForTask(await admitCreation(h), context);
+		assert.equal((await listStashes(h.storeDir, {})).length, 0);
+		assert.equal((await creationReceipt(h.root)).status, status);
+		assert.equal(h.faux.state.callCount, responses.length);
 	});
-	assert.match(again, /No stash distillation task is running/u);
-	// The abort does not touch ordinary conversation work.
-	await answerWith(h.root, h.faux, [fauxAssistantMessage("conversation still works")], "are you alive?");
+}
+
+test("native creation records publication failure without another generation", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t);
+	const obstacle = join(h.workdir, "not-a-directory");
+	await writeFile(obstacle, "occupied");
+	h.faux.setResponses([fauxAssistantMessage('{"title":"Failure","summary":"Valid result."}')]);
+	await h.harness.waitForTask(await admitCreation(h, "failure", { ...creationInput(h), storeDir: obstacle }), context);
+	assert.equal((await creationReceipt(h.root)).status, "failed");
+	assert.equal(h.faux.state.callCount, 1);
+	assert.equal((await listStashes(h.storeDir, {})).length, 0);
+});
+
+test("native creation validates structured input before configuration or admission", async (t) => {
+	const h = await startHarness(t);
+	const before = await h.root.agent(context);
+	for (const data of [
+		null,
+		[],
+		{},
+		{ ...creationInput(h), hint: " " },
+		{ ...creationInput(h), artifacts: [3] },
+		{ ...creationInput(h), project: "relative" },
+		{ ...creationInput(h), storeDir: "relative" },
+		{ ...creationInput(h), transcript: 3 },
+		{ ...creationInput(h), branch: 3 },
+	]) {
+		await assert.rejects(admitCreation(h, "invalid-input", data));
+	}
+	assert.deepEqual(await h.root.agent(context), before);
+	assert.equal((await h.harness.commit((tx) => tx.scanTasks({ kind: "stash.distill" }, 10), context)).items.length, 0);
+});
+
+test("isolated native workers preserve each snapshot under burst admission and caller abort", {
+	timeout: 30000,
+}, async (t) => {
+	const h = await startHarness(t);
+	const count = 16;
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	h.faux.setResponses(
+		Array.from({ length: count }, () => async (request) => {
+			await gate;
+			const text = request.messages.map(messageText).join("\n");
+			const subject = /Operator hint: (effort-\d+)/u.exec(text)?.[1];
+			assert.ok(subject);
+			return fauxAssistantMessage(JSON.stringify({ title: subject, summary: `${subject} captured state.` }));
+		}),
+	);
+	const workers = await Promise.all(
+		Array.from({ length: count }, () =>
+			h.harness.createConversation(
+				{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: h.workdir } },
+				context,
+			),
+		),
+	);
+	const taskIds = await Promise.all(
+		workers.map((root, index) =>
+			admitCreation({ ...h, root }, `burst-${index}`, {
+				...creationInput(h),
+				hint: `effort-${index}`,
+				sessionId: `source-${index}`,
+			}),
+		),
+	);
+	await h.root.abort(context, { background: true });
+	release();
+	const results = await Promise.all(taskIds.map((id) => h.harness.waitForTask(id, context)));
+	assert.ok(results.every((result) => result.state.outcome.status === "completed"));
+	const entries = await listStashes(h.storeDir, { limit: 50 });
+	assert.equal(entries.length, count);
+	for (let i = 0; i < count; i++) {
+		const entry = entries.find((item) => item.meta.title === `effort-${i}`);
+		assert.equal(entry?.meta.sessionId, `source-${i}`);
+		assert.equal((await creationReceipt(workers[i])).id, entry?.meta.id);
+	}
+	assert.equal(h.faux.state.callCount, count);
+	assert.equal(await modelText(h.root), "");
 });
 
 test("reports lifecycle failures from the command without changing the store", { timeout: 30000 }, async (t) => {
@@ -558,7 +770,7 @@ async function recover(
 	storeDir: string,
 	workdir: string,
 	answer: string,
-): Promise<{ harness: Durable.Harness; root: Durable.Conversation }> {
+): Promise<{ harness: Durable.Harness; root: Durable.Conversation; faux: ReturnType<typeof fauxProvider> }> {
 	process.env.PI_STASH_DIR = storeDir;
 	process.env.PI_STASH_CAPACITY = "0";
 	const faux = fauxProvider();
@@ -570,6 +782,9 @@ async function recover(
 		cwd: workdir,
 		agentDir: workdir,
 		storageId: "stash-replay",
+		launchIndependent: async () => {
+			throw new Error("replay fixture does not launch work");
+		},
 		signal: new AbortController().signal,
 		onClose: () => {},
 		inventory: { contributions: [], ordinaryOnly: [] },
@@ -582,12 +797,12 @@ async function recover(
 	const root = await harness.root(context, {
 		agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: workdir },
 	});
-	return { harness, root };
+	return { harness, root, faux };
 }
 
 async function replayCase(
 	t: { after(fn: () => void | Promise<void>): void },
-	mode: "write" | "complete",
+	mode: "write" | "complete" | "distill",
 ): Promise<void> {
 	const rootDir = await mkdtemp(join(tmpdir(), `stash-replay-${mode}-`));
 	t.after(async () => {
@@ -620,8 +835,20 @@ async function replayCase(
 		const before = await listStashes(storeDir, {});
 		assert.equal(before.length, 1, "the killed attempt reached its external effect");
 
-		const { harness, root } = await recover(storagePath, storeDir, workdir, "after recovery");
+		const original = await readFile(before[0].path);
+		const { harness, root, faux } = await recover(storagePath, storeDir, workdir, "after recovery");
 		try {
+			if (mode === "distill") {
+				const tasks = await harness.commit((tx) => tx.scanTasks({ kind: "stash.distill" }, 10), context);
+				assert.equal(tasks.items.length, 1);
+				const settled = await harness.waitForTask(tasks.items[0].id, context);
+				assert.equal(settled.state.outcome.status, "completed");
+				assert.equal((await listStashes(storeDir, {})).length, 1);
+				assert.deepEqual(await readFile(before[0].path), original);
+				assert.equal((await creationReceipt(root)).id, before[0].meta.id);
+				assert.equal(faux.state.callCount, 0, "committed generation is not repeated after recovery");
+				return;
+			}
 			const submission = await root.submit({ type: "input", content: prompt, requestId }, context);
 			const settled = await submission.wait(context);
 			assert.equal(settled.status, "done", settled.status === "unanswered" ? settled.reason : "");
@@ -653,6 +880,12 @@ async function replayCase(
 		}
 	}
 }
+
+test("replays native creation after publication without a duplicate artifact or generation", {
+	timeout: 60000,
+}, async (t) => {
+	await replayCase(t, "distill");
+});
 
 test("replays a safe stash_write without a duplicate artifact", { timeout: 60000 }, async (t) => {
 	await replayCase(t, "write");

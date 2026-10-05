@@ -1,10 +1,12 @@
 /**
  * Synthetic fixture for Durable stash replay tests.
  *
- * The child runs one stash tool to a durable checkpoint, blocks in an
- * `afterTool` hook before its result commits, and waits to be killed. The test
- * then reopens the same storage without the blocking hook.
+ * The child blocks after publication or a tool effect, before its receipt
+ * commits. The test kills the child and reopens the same storage.
  */
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -47,14 +49,16 @@ async function main(): Promise<number> {
 		cwd: workdir,
 		agentDir: workdir,
 		storageId: "stash-replay",
+		launchIndependent: async () => {
+			throw new Error("replay fixture does not launch work");
+		},
 		signal: new AbortController().signal,
 		onClose: () => {},
 		inventory: { contributions: [], ordinaryOnly: [] },
 	};
 	const registry = createRegistry();
-	registry.install(
-		stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url))).create(host),
-	);
+	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)));
+	registry.install(contribution.create(host));
 	registry.install(blockingHook(mode === "write" ? "stash_write" : "stash_complete"));
 	faux.setResponses([
 		fauxAssistantMessage(
@@ -66,11 +70,41 @@ async function main(): Promise<number> {
 		fauxAssistantMessage("recovered"),
 	]);
 	const harness = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry }, context);
-	harness.resume();
 	const root = await harness.root(context, {
 		agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: workdir },
 	});
-	await root.submit({ type: "input", content: prompt, requestId }, context);
+	if (mode === "distill") {
+		const link = fs.link;
+		fs.link = async (...args) => {
+			await link(...args);
+			if (dirname(String(args[1])) !== storeDir) return;
+			process.stdout.write("READY\n");
+			await new Promise(() => {});
+		};
+		syncBuiltinESMExports();
+		faux.setResponses([fauxAssistantMessage('{"title":"Replay handover","summary":"Captured before restart."}')]);
+		const command = contribution.commands?.[0];
+		if (!command) throw new Error("Stash command is unavailable.");
+		await command.run({
+			args: "new",
+			data: {
+				hint: "replay",
+				transcript: "Captured source.",
+				artifacts: [],
+				project: workdir,
+				sessionId: "source-session",
+				storeDir,
+			},
+			conversation: root,
+			context,
+			host,
+			invocationId: requestId,
+			harness,
+		});
+		harness.resume();
+	} else {
+		await root.submit({ type: "input", content: prompt, requestId }, context);
+	}
 	await new Promise(() => {});
 	return 0;
 }

@@ -1,28 +1,12 @@
 import assert from "node:assert/strict";
-import fs, { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, afterEach, before, describe, it, mock } from "node:test";
-import {
-	type Api,
-	getCurrentSystemPrompt,
-	getCurrentTools,
-	InMemoryCredentialStore,
-	InMemoryModelsStore,
-	type Model,
-	type Provider,
-	type Usage,
-} from "@earendil-works/pi-ai";
-import {
-	type ExtensionContext,
-	ModelRegistry,
-	ModelRuntime,
-	SessionManager,
-	type SessionShutdownEvent,
-} from "@earendil-works/pi-coding-agent";
+import { after, before, describe, it, mock } from "node:test";
+import { type ExtensionContext, SessionManager, type SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
 import { CAPACITY_STATE, capacityReset, readCapacityState } from "./capacity.ts";
-import type { DistillStreamFunction } from "./distill.ts";
+import { buildDistillPrompt } from "./distill.ts";
+import { type IndependentCommandInput, type IndependentCommandLaunch, readDistillInput } from "./launch.ts";
 import registerStash from "./index.ts";
 import type { PanelTheme, StashPanelResult } from "./panel.ts";
 import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
@@ -31,19 +15,28 @@ import {
 	captureCommand,
 	captureShortcut,
 	captureTool,
-	completedDistillStream,
-	controlledDistillStream,
 	hostContext,
 	RequiredMap,
 	stringArray,
 	type TestContext,
 	type TestUi,
 	testAssistantMessage,
-	testModel,
-	transcriptProjection,
 } from "./test-fixtures.mts";
 
+function launchReceipt(input: IndependentCommandInput) {
+	return {
+		sessionId: "worker",
+		cwd: input.cwd,
+		admission: { name: "stash", conversationId: 1, identity: "worker", text: "admitted" },
+	};
+}
+
 function registry(overrides?: Parameters<typeof registerStash>[1]) {
+	const launches: IndependentCommandInput[] = [];
+	const launch: IndependentCommandLaunch = async (input) => {
+		launches.push(input);
+		return launchReceipt(input);
+	};
 	const tools = new RequiredMap<string, ReturnType<typeof captureTool>>();
 	const commands = new RequiredMap<string, ReturnType<typeof captureCommand>>();
 	const shortcuts = new RequiredMap<string, ReturnType<typeof captureShortcut>>();
@@ -68,7 +61,13 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 			sent.push({ content, options });
 		},
 		appendEntry: () => {},
-		events: { emit: () => {}, on: () => () => {} },
+		events: {
+			emit: (event, value) => {
+				if (event !== "durable:launch-provider") return;
+				(value as { provide: (launch: IndependentCommandLaunch) => void }).provide(launch);
+			},
+			on: () => () => {},
+		},
 		on: (event, handler) => {
 			if (event !== "session_shutdown") return () => {};
 			const shutdown = handler as (event: SessionShutdownEvent, ctx: ExtensionContext) => Promise<void>;
@@ -79,7 +78,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		},
 	};
 	registerStash(pi, overrides);
-	return { tools, commands, shortcuts, sent, events, pi };
+	return { tools, commands, shortcuts, sent, events, pi, launches };
 }
 
 const theme: PanelTheme = {
@@ -129,7 +128,7 @@ describe("stash entrypoint", () => {
 		const unexpected = () => {
 			throw new Error("opening the browser must not perform this action");
 		};
-		const { shortcuts, sent, pi } = registry({ distillStream: unexpected, copyText: unexpected });
+		const { shortcuts, sent, pi } = registry({ copyText: unexpected });
 		pi.exec = unexpected;
 		pi.appendEntry = unexpected;
 		const entries = await listStashes(dir, { limit: 50 });
@@ -1026,85 +1025,18 @@ describe("stash entrypoint", () => {
 	});
 });
 
-const DISTILL_USAGE: Usage = {
-	input: 1_000,
-	output: 2_000,
-	cacheRead: 30_000,
-	cacheWrite: 4_000,
-	totalTokens: 37_000,
-	cost: { input: 0.01, output: 0.1, cacheRead: 0.01, cacheWrite: 0.003, total: 0.123 },
-};
-
-const DISTILL_PAYLOAD = JSON.stringify({
-	title: "Distilled handover",
-	summary: "Background distillation state.",
-	decisions: ["Use the model registry for distillation"],
-	nextActions: ["Run the suite"],
-	tags: ["distill"],
-});
-
-function creationCtx(ui: TestUi, extra: TestContext & { registryModels?: Model<Api>[] } = {}): TestContext {
-	const parentModel =
-		extra.model === undefined && !("model" in extra) ? testModel({ contextWindow: 100_000 }) : extra.model;
-	const available = extra.registryModels ?? (parentModel ? [parentModel] : []);
-	const registry = extra.modelRegistry ?? {
-		find(provider: string, id: string) {
-			return available.find((model) => model.provider === provider && model.id === id) ?? null;
-		},
-		getAvailable() {
-			return available;
-		},
-		hasConfiguredAuth(model: Model<Api>) {
-			return available.includes(model);
-		},
-	};
-	const { registryModels: _registryModels, modelRegistry: _modelRegistry, ...rest } = extra;
+function creationCtx(ui: TestUi = {}, extra: TestContext = {}): TestContext {
 	return {
 		mode: "tui",
 		hasUI: true,
 		cwd: "/workspace",
-		model: parentModel,
-		thinkingLevel: "medium",
-		modelRegistry: registry,
 		sessionManager: {
-			getSessionId: () => "sess-1",
+			getSessionId: () => "source-session",
 			buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
 		},
 		ui,
-		...rest,
+		...extra,
 	};
-}
-
-/**
- * Wrap a notify sink so it also releases a promise when a creation publishes one
- * of its terminal notifications. Every terminal message is published after the
- * in-flight slot is free, so awaiting `done` deterministically proves the job
- * settled; a fixed sleep cannot, because the store commit may outlast it under
- * suite load.
- */
-function settledNotify<T extends unknown[]>(notify: (message: string, ...rest: T) => void) {
-	let release!: () => void;
-	const done = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-	const isTerminal = (message: string) =>
-		/^(?:Stashed "|Nothing worth stashing|Stash distillation failed|The stash artifact was already written|Stash creation cancelled by session shutdown)/.test(
-			message,
-		);
-	return {
-		done,
-		notify: (message: string, ...rest: T) => {
-			notify(message, ...rest);
-			if (isTerminal(message)) release();
-		},
-	};
-}
-
-/** Under mock timers, an unmocked macrotask turn lets the job's microtask chain complete. */
-async function flushUnderMockTimers(tickMs: number): Promise<void> {
-	await new Promise((resolve) => setImmediate(resolve));
-	if (tickMs > 0) await mock.timers.tick(tickMs);
-	await new Promise((resolve) => setImmediate(resolve));
 }
 
 describe("stash creation", () => {
@@ -1141,24 +1073,13 @@ describe("stash creation", () => {
 		const editedLeaf = manager.getLeafId();
 		assert.ok(editedLeaf);
 		const rawBefore = JSON.stringify(manager.getEntries());
-		const prompts: string[] = [];
-		const stream: DistillStreamFunction = (model, context, options) => {
-			const user = context.messages.find((message) => message.role === "user");
-			assert.ok(user && typeof user.content === "string");
-			prompts.push(user.content);
-			return completedDistillStream("SKIP_STASH")(model, context, options);
-		};
-		const { commands, events, sent } = registry({ distillStream: stream });
+		const { commands, launches, sent } = registry();
 		const capture = async () => {
-			const { done, notify } = settledNotify(() => {});
-			const ctx = creationCtx({ notify }, { cwd: dir, sessionManager: manager });
-			try {
-				await commands.get("stash").handler("new retained effort", ctx);
-				await done;
-			} finally {
-				await events.get("session_shutdown")({}, ctx);
-			}
-			return prompts.at(-1) ?? "";
+			await commands
+				.get("stash")
+				.handler("new retained effort", creationCtx({}, { cwd: dir, sessionManager: manager }));
+			const input = readDistillInput(launches.at(-1)?.command.data);
+			return buildDistillPrompt(input.hint, input.transcript, input.artifacts);
 		};
 		const edited = await capture();
 		assert.match(edited, /KEEP_USER/);
@@ -1192,692 +1113,152 @@ describe("stash creation", () => {
 		assert.equal(sent.length, 0);
 	});
 
-	it("reports synchronous projection failures in each mode without a raw fallback or occupied slot", async () => {
-		let requests = 0;
-		const stream: DistillStreamFunction = (...args) => {
-			requests++;
-			return completedDistillStream("SKIP_STASH")(...args);
+	it("freezes source, identity, project and store before branch discovery yields", async () => {
+		const manager = SessionManager.inMemory(dir);
+		manager.appendMessage({
+			role: "user",
+			content: "SNAPSHOT_ONLY api_key=sk-test_12345678901234567890",
+			timestamp: 0,
+		});
+		const { commands, pi, launches } = registry();
+		let resume!: () => void;
+		pi.exec = async () => {
+			await new Promise<void>((resolve) => {
+				resume = resolve;
+			});
+			return { code: 0, stdout: "snapshot-branch\n", stderr: "", killed: false };
 		};
-		const { commands, events } = registry({ distillStream: stream });
+		const ctx = creationCtx({}, { cwd: dir, sessionManager: manager });
+		const originalSession = manager.getSessionId();
+		const pending = commands.get("stash").handler("new captured effort", ctx);
+		manager.appendMessage({ role: "user", content: "AFTER_INVOCATION", timestamp: 1 });
+		ctx.cwd = "/other-project";
+		ctx.sessionManager = SessionManager.inMemory();
+		process.env.PI_STASH_DIR = join(dir, "changed-store");
+		try {
+			resume();
+			await pending;
+		} finally {
+			process.env.PI_STASH_DIR = dir;
+		}
+		assert.equal(launches.length, 1);
+		const input = readDistillInput(launches[0].command.data);
+		assert.match(input.transcript, /SNAPSHOT_ONLY/);
+		assert.doesNotMatch(input.transcript, /AFTER_INVOCATION|sk-test_/);
+		assert.equal(input.project, dir);
+		assert.equal(input.storeDir, dir);
+		assert.equal(input.sessionId, originalSession);
+		assert.equal(input.branch, "snapshot-branch");
+		assert.equal(launches[0].creatorId, originalSession);
+	});
+
+	it("admits work silently in every mode without caller selection or cancellation hooks", async () => {
 		for (const mode of ["tui", "rpc", "print", "json"] as const) {
-			const notices: string[] = [];
-			const statuses: Array<string | undefined> = [];
-			const manager = SessionManager.inMemory(dir);
-			manager.buildContextEntries = () => {
-				throw new Error("RAW_FALLBACK");
-			};
-			manager.buildSessionProjection = () => {
-				throw new Error("projection unavailable\nnext line");
+			const { commands, launches, events, sent } = registry();
+			const unexpected = () => {
+				throw new Error("caller state must not be used");
 			};
 			const ctx = creationCtx(
-				{
-					notify: (message) => notices.push(message),
-					setStatus: (_key, value) => {
-						statuses.push(value);
-					},
-				},
-				{ mode, hasUI: mode === "tui" || mode === "rpc", cwd: dir, sessionManager: manager },
+				{ notify: unexpected, setStatus: unexpected },
+				{ mode, hasUI: mode === "tui" || mode === "rpc" },
 			);
-			if (ctx.hasUI) {
-				await commands.get("stash").handler("new capture failure", ctx);
-				assert.match(notices.join("\n"), /Could not read the session transcript: projection unavailable/);
-				assert.doesNotMatch(notices.join("\n"), /RAW_FALLBACK|already in flight/);
-			} else {
-				await assert.rejects(
-					commands.get("stash").handler("new capture failure", ctx),
-					/Could not read the session transcript: projection unavailable/,
-				);
-			}
-			assert.equal(requests, 0);
-			assert.deepEqual(statuses, []);
-		}
-		const { done, notify } = settledNotify(() => {});
-		const ctx = creationCtx({ notify }, { cwd: dir, sessionManager: SessionManager.inMemory(dir) });
-		try {
-			await commands.get("stash").handler("new recovered capture", ctx);
-			await done;
-			assert.equal(requests, 1);
-		} finally {
-			await events.get("session_shutdown")({}, ctx);
-		}
-	});
-
-	afterEach(() => {
-		mock.timers.reset();
-	});
-
-	it("dispatches a background distillation without touching the live session", async () => {
-		const { commands, sent } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
-		const statuses: string[] = [];
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		await commands.get("stash").handler(
-			"new focus the harness on distillation",
-			creationCtx({
-				notify,
-				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-			}),
-		);
-
-		assert.equal(sent.length, 0, "the live session must receive no turn");
-		assert.ok(statuses[0]?.startsWith("stash: running"), "a running status must appear on dispatch");
-		assert.match(notifications.join("\n"), /Stash distillation started.*focus the harness on distillation/);
-
-		await done;
-		assert.ok(
-			statuses.some((text) => /^stash: done \d{8}T\d{6}Z-/.test(text)),
-			"a done status must name the written artifact",
-		);
-		assert.match(notifications.join("\n"), /Stashed "Distilled handover"/);
-		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
-	});
-
-	it("uses the command context registry for a registered-only provider", { timeout: 10_000 }, async () => {
-		const runtime = await ModelRuntime.create({
-			credentials: new InMemoryCredentialStore(),
-			modelsStore: new InMemoryModelsStore(),
-			modelsPath: join(dir, "isolated-models.json"),
-			allowModelNetwork: false,
-			refreshOnCreate: false,
-		});
-		const modelRegistry = new ModelRegistry(runtime);
-		const model = testModel({
-			id: "registry-distiller",
-			name: "Registry distiller",
-			provider: "stash-synthetic-provider",
-			api: "stash-synthetic-api",
-			contextWindow: 100_000,
-		});
-		let received: Parameters<Provider["streamSimple"]> | undefined;
-		let requests = 0;
-		const reply = JSON.stringify({ title: "Registry-backed handover", summary: "REGISTERED_PROVIDER_RESULT" });
-		const provider: Provider = {
-			id: model.provider,
-			name: "Synthetic stash provider",
-			auth: {
-				apiKey: {
-					name: "Synthetic in-memory auth",
-					check: async () => ({ type: "api_key", source: "synthetic" }),
-					resolve: async () => ({ auth: { headers: { "x-stash-test-auth": "synthetic" } } }),
-				},
-			},
-			getModels: () => [model],
-			stream: () => {
-				throw new Error("The command must use provider-neutral streaming");
-			},
-			streamSimple: (...args) => {
-				received = args;
-				requests++;
-				return completedDistillStream(reply, DISTILL_USAGE)(...args);
-			},
-		};
-		assert.equal(modelRegistry.find(model.provider, model.id), undefined);
-		modelRegistry.registerProvider(provider);
-		const refresh = await modelRegistry.refresh({ allowNetwork: false, providers: [model.provider] });
-		assert.equal(refresh.errors.size, 0);
-		assert.equal(modelRegistry.find(model.provider, model.id), model);
-		assert.equal(modelRegistry.hasConfiguredAuth(model), true);
-
-		const { commands, sent, events } = registry();
-		const notices: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notices.push(message));
-		const projection = transcriptProjection([
-			{ type: "message", message: { role: "user", content: "REGISTRY_CONTEXT_BODY" } },
-		]);
-		const ctx = creationCtx(
-			{ notify },
-			{
-				cwd: dir,
-				model,
-				modelRegistry,
-				thinkingLevel: "off",
-				sessionManager: { getSessionId: () => "registry-owner", buildSessionProjection: () => projection },
-			},
-		);
-		try {
-			await commands.get("stash").handler("new registry binding", ctx);
-			await done;
-			assert.equal(requests, 1);
-			assert.ok(received);
-			assert.equal(received[0], model);
-			assert.match(getCurrentSystemPrompt(received[1].messages), /stash/i);
-			assert.deepEqual(getCurrentTools(received[1].messages), []);
-			assert.match(JSON.stringify(received[1].messages), /Operator hint: registry binding/);
-			assert.match(JSON.stringify(received[1].messages), /REGISTRY_CONTEXT_BODY/);
-			assert.equal(received[2]?.reasoning, undefined);
-			assert.equal(received[2]?.headers?.["x-stash-test-auth"], "synthetic");
-			assert.ok(received[2]?.signal instanceof AbortSignal);
-			assert.equal(sent.length, 0);
-			assert.match(notices.join("\n"), /Stashed "Registry-backed handover"/);
-			assert.match(notices.join("\n"), /35k in · 2\.0k out · ~\$0\.12/);
-			const artifact = (await listStashes(dir, { limit: 50 })).find(
-				(entry) => entry.meta.title === "Registry-backed handover",
-			);
-			assert.ok(artifact);
-			const stored = await readStash(dir, artifact.meta.id);
-			assert.ok(stored.ok);
-			assert.match(stored.content, /REGISTERED_PROVIDER_RESULT/);
-		} finally {
-			await events.get("session_shutdown")({}, ctx);
-		}
-	});
-
-	it("names the distiller model and thinking level and reports usage", async () => {
-		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD, DISTILL_USAGE) });
-		const statuses: string[] = [];
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		await commands.get("stash").handler(
-			"new show the distiller identity",
-			creationCtx({
-				notify,
-				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-			}),
-		);
-
-		assert.match(statuses[0] ?? "", /^stash: running .+ · test-model \[medium\]$/);
-		assert.match(
-			notifications.join("\n"),
-			/Stash distillation started \(test-model \[medium\]; hint: show the distiller identity\)\./,
-		);
-
-		await done;
-		assert.ok(
-			statuses.some((text) => /^stash: done \d{8}T\d{6}Z-.*35k in · 2\.0k out · ~\$0\.12$/.test(text)),
-			"the done status must carry the token and cost totals",
-		);
-		assert.match(notifications.join("\n"), /Distilled by test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/);
-	});
-
-	it("reports the distiller and usage on a skip", async () => {
-		const { commands } = registry({ distillStream: completedDistillStream("SKIP_STASH", DISTILL_USAGE) });
-		const notifications: string[] = [];
-		const statuses: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		await commands.get("stash").handler(
-			"new skip probe",
-			creationCtx({
-				notify,
-				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-			}),
-		);
-		await done;
-		assert.match(
-			notifications.join("\n"),
-			/Nothing worth stashing.*\n\nDistiller: test-model \[medium\] · 35k in · 2\.0k out · ~\$0\.12/s,
-		);
-		assert.ok(statuses.includes("stash: skipped"), "the skip status itself carries no usage");
-	});
-
-	it("reports the distiller and usage on a distillation failure", async () => {
-		const { commands } = registry({ distillStream: completedDistillStream("not json at all", DISTILL_USAGE) });
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		await commands.get("stash").handler(
-			"new failure probe",
-			creationCtx({
-				notify,
-				setStatus: () => {},
-			}),
-		);
-		await done;
-		assert.match(
-			notifications.join("\n"),
-			/Stash distillation failed:.*did not return valid JSON.*\n\nDistiller: test-model \[medium\] · 70k in · 4\.0k out · ~\$0\.25/s,
-		);
-	});
-
-	it("labels a non-reasoning model by name without a thinking bracket", async () => {
-		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		const ctx = creationCtx({ notify }, { model: testModel({ name: "Custom Model", reasoning: false }) });
-		await commands.get("stash").handler("new unlabeled", ctx);
-		const joined = notifications.join("\n");
-		assert.match(joined, /Stash distillation started \(Custom Model; hint: unlabeled\)\./);
-		assert.ok(!joined.includes("Custom Model ["), "a non-reasoning model must not carry a thinking bracket");
-		await done;
-	});
-
-	it("sanitizes a hostile configured model name in status and notifications", async () => {
-		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
-		const statuses: string[] = [];
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		const esc = String.fromCharCode(27);
-		const bel = String.fromCharCode(7);
-		const evil = `evil${esc}]52;c;SGVsbG8=${bel}${String.fromCharCode(8238)}\nNEXT`;
-		await commands.get("stash").handler(
-			"new hostile name",
-			creationCtx(
-				{
-					notify,
-					setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-				},
-				{ model: testModel({ name: evil, reasoning: true }) },
-			),
-		);
-		const status = statuses[0] ?? "";
-		const start = notifications[0] ?? "";
-		for (const surfaced of [status, start]) {
-			assert.ok(!surfaced.includes(esc), "no raw ESC may reach a status or notification");
-			assert.ok(!surfaced.includes(bel), "no raw BEL may reach a status or notification");
-			assert.ok(!surfaced.includes("\n"), "the label must stay single-line");
-			assert.ok(!surfaced.includes(String.fromCharCode(8238)), "no raw bidi control may surface");
-		}
-		assert.match(status, /evil\\x1b\]52;c;/);
-		await done;
-	});
-
-	it("names the distiller in the RPC start notification", async () => {
-		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		const ctx = creationCtx({ notify }, { mode: "rpc" });
-		await commands.get("stash").handler("new rpc identity", ctx);
-		assert.match(
-			notifications.join("\n"),
-			/Stash distillation started \(test-model \[medium\]; hint: rpc identity\)\./,
-		);
-		await done;
-	});
-
-	it("reserves the single-flight slot before asynchronous setup", async () => {
-		type ExecResult = { code: number; stdout: string; stderr: string; killed: boolean };
-		let releaseExec!: (result: ExecResult) => void;
-		const execGate = new Promise<ExecResult>((resolve) => {
-			releaseExec = resolve;
-		});
-		const { commands, pi } = registry({ distillStream: controlledDistillStream() });
-		pi.exec = async () => execGate;
-		const notifications: string[] = [];
-		const ctx = creationCtx({ notify: (message: string) => notifications.push(message) });
-
-		const first = commands.get("stash").handler("new first dispatch", ctx);
-		await commands.get("stash").handler("new second try", ctx);
-		assert.match(notifications.join("\n"), /already in flight.*abort/i);
-
-		releaseExec({ code: 0, stdout: "main\n", stderr: "", killed: false });
-		await first;
-		await commands.get("stash").handler("abort", ctx);
-	});
-
-	it("does not let aborted setup clear a replacement creation slot", async () => {
-		type ExecResult = { code: number; stdout: string; stderr: string; killed: boolean };
-		const releases: Array<(result: ExecResult) => void> = [];
-		const { commands, pi } = registry({ distillStream: controlledDistillStream() });
-		pi.exec = () =>
-			new Promise<ExecResult>((resolve) => {
-				releases.push(resolve);
+			Object.defineProperties(ctx, {
+				model: { get: unexpected },
+				thinkingLevel: { get: unexpected },
+				modelRegistry: { get: unexpected },
 			});
-		const notifications: string[] = [];
-		const ctx = creationCtx({ notify: (message: string) => notifications.push(message) });
-
-		const first = commands.get("stash").handler("new first setup", ctx);
-		await commands.get("stash").handler("abort", ctx);
-		const replacement = commands.get("stash").handler("new replacement setup", ctx);
-		assert.equal(releases.length, 2);
-
-		releases[0]({ code: 0, stdout: "main\n", stderr: "", killed: false });
-		await first;
-		notifications.length = 0;
-		await commands.get("stash").handler("new third dispatch", ctx);
-		assert.match(notifications.join("\n"), /already in flight.*abort/i);
-
-		releases[1]({ code: 0, stdout: "main\n", stderr: "", killed: false });
-		await replacement;
-		await commands.get("stash").handler("abort", ctx);
-	});
-
-	it("throws setup failures when no UI can carry the error", async () => {
-		const { commands } = registry();
-		await assert.rejects(
-			commands
-				.get("stash")
-				.handler("new headless creation", creationCtx({}, { mode: "json", hasUI: false, model: undefined })),
-			/No model is available/,
-		);
-	});
-
-	it("uses PI_STASH_MODEL without a parent model and fails a missing override without starting a job", async () => {
-		const oldModel = process.env.PI_STASH_MODEL;
-		const override = testModel({ id: "cheap-model", name: "cheap-model", provider: "cheap", reasoning: true });
-		let streamCalls = 0;
-		const stream: DistillStreamFunction = (...args) => {
-			streamCalls++;
-			assert.equal(args[0], override);
-			return completedDistillStream(DISTILL_PAYLOAD)(...args);
-		};
-		const { commands } = registry({ distillStream: stream });
-		try {
-			process.env.PI_STASH_MODEL = "cheap/cheap-model";
-			const notifications: string[] = [];
-			const { done, notify } = settledNotify((message: string) => notifications.push(message));
-			await commands
-				.get("stash")
-				.handler("new use explicit model", creationCtx({ notify }, { model: undefined, registryModels: [override] }));
-			await done;
-			assert.equal(streamCalls, 1);
-			assert.match(notifications.join("\n"), /Stash distillation started/);
-
-			process.env.PI_STASH_MODEL = "missing/model";
-			notifications.length = 0;
-			await commands
-				.get("stash")
-				.handler(
-					"new missing model",
-					creationCtx(
-						{ notify: (message: string) => notifications.push(message) },
-						{ model: undefined, registryModels: [override] },
-					),
-				);
-			assert.equal(streamCalls, 1, "a missing override must not start the distiller");
-			assert.match(notifications.join("\n"), /not in the current registry/);
-		} finally {
-			if (oldModel === undefined) delete process.env.PI_STASH_MODEL;
-			else process.env.PI_STASH_MODEL = oldModel;
+			await commands.get("stash").handler("new isolated effort", ctx);
+			assert.equal(launches.length, 1);
+			assert.equal(events.has("session_shutdown"), false);
+			assert.deepEqual(sent, []);
+			assert.deepEqual(Object.keys(launches[0]).sort(), ["command", "creatorId", "cwd", "invocationId", "name"]);
+			assert.equal(launches[0].command.name, "stash");
+			assert.equal(launches[0].command.args, "new");
 		}
 	});
 
-	it("passes inherited thinking through the stream and rejects an unsupported explicit level", async () => {
-		const oldThinking = process.env.PI_STASH_THINKING;
-		let received: Parameters<DistillStreamFunction>[2];
-		const stream: DistillStreamFunction = (model, context, options) => {
-			received = options;
-			return completedDistillStream(DISTILL_PAYLOAD)(model, context, options);
+	it("waits only for host admission without timers or single-flight state", async () => {
+		const { commands, pi } = registry();
+		const admissions: Array<() => void> = [];
+		const inputs: IndependentCommandInput[] = [];
+		pi.events.emit = (_event, value) =>
+			(value as { provide: (launch: IndependentCommandLaunch) => void }).provide(async (input) => {
+				inputs.push(input);
+				await new Promise<void>((resolve) => admissions.push(resolve));
+				return launchReceipt(input);
+			});
+		const unexpected = () => {
+			throw new Error("creation must not install timers");
 		};
-		const { commands } = registry({ distillStream: stream });
+		const timeout = mock.method(globalThis, "setTimeout", unexpected);
+		const interval = mock.method(globalThis, "setInterval", unexpected);
 		try {
-			delete process.env.PI_STASH_THINKING;
-			const inherited = settledNotify(() => {});
-			await commands
+			let returned = false;
+			const first = commands
 				.get("stash")
-				.handler("new inherit thinking", creationCtx({ notify: inherited.notify }, { thinkingLevel: "high" }));
-			await inherited.done;
-			assert.ok(received);
-			assert.equal(received.reasoning, "high");
-
-			process.env.PI_STASH_THINKING = "high";
-			const notifications: string[] = [];
-			received = undefined;
-			await commands.get("stash").handler(
-				"new unsupported thinking",
-				creationCtx(
-					{ notify: (message: string) => notifications.push(message) },
-					{
-						model: testModel({ id: "plain", provider: "plain", reasoning: false }),
-						registryModels: [testModel({ id: "plain", provider: "plain", reasoning: false })],
-					},
-				),
-			);
-			assert.equal(received, undefined, "unsupported explicit thinking must not start the distiller");
-			assert.match(notifications.join("\n"), /thinking "high" is not supported by plain\/plain/);
+				.handler("new first", creationCtx())
+				.then(() => {
+					returned = true;
+				});
+			const second = commands.get("stash").handler("new second", creationCtx());
+			await Promise.resolve();
+			await Promise.resolve();
+			assert.equal(inputs.length, 2);
+			assert.equal(returned, false);
+			assert.notEqual(inputs[0].invocationId, inputs[1].invocationId);
+			for (const admit of admissions) admit();
+			await Promise.all([first, second]);
+			assert.equal(returned, true);
 		} finally {
-			if (oldThinking === undefined) delete process.env.PI_STASH_THINKING;
-			else process.env.PI_STASH_THINKING = oldThinking;
+			timeout.mock.restore();
+			interval.mock.restore();
 		}
 	});
 
-	it("aborts an in-flight creation, clears the status, and frees the slot", async () => {
-		let aborted = false;
-		const { commands } = registry({
-			distillStream: controlledDistillStream(() => {
-				aborted = true;
-			}),
-		});
-		const statuses: string[] = [];
-		const notifications: string[] = [];
-		const ctx = creationCtx({
-			notify: (message: string) => notifications.push(message),
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		});
-		await commands.get("stash").handler("new create one", ctx);
-		assert.ok(statuses.some((text) => text.startsWith("stash: running")));
-		await commands.get("stash").handler("abort", ctx);
-		assert.equal(aborted, true, "the provider stream must receive the abort");
-		assert.equal(statuses.at(-1), "<clear>", "abort must clear the status");
-		assert.match(notifications.join("\n"), /Stash creation cancelled/);
-
-		notifications.length = 0;
-		await commands.get("stash").handler("abort", ctx);
-		assert.match(notifications.join("\n"), /No stash creation is in flight/);
-	});
-
-	it("reports an artifact that commits after the creation is cancelled", { timeout: 5000 }, async (t) => {
-		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		const ctx = creationCtx({
-			notify,
-			setStatus: () => {},
-		});
-		// Cancel at filesystem publication, after the last pre-write signal check.
-		const originalLink = fs.link;
-		const publication = mock.method(fs, "link", async (...args: Parameters<typeof fs.link>) => {
-			if (typeof args[1] === "string" && args[1].startsWith(`${dir}/`)) {
-				await commands.get("stash").handler("abort", ctx);
-			}
-			return originalLink(...args);
-		});
-		syncBuiltinESMExports();
-		t.after(() => {
-			publication.mock.restore();
-			syncBuiltinESMExports();
-		});
-		await commands.get("stash").handler("new create one", ctx);
-		await done;
-		const text = notifications.join("\n");
-		assert.match(text, /Stash creation cancelled/);
-		assert.match(text, /already written when the creation was cancelled/);
-		assert.match(text, /stash rotate/);
-	});
-
-	it("clears a stale done status before a new dispatch runs", async () => {
-		mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
-		// Job 1 settles on microtasks only (SKIP path), so synchronous ticks drive
-		// its lifecycle; job 2 stays stuck, so its own clear timer never competes.
+	it("rejects absent, duplicate and invalid providers before any launch", async () => {
+		const { commands, pi } = registry();
 		let calls = 0;
-		const stream: DistillStreamFunction = (...args) => {
+		const launch: IndependentCommandLaunch = async (input) => {
 			calls++;
-			return calls === 1 ? completedDistillStream("SKIP_STASH")(...args) : controlledDistillStream()(...args);
+			return launchReceipt(input);
 		};
-		const { commands } = registry({ distillStream: stream });
-		const statuses: string[] = [];
-		const ctx = creationCtx({
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		});
-		await commands.get("stash").handler("new first hint", ctx);
-		await flushUnderMockTimers(50);
-		// First job settled; its held status is pending a three-second clear.
-		assert.ok(statuses.some((text) => text === "stash: skipped"));
-		await commands.get("stash").handler("new second hint", ctx);
-		const before = statuses.length;
-		// Past the first job's hold deadline, its stale clear timer must not wipe
-		// the new running status: startCreation clears it before dispatch.
-		await mock.timers.tick(3100);
-		await flushUnderMockTimers(0);
-		assert.ok(statuses.slice(before).every((text) => text !== "<clear>"));
-		assert.ok(statuses.slice(before).some((text) => text.startsWith("stash: running")));
-		await commands.get("stash").handler("abort", ctx);
-	});
-
-	it("clears the status after the held state expires", async () => {
-		mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
-		const { commands } = registry({ distillStream: completedDistillStream("SKIP_STASH") });
-		const statuses: string[] = [];
-		const ctx = creationCtx({
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		});
-		await commands.get("stash").handler("new skip me", ctx);
-		await flushUnderMockTimers(50);
-		assert.ok(statuses.some((text) => text === "stash: skipped"));
-		await mock.timers.tick(3100);
-		await flushUnderMockTimers(0);
-		assert.equal(statuses.at(-1), "<clear>", "the held status must clear itself");
-	});
-
-	it("writes the artifact in RPC mode without a spinner and without a live turn", async () => {
-		const { commands, sent } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
-		const notifications: string[] = [];
-		const statuses: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		const ctx = creationCtx(
-			{
-				notify,
-				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-			},
-			{ mode: "rpc" },
-		);
-		await commands.get("stash").handler("new rpc dispatch", ctx);
-		await done;
-		assert.equal(sent.length, 0);
-		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
-	});
-
-	it("reports distillation failures and writes nothing", async () => {
-		const { commands } = registry({
-			distillStream: completedDistillStream("not json at all"),
-		});
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const notifications: string[] = [];
-		const statuses: string[] = [];
-		const { done, notify } = settledNotify((message: string, level?: string) =>
-			notifications.push(`${level}: ${message}`),
-		);
-		const ctx = creationCtx({
-			notify,
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		});
-		await commands.get("stash").handler("new failing run", ctx);
-		await done;
-		assert.match(notifications.join("\n"), /error: Stash distillation failed.*did not return valid JSON/);
-		assert.ok(statuses.some((text) => text === "stash: failed"));
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before, "a failed distillation must not write");
-	});
-
-	it("skips writing when the distiller finds nothing worth preserving", async () => {
-		const { commands } = registry({ distillStream: completedDistillStream("SKIP_STASH") });
-		const before = (await listStashes(dir, { limit: 200 })).length;
-		const notifications: string[] = [];
-		const statuses: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		const ctx = creationCtx({
-			notify,
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		});
-		await commands.get("stash").handler("new skip run", ctx);
-		await done;
-		assert.match(notifications.join("\n"), /Nothing worth stashing/);
-		assert.ok(statuses.some((text) => text === "stash: skipped"));
-		assert.equal((await listStashes(dir, { limit: 200 })).length, before);
-	});
-
-	it("aborts the in-flight job on session shutdown", async () => {
-		let aborted = false;
-		const { commands, events } = registry({
-			distillStream: controlledDistillStream(() => {
-				aborted = true;
-			}),
-		});
-		const statuses: string[] = [];
-		const ctx = creationCtx({
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		});
-		await commands.get("stash").handler("new shutdown target", ctx);
-		const shutdownHandler = events.get("session_shutdown");
-		assert.equal(typeof shutdownHandler, "function", "a session_shutdown handler must be registered");
-		await shutdownHandler({}, ctx);
-		assert.equal(aborted, true, "session shutdown must abort the provider stream");
-		assert.equal(statuses.at(-1), "<clear>", "session shutdown must clear the status");
-	});
-
-	it("ignores a foreign session's shutdown and aborts only for the owning session", async () => {
-		// Worker sessions share this module instance in one process, so their
-		// shutdown fires the same handler with their own context: the in-flight
-		// job belongs to the session that reserved it and must survive the foreign
-		// shutdown untouched.
-		let aborted = false;
-		const { commands, events } = registry({
-			distillStream: controlledDistillStream(() => {
-				aborted = true;
-			}),
-		});
-		const statuses: string[] = [];
-		const owner = creationCtx({
-			setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-		});
-		const foreign = creationCtx(
-			{
-				setStatus: (_key: string, text: string | undefined) => statuses.push(text ?? "<clear>"),
-			},
-			{
-				sessionManager: {
-					getSessionId: () => "sess-worker",
-					buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
-				},
-			},
-		);
-		await commands.get("stash").handler("new race probe", owner);
-		const shutdownHandler = events.get("session_shutdown");
-		await shutdownHandler({ type: "session_shutdown", reason: "quit" }, foreign);
-		assert.equal(aborted, false, "a foreign session's shutdown must not abort the job");
-		assert.ok(statuses.at(-1)?.startsWith("stash: running"), "a foreign shutdown must not clear the status");
-		await shutdownHandler({ type: "session_shutdown", reason: "quit" }, owner);
-		assert.equal(aborted, true, "the owning session's shutdown must abort the job");
-		assert.equal(statuses.at(-1), "<clear>", "the owning session's shutdown must clear the status");
-	});
-
-	it("refuses a foreign session's abort command without cancelling the owner's creation", async () => {
-		let aborted = false;
-		const { commands } = registry({
-			distillStream: controlledDistillStream(() => {
-				aborted = true;
-			}),
-		});
-		const owner = creationCtx({ notify: () => {} });
-		const notices: string[] = [];
-		const foreign = creationCtx(
-			{ notify: (text: string) => notices.push(text) },
-			{
-				sessionManager: {
-					getSessionId: () => "foreign",
-					buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
-				},
-			},
-		);
-		await commands.get("stash").handler("new owner effort", owner);
-		try {
-			await commands.get("stash").handler("abort", foreign);
-			assert.equal(aborted, false);
-			assert.match(notices.join("\n"), /belongs to another session/);
-		} finally {
-			await commands.get("stash").handler("abort", owner);
+		for (const providers of [[], [launch, launch], [null]]) {
+			pi.events.emit = (_event, value) => {
+				for (const provider of providers) (value as { provide: (launch: unknown) => void }).provide(provider);
+			};
+			await assert.rejects(
+				commands.get("stash").handler("new no provider", creationCtx({}, { hasUI: false })),
+				/exactly one independent Durable host provider/,
+			);
 		}
-		assert.equal(aborted, true);
+		assert.equal(calls, 0);
 	});
 
-	it("notifies when session shutdown cancels a running creation", async () => {
-		// /stash abort reports itself synchronously; a shutdown does not, so the
-		// cancelled outcome is the operator's only notice that the creation died.
-		let shutdownNow: (() => void) | null = null;
-		const stream: DistillStreamFunction = (...args) => {
-			const events = controlledDistillStream()(...args);
-			queueMicrotask(() => shutdownNow?.());
-			return events;
-		};
-		const { commands, events } = registry({ distillStream: stream });
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		const ctx = creationCtx({
-			notify,
-			setStatus: () => {},
-		});
-		shutdownNow = () => {
-			void events.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, ctx);
-		};
-		await commands.get("stash").handler("new shutdown notice", ctx);
-		await done;
-		assert.match(notifications.join("\n"), /Stash creation cancelled by session shutdown/);
+	it("reports capture and admission failures without a fallback or retained job", async () => {
+		const { commands, pi, launches } = registry();
+		const errors: string[] = [];
+		const broken = creationCtx(
+			{ notify: (message) => errors.push(message) },
+			{
+				sessionManager: {
+					getSessionId: () => "source",
+					buildSessionProjection: () => {
+						throw new Error("projection unavailable\nnext line");
+					},
+				},
+			},
+		);
+		await commands.get("stash").handler("new failed capture", broken);
+		assert.match(errors[0], /projection unavailable/);
+		assert.equal(launches.length, 0);
+		pi.events.emit = (_event, value) =>
+			(value as { provide: (launch: IndependentCommandLaunch) => void }).provide(async () => {
+				throw new Error("admission refused");
+			});
+		await assert.rejects(
+			commands.get("stash").handler("new failed admission", creationCtx({}, { hasUI: false })),
+			/admission refused/,
+		);
 	});
 });
 
@@ -1888,7 +1269,7 @@ describe("stash command grammar", () => {
 		const actions = await complete("");
 		assert.deepEqual(
 			actions?.map((item) => item.value),
-			["new", "get", "complete", "release", "reopen", "rotate", "abort", "capacity", "help"],
+			["new", "get", "complete", "release", "reopen", "rotate", "capacity", "help"],
 		);
 		assert.equal(await complete("20270724"), null, "bare ids must not autocomplete as actions");
 		const ids = await complete("get 20270724");
@@ -1904,20 +1285,16 @@ describe("stash command grammar", () => {
 			ui: { notify: (message: string) => notifications.push(message) },
 		};
 		await commands.get("stash").handler("abort the plan", ctx);
-		assert.match(notifications.join("\n"), /Usage: \/stash abort/);
+		assert.match(notifications.join("\n"), /Unknown \/stash action/);
 		notifications.length = 0;
 		await commands.get("stash").handler("help me", ctx);
 		assert.match(notifications.join("\n"), /Usage: \/stash help/);
 	});
 
 	it("creates through /stash new and preserves an action-shaped hint", async () => {
-		const { commands } = registry({ distillStream: completedDistillStream(DISTILL_PAYLOAD) });
-		const notifications: string[] = [];
-		const { done, notify } = settledNotify((message: string) => notifications.push(message));
-		await commands.get("stash").handler("new abort the plan", creationCtx({ notify }));
-		assert.match(notifications.join("\n"), /hint: abort the plan/);
-		await done;
-		assert.ok((await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Distilled handover"));
+		const { commands, launches } = registry();
+		await commands.get("stash").handler("new abort the plan", creationCtx());
+		assert.equal(readDistillInput(launches[0].command.data).hint, "abort the plan");
 	});
 
 	it("rejects bare creation text as an unknown action", async () => {

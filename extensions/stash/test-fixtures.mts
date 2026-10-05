@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import {
-	createAssistantMessageEventStream,
-	type Api,
-	type AssistantMessage,
-	type Model,
-	type TextContent,
-	type ThinkingContent,
-	type ToolCall,
-	type Usage,
+import type {
+	Api,
+	AssistantMessage,
+	Model,
+	TextContent,
+	ThinkingContent,
+	ToolCall,
+	Usage,
 } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
@@ -24,7 +23,6 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import type { StashPanel, StashPanelResult, PanelTheme } from "./panel.ts";
-import type { DistillModelRegistry, DistillStreamFunction } from "./distill.ts";
 
 export function testModel(overrides: Partial<Model<Api>> = {}): Model<Api> {
 	return {
@@ -62,34 +60,6 @@ export function testAssistantMessage(reply: string, model = testModel(), usage?:
 	};
 }
 
-export function completedDistillStream(reply: string, usage?: Usage): DistillStreamFunction {
-	return (model) => {
-		const stream = createAssistantMessageEventStream();
-		stream.push({ type: "done", reason: "stop", message: testAssistantMessage(reply, model, usage) });
-		stream.end();
-		return stream;
-	};
-}
-
-/** A pending provider stream settles only when the job aborts its request signal. */
-export function controlledDistillStream(onAbort: () => void = () => {}): DistillStreamFunction {
-	return (model, _context, options) => {
-		assert.ok(options?.signal, "the distiller must supply a request abort signal");
-		const stream = createAssistantMessageEventStream();
-		const abort = () => {
-			onAbort();
-			const message = testAssistantMessage("", model);
-			message.stopReason = "aborted";
-			message.errorMessage = "Request aborted";
-			stream.push({ type: "error", reason: "aborted", error: message });
-			stream.end();
-		};
-		if (options.signal.aborted) abort();
-		else options.signal.addEventListener("abort", abort, { once: true });
-		return stream;
-	};
-}
-
 export class RequiredMap<K, V> extends Map<K, V> {
 	override get(key: K): V {
 		const value = super.get(key);
@@ -116,7 +86,7 @@ export interface TestContext {
 	ui?: TestUi;
 	model?: Model<Api>;
 	thinkingLevel?: ExtensionContext["thinkingLevel"];
-	modelRegistry?: DistillModelRegistry & Partial<Pick<ExtensionContext["modelRegistry"], "streamSimple">>;
+	modelRegistry?: Partial<ExtensionContext["modelRegistry"]>;
 	sessionManager?: Pick<ExtensionContext["sessionManager"], "getSessionId" | "buildSessionProjection">;
 }
 
