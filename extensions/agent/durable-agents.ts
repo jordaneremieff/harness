@@ -1116,7 +1116,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const sendTool = durable.defineTool({
 		name: "agent_send",
 		description:
-			"Send a message to an agent conversation. A busy conversation receives steer at its next tool boundary; mode followUp or report waits for its current run to end. The answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
+			"Send a message to an agent conversation. A busy conversation receives steer at its next tool boundary; mode followUp or report to a Durable agent waits for its current run to end. Model-origin reports to ordinary primaries use steer. The answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) => {

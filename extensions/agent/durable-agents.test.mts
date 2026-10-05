@@ -953,6 +953,8 @@ it("includes the busy-run boundary in native report receipts", async (t) => {
 	assert.ok(outcome && !outcome.isError);
 	assert.match(outcome.text, /report waits for its current run to end/u);
 	assert.match(outcome.text, /Use steer.*next tool boundary/u);
+	assert.match(outcome.text, /recipient is a busy Durable agent/u);
+	assert.match(outcome.text, /reports to ordinary primaries use steer/u);
 });
 
 it("spawns a child in a new storage when the cwd differs", async (t) => {

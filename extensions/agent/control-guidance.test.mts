@@ -64,7 +64,7 @@ it("keeps the contract, reporting, polling, live-work, and authority guidance", 
 	assert.match(all, /a spawn or send receipt is not that result/u);
 	assert.match(all, /Do not stop unrelated, standing, or background agents merely to finish this request/u);
 	assert.match(all, /continue useful work, redirect changed work, or abort superseded work/u);
-	assert.match(all, /interim reports, blocking questions, and corrections/u);
+	assert.match(all, /informational reports and blocking questions/u);
 	assert.match(all, /Do not replace the terminal result with an interim report/u);
 	assert.match(all, /A terminal answer settles the current request/u);
 	assert.match(all, /substantive result or exact blocker, not a waiting note/u);

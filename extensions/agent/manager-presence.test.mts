@@ -101,7 +101,8 @@ it("carries the current primary name and published purpose on direct session mes
 	assert.equal(purpose.provider, undefined);
 	assert.equal(purpose.modelId, undefined);
 	assert.equal(purpose.thinkingLevel, undefined);
-	await manager.control("report", { sessionId: recipientId, message: "Explicit report", requestId: "report", origin: "model" }, { id: senderId, cwd: root });
+	const receipt = await manager.control("report", { sessionId: recipientId, message: "Explicit report", requestId: "report", origin: "model" }, { id: senderId, cwd: root }) as { boundary: string };
+	assert.doesNotMatch(receipt.boundary, /waits.*run to end/u, "a primary receipt does not claim Durable follow-up delivery");
 	const report = received[2]?.details as Record<string, unknown>;
 	assert.equal(report.kind, "report");
 	assert.equal(report.wake, true);
