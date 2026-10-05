@@ -265,7 +265,7 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	assert.match(received[0]?.text ?? "", /^Agent “source-storage” finished\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	releaseDelivery();
-	await waitForDelivery(source, async () => ids.every((id) => revisions.at(-1)?.receipts[String(id)]?.acknowledged === true));
+	await waitForDelivery(source, async () => ids.every((id) => revisions.at(-1)?.receipts[String(id)]?.acknowledged === (recipients !== "overlap" || id === original.submissionId)));
 	assert.equal(received.length, recipients === "distinct" ? 2 : 1, "one answer reaches each recipient once, including overlapping owner routes");
 	for (const delivery of received) {
 		const messageDetails = delivery.details as { deliveryRecipient: string; submissions: Array<{ ownerId: string; origin?: string }>; wake?: unknown };
@@ -275,13 +275,13 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	for (const revision of revisions) {
 		const members = ids.flatMap((id) => revision.receipts[String(id)] ?? []);
 		assert.ok(members.length === 0 || members.length === 2, "receipt materialization is atomic");
-		assert.ok(members.every((member) => member.acknowledged) || members.every((member) => !member.acknowledged), "answer acknowledgement is atomic");
+		if (recipients !== "overlap") assert.ok(members.every((member) => member.acknowledged) || members.every((member) => !member.acknowledged), "live answer acknowledgement is atomic");
 	}
 	const later = await addReceipt(source, owner, "later-answer");
 	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(later)]?.acknowledged === true);
 	assert.equal(received.length, recipients === "distinct" ? 3 : 2, "equal text from a distinct answer entry remains a separate notice");
 	assert.notEqual(received[0]?.sourceId, received.at(-1)?.sourceId);
-	assert.deepEqual(errors, []);
+	if (recipients !== "overlap") assert.deepEqual(errors, []);
 });
 
 for (const route of ["operator", "model", "fallback"] as const) it(`delivers a ${route} check-in through the report primary route`, { timeout: 30000 }, async (t) => {
@@ -314,7 +314,7 @@ for (const route of ["operator", "model", "fallback"] as const) it(`delivers a $
 	assert.equal((await deliveryState(source))?.reports[0]?.acknowledged, false, "admission precedes acknowledgement");
 	assert.equal((await deliveryState(source))?.reports[0]?.checkIn?.fallbackBroadcast, undefined, "an unaccepted broadcast records no flag");
 	release();
-	await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
+	await waitForDelivery(source, async () => route === "fallback" ? (await deliveryState(source))?.reports[0]?.checkIn?.fallbackBroadcast === true : (await deliveryState(source))?.reports[0]?.acknowledged === true);
 	const message = received[0];
 	assert.equal(message.sourceId, "source-storage:checkin:task:1");
 	const details = message.details as Record<string, unknown>;
@@ -353,7 +353,8 @@ it("retains one accepted check-in fallback broadcast per watched task and owner"
 	const add = async (sourceId: string, requestId = "task", conversationId = 1, ownerId = owner): Promise<void> => {
 		await source.harness.commit(async (tx) => {
 			const state = await tx.doc(AgentDeliveryDoc);
-			const checkIn = { conversationId, requestId, origin: "model" as const, elapsedMs: 1_800_000, cost: null };
+			const fallbackBroadcast = state.reports.some((report) => report.ownerId === ownerId && report.checkIn?.conversationId === conversationId && report.checkIn.requestId === requestId && report.checkIn.fallbackBroadcast === true);
+			const checkIn = { ...(fallbackBroadcast ? { fallbackBroadcast: true } : {}), conversationId, requestId, origin: "model" as const, elapsedMs: 1_800_000, cost: null };
 			state.reports.push({ sourceId, requestId: sourceId, ownerId, senderIdentity: source.storageId,
 				message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn });
 		}, BACKGROUND_CONTEXT);
@@ -369,9 +370,9 @@ it("retains one accepted check-in fallback broadcast per watched task and owner"
 	}, BACKGROUND_CONTEXT);
 	await add("checkin:task:coalesced");
 	releaseFirst();
-	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:coalesced")?.acknowledged === true);
-	const accepted = (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:1");
-	assert.equal(accepted?.acknowledged, true);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:coalesced")?.checkIn?.fallbackBroadcast === true);
+	const accepted = (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:coalesced");
+	assert.equal(accepted?.acknowledged, false);
 	assert.equal(accepted?.checkIn?.fallbackBroadcast, true, "accepted delivery survives replacement of its pending row");
 	assert.equal(received.length, 1, "the coalesced row uses the accepted broadcast instead of another notice");
 	await watcher.close();
@@ -379,15 +380,15 @@ it("retains one accepted check-in fallback broadcast per watched task and owner"
 	source = await openHost(sourcePath, "source-storage", root);
 	await add("checkin:task:2");
 	watcher = start();
-	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:2")?.acknowledged === true);
-	assert.equal(received.length, 1, "a retained acknowledged broadcast suppresses the next fallback after reopen");
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:2")?.checkIn?.fallbackBroadcast === true);
+	assert.equal(received.length, 1, "a retained broadcast suppresses the next fallback after reopen");
 	for (const [sourceId, requestId, conversationId, ownerId] of [
 		["checkin:other-task:1", "other-task", 1, owner],
 		["checkin:other-conversation:1", "task", 2, owner],
 		["checkin:other-owner:1", "task", 1, randomUUID()],
 	] as const) {
 		await add(sourceId, requestId, conversationId, ownerId);
-		await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === sourceId)?.acknowledged === true);
+		await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === sourceId)?.checkIn?.fallbackBroadcast === true);
 	}
 	assert.equal(received.length, 4, "different watched tasks, conversations and owners each retain their own fallback");
 	const direct = eventLog<PrimaryDelivery>();
@@ -1214,7 +1215,7 @@ it("falls back to one registered live primary when the owning endpoint is absent
 		onError: (error) => errors.push(error),
 	});
 	await received.waitForCount(1);
-	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(submissionId)]?.acknowledged === true);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(submissionId)]?.fallbackRecipients?.length === 1);
 	const message = received[0];
 	const details = message.details as Record<string, unknown>;
 	assert.equal(details.fallback, true);
@@ -1228,7 +1229,7 @@ it("falls back to one registered live primary when the owning endpoint is absent
 	assert.match(message.text, /no live owning session/u);
 	assert.ok(message.text.includes(absentOwner));
 	const state = await deliveryState(source);
-	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, true);
+	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false);
 	assert.deepEqual(errors, []);
 	await watcher.close();
 });
@@ -1435,6 +1436,88 @@ it("backs off on failure and close cancels the retry", { timeout: 30000 }, async
 	assert.ok(settled >= 2 && settled < 30, `bounded attempts, received ${settled}`);
 });
 
+it("preserves the live owner's wake when an absent owner shares its answer", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const absent = randomUUID();
+	const live = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({ id: live, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const sourcePath = join(root, "source.sqlite");
+	const source = await openHost(sourcePath, "source-storage", root);
+	t.after(() => source.close());
+	const submissionId = await addReceipt(source, absent);
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		state.receipts["999"] = { ...state.receipts[String(submissionId)], submissionId: 999 as SubmissionId, ownerId: live, origin: "model" };
+	}, BACKGROUND_CONTEXT);
+	const idle = eventLog<void>();
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	await received.waitForCount(1);
+	await idle.waitForCount(1);
+	const normal = received.find((message) => (message.details as { liveOwner: boolean }).liveOwner);
+	assert.ok(normal, "a fallback never substitutes for the live owner's delivery");
+	assert.equal((normal.details as { wake: boolean }).wake, true);
+	assert.equal((await deliveryState(source))?.receipts[String(submissionId)]?.acknowledged, false);
+	assert.equal((await deliveryState(source))?.receipts["999"]?.acknowledged, true);
+});
+
+for (const kind of ["receipt", "report"] as const) it(`keeps a dead owner's ${kind} pending across fallback and source reopen`, { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const other = randomUUID();
+	const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await waitForProcessExit(dead, 5000);
+	assert.ok(dead.pid);
+	writeIncompatibleEndpoint(sessionsRoot, owner, dead.pid);
+	const fallback = eventLog<PrimaryDelivery>();
+	let channel = await createPrimaryChannel({ id: other, cwd: root, sessionsRoot, deliver: (message) => { fallback.push(message); }, promptTrust: async () => undefined });
+	const sourcePath = join(root, "source.sqlite");
+	let source = await openHost(sourcePath, "source-storage", root);
+	let watcher: ReturnType<typeof startDurableDelivery> | undefined;
+	t.after(async () => { await watcher?.close(); await channel.close(); await source.close(); });
+	const submissionId = kind === "receipt" ? await addReceipt(source, owner) : undefined;
+	if (kind === "report") await recordReport(source.harness, { ownerId: owner, senderIdentity: source.storageId, message: "result", requestId: "offline-report" }, BACKGROUND_CONTEXT);
+	const row = async () => {
+		const state = await deliveryState(source);
+		return kind === "receipt" ? state?.receipts[String(submissionId)] : state?.reports[0];
+	};
+	const idle = eventLog<void>();
+	const start = () => startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
+	watcher = start();
+	await fallback.waitForCount(1);
+	await idle.waitForCount(1);
+	assert.equal((await row())?.acknowledged, false, "fallback is informational, not owner acceptance");
+	assert.deepEqual((await row() as { fallbackRecipients?: string[] })?.fallbackRecipients, [other]);
+	assert.equal((fallback[0].details as { wake: boolean }).wake, false);
+	assert.match(fallback[0].text, /no live owning session/u);
+	await watcher.close();
+	await source.close();
+	await channel.close();
+	channel = await createPrimaryChannel({ id: other, cwd: root, sessionsRoot, deliver: (message) => { fallback.push(message); }, promptTrust: async () => undefined });
+	source = await openHost(sourcePath, "source-storage", root);
+	const passes = idle.length;
+	watcher = start();
+	await idle.waitForCount(passes + 1);
+	assert.equal(fallback.length, 1, "retained recipient state survives both source and receiver reopen");
+	const direct = eventLog<PrimaryDelivery>();
+	const ownerChannel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver: (message) => { direct.push(message); }, promptTrust: async () => undefined });
+	t.after(() => ownerChannel.close());
+	await watcher.close();
+	watcher = start();
+	await direct.waitForCount(1);
+	await waitForDelivery(source, async () => (await row())?.acknowledged === true);
+	await watcher.close();
+	watcher = start();
+	await idle.waitForCount(idle.length + 1);
+	assert.equal(direct.length, 1, "one normal owner delivery per registration");
+	assert.equal(fallback.length, 1);
+});
+
 it("broadcasts a fallback to every registered live primary exactly once", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");
@@ -1481,7 +1564,7 @@ it("broadcasts a fallback to every registered live primary exactly once", { time
 		onError: (error) => errors.push(error),
 	});
 	await Promise.all([firstReceived.waitForCount(1), secondReceived.waitForCount(1)]);
-	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(submissionId)]?.acknowledged === true);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(submissionId)]?.fallbackRecipients?.length === 2);
 	assert.equal(firstReceived.length, 1, "the first registered primary receives exactly one");
 	assert.equal(secondReceived.length, 1, "the second registered primary receives exactly one");
 	for (const [id, received] of [
@@ -1499,8 +1582,8 @@ it("broadcasts a fallback to every registered live primary exactly once", { time
 	const state = await deliveryState(source);
 	assert.equal(
 		state?.receipts[String(submissionId)]?.acknowledged,
-		true,
-		"the row is acknowledged after every live recipient accepts",
+		false,
+		"the row waits for its owner after every fallback recipient accepts",
 	);
 	assert.deepEqual(errors, []);
 	await watcher.close();
@@ -1556,12 +1639,12 @@ it("retries a failed broadcast without duplicating a successful receiver", { tim
 		onError: (error) => errors.push(error),
 	});
 	await waitForDelivery(source,
-		async () => (await deliveryState(source))?.receipts[String(submissionId)]?.acknowledged === true,
+		async () => (await deliveryState(source))?.receipts[String(submissionId)]?.fallbackRecipients?.length === 2,
 		15000,
 	);
 	assert.ok(failingAttempts >= 2, `the failed candidate was retried, attempts ${failingAttempts}`);
 	const expected = await receiptSourceId(source, submissionId);
-	assert.ok(stableKeys.length >= 1, "the stable receiver got the row");
+	assert.equal(stableKeys.length, 1, "retained state suppresses retry copies to the stable receiver");
 	assert.equal(new Set(stableKeys).size, 1, "the retry preserves one source key for receiver dedup");
 	for (const key of stableKeys) assert.equal(key, expected);
 	assert.deepEqual(new Set(failingKeys), new Set([expected]));
@@ -1672,7 +1755,8 @@ it("leaves the broadcast pending when a registered live candidate is unreachable
 	assert.equal(details.fallback, true);
 	assert.equal(details.deliveryRecipient, reachable);
 	assert.match(errors[0]?.message ?? "", new RegExp(unreachable, "u"), "the unavailable candidate is named");
-	await received.waitForCount(2, 15000);
+	await errors.waitForCount(2, 15000);
+	assert.equal(received.length, 1, "retained state suppresses duplicate fallback attempts");
 	assert.equal(
 		new Set(received.map((message) => message.sourceId)).size,
 		1,

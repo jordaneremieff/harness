@@ -648,6 +648,58 @@ it("keeps hundreds of clean catalog records out of board reads and host launches
 	assert.equal(observes, 0);
 });
 
+it("closes a recovery link with parked deliveries and recovers again at another registration", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const links: FakeConnection[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => {
+			const link = fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: true, deliveriesActive: false }));
+			links.push(link);
+			return link;
+		},
+		observe: async () => ({ conversations: [] }), connect: noHost,
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root, "parked");
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	assert.equal(links.length, 1);
+	assert.equal(links[0].closed, true, "parked rows release the transient recovery link");
+	assert.equal(manager.catalog.read(record.storageId).recoveryDue, true);
+	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+	assert.equal(links.length, 2);
+	assert.equal(links[1].closed, true);
+});
+
+it("refreshes an existing recovery link at another primary registration", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	let connection: FakeConnection | undefined;
+	let active = true;
+	let reads = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => {
+			connection = fakeConnection(metadata, async (method) => {
+				if (method === "recovery-state") reads++;
+				return { workPending: false, deliveriesPending: true, deliveriesActive: active };
+			});
+			return connection;
+		},
+		observe: async () => ({ conversations: [] }), connect: noHost,
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root, "recovering");
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	assert.equal(connection?.closed, false);
+	const prior = reads;
+	active = false;
+	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+	assert.ok(reads > prior, "registration refreshes delivery even without a native commit");
+	assert.equal(connection?.closed, true);
+});
+
 it("launches only marked-due records and caps concurrent recovery at two", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const acquired = eventLog<string>();
@@ -668,7 +720,7 @@ it("launches only marked-due records and caps concurrent recovery at two", { tim
 				}));
 			}
 			activity.active -= 1;
-			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false } : {}));
+			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {}));
 		},
 		observe: async () => ({ conversations: [] }),
 		connect: noHost,
@@ -712,7 +764,7 @@ it("serializes simultaneous primary registrations without duplicate recovery", {
 				}));
 			}
 			activity.active -= 1;
-			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: true, deliveriesPending: true } : {}));
+			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: true, deliveriesPending: true, deliveriesActive: true } : {}));
 		},
 		observe: async () => ({ conversations: [] }),
 		connect: noHost,
@@ -748,11 +800,11 @@ it("refuses to recover a due record with an unknown or live writer claim", { tim
 		createPrimary: primaryFactory().factory,
 		acquire: async (metadata) => {
 			acquired.push(metadata.storageId);
-			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false } : {}));
+			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {}));
 		},
 		connect: async (metadata) => {
 			connected.push(metadata.storageId);
-			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false } : {}));
+			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {}));
 		},
 		observe: async () => ({ conversations: [] }),
 	}));
@@ -778,7 +830,7 @@ it("refuses to recover a due record with an unknown or live writer claim", { tim
 
 it("closes a delivery-only recovery connection when no work remains", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
-	let recoveryState: { workPending: boolean; deliveriesPending: boolean } = { workPending: false, deliveriesPending: true };
+	let recoveryState = { workPending: false, deliveriesPending: true, deliveriesActive: true };
 	let connection: FakeConnection | undefined;
 	const manager = new AgentManager(managerOptions(root, {
 		createPrimary: primaryFactory().factory,
@@ -798,7 +850,7 @@ it("closes a delivery-only recovery connection when no work remains", { timeout:
 	const active = connection;
 	assert.ok(active);
 	assert.equal(active.closed, false, "pending deliveries keep the recovery connection open");
-	recoveryState = { workPending: false, deliveriesPending: false };
+	recoveryState = { workPending: false, deliveriesPending: false, deliveriesActive: false };
 	active.change();
 	await waitForConnectionClose(active);
 	assert.deepEqual(manager.connectedStorageIds(), [], "delivery-only connections stay out of the client map");

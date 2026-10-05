@@ -10,7 +10,12 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { hostname } from "node:os";
+import { eventLog, waitForProcessExit } from "./host-fixture.mts";
+import { createPrimaryChannel, primaryEndpointPath } from "./primary-channel.ts";
+import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
@@ -180,6 +185,51 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 	} finally {
 		await second.close();
 	}
+});
+
+it("retires pending dead-owner delivery and recovers it through primary registration", { timeout: 60000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const owner = randomUUID();
+	const other = randomUUID();
+	const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await waitForProcessExit(dead, 5000);
+	assert.ok(dead.pid);
+	const endpoint = primaryEndpointPath(f.root, owner);
+	mkdirSync(dirname(endpoint), { recursive: true });
+	writeFileSync(endpoint, JSON.stringify({ version: PRIMARY_DELIVERY_CONTRACT, id: owner, serverId: randomUUID(), startedAt: new Date().toISOString(), hostname: hostname(), pid: dead.pid, socketPath: join(f.root, "dead.sock"), cwd: f.cwd }));
+	const fallback = eventLog<unknown>();
+	const channel = await createPrimaryChannel({ id: other, cwd: f.cwd, sessionsRoot: f.root, deliver: (message) => { fallback.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const first = await acquireHost(f.metadata, { env: f.env("answer") });
+	trackHost(t, first.pid);
+	const submitted = await first.request("submit", { message: "survive owner restart", ownerId: owner, origin: "model", requestId: "offline-owner" }) as SubmitResult;
+	await waitForReceipt(first, owner, submitted.submissionId);
+	await fallback.waitForCount(1);
+	await first.close();
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	const catalog = new AgentCatalog(f.root);
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
+	await channel.close();
+	const acquired: number[] = [];
+	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, acquire: async (metadata) => {
+		const client = await acquireHost(metadata, { env: f.env("answer") });
+		acquired.push(client.pid); trackHost(t, client.pid); return client;
+	} });
+	t.after(() => manager.close());
+	await manager.registerPrimary(other, { cwd: f.cwd, signal: new AbortController().signal, send: (_text, details) => { fallback.push(details); } });
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	assert.equal(acquired.length, 1, "another primary reopens the marked storage");
+	assert.equal(fallback.length, 1, "the recorded fallback never repeats at receiver re-registration");
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "retirement preserves the pending owner row");
+	const delivered = eventLog<unknown>();
+	await manager.registerPrimary(owner, { cwd: f.cwd, signal: new AbortController().signal, send: (_text, details) => { delivered.push(details); } });
+	await delivered.waitForCount(1);
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	assert.equal(acquired.length, 2);
+	assert.equal(delivered.length, 1);
+	assert.equal((delivered[0] as { liveOwner: boolean }).liveOwner, true);
+	assert.equal((delivered[0] as { wake: boolean }).wake, true);
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false);
 });
 
 it("preserves a crash recovery marker through primary startup and clears it after idle retirement", { timeout: 120000 }, async (t) => {
@@ -354,7 +404,7 @@ it("marks recovery due before admission and reports the recovery state", { timeo
 	const primary = await acquireHost(f.metadata, { env: f.env("request") });
 	trackHost(t, primary.pid);
 	try {
-		assert.deepEqual(await primary.request("recovery-state", {}), { workPending: false, deliveriesPending: false });
+		assert.deepEqual(await primary.request("recovery-state", {}), { workPending: false, deliveriesPending: false, deliveriesActive: false });
 		const submitted = await primary.request("submit", { message: "RECOVERY_MARK", requestId: "recovery-mark" }) as SubmitResult;
 		assert.ok(submitted.submissionId);
 		await f.marker("requested");

@@ -126,12 +126,13 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 				const sourceId = `check-in:${id}:${input.requestId}:${k}`;
 				const state = await tx.doc(AgentDeliveryDoc);
 				if (!state.reports.some((report) => report.sourceId === sourceId)) {
+					const fallbackBroadcast = state.reports.some((report) => report.ownerId === input.ownerId && report.checkIn?.conversationId === input.conversationId && report.checkIn.requestId === input.requestId && report.checkIn.fallbackBroadcast === true);
 					for (let index = state.reports.length - 1; index >= 0; index -= 1) {
 						const previous = state.reports[index];
 						if (previous?.checkIn?.conversationId === input.conversationId && previous.checkIn.requestId === input.requestId && previous.ownerId === input.ownerId && !previous.acknowledged) state.reports.splice(index, 1);
 					}
 					const snapshot = await digest(tx, input, retained?.entry, now);
-					state.reports.push({ sourceId, requestId: sourceId, ownerId: input.ownerId, senderIdentity: input.senderIdentity, message: snapshot.digest, replyTo: null, acknowledged: false, createdAt: now, checkIn: { origin: input.origin, elapsedMs: Math.max(0, now - input.admittedAt), cost: snapshot.cost, conversationId: input.conversationId, requestId: input.requestId } });
+					state.reports.push({ sourceId, requestId: sourceId, ownerId: input.ownerId, senderIdentity: input.senderIdentity, message: snapshot.digest, replyTo: null, acknowledged: false, createdAt: now, checkIn: { origin: input.origin, elapsedMs: Math.max(0, now - input.admittedAt), cost: snapshot.cost, conversationId: input.conversationId, requestId: input.requestId, ...fallbackMarker(fallbackBroadcast) } });
 				}
 				return { status: "running", checkpoint: { phase: "watch", next: k + 1 } };
 			}, context);
@@ -139,6 +140,11 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 	},
 	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
+
+/** Omit a fallback marker until a quiet broadcast was accepted. */
+function fallbackMarker(accepted: boolean): { fallbackBroadcast?: boolean } {
+	return accepted ? { fallbackBroadcast: true } : {};
+}
 
 /** Create with the admission intent or local reporter, never with output deliveries. */
 export async function createCheckIn(tx: Tx, input: Omit<CheckInInput, "intervalMs">, minutes: number): Promise<void> {

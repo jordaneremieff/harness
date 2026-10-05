@@ -198,7 +198,7 @@ export class AgentManager {
 	private readonly launchRows = new Map<string, AgentConversationSummary>();
 	private readonly recovering = new Set<string>();
 	private recoveryQueue: Promise<void> = Promise.resolve();
-	private readonly recoveryClients = new Map<string, () => void>();
+	private readonly recoveryClients = new Map<string, { close: () => void; refresh: () => Promise<void> }>();
 	private readonly primaries = new Map<string, PrimaryClient>();
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
 	private readonly closingPrimaries = new Map<string, Promise<void>>();
@@ -794,7 +794,16 @@ export class AgentManager {
 	}
 
 	private async recover(record: CatalogRecord, primary: PrimaryClient, afterLoss: boolean): Promise<void> {
-		if (this.recovering.has(record.storageId) || this.clients.has(record.storageId) || this.crashes.get(record.storageId)?.stopped) return;
+		if (this.crashes.get(record.storageId)?.stopped) return;
+		const cached = this.clients.get(record.storageId);
+		if (cached) {
+			try { await cached.request("recovery-state"); }
+			catch (error) { this.recordRecoveryError(record.storageId, errorText(error)); }
+			return;
+		}
+		const recovering = this.recoveryClients.get(record.storageId);
+		if (recovering) { await recovering.refresh(); return; }
+		if (this.recovering.has(record.storageId)) return;
 		const paths = hostPaths(record);
 		const claim = observeClaim(paths.claim, paths.identity);
 		if (claim.kind === "unknown") { this.recordRecoveryError(record.storageId, claim.error); return; }
@@ -853,7 +862,7 @@ export class AgentManager {
 			this.recovering.delete(storageId);
 			void client.close().catch((error) => this.failures.set(storageId, errorText(error)));
 		};
-		this.recoveryClients.set(storageId, close);
+		this.recoveryClients.set(storageId, { close, refresh: () => check() });
 		primary.signal.addEventListener("abort", close, { once: true });
 		const lost = () => {
 			if (closed) return;
@@ -868,8 +877,8 @@ export class AgentManager {
 			try {
 				do {
 					again = false;
-					const state = await client.request("recovery-state") as { workPending?: boolean; deliveriesPending?: boolean };
-					if (state.workPending === false && state.deliveriesPending === false) {
+					const state = await client.request("recovery-state") as { workPending?: boolean; deliveriesPending?: boolean; deliveriesActive?: boolean };
+					if (state.workPending === false && state.deliveriesActive === false) {
 						close();
 					}
 					void this.refreshFooter();
@@ -944,7 +953,7 @@ export class AgentManager {
 
 	private releaseClients(): void {
 		this.launchRows.clear();
-		for (const close of this.recoveryClients.values()) close();
+		for (const client of this.recoveryClients.values()) client.close();
 		for (const unsubscribe of this.subscriptions.values()) unsubscribe();
 		this.subscriptions.clear();
 		const clients = [...this.clients.values()];

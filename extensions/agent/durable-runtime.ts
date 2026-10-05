@@ -15,7 +15,7 @@ import { publishAgentControlDispatch, type AgentControlDispatch } from "./durabl
 import { AgentDeliveryDoc } from "./durable-controls.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
-import { startDurableDelivery } from "./durable-delivery.ts";
+import { deliveryOwnerIsDead, startDurableDelivery } from "./durable-delivery.ts";
 import { connectPrimaryChannel } from "./primary-channel.ts";
 
 function controlParams(input: unknown): Record<string, unknown> {
@@ -98,7 +98,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		if (runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy) return false;
 		const generation = activityGeneration;
 		const state = await recoveryState();
-		if (state.workPending || state.deliveriesPending || !host.isIdle() || generation !== activityGeneration
+		if (state.workPending || state.deliveriesActive || !host.isIdle() || generation !== activityGeneration
 			|| runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy || !seal()) return false;
 		deliveries.sealAdmission();
 		retirementSealed = true;
@@ -120,9 +120,16 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	}
 
 	/** Native work plus pending delivery state used by the marker and transient monitors. */
-	async function recoveryState(): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean }> {
+	async function recoveryState(): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean; readonly deliveriesActive: boolean }> {
 		const idle = await host.refreshIdle();
-		return { workPending: !idle, deliveriesPending: await deliveriesPending() };
+		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+		const sessionsRoot = dirname(dirname(metadata.storagePath));
+		const active = (owner: string) => !deliveryOwnerIsDead(catalog, sessionsRoot, owner);
+		const deliveriesActive = state !== undefined && (
+			state.intents.some((intent) => intent.submissionId === null || state.receipts[String(intent.submissionId)] === undefined)
+			|| Object.values(state.receipts).some((receipt) => !receipt.acknowledged && active(receipt.ownerId))
+			|| state.reports.some((report) => !report.acknowledged && active(report.ownerId)));
+		return { workPending: !idle, deliveriesPending: await deliveriesPending(), deliveriesActive };
 	}
 
 	/** Clear the marker only when the storage closes with no work and no pending delivery. */
@@ -372,7 +379,11 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	}
 	async function executeRequest(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
 		const params = controlParams(input);
-		if (method === "recovery-state") return recoveryState();
+		if (method === "recovery-state") {
+			const state = await recoveryState();
+			if (state.deliveriesPending) deliveries.refresh();
+			return state;
+		}
 		if (ADMITTING_METHODS.has(method)) markRecoveryDue(true);
 		switch (method) {
 			case "spawn": case "resolve-agent": return spawn(params, requestId);

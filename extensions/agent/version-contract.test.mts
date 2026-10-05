@@ -14,6 +14,14 @@ it("advertises actual upstream releases separately from current operation contra
 	assert.deepEqual(parsed.requires, { codingAgent: "1.0.0", durable: "1.0.0" });
 });
 
+it("refuses only recovery-state for a peer without the active-delivery response", () => {
+	assert.deepEqual(HOST_CONTRACT.operations["recovery-state"], { request: "recovery-state/1.0.0", response: "recovery-state/1.1.0" });
+	const peer = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, "recovery-state": { request: "recovery-state/1.0.0", response: "recovery-state/1.0.0" } } };
+	assert.match(contractRefusal("recovery-state", peer)?.message ?? "", /response contract/u);
+	assert.equal(contractRefusal("submit", peer), undefined);
+	assert.equal(contractRefusal("receipts", peer), undefined);
+});
+
 it("accepts unchanged operations despite added operations and different source releases", () => {
 	const peer: RuntimeContract = { ...HOST_CONTRACT, release: "8.0.0", operations: { ...HOST_CONTRACT.operations, extra: { request: "extra/1.0.0", response: "extra/1.0.0" } } };
 	assert.equal(contractRefusal("submit", peer), undefined);

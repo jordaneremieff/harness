@@ -6,16 +6,16 @@
  * from its own storage. The foreign storage retains that result as a delivery
  * receipt or report. This watcher runs beside the source storage: after every
  * native commit it settles pending intents, routes each unacknowledged row, and
- * only then acknowledges the source row.
+ * acknowledges only the owners that accepted their normal delivery.
  *
  * Routing: an owner with a discovery catalog record receives an untrusted
  * follow-up in its own Durable host. Without a catalog record, only a canonical
  * primary identity can use a registered primary channel. If
  * that primary endpoint is absent or its owner process is proven dead, every
- * registered live or unknown primary receives a labeled fallback delivery. A
- * live or unknown candidate that cannot be reached leaves the row
- * unacknowledged, so the next pass retries without treating transport failure
- * as proof that the candidate is not live.
+ * registered live or unknown primary receives a labeled informational copy.
+ * Accepted copies are retained per recipient and never acknowledge the owner.
+ * A proven-dead owner waits in durable storage without a delivery retry timer;
+ * other routes retry without treating transport failure as proof of death.
  *
  * Delivery is at-least-once. Request IDs and channel source IDs derive from the
  * source storage and the answer, unanswered submission, or report identity.
@@ -108,6 +108,8 @@ export interface DurableDeliveryOptions {
 
 export interface DurableDelivery {
 	readonly busy: boolean;
+	/** Request a scan after a recovery acquisition or endpoint registration, without polling. */
+	refresh(): void;
 	/** Stop new delivery effects synchronously; close still owns link and in-flight cleanup. */
 	sealAdmission(): void;
 	close(): Promise<void>;
@@ -121,6 +123,11 @@ type ReceiptRow = {
 };
 
 type DeliveryRow = ReceiptRow | { readonly kind: "report"; readonly report: DeliveryReport; readonly deliveredTo: Set<string> };
+
+/** Informational copies already accepted for this answer group or report. */
+function fallbackRecipients(row: DeliveryRow): readonly string[] {
+	return row.kind === "receipt" ? row.receipts.flatMap((receipt) => receipt.fallbackRecipients ?? []) : row.report.fallbackRecipients ?? [];
+}
 
 /** Answer entries are storage-wide identities; unanswered inputs remain separate. */
 function receiptKey(receipt: DeliveryReceipt): string {
@@ -261,6 +268,14 @@ function rowSourceId(metadata: HostMetadata, row: DeliveryRow): string {
 		: `${metadata.storageId}:${row.report.sourceId}`;
 }
 
+/** Only a proven-dead ordinary primary permits delivery to wait in cold storage. */
+export function deliveryOwnerIsDead(catalog: AgentCatalog, sessionsRoot: string, owner: string): boolean {
+	if (!PRIMARY_ID.test(owner)) return false;
+	try { catalog.read(owner); return false; }
+	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false; }
+	return primaryEndpointStatus(sessionsRoot, owner).state === "dead";
+}
+
 function rowOwners(row: DeliveryRow): string[] {
 	return row.kind === "receipt"
 		? [...new Set(row.receipts.filter((receipt) => !receipt.acknowledged).map((receipt) => receipt.ownerId))]
@@ -365,10 +380,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let closePromise: Promise<void> | undefined;
 	let unsubscribe: (() => void) | undefined;
 	const corruptRows = new Set<string>();
+	let routingFailed = false;
 
 	/** Report one routing failure. The host keeps the latest failure in its status. */
 	const fail = (error: unknown): void => {
 		const failure = asError(error);
+		routingFailed = true;
 		host.reportDeliveryError(failure);
 		try {
 			onError?.(failure);
@@ -429,22 +446,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, whenBusy: row.report.steer ? "steer" : "followUp" });
 	};
 
-	const acknowledgeRow = async (row: DeliveryRow): Promise<void> => {
+	const acknowledgeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
+		if (owners.length === 0) return;
 		if (row.kind === "report") {
-			if (row.report.checkIn !== undefined && row.deliveredTo.has("fallback:accepted")) {
-				const report = row.report;
-				const checkIn = row.report.checkIn;
-				await host.harness.commit(async (tx) => {
-					const state = await tx.doc(AgentDeliveryDoc);
-					const index = state.reports.findIndex((current) => current.sourceId === report.sourceId && current.ownerId === report.ownerId);
-					const current = index < 0 ? report : state.reports[index];
-					const acknowledged = { ...current, acknowledged: true, checkIn: { ...checkIn, fallbackBroadcast: true } };
-					// An accepted broadcast survives replacement of its pending row by a newer check-in.
-					if (index < 0) state.reports.push(acknowledged);
-					else state.reports[index] = acknowledged;
-				}, BACKGROUND_CONTEXT);
-				return;
-			}
 			await acknowledgeReports(host.harness, row.report.ownerId, [row.report.sourceId], BACKGROUND_CONTEXT);
 			return;
 		}
@@ -453,7 +457,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			for (const receipt of row.receipts) {
 				const key = String(receipt.submissionId);
 				const current = state.receipts[key];
-				if (current !== undefined && current.ownerId === receipt.ownerId && !current.acknowledged)
+				if (current !== undefined && current.ownerId === receipt.ownerId && owners.includes(current.ownerId) && !current.acknowledged)
 					state.receipts[key] = { ...current, acknowledged: true };
 			}
 		}, BACKGROUND_CONTEXT);
@@ -611,7 +615,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		identity: string,
 		owner: string,
 	): Promise<CandidateOutcome> => {
-		if (row.deliveredTo.has(`primary:${id}`)) return { kind: "delivered" };
+		const recipients = fallbackRecipients(row);
+		if (recipients.includes(id) || row.deliveredTo.has(`fallback:${id}`)) return { kind: "delivered" };
 		const status = primaryEndpointStatus(sessionsRoot, id);
 		if (status.state === "absent" || status.state === "dead") return { kind: "skipped" };
 		if (status.state === "incompatible") return { kind: "incompatible", version: status.version ?? "unadvertised" };
@@ -622,24 +627,46 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			// A live or unknown candidate that cannot be reached is not proven absent.
 			return { kind: "failed" };
 		}
+		return acceptFallbackCopy(connection, row, identity, owner, id);
+	};
+
+	const acceptFallbackCopy = async (connection: PrimaryChannelConnection, row: DeliveryRow, identity: string, owner: string, id: string): Promise<CandidateOutcome> => {
 		try {
-			const accepted = await deliverChannel(connection, row, identity, owner, id, false, true);
-			return { kind: accepted ? "delivered" : "skipped" };
-		} catch {
-			return { kind: "failed" };
-		} finally {
-			await connection.close().catch(() => undefined);
-		}
+			if (!await deliverChannel(connection, row, identity, owner, id, false, true)) return { kind: "skipped" };
+			await recordFallbackRecipient(row, id);
+			row.deliveredTo.add(`fallback:${id}`);
+			return { kind: "delivered" };
+		} catch { return { kind: "failed" }; }
+		finally { await connection.close().catch(() => undefined); }
+	};
+
+	/** Retain each accepted informational copy independently of owner acknowledgment. */
+	const recordFallbackRecipient = async (row: DeliveryRow, recipient: string): Promise<void> => {
+		await host.harness.commit(async (tx) => {
+			const state = await tx.doc(AgentDeliveryDoc);
+			const add = (prior: readonly string[] = []) => [...new Set([...prior, recipient])];
+			if (row.kind === "report") {
+				const index = state.reports.findIndex((report) => report.sourceId === row.report.sourceId && report.ownerId === row.report.ownerId);
+				if (index >= 0) state.reports[index] = { ...state.reports[index], fallbackRecipients: add(state.reports[index].fallbackRecipients) };
+				return;
+			}
+			for (const receipt of row.receipts) {
+				const current = state.receipts[String(receipt.submissionId)];
+				if (current === undefined) continue;
+				state.receipts[String(receipt.submissionId)] = { ...current, fallbackRecipients: add(current.fallbackRecipients) };
+			}
+		}, BACKGROUND_CONTEXT);
 	};
 
 	/** Registered candidates for an absent or dead owner; incomplete discovery refuses before any delivery. */
-	const fallbackCandidates = async (owner: string): Promise<readonly string[]> => {
+	const fallbackCandidates = async (owner: string, row: DeliveryRow): Promise<readonly string[]> => {
 		const discovery = await listPrimaryChannels(sessionsRoot);
 		if (!discovery.complete)
 			throw new Error(
 				`primary discovery is incomplete after ${discovery.visited} visits; refusing to acknowledge fallback for ${owner}`,
 			);
-		const candidates = discovery.ids.filter((id) => id !== owner);
+		const normalOwners = row.kind === "receipt" ? row.receipts.map((receipt) => receipt.ownerId) : [owner];
+		const candidates = discovery.ids.filter((id) => !normalOwners.includes(id));
 		if (candidates.length === 0)
 			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
 		return candidates;
@@ -677,12 +704,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
-	/** Only an acknowledged broadcast for this watched input and owner suppresses later check-in fallback. */
+	/** A retained accepted broadcast suppresses later check-in fallback independently of owner acknowledgment. */
 	const fallbackAlreadyAccepted = async (row: DeliveryRow, owner: string): Promise<boolean> => {
 		if (row.kind !== "report" || row.report.checkIn === undefined) return false;
 		const checkIn = row.report.checkIn;
 		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
-		return state?.reports.some((prior) => prior.acknowledged && prior.ownerId === owner
+		return state?.reports.some((prior) => prior.ownerId === owner
 			&& prior.checkIn?.conversationId === checkIn.conversationId && prior.checkIn.requestId === checkIn.requestId
 			&& prior.checkIn.fallbackBroadcast === true) ?? false;
 	};
@@ -690,7 +717,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	/** Broadcast the fallback to every registered primary; an older, unreachable, or absent audience holds the row. */
 	const deliverFallbackOwner = async (row: DeliveryRow, identity: string, owner: string): Promise<void> => {
 		if (await fallbackAlreadyAccepted(row, owner)) return;
-		const candidates = await fallbackCandidates(owner);
+		const candidates = await fallbackCandidates(owner, row);
 		preflightFallback(candidates, owner);
 		const { delivered, unavailable, incompatible } = await broadcastFallback(candidates, row, identity, owner);
 		if (delivered === 0 && !await checkInCurrent(row)) return;
@@ -701,12 +728,22 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			);
 		if (delivered === 0)
 			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
-		if (row.kind === "report" && row.report.checkIn !== undefined) row.deliveredTo.add("fallback:accepted");
+		if (row.kind === "report" && row.report.checkIn !== undefined) {
+			const checkIn = row.report.checkIn;
+			await host.harness.commit(async (tx) => {
+				const state = await tx.doc(AgentDeliveryDoc);
+				for (let index = 0; index < state.reports.length; index++) {
+					const current = state.reports[index];
+					if (current.ownerId === owner && current.checkIn?.conversationId === checkIn.conversationId && current.checkIn.requestId === checkIn.requestId)
+						state.reports[index] = { ...current, checkIn: { ...current.checkIn, fallbackBroadcast: true } };
+				}
+			}, BACKGROUND_CONTEXT);
+		}
 	};
 
-	/** Noncatalog owners: an older, unknown, or dead endpoint never falls back to a broadcast. */
-	const deliverPrimary = async (row: DeliveryRow, owner: string): Promise<void> => {
-		if (row.deliveredTo.has(`primary:${owner}`)) return;
+	/** Only absent or proven-dead ordinary owners permit informational fallback. */
+	const deliverPrimary = async (row: DeliveryRow, owner: string): Promise<boolean> => {
+		if (row.deliveredTo.has(`primary:${owner}`)) return true;
 		if (!PRIMARY_ID.test(owner))
 			throw new Error(`delivery owner ${owner} has no catalog record and is not a canonical primary id; refusing fallback`);
 		const identity = deliverySender(row, host);
@@ -715,7 +752,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		else if (status.state === "incompatible") throw primaryEndpointIncompatibleError(owner, status.version ?? "unadvertised");
 		else if (status.state === "unknown") throw new Error(`primary owner ${owner} has an unknown endpoint; refusing fallback`);
 		else if (directReport(row)) throw new Error(`Thread recipient ${owner} has no live endpoint; its notification stays pending without broadcast`);
-		else await deliverFallbackOwner(row, identity, owner);
+		else { await deliverFallbackOwner(row, identity, owner); return false; }
+		return true;
 	};
 
 	/** Catalog owners: untrusted follow-up into the owner's own host; no ownerId intent. */
@@ -744,29 +782,42 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
-	const routeOwner = async (row: DeliveryRow, owner: string): Promise<void> => {
-		if (!await checkInCurrent(row)) return;
+	const routeOwner = async (row: DeliveryRow, owner: string): Promise<boolean> => {
+		if (!await checkInCurrent(row)) return false;
 		if (ownerStorageId(owner) === metadata.storageId) {
 			await deliverSameStorage(row, owner);
-			return;
+			return true;
 		}
 		const record = ownerRecord(owner);
-		if (record !== undefined) await deliverCatalog(record, row, owner);
-		else await deliverPrimary(row, owner);
+		if (record !== undefined) { await deliverCatalog(record, row, owner); return true; }
+		return deliverPrimary(row, owner);
 	};
 
-	/** All owner routes must complete before the answer group is acknowledged. */
+	/** A dead owner's error remains visible without a process-local retry loop. */
+	const routeFailure = (row: DeliveryRow, owner: string, error: unknown): Error | undefined => {
+		const failure = new Error(`Delivery ${rowSourceId(metadata, row)} to ${owner} failed: ${asError(error).message}`, { cause: error });
+		if (!deliveryOwnerIsDead(catalog, sessionsRoot, owner)) return failure;
+		fail(failure);
+		return undefined;
+	};
+
+	const tryRouteOwner = async (row: DeliveryRow, owner: string): Promise<{ accepted: boolean; failure?: Error }> => {
+		try { return { accepted: await routeOwner(row, owner) }; }
+		catch (error) { return { accepted: false, failure: routeFailure(row, owner, error) }; }
+	};
+
+	/** Acknowledge only owners that accepted their normal route, not informational copies. */
 	const routeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
 		let failure: Error | undefined;
+		const accepted: string[] = [];
 		for (const owner of owners) {
 			if (closed || signal.aborted) return;
-			try { await routeOwner(row, owner); }
-			catch (error) {
-				failure ??= new Error(`Delivery ${rowSourceId(metadata, row)} to ${owner} failed: ${asError(error).message}`, { cause: error });
-			}
+			const outcome = await tryRouteOwner(row, owner);
+			if (outcome.accepted) accepted.push(owner);
+			failure ??= outcome.failure;
 		}
+		if (!closed && !signal.aborted) await acknowledgeRow(row, accepted);
 		if (failure !== undefined) throw failure;
-		if (!closed && !signal.aborted) await acknowledgeRow(row);
 	};
 
 	/** Route independent answers and reports even when another route fails; corruption is contained per row. */
@@ -790,6 +841,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	/** One pass: settle intents, route every unacknowledged record, report the first failure. */
 	const scan = async (): Promise<void> => {
 		corruptRows.clear();
+		routingFailed = false;
 		await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
 		if (state === undefined) return;
@@ -806,7 +858,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		running = true;
 		try {
 			await scan();
-			if (corruptRows.size === 0) host.reportDeliveryError(undefined);
+			if (corruptRows.size === 0 && !routingFailed) host.reportDeliveryError(undefined);
 			attempts = 0;
 		} catch (error) {
 			fail(error);
@@ -874,5 +926,5 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	signal.addEventListener("abort", onAbort, { once: true });
 	unsubscribe = host.harness.subscribeCommits(() => schedule(0));
 	if (!signal.aborted) schedule(0);
-	return { get busy() { return running || inFlight !== undefined; }, sealAdmission, close };
+	return { get busy() { return running || inFlight !== undefined; }, refresh: () => schedule(0), sealAdmission, close };
 }

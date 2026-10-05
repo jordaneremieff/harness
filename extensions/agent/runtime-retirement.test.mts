@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { hostname } from "node:os";
+import { dirname, join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
@@ -11,7 +14,9 @@ import { DurableHost } from "./durable-host.ts";
 import { createDurableRuntime } from "./durable-runtime.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { resolveAgentControlDispatch } from "./durable-agents.ts";
-import { eventLog } from "./host-fixture.mts";
+import { eventLog, waitForProcessExit } from "./host-fixture.mts";
+import { primaryEndpointPath } from "./primary-channel.ts";
+import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import { connectHost } from "./host-client.ts";
 import { hostPaths } from "./host-protocol.ts";
 import { runHost } from "./host-process.ts";
@@ -99,6 +104,53 @@ for (const kind of ["intent", "missing-receipt", "receipt", "report"] as const) 
 		state.reports.splice(0);
 	}, BACKGROUND_CONTEXT);
 	assert.equal(await eligible(f.runtime), true);
+});
+
+for (const kind of ["receipt", "report"] as const) it(`retires with a dead-owner ${kind} and retains the recovery marker`, { timeout: 15000 }, async (t) => {
+	const f = await fixture(t);
+	const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await waitForProcessExit(dead, 5000);
+	assert.ok(dead.pid);
+	const sessionsRoot = dirname(dirname(f.metadata.storagePath));
+	const path = primaryEndpointPath(sessionsRoot, f.ownerId);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, JSON.stringify({ version: PRIMARY_DELIVERY_CONTRACT, id: f.ownerId, serverId: randomUUID(), startedAt: new Date().toISOString(), pid: dead.pid, hostname: hostname(), socketPath: join(f.root, "dead.sock"), cwd: f.cwd }));
+	await f.runtime.request("report", { ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "pending", requestId: "dead-owner" }, "dead-owner");
+	if (kind === "receipt") await f.native.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		state.reports.splice(0);
+		state.receipts["999"] = { submissionId: 999 as SubmissionId, requestId: "pending", ownerId: f.ownerId, conversationId: 1 as ConversationId, operationId: null, origin: "model", status: "done", entryId: null, answerEntryId: 999 as EntryId, answer: "answer", reason: null, acknowledged: false };
+	}, BACKGROUND_CONTEXT);
+	const state = await f.runtime.request("recovery-state", {}, "state") as { workPending: boolean; deliveriesPending: boolean; deliveriesActive: boolean };
+	assert.deepEqual(state, { workPending: false, deliveriesPending: true, deliveriesActive: false });
+	assert.equal(await eligible(f.runtime), true);
+	await f.runtime.close();
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+});
+
+it("delivers a parked row when its owner registers before the source host retires", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t);
+	const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await waitForProcessExit(dead, 5000);
+	assert.ok(dead.pid);
+	const sessionsRoot = dirname(dirname(f.metadata.storagePath));
+	const path = primaryEndpointPath(sessionsRoot, f.ownerId);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, JSON.stringify({ version: PRIMARY_DELIVERY_CONTRACT, id: f.ownerId, serverId: randomUUID(), startedAt: new Date().toISOString(), pid: dead.pid, hostname: hostname(), socketPath: join(f.root, "dead.sock"), cwd: f.cwd }));
+	const errors = eventLog<Error>();
+	const reportError = f.native.reportDeliveryError.bind(f.native);
+	t.mock.method(f.native, "reportDeliveryError", (error?: Error) => { reportError(error); if (error) errors.push(error); });
+	const host = await runHost(() => f.runtime, { metadata: f.metadata, idleMs: 0, announceReady: () => {} });
+	t.after(() => host.close());
+	await f.runtime.request("report", { ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "parked", requestId: "parked-before-return" }, "report");
+	await errors.waitForCount(1);
+	const notices = eventLog<string>();
+	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir });
+	t.after(() => manager.close());
+	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
+	await manager.registerPrimary(f.ownerId, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => notices.push(text) });
+	await notices.waitForCount(1, 3000);
+	assert.equal(notices.length, 1);
 });
 
 it("rechecks a commit and an admission at asynchronous retirement boundaries", { timeout: 15000 }, async (t) => {

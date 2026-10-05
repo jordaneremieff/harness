@@ -601,8 +601,9 @@ notice details retain each submission's request, operation, input entry, owner,
 and admission origin.
 Each recipient receives one notice for that answer,
 including when owner routes overlap. Distinct answers and unanswered submissions
-stay separate. The watcher acknowledges every receipt in the answer group in one
-commit only after all required recipients accept it. Reports remain separate. A catalog owner receives an untrusted
+stay separate. The watcher acknowledges the receipts for accepted owner routes
+in one commit. An offline owner stays pending while live owners receive their
+normal notice and wake intent. Reports remain separate. A catalog owner receives an untrusted
 follow-up in its own host. A conversation in the same storage as the source
 receives the answer as an in-storage follow-up, never through a primary route. A
 noncatalog owner is an ordinary primary reached
@@ -610,10 +611,12 @@ through its registered primary channel. Only an absent or proven-dead owner
 endpoint permits fallback: the watcher broadcasts to every live primary within
 one bounded discovery of registered endpoints, and each delivery is labeled
 `no live owning session` while the original owner identity stays in the message
-details. It acknowledges the row only after discovery and every delivery
-complete; a partial or unavailable scan leaves the row pending and reports that
-coverage explicitly. A live or unknown owner endpoint refuses fallback and
-retries. An owner endpoint carries the primary channel contract version. A host
+details. These copies are informational and never acknowledge the owner row.
+Each accepted fallback recipient is recorded in the retained row, so subsequent
+passes and host reopens do not repeat that copy. Other owners of the same answer
+receive their normal delivery rather than a fallback substitute. A partial or
+unavailable scan leaves the row pending and reports that coverage explicitly.
+A live or unknown owner endpoint refuses fallback and retries. An owner endpoint carries the primary channel contract version. A host
 that meets a live owner with another version holds that delivery pending and
 reports the endpoint version and the restart that clears it; it never treats the
 owner as dead and never falls back for it. Endpoint identity and local process
@@ -701,9 +704,11 @@ unanswered; an idle background deadline never waits out its remaining interval.
 Check-ins use the report owner route, version checks, deduplication, and
 acknowledgement. A model-origin check-in wakes its live primary owner; an
 explicit operator-origin interval stays quiet. An absent or dead owner gets at
-most one quiet fallback broadcast per watched task and owner, recorded only
-after every required receiver accepts it. Repeated intervals never broadcast
-again for that owner. A failed or incomplete fallback stays pending.
+most one quiet fallback broadcast per watched task and owner. The accepted
+broadcast marker is independent of owner acknowledgment and survives notice
+replacement. Each accepted recipient is recorded before another receiver is
+tried. Repeated intervals never broadcast again after a complete broadcast for
+that owner. A failed or incomplete fallback stays pending.
 
 The headline names the agent and says it is still working, not finished, with
 elapsed time and retained conversation-total cost. The bounded body covers only
@@ -740,6 +745,12 @@ name when the ordinary session changes them, so `agent_status` and endpoint
 discovery report the identity the operator runs.
 
 ### Current process contracts
+
+`recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
+field. `deliveriesPending` still reports all pending rows and governs marker
+clearance. `manager/1.4.0` makes retained managers release recovery links when
+only parked delivery remains. Restart Pi windows to load that manager behavior.
+The recovery-state request and primary-delivery contracts are unchanged.
 
 `version-contract.ts` separates source release, actual loaded upstream releases,
 and operation contracts. A host advertises its descriptor in readiness and
@@ -820,8 +831,18 @@ opening finds pending native work or pending delivery. Startup recovery reads
 only that marker from bounded catalog pages; it does not open, copy, or
 status-probe every storage. Recovery acquisitions run at most two at a time. A
 transient recovery link closes when the internal `recovery-state` check reports
-no pending native work and no unsettled or unacknowledged delivery; host change
-notifications trigger that check, not polling. The marker clears only on a clean
+no pending native work and no active delivery; host change notifications trigger
+that check, not polling. A row addressed only to a proven-dead ordinary primary
+waits in durable storage without a recovery link or a delivery retry timer. The
+host retires normally and keeps `recoveryDue` set while that row remains pending,
+with or without a live fallback recipient. Any primary registration runs the
+existing bounded recovery scan; a resumed owner with the same session ID receives
+its pending notice. A recovery-state read requests a delivery scan even if the
+source host is still up, so owner registration before retirement also resumes
+delivery. Other registrations never repeat a recorded fallback copy.
+Live, unknown, incompatible, absent, and catalog owner routes remain active and
+keep their existing retry and retirement behavior. No row expiry or new catalog
+scan bound is introduced. The marker clears only on a clean
 close with nothing pending, after final catalog publication. Clean retirement
 closes cached manager and peer delivery links without a recovery acquisition or
 crash-budget charge. Footer totals remain in the catalog; later reads use cold

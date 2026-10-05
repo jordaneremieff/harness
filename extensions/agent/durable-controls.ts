@@ -117,6 +117,8 @@ export type DeliveryReceipt = {
 	readonly answer: string | null;
 	/** Terminal reason for an unanswered submission. */
 	readonly reason: string | null;
+	/** Informational primary copies accepted before owner delivery; retained across host reopen. */
+	readonly fallbackRecipients?: string[];
 	readonly acknowledged: boolean;
 };
 
@@ -141,6 +143,8 @@ export type DeliveryReport = {
 	/** Title and display body from the defining thread event, not parsed notice text. */
 	readonly threadTitle?: string;
 	readonly operatorMessage?: string;
+	/** Informational primary copies accepted before owner delivery; retained across host reopen. */
+	readonly fallbackRecipients?: string[];
 	readonly acknowledged: boolean;
 	readonly createdAt: number;
 	readonly checkIn?: { readonly origin: DeliveryOrigin; readonly elapsedMs: number; readonly cost: number | null; readonly conversationId: number; readonly requestId: string; readonly fallbackBroadcast?: boolean };

@@ -126,6 +126,37 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 	} finally { f.releaseAnswer(); }
 });
 
+it("carries accepted fallback evidence into the next pending check-in and prunes it at settlement", { timeout: 60000 }, async (t) => {
+	const epoch = Date.now();
+	let now = epoch;
+	const f = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, now: () => now });
+	t.mock.method(Date, "now", () => epoch);
+	try {
+		await f.host.request("submit", { sessionId: f.storageId, message: "still active", requestId: "fallback-repeat", ownerId: f.ownerId, origin: "model", checkInMinutes: 1 });
+		const conversation = await f.conversation();
+		now = epoch + 60000;
+		await f.reopen();
+		const first = await waitForReport(f, `check-in:${conversation.id}:fallback-repeat:1`);
+		await f.host.harness.commit(async (tx) => {
+			const state = await tx.doc(AgentDeliveryDoc);
+			const index = state.reports.findIndex((row) => row.sourceId === first.sourceId);
+			const report = state.reports[index];
+			assert.ok(report.checkIn);
+			state.reports[index] = { ...report, checkIn: { ...report.checkIn, fallbackBroadcast: true } };
+		}, BACKGROUND_CONTEXT);
+		now = epoch + 120000;
+		await f.reopen();
+		const next = await waitForReport(f, `check-in:${conversation.id}:fallback-repeat:2`);
+		assert.equal(next.acknowledged, false);
+		assert.equal(next.checkIn?.fallbackBroadcast, true);
+		assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length, 1);
+		f.releaseAnswer();
+		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await settleDeliveries(f.host.harness, BACKGROUND_CONTEXT);
+		assert.deepEqual((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports, []);
+	} finally { f.releaseAnswer(); }
+});
+
 async function digestFixture(t: { after(fn: () => void | Promise<void>): void }, seed: (tx: Tx, conversationId: ConversationId) => Promise<void>) {
 	const now = Date.now();
 	const f = await scheduleFixture(t, { resume: false, now: () => now });

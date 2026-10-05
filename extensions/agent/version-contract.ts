@@ -44,6 +44,8 @@ operations.list = { ...operations.list, response: schemaId(ListRowSchema) };
 operations.dashboard = { ...operations.dashboard, response: schemaId(AgentConversationSummarySchema) };
 for (const method of ["snapshot", "observe-open", "observe-frame", "receipts", "fork", "rewind", "compact", "command"]) operations[method] = { ...operations[method], durable: durableVersion };
 
+operations["recovery-state"] = { ...operations["recovery-state"], response: "recovery-state/1.1.0" };
+
 /** Release identifies source; operation identities, not release ordering, authorize calls. */
 export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 	format: "pi.agent.contract/1",
@@ -54,7 +56,7 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 });
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
-export const MANAGER_CONTRACT = "manager/1.3.0";
+export const MANAGER_CONTRACT = "manager/1.4.0";
 export const CONTROL_BINDING_CONTRACT = `native-controls/1.0.0;durable=${durableVersion}`;
 export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.0.0";
 
