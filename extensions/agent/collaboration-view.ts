@@ -1,4 +1,5 @@
-import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager } from "@earendil-works/pi-tui";
 import {
 	matchesKey,
 	wrapTextWithAnsi,

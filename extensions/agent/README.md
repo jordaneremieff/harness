@@ -21,6 +21,7 @@ Choose the surface that serves your task:
 |---|---|
 | Start work or change its direction | [Controls](#controls); use the returned canonical identity or a retained `@handle`, not a display name. |
 | Read and message an agent | [Dashboard and agent console](#dashboard-and-agent-console), then [live conversation and history](#live-conversation-and-history). |
+| Use an existing agent as the main terminal conversation | [Standalone terminal attachment](#standalone-terminal-attachment). |
 | Delegate and receive an answer | [Agent collaboration and placement](#agent-collaboration-and-placement); native callers also [await exact peer results](#await-exact-peer-results). |
 | Reuse an expert or develop a shared outcome | [Standing agents and expertise](#standing-agents-and-expertise) and [peer threads](#peer-threads). |
 | Coordinate with another primary | [Efforts, presence, and intent](#efforts-presence-and-intent); intent is a claim, not authority or a lock. |
@@ -206,6 +207,85 @@ model-facing `agent_send` tool keeps its documented steering disposition. The
 status card labels its newest text by role and state: `Latest reply` or
 `Latest input` when idle, and `Replying` or `Working on input` while active.
 Text without a retained author role uses `Latest message` or `Working on the task`.
+
+## Standalone terminal attachment
+
+From this checkout, start an interactive terminal with an existing identity or
+retained handle:
+
+```sh
+node extensions/agent/terminal.ts --theme dark --session @handle
+```
+
+`--session` accepts a root storage identity, `storageId:conversationId` for an
+exact nonroot conversation, or a retained `@handle`. Entry attaches through the
+existing manager and host. It sends no prompt, changes no model, and creates no
+ordinary Pi session. A target need not appear in the bounded dashboard roster.
+The selected conversation fills the window with the existing transcript, native
+pi-tui `Editor`, tool cards, live tool and assistant output, and status block.
+
+Without `--session`, the terminal reads the last attached identity from
+`terminal-target.json` under `PI_AGENT_SESSIONS_DIR`, or its default store root.
+With no remembered target, it opens the dashboard. This file remembers only the
+identity; drafts, sent-message history, reading positions, and expanded cards
+remain local to each terminal process. Navigation away and back preserves those
+local values while native work continues. Separate terminals have independent
+local values and share operator input to the same native conversation. There is
+no exclusive input lease. Native admission determines the result.
+
+| Input | Effect |
+|---|---|
+| `/agent` or Esc in the main console | Open the dashboard without stopping work. |
+| `/agent enter <identity-or-@handle>` | Attach that exact conversation as the main console. |
+| Enter on a dashboard row | Use that row as the main console. |
+| `/agent back` | Return to the previously attached target. |
+| `/agent recover` | Choose an unconfirmed input, then explicitly restore it to the composer or discard its local copy. Never resend automatically. |
+| Esc in the dashboard | Return to the main console, or the navigation field if no target exists. |
+| Enter in the composer | Admit the text through the selected native host. |
+| Ctrl+J | Insert a native editor newline. |
+| Tab | Choose requested Steer or Follow-up. |
+| PageUp / PageDown | Read history; PageUp at the oldest loaded boundary requests earlier entries. |
+| Ctrl+O / Ctrl+T | Expand tool output / show thinking. |
+| `/quit`, Ctrl+D with an empty composer, or process exit | Close this terminal and its observation links, not native work. |
+
+All other slash and bang text stays literal. In particular, `/help`, `/restart`,
+and shell text do not invoke ordinary Pi commands. Ctrl+D in a nonempty composer
+keeps its native forward-delete behavior. Receipts say *admitted* or *already
+admitted*, name the exact target and submission, and label the mode as
+*requested*. Admission does not prove placement, execution, or an answer. An
+uncertain delivery keeps the current draft and mode. The submitted text and
+requested mode remain separately in a target-local unconfirmed-input list, not
+sent-message history. Each failure adds a separate record. `/agent recover`
+opens local dialogs to choose a record and explicitly restore or discard it.
+Restore replaces the captured target's current draft and mode only after the
+displayed confirmation; a concurrent edit cancels that restoration. Restore
+never resends, and the unconfirmed copy remains until explicit discard. Inspect
+native history before any resend because a transport error does not prove that
+admission failed. Unconfirmed copies disappear when the terminal exits. An
+unavailable stream shows a warning over the last observed data. Re-enter the
+target to retry the connection.
+
+The dashboard uses public local text dialogs for native actions, including
+status, reconnect, stop, reset, compaction, contributed commands, configuration,
+profile, fork, rewind, schedules, and timer cancellation. Stop, reset, compaction,
+await release, and timer cancellation require their displayed confirmation word.
+Configuration accepts JSON with `name`, `thinkingLevel`, and/or
+`model: {"provider":"...","modelId":"..."}`, not a provider/model string.
+Actions keep their captured target if the main selection changes. New Agent is
+visibly unavailable here; create an agent through the agent tools, then enter it.
+
+The standalone attachment supports explicit shipped `dark` and `light` themes.
+It resolves public Pi packages from the managed install selected by
+`PI_MANAGED_INSTALL_ROOT`, or the managed `pi` launcher on `PATH`, and rereads
+`current-version` on each process start. Agent/Durable runtime dependencies stay
+checkout-local. It uses the existing `PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR`
+configuration.
+
+This surface accepts text only. It has no image or file ingestion, image
+clipboard action, external editor, shell runner, ordinary slash-command palette,
+automatic/system theme selection, or ordinary extension UI context. Related
+efforts and peer-thread dialogs require the ordinary extension surface and are
+unavailable here. No retained ordinary archive is converted or edited.
 
 ## Dashboard and agent console
 
@@ -1456,6 +1536,7 @@ stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 | Variable | Meaning |
 |---|---|
 | `PI_AGENT_DIR` | Pi configuration directory, otherwise public `getAgentDir()`. |
+| `PI_MANAGED_INSTALL_ROOT` | Standalone terminal managed-install directory. Otherwise locate the managed `pi` launcher on `PATH`; read its install directory's `current-version` afresh. |
 | `PI_AGENT_SESSIONS_DIR` | Agent store root, otherwise `<agentDir>/agent-sessions`. |
 | `PI_AGENT_IDLE_MINUTES` | Idle host retirement interval. Default 5; zero disables; finite range 0 through 35791 minutes, including fractions. Passive clients do not extend the interval. |
 | `PI_AGENT_CHECK_IN_MINUTES` | Default automatic owner check-in interval for model `agent_spawn` and `agent_place` prompts and `agent_send` tasks. Default 30; zero disables; finite range 0 through 35791 minutes, including fractions. Blank and invalid values are rejected with the variable name and range. Per-call `checkInMinutes` overrides it. Operator admissions have no default. |

@@ -1,6 +1,7 @@
-import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	Input,
+	type KeybindingsManager,
 	visibleWidth,
 	truncateToWidth,
 	matchesKey,
@@ -43,9 +44,12 @@ import type { AgentModelInfo, DelegatedFigures } from "./agent-footer.ts";
 
 export interface DashboardResult {
 	text: string;
+	receipt?: string;
 	sessionId?: string;
 }
 export interface DashboardOperations {
+	/** A terminal attachment enters the target instead of opening an embedded console. */
+	enter?(id: string): void;
 	saveLayout?(layout: DashboardLayout): void;
 	efforts?(): Promise<EffortAwareness>;
 	messageEffort?(id: string, text: string): Promise<DashboardResult>;
@@ -54,14 +58,16 @@ export interface DashboardOperations {
 	branch?: AgentBranchReader;
 	collaborate?: Collaborate;
 	submit(input: { id: string; text: string; mode: "steer" | "followUp" }): Promise<DashboardResult>;
-	newAgent(input: { prompt: string; onCreated: (row: AgentConversationSummary) => void }): Promise<DashboardResult>;
+	submissionFailure?(input: { id: string; text: string; mode: "steer" | "followUp" }, error: unknown): string;
+	newAgent?(input: { prompt: string; onCreated: (row: AgentConversationSummary) => void }): Promise<DashboardResult>;
 	chooseConversation(labels: readonly TaskLabel[], surface: NativeSurface): Promise<string | undefined>;
 	action(name: string, target: AgentConversationSummary, surface: NativeSurface): Promise<DashboardResult | undefined>;
 }
 const HELP = [
 	"Dashboard",
 	"↑↓ selects an agent. Enter opens its full conversation.",
-	"Tab or m writes to the selected agent. n starts a new agent.",
+	"Tab or m writes to the selected agent.",
+	"n starts a new agent.",
 	"a opens actions. / finds loaded agents. t opens Threads. b opens Related efforts. ? opens help.",
 	"[other] marks an agent created by another session, not its current task requester.",
 	"Related efforts shows presence and labeled intent claims. Enter opens a contact thread; m sends an operator message.",
@@ -551,21 +557,21 @@ export class AgentDashboard implements Component, Focusable {
 		state.receipt = "Sending…";
 		this.redraw();
 		try {
-			await Promise.resolve().then(() => this.operations.submit({ id: row.id, text, mode }));
+			const result = await Promise.resolve().then(() => this.operations.submit({ id: row.id, text, mode }));
 			state.history.push(text);
-			state.receipt =
+			state.receipt = result.receipt ?? (
 				row.state === "working"
 					? mode === "steer"
 						? `Steer sent to ${agentDisplayName(row)}`
 						: `Follow-up queued for ${agentDisplayName(row)}`
-					: `Sent to ${agentDisplayName(row)}`;
+					: `Sent to ${agentDisplayName(row)}`);
 			if (state.draftRevision === revision && state.draft === text) {
-				state.mode = "steer";
+				if (state.mode === mode) state.mode = "steer";
 				updateDraft(state, "");
 			}
 			this.queueRoster();
 		} catch (error) {
-			state.receipt = `Delivery not confirmed. Draft retained; check the conversation before resending. ${error instanceof Error ? error.message : String(error)}`;
+			state.receipt = this.operations.submissionFailure?.({ id: row.id, text, mode }, error) ?? `Delivery not confirmed. Current draft kept; check the conversation before resending. ${error instanceof Error ? error.message : String(error)}`;
 		} finally {
 			state.pending = undefined;
 			notifyAgentState(state);
@@ -573,14 +579,15 @@ export class AgentDashboard implements Component, Focusable {
 		}
 	}
 	private async startAgent(text: string): Promise<void> {
-		if (this.creating || !text.trim()) return;
+		const newAgent = this.operations.newAgent;
+		if (!newAgent || this.creating || !text.trim()) return;
 		this.creating = true;
 		let generation = this.navigation.generation;
 		this.notice = "Starting agent…";
 		this.redraw();
 		try {
 			const result = await Promise.resolve().then(() =>
-				this.operations.newAgent({
+				newAgent({
 					prompt: text,
 					onCreated: (row) => {
 						if (this.closed || generation !== this.navigation.generation) return;
@@ -870,10 +877,17 @@ export class AgentDashboard implements Component, Focusable {
 			return;
 		}
 		if (this.emptyStore()) {
-			this.navigation.enter("new");
+			this.openNew();
 			return;
 		}
-		if (this.console) this.navigation.enter("console", this.console.row.id);
+		if (this.console) {
+			if (this.operations.enter) this.operations.enter(this.console.row.id);
+			else this.navigation.enter("console", this.console.row.id);
+		}
+	}
+	private openNew(): void {
+		if (this.operations.newAgent) this.navigation.enter("new");
+		else this.notice = "New agent is unavailable. Enter an existing conversation.";
 	}
 	private openEfforts(): void {
 		if (!this.operations.efforts) {
@@ -927,7 +941,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (!matchesKey(data, "up") && !matchesKey(data, "down")) this.rosterOrderLocked = false;
 		const actions: Record<string, () => void> = {
 			r: () => { this.resize.startKeyboard(); },
-			n: () => this.navigation.enter("new"),
+			n: () => this.openNew(),
 			t: () => this.openThreads(),
 			b: () => this.openEfforts(),
 			a: () => {
@@ -1075,7 +1089,7 @@ export class AgentDashboard implements Component, Focusable {
 			const index = this.rows.findIndex((row) => row.id === this.state.selected);
 			position = `${index + 1}/${this.rows.length}${this.page?.coverage.complete ? "" : "+"}`;
 		}
-		return dashboardHeading(this.title(), position, width, this.theme);
+		return dashboardHeading(this.operations.newAgent ? this.title() : `${this.title()} · New unavailable`, position, width, this.theme);
 	}
 	private actionLines(): string[] {
 		if (!this.console) return [];
@@ -1107,7 +1121,8 @@ export class AgentDashboard implements Component, Focusable {
 		return lines;
 	}
 	private readerLines(width: number): string[] {
-		const source = this.navigation.screen === "help" ? HELP : this.result.split("\n");
+		const help = this.operations.newAgent ? HELP : HELP.map((line) => line === "n starts a new agent." ? "New agent is unavailable. Enter an existing conversation." : line);
+		const source = this.navigation.screen === "help" ? help : this.result.split("\n");
 		const content = source.flatMap((line) =>
 			wrapTextWithAnsi(
 				this.navigation.screen === "help" && ["Dashboard", "Messages", "Read", "Return"].includes(line)
@@ -1165,7 +1180,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (this.navigation.screen === "find") return "Find loaded agents · Enter keeps filter · Esc cancels";
 		return (
 			this.console?.messageLabel() ??
-			(this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent")
+			(this.operations.newAgent ? this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent" : "Enter an existing conversation")
 		);
 	}
 	private statusText(): string {
@@ -1184,6 +1199,25 @@ export class AgentDashboard implements Component, Focusable {
 	private resizeHints(width: number): string {
 		return mouseHints(this.mouse, this.tui.terminal.rows - 1, ["enter keep", "tab divider", this.resize.selected === "roster" ? "←→ width" : "↑↓ height", "0 auto", this.resizeValue()], "esc cancel", width, (data) => this.handleInput(data), this.theme);
 	}
+	private rosterHints(): [string[], string] {
+		if (this.rows.length) return [
+					[
+						"↑↓ select",
+						"Enter open",
+						...(this.resize.available ? ["r resize"] : []),
+						"b efforts",
+						"Tab message",
+						"t threads",
+						...(this.operations.newAgent ? ["n new"] : []),
+						"a actions",
+						"/ find",
+						"? help",
+					],
+					this.state.filter ? "Esc clear find" : "Esc close",
+		];
+		if (this.emptyStore()) return [["b efforts", ...(this.operations.newAgent ? ["Enter new agent", "n new"] : []), "t threads", "/ find", "? help"], "Esc close"];
+		return [["b efforts", ...(this.operations.newAgent ? ["n new"] : []), "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
+	}
 	private hintLine(width: number): string {
 		if (this.resize.keyboard) return this.resizeHints(width);
 		const screen = this.navigation.screen;
@@ -1193,26 +1227,7 @@ export class AgentDashboard implements Component, Focusable {
 			new: [["Enter start", "Ctrl+J newline"], "Esc roster"],
 			find: [["↑↓ select", "Enter keep filter"], "Esc cancel find"],
 		};
-		const normal: [string[], string] = this.rows.length
-			? [
-					[
-						"↑↓ select",
-						"Enter open",
-						...(this.resize.available ? ["r resize"] : []),
-						"b efforts",
-						"Tab message",
-						"t threads",
-						"n new",
-						"a actions",
-						"/ find",
-						"? help",
-					],
-					this.state.filter ? "Esc clear find" : "Esc close",
-				]
-			: this.emptyStore()
-				? [["b efforts", "Enter new agent", "n new", "t threads", "/ find", "? help"], "Esc close"]
-				: [["b efforts", "n new", "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
-		const [items, back] = hints[screen] ?? normal;
+		const [items, back] = hints[screen] ?? this.rosterHints();
 		if (this.resize.selected) items.unshift(this.resizeValue());
 		return mouseHints(
 			this.mouse,
@@ -1389,7 +1404,10 @@ export class AgentDashboard implements Component, Focusable {
 			x: paneX, y: paneY + header.length, width: paneWidth, height: geometry.bodyHeight + boundaryRows,
 			click: () => {
 				if (!this.console || screen === "new" || screen === "find") return false;
-				if (screen !== "console") this.navigation.enter("console", this.console.row.id);
+				if (screen !== "console") {
+					if (this.operations.enter) this.operations.enter(this.console.row.id);
+					else this.navigation.enter("console", this.console.row.id);
+				}
 			},
 			wheel: (delta) => this.wheelConversation(delta),
 		});

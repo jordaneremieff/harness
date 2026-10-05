@@ -1,4 +1,5 @@
-import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager } from "@earendil-works/pi-tui";
 import { matchesKey, wrapTextWithAnsi, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { RelatedEffort, PrimaryIntentClaim } from "./effort-presence.ts";

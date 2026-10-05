@@ -1,11 +1,14 @@
 /**
- * Per-agent composer over the native CustomEditor. One instance owns the caret
+ * Per-agent composer over the native Editor. One instance owns the caret
  * for one agent; the dashboard focuses exactly one composer at a time and stores
  * drafts outside the editor, so a selection change or reopen keeps
  * the text.
  */
-import { CustomEditor, getSelectListTheme, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
+import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
+	Editor,
+	setKeybindings,
+	type KeybindingsManager,
 	matchesKey,
 	parseKey,
 	sliceByColumn,
@@ -19,7 +22,7 @@ import {
 
 import { dashboardHeading } from "./dashboard-layout.ts";
 
-class ComposerEditor extends CustomEditor {
+class ComposerEditor extends Editor {
 	topHidden = 0;
 	bottomHidden = 0;
 	protected override renderTopBorder(_width: number, hidden: number): string {
@@ -74,11 +77,9 @@ export class AgentComposer implements Component, Focusable {
 				borderColor: (text) => options.theme.fg("borderMuted", text),
 				selectList: getSelectListTheme(),
 			},
-			options.keys,
 		);
 		this.editor.disableSubmit = true;
 		this.editor.onChange = () => options.onChange?.(this.editor.getExpandedText());
-		this.editor.onEscape = () => options.onEscape();
 	}
 
 	get focused(): boolean {
@@ -106,8 +107,16 @@ export class AgentComposer implements Component, Focusable {
 		this.editor.addToHistory(text);
 	}
 	handleInput(data: string): void {
-		if (matchesKey(data, "escape")) {
+		const key = parseKey(data);
+		if (key?.includes("alt+") || /^f\d+$/.test(key ?? "")) return;
+		if ((matchesKey(data, "escape") || this.options.keys.matches(data, "app.interrupt")) && !this.editor.isShowingAutocomplete()) {
 			this.options.onEscape();
+			return;
+		}
+		if (this.options.keys.matches(data, "tui.input.newLine")) {
+			setKeybindings(this.options.keys);
+			this.editor.handleInput(data);
+			this.options.onChange?.(this.getText());
 			return;
 		}
 		if (matchesKey(data, "enter")) {
@@ -120,8 +129,7 @@ export class AgentComposer implements Component, Focusable {
 			return;
 		}
 		if (matchesKey(data, "ctrl+d") && this.isEmpty()) return;
-		const key = parseKey(data);
-		if (key?.includes("alt+") || /^f\d+$/.test(key ?? "")) return;
+		setKeybindings(this.options.keys);
 		this.editor.handleInput(data);
 		this.options.onChange?.(this.getText());
 	}
