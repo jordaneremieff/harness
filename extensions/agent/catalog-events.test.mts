@@ -13,6 +13,35 @@ import { it } from "node:test";
 import { AgentManager } from "./manager.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 
+/** Failure reports name the failed wait and carry bounded publisher evidence. */
+const PUBLISHER_STDERR_BYTES = 8192;
+
+function failedWait(label: string, evidence: () => string = () => "") {
+	return (error: unknown): never => {
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new Error(`${label} failed: ${detail}${evidence()}`, { cause: error });
+	};
+}
+
+/** Bounded ordered producer trace; a failed wait reports what progressed and in which order. */
+function producerTrace(limitBytes = 8192) {
+	const start = Date.now();
+	const lines: string[] = [];
+	let bytes = 0;
+	return {
+		push(line: string): void {
+			const entry = `t+${Date.now() - start}ms ${line}`;
+			if (bytes >= limitBytes) return;
+			const bounded = entry.slice(0, limitBytes - bytes);
+			bytes += bounded.length;
+			lines.push(bounded);
+		},
+		text(): string {
+			return lines.length === 0 ? "" : `\nproducer trace (bounded): ${lines.join(" | ")}`;
+		},
+	};
+}
+
 /** The writer is already initialized before the observer subscribes or creates a file. */
 async function publisher(t: { after(fn: () => void | Promise<void>): void }, root: string) {
 	const messages = eventLog<{ type: string; id?: string; submissions?: number }>();
@@ -46,14 +75,28 @@ async function publisher(t: { after(fn: () => void | Promise<void>): void }, roo
 		});
 		process.send({type:'ready'});
 	`;
-	const child = spawn(process.execPath, ["--input-type=module", "-e", source, root], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+	// Capture bounded publisher stderr for cross-process wait failures.
+	const stderrChunks: Buffer[] = [];
+	let stderrBytes = 0;
+	const child = spawn(process.execPath, ["--input-type=module", "-e", source, root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+	child.stderr?.on("data", (chunk: Buffer) => {
+		if (stderrBytes >= PUBLISHER_STDERR_BYTES) return;
+		const bounded = chunk.subarray(0, PUBLISHER_STDERR_BYTES - stderrBytes);
+		stderrBytes += bounded.length;
+		stderrChunks.push(bounded);
+	});
+	const publisherEvidence = (): string => {
+		const state = child.exitCode !== null ? `exit ${child.exitCode}` : child.signalCode !== null ? `signal ${child.signalCode}` : "still running";
+		const text = Buffer.concat(stderrChunks).toString("utf8").trim();
+		return `\npublisher ${state}${text === "" ? "" : `; stderr (${stderrBytes} bytes, bounded): ${text}`}`;
+	};
 	child.on("message", (value) => messages.push(value as { type: string; id?: string; submissions?: number }));
 	const exited = waitForProcessExit(child, 30000);
 	void exited.catch(() => undefined);
 	t.after(async () => { child.kill("SIGTERM"); await exited; });
-	await messages.waitForCount(1);
+	await messages.waitForCount(1).catch(failedWait("publisher ready wait", publisherEvidence));
 	assert.equal(messages[0]?.type, "ready");
-	return { child, messages };
+	return { child, messages, evidence: publisherEvidence };
 }
 
 function fixture(t: { after(fn: () => void | Promise<void>): void }) {
@@ -66,13 +109,16 @@ function fixture(t: { after(fn: () => void | Promise<void>): void }) {
 
 it("receives immediate external creates after subscription without a watcher warm-up", { timeout: 30000 }, async (t) => {
 	const f = fixture(t);
-	const { child, messages } = await publisher(t, f.root);
+	const { child, messages, evidence: publisherEvidence } = await publisher(t, f.root);
 	for (let trial = 0; trial < 12; trial++) {
 		const changed = eventLog<void>();
 		const off = f.manager.subscribeRoster(() => changed.push(undefined));
 		try {
 			child.send({ type: "create" });
-			await Promise.all([changed.waitForCount(1), messages.waitForCount(trial + 2)]);
+			await Promise.all([
+				changed.waitForCount(1).catch(failedWait("roster change wait", publisherEvidence)),
+				messages.waitForCount(trial + 2).catch(failedWait("publisher create-message wait", publisherEvidence)),
+			]);
 			const id = messages[trial + 1]?.id;
 			assert.ok(id);
 			assert.equal(f.manager.catalog.read(id).storageId, id);
@@ -86,22 +132,33 @@ it("notifies every manager for external rewrite and discard, then releases its r
 	const f = fixture(t);
 	const second = new AgentManager({ root: f.root, agentDir: f.root, packageDir: f.root });
 	t.after(() => second.close());
-	const { child, messages } = await publisher(t, f.root);
+	const { child, messages, evidence: publisherEvidence } = await publisher(t, f.root);
 	const firstEvents = eventLog<void>();
 	const secondEvents = eventLog<void>();
 	const offFirst = f.manager.subscribeRoster(() => firstEvents.push(undefined));
 	const offSecond = second.subscribeRoster(() => secondEvents.push(undefined));
 	child.send({ type: "create" });
-	await Promise.all([firstEvents.waitForCount(1), secondEvents.waitForCount(1), messages.waitForCount(2)]);
+	await Promise.all([
+		firstEvents.waitForCount(1).catch(failedWait("first manager roster notice wait", publisherEvidence)),
+		secondEvents.waitForCount(1).catch(failedWait("second manager roster notice wait", publisherEvidence)),
+		messages.waitForCount(2).catch(failedWait("publisher create-message wait", publisherEvidence)),
+	]);
 	const id = messages[1]?.id;
 	assert.ok(id);
 	child.send({ type: "update", id });
-	await Promise.all([firstEvents.waitForCount(2), secondEvents.waitForCount(2), messages.waitForCount(3)]);
+	await Promise.all([
+		firstEvents.waitForCount(2).catch(failedWait("first manager rewrite notice wait", publisherEvidence)),
+		secondEvents.waitForCount(2).catch(failedWait("second manager rewrite notice wait", publisherEvidence)),
+		messages.waitForCount(3).catch(failedWait("publisher update-message wait", publisherEvidence)),
+	]);
 	assert.equal(f.manager.catalog.read(id).recoveryDue, true);
 	assert.equal(second.catalog.read(id).recoveryDue, true);
 	offFirst();
 	child.send({ type: "discard", id });
-	await Promise.all([secondEvents.waitForCount(3), messages.waitForCount(4)]);
+	await Promise.all([
+		secondEvents.waitForCount(3).catch(failedWait("second manager discard notice wait", publisherEvidence)),
+		messages.waitForCount(4).catch(failedWait("publisher discard-message wait", publisherEvidence)),
+	]);
 	assert.equal(firstEvents.length, 2, "released listeners receive no later notice");
 	assert.equal(existsSync(f.manager.catalog.path(id)), false);
 	const records = readdirSync(join(f.manager.catalog.root, ".observers"));
@@ -132,16 +189,28 @@ it("refreshes a real cold thread after external publication without acquiring a 
 	const caller = { id: randomUUID(), cwd: f.root };
 	const before = await f.manager.collaborate({ action: "read", threadId }, caller) as CollaborationPage;
 	assert.equal(before.thread.sequence, 1);
-	const { child, messages } = await publisher(t, f.root);
+	const { child, messages, evidence: publisherEvidence } = await publisher(t, f.root);
 	const refreshed = eventLog<CollaborationPage>();
 	const errors = eventLog<unknown>();
+	const trace = producerTrace();
+	child.on("message", (value) => trace.push(`child ${(value as { type?: string }).type ?? "message"}`));
 	let active = true;
 	const off = f.manager.subscribeRoster(() => {
-		if (active) void f.manager.collaborate({ action: "read", threadId }, caller).then((page) => refreshed.push(page as CollaborationPage), (error) => errors.push(error));
+		trace.push("roster notice");
+		if (active) void f.manager.collaborate({ action: "read", threadId }, caller).then((page) => {
+			trace.push(`refresh sequence ${(page as CollaborationPage).thread.sequence}`);
+			refreshed.push(page as CollaborationPage);
+		}, (error) => {
+			trace.push("refresh failed");
+			errors.push(error);
+		});
 	});
 	child.send({ type: "post", id: record.storageId, threadId, requestId: "external-post", message: "External cold publication" });
 	try {
-		await Promise.all([messages.waitForCount(2), refreshed.waitFor((pages) => pages.some((page) => page.thread.sequence === 2))]);
+		await Promise.all([
+			messages.waitForCount(2).catch(failedWait("publisher posted-message wait", () => `${publisherEvidence()}${trace.text()}`)),
+			refreshed.waitFor((pages) => pages.some((page) => page.thread.sequence === 2)).catch(failedWait("cold refresh wait", () => `${publisherEvidence()}${trace.text()}`)),
+		]);
 		assert.ok(refreshed.some((page) => page.events.some((event) => event.message === "External cold publication")));
 		assert.equal(messages[1]?.submissions, 0);
 		assert.deepEqual(errors, []);
