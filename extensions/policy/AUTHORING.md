@@ -26,6 +26,9 @@ correction. Never invent a tool's failure contract or a private identifier.
 7. Verify the returned state and mode. Approval does not change session mode;
    denial and correction require `enforce`. A replacement preserves overrides.
 
+See the README for the [mode matrix](README.md#modes-and-guidance) and complete
+[operator-control reference](README.md#tools-and-operator-controls).
+
 Checks and proposal submission grant no activation authority. Agent inference or
 recommendation is not operator approval. Faithfully carried operator decisions
 retain their scope and restrictions. Resolve material ambiguity from context or
@@ -119,13 +122,27 @@ outcomes after state observation and retains eligible guidance for the next
 real context request. It does not force another request. Context and completion
 guides require exact authority. Input guides appear only after a matched success.
 
-Conditions support `all`, `any`, `not`, scalar equality/membership/type/presence,
-numeric comparisons, bounded string comparisons, and declared table lookups.
-Unknown remains unknown under negation and composition. A missing comparison
-field is not false or zero; `exists` tests presence. Unknown conditions skip,
-unless an applicable input rule explicitly permits unavailable denial. Selected
-`steer` never denies. Arbitrary nested field names are not semantically proved
-by syntax admission; test their actual evidence.
+A condition uses exactly one form: `all:[conditions]`, `any:[conditions]`,
+`not:condition`, or a leaf with `op`, `path`, and its permitted `value`/`table`
+fields. Nested conditions use the same grammar.
+
+| Leaf operator | Required value and table fields |
+| --- | --- |
+| `eq` | A scalar `value`, including `null`; no `table` |
+| `in` | A nonempty array of scalar values; no `table` |
+| `exists` | Neither `value` nor `table` |
+| `type` | One of `string`, `number`, `integer`, `boolean`, `null`, `array`, or `object`; no `table` |
+| `gt`, `gte`, `lt`, `lte` | A numeric `value`; no `table` |
+| `starts-with`, `ends-with`, `contains` | A string `value`; no `table` |
+| `lookup` | A declared `table` and `value:"missing"`, `"unique"`, or `"ambiguous"` |
+
+Unavailable lookup evidence evaluates to unknown; `unavailable` is not an
+accepted lookup comparison value. A missing comparison field is not false or
+zero; `exists` tests presence. `not` preserves unknown. In `all`, false wins;
+in `any`, true wins. Otherwise a composition with an unknown child stays unknown.
+Unknown conditions skip, unless an applicable input rule explicitly permits
+unavailable denial. Selected `steer` never denies. Arbitrary nested field names
+are not semantically proved by syntax admission; test their actual evidence.
 
 Actions are `deny` (input), `rename-key` and `substitute` (input), `assert-error`
 (result), `observe` (completion), and `guide` (input/result/completion/context).

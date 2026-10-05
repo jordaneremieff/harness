@@ -5,12 +5,61 @@ recovery, and resource use. Each rule declares its purpose, applicability,
 evidence, action, and authority. One extension owns decisions, corrections,
 observations, operator controls, and records.
 
-The operator's stored catalog is one `RuleRecord` aggregate reduced from a
-private, append-only `rules.jsonl` log. Bundled defaults supply initial data,
-not continuing authority over stored rules. [compiler.ts](compiler.ts)
-normalizes authoring syntax into the same execution steps. Command parsing is an
-internal evidence source, not a second policy pipeline. There is no script
-language, dynamic plugin loader, background service, or sibling protocol.
+## Use policy
+
+Start with `policy_rules` to inspect stored rules, pending proposals, health,
+and exact session scope. Use `view:"capabilities"` for active tools and supported
+actions, or `view:"state"` for observations and retained guidance.
+
+`policy_propose` submits an inert proposal. `policy_approve` activates the
+inspected proposal revision after clear operator approval. `policy_control`
+provides revision-checked controls and their read-only inspection steps.
+Approval does not change the policy mode. Use the [authoring guide](AUTHORING.md)
+for the author, check, propose, and approve workflow.
+
+In an ordinary session, the operator uses `/policy` for the TUI panel or explicit
+commands:
+
+```text
+/policy list
+/policy mode
+/policy help
+```
+
+See [tools and operator controls](#tools-and-operator-controls) for the complete
+ordinary control surface.
+
+## Modes and guidance
+
+In ordinary Pi sessions, `--policy-mode` overrides `PI_POLICY_MODE`. Durable
+hosts select the mode from `PI_POLICY_MODE` only; the ordinary flag does not
+apply. Values are `observe`, `notice`, `annotate`, and `enforce`. When no ordinary
+flag applies, unset or blank environment configuration defaults to `observe`;
+invalid configuration is reported rather than silently guessed.
+
+| Mode | Applied behavior |
+| --- | --- |
+| `observe` | Record actual facts, matches, and candidate effects only |
+| `notice` | Also show bounded operator notices in TUI mode |
+| `annotate` | Also supply eligible model guidance; no denial or input/error correction |
+| `enforce` | Also apply approved denials and corrections |
+
+Every event phase obeys this matrix. Downstream live predicates use actual input
+and result state, never a suppressed hypothetical correction. Preview is a
+separately labeled simulation.
+
+See [model guidance](#model-guidance) for delivery and recovery boundaries.
+
+## Configuration and validation
+
+| Setting | Purpose |
+| --- | --- |
+| `PI_POLICY_DIR` | Private rule/data/telemetry directory; default `<agentDir>/policy` |
+| `--policy-mode` | Ordinary-session mode only; overrides `PI_POLICY_MODE` |
+| `PI_POLICY_MODE` | Durable mode source and ordinary-session fallback; `observe` by default, or `notice`, `annotate`, `enforce` |
+| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts`, `nested-guidance.test.mts`, `proposal-schema.test.mts`, and the package schema test in `scripts/extension-load-check.test.mts`; runtime does not read it |
+
+See [validation](#validation) for focused checks and their evidence limits.
 
 ## Durable agents
 
@@ -42,11 +91,11 @@ Durable tool results carry the ordinary `details` fields and add
 `structuredContent` beside them. Each registration declares an `outputSchema`
 that describes that structured object.
 
-Replay classes: `policy_rules` is `safe` because it only reads. The three
-mutating tools are `unsafe`, so an interrupted execution produces an
-interrupted result instead of repeating an external write. A `policy.state`
-document that cannot be normalized is discarded field by field; the rule store
-is never repaired from the document.
+Replay classes: `policy_rules` is `safe` because it only reads.
+`policy_propose`, `policy_approve`, and `policy_control` declare `unsafe` replay,
+so an interrupted execution produces an interrupted result instead of repeating
+an external write. A `policy.state` document that cannot be normalized is
+discarded field by field; the rule store is never repaired from the document.
 
 Semantic differences from the ordinary runtime:
 
@@ -58,6 +107,15 @@ Semantic differences from the ordinary runtime:
   crash between the two loses that record rather than duplicating it.
 - The shell contract card is delivered on the first annotate/enforce request
   of each conversation rather than once per session load.
+
+## Rule store and execution
+
+The operator's stored catalog is one `RuleRecord` aggregate reduced from a
+private, append-only `rules.jsonl` log. Bundled defaults supply initial data,
+not continuing authority over stored rules. [compiler.ts](compiler.ts)
+normalizes authoring syntax into the same execution steps. Command parsing is an
+internal evidence source, not a second policy pipeline. There is no script
+language, dynamic plugin loader, background service, or sibling protocol.
 
 ## Starter policies
 
@@ -288,14 +346,8 @@ A program declares:
 | `data` | Approved named data dependencies |
 | `state` | Optional observation condition, reset condition, aggregates, and guidance limits |
 
-Conditions support `all`, `any`, `not`, `eq`, `in`, `exists`, `type`, numeric
-comparisons, bounded string comparisons, and exact table lookup status. Paths are
-arrays of safe own-property keys, not executable expressions. Unknown evidence
-stays unknown under negation and composition. Missing comparison values are not
-zero or false; `exists` tests actual property presence separately.
-
-Fact roots include `tool`, `operation`, `input`, `original`, `outer`,
-`originalOuter`, `result`, `outcome`, `state`, `schema`, `data`, and `context`.
+The [authoring guide](AUTHORING.md#facts-and-phase-limits) owns condition syntax,
+value requirements, safe fact paths, and unknown-evidence semantics.
 `result.tool` identifies the actual physical tool independently of arbitrary
 result details. Corrections use paths relative to their argument object, rather
 than condition paths prefixed with `input`.
@@ -408,22 +460,7 @@ sequence of retries. Policy never serializes tool execution to simplify counters
 - Extensions execute with host permissions. Policy is a workflow control, not an
   operating-system sandbox or protection against a hostile installed extension.
 
-## Modes and guidance
-
-`--policy-mode` overrides `PI_POLICY_MODE`. Values are `observe`, `notice`,
-`annotate`, and `enforce`. Unset or blank environment configuration defaults to
-`observe`; invalid configuration is reported rather than silently guessed.
-
-| Mode | Applied behavior |
-| --- | --- |
-| `observe` | Record actual facts, matches, and candidate effects only |
-| `notice` | Also show bounded operator notices in TUI mode |
-| `annotate` | Also supply eligible model guidance; no denial or input/error correction |
-| `enforce` | Also apply approved denials and corrections |
-
-Every event phase obeys this matrix. Downstream live predicates use actual input
-and result state, never a suppressed hypothetical correction. Preview is a
-separately labeled simulation.
+## Model guidance
 
 ### Shell guidance before command selection
 
@@ -493,8 +530,10 @@ stored recovery rule requires an exact import or approved replacement.
 
 ## Bounded observation state
 
-Each rule owns an in-memory observation period with an explicit start time, reset
-reason, revision, and generation. It can declare:
+Each rule owns an observation period with an explicit start time, reset reason,
+revision, and generation. Ordinary Pi sessions hold these periods in memory;
+[Durable conversations](#durable-agents) commit them to `policy.state`. A rule
+can declare:
 
 - an `observe` condition and optional `resetWhen` condition;
 - an optional numeric `totalPath`;
@@ -507,9 +546,9 @@ the age bound. They do not claim an exhaustive time-window tally after the event
 limit. Missing metrics and unavailable historical turn totals remain unknown,
 not zero. Inspection renders unavailable values explicitly.
 
-Session load, reload, new session, resume, fork, and tree navigation reset
-observations. Disable, replacement, and explicit reset invalidate the affected
-rule's prior pins. Old completions cannot restore explicitly reset state.
+In ordinary sessions, load, reload, new session, resume, fork, and tree navigation
+reset observations. Disable, replacement, and explicit reset invalidate the
+affected rule's prior pins. Old completions cannot restore explicitly reset state.
 Compaction and ordinary continuation preserve observations.
 
 Natural expiry and outcome-based reset are completion-time boundaries, not
@@ -536,9 +575,10 @@ count a policy denial as an executed-tool failure:
 }
 ```
 
-There is no checkpoint persistence, ancestry replay, cross-session counter store,
-or persistent admission quota. Retained telemetry does not silently restore
-behavioral state.
+Ordinary sessions have no checkpoint persistence, ancestry replay, cross-session
+counter store, or persistent admission quota. Retained telemetry does not silently
+restore behavioral state. The Durable contribution instead reads and commits its
+conversation-scoped state document; it does not restore state from telemetry.
 
 ## Named data and schema validation
 
@@ -1188,14 +1228,7 @@ These tests establish supplied behavior under controlled conditions. They do not
 establish live workload benefits or human quality. Model-backed runs and human
 adjudication remain distinct from deterministic validation.
 
-## Configuration and validation
-
-| Setting | Purpose |
-| --- | --- |
-| `PI_POLICY_DIR` | Private rule/data/telemetry directory; default `<agentDir>/policy` |
-| `--policy-mode` | Session mode; overrides the environment |
-| `PI_POLICY_MODE` | `observe` by default, or `notice`, `annotate`, `enforce` |
-| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts`, `nested-guidance.test.mts`, `proposal-schema.test.mts`, and the package schema test in `scripts/extension-load-check.test.mts`; runtime does not read it |
+## Validation
 
 Focused checks:
 
