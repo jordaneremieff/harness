@@ -20,6 +20,7 @@ import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, 
 import { Type } from "typebox";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
 import { createAgentToolCards } from "./tool-cards.ts";
+import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
 const agentCards = createAgentToolCards();
 
 export function cleanDashboardText(text: string): string {
@@ -191,6 +192,7 @@ export class AgentConversation {
 	private readonly tui: TUI;
 	private readonly expanded: boolean;
 	private readonly showThinking: boolean;
+	private awaitingSignature = "";
 	private readonly renderCustom?: (entry: AgentConversationEntry) => Component | undefined;
 	constructor(
 		entries: readonly AgentConversationEntry[],
@@ -237,6 +239,17 @@ export class AgentConversation {
 		});
 		this.entryBlocks = next;
 		this.signatures = signatures;
+		this.cache = undefined;
+		this.pruneComponents();
+	}
+	/** Current dependency facts share the selected pane's scroll, not retained history. */
+	setAwaiting(fact?: AwaitFact): void {
+		const id = "current-await-facts";
+		const signature = JSON.stringify(fact) ?? "";
+		if (signature === this.awaitingSignature && this.blocks.some((block) => block.id === id) === (fact !== undefined)) return;
+		this.blocks = this.blocks.filter((block) => block.id !== id);
+		if (fact !== undefined) this.blocks.push({ id, component: new Text(awaitFactLines(fact).map(cleanDashboardText).join("\n"), 1, 1) });
+		this.awaitingSignature = signature;
 		this.cache = undefined;
 		this.pruneComponents();
 	}

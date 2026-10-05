@@ -1,3 +1,4 @@
+import type { AwaitFact } from "./await-facts.ts";
 import type { TUI } from "@earendil-works/pi-tui";
 import { ScrollView } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry, AgentConversationSnapshot } from "./dashboard-types.ts";
@@ -178,7 +179,7 @@ export class ConversationView {
 			{ follow: "end", scrollbar: "hidden", overscroll: "contain" },
 		);
 	}
-	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], cwd: string): void {
+	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], cwd: string, awaiting?: AwaitFact): void {
 		const key = `${cwd}:${this.state.expanded}:${this.state.showThinking}`;
 		const committed = boundedEntries(entries);
 		const ids = new Set(committed.map((entry) => entry.id));
@@ -187,6 +188,7 @@ export class ConversationView {
 			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking);
 			this.optionsKey = key;
 		} else this.transcript.update(merged);
+		this.transcript.setAwaiting(awaiting);
 		if (!this.state.follow) this.restored = false;
 	}
 	render(width: number, height: number): string[] {

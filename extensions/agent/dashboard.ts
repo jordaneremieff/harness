@@ -440,6 +440,7 @@ export class AgentDashboard implements Component, Focusable {
 		return {
 			...row,
 			owner: "here",
+			awaiting: frame.status.awaiting,
 			name: frame.status.name ?? row.name,
 			firstMessage: frame.status.firstMessage ?? row.firstMessage,
 			state: frame.status.busy
@@ -480,12 +481,12 @@ export class AgentDashboard implements Component, Focusable {
 				partial: !frame.coverage.complete,
 				nextBefore: this.history.earlier(),
 			};
+			this.updateObservedRow(console, frame);
 			this.setConversation(frame.live);
 			const availability = this.source.availability(console.row.id);
 			console.status = frame.coverage.complete ? "" : "Partial history";
 			console.warning = availability?.state === "unavailable" ? "Conversation unavailable; last messages shown" : undefined;
 			console.observeUsage(frame.entries, availability?.state === "live" ? frame.status.usage : undefined);
-			this.updateObservedRow(console, frame);
 			this.branches.refresh(console.row.cwd, `${console.row.id}:${frame.entries.at(-1)?.id ?? "empty"}`);
 		}
 		if (!frame && this.source.availability(console.row.id)?.state === "unavailable")

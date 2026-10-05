@@ -8,6 +8,34 @@ import type { ConversationFrame } from "./live-frames.ts";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { sessionFigures } from "./footer.ts";
+import type { AwaitFact } from "./await-facts.ts";
+
+for (const [width, height] of [[120, 36], [60, 24]]) {
+	it(`selected dependency facts update and retire through native frames at ${width}`, async () => {
+		const fact: AwaitFact = { runId: 7, heldInputs: [8], results: [{ result: { sessionId: "exact-peer:2", submissionId: 9, requestId: "exact-request" }, status: "pending" }], queuedInputCount: 1, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 1, results: 2 }, producers: [{ sessionId: "exact-peer:2", source: "producer await-state", observedAt: 123, unavailable: "Producer endpoint closed" }], omittedProducers: 3, likelyCycle: [], coverage: "one hop; remote graph incomplete" };
+		const observed = source([row("one", { awaiting: fact })]); let notify = () => {};
+		observed.subscribe = (listener) => { notify = listener; return () => {}; };
+		let frame = conversationFrame(); frame = { ...frame, status: { ...frame.status, awaiting: fact } };
+		observed.frame = () => frame; observed.availability = () => ({ state: "live", at: frame.observedAt });
+		const f = fixture(width, height, observed);
+		const read = () => {
+			let text = "";
+			for (let index = 0; index < 5; index++) { const lines = f.ui.render(width); assert.ok(lines.every((line) => visibleWidth(line) <= width)); text += stripVTControlCharacters(lines.join("\n")); f.ui.handleInput("\x1b[5~"); }
+			f.ui.handleInput("\x1b[6~"); return text.replace(/\s+/gu, " ");
+		};
+		try {
+			await turn(); f.ui.handleInput("\t");
+			let text = read(); assert.match(text, /exact-peer:2/u); assert.match(text, /submission 9.*pending/u);
+			assert.match(text, /Producer endpoint closed/u); assert.match(text, /123/u); assert.match(text, /Coverage: one hop/u); assert.match(text, /omitted 1 held requests/u);
+			const next = { ...fact, results: [{ ...fact.results[0], status: "done" as const }], producers: [{ sessionId: "exact-peer:2", source: "producer await-state" as const, observedAt: 456 }] };
+			frame = { ...frame, revision: 2, status: { ...frame.status, awaiting: next } }; notify();
+			text = read(); assert.match(text, /submission 9.*done/u); assert.match(text, /456/u); assert.doesNotMatch(text, /Producer endpoint closed/u);
+			frame = { ...frame, revision: 3, status: { ...frame.status, awaiting: undefined } }; notify();
+			text = read(); assert.doesNotMatch(text, /exact-peer:2|Coverage: one hop|producer await-state/u);
+			f.ui.handleInput("\x1b"); f.ui.handleInput("a"); assert.doesNotMatch(f.ui.render(width).join("\n"), /Release await/u);
+		} finally { f.ui.dispose(); }
+	});
+}
 
 for (const [width, height] of [
 	[140, 45],

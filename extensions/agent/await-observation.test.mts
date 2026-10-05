@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { InboxDoc, LiveDoc, type Tx, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { AwaitDoc, type AwaitState } from "./awaited-results.ts";
+import { AwaitDoc, commitAwaitOutcome, type AwaitState } from "./awaited-results.ts";
 import { AwaitFactSchema, type OwnAwaitFact } from "./await-facts.ts";
 import { readAwaitFact, recordProducerAwait, releaseAwait } from "./await-observation.ts";
 
@@ -38,6 +38,18 @@ it("skips unchanged semantic facts instead of writing notification feedback", as
 	await recordProducerAwait(f.tx, 3 as TaskId, fact); const before = JSON.stringify(f.state);
 	await recordProducerAwait(f.tx, 3 as TaskId, { ...fact, observedAt: 2 }); assert.equal(JSON.stringify(f.state), before);
 	await recordProducerAwait(f.tx, 3 as TaskId, { ...fact, observedAt: 3, unavailable: "connection closed" }); assert.notEqual(JSON.stringify(f.state), before);
+});
+
+it("requires unresolved forward edges for a retained producer reverse wait after partial settlement", async () => {
+	const f = fixture(); f.state.declarations[0].results = f.results.slice(0, 2);
+	const producer: OwnAwaitFact = { runId: 9, heldInputs: [10], results: [{ result: { sessionId: "consumer", submissionId: 4 }, status: "pending" }], queuedInputCount: 0, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 } };
+	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: f.results[0].sessionId, observedAt: 1, source: "producer await-state", awaiting: producer });
+	assert.deepEqual((await readAwaitFact(f.tx, "consumer", conversation))?.likelyCycle, [f.results[0].sessionId]);
+	await commitAwaitOutcome(f.tx, 3 as TaskId, { result: f.results[0], status: "done", answer: "B finished", answerEntryId: 100 });
+	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: f.results[0].sessionId, observedAt: 2, source: "producer await-state", awaiting: { ...producer, runId: 11 } });
+	const fact = await readAwaitFact(f.tx, "consumer", conversation); assert.ok(fact);
+	assert.deepEqual(fact.results.map((item) => item.status), ["done", "pending"]); assert.equal(fact.producers[0]?.awaiting?.runId, 11);
+	assert.deepEqual(fact.likelyCycle, []); assert.equal(f.state.declarations[0].decision, "awaiting");
 });
 
 it("omits terminal native owners and refuses stale selected-run release", async () => {

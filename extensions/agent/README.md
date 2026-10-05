@@ -283,6 +283,9 @@ Vector and byte bounds report omitted requests, results, and producers.
 Unchanged semantic observations do not write new durable facts. Existing commit
 notifications refresh the projection; no extra timer or recursive watch exists.
 
+The selected pane appends current dependency facts to its scrollable display,
+not to retained history. PgUp/PgDn reveals long dependency lists. Native frames
+update and remove these facts without retaining a stale roster field.
 The dashboard shows Awaiting rather than Responding and offers Release await
 for that selected run. A stale run selection does nothing. Release returns
 partial results on the original request without a new input or producer cancel.

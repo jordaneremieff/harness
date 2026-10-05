@@ -46,7 +46,7 @@ export async function readAwaitFact(tx: Tx, storageId: string, conversationId: C
 	const all = [...new Map((await activeDeclarations(tx, conversationId)).flatMap((item) => item.producers ?? []).map((fact) => [fact.sessionId, fact])).values()];
 	const producers = all.slice(0, 16);
 	const identity = canonicalIdentity(storageId, conversationId);
-	const cycles = () => producers.filter((producer) => producer.awaiting?.results.some((item) => item.status === "pending" && item.result.sessionId === identity && own.heldInputs.includes(item.result.submissionId))).map((item) => item.sessionId);
+	const cycles = () => producers.filter((producer) => own.results.some((item) => item.status === "pending" && item.result.sessionId === producer.sessionId) && producer.awaiting?.results.some((item) => item.status === "pending" && item.result.sessionId === identity && own.heldInputs.includes(item.result.submissionId))).map((item) => item.sessionId);
 	const fact: AwaitFact = { ...own, producers, omittedProducers: Math.max(0, all.length - 16), likelyCycle: cycles(), coverage: "one hop; remote graph incomplete" };
 	while (Buffer.byteLength(JSON.stringify(fact), "utf8") > AWAIT_BYTE_LIMIT && producers.length > 0) { producers.pop(); fact.omittedProducers++; fact.likelyCycle = cycles(); }
 	return JSON.parse(JSON.stringify(fact)) as AwaitFact;
