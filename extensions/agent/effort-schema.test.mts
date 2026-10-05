@@ -6,7 +6,7 @@ import { validateIntentInput } from "./effort-schema.ts";
 
 it("registers every ordinary agent tool with a plain object parameter schema", () => {
 	const tools: Array<{ name: string; parameters: Record<string, unknown> }> = [];
-	register({ events: { emit() {} }, on: () => () => {}, registerTool: (tool: typeof tools[number]) => tools.push(tool), registerShortcut() {}, registerMessageRenderer() {}, registerCommand() {} } as unknown as ExtensionAPI);
+	register({ events: { emit() {} }, on: () => () => {}, registerTool: (tool: typeof tools[number]) => tools.push(tool), registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {} } as unknown as ExtensionAPI);
 	assert.ok(tools.length > 0);
 	for (const tool of tools) {
 		assert.equal(tool.parameters.type, "object", tool.name);

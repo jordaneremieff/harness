@@ -60,7 +60,7 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 });
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
-export const MANAGER_CONTRACT = "manager/1.4.0";
+export const MANAGER_CONTRACT = "manager/1.5.0";
 export const CONTROL_BINDING_CONTRACT = `native-controls/1.2.0;durable=${durableVersion}`;
 export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.0.0";
 
