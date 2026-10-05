@@ -1647,3 +1647,36 @@ same store with current source. A controlled provider verifies every retained
 input and its completed receipt. The test also checks bounded route omissions
 and a live profile mutation before the queue drains. The source archive is
 removed with the fixture; no archived implementation ships in the repository.
+
+### Ordinary-caller continuity
+
+`host-continuity.test.mts` drives separate ordinary SDK callers in print mode
+through the production host runner. A socket-controlled synthetic tool remains
+blocked until the first caller exits normally. The test checks the retained
+answer before a fresh caller reads it, then checks a follow-up after idle host
+retirement and relaunch from the fresh caller's installation. It verifies SDK
+and loaded extension installation bindings, not interactive CLI or live-provider
+behavior.
+
+This regression skips by default. It runs only when both
+`PI_AGENT_TEST_PACKAGE_A` and `PI_AGENT_TEST_PACKAGE_B` are nonempty.
+
+| Test variable | Value |
+|---|---|
+| `PI_AGENT_TEST_PACKAGE_A` | Absolute directory of an existing `@earendil-works/pi-coding-agent` package for the first caller, containing its `package.json`. |
+| `PI_AGENT_TEST_PACKAGE_B` | Absolute package directory for the fresh caller. Its real path must differ from A, and its package version must match A. |
+| `PI_AGENT_TEST_EVIDENCE_DIR` | Optional output directory for `evidence.json`, `callers.json`, and `continuity.jsonl`. Use a fresh directory because a run overwrites these files. Without it, cleanup removes the temporary fixture trace. |
+
+From the repository root, replace the placeholder paths with your existing
+package directories and chosen evidence directory, then run:
+
+```sh
+PI_AGENT_TEST_PACKAGE_A="/path/to/pi-package-a" \
+PI_AGENT_TEST_PACKAGE_B="/path/to/pi-package-b" \
+PI_AGENT_TEST_EVIDENCE_DIR="/path/to/continuity-evidence" \
+node --test extensions/agent/host-continuity.test.mts
+```
+
+The fixture sets isolated `PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR` values and
+removes its temporary stores. The command uses existing installations; it does
+not install or copy a package.
