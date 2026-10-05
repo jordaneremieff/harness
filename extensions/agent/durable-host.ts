@@ -14,6 +14,7 @@
  * writer claim.
  */
 import { randomUUID } from "node:crypto";
+import { StrandedInputRecovery } from "./stranded-inputs.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
 import { richSubmitConversation } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
@@ -202,6 +203,7 @@ export class DurableHost {
 	private readonly retryMaxAttempts: number | undefined;
 	private readonly now: () => number;
 	private deliveryError: string | undefined;
+	private recovery: StrandedInputRecovery | undefined;
 
 	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, now: () => number) {
 		this.harness = harness;
@@ -305,6 +307,11 @@ export class DurableHost {
 			if (options.resume !== false) harness.resume();
 			if (options.resume !== false) await reconcileDeliveries(harness, context);
 			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
+			host.recovery = new StrandedInputRecovery(harness, (error) => {
+				host.deliveryError = `Queued-input recovery failed: ${error instanceof Error ? error.message : String(error)}`;
+				options.onReport?.(error);
+			});
+			await host.recovery.open(context);
 			// A fresh host has no commit to trigger the subscriber; establish the idle cache now.
 			await host.refreshIdle(context);
 			return host;
@@ -835,6 +842,7 @@ export class DurableHost {
 		if (this.closed) return;
 		this.closed = true;
 		this.lifecycle.abort(new DurableHostClosedError());
+		await this.recovery?.close();
 		await this.harness.close(BACKGROUND_CONTEXT);
 	}
 }

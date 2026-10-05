@@ -782,6 +782,20 @@ fields. Provider parsing buffers do not enter these live projections; raw native
 state stays unchanged. A status schema error alone does not establish different
 process versions.
 
+When a model-error run ends with queued inputs, the host submits a passive
+status write through Pi Durable's public conversation API. The write places
+queued inputs at a final boundary and starts their next run. It tells the model
+the previous error and identifies the notice as host status, not an operator
+instruction. The failed original input remains unanswered. Native queue modes
+still select one or all follow-ups.
+
+Each ended generation supplies a deterministic recovery request ID. Native
+request deduplication prevents duplicate recovery writes after replay. A host
+also checks existing queued inputs once on open. Recovery adds no user input,
+so repeated failures cannot create a self-sustaining recovery queue. An abort
+withdraws queued inputs; a recovery write admitted after that abort starts no
+run for those inputs. Commit notices drive recovery without timers or polling.
+
 Owned launches supply readiness events. For a host launched elsewhere, this Pi
 makes one bounded attach attempt and reports when no readiness event is
 available.
