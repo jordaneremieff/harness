@@ -404,7 +404,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const existing = targets.get(record.storageId);
 		if (existing && !existing.closed) return existing;
 		if (existing) targets.delete(record.storageId);
-		const connection = await acquire(hostMetadata(record));
+		const connection = await acquire(hostMetadata(record, metadata.packageDir));
 		if (closed || signal.aborted) {
 			await connection.close().catch(() => undefined);
 			throw new Error("durable delivery is closed");

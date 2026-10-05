@@ -239,7 +239,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			return primaryControl(method, params, sessionId);
 		}
-		const client = await acquireHost(hostMetadata(record));
+		const client = await acquireHost(hostMetadata(record, metadata.packageDir));
 		try {
 			if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity });
 			if (method !== "attach") return await client.request(method, params, { signal: context?.abortSignal });
@@ -274,7 +274,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const publish = params.publish as (fact: ProducerAwaitFact) => Promise<void>;
 		if (storageIdOf(sessionId) === metadata.storageId) return observeProducerAwait(sessionId, async () => await host.request("await-state", { sessionId }, context) as { awaiting?: import("./await-facts.ts").OwnAwaitFact }, async (changed) => host.harness.subscribeCommits((publication) => { if (publication.changes.length) changed(); }), publish, context);
 		const record = catalog.read(sessionId);
-		const client = await acquireHost(hostMetadata(record));
+		const client = await acquireHost(hostMetadata(record, metadata.packageDir));
 		try {
 			const subscribe = client.subscribeChanges?.bind(client);
 			if (subscribe === undefined) throw new Error("Producer host has no commit observation capability");

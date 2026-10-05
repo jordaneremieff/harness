@@ -648,10 +648,13 @@ for (const cached of [false, true]) it(`keeps a live host's recovery contract di
 
 it("stops repeated live host losses in Attention and permits an explicit attach retry", async (t) => {
 	const root = fixtureRoot(t);
+	const packageDir = join(root, "caller-installation");
 	const connections = eventLog<FakeConnection>();
 	const manager = new AgentManager(managerOptions(root, {
 		createPrimary: primaryFactory().factory,
+		packageDir,
 		acquire: async (metadata, options) => {
+			assert.equal(metadata.packageDir, packageDir, "explicit acquisition and loss recovery use the caller installation");
 			assert.equal(options?.retryAttempts, 0);
 			const client = fakeConnection(metadata, async (method) => method === "recovery-state" ? { workPending: true, deliveriesPending: true } : {});
 			connections.push(client);
@@ -799,9 +802,12 @@ it("launches only marked-due records and caps concurrent recovery at two", { tim
 	const gates = new Map<string, () => void>();
 	const activity = { active: 0, peak: 0 };
 	let flowing = false;
+	const packageDir = join(root, "caller-installation");
 	const manager = new AgentManager(managerOptions(root, {
+		packageDir,
 		createPrimary: primaryFactory().factory,
 		acquire: async (metadata) => {
+			assert.equal(metadata.packageDir, packageDir, "startup recovery uses the caller installation");
 			const storageId = metadata.storageId;
 			acquired.push(storageId);
 			activity.active += 1;

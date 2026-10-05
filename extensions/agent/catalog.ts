@@ -83,9 +83,10 @@ export interface CatalogRecord extends HostMetadata {
 	/** Host-local marker: true before admission or resume, false only on a clean idle host with no deliveries. */
 	recoveryDue?: boolean;
 }
-export function hostMetadata(record: CatalogRecord): HostMetadata {
+/** Extract retained metadata; acquisitions supply the caller's running Pi installation. */
+export function hostMetadata(record: CatalogRecord, packageDir = record.packageDir): HostMetadata {
 	const { createdAt: _createdAt, view: _view, threads: _threads, recoveryDue: _recoveryDue, ...metadata } = record;
-	return metadata;
+	return { ...metadata, packageDir };
 }
 export interface CatalogPage {
 	records: CatalogRecord[];
@@ -164,7 +165,7 @@ export class AgentCatalog {
 		} catch (error) {
 			if (requestId === undefined || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			const previous = this.read(storageId);
-			if (JSON.stringify(hostMetadata(previous)) !== JSON.stringify(metadata))
+			if (JSON.stringify(hostMetadata(previous, metadata.packageDir)) !== JSON.stringify(metadata))
 				throw new Error("Spawn request ID already belongs to different agent configuration");
 			return { record: previous, created: false };
 		}

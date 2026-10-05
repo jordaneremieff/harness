@@ -235,7 +235,7 @@ export class AgentManager {
 		}
 		if (!launch) this.attaching.add(record.storageId);
 		const acquire = launch ? this.options.acquire ?? acquireHost : this.options.connect ?? connectHost;
-		const open = Promise.resolve().then(() => acquire(hostMetadata(record), MANAGED_LINK))
+		const open = Promise.resolve().then(() => acquire(hostMetadata(record, this.options.packageDir), MANAGED_LINK))
 			.then((client) => this.adoptClient(record, client, primary))
 			.finally(() => { this.opening.delete(record.storageId); this.attaching.delete(record.storageId); });
 		this.opening.set(record.storageId, open);
@@ -829,7 +829,7 @@ export class AgentManager {
 		this.recovering.add(record.storageId);
 		try {
 			const open = claim.kind === "live" && !afterLoss ? this.options.connect ?? connectHost : this.options.acquire ?? acquireHost;
-			const client = await open(hostMetadata(record), MANAGED_LINK);
+			const client = await open(hostMetadata(record, this.options.packageDir), MANAGED_LINK);
 			if (this.stopping(primary)) { await client.close(); this.recovering.delete(record.storageId); return; }
 			this.recoveryErrors.delete(record.storageId);
 			await this.monitorRecovery(record.storageId, client, primary);

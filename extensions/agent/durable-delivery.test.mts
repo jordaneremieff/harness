@@ -582,6 +582,7 @@ for (const route of ["catalog", "same-storage"] as const) it(`routes a check-in 
 
 it("routes a receipt and a report only after the target admits them", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
+	const packageDir = join(root, "source-installation");
 	const catalog = new AgentCatalog(root);
 	const record = catalog.create({
 		cwd: root,
@@ -617,10 +618,13 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 	source.reportDeliveryError = (error) => { report(error); passes.push(error); };
 	const watcher = startDurableDelivery({
 		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
+		metadata: { ...sourceMetadata(root, source.storageId, sourcePath), packageDir },
 		catalog,
 		signal: new AbortController().signal,
-		acquire: async () => fakeTarget(target, calls, gate),
+		acquire: async (metadata) => {
+			assert.equal(metadata.packageDir, packageDir, "delivery uses the source host installation, not the target record");
+			return fakeTarget(target, calls, gate);
+		},
 		onError: (error) => errors.push(error),
 	});
 	await calls.waitForCount(1);

@@ -144,6 +144,27 @@ it("deduplicates a spawn request by owner and request identity", (t) => {
 	assert.throws(() => catalog.create({ ...input, name: "changed" }, "request"), /different agent configuration/u);
 });
 
+it("reuses immutable creation metadata across Pi installations without rewriting the record", (t) => {
+	const { catalog, input } = fixture(t);
+	const first = catalog.create(input, "same-request");
+	const before = readFileSync(catalog.path(first.storageId), "utf8");
+	const callerPackageDir = join(input.cwd, "caller-installation");
+	const reused = catalog.createTracked({ ...input, packageDir: callerPackageDir }, "same-request");
+	assert.equal(reused.created, false);
+	assert.deepEqual(reused.record, first);
+	assert.deepEqual(hostMetadata(reused.record, callerPackageDir), { ...hostMetadata(first), packageDir: callerPackageDir });
+	assert.equal(hostMetadata(reused.record).packageDir, input.packageDir);
+	for (const changed of [
+		{ cwd: join(input.cwd, "other-cwd") },
+		{ agentDir: join(input.cwd, "other-agent") },
+		{ model: { ...input.model, modelId: "other-model" } },
+		{ thinkingLevel: "high" },
+		{ name: "other-name" },
+		{ trust: true },
+	]) assert.throws(() => catalog.create({ ...input, packageDir: callerPackageDir, ...changed }, "same-request"), /different agent configuration/u);
+	assert.equal(readFileSync(catalog.path(first.storageId), "utf8"), before);
+});
+
 it("validates metadata before publishing a catalog record", (t) => {
 	const { catalog, input } = fixture(t);
 	assert.throws(() => catalog.create({ ...input, thinkingLevel: "unknown" }), /reasoning level/u);

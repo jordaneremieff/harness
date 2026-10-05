@@ -1043,6 +1043,14 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   Native documents retain the creating owner as provenance. Each task's results
   return to its own reply recipient as deduplicated follow-ups. A separate root
   gets new storage; a handle always selects an independent root, even at the same cwd.
+- Each host start uses the caller's running Pi installation, not the installation
+  path retained when the catalog record was created. A primary supplies its
+  running package directory; a Durable host supplies its own for foreign controls,
+  delivery, and recovery. Existing records stay readable without rewriting their
+  creation metadata. Repeating a spawn request after an installation change reuses
+  the retained record when its other configuration fields match. A live host from
+  another installation remains attachable under its advertised operation contracts;
+  attachment does not restart it.
 - Each storage has one writer claim. The process takes it before it opens
   SQLite or resumes the Durable scheduler. A live or unverified claim refuses
   a second writer. A dead local owner permits a replacement.
