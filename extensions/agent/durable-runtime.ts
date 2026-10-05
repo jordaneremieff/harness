@@ -12,7 +12,7 @@ import type { HostRuntime } from "./host-process.ts";
 import { DurableHost } from "./durable-host.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
-import { AgentDeliveryDoc, reconcileDeliveries } from "./durable-controls.ts";
+import { AgentDeliveryDoc } from "./durable-controls.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
@@ -286,8 +286,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 				if (publication.changes.length) { notifyActivity(); scheduleCatalogView(); }
 			});
 			await markPendingRecovery();
-			opened.harness.resume();
-			await reconcileDeliveries(opened.harness, BACKGROUND_CONTEXT);
+			await opened.resume(BACKGROUND_CONTEXT);
 			scheduleCatalogView();
 			return opened;
 		} catch (error) {

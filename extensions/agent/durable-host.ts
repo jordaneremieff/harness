@@ -204,6 +204,8 @@ export class DurableHost {
 	private readonly now: () => number;
 	private deliveryError: string | undefined;
 	private recovery: StrandedInputRecovery | undefined;
+	private resumeWork: Promise<void> | undefined;
+	private recoveryError: ((error: unknown) => void) | undefined;
 
 	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, now: () => number) {
 		this.harness = harness;
@@ -304,14 +306,12 @@ export class DurableHost {
 				},
 			});
 			await reconcileProfiles(harness, options.storageId, context, options.onReport);
-			if (options.resume !== false) harness.resume();
-			if (options.resume !== false) await reconcileDeliveries(harness, context);
 			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
-			host.recovery = new StrandedInputRecovery(harness, (error) => {
+			host.recoveryError = (error) => {
 				host.deliveryError = `Queued-input recovery failed: ${error instanceof Error ? error.message : String(error)}`;
 				options.onReport?.(error);
-			});
-			await host.recovery.open(context);
+			};
+			if (options.resume !== false) await host.resume(context);
 			// A fresh host has no commit to trigger the subscriber; establish the idle cache now.
 			await host.refreshIdle(context);
 			return host;
@@ -323,6 +323,18 @@ export class DurableHost {
 			}
 			throw error;
 		}
+	}
+
+	/** Resume only after the caller installs contributions and model-facing sections. */
+	resume(context: Context = BACKGROUND_CONTEXT): Promise<void> {
+		if (this.closed) return Promise.reject(new DurableHostClosedError());
+		this.resumeWork ??= (async () => {
+			this.recovery = new StrandedInputRecovery(this.harness, (error) => this.recoveryError?.(error));
+			this.harness.resume();
+			await reconcileDeliveries(this.harness, context);
+			await this.recovery.open(context);
+		})();
+		return this.resumeWork;
 	}
 
 	/** External identity of one conversation: the storage ID for the root, otherwise `storageId:conversationId`. */

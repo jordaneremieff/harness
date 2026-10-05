@@ -804,7 +804,9 @@ still select one or all follow-ups.
 
 Each ended generation supplies a deterministic recovery request ID. Native
 request deduplication prevents duplicate recovery writes after replay. A host
-also checks existing queued inputs once on open. Recovery adds no user input,
+also checks existing queued inputs once at startup. A paused host waits until
+its caller installs contributions and request-context sections, then calls the
+host's `resume()` method. Recovery adds no user input,
 so repeated failures cannot create a self-sustaining recovery queue. An abort
 withdraws queued inputs; a recovery write admitted after that abort starts no
 run for those inputs. Commit notices drive recovery without timers or polling.

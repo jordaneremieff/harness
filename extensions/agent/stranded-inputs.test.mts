@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Harness, InboxDoc, type Conversation } from "@earendil-works/pi-durable";
+import { Harness, InboxDoc, defineTool, type Conversation } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { Type } from "typebox";
+import { recordRequestContext, requestContextSection } from "./request-context.ts";
 import { createAssistantMessageEventStream, type TranscriptContext } from "@earendil-works/pi-ai";
 import { DurableHost } from "./durable-host.ts";
 import { recoverStrandedInputs } from "./stranded-inputs.ts";
@@ -98,6 +100,38 @@ it("reopens a stranded native queue once and deduplicates replay", { timeout: 10
 	t.after(() => reopened.close());
 	assert.equal((await recoveryEntries(reopened.root())).length, 1);
 	assert.equal(p.calls(), 3);
+});
+
+it("keeps startup recovery paused until contributions and request sections are installed", { timeout: 10000 }, async (t) => {
+	const path = rootPath(t), p = await provider();
+	const harness = await Harness.open(await openNodeSqliteStorage(path), { models: p.runtime, registry: fixtureRegistry(), settings }, context);
+	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+	const original = await conversation.submit({ type: "input", content: "first" }, context);
+	await p.started.promise;
+	const queued = await queue(conversation);
+	p.release.resolve();
+	await original.wait(context);
+	await conversation.waitForIdle(context);
+	await harness.close(context);
+	const registry = fixtureRegistry();
+	const host = await DurableHost.open({ ...hostOptions(path, p.runtime, registry), settings, resume: false });
+	t.after(() => host.close());
+	assert.equal(p.calls(), 1, "paused open does not schedule a queued recovery");
+	assert.equal((await recoveryEntries(host.root())).length, 0);
+	registry.install({ name: "initialized-contribution", tools: [defineTool({ name: "initialized-tool", description: "Initialized native tool", parameters: Type.Object({}), execute: async () => ({}) })], sections: [requestContextSection(() => host.harness)] });
+	await host.root().commit((tx) => recordRequestContext(tx, host.root().id, { requestId: "one", requester: "original-requester", replyTo: "original-recipient", origin: "model" }), context);
+	assert.equal(p.calls(), 1, "section installation and retained route writes do not enable scheduling");
+	await host.resume(context);
+	for (const submission of queued) {
+		const resumed = await host.harness.submission(submission.id, context);
+		assert.ok(resumed);
+		assert.equal((await resumed.wait(context)).status, "done");
+	}
+	await host.root().waitForIdle(context);
+	assert.match(JSON.stringify(p.contexts[1]), /initialized-tool/u);
+	assert.match(JSON.stringify(p.contexts[1]), /original-requester/u);
+	await host.resume(context);
+	assert.equal((await recoveryEntries(host.root())).length, 1, "repeated resume does not repeat startup recovery");
 });
 
 it("deduplicates concurrent recovery from the same ended native generation", { timeout: 10000 }, async (t) => {
