@@ -274,7 +274,10 @@ runs.
 
 Recipient acceptance prevents duplicate contextual delivery. Owned queued
 synthetic result inputs are withdrawn through the public native operation, with
-unrelated grouped results retained. Already placed results return retained entry
+unrelated grouped results retained. Each incoming result receives a disposition,
+even when it arrives alongside an older group. Original-request replay is not an
+interruption. Delivery replay preserves external withdrawal; it never creates a
+new input for a result that you canceled. Already placed results return retained entry
 references rather than repeat their bodies. Capped answers and receipt excerpts
 include exact entry continuations. Follow their native inspection offsets for
 the remaining source text. Safe replay retains result identities and accepted

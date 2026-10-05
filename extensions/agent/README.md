@@ -258,7 +258,12 @@ later; queued follow-ups retain their normal later runs.
 
 Recipient acceptance commits before source acknowledgment. It reconciles owned
 queued synthetic result inputs through public withdrawal, preserving unrelated
-results in a receipt group. Already placed result bodies are not repeated;
+results in a receipt group. Incoming results retain their own group membership;
+a larger receipt group does not drop new members. Replaying the original
+request does not release its own wait. Replaying result delivery does not revive
+an input that you withdrew. Owned reconciliation records its withdrawal intent
+before the native operation and preserves it through a crash. Already placed
+result bodies are not repeated;
 `representedBy` names the retained contextual entry. Capped answers and receipt
 excerpts include an exact `agent_inspect` continuation. Start at its supplied
 entry and offset, then follow each returned `nextOffset` until it is null.

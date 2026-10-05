@@ -10,13 +10,13 @@ function fixture() {
 	const inbox = new Map<number, { items: { id: number; mode: string }[] }>();
 	const tasks = new Map<number, { state: { status: string; outcome?: { status: string } }; abortRequested?: boolean }>();
 	const inputs = new Map<string, { id: number; conversationId?: number; type: string; status: string; requestId?: string; entry?: number; reason?: string }>();
-	const markers = new Map<string, { record: ResultConsumption | null }>();
+	const markers = new Map<string, { record: ResultConsumption | null; awaitedRunId: number | null }>();
 	const tx = {
 		async doc(kind: unknown, id?: number | string) {
 			if (kind === AwaitDoc) return state;
 			if (kind === LiveDoc) return live.get(id as number) ?? {};
 			if (kind === InboxDoc) return inbox.get(id as number) ?? { items: [] };
-			if (kind === ResultConsumptionDoc) { if (!markers.has(String(id))) markers.set(String(id), { record: null }); return markers.get(String(id)); }
+			if (kind === ResultConsumptionDoc) { if (!markers.has(String(id))) markers.set(String(id), { record: null, awaitedRunId: null }); return markers.get(String(id)); }
 			throw new Error("Unexpected document");
 		},
 		async task(id: number) { return tasks.get(id); },
@@ -107,6 +107,7 @@ it("keeps a failed admission intact and refuses replay with changed provenance",
 it("deduplicates acceptance and preserves already placed result context", async () => {
 	const f = fixture(); const a = f.owner(1); const result = f.result(2); const outcome = { result, status: "done" as const, answer: "answer" };
 	const intent = await acceptResult(f.tx, a.conversationId, outcome, "synthetic"); assert.equal(intent.disposition, "intent");
+	const marker = await f.tx.doc(ResultConsumptionDoc, intent.key, null); assert.ok(marker.record); marker.record.group = [intent.key];
 	f.inputs.set("1/synthetic", { id: 90, entry: 99, type: "input", status: "placed" });
 	await acceptResult(f.tx, a.conversationId, outcome, "other-replay-id");
 	const declaration = await declareAwait(f.tx, "store", a, [result]);

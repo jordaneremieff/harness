@@ -1,6 +1,6 @@
 /** Native await ownership, exact outcomes, and recipient-local delivery decisions. */
 import { Type, type Static } from "typebox";
-import { defineDoc, defineDocFamily, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, defineDocFamily, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { canonicalIdentity } from "./identity.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
 
@@ -31,7 +31,7 @@ export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswer
 export type AwaitDecision = "awaiting" | "settled" | "released" | "failed";
 export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string };
 export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number };
-export type ResultConsumption = { key: string; conversationId: number; outcome: AwaitOutcome; requestId: string; disposition: "intent" | "ordinary" | "consumed" | "represented"; submissionId?: number; entryId?: number; group?: string[] };
+export type ResultConsumption = { key: string; conversationId: number; outcome: AwaitOutcome; requestId: string; disposition: "intent" | "ordinary" | "consumed" | "represented"; submissionId?: number; entryId?: number; group?: string[]; withdrawal?: { requestId: string; runId: number } };
 export type AwaitState = { declarations: AwaitDeclaration[]; consumptions: { key: string; conversationId: number; result: ResultReference }[]; provenance: InputProvenance[] };
 export const ResultConsumptionDoc = defineDocFamily<{ record: ResultConsumption | null; awaitedRunId: number | null }, null>({ kind: "agent.result-consumption", version: 1, scope: "session", family: true, initial: () => ({ record: null, awaitedRunId: null }) });
 export function consumptionKey(conversationId: number, result: ResultReference): string { return `${conversationId}/${referenceKey(result)}`; }
@@ -251,7 +251,7 @@ export async function reconcileInputRelease(tx: Tx, conversationId: Conversation
 	const inbox = await tx.doc(InboxDoc, conversationId);
 	const live = await tx.doc(LiveDoc, conversationId);
 	if (!inbox.items.some((item) => item.mode !== "write" && item.id === input.id) && !live.run?.inputs.includes(input.id)) return;
-	for (const declaration of state.declarations.filter((item) => item.conversationId === conversationId && item.runId === live.run?.taskId && (input.status === "queued" || item.inputs.includes(input.id)))) {
+	for (const declaration of state.declarations.filter((item) => item.conversationId === conversationId && item.runId === live.run?.taskId && input.status === "queued" && !item.inputs.includes(input.id))) {
 		if (provenance.classification === "explicit" || (provenance.classification === "report" && declaration.results.some((reference) => reference.sessionId === provenance.sender))) {
 			const queued = inbox.items.find((item) => item.id === input.id);
 			if (queued !== undefined && queued.mode !== "write") queued.mode = "steer";
@@ -266,18 +266,22 @@ async function pruneConsumptionIndex(tx: Tx, state: AwaitState): Promise<void> {
 		const record = (await tx.doc(ResultConsumptionDoc, index.key, null)).record;
 		if (record === null) continue;
 		const input = await tx.submissionByRequest(record.conversationId as ConversationId, record.requestId);
-		if (record.disposition === "intent" || input?.status === "queued") retained.push(index);
+		if (record.disposition === "intent" || input?.status === "queued" || (record.disposition !== "consumed" && input !== undefined && await ownedResultWithdrawal(tx, record, input))) retained.push(index);
 	}
 	state.consumptions.splice(0, state.consumptions.length, ...retained);
 }
 
 async function reconcileConsumption(tx: Tx, record: ResultConsumption): Promise<void> {
+	if (record.group === undefined) return;
 	const input = await tx.submissionByRequest(record.conversationId as ConversationId, record.requestId);
 	if (input === undefined) return;
 	record.submissionId = input.id;
 	if (input.entry !== undefined) record.entryId = input.entry;
-	const withdrawnGroup = input.status === "unanswered" && input.reason === "aborted" && record.group !== undefined;
-	if (input.status !== "queued" && !withdrawnGroup && record.disposition !== "consumed") record.disposition = "represented";
+	if (input.status === "unanswered" && input.reason === "aborted" && input.entry === undefined) {
+		if (!await ownedResultWithdrawal(tx, record, input)) record.disposition = "consumed";
+		return;
+	}
+	if (input.status !== "queued" && record.disposition !== "consumed") record.disposition = "represented";
 }
 function publishAccepted(state: AwaitState, consumers: AwaitDeclaration[], record: ResultConsumption, outcome: AwaitOutcome): void {
 	if (record.disposition !== "consumed" && record.disposition !== "represented") return;
@@ -286,6 +290,10 @@ function publishAccepted(state: AwaitState, consumers: AwaitDeclaration[], recor
 		decide(declaration);
 		if (declaration.decision === "failed") releaseCohort(state, declaration, outcome.reason ?? "a result did not succeed");
 	}
+}
+
+export async function ownedResultWithdrawal(tx: Tx, record: ResultConsumption, submission: SubmissionRecord): Promise<boolean> {
+	return submission.type === "input" && submission.status === "unanswered" && submission.reason === "aborted" && record.withdrawal !== undefined && record.withdrawal.requestId === submission.requestId && !await abortedAwaitRun(tx, record.withdrawal.runId);
 }
 
 async function abortedAwaitRun(tx: Tx, runId: number | null): Promise<boolean> {
