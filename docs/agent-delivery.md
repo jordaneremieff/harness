@@ -383,6 +383,11 @@ its normal notice and wake intent. Delivery is at-least-once: a crash after
 receiver acceptance but before the retained checkpoint can repeat a notice, and
 receiver deduplication is process-local.
 
+Keep delivery acknowledgment separate from task acceptance. Informational
+copies never acknowledge the original owner's row. The delivery worker
+acknowledges each accepted normal-owner route independently, even when another
+route fails. Inspect the requested outcome before accepting the task.
+
 Rows for proven-dead owners wait in durable storage, not a permanently live
 host. The host retires with its recovery marker set, and the recovery link
 closes. Primary registration runs the existing bounded recovery scan; the same
