@@ -1,4 +1,4 @@
-# Clean-room evaluations
+# Evaluations
 
 The `evals/` application plans and records maintained evaluations without coupling suite definitions to a model runtime. Suites declare a neutral adapter identifier, subject kind and configuration, JSON cases, checks, limits, requested effects, and adjudication policy. Adapter-specific resource configuration stays in its adapter.
 
@@ -11,12 +11,12 @@ slice; the shared application retains execution and review ownership.
 
 ## Commands
 
-Run all commands from the repository root:
+Run all commands from the repository root. The participant
+`anthropic/claude-model:high` below is a placeholder; replace it with the selected
+provider, model ID, and thinking level before planning or execution.
 
 ```bash
 npm run evals -- validate prompts/wtf.eval.mts
-npm run evals -- validate prompts/drift.eval.mts
-npm run evals -- validate prompts/policy-enforce.eval.mts
 npm run evals -- validate prompts/seed.eval.mts
 npm run evals -- validate prompts/seed-transfer.eval.mts
 
@@ -174,28 +174,15 @@ own checks against both variants.
 
 ### Reader comprehension suite
 
-[`reader-comprehension.eval.mts`](../extensions/pillars/reader-comprehension.eval.mts)
-exercises explanations and prose repairs with the current Pillars text supplied
-explicitly in context. Cases cover necessary explanation, precise terms,
-claim preservation, missing evidence, and requested neutral or verbatim output.
-The suite isolates text behavior rather than consultation or tool refusal.
-Deterministic checks protect declared exact artifacts and transcript boundaries;
-semantic quality remains subject to human adjudication. See the
-[Pillars evaluation guide](../extensions/pillars/README.md#behavioral-evaluations)
-for validation and delivery details.
+The [Pillars evaluation guide](../extensions/pillars/README.md#behavioral-evaluations)
+owns the case coverage, supplied-source profile, validation, and evidence limits
+of [`reader-comprehension.eval.mts`](../extensions/pillars/reader-comprehension.eval.mts).
 
 ### Message role mapping suite
 
-[`message-role-mapping.eval.mts`](../extensions/pillars/message-role-mapping.eval.mts)
-exercises work selection and evidence boundaries under mixed human communication.
-It includes factual tasks, explicit delegation, requested interpretation, missing
-evidence, and clear requests that need no separate role analysis. Paired cases
-hold source wording fixed while the operator's request changes. Full selected
-Pillars bodies enter context explicitly; fixture gold remains outside subject
-messages. Deterministic checks protect exact requested artifacts and transcript
-boundaries, not semantic quality. Human adjudication remains required. See the
-[Pillars evaluation guide](../extensions/pillars/README.md#message-role-mapping)
-for validation, source delivery, and the text-only evidence boundary.
+The [Pillars evaluation guide](../extensions/pillars/README.md#message-role-mapping)
+owns the case coverage, supplied-source profile, validation, and evidence limits
+of [`message-role-mapping.eval.mts`](../extensions/pillars/message-role-mapping.eval.mts).
 
 ## Deterministic development checks
 
