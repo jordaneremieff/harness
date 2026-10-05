@@ -8,6 +8,7 @@ import { it, type TestContext } from "node:test";
 import { Value } from "typebox/value";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { PrimaryInfo } from "./primary-channel.ts";
+import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { formatPrimaryObservation, OrdinaryPrimaryObservationSchema, PRIMARY_OBSERVATION_LIMITS as limits, readPrimaryObservation } from "./primary-observation.ts";
 
 const at = "2026-10-05T12:00:00.000Z";
@@ -442,4 +443,49 @@ it("refuses existing sensitive paths before reads or continuation and preserves 
 	const first = await readPrimaryObservation({ ...f.primary, sessionFile: ordinary }, { limit: 1 });
 	assert.equal(first.source.path, ordinary);
 	assert.equal(first.nextCursor?.path, ordinary);
+});
+it("keeps credential redaction intact through the actual dashboard cleanup for Unicode controls", async t => {
+	const f = fixture(t), body = "aB3x".repeat(8), uuid = randomUUID();
+	const prose = `🙂 The token budget and password prompt stay unchanged. Request ${uuid}.`;
+	const codes = [0, 0x85, 0xad, 0x600, 0x61c, 0x6dd, 0x70f, 0x180e, 0x200b, 0x200d, 0x2060, 0xfeff, 0xfff9, 0x110bd, 0x13430, 0x1bca0, 0x1d173, 0xe0001, 0xe0020, 0xe007f];
+	for (const code of codes) for (const separator of [String.fromCodePoint(code), `\\u{${code.toString(16)}}`]) {
+		const credential = `sk-${body.slice(0, 8)}${separator}${body.slice(8)}`;
+		f.write([message(1, null, "user", `${prose} ${credential} ordinary ending.`)]);
+		const result = await readPrimaryObservation({ ...f.primary, name: credential });
+		const formatted = formatPrimaryObservation(result), displayed = cleanDashboardText(formatted);
+		assert.equal(result.coverage.omissions.credentials, 2, `U+${code.toString(16)}`);
+		assert.ok(!JSON.stringify(result).includes(body.slice(8)));
+		assert.ok(displayed.includes(prose));
+		assert.ok(displayed.includes("ordinary ending."));
+		assert.match(displayed, /\[credential omitted\]/u);
+		assert.ok(!displayed.includes(body));
+		assert.equal(displayed, formatted);
+		assert.ok(Buffer.byteLength(formatted) <= limits.outputBytes);
+	}
+});
+it("preserves full format-control code points as bounded visible escapes", async t => {
+	const text = "ordinary\u200b prose\u200d and\ufeff tags\u{e0001} 🙂";
+	const f = fixture(t, [message(1, null, "user", text)]);
+	const result = await readPrimaryObservation(f.primary);
+	assert.equal(result.coverage.omissions.credentials, 0);
+	assert.equal(result.entries[0]?.text, "ordinary\\u200b prose\\u200d and\\ufeff tags\\u{e0001} 🙂");
+	assert.equal(cleanDashboardText(formatPrimaryObservation(result)), formatPrimaryObservation(result));
+	f.write([message(1, null, "user", "\u{e0001}".repeat(1000))]);
+	const bounded = await readPrimaryObservation(f.primary);
+	assert.ok(bounded.coverage.reasons.includes("text-output-budget"));
+	assert.ok(Buffer.byteLength(bounded.entries[0]?.text ?? "") <= limits.textBytes);
+	assert.ok(bounded.coverage.textScanBytes <= limits.textScanBytes);
+});
+it("refuses source paths whose control removal would reconstruct a credential", async t => {
+	const f = fixture(t, [message(1, null), message(2, 1)]);
+	for (const control of ["\u200b", "\u200d", "\ufeff", "\u{e0001}"]) {
+		const path = join(f.root, `sk-${"aB3x".repeat(2)}${control}${"aB3x".repeat(6)}.jsonl`);
+		writeFileSync(path, readFileSync(f.sessionFile));
+		const result = await readPrimaryObservation({ ...f.primary, sessionFile: path }, { limit: 1 });
+		assert.ok(result.coverage.reasons.includes("sensitive-session-path"));
+		assert.equal(result.coverage.bytesRead, 0);
+		assert.equal(result.source.path, undefined);
+		assert.equal(result.nextCursor, undefined);
+		assert.ok(!cleanDashboardText(formatPrimaryObservation(result)).includes("aB3x".repeat(8)));
+	}
 });

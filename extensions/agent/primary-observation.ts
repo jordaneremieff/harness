@@ -73,12 +73,15 @@ const CREDENTIAL_PATTERNS = [
 	/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu,
 ];
 const CREDENTIAL_ASSIGNMENT = /\b(?:[a-z][a-z0-9_]*_)?(?:x-api-key|x-auth-token|api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key|secret[_-]?access[_-]?key|password|passwd)["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9_./+~!$%=-]{8,})["']?/giu;
-const CONTROL_TEXT = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
+const CONTROL_TEXT = /[\p{Cc}\p{Cf}]/gu;
 function unsafeControl(code: number): boolean {
-	return code <= 31 || (code >= 127 && code <= 159) || [0x061c, 0x200e, 0x200f].includes(code) || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+	return code >= 0 && code <= 0x10ffff && /[\p{Cc}\p{Cf}]/u.test(String.fromCodePoint(code));
 }
 function escapeControls(text: string): string {
-	return text.replace(CONTROL_TEXT, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+	return text.replace(CONTROL_TEXT, character => {
+		const code = character.codePointAt(0) ?? 0;
+		return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, "0")}`;
+	});
 }
 function credentialSpans(text: string): Span[] {
 	const spans: Span[] = [];
@@ -92,10 +95,11 @@ function credentialSpans(text: string): Span[] {
 /** Decode controls only in a bounded match view; decoded controls never reach output. */
 function controlView(escaped: string): MatchView {
 	const text: string[] = [], starts: number[] = [], ends: number[] = [];
-	const pattern = /\\(?:u([0-9a-f]{4})|x([0-9a-f]{2})|([nrt]))/iy;
+	const pattern = /\\(?:u\{([0-9a-f]{1,6})\}|u([0-9a-f]{4})|x([0-9a-f]{2})|([nrt]))/iy;
 	for (let offset = 0; offset < escaped.length;) {
 		const unit = controlUnit(escaped, offset, pattern);
-		text.push(unit.text); starts.push(offset); ends.push(unit.end);
+		text.push(unit.text);
+		for (let index = 0; index < unit.text.length; index++) { starts.push(offset); ends.push(unit.end); }
 		offset = unit.end;
 	}
 	return { text: text.join(""), starts, ends };
@@ -105,25 +109,28 @@ function controlUnit(text: string, offset: number, pattern: RegExp): { text: str
 	const match = pattern.exec(text);
 	if (!match) return { text: text[offset] ?? "", end: offset + 1 };
 	const short: Record<string, number> = { n: 10, r: 13, t: 9 };
-	const code = match[3] ? short[match[3]] : Number.parseInt(match[1] ?? match[2] ?? "", 16);
+	const code = match[4] ? short[match[4]] : Number.parseInt(match[1] ?? match[2] ?? match[3] ?? "", 16);
 	if (code === undefined || !unsafeControl(code)) return { text: text[offset] ?? "", end: offset + 1 };
-	return { text: String.fromCharCode(code), end: offset + match[0].length };
+	return { text: String.fromCodePoint(code), end: offset + match[0].length };
 }
 function normalizedView(decoded: MatchView, whitespace: boolean): MatchView {
 	const excluded = new Uint8Array(decoded.text.length);
 	const ansi = /\u001b(?:\[[0-?]*[ -/]*[@-~]|[\]PX^_][^\u0007\u001b]*(?:\u0007|\u001b\\|$)|[ -/]*[@-~])|\u009b[0-?]*[ -/]*[@-~]|[\u0090\u0098\u009d-\u009f][^\u0007\u001b\u009c]*(?:\u0007|\u009c|\u001b\\|$)/gu;
 	for (const match of decoded.text.matchAll(ansi)) excluded.fill(1, match.index, match.index + match[0].length);
 	const text: string[] = [], starts: number[] = [], ends: number[] = [];
-	for (let offset = 0; offset < decoded.text.length; offset++) {
-		if (excluded[offset]) continue;
-		const character = normalizedCharacter(decoded.text[offset] ?? "", whitespace);
+	let offset = 0;
+	for (const point of decoded.text) {
+		const start = offset; offset += point.length;
+		if (excluded[start]) continue;
+		const character = normalizedCharacter(point, whitespace);
 		if (!character) continue;
-		text.push(character); starts.push(decoded.starts[offset] ?? 0); ends.push(decoded.ends[offset] ?? 0);
+		text.push(character);
+		for (let index = 0; index < character.length; index++) { starts.push(decoded.starts[start + index] ?? 0); ends.push(decoded.ends[start + index] ?? 0); }
 	}
 	return { text: text.join(""), starts, ends };
 }
 function normalizedCharacter(character: string, whitespace: boolean): string {
-	const code = character.charCodeAt(0);
+	const code = character.codePointAt(0) ?? -1;
 	if (!unsafeControl(code)) return character;
 	// Line boundaries separate declarations; normalization must not join their values.
 	if (code === 10 || code === 13) return "\n";
