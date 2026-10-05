@@ -33,8 +33,7 @@ import { ProfileDoc, readProfile } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
 import { AgentMetaDoc, AgentDeliveryDoc, AwaitInputSuppressed, readOutcome, submitConversation } from "./durable-controls.ts";
-import { deliverAcceptedResult, deliverAcceptedResults } from "./result-acceptance.ts";
-import { AwaitDoc, ResultConsumptionDoc, consumptionKey, boundedAwaitAnswer, type AwaitState, type AwaitOutcome } from "./awaited-results.ts";
+import { AwaitDoc, type AwaitState, type AwaitOutcome } from "./awaited-results.ts";
 
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry } from "./durable-host-fixture.mts";
@@ -559,7 +558,7 @@ it("forwards native await cancellation through the registered entrypoint contrib
 	assert.equal(cancelled, true);
 });
 
-it("does not restart an aborted await when its independent producer later answers", async (t) => {
+it("keeps an aborted request unanswered while a late producer report starts an ordinary input", async (t) => {
 	const route = createRoute();
 	let finish!: (answer: AssistantMessage) => void;
 	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
@@ -585,7 +584,8 @@ it("does not restart an aborted await when its independent producer later answer
 	assert.equal((await original.wait(context)).status, "unanswered");
 	finish(fauxAssistantMessage("RESULT"));
 	await settle(harness, root.id);
-	assert.equal(route.requests.length, calls, "the late result must not start model work after abort");
+	assert.equal(route.requests.length, calls + 1, "the late ordinary report uses one model turn without reviving the aborted request");
+	assert.equal((await original.status(context)).status, "unanswered");
 	route.script.push({ tool: "agent_await", args: { results: [result] } });
 	await say(root, "Reconsider the retained result");
 	const observed = await toolOutcomes(harness, root.id);
@@ -632,44 +632,6 @@ for (const tool of ["agent_spawn", "agent_send"]) it(`${tool} returns an admitte
 	assert.ok(admitted?.status === "queued" || admitted?.status === "placed");
 	const checkIns = (await harness.inspect(context)).tasks.filter((task) => task.record.kind === CheckInTask.definition.name);
 	assert.equal(checkIns.length, 1, "the tool and Reporter share one admission marker");
-});
-
-it("withdraws only an owned queued result before declaration and preserves a later automatic follow-up", { timeout: 30000 }, async (t) => {
-	const route = createRoute();
-	let start!: () => void;
-	let finish!: (answer: AssistantMessage) => void;
-	const started = new Promise<void>((resolve) => { start = resolve; });
-	const pending = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => {
-		const last = args[0].messages.findLast((message) => message.role !== "system");
-		if (last?.role === "user" && messageText(last) === "QUEUE-AND-AWAIT") { start(); return pending; }
-		return route.route(...args);
-	});
-	const holder: DispatchHolder = {};
-	const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
-	holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("FINISHED")); await harness.close(context); });
-	const producer = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-	const source = await producer.submit({ type: "input", content: "CONTRACT: reply READY", requestId: "ready-result" }, context);
-	const terminal = await readOutcome(harness, source.id, context);
-	const result = { sessionId: `${storageId}:${producer.id}`, submissionId: source.id, requestId: "ready-result" };
-	const original = await root.submit({ type: "input", content: "QUEUE-AND-AWAIT" }, context);
-	await started;
-	const receipt = await deliverAcceptedResult(harness, root.id, { result, status: "done", answer: terminal.answer, answerEntryId: terminal.answerEntryId }, "synthetic:ready", "OWNED-SYNTHETIC-RESULT", context);
-	assert.equal(receipt.disposition, "ordinary");
-	assert.ok(receipt.submissionId);
-	const later = await submitConversation(root, { message: "CORRECTION KEEP", requestId: "later:automatic", whenBusy: "followUp", provenance: { classification: "automatic", automaticKind: "timer" } }, context);
-	finish(fauxAssistantMessage([fauxToolCall("agent_await", { results: [result] })], { stopReason: "toolUse" }));
-	assert.equal((await original.wait(context)).status, "done");
-	const synthetic = await harness.submission(receipt.submissionId as Durable.SubmissionId, context);
-	assert.ok(synthetic);
-	assert.equal((await synthetic.status(context)).status, "unanswered");
-	assert.equal((await synthetic.status(context)).reason, "aborted");
-	const retained = await harness.submission(later.submissionId, context);
-	assert.ok(retained);
-	assert.equal((await retained.wait(context)).status, "done", "the later automatic input still gets its own normal run");
-	assert.equal((await entriesOf(harness, root.id)).some((entry) => messageText(entry.model?.[0]) === "OWNED-SYNTHETIC-RESULT"), false);
 });
 
 it("keeps the original input placed while one native await accepts two exact results without provider turns", { timeout: 30000 }, async (t) => {
@@ -846,130 +808,62 @@ async function completedPeerResults(harness: Durable.Harness, names: string[]): 
 	}
 	return outcomes;
 }
-function heldObservation(base: AgentControlDispatch): AgentControlDispatch {
-	return (method, params, callContext = context) => method === "await-native" ? new Promise((_, reject) => {
-		if (callContext.abortSignal?.aborted) reject(new Error("cancelled"));
-		else callContext.abortSignal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
-	}) : base(method, params, callContext);
-}
-
-for (const sameId of [false, true]) it(`reconciles singleton observation and grouped delivery after a native partial release with same-id=${sameId}`, { timeout: 10000 }, async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "overlap-result-groups-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
-	const route = createRoute(); let begin!: () => void; let proceed!: (answer: AssistantMessage) => void;
-	const begun = new Promise<void>((resolve) => { begin = resolve; });
-	const initial = new Promise<AssistantMessage>((resolve) => { proceed = resolve; });
-	let released!: () => void; let finish!: (answer: AssistantMessage) => void;
-	const partial = new Promise<void>((resolve) => { released = resolve; });
-	const boundary = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => {
-		if (args[0].messages.some((item) => item.role === "user" && messageText(item) === "PARTIAL-RELEASE")) { released(); return boundary; }
-		if (messageText(args[0].messages.findLast((item) => item.role !== "system")) === "PAUSE-GROUP") { begin(); return initial; }
-		return route.route(...args);
-	});
-	const holder: DispatchHolder = {}; const { registry } = buildRegistry(heldObservation(createDispatch(holder, [])));
-	const host = await DurableHost.open({ storageId, storagePath: join(directory, "caller.sqlite"), cwd: directory, registry, models, agent: { model } }, context); holder.harness = host.harness;
-	t.after(async () => { proceed(fauxAssistantMessage("STOPPED")); finish(fauxAssistantMessage("DONE")); await host.close(); });
-	const root = await host.harness.root(context);
-	const outcomes = await completedPeerResults(host.harness, ["ONE", "TWO"]);
-	const original = await root.submit({ type: "input", content: "PAUSE-GROUP" }, context); await begun;
-	const singleton = await deliverAcceptedResult(host.harness, root.id, outcomes[0], sameId ? "normal-group" : "observer-singleton", "ANSWER-ONE", context);
-	assert.equal(singleton.disposition, "ordinary");
-	const ready = waitForAwait(host.harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	proceed(fauxAssistantMessage([fauxToolCall("agent_await", { results: [outcomes[1].result] })], { stopReason: "toolUse" })); await ready;
-	await submitConversation(root, { message: "PARTIAL-RELEASE", requestId: "release-group", provenance: { classification: "explicit" } }, context);
-	await partial;
-	assert.equal((await original.status(context)).status, "placed", "the original model stays paused after partial release and before grouped delivery");
-	const response = await host.request("receive-result", { sessionId: storageId, outcomes, requestId: "normal-group", message: "ANSWER-ONE ANSWER-TWO" }, context) as { dispositions: string[] };
-	assert.deepEqual(response.dispositions, ["ordinary", "ordinary"]);
-	for (const outcome of outcomes) assert.notEqual((await host.harness.snapshot(ResultConsumptionDoc, consumptionKey(root.id, outcome.result), context))?.record?.disposition, "intent");
-	finish(fauxAssistantMessage("DONE")); await original.wait(context); await root.waitForIdle(context);
-	const texts = await userTexts(host.harness, root.id);
-	assert.equal(texts.filter((text) => text.includes("ANSWER-ONE")).length, 1);
-	assert.equal(texts.filter((text) => text.includes("ANSWER-TWO")).length, 1);
-});
-
-for (const abort of ["conversation", "input"] as const) it(`does not revive a result group withdrawn by an external ${abort} abort`, { timeout: 10000 }, async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "external-group-abort-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
-	const route = createRoute(); const holder: DispatchHolder = {};
-	const { registry } = buildRegistry(heldObservation(createDispatch(holder, [])));
-	const host = await DurableHost.open({ storageId, storagePath: join(directory, "caller.sqlite"), cwd: directory, registry, models: createTestModels(route.route), agent: { model } }, context); holder.harness = host.harness;
-	t.after(() => host.close());
-	const root = await host.harness.root(context);
-	const all = await completedPeerResults(host.harness, ["ONE", "TWO", "OTHER"]); const outcomes = all.slice(0, 2);
-	await host.harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const ready = waitForAwait(host.harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: [all[2].result] } });
-	const original = await root.submit({ type: "input", content: "STOP-GROUPS" }, context); await ready;
-	const params = { sessionId: storageId, outcomes, requestId: "ordinary-group", message: "ANSWER-ONE ANSWER-TWO" };
-	await host.request("receive-result", params, context);
-	const queued = await host.harness.commit((tx) => tx.submissionByRequest(root.id, params.requestId), context); assert.ok(queued);
-	assert.equal(queued.status, "queued"); const calls = route.requests.length;
-	if (abort === "conversation") await root.abort(context);
-	else { const input = await host.harness.submission(queued.id, context); assert.ok(input); assert.equal(await input.abort(context), "aborted"); }
-	const response = await host.request("receive-result", params, context) as { dispositions: string[] };
-	assert.deepEqual(response.dispositions, ["consumed", "consumed"]);
-	assert.equal((await host.harness.snapshot(Durable.InboxDoc, root.id, context))?.items.length, 0);
-	assert.equal(route.requests.length, calls);
-	assert.equal((await original.status(context)).status, abort === "conversation" ? "unanswered" : "placed");
-	if (abort === "input") await root.abort(context);
-});
-
-it("reconciles a queued result group after withdrawal crashes without losing its ordinary subset", { timeout: 10000 }, async (t) => {
-	const route = createRoute();
-	let start!: () => void; let finish!: (message: AssistantMessage) => void;
-	const started = new Promise<void>((resolve) => { start = resolve; });
-	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => {
-		if (messageText(args[0].messages.findLast((item) => item.role !== "system")) === "PAUSE-OWNER") { start(); return held; }
-		return route.route(...args);
-	});
-	const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
-	const dispatch: AgentControlDispatch = async (method, params, callContext = context) => {
-		if (method === "await-native") return new Promise((_, reject) => {
-			if (callContext.abortSignal?.aborted) reject(new Error("cancelled"));
-			else callContext.abortSignal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
-		});
-		return base(method, params, callContext);
+for (const mode of ["covered", "partial", "late", "placed"] as const) it(`native await withdraws only fully covered queued delivery inputs with mode=${mode}`, { timeout: 10000 }, async (t) => {
+	const route = createRoute(); const holder: DispatchHolder = {}; let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	let sources: AwaitOutcome[] = [];
+	const base = createDispatch(holder, []);
+	const deliveryId = "deliver:foreign:answer:shared";
+	const dispatch: AgentControlDispatch = async (method, params, ctx = context) => {
+		if (method !== "receipts") return base(method, params, ctx);
+		await gate;
+		const result = params.result as { submissionId: number };
+		const outcome = sources.find((item) => item.result.submissionId === result.submissionId); assert.ok(outcome);
+		return { outcome: { ...outcome, submissionId: outcome.result.submissionId, requestId: outcome.result.requestId }, delivery: { requestId: deliveryId, results: sources.map((item) => item.result), complete: true } };
 	};
-	const { registry } = buildRegistry(dispatch);
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("FINISHED")); await harness.close(context); });
-	const outcomes = [];
-	for (const name of ["ONE", "TWO"]) {
-		const producer = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-		const source = await producer.submit({ type: "input", content: `CONTRACT: reply ${name}`, requestId: name }, context);
-		const terminal = await readOutcome(harness, source.id, context);
-		outcomes.push({ result: { sessionId: `${storageId}:${producer.id}`, submissionId: source.id, requestId: name }, status: "done" as const, answer: terminal.answer, answerEntryId: terminal.answerEntryId });
-	}
-	const original = await root.submit({ type: "input", content: "PAUSE-OWNER" }, context); await started;
-	const group = await deliverAcceptedResults(harness, root.id, outcomes, "grouped", "GROUP ANSWER-ONE ANSWER-TWO", context);
-	assert.deepEqual(group.map((item) => item.disposition), ["ordinary", "ordinary"]);
+	const { registry } = buildRegistry(dispatch); const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route)); holder.harness = harness;
+	t.after(async () => { release(); await harness.close(context); });
+	sources = (await completedPeerResults(harness, ["ONE", "TWO"])).map((outcome) => ({ ...outcome, result: { ...outcome.result, sessionId: "foreign" } }));
+	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
 	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	finish(fauxAssistantMessage([fauxToolCall("agent_await", { results: [outcomes[0].result] })], { stopReason: "toolUse" })); await ready;
-	let crashed = false;
-	const crashing = {
-		commit: harness.commit.bind(harness),
-		conversation: async (id: Durable.ConversationId, callContext: import("@earendil-works/chord").Context) => {
-			const recipient = await harness.conversation(id, callContext); assert.ok(recipient);
-			return { id: recipient.id, abort: recipient.abort.bind(recipient), waitForIdle: recipient.waitForIdle.bind(recipient), submit: async (...args: Parameters<typeof recipient.submit>) => {
-				const input = await recipient.submit(...args);
-				return { id: input.id, status: input.status.bind(input), wait: input.wait.bind(input), abort: async (ctx: import("@earendil-works/chord").Context) => {
-					const disposition = await input.abort(ctx);
-					if (!crashed) { crashed = true; throw new Error("crash after withdrawal"); }
-					return disposition;
-				} };
-			} };
-		},
-	};
-	await assert.rejects(deliverAcceptedResults(crashing, root.id, outcomes, "grouped", "GROUP ANSWER-ONE ANSWER-TWO", context), /crash after withdrawal/u);
-	assert.equal((await original.status(context)).status, "placed");
-	await deliverAcceptedResults(harness, root.id, outcomes, "grouped", "GROUP ANSWER-ONE ANSWER-TWO", context);
-	assert.equal((await original.wait(context)).status, "done"); await root.waitForIdle(context);
-	const texts = await userTexts(harness, root.id);
-	assert.equal(texts.some((text) => text.includes("ANSWER-ONE")), false);
-	assert.equal(texts.filter((text) => text.includes("ANSWER-TWO")).length, 1);
-	await deliverAcceptedResults(harness, root.id, outcomes, "grouped", "GROUP ANSWER-ONE ANSWER-TWO", context);
-	assert.equal((await userTexts(harness, root.id)).filter((text) => text.includes("ANSWER-TWO")).length, 1);
+	route.script.push({ tool: "agent_await", args: { results: (mode === "partial" ? sources.slice(0, 1) : sources).map((item) => item.result) } });
+	const original = await root.submit({ type: "input", content: mode === "placed" ? "DELIVERED-COPY" : "AWAIT-COVERAGE", ...(mode === "placed" ? { requestId: deliveryId } : {}) }, context); await ready;
+	let copy: Durable.Submission | undefined;
+	if (mode === "placed") copy = original;
+	else if (mode !== "late") copy = await root.submit({ type: "input", content: "DELIVERED-COPY", requestId: deliveryId, whenBusy: "followUp" }, context);
+	release(); await original.wait(context); await root.waitForIdle(context);
+	if (mode === "late") { copy = await root.submit({ type: "input", content: "DELIVERED-COPY", requestId: deliveryId, whenBusy: "followUp" }, context); await copy.wait(context); await root.waitForIdle(context); }
+	assert.ok(copy); const status = await copy.status(context);
+	assert.equal(status.status, mode === "covered" ? "unanswered" : "done");
+	if (status.status === "unanswered") assert.equal(status.reason, "aborted");
+	assert.equal((await userTexts(harness, root.id)).filter((text) => text === "DELIVERED-COPY").length, mode === "covered" ? 0 : 1);
+	assert.equal((await original.status(context)).status, "done");
+});
+
+it("withdraws a queued same-storage Reporter input by its actual request ID", { timeout: 10000 }, async (t) => {
+	const route = createRoute(); let finish!: (answer: AssistantMessage) => void;
+	const producer = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
+	const models = createTestModels((...args) => messageText(args[0].messages.findLast((message) => message.role !== "system")) === "HELD-REPORT" ? producer : route.route(...args));
+	const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
+	let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+	const dispatch: AgentControlDispatch = async (method, params, ctx = context) => { const result = await base(method, params, ctx); if (method === "await-native") await gate; return result; };
+	const { registry } = buildRegistry(dispatch); const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
+	t.after(async () => { finish(fauxAssistantMessage("RESULT")); release(); await harness.close(context); });
+	route.script.push({ tool: "agent_spawn", args: { prompt: "HELD-REPORT", name: "report-producer", checkInMinutes: 0 } });
+	await say(root, "Dispatch report work");
+	const admission = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(admission);
+	const result = (admission.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	const reportId = `agent-report:${result.requestId.slice("agent-deliver:".length)}`;
+	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
+	route.script.push({ tool: "agent_await", args: { results: [result] } });
+	const original = await root.submit({ type: "input", content: "Await queued report" }, context); await ready;
+	const watch = await harness.watchDoc(Durable.InboxDoc, root.id, context); assert.ok(watch);
+	const queued = new Promise<void>((resolve) => watch.start(async () => { if ((await harness.commit((tx) => tx.submissionByRequest(root.id, reportId), context))?.status === "queued") resolve(); }));
+	finish(fauxAssistantMessage("RESULT")); await queued; await watch.stop(); release();
+	await original.wait(context); await root.waitForIdle(context);
+	const report = await harness.commit((tx) => tx.submissionByRequest(root.id, reportId), context);
+	assert.equal(report?.status, "unanswered"); if (report?.status === "unanswered") assert.equal(report.reason, "aborted");
+	assert.equal((await userTexts(harness, root.id)).some((text) => text.startsWith("[agent report-producer answered]")), false);
 });
 
 for (const receiptFirst of [false, true]) it(`awaits a foreign recipient result and follows its exact continuation with receipt-first=${receiptFirst}`, { timeout: 10000 }, async (t) => {
@@ -980,12 +874,11 @@ for (const receiptFirst of [false, true]) it(`awaits a foreign recipient result 
 	const admission = await foreign.request("submit", { message: "foreign work", requestId: "foreign-result", ownerId: storageId, origin: "operator" }, context) as { submissionId: Durable.SubmissionId };
 	const result = { sessionId: "foreign", submissionId: admission.submissionId, requestId: "foreign-result" };
 	const route = createRoute(); const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
+	let resumeObservation!: () => void; const observationGate = new Promise<void>((resolve) => { resumeObservation = resolve; });
+	t.after(() => resumeObservation());
 	const dispatch: AgentControlDispatch = async (method, params, callContext = context) => {
 		if (method !== "receipts") return base(method, params, callContext);
-		if (receiptFirst) await new Promise((_resolve, reject) => {
-			if (callContext.abortSignal?.aborted) reject(new Error("cancelled"));
-			else callContext.abortSignal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
-		});
+		if (receiptFirst) await observationGate;
 		return foreign.request(method, params, callContext);
 	};
 	const { registry } = buildRegistry(dispatch); const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route)); holder.harness = harness;
@@ -998,11 +891,14 @@ for (const receiptFirst of [false, true]) it(`awaits a foreign recipient result 
 	await assert.rejects(foreign.request("receipts", { ownerId: "third-agent", result, wait: true }, context), /not addressed/u);
 	const answer = `${"x".repeat(15999)}😀${"y".repeat(4000)}TAIL`;
 	finish(fauxAssistantMessage(answer));
+	let queuedReceipt: Durable.Submission | undefined;
 	if (receiptFirst) {
 		const terminal = await foreign.wait(admission.submissionId, context);
-		await deliverAcceptedResult(harness, root.id, { result, status: "done", answerEntryId: terminal.answerEntryId, ...boundedAwaitAnswer(result, answer.slice(0, 1200), terminal.answerEntryId, true) }, "foreign-receipt", "EXCERPT", context);
+		queuedReceipt = await root.submit({ type: "input", content: "EXCERPT", whenBusy: "followUp", requestId: `deliver:foreign:answer:${terminal.answerEntryId}` }, context);
+		resumeObservation();
 	}
 	assert.equal((await original.wait(context)).status, "done");
+	if (queuedReceipt !== undefined) { const status = await queuedReceipt.status(context); assert.equal(status.status, "unanswered"); if (status.status === "unanswered") assert.equal(status.reason, "aborted"); }
 	const tool = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_await"); assert.ok(tool);
 	const output = JSON.parse(tool.text);
 	const continuation = output.results[0].continuation;

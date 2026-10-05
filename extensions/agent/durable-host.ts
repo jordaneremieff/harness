@@ -16,9 +16,7 @@
 import { randomUUID } from "node:crypto";
 import { StrandedInputRecovery } from "./stranded-inputs.ts";
 import { admittedResult, type ResultReference } from "./result-reference.ts";
-import { AwaitOutcomeSchema, type InputProvenance, type AwaitOutcome } from "./awaited-results.ts";
-import { Value } from "typebox/value";
-import { deliverAcceptedResults } from "./result-acceptance.ts";
+import type { InputProvenance } from "./awaited-results.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
 import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
@@ -416,7 +414,6 @@ export class DurableHost {
 				});
 			case "receipts":
 				return this.receiptsRequest(params, requestContext);
-			case "receive-result": return this.receiveResults(params, requestContext);
 			case "report":
 				return this.reportRequest(params, requestContext);
 			case "acknowledge":
@@ -485,14 +482,6 @@ export class DurableHost {
 		};
 	}
 
-	private async receiveResults(params: RequestParams | undefined, context: Context): Promise<unknown> {
-		const recipient = await this.target(params, context);
-		const outcomes = params?.outcomes as AwaitOutcome[];
-		if (!Array.isArray(outcomes) || outcomes.length < 1 || outcomes.length > 128 || !outcomes.every((outcome) => Value.Check(AwaitOutcomeSchema, outcome))) throw new Error("Result delivery requires a bounded typed outcome group");
-		const dispositions = await deliverAcceptedResults(this.harness, recipient.id, outcomes, requestRequiredString(params, "requestId"), requestRequiredString(params, "message"), context);
-		return { dispositions: dispositions.map((record) => record.disposition) };
-	}
-
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
 		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
@@ -542,7 +531,15 @@ export class DurableHost {
 		if (!routed) throw new Error("The selected result is not addressed to this recipient");
 		const { usage: _storageUsage, ...outcome } = await readOutcome(this.harness, status.id, context);
 		await reconcileDeliveries(this.harness, context);
-		return { outcome };
+		const delivery = await this.harness.commit(async (tx) => {
+			const receipts = Object.values((await tx.doc(AgentDeliveryDoc)).receipts);
+			const selected = receipts.find((receipt) => receipt.submissionId === status.id && receipt.ownerId === ownerId);
+			if (selected === undefined) return undefined;
+			const group = receipts.filter((receipt) => receipt.ownerId === ownerId && (selected.answerEntryId === null ? receipt.submissionId === selected.submissionId : receipt.answerEntryId === selected.answerEntryId));
+			const key = selected.answerEntryId === null ? `submission:${selected.submissionId}` : `answer:${selected.answerEntryId}`;
+			return { requestId: `deliver:${this.storageId}:${key}`, results: group.slice(0, 16).map((receipt) => ({ sessionId: this.identity(receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId })), complete: group.length <= 16 };
+		}, context);
+		return { outcome, ...(delivery === undefined ? {} : { delivery }) };
 	}
 
 	private async receiptsRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {

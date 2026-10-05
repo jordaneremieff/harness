@@ -95,7 +95,7 @@ function fakeTarget(target: DurableHost, calls: SubmitRecord[], gate?: Promise<v
 		async request(method, params, options) {
 			const record = params as Record<string, unknown>;
 			const index =
-				(method === "submit" || method === "receive-result")
+				method === "submit"
 					? calls.push({
 							params: record,
 							...(options?.requestId === undefined ? {} : { requestId: options.requestId }),
@@ -556,7 +556,7 @@ for (const route of ["catalog", "same-storage"] as const) it(`routes a check-in 
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	const request = source.request.bind(source);
 	if (route === "same-storage") source.request = async (method, params, context) => {
-		if (method === "submit" || method === "receive-result") { calls.push({ params: params as Record<string, unknown>, result: undefined }); await gate; }
+		if (method === "submit") { calls.push({ params: params as Record<string, unknown>, result: undefined }); await gate; }
 		return request(method, params, context);
 	};
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog,
@@ -737,7 +737,7 @@ it("resumes after reopen and native dedup keeps one submission", { timeout: 3000
 	});
 	const preAdmission = (await target.request(
 		"submit",
-		{ sessionId: owner, message: "already admitted", requestId: expected, whenBusy: "followUp", origin: "model" },
+		{ sessionId: owner, message: "already admitted", requestId: expected, whenBusy: "followUp", origin: "model", provenance: { classification: "automatic" } },
 		BACKGROUND_CONTEXT,
 	)) as { submissionId: number };
 

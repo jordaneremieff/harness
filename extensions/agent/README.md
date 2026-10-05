@@ -256,17 +256,16 @@ release the wait. Each return includes `queuedInputCount` from a committed inbox
 snapshot, excluding writes and suppressed check-ins. More inputs may arrive
 later; queued follow-ups retain their normal later runs.
 
-Recipient acceptance commits before source acknowledgment. It reconciles owned
-queued synthetic result inputs through public withdrawal, preserving unrelated
-results in a receipt group. Incoming results retain their own group membership;
-a larger receipt group does not drop new members. Replaying the original
-request does not release its own wait. Replaying result delivery does not revive
-an input that you withdrew. Owned reconciliation records its withdrawal intent
-before the native operation and preserves it through a crash. Already placed
-result bodies are not repeated;
-`representedBy` names the retained contextual entry. Capped answers and receipt
-excerpts include an exact `agent_inspect` continuation. Start at its supplied
-entry and offset, then follow each returned `nextOffset` until it is null.
+When `agent_await` returns, it withdraws only still-queued delivery inputs wholly
+covered by its returned results. It matches actual receipt and Reporter request
+IDs. A grouped input that also carries other results stays queued. Original
+request replay does not release its own wait.
+
+Normal delivery stays independent. A late or already-placed copy remains possible
+and costs an additional model turn. There is no recipient consumption ledger or
+exactly-once contextual-delivery guarantee. Capped answers include an exact
+`agent_inspect` continuation. Follow its entry and each returned `nextOffset`
+until the continuation is complete.
 
 Local cycle admission uses one consistent native transaction, including named
 request lookup and bare-reference live/inbox membership. It refuses self-waits

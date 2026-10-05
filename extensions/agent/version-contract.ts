@@ -38,7 +38,6 @@ for (const method of ["profile-read", "profile-update", "profile-list", "resolve
 operations["task-submit"] = { ...operations["task-submit"], response: "task-submit/1.1.0" };
 operations.submit = { request: "submit/1.1.0", response: "submit/1.1.0" };
 operations.receipts = { request: "receipts/1.1.0", response: "receipts/1.1.0" };
-operations["receive-result"] = { request: "receive-result/1.0.0", response: "receive-result/1.0.0", durable: durableVersion };
 operations["profile-list"] = { ...operations["profile-list"], response: schemaId(ProfiledListOutputSchema) };
 operations["profile-read"] = { ...operations["profile-read"], response: schemaId(AgentProfileSchema) };
 operations["profile-update"] = { ...operations["profile-update"], response: schemaId(ProfileUpdateSchema) };

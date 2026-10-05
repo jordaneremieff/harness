@@ -19,9 +19,8 @@
  */
 
 import { realpathSync } from "node:fs";
-import { AwaitParams, AwaitOutputSchema, boundedAwaitAnswer, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease, type AwaitOutcome } from "./awaited-results.ts";
+import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
-import { deliverAcceptedResult } from "./result-acceptance.ts";
 import { readAgentLineage, renderAgentLineage } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile } from "./profile.ts";
 import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
@@ -704,7 +703,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		/** Conversation that receives the answer; absent: the reporter's conversation. */
 		reportTo?: Durable.ConversationId;
 	};
-	type ReporterState = { phase: "deliver" } | { phase: "report"; report?: string; outcome?: AwaitOutcome };
+	type ReporterState = { phase: "deliver" } | { phase: "report"; report?: string };
 
 	const reporterInput = (
 		name: string,
@@ -730,10 +729,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		ownerConversationId: Durable.ConversationId,
 		settled: Durable.SettledSubmissionRecord,
 	): Promise<ReporterState> => {
-		const result = { sessionId: identity(conversationId), submissionId: settled.id, ...(settled.requestId === undefined ? {} : { requestId: settled.requestId }) };
-		const next = (report?: string, outcome?: AwaitOutcome): ReporterState => ({ phase: "report", report, ...(outcome === undefined ? {} : { outcome }) });
+		const next = (report?: string): ReporterState => ({ phase: "report", report });
 		if (settled.status === "unanswered") {
-			return next(`[agent ${name} stopped without an answer: ${settled.reason}]`, { result, status: "unanswered", reason: settled.reason });
+			return next(`[agent ${name} stopped without an answer: ${settled.reason}]`);
 		}
 		if (settled.type !== "input") return next(`[agent ${name} failed: unexpected settlement]`);
 		const registry = await tx.doc(Children, ownerConversationId);
@@ -742,7 +740,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		record?.reported.push(settled.answer);
 		const answer = await tx.entry(durable.AssistantEntry, settled.answer);
 		const text = messageText(answer?.model);
-		return next(`[agent ${name} answered] ${text === "" ? "(no text)" : text}`, { result, status: "done", answerEntryId: settled.answer, entryId: settled.entry, ...boundedAwaitAnswer(result, text, settled.answer) });
+		return next(`[agent ${name} answered] ${text === "" ? "(no text)" : text}`);
 	};
 
 	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({ kind: "agent.local-admission", version: 1, scope: "task", initial: () => ({ armed: false }) });
@@ -815,9 +813,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					const destination = reporter.input.reportTo ?? runtime.conversationId;
 					const owner = await runtime.conversation(destination, context);
 					if (owner !== undefined) {
-						const outcome = reporter.state.checkpoint.outcome;
-						if (outcome === undefined) await owner.submit({ type: "input", content: report, whenBusy: "followUp", requestId: `agent-report:${reporter.id}` }, context);
-						else await deliverAcceptedResult(runtime, destination, outcome, `agent-report:${reporter.id}`, report, context);
+						await owner.submit({ type: "input", content: report, whenBusy: "followUp", requestId: `agent-report:${reporter.id}` }, context);
 					}
 				}
 				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);

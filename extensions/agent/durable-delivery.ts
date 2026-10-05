@@ -22,7 +22,7 @@
  * Retries and reopens reuse them for recipient-local deduplication.
  */
 import { createHash } from "node:crypto";
-import { boundedAwaitAnswer, type AwaitOutcome, type InputProvenance } from "./awaited-results.ts";
+import type { InputProvenance } from "./awaited-results.ts";
 import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
@@ -305,10 +305,6 @@ function reportProvenance(report: DeliveryReport): Omit<InputProvenance, "conver
 	if (report.checkIn !== undefined) return { classification: "automatic", automaticKind: "checkIn", sender: report.senderIdentity, producerRequestId: report.checkIn.requestId };
 	return { classification: report.passive ? "automatic" : "report", sender: report.senderIdentity };
 }
-function receiptOutcomes(row: ReceiptRow, owner: string, host: DurableHost): AwaitOutcome[] {
-	return row.receipts.filter((receipt) => receipt.ownerId === owner).map((receipt) => ({ result: { sessionId: host.identity(receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId }, status: receipt.status, ...(receipt.answer === null ? {} : boundedAwaitAnswer({ sessionId: host.identity(receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId }, receipt.answer, receipt.answerEntryId ?? undefined, true)), ...(receipt.answerEntryId === null ? {} : { answerEntryId: receipt.answerEntryId }), ...(receipt.entryId === null ? {} : { entryId: receipt.entryId }), ...(receipt.reason === null ? {} : { reason: receipt.reason }) }));
-}
-
 function reportFollowText(report: DeliveryReport): string {
 	if (report.checkIn !== undefined)
 		return `Check-in from ${report.senderIdentity} (source ${report.sourceId}): still working, not finished. ${checkInSummary(report.checkIn)}. ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(report.message).text}`;
@@ -447,7 +443,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const deliverSameStorage = async (row: DeliveryRow, owner: string): Promise<void> => {
 		if (row.kind === "receipt") {
 			const requestId = receiptRequestId(metadata, row.receipt);
-			await host.request("receive-result", { sessionId: owner, outcomes: receiptOutcomes(row, owner, host), message: receiptFollowText(metadata, row), requestId });
+			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row), requestId, provenance: { classification: "automatic" }, whenBusy: "followUp" });
 			return;
 		}
 		if (!await checkInCurrent(row)) return;
@@ -771,10 +767,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (row.kind === "receipt") {
 			const requestId = receiptRequestId(metadata, row.receipt);
 			await connection.request(
-				"receive-result",
+				"submit",
 				{
 					sessionId: owner,
-					outcomes: receiptOutcomes(row, owner, host),
+					provenance: { classification: "automatic" },
 					message: receiptFollowText(metadata, row),
 					requestId,
 					whenBusy: "followUp",

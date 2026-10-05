@@ -1,6 +1,6 @@
-/** Native await ownership, exact outcomes, and recipient-local delivery decisions. */
+/** Native await ownership, exact outcomes, and control-provenance release. */
 import { Type, type Static } from "typebox";
-import { defineDoc, defineDocFamily, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { canonicalIdentity } from "./identity.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
 
@@ -15,7 +15,6 @@ export const AwaitOutcomeSchema = Type.Object({
 	reason: Type.Optional(Type.String()),
 	truncated: Type.Optional(Type.Boolean()),
 	excerpt: Type.Optional(Type.Boolean()),
-	representedBy: Type.Optional(Type.Integer({ minimum: 1 })),
 	continuation: Type.Optional(Type.Object({ tool: Type.Literal("agent_inspect"), sessionId: Type.String({ minLength: 1, maxLength: 256 }), view: Type.Literal("exact"), entryId: Type.Integer({ minimum: 1 }), offset: Type.Literal(0) }, { additionalProperties: false })),
 }, { additionalProperties: false });
 export const AwaitOutputSchema = Type.Object({
@@ -27,17 +26,14 @@ export const AwaitOutputSchema = Type.Object({
 	queueSnapshot: Type.Object({ source: Type.Literal("committed InboxDoc"), conversationId: Type.Integer({ minimum: 1 }), runId: Type.Integer({ minimum: 1 }) }),
 	releaseReason: Type.Optional(Type.String()),
 }, { additionalProperties: false });
-export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 }; representedBy?: number };
+export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
 export type AwaitDecision = "awaiting" | "settled" | "released" | "failed";
-export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string };
+export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[] };
 export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number };
-export type ResultConsumption = { key: string; conversationId: number; outcome: AwaitOutcome; requestId: string; disposition: "intent" | "ordinary" | "consumed" | "represented"; submissionId?: number; entryId?: number; group?: string[]; withdrawal?: { requestId: string; runId: number } };
-export type AwaitState = { declarations: AwaitDeclaration[]; consumptions: { key: string; conversationId: number; result: ResultReference }[]; provenance: InputProvenance[] };
-export const ResultConsumptionDoc = defineDocFamily<{ record: ResultConsumption | null; awaitedRunId: number | null }, null>({ kind: "agent.result-consumption", version: 1, scope: "session", family: true, initial: () => ({ record: null, awaitedRunId: null }) });
-export function consumptionKey(conversationId: number, result: ResultReference): string { return `${conversationId}/${referenceKey(result)}`; }
-export const AwaitDoc = defineDoc<AwaitState>({ kind: "agent.awaited-results", version: 1, scope: "session", initial: () => ({ declarations: [], consumptions: [], provenance: [] }) });
+export type AwaitDelivery = { requestId: string; results: ResultReference[]; complete: boolean };
+export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[] };
+export const AwaitDoc = defineDoc<AwaitState>({ kind: "agent.awaited-results", version: 1, scope: "session", initial: () => ({ declarations: [], provenance: [] }) });
 export const AWAIT_DECLARATION_LIMIT = 64;
-export const AWAIT_CONSUMPTION_LIMIT = 128;
 export const AWAIT_PROVENANCE_LIMIT = 128;
 
 export function boundedAwaitAnswer(result: ResultReference, answer: string, answerEntryId: number | undefined, excerpt = false): Pick<AwaitOutcome, "answer" | "truncated" | "excerpt" | "continuation"> {
@@ -55,11 +51,6 @@ export function localProducer(storageId: string, reference: ResultReference): Co
 	const id = Number(reference.sessionId.slice(storageId.length + 1));
 	if (!Number.isSafeInteger(id) || id < 1 || canonicalIdentity(storageId, id as ConversationId) !== reference.sessionId) throw new Error("Result conversation identity is not canonical");
 	return id as ConversationId;
-}
-export function representedOutcome(outcome: AwaitOutcome, entryId?: number): AwaitOutcome {
-	if (entryId === undefined) return { ...outcome };
-	const { answer: _answer, truncated: _truncated, excerpt: _excerpt, continuation: _continuation, ...reference } = outcome;
-	return { ...reference, representedBy: entryId };
 }
 export async function forgetFailedAdmission(tx: Tx, conversationId: ConversationId, requestId: string): Promise<void> {
 	if (await tx.submissionByRequest(conversationId, requestId) !== undefined) return;
@@ -166,14 +157,6 @@ async function inboxRelease(tx: Tx, state: AwaitState, declaration: AwaitDeclara
 	}
 }
 
-async function restoreAcceptedOutcomes(tx: Tx, declaration: AwaitDeclaration): Promise<void> {
-	for (const reference of declaration.results) {
-		const consumption = (await tx.doc(ResultConsumptionDoc, consumptionKey(declaration.conversationId, reference), null)).record;
-		if (consumption === null || (consumption.disposition !== "consumed" && consumption.disposition !== "represented")) continue;
-		if (matching(reference, consumption.outcome.result)) declaration.outcomes.push(representedOutcome(consumption.outcome, consumption.entryId));
-	}
-}
-
 /** All ownership and local dependency edges are admitted on one native transaction line. */
 export async function declareAwait(tx: Tx, storageId: string, owner: { conversationId: ConversationId; taskId: TaskId; callId: string }, results: ResultReference[]): Promise<AwaitDeclaration> {
 	const state = await tx.doc(AwaitDoc);
@@ -193,19 +176,18 @@ export async function declareAwait(tx: Tx, storageId: string, owner: { conversat
 	const admitted = state.declarations.find((item) => item.taskId === owner.taskId);
 	if (admitted === undefined) throw new Error("The native declaration was not admitted");
 	declaration = admitted;
-	for (const result of declaration.results) (await tx.doc(ResultConsumptionDoc, consumptionKey(declaration.conversationId, result), null)).awaitedRunId = declaration.runId;
-	await restoreAcceptedOutcomes(tx, declaration);
 	decide(declaration);
 	if (declaration.decision === "failed") releaseCohort(state, declaration, "a retained result did not succeed");
 	await inboxRelease(tx, state, declaration);
 	return JSON.parse(JSON.stringify(declaration)) as AwaitDeclaration;
 }
 
-export async function commitAwaitOutcome(tx: Tx, taskId: TaskId, outcome: AwaitOutcome): Promise<void> {
+export async function commitAwaitOutcome(tx: Tx, taskId: TaskId, outcome: AwaitOutcome, delivery?: AwaitDelivery): Promise<void> {
 	const state = await tx.doc(AwaitDoc);
 	const declaration = state.declarations.find((item) => item.taskId === taskId);
 	if (declaration === undefined || !declaration.results.some((reference) => matching(reference, outcome.result))) return;
 	if (!declaration.outcomes.some((item) => matching(item.result, outcome.result))) declaration.outcomes.push(outcome);
+	if (delivery !== undefined && !(declaration.deliveries ?? []).some((item) => item.requestId === delivery.requestId)) { declaration.deliveries ??= []; declaration.deliveries.push(delivery); }
 	decide(declaration);
 	if (declaration.decision === "failed") releaseCohort(state, declaration, outcome.reason ?? "a result did not succeed");
 }
@@ -258,69 +240,4 @@ export async function reconcileInputRelease(tx: Tx, conversationId: Conversation
 			releaseCohort(state, declaration, "admitted input");
 		}
 	}
-}
-
-async function pruneConsumptionIndex(tx: Tx, state: AwaitState): Promise<void> {
-	const retained: AwaitState["consumptions"] = [];
-	for (const index of state.consumptions) {
-		const record = (await tx.doc(ResultConsumptionDoc, index.key, null)).record;
-		if (record === null) continue;
-		const input = await tx.submissionByRequest(record.conversationId as ConversationId, record.requestId);
-		if (record.disposition === "intent" || input?.status === "queued" || (record.disposition !== "consumed" && input !== undefined && await ownedResultWithdrawal(tx, record, input))) retained.push(index);
-	}
-	state.consumptions.splice(0, state.consumptions.length, ...retained);
-}
-
-async function reconcileConsumption(tx: Tx, record: ResultConsumption): Promise<void> {
-	if (record.group === undefined) return;
-	const input = await tx.submissionByRequest(record.conversationId as ConversationId, record.requestId);
-	if (input === undefined) return;
-	record.submissionId = input.id;
-	if (input.entry !== undefined) record.entryId = input.entry;
-	if (input.status === "unanswered" && input.reason === "aborted" && input.entry === undefined) {
-		if (!await ownedResultWithdrawal(tx, record, input)) record.disposition = "consumed";
-		return;
-	}
-	if (input.status !== "queued" && record.disposition !== "consumed") record.disposition = "represented";
-}
-function publishAccepted(state: AwaitState, consumers: AwaitDeclaration[], record: ResultConsumption, outcome: AwaitOutcome): void {
-	if (record.disposition !== "consumed" && record.disposition !== "represented") return;
-	for (const declaration of consumers) {
-		if (!declaration.outcomes.some((item) => matching(item.result, outcome.result))) declaration.outcomes.push(representedOutcome(outcome, record.entryId));
-		decide(declaration);
-		if (declaration.decision === "failed") releaseCohort(state, declaration, outcome.reason ?? "a result did not succeed");
-	}
-}
-
-export async function ownedResultWithdrawal(tx: Tx, record: ResultConsumption, submission: SubmissionRecord): Promise<boolean> {
-	return submission.type === "input" && submission.status === "unanswered" && submission.reason === "aborted" && record.withdrawal !== undefined && record.withdrawal.requestId === submission.requestId && !await abortedAwaitRun(tx, record.withdrawal.runId);
-}
-
-async function abortedAwaitRun(tx: Tx, runId: number | null): Promise<boolean> {
-	if (runId === null) return false;
-	const run = await tx.task(runId as TaskId);
-	return run?.abortRequested === true || (run?.state.status === "terminal" && run.state.outcome.status === "aborted");
-}
-
-/** A recipient commits its result disposition before input admission or source acknowledgment. */
-export async function acceptResult(tx: Tx, conversationId: ConversationId, outcome: AwaitOutcome, requestId: string): Promise<ResultConsumption> {
-	const state = await tx.doc(AwaitDoc);
-	await pruneDeclarations(tx, state);
-	const key = consumptionKey(conversationId, outcome.result);
-	const marker = await tx.doc(ResultConsumptionDoc, key, null);
-	let record = marker.record ?? undefined;
-	const created = record === undefined;
-	if (record === undefined) {
-		await pruneConsumptionIndex(tx, state);
-		if (state.consumptions.length >= AWAIT_CONSUMPTION_LIMIT) throw new Error("Result admission reconciliation bound is full");
-		record = { key, conversationId, outcome, requestId, disposition: "intent" };
-		marker.record = record;
-		record = marker.record;
-		state.consumptions.push({ key, conversationId, result: outcome.result });
-	}
-	await reconcileConsumption(tx, record);
-	const consumers = state.declarations.filter((item) => item.conversationId === conversationId && item.decision === "awaiting" && item.results.some((reference) => matching(reference, outcome.result)));
-	if ((consumers.length > 0 && created && record.submissionId === undefined) || await abortedAwaitRun(tx, marker.awaitedRunId)) record.disposition = "consumed";
-	publishAccepted(state, consumers, record, outcome);
-	return JSON.parse(JSON.stringify(record)) as ResultConsumption;
 }

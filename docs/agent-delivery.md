@@ -272,16 +272,14 @@ stay queued follow-ups. Requester check-ins remain active. The result states its
 committed queued-input snapshot; queued follow-ups retain their normal later
 runs.
 
-Recipient acceptance prevents duplicate contextual delivery. Owned queued
-synthetic result inputs are withdrawn through the public native operation, with
-unrelated grouped results retained. Each incoming result receives a disposition,
-even when it arrives alongside an older group. Original-request replay is not an
-interruption. Delivery replay preserves external withdrawal; it never creates a
-new input for a result that you canceled. Already placed results return retained entry
-references rather than repeat their bodies. Capped answers and receipt excerpts
-include exact entry continuations. Follow their native inspection offsets for
-the remaining source text. Safe replay retains result identities and accepted
-outcomes without dispatching work again.
+Normal result delivery is independent of `agent_await`. At return, the tool
+withdraws only still-queued delivery inputs wholly covered by returned results,
+using their actual receipt or Reporter request IDs. A partially covered group
+stays queued; already-placed inputs remain untouched. Late or placed copies can
+appear and cost an additional model turn. No recipient consumption ledger or
+exactly-once contextual-delivery guarantee applies. Original-request replay is
+not an interruption. Durable outcomes survive safe replay. Capped answers
+include exact entry continuations with native inspection offsets.
 
 Await is native-only. Ordinary primaries remain responsive and refuse blocking
 wait calls. Foreign results require a normal reply route to this recipient;

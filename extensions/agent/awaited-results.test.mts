@@ -1,22 +1,22 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { AwaitDoc, ResultConsumptionDoc, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, acceptResult, boundedAwaitAnswer, forgetFailedAdmission, type AwaitState, type ResultConsumption } from "./awaited-results.ts";
+import { AwaitDoc, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, boundedAwaitAnswer, forgetFailedAdmission, type AwaitState } from "./awaited-results.ts";
 import { LiveDoc, InboxDoc, type Tx, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 
 /** A serialized native transaction's read set, with controlled request placement. */
 function fixture() {
-	const state: AwaitState = { declarations: [], consumptions: [], provenance: [] };
+	const state: AwaitState = { declarations: [], provenance: [] };
 	const live = new Map<number, { run: { taskId: number; inputs: number[] }; tools: { taskId: number }[] }>();
 	const inbox = new Map<number, { items: { id: number; mode: string }[] }>();
 	const tasks = new Map<number, { state: { status: string; outcome?: { status: string } }; abortRequested?: boolean }>();
 	const inputs = new Map<string, { id: number; conversationId?: number; type: string; status: string; requestId?: string; entry?: number; reason?: string }>();
-	const markers = new Map<string, { record: ResultConsumption | null; awaitedRunId: number | null }>();
+
 	const tx = {
 		async doc(kind: unknown, id?: number | string) {
 			if (kind === AwaitDoc) return state;
 			if (kind === LiveDoc) return live.get(id as number) ?? {};
 			if (kind === InboxDoc) return inbox.get(id as number) ?? { items: [] };
-			if (kind === ResultConsumptionDoc) { if (!markers.has(String(id))) markers.set(String(id), { record: null, awaitedRunId: null }); return markers.get(String(id)); }
+
 			throw new Error("Unexpected document");
 		},
 		async task(id: number) { return tasks.get(id); },
@@ -104,17 +104,6 @@ it("keeps a failed admission intact and refuses replay with changed provenance",
 	assert.equal(f.state.declarations[0].decision, "awaiting");
 	await assert.rejects(classifyAwaitInput(f.tx, { conversationId: 1, requestId: "failed-admission", classification: "automatic" }), /different release provenance/u);
 });
-it("deduplicates acceptance and preserves already placed result context", async () => {
-	const f = fixture(); const a = f.owner(1); const result = f.result(2); const outcome = { result, status: "done" as const, answer: "answer" };
-	const intent = await acceptResult(f.tx, a.conversationId, outcome, "synthetic"); assert.equal(intent.disposition, "intent");
-	const marker = await f.tx.doc(ResultConsumptionDoc, intent.key, null); assert.ok(marker.record); marker.record.group = [intent.key];
-	f.inputs.set("1/synthetic", { id: 90, entry: 99, type: "input", status: "placed" });
-	await acceptResult(f.tx, a.conversationId, outcome, "other-replay-id");
-	const declaration = await declareAwait(f.tx, "store", a, [result]);
-	assert.equal(declaration.decision, "settled"); assert.equal(declaration.outcomes[0].representedBy, 99); assert.equal(declaration.outcomes[0].answer, undefined);
-	assert.equal((await acceptResult(f.tx, a.conversationId, outcome, "synthetic")).disposition, "represented");
-	assert.equal(f.state.declarations[0].outcomes.length, 1);
-});
 it("does not let a settled old input release a newer await", async () => {
 	const f = fixture(); const a = f.owner(1); const result = f.result(2);
 	await classifyAwaitInput(f.tx, { conversationId: 1, requestId: "old", classification: "explicit" });
@@ -131,15 +120,6 @@ it("keeps a failed round decision for a delayed parallel declaration", async () 
 	await commitAwaitOutcome(f.tx, a.taskId, { result: first, status: "unanswered", reason: "model_error" });
 	f.tasks.set(a.taskId, { state: { status: "terminal", outcome: { status: "completed" } } });
 	assert.equal((await declareAwait(f.tx, "store", peer, [second])).decision, "released");
-});
-it("does not consume a late result after a partial release", async () => {
-	const f = fixture(); const a = f.owner(1); const result = f.result(2);
-	await declareAwait(f.tx, "store", a, [result]);
-	await classifyAwaitInput(f.tx, { conversationId: 1, requestId: "release", classification: "explicit" });
-	f.inputs.set("1/release", { id: 90, type: "input", status: "queued" }); f.inbox.set(1, { items: [{ id: 90, mode: "followUp" }] });
-	await reconcileInputRelease(f.tx, a.conversationId, "release");
-	assert.equal((await acceptResult(f.tx, a.conversationId, { result, status: "done", answer: "late answer" }, "late-result")).disposition, "intent");
-	assert.equal(f.state.declarations[0].outcomes.length, 0);
 });
 it("does not exhaust active slots across repeated aborts and failed admissions", async () => {
 	const f = fixture(); const result = f.result(2);

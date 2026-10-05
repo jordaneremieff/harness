@@ -114,7 +114,7 @@ it("spawns a cross-cwd child in an independent storage and delivers its result t
 			assert.ok(submission, excerpt);
 			const result = await child.request("inspect", { view: "result", submissionId: Number(submission) }) as { answerEntryId: number };
 			const deliveryRequest = `deliver:${record.storageId}:answer:${result.answerEntryId}`;
-			const repeat = await primary.request("submit", { message: "DUPLICATE_DELIVERY", requestId: deliveryRequest }) as SubmitResult;
+			const repeat = await primary.request("submit", { message: "DUPLICATE_DELIVERY", requestId: deliveryRequest, provenance: { classification: "automatic" } }) as SubmitResult;
 			assert.equal(repeat.deduped, true, "the delivery request ID is retained and deduplicated");
 			const after = await primary.request("inspect", { view: "search", query: "DUPLICATE_DELIVERY" }) as { matches: unknown[] };
 			assert.equal(after.matches.length, 0, "the deduplicated submit wrote no new entry");
