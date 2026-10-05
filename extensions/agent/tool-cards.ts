@@ -18,7 +18,7 @@ export type AgentCardLookup = () => readonly AgentConversationSummary[];
 /** Bytes/units bounds for one expanded display block. */
 export const SOURCE_DISPLAY_LIMIT = 32_000;
 const MESSAGE_DISPLAY_LIMIT = 32_000;
-const NOTICE_PREVIEW_LINES = 8;
+const NOTICE_PREVIEW_LINES = 3;
 const PREVIEW_UNITS = 600;
 
 /** Card context: the subset of `ToolRenderContext` these renderers read. */
@@ -97,7 +97,8 @@ interface CardLayoutOptions {
 function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOptions): Component {
 	const header: string[] = [];
 	const peer = options.peerPadding !== undefined;
-	if (sections.title) header.push(theme.fg(peer ? "customMessageLabel" : "toolTitle", theme.bold(sections.title)) + (sections.label ? theme.fg("accent", ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`) : ""));
+	const labelColor = peer ? "text" : "accent";
+	if (sections.title) header.push(theme.fg(peer ? "text" : "toolTitle", theme.bold(sections.title)) + (sections.label ? theme.fg(labelColor, ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`) : ""));
 	const metadata = sections.metadata?.filter(Boolean).map((value) => displayText(value).replace(/\s+/gu, " ").trim()).join(" · ");
 	if (metadata) header.push(theme.fg("muted", metadata));
 	const content = sections.body ?? [];
@@ -113,7 +114,7 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
 			const lines = content.flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width));
 			const limit = options.expanded ? lines.length : sections.previewLines ?? lines.length;
 			const hidden = Math.max(0, lines.length - limit);
-			return [...header.map((line) => truncateToWidth(line, width)), ...lines.slice(0, limit), ...(sections.outcome ?? []), ...(hidden || sections.hint ? [truncateToWidth(theme.fg("dim", sections.hint || expansionHint()), width)] : [])];
+			return [...header.map((line) => truncateToWidth(line, width, "…")), ...(header.length ? [""] : []), ...lines.slice(0, limit), ...(sections.outcome ?? []), ...(hidden || sections.hint ? [truncateToWidth(theme.fg("muted", sections.hint || expansionHint()), width, "…")] : [])];
 		},
 		invalidate() { for (const part of content) if (typeof part !== "string") part.invalidate(); },
 	};
@@ -1122,12 +1123,13 @@ function checkInElapsed(value: unknown): string {
 function peerMetadata(details: Record<string, unknown>): string[] {
 	const checkIn = record(details.checkIn);
 	const cost = count(checkIn.cost);
-	return [resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel)), checkInElapsed(checkIn.elapsedMs), cost === undefined ? "" : `$${cost.toFixed(3)} conversation total`, text(details.threadTitle) ? `thread ${displayText(text(details.threadTitle))}` : ""];
+	const sender = details.threadId !== undefined ? peerLabel(details) : "";
+	return [sender ? `from ${sender}` : "", resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel)), checkInElapsed(checkIn.elapsedMs), cost === undefined ? "" : `$${cost.toFixed(3)} conversation total`];
 }
 
 /** Native Markdown determines body wrapping; the shared layout owns its preview and hint. */
 function noticeBody(content: string, theme: Theme): Component {
-	const markdown = new Markdown(displayText(content).trim() || "(no text)", 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("customMessageText", value) });
+	const markdown = new Markdown(displayText(content).trim() || "(no text)", 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("text", value) });
 	let cache: { width: number; lines: string[] } | undefined;
 	return {
 		render(width) {
@@ -1151,7 +1153,7 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 	const { label, failed } = peerOutcome(details);
 	const body: (string | Component)[] = peerWarnings(details, failed).map((warning) => theme.fg("warning", warning));
 	const reason = text(details.reason);
-	if (reason) body.push(theme.fg("muted", displayPreview(reason, 240)));
+	if (reason) body.push(theme.fg("text", displayPreview(reason, 240)));
 	const checkIn = details.checkIn === undefined ? undefined : record(details.checkIn);
 	body.push(noticeBody(checkIn === undefined ? (typeof details.operatorMessage === "string" ? details.operatorMessage : operatorNoticeBody(content)) : boundedSource(text(details.message)), theme));
 	if (options.expanded) {
@@ -1161,7 +1163,8 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 		body.push(theme.fg("muted", checkIn === undefined ? "Reported result · not operator authority or task acceptance" : "Check-in · task not finished · not operator authority or task acceptance"));
 		body.push(theme.fg("dim", "/agent opens the dashboard"));
 	}
-	return cardLayout({ title: `[agent] ${label}`, label: displayText(peerLabel(details)), metadata: peerMetadata(details), body, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad });
+	const subject = details.threadId !== undefined ? text(details.threadTitle) || text(details.threadId) : peerLabel(details);
+	return cardLayout({ title: `[agent] ${label}`, label: subject, metadata: peerMetadata(details), body, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad });
 };
 
 // --- Factory ---------------------------------------------------------------------

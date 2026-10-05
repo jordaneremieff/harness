@@ -347,7 +347,7 @@ describe("agent result notice card", () => {
 			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "message" }, heading: "message from another session · Parser session" },
 			{ details: { senderIdentity: id, senderKind: "session", observedPurpose: "Review the parser", kind: "message", provider: "provider" }, heading: "message from another session · Review the parser" },
 			{ details: { senderIdentity: id, senderKind: "session", kind: "message" }, heading: `message from another session · ${id}` },
-			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "report", threadId: "retained-thread", threadTitle: "Parser contract", operatorMessage: "The sourced event body" }, heading: "thread notice · Parser session" },
+			{ details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "report", threadId: "retained-thread", threadTitle: "Parser contract", operatorMessage: "The sourced event body" }, heading: "thread notice · Parser contract" },
 			{ details: { identity: id, name: "Fallback reader", kind: "receipt", status: "done", liveOwner: false, fallback: true }, heading: "result · Fallback reader" },
 			{ details: {}, heading: "message from another session" },
 		];
@@ -524,12 +524,13 @@ describe("agent result notice card", () => {
 		assert.ok(card);
 		for (const width of [80, 140]) {
 			const lines: string[] = card.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.equal(lines.length, 5);
+			assert.equal(lines.length, 6);
 			assert.equal(lines[0]?.trim(), "");
 			assert.match(lines[1] ?? "", /\[agent\] result · A very long/u);
 			assert.equal(lines[2]?.trim(), "provider/model · high");
-			assert.equal(lines[3]?.trim(), "A short answer.");
-			assert.equal(lines[4]?.trim(), "");
+			assert.equal(lines[3]?.trim(), "");
+			assert.equal(lines[4]?.trim(), "A short answer.");
+			assert.equal(lines[5]?.trim(), "");
 			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 			assert.doesNotMatch(lines.join("\n"), /Open:|Source details|to expand|opens the dashboard/);
 		}
@@ -547,9 +548,11 @@ describe("agent result notice card", () => {
 		assert.ok(collapsed && expanded);
 		for (const width of [80, 140]) {
 			const preview: string[] = collapsed.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.equal(preview.length, 13, "two padded lines, a two-tier header, eight body lines and one hint");
+			assert.equal(preview.length, 9, "two padded lines, a two-tier header, one separator, three body lines and one hint");
 			const full: string[] = expanded.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.match(preview[11] ?? "", /\.\.\. \(ctrl\+o to expand\)/u);
+			assert.match(preview[7] ?? "", /\.\.\. \(ctrl\+o to expand\)/u);
+			assert.equal(preview[3]?.trim(), "");
+			assert.deepEqual(preview.slice(4, 7), full.slice(4, 7));
 			assert.equal(preview.filter((line) => /to expand/u.test(line)).length, 1);
 			assert.doesNotMatch(preview.join("\n"), /^\s*…\s*$/mu);
 			assert.doesNotMatch(preview.join("\n"), /FINAL_RESULT|Source details|Open:|opens the dashboard/);
@@ -570,8 +573,8 @@ describe("agent result notice card", () => {
 		for (const width of [80, 140]) {
 			const components = Array.from({ length: 4 }, () => new CustomMessageComponent(message, renderAgentPeerMessage));
 			const lines = components.flatMap((component) => component.render(width)).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.equal(lines.length, 24, "four native separators and four padded two-tier cards");
-			assert.equal(lines.filter((line) => line.trim() === "").length, 12);
+			assert.equal(lines.length, 28, "four native separators and four padded two-tier cards with header separators");
+			assert.equal(lines.filter((line) => line.trim() === "").length, 16);
 			assert.equal(lines.filter((line) => line.trim()).at(-1)?.trim(), "Short answer.");
 			const first = components[0];
 			assert.ok(first);

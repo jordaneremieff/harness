@@ -15,8 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
+import { stripVTControlCharacters } from "node:util";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
-import { DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomMessageComponent, DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, initTheme, type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { eventLog, type EventLog } from "./host-fixture.mts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { connectPrimaryChannel, createPrimaryChannel } from "./primary-channel.ts";
@@ -26,6 +27,7 @@ import { scheduleFixture } from "./durable-schedule-fixture.mts";
 import { startDurableDelivery } from "./durable-delivery.ts";
 import { AgentCatalog } from "./catalog.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { renderAgentPeerMessage } from "./tool-cards.ts";
 
 
 const INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
@@ -245,6 +247,22 @@ it("retains a full wake-false notice and its source details without a primary mo
 	assert.equal(entries[0]?.content, body);
 	assert.deepEqual(entries[0]?.details, { sourceId: "operator:1", wake: false, identity: "storage-a", label: "poem task", status: "done", provider: "test-provider", modelId: "test-model", thinkingLevel: "high" });
 	assert.equal(fixture.requests.length, 0, "a wake-false notice starts no provider request");
+	initTheme("dark", false);
+	const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content: body, details: entries[0]?.details };
+	const component = new CustomMessageComponent(message, renderAgentPeerMessage);
+	const collapsed = component.render(160).map((line) => stripVTControlCharacters(line).trim());
+	const first = collapsed.findIndex((line) => line.startsWith("[agent]"));
+	assert.equal(collapsed[first + 2], "");
+	assert.deepEqual(collapsed.slice(first + 3, first + 6), ["operator notice body", "Retained result line.", "Retained result line."]);
+	assert.equal(collapsed.filter((line) => line === "... (expand for full details)").length, 1);
+	assert.equal(collapsed.filter(Boolean).length, 6);
+	assert.equal(collapsed.includes("FINAL_RESULT"), false);
+	component.setExpanded(true);
+	const expanded = component.render(160).map((line) => stripVTControlCharacters(line)).join("\n");
+	assert.match(expanded, /FINAL_RESULT/u);
+	assert.doesNotMatch(expanded, /to expand|expand for full/u);
+	assert.equal(fixture.customEntries()[0]?.content, body);
+	assert.equal(fixture.requests.length, 0);
 });
 
 it("keeps a provider request consumer pending until the provider leaves its gate", { timeout: 30000 }, async (t) => {

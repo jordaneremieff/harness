@@ -88,11 +88,13 @@ separate detach operation or detached-run registry.
 
 ### Tool cards
 
-All tool and peer cards use one layout. The first header line shows the tool
-name or message kind and the target or sender label. The muted second line shows
-known provider/model, thinking level, and other secondary facts. All card kinds
-use the same `provider/model · xhigh` form, without redundant `Model:`,
-`thinking`, or `reasoning` labels. Ambiguous values retain labels such as
+All tool and peer cards use one two-tier layout. The first header line shows
+the tool name or message kind and the target or sender label. Thread notices
+use the thread title, or full thread identity when no title is known, as their
+subject; their second line starts with `from <sender>` when known. The muted
+second line shows known provider/model, thinking level, and other secondary
+facts. All card kinds use the same `provider/model · xhigh` form, without
+redundant `Model:`, `thinking`, or `reasoning` labels. Ambiguous values retain labels such as
 `submission 2987` or `mode report`. Missing facts create no placeholders.
 Targeted cards use the retained `@handle` or display name. Duplicate display names add the full identity when neither handles nor
 model settings distinguish them. Unobserved targets use the full identity or
@@ -109,8 +111,9 @@ Expanded cards retain full IDs and the complete result within the display bound.
 A collapsed card has at most one expansion hint across its call and result.
 Before execution, the call owns the hint; after execution starts, the result
 owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole
-card, not just its result. Expanded cards show no expansion hint. Expanded
-messages use the plain `Message:` label.
+card, not just its result. Peer notices show the same hint only when their
+visual-line preview hides body text. Expanded cards show no expansion hint.
+Expanded messages use the plain `Message:` label.
 
 Collapsed results use plain outcomes rather than raw JSON. Expanded results
 retain the raw result within the display bound. Message receipts use `Admitted`
@@ -1180,19 +1183,24 @@ current name and published purpose. Foreign thread senders use their exact
 retained agent row or published primary endpoint without a host launch or
 discovery scan. A dead primary descriptor retains its parsed sender metadata;
 its published configuration is not a live-state observation. Missing source
-evidence does not classify a report sender as an agent. Thread notices show
-the thread title and sender; their display
-body comes from the defining event, while stored model content stays unchanged.
+evidence does not classify a report sender as an agent. Thread notices put the
+thread title, or full thread identity when no title is known, on the first line.
+Their second line starts with `from <sender>` when known. Their display body
+comes from the defining event, while stored model content stays unchanged.
+Thread mutations, not only posts, produce these notices.
 The first header line uses plain kinds: result, still working, report, thread
-notice, or message from another session, followed by the sender label. The muted
-second line contains known model, provider, thinking level, check-in elapsed
-time, cost, and thread title. Missing optional facts produce no unknown or
+notice, or message from another session. Other kinds keep the sender label on
+that line. The muted second line contains known provider/model, thinking level,
+check-in elapsed time, and cost. A blank line separates the header from the body.
+Peer kinds use bold theme text; their subjects and normal body use theme text.
+Metadata and expansion hints stay muted. Warning colors and native Markdown
+styles retain their meaning. Missing optional facts produce no unknown or
 unavailable header fields. Expected reports and direct messages omit the unsaved
 result warning; genuine failure warnings remain in the body.
-The collapsed answer uses a short visual-line preview, with one Pi expansion
-hint only when text is hidden and no separate ellipsis row. The shared layout
-adds the same inner top and bottom padding as Pi tool cards, with no collapsed
-navigation instructions. Expanding the notice shows the full
+The collapsed answer uses up to three visual lines, including any warning or
+reason lines, with one Pi expansion hint only when text is hidden and no
+separate ellipsis row. The shared layout adds the same inner top and bottom
+padding as Pi tool cards, with no collapsed navigation instructions. Expanding the notice shows the full
 received answer, source details including full identities and submission rows,
 and `/agent opens the dashboard`. Model-facing caveats stay in the stored
 message content rather than the answer preview. Catalog follow-ups between Durable hosts keep their

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { CustomMessageComponent, defineTool, initTheme, ToolExecutionComponent, type ExtensionAPI, type ToolDefinition, type Theme } from "@earendil-works/pi-coding-agent";
@@ -9,6 +10,12 @@ import type { AgentConversationSummary } from "./dashboard-types.ts";
 import register from "./index.ts";
 
 initTheme("dark", false);
+const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+function noticeKeys(t: { after(fn: () => void): void }): void {
+	const previous = nativeTui.getKeybindings();
+	nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
+	t.after(() => nativeTui.setKeybindings(previous));
+}
 const identity = "01a106df-0000-4000-8000-000000000001";
 const model = { provider: "provider", modelId: "model", thinkingLevel: "xhigh" };
 const row: AgentConversationSummary = { id: identity, storageId: identity, name: "Parser review", cwd: ".", modifiedAt: 0, owner: "unknown", state: "idle", cost: 0, partial: false, model };
@@ -193,7 +200,146 @@ it("expected unsaved reports and direct messages omit warnings but genuine recei
 	assert.match(text(failure), /Result unavailable or unanswered/u);
 	assert.match(text(failure), /No live owner; retained result only/u);
 	assert.match(text(failure), /Result not saved; retained only by the live owner/u);
-	assert.match(text(failure), /aborted/u);
+	assert.doesNotMatch(text(failure), /aborted|Failure body/u);
+	assert.equal((text(failure).match(/to expand|expand for full/gu) ?? []).length, 1);
+	const expanded = renderPeerNoticeCard({ content: "Failure body", details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity } }, theme, true);
+	assert.ok(expanded);
+	assert.match(text(expanded), /aborted/u);
+	assert.match(text(expanded), /Failure body/u);
+	assert.doesNotMatch(text(expanded), /to expand|expand for full/u);
+});
+
+it("native peer notices keep three visual body lines and one hint only when text is hidden", (t) => {
+	noticeKeys(t);
+	const content = `Opening finding: the parser preserves the complete source. ${"Useful detail follows. ".repeat(70)}FINAL_BODY`;
+	const kinds = [
+		{ kind: "report" },
+		{ kind: "message", senderKind: "session" },
+		{ kind: "receipt", status: "done" },
+		{ kind: "report", threadId: "source/thread", threadTitle: "Parser contract", operatorMessage: content },
+		{ checkIn: {}, message: content },
+	];
+	for (const facts of kinds) {
+		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { senderIdentity: identity, ...model, ...facts } };
+		const before = structuredClone(message);
+		const component = new CustomMessageComponent(message, renderAgentPeerMessage);
+		for (const width of [24, 60, 160]) {
+			component.setExpanded(false);
+			const collapsed = clean(component, width);
+			const first = collapsed.findIndex((line) => line.trim());
+			assert.equal(collapsed[first + 2]?.trim(), "");
+			const preview = collapsed.slice(first + 3, -1);
+			assert.equal(preview.length, 4, JSON.stringify({ facts, width, preview }));
+			assert.match(preview[0] ?? "", /Opening finding/u);
+			assert.equal(preview.filter((line) => /to expand|expand for full/u.test(line)).length, 1);
+			assert.doesNotMatch(preview.slice(0, 3).join("\n"), /FINAL_BODY/u);
+			assert.ok(component.render(width).every((line) => visibleWidth(line) <= width));
+			component.setExpanded(true);
+			const expanded = clean(component, width);
+			assert.deepEqual(preview.slice(0, 3), expanded.slice(first + 3, first + 6));
+			assert.doesNotMatch(expanded.join("\n"), /to expand|expand for full/u);
+		}
+		assert.match(text(component, 240), /FINAL_BODY/u);
+		assert.deepEqual(message, before);
+	}
+	for (const content of ["Only one body line", "First line\nSecond line\nThird line"]) {
+		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { kind: "report", senderIdentity: identity } };
+		const component = new CustomMessageComponent(message, renderAgentPeerMessage);
+		assert.doesNotMatch(text(component, 160), /to expand|expand for full/u);
+		assert.match(text(component, 160), new RegExp(content.split("\n").at(-1) ?? ""));
+	}
+});
+
+it("peer Markdown and wrapped reasons share the total visual preview bound", (t) => {
+	noticeKeys(t);
+	for (const source of [
+		{ content: "First paragraph\n\nSecond paragraph\n\nFINAL_BODY", details: { kind: "report" } },
+		{ content: "```text\nFirst code line\nSecond code line\nThird code line\nFINAL_BODY\n```", details: { kind: "report" } },
+		{ content: "FINAL_BODY", details: { kind: "receipt", status: "done", reason: "Reason detail. ".repeat(20) } },
+	]) {
+		const component = renderPeerNoticeCard({ ...source, details: { senderIdentity: identity, ...source.details } }, theme, false);
+		const expanded = renderPeerNoticeCard({ ...source, details: { senderIdentity: identity, ...source.details } }, theme, true);
+		assert.ok(component); assert.ok(expanded);
+		for (const width of "reason" in source.details ? [24, 60] : [24, 160]) {
+			const lines = clean(component, width);
+			const first = lines.findIndex((line) => line.trim());
+			assert.equal(lines[first + 1]?.trim(), "");
+			const preview = lines.slice(first + 2, -1);
+			assert.equal(preview.length, 4);
+			assert.deepEqual(preview.slice(0, 3), clean(expanded, width).slice(first + 2, first + 5));
+			assert.match(preview.at(-1) ?? "", /to expand|expand for full/u);
+			assert.doesNotMatch(preview.slice(0, 3).join("\n"), /FINAL_BODY/u);
+		}
+		assert.match(text(expanded), /FINAL_BODY/u);
+	}
+});
+
+it("thread notice headers show the subject before known sender and secondary facts without duplicate labels", () => {
+	const threadId = `${identity}/${"a".repeat(32)}`;
+	const facts = { kind: "report", senderIdentity: identity, name: "Parser review", threadId, threadTitle: "Parser contract", ...model, checkIn: undefined };
+	const cases = [
+		{ details: facts, header: ["[agent] thread notice · Parser contract", "from Parser review · provider/model · xhigh"] },
+		{ details: { ...facts, name: undefined, threadTitle: undefined }, header: [`[agent] thread notice · ${threadId}`, `from ${identity} · provider/model · xhigh`] },
+		{ details: { threadId, threadTitle: "Parser contract" }, header: ["[agent] thread notice · Parser contract"] },
+		{ details: { threadId, name: "Parser review" }, header: [`[agent] thread notice · ${threadId}`, "from Parser review"] },
+		{ details: { ...model, kind: "report", name: "Parser review" }, header: ["[agent] report · Parser review", "provider/model · xhigh"] },
+		{ details: { ...model, name: "Parser review", checkIn: { elapsedMs: 90_000, cost: 0 } }, header: ["[agent] still working · Parser review", "provider/model · xhigh · 1m elapsed · $0.000 conversation total"] },
+	];
+	for (const { details, header } of cases) {
+		const card = renderPeerNoticeCard({ content: "Body text", details }, theme, false);
+		assert.ok(card);
+		const lines = clean(card, 240);
+		assert.deepEqual(lines.slice(1, header.length + 1), header);
+		assert.equal(lines[header.length + 1], "");
+		assert.doesNotMatch(lines.join("\n"), /Model:|Provider:|unknown|unavailable|to expand|expand for full/u);
+		for (const label of ["Parser contract", "Parser review", "provider/model"]) {
+			assert.ok((lines.join("\n").match(new RegExp(label, "gu")) ?? []).length <= 1, label);
+		}
+	}
+});
+
+it("peer kind, subject and normal body use text while metadata and hints remain muted", (t) => {
+	noticeKeys(t);
+	const colors: Array<{ color: string; value: string }> = [];
+	const bold: string[] = [];
+	const spy = { ...theme, fg: (color: string, value: string) => { colors.push({ color, value }); return value; }, bold: (value: string) => { bold.push(value); return value; } } as unknown as Theme;
+	const card = renderPeerNoticeCard({ content: "First body line\nSecond body line\nThird body line\nFinal body line", details: { threadId: "source/thread", threadTitle: "Parser contract", name: "Parser review", ...model } }, spy, false);
+	assert.ok(card);
+	card.render(160);
+	assert.deepEqual(bold, ["[agent] thread notice"]);
+	for (const value of ["[agent] thread notice", " · Parser contract"]) assert.ok(colors.some((entry) => entry.color === "text" && entry.value === value), value);
+	assert.ok(colors.some(({ color, value }) => color === "text" && value.includes("First body line")));
+	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "from Parser review · provider/model · xhigh"));
+	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (ctrl+o to expand)"));
+	assert.equal(colors.some(({ color }) => ["accent", "customMessageLabel", "customMessageText", "dim"].includes(color)), false);
+	colors.length = 0;
+	const failure = renderPeerNoticeCard({ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } }, spy, false);
+	assert.ok(failure); failure.render(160);
+	assert.ok(colors.some(({ color, value }) => color === "warning" && value === "Result unavailable or unanswered"));
+	assert.ok(colors.some(({ color, value }) => color === "text" && value === "Diagnostic reason"));
+});
+
+it("peer width clips use one ellipsis while wide headers and expanded details retain full identities", (t) => {
+	noticeKeys(t);
+	const threadId = `${identity}/${"a".repeat(32)}`;
+	const details = { kind: "report", senderIdentity: identity, threadId, provider: "provider", modelId: `model-${"m".repeat(160)}`, thinkingLevel: "xhigh" };
+	const card = renderPeerNoticeCard({ content: "Body line\n".repeat(8), details }, theme, false);
+	const expanded = renderPeerNoticeCard({ content: "Body line\n".repeat(8), details }, theme, true);
+	assert.ok(card); assert.ok(expanded);
+	const wide = text(card, 400);
+	assert.ok(wide.includes(threadId));
+	assert.ok(wide.includes(`from ${identity}`));
+	assert.ok(wide.includes(`provider/${details.modelId}`));
+	assert.equal((wide.match(/\.\.\. \(ctrl\+o to expand\)/gu) ?? []).length, 1);
+	assert.doesNotMatch(wide, /…/u);
+	const narrow = clean(card, 20);
+	assert.match(narrow[1] ?? "", /…$/u);
+	assert.match(narrow[2] ?? "", /…$/u);
+	assert.match(narrow.at(-2) ?? "", /^\.\.\. \(ctrl\+o.*…$/u);
+	assert.doesNotMatch(narrow.slice(1, 3).join("\n"), /\.\.\./u);
+	assert.ok(card.render(20).every((line) => visibleWidth(line) <= 20));
+	assert.ok(text(expanded, 400).includes(`threadId: ${threadId}`));
+	assert.ok(text(expanded, 400).includes(`senderIdentity: ${identity}`));
 });
 
 it("wide headers preserve full model identities and narrow headers clip only to width", () => {
