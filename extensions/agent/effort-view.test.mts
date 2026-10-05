@@ -510,19 +510,23 @@ it("explicit effort observation fires no message or agent control and keeps sele
 		assert.deepEqual(messages, []); assert.deepEqual(controls, []);
 	} finally { read.resolve("done"); f.ui.dispose(); }
 });
-it("late observations are rejected after away-and-back selection, pane exit and disposal", async () => {
+it("late observations are rejected after away-and-back selection, pane exit and disposal", async t => {
+	// Unrelated dashboard repaint timers must not count as an observation response.
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
 	for (const exit of ["selection", "pane", "dispose"]) {
 		const read = deferred<string>();
 		const f = fixture(100, 32, source(), { efforts: async () => awareness(), observeEffort: () => read.promise });
-		await turn(); f.ui.handleInput("b"); await turn(); f.ui.handleInput("o");
-		if (exit === "selection") { f.ui.handleInput("\x1b[B"); f.ui.handleInput("\x1b[A"); }
-		else if (exit === "pane") f.ui.handleInput("\x1b");
-		else f.ui.dispose();
-		const count = f.counts().renders;
-		read.resolve("REJECTED_OLD_OBSERVATION"); await turn();
-		assert.equal(f.counts().renders, count);
-		if (exit !== "dispose") assert.doesNotMatch(f.ui.render(100).join("\n"), /REJECTED_OLD_OBSERVATION/);
-		f.ui.dispose();
+		try {
+			await turn(); f.ui.handleInput("b"); await turn(); f.ui.handleInput("o");
+			if (exit === "selection") { f.ui.handleInput("\x1b[B"); f.ui.handleInput("\x1b[A"); }
+			else if (exit === "pane") f.ui.handleInput("\x1b");
+			else f.ui.dispose();
+			t.mock.timers.tick(0);
+			const count = f.counts().renders;
+			read.resolve("REJECTED_OLD_OBSERVATION"); await turn();
+			assert.equal(f.counts().renders, count, exit);
+			if (exit !== "dispose") assert.doesNotMatch(f.ui.render(100).join("\n"), /REJECTED_OLD_OBSERVATION/);
+		} finally { read.resolve("done"); f.ui.dispose(); }
 	}
 });
 it("observation text has a Unicode-safe display bound, explicit omissions and no terminal controls", async () => {
