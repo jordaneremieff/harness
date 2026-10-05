@@ -120,6 +120,11 @@ it("keeps discovery and intent out of ordinary transcripts across processes", { 
 	await second.command("prompt");
 	const injectedContext = second.events.find((event) => event.type === "provider-request");
 	assert.ok(textOf(injectedContext?.effortSections).includes(first.id), "the stable before-agent-start context names the existing related primary");
+	const parameters = injectedContext?.intentParameters as { type?: string; properties?: Record<string, unknown>; anyOf?: unknown; oneOf?: unknown };
+	assert.equal(parameters.type, "object", "the real loader exposes an object schema to the model");
+	assert.deepEqual(Object.keys(parameters.properties ?? {}).sort(), ["action", "authority", "contactThread", "integration", "purpose", "scope"]);
+	assert.equal(parameters.anyOf, undefined);
+	assert.equal(parameters.oneOf, undefined);
 	const observed = await second.command("inspect");
 	const observedSelf = (observed.awareness as { self: { observedPurpose?: { source: string; text: string } }; threads: { items: unknown[] } }).self;
 	assert.deepEqual(observedSelf.observedPurpose, { source: "interactive-input", text: "Check the current effort context" }, "the first interactive input becomes a bounded purpose claim");

@@ -38,7 +38,7 @@ import { createRestartCommand, type RestartHosts } from "./restart.ts";
 import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
 import { promptProjectTrust } from "./trust-support.ts";
-import { IntentParams } from "./effort-schema.ts";
+import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
 import { formatEffortAwareness } from "./effort-awareness.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
@@ -238,6 +238,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		parameters: IntentParams,
 		outputSchema: Type.Unknown(),
 		async execute(_callId, input, _signal, _update, ctx) {
+			validateIntentInput(input);
 			const { action, ...fields } = input;
 			return result(await getManager().publishIntent(ctx.sessionManager.getSessionId(), action === "clear" ? undefined : fields as Omit<PrimaryIntentClaim, "updatedAt">));
 		},

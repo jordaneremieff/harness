@@ -120,7 +120,10 @@ the first. A session name or declared purpose still supplies useful context.
 
 `agent_intent` is an ordinary-primary tool. Publish with `action: "publish"`,
 `purpose`, `integration`, `authority`, `scope: { paths, branches, fullGate? }`, and
-an optional `contactThread`. Clear with `action: "clear"`. The host supplies the
+an optional `contactThread`. Clear with `action: "clear"` alone. The tool declares
+one object schema so models receive the action and publish fields directly.
+Execution rejects missing publish fields and any publish fields on clear.
+The host supplies the
 claim's update time. Repository-relative paths use exact or component-prefix
 matching, not globs. `scope.fullGate` declares a planned full-gate run; it is not
 a reservation or lock. The endpoint's total byte bound still applies to a claim.

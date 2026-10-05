@@ -104,7 +104,8 @@ async function main(): Promise<void> {
 	const stream = (_model: unknown, context: TranscriptContext) => {
 		totalRequests++;
 		const action = currentAction;
-		send({ type: "provider-request", totalRequests, action: action ?? null, effortSections: effortSections(context) });
+		const intent = context.messages.flatMap((message) => message.role === "system" ? message.toolsAdded ?? [] : []).find((tool) => tool.name === "agent_intent");
+		send({ type: "provider-request", totalRequests, action: action ?? null, effortSections: effortSections(context), intentParameters: intent?.parameters });
 		currentAction = undefined;
 		const args = intentArguments(action);
 		const toolCall = args === undefined ? undefined : { type: "toolCall" as const, id: `effort-intent-${totalRequests}`, name: "agent_intent", arguments: args };

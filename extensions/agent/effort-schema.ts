@@ -1,5 +1,7 @@
 /** Ordinary intent input and tool-only awareness output, independent of host wire schemas. */
 import { Type } from "typebox";
+import { Value } from "typebox/value";
+import { StringEnum } from "@earendil-works/pi-ai";
 
 const object = <T extends Record<string, import("typebox").TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const text = Type.String();
@@ -17,10 +19,25 @@ const intentFields = {
 	scope,
 	contactThread: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
 };
-export const IntentParams = Type.Union([
-	object({ action: Type.Literal("publish"), ...intentFields }),
-	object({ action: Type.Literal("clear") }),
-]);
+export const IntentParams = object({
+	action: StringEnum(["publish", "clear"]),
+	purpose: Type.Optional(intentFields.purpose),
+	integration: Type.Optional(intentFields.integration),
+	authority: Type.Optional(intentFields.authority),
+	scope: Type.Optional(intentFields.scope),
+	contactThread: intentFields.contactThread,
+});
+const publishIntent = object({ action: Type.Literal("publish"), ...intentFields });
+const clearIntent = object({ action: Type.Literal("clear") });
+
+export function validateIntentInput(input: unknown): void {
+	if (!Value.Check(IntentParams, input)) throw new Error("Intent requires action publish or clear and valid publish fields");
+	if ((input as { action: string }).action === "clear") {
+		if (!Value.Check(clearIntent, input)) throw new Error("Clear intent takes only action; omit all publish fields");
+	} else if (!Value.Check(publishIntent, input)) {
+		throw new Error("Publish intent requires purpose, integration, authority, and scope with paths and branches");
+	}
+}
 export const IntentClaimSchema = object({ ...intentFields, updatedAt: text });
 export const ObservedPurposeSchema = object({ source: Type.Union([Type.Literal("session-name"), Type.Literal("interactive-input")]), text });
 export const RelatedEffortSchema = object({
