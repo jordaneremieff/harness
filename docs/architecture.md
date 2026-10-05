@@ -1,8 +1,8 @@
 # Architecture
 
-Repo-level index for the harness: the load model, what an extension must
-contain, what a skill must contain, and where cross-extension contracts live.
-Detailed rules live in `AGENTS.md`; this document is the entry point.
+This document owns package setup, the load model, resource anatomy, and routes
+to repository conventions. Start with [Setup](#setup) to install the package.
+The [repository instructions](../AGENTS.md) govern changes.
 
 ## Setup
 
@@ -18,7 +18,8 @@ pi install /absolute/path/to/harness
 ```
 
 Pi uses the local path directly, without copying it. Update that checkout
-through Git. Install development dependencies with `npm install` in the checkout.
+through Git. Install the lockfile's development dependencies with `npm ci` in
+the checkout.
 
 For extension development, disable the package's extension resources in
 `pi config` and use the persistent worktree entrypoints. Follow the
@@ -27,8 +28,8 @@ activation, checks, and publication.
 
 ### Other machines
 
-Install the private Git repository through SSH without a ref; replace `OWNER`
-with the repository owner:
+Install the Git repository through SSH without a ref. Repository access is
+required; replace `OWNER` with the repository owner:
 
 ```bash
 pi install git:git@github.com:OWNER/harness
@@ -94,29 +95,22 @@ The harness is a Pi package. `package.json` declares the resources under the
 - Extensions are TypeScript sources that Pi loads through jiti. There is no
   build step. Pi requires Node 22.19 or newer; Node runs the direct TypeScript
   tests through `node --test` over the glob in the `test` script.
-- `package.json` declares wildcard peers for `@earendil-works/pi-ai`,
-  `@earendil-works/pi-agent-core`, `@earendil-works/pi-coding-agent`,
-  `@earendil-works/pi-tui`, and `typebox`. Runtime dependencies include
-  `htmlparser2` for static HTML parsing; Chord, Pi Client, and Pi Server for
-  typed services and Unix control connections; and Pi Durable, Codemode, and
-  MCP for native agent execution. Policy checks registered tool arguments
-  through TypeBox. Read the manifest for the complete current dependency set.
+- [The manifest](../package.json) owns the dependency declarations. Its Pi
+  peer ranges are wildcards; the lockfile records the versions used for
+  repository checks.
 - Pi's extension loader binds the core AI, agent, coding-agent, TUI,
   and TypeBox imports to its running installation. It does not bind Chord,
-  Pi Client, Pi Server, Pi Durable, Codemode, or MCP. The
-  [agent slice](../extensions/agent/README.md) uses the public client/server
-  packages for its private Unix control socket. Public coding-agent session
-  services supply cwd-bound resources, trust, settings, and configured
-  providers; native contributions supply capabilities. Pi Durable owns agent
-  execution, retained entries, submissions, and task outcomes inside independent
-  storage hosts. The ordinary primary retains its terminal host and ordinary
-  session history. A peer declaration alone does not establish loader binding.
-  See [the durable-harness track](pi-durable-harness.md) before selecting a
-  runtime or remote integration surface.
+  Pi Client, Pi Server, Pi Durable, Codemode, or MCP. A peer declaration alone
+  does not establish loader binding. The [session host roles](conventions/session-host-roles.md)
+  distinguish the ordinary primary from independent Durable storage hosts;
+  the [contribution convention](conventions/durable-contributions.md) defines
+  native capabilities. See [the durable-harness track](pi-durable-harness.md)
+  before selecting a runtime or remote integration surface.
 - `package-lock.json` pins the development dependency snapshot for reproducible
   standalone checks. Refresh it with the Pi release used to validate the harness.
-- Every change is validated against the installed Pi declarations, not only
-  against the tests.
+  Run `npm ci` in each affected checkout after a lockfile update. Worktree source
+  synchronization does not install dependencies.
+- Validate changes against the installed Pi declarations, not only the tests.
 
 The manifest activates extensions, skills, and the prompt templates in
 `prompts/`. Other tracked package content has explicit consumers:
@@ -140,6 +134,15 @@ The root `AGENTS.md` governs work on this repository. The separate
 `config/pi/agent/AGENTS.md` file is the machine-independent source for global
 Pi rules. Its repository location does not establish how a particular machine
 deploys or loads it.
+
+## Repository verification
+
+Repository checks include the [extension registration and tool-schema
+check](../scripts/extension-load-check.test.mts). It loads the package with Pi's
+resource loader and checks registered and built-in tool schemas for tuple
+notation. It does not establish acceptance by a live provider or cover tools
+registered later at runtime. Follow the [worktree convention](conventions/worktrees.md)
+and repository instructions for completion checks.
 
 ## Native Pi controls
 
@@ -172,12 +175,10 @@ harness does not select their values or authorize an evidence upload.
 
 ## Extension anatomy
 
-Each extension is an independent vertical slice under `extensions/<name>/`.
-A slice owns its structure, semantics, state, and presentation, and must not
-import a sibling, parse sibling-formatted output, reproduce sibling-owned
-types or lifecycle states, or establish an undocumented sibling protocol
-(`AGENTS.md`). Cross-extension behavior uses public Pi surfaces or an
-explicit repository-level contract (see the conventions registry below).
+Each extension is an independent slice under `extensions/<name>/`. A slice is
+an independently developed repository area with its own behavior, state, and
+presentation. The [repository instructions](../AGENTS.md) define slice isolation;
+shared contracts live in the [conventions registry](#conventions-registry).
 
 An extension contains:
 
@@ -195,9 +196,6 @@ An extension contains:
   the README (see `docs/conventions/extension-config.md`).
 - Optional footer status keys through `ctx.ui.setStatus` (see
   `docs/conventions/status-keys.md`).
-
-A new extension must not reuse an earlier harness generation's source,
-comments, tests, names, or identifiers (`AGENTS.md`).
 
 ## Skill anatomy
 
@@ -243,24 +241,13 @@ contract, name the producer and consumers, and keep it stable.
 
 ## Adding an extension
 
-1. Load `skills/harness/SKILL.md`, classify the capability, and obtain the
-   required approval for a new extension surface before any write.
-2. Use the slice's persistent worktree and create
-   `extensions/<name>/index.ts` with a default-export factory.
-3. Add colocated tests and a README; document every configuration variable
-   in the README.
-4. Give the slice its own state and cleanup; no sibling imports. Use `PI_*`
-   environment variables under the configuration convention.
-5. Run all completion gates in `AGENTS.md` and update README claims to match
-   the result. Keep activation separate from implementation.
+Use the [Harness skill](../skills/harness/SKILL.md) for surface selection,
+approval, implementation, and verification. The [worktree convention](conventions/worktrees.md)
+owns the development and publication workflow. Implementation does not activate
+an extension.
 
 ## Adding a skill
 
-1. Load `skills/harness/SKILL.md`, classify the requested capability, and use
-   its Agent Skill lane when a skill is the lowest sufficient surface. Obtain
-   the required approval for a new skill surface before any write.
-2. Use the slice's persistent worktree. Create `skills/<name>/SKILL.md` with
-   frontmatter and one-level references; add dependency-free, tested
-   `scripts/` only when repeated work justifies them.
-3. Validate the shape with `skills/harness/scripts/validate-skill.mts` and run
-   the `AGENTS.md` gates before closing.
+Use the [Harness skill](../skills/harness/SKILL.md) and its Agent Skill lane.
+The skill validator checks structure; it does not prove useful behavior or
+selective activation.

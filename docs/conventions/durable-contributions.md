@@ -36,6 +36,10 @@ a shared module to satisfy it. Each slice copies the members it uses from the
 
 ## Shape
 
+This block is the shared subset that every contribution may rely on. The agent
+host also passes host-specific fields for its own contribution, and other
+contributions must not depend on them.
+
 ```ts
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";

@@ -1,9 +1,9 @@
 # Policy recovery seeds for registered tool contracts
 
-Some bundled policy seeds reference tools that other extensions register. This
-document is the package-level contract for those references. It sits outside
-both extensions: the policy extension owns the seeds, and the tool-owning
-extension owns its own schema, execution, and results. Neither slice imports
+A policy seed is a bundled starting rule. Some seeds reference tools that other
+extensions register. This document is the package-level contract for those
+references. It sits outside both extensions: the policy extension owns the seeds,
+and the tool-owning extension owns its own schema, execution, and results. Neither slice imports
 the other or depends on this document's implementation details.
 
 ## Seed data selects public evidence only

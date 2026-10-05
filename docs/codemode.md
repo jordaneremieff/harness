@@ -1,9 +1,9 @@
-# Read-only reconnaissance with native codemode
+# Native codemode
 
-Use Pi's native `codemode` to read independent sources together and return a
-small result. The agent, stash, memory, and registry extensions expose bounded
-objects through `outputSchema` and `structuredContent`. Scripts use those
-objects directly, without parsing terminal prose or JSON strings.
+Use Pi's native `codemode` to compose tool calls and model requests in JavaScript.
+Read-only reconnaissance below combines independent sources into a small result.
+The agent, stash, memory, and registry extensions expose bounded objects through
+`outputSchema` and `structuredContent`. Scripts use those objects directly, without parsing terminal prose or JSON strings.
 
 This composition adds no shared runtime, store, or cross-extension import.
 Each extension still owns its data, bounds, errors, and continuation rules.
@@ -163,22 +163,24 @@ conclusion. Do not mistake a short script result for complete source coverage.
 The installed `docs/codemode.md` is the script API reference: globals, tool
 result shapes, the `models` API, and limits. It records the store bounds
 (262,144 characters of JSON per value, 1,048,576 across all values) and the
-failure contract: a failed, blocked, or invalid-argument call rejects with an
-`Error` carrying the tool's error text, and a failed script keeps its partial
-output while calls still running at script end are cancelled.
+failure contract: calls without structured data reject on failure with an
+`Error` carrying the tool's error text. A tool that declares an output schema
+can instead return structured error data; inspect its outcome as well as promise
+settlement. A failed script keeps its partial output, and calls still running
+at script end are cancelled.
 
 ## Preserve source boundaries
 
-| Tool | Records | Required interpretation |
+Keep each tool's errors, coverage, omissions, observation time, and continuation
+metadata beside its records. A script's summary does not replace those facts.
+The owning extension documents the current result fields:
+
+| Source | Evidence boundary | Owner |
 | --- | --- | --- |
-| `agent_list` | `rows` | Keep `coverage`, including its `unavailable` storages, `nextCursor`, `observedAt`, and `authority`. A row is catalog and conversation metadata, not live host state. |
-| `agent_status` primary overview | `sessions` | Keep `primaries`, `failures`, `summary`, `coverage`, `observedAt`, and `discovery`. Do not treat summary counts or excerpts as a complete inventory. |
-| `agent_status` selected storage/conversation | `conversations` or `conversation` | Preserve the returned shape and `live` boundary; a cold snapshot is not live host state. See [agent observation](../extensions/agent/README.md#controls). |
-| `agent_status` with `view: "fleet"` | `models`, `failures`, `warnings` | Keep `conversations`, `toolReportedCost`, `coverage`, `observedAt`, and `notes`. These are sampled machine-local publications, not live provider health. See [model evidence](../extensions/agent/README.md#controls). |
-| `stash_list` with query | `matches` | Keep `skipped`, `coverage`, `nextCursor`, `consistency`, and `representation`. Search does not activate a handover. |
-| `stash_list` without query | `records` | Keep `omittedRecords`, `textTruncated`, and `limitReached`. `coverage.complete: null` means store-wide coverage is unknown. |
-| `memory_search` | `notes` | Keep `scan`, `coverage`, `countScope`, `hasMore`, and `nextCursor`. Ranking and counts cover one source window. |
-| `registry` | `records` | Keep `outcome`, availability/coverage fields, `resultBounded`, `pageBlocked`, and `cursor`. For model pages, also keep `catalogBoundary` and `settingsScope` when present. See [structured results](../extensions/registry/README.md#structured-results) for the chat-only catalog and settings-evidence boundaries. |
+| `agent_list`, `agent_status` | Catalog metadata and cold snapshots are not live host state. Summary figures and excerpts are not complete inventories. Fleet evidence samples machine-local publications, not provider health. | [Agent](../extensions/agent/README.md) |
+| `stash_list` | Search does not activate a handover. Retain skipped records, representation and consistency limits; unknown store-wide coverage remains unknown. | [Stash](../extensions/stash/README.md) |
+| `memory_search` | Ranking and counts cover one source window, not the whole corpus. | [Memory](../extensions/memory/README.md) |
+| `registry` | Configured presence, active access, model declarations, and cached availability are distinct. Preserve incomplete-source and blocked-page limits, including model-catalog and settings boundaries. | [Registry](../extensions/registry/README.md) |
 
 Follow each source's cursor independently:
 
@@ -244,16 +246,22 @@ records the exposure, naming, and waiting rules with their sources.
 ## Generate images from a script
 
 The `models` API runs image models with the session's credentials. OpenRouter
-image models, such as `google/gemini-2.5-flash-image` and
-`black-forest-labs/flux.2-pro`, use the same `OPENROUTER_API_KEY` or `/login`
-credential as its chat models. List the IDs that work with the current
-credentials with `models.getAvailableOfType("image")`. Generation can take
-minutes, so leave `timeout_ms` unset or generous; at most four `models` calls
-run at once per script, and further calls wait for a free slot.
+image models use the same `OPENROUTER_API_KEY` or `/login` credential as its chat
+models. Use `models.getAvailableOfType("image")` for current selection facts;
+a catalog entry does not prove that a remote request will succeed. Generation
+can take minutes, so leave `timeout_ms` unset or generous; at most four `models`
+calls run at once per script, and further calls wait for a free slot.
+
+In the example, replace `PROVIDER` and `MODEL_ID` with a returned model's provider
+and ID selected for the task. Discovery does not authorize a metered request.
 
 ```javascript
 // @options: {"timeout_ms": 300000}
-const painter = await models.getModelOfType("image", "openrouter", "google/gemini-2.5-flash-image");
+const available = await models.getAvailableOfType("image");
+const painter = available.find(model =>
+  model.provider === "PROVIDER" && model.id === "MODEL_ID",
+);
+if (!painter) return "No available image model matches the selected provider and ID.";
 const result = await models.generateImages(painter, {
   input: [{ type: "text", text: "A red fox in the snow, watercolor" }],
 });

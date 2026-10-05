@@ -28,21 +28,34 @@ those bundles execute inside Durable conversations. No shadow SessionManager
 or synthetic primary registration exists there.
 
 Owner-directed reports and results retain their source IDs in native documents.
-The source storage's durable-delivery watcher is the sole retained-output
-delivery owner: after every native commit it settles intents, routes each
-unacknowledged receipt or report, and only then acknowledges the source. A
-catalog owner receives a native follow-up in its own host. A noncatalog owner is
-an ordinary primary reached through its registered primary channel. Only an
-absent or proven-dead owner endpoint permits fallback: the watcher broadcasts
-to every live primary within one bounded discovery of registered endpoints, and
-each delivery is labeled `no live owning session` while the original owner
-identity stays in the message details. It acknowledges the row only after
-discovery and every delivery complete; a partial or unavailable scan leaves the
-row pending and reports that coverage explicitly. A live or unknown endpoint
-refuses fallback and retries. Delivery is at-least-once; the cross-host boundary
-has no shared transaction and no general exactly-once promise. The manager does
-not poll receipts. Delivery and task acceptance remain distinct. Footer text
-grants no authority.
+The source storage's durable-delivery watcher owns retained-output delivery. After
+native commits it settles intents and routes unacknowledged receipts and reports.
+A catalog owner receives native input in its own host; an ordinary primary
+receives it through its registered primary channel. The watcher acknowledges
+only accepted normal-owner routes, independently of other routes. Admission is
+not model consumption or task acceptance.
+
+Only an absent or proven-dead ordinary-owner endpoint permits informational
+fallback copies to other registered primaries. The watcher requires complete
+bounded discovery before copies, excludes the normal owners, and labels copies
+`no live owning session` while retaining the original owner identity. It records
+each accepted copy recipient, but copies never acknowledge the original owner's
+row. Incomplete discovery refuses copies and reports that limit. Copy failures
+also leave owner delivery pending. Direct thread notifications stay pending
+without broadcast when their recipient has no live endpoint. Live, unknown, and
+incompatible endpoints do not justify fallback; transport failure is not proof
+of death.
+
+Pending delivery and active delivery differ. Rows for proven-dead ordinary
+owners remain durable without a delivery retry timer. Those rows retain the
+recovery marker but alone do not prevent otherwise idle host retirement. Native
+work, unsettled intents, in-flight effects, controls, and observations still
+prevent retirement. An absent or unknown endpoint is not the proven-dead case.
+
+Delivery is at-least-once. The cross-host boundary has no shared transaction or
+general exactly-once promise. The manager does not poll receipts, and footer
+text grants no authority. See the [agent extension](../../extensions/agent/README.md)
+for delivery controls and limits.
 
 Configuration runs only on an idle conversation through its storage owner. An
 explicit model is validated against the configured catalog and the requested

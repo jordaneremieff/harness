@@ -37,80 +37,20 @@ of the corpus.
 
 ## Maintained commands
 
-- `/drift` reconstructs the opening intent in exactly two sentences without
-  advancing the task. Operator clarification informs that reconstruction;
-  a later goal change does not replace the opening intent. Missing opening
-  context produces an explicit evidence boundary, not an invented intent.
-- `/recap [work, topic, or session; optional focus or comparison]` explains
-  selected work in plain English: its purpose, actual changes or lessons,
-  practical consequence, and unfinished or uncertain parts. Without a work
-  selection, it summarizes the latest substantive task and related agent
-  reports. A natural-language focus narrows the summary; a question or action
-  phrase never grants permission to do the work. An explicit comparison such
-  as `/recap export work since the last recap` names the earlier reference for
-  the same work and reports material changes in outcomes, evidence, blockers,
-  and decisions. It omits settled background, retains unchanged constraints
-  that affect the current state or next act, and distinguishes corrections to
-  earlier reports from actual work changes. A missing or ambiguous reference
-  produces an explicit limit and a useful current-state summary, not an invented
-  comparison or a required operator task to reconstruct the reference.
-  Missing later evidence does not establish an unchanged state.
-  It separates verified results from reports, proposals, local changes, and
-  completed releases. It uses visible evidence first and public read-only
-  history or session tools only for relevant gaps; unavailable evidence stays
-  explicit. It excludes unrelated work and does not scan unrelated sessions
-  or private stores. The summary appears in chat, usually in 150–250 words or
-  fewer for simple work, without a fixed section template. It ends with a
-  decision or next step only when source evidence establishes that the work
-  requires it; an unspecified detail alone creates no required decision.
-  It never invents an action or approval request. It does not change files,
-  copy to the clipboard, run tests, start or resume agents, or continue the task.
-- `/seed [hint]` puts a quick brief for another session on the operator's
-  clipboard without advancing the task. The optional free-text hint selects
-  the purpose and recipient: a continuation, a reset of a faulty frame, or
-  an update for an existing session. An existing recipient gets the selected
-  update without an invented account of its knowledge or a task restart.
-  Without recipient context, the template assumes a fresh session. Without
-  a hint, it selects the latest intent the visible operator context still
-  supports. The brief preserves decisive
-  sources with links, navigation that worked, relevant memory references,
-  lessons with their basis, and task state marked as last observed. It
-  separates operator direction from agent inference; references only what
-  the visible context establishes; attributes reports to their actual
-  speakers; and excludes secrets and their fragments, unexplained markers,
-  transcript bulk, unsupported frames, and self-praise. It preserves reported
-  work as unverified state rather than treating missing evidence as no work.
-  Inspection status stays source-qualified; no visible check does not establish
-  that nobody opened or verified a source.
-  It never claims to remove bias. The clipboard is the deliverable, labeled
-  `seed: <topic>`; the chat confirmation follows the clipboard tool's actual outcome, including its
-  history archive result, and never claims success after a failed write.
-  If copying fails or the tool is absent, the same complete brief appears in
-  chat, marked as not copied, without another permission request. Maintained
-  evaluations cover its delivery surfaces (`prompts/seed.eval.mts`) and its
-  transfer quality (`prompts/seed-transfer.eval.mts`) under the
-  [evaluation application](../../evals/README.md).
-- `/wtf [account]` replaces a hard-to-use assistant reply without continuing
-  its task. The optional account identifies the fault or target and supplies
-  corrections. An explicit gist, summary, or short sentence budget permits
-  omission of supporting detail, not lost check results, source qualifications, uncertainty,
-  negative facts, permission limits, or a complete approval artifact. The
-  replacement keeps the target's language unless the operator requests another.
-  Short approval artifacts stay inline within a feasible sentence budget,
-  together with their limits and pending decision. A bare invocation remains
-  a full meaning-preserving repair. Without an explicit
-  target, a mere administrative notice points back to the nearest visible
-  answer for the same task. Short genuine answers
-  remain targets. The replacement preserves meaning, later same-task limits,
-  permissions, exact copy spans, and successful earlier repairs. Missing target text produces an
-  explicit boundary, not a rewrite of the command or a tool result.
+- [`/drift`](../../prompts/drift.md) reconstructs the opening intent.
+- [`/recap [work, topic, or session; optional focus or comparison]`](../../prompts/recap.md)
+  explains selected work, its practical consequences, and changes from a relevant
+  earlier account.
+- [`/seed [hint]`](../../prompts/seed.md) puts a brief for another session on the
+  clipboard. The hint selects its purpose or recipient.
+- [`/wtf [account]`](../../prompts/wtf.md) repairs a hard-to-use assistant reply
+  while preserving its meaning. The account identifies the target or fault.
 
-These jobs remain separate: `/drift` restores intent; `/wtf` repairs a reply;
-`/seed` briefs another session; `/recap` explains work outcomes to the operator.
-None of them executes the underlying work or
-changes persistent configuration. Ordinary requests for current status or a
-short explanation need no command. These templates do not make clear, concise
-answers an opt-in behavior.
+The templates own their detailed instructions, evidence limits, and delivery
+rules. None executes the underlying work or changes persistent configuration.
+Ordinary requests for status or a short explanation need no command; clear
+answers are not an opt-in behavior. Maintained evaluations use the
+[evaluation application](../../evals/README.md) and its approval gate.
 
 ## Discovery and changes
 

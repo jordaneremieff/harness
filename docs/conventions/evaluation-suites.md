@@ -20,9 +20,10 @@ allows only these consumer kinds and exact producer paths. Runtime modules,
 fixture factories, other evaluation internals, and sibling extensions remain
 outside this allowance. No test uses this contract to execute paid inference.
 
-Current extension consumers include the registry discovery suite
-(`registry/registry.eval.mts`, `registry/registry-evals.test.mts`) and the Pillars
-command suite (`pillars/commands.eval.mts`, `pillars/evaluation.test.mts`).
+For an extension import example, see the [registry discovery
+suite](../../extensions/registry/registry.eval.mts) and its [deterministic
+tests](../../extensions/registry/registry-evals.test.mts).
+
 Prompt and skill suites also use the package evaluation facade outside the
 extension slice boundary. Skill suites use `*.eval.mts` within their skill
 directory; deterministic tests live in `scripts/*.test.mts` so the normal test
