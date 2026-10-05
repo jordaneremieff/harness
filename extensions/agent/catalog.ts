@@ -193,6 +193,11 @@ export class AgentCatalog {
 		publishCatalogChange(this.root);
 		return "removed";
 	}
+	/** Read the storage already assigned to one creation request, without resolving defaults again. */
+	readRequest(ownerId: string, requestId: string): CatalogRecord | undefined {
+		try { return this.read(requestStorageId(JSON.stringify([ownerId, requestId]))); }
+		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+	}
 	path(identity: string): string {
 		return join(this.root, `${storageIdOf(identity)}.json`);
 	}

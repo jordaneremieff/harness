@@ -56,6 +56,8 @@ export interface HostMetadata {
 	readonly name?: string;
 	readonly trust?: boolean;
 	readonly ownerId?: string;
+	/** Evaluated launch inputs, not a new trust decision or a delivery destination. */
+	readonly independent?: { readonly inputDigest: string; readonly projectTrusted: boolean };
 }
 
 /** Application failure codes carried inside a host error message. */
@@ -115,10 +117,15 @@ function rejectUnknownFields(value: Record<string, unknown>, allowed: readonly s
 /** Strict metadata validation for spawn arguments and for the host process. */
 export function parseHostMetadata(value: unknown): HostMetadata {
 	if (!isRecord(value)) throw new Error("host metadata must be an object");
-	rejectUnknownFields(value, ["storageId", "cwd", "agentDir", "packageDir", "storagePath", "model", "thinkingLevel", "name", "trust", "ownerId"], "host metadata");
+	rejectUnknownFields(value, ["storageId", "cwd", "agentDir", "packageDir", "storagePath", "model", "thinkingLevel", "name", "trust", "ownerId", "independent"], "host metadata");
 	if (!isRecord(value.model)) throw new Error("host metadata model must be an object");
 	rejectUnknownFields(value.model, ["provider", "modelId"], "host metadata model");
 	if (value.trust !== undefined && typeof value.trust !== "boolean") throw new Error("host metadata trust must be a boolean");
+	if (value.independent !== undefined) {
+		if (!isRecord(value.independent)) throw new Error("host metadata independent must be an object");
+		rejectUnknownFields(value.independent, ["inputDigest", "projectTrusted"], "host metadata independent");
+		if (typeof value.independent.inputDigest !== "string" || !/^[a-f0-9]{64}$/u.test(value.independent.inputDigest) || typeof value.independent.projectTrusted !== "boolean") throw new Error("host metadata independent is malformed");
+	}
 	return {
 		storageId: boundedText(value.storageId, "host metadata storageId", IDENTITY_LIMIT),
 		cwd: absolutePath(value.cwd, "host metadata cwd"),
@@ -133,6 +140,7 @@ export function parseHostMetadata(value: unknown): HostMetadata {
 		...(value.name === undefined ? {} : { name: boundedText(value.name, "host metadata name", NAME_LIMIT, true) }),
 		...(value.trust === undefined ? {} : { trust: value.trust }),
 		...(value.ownerId === undefined ? {} : { ownerId: boundedText(value.ownerId, "host metadata ownerId", IDENTITY_LIMIT) }),
+		...(value.independent === undefined ? {} : { independent: { inputDigest: (value.independent as Record<string, unknown>).inputDigest as string, projectTrusted: (value.independent as Record<string, unknown>).projectTrusted as boolean } }),
 	};
 }
 

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { launchIndependentCommand } from "./independent-launch.ts";
 
 function controlRequestId(params: Readonly<Record<string, unknown>>): string { return typeof params.requestId === "string" ? params.requestId : randomUUID(); }
 async function nativeResult(host: DurableHost, reference: ResultReference, context: Context): Promise<unknown> {
@@ -48,8 +49,13 @@ const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-
 const PUBLISH_COALESCE_MS = 250;
 
 async function bootstrap(metadata: HostMetadata, controller: AbortController, execution: boolean, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<DurableServices> {
+	const independent = metadata.independent;
 	return createDurableServices({ ...options, cwd: metadata.cwd, agentDir: metadata.agentDir, storageId: metadata.storageId, catalogRoot: dirname(metadata.storagePath),
 		packageDir: metadata.packageDir, trusted: metadata.trust, signal: controller.signal,
+		...(independent === undefined ? {} : { resolveProjectTrust: async () => independent.projectTrusted }),
+		launchIndependent: (input) => launchIndependentCommand(input, {
+			root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir,
+		}),
 		askPrimary: async (cwd) => {
 			const root = dirname(dirname(metadata.storagePath));
 			const catalog = new AgentCatalog(root);

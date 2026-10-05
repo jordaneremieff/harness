@@ -1,5 +1,6 @@
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { mkdirSync, realpathSync } from "node:fs";
+import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { DispatchOutputSchema } from "./result-reference.ts";
@@ -207,6 +208,10 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		observedManager = manager;
 		return manager;
 	};
+	pi.events.on("durable:launch-provider", (query) => {
+		if (query === null || typeof query !== "object" || typeof (query as { provide?: unknown }).provide !== "function") throw new Error("Independent launch discovery requires provide()");
+		(query as { provide: (launch: IndependentCommandLaunch) => void }).provide((input) => getManager().launchIndependent(input));
+	});
 	const control = (method: string, input: Record<string, unknown>, ctx: ExtensionContext) =>
 		getManager().control(method, input, caller(ctx, pi));
 	const register = (

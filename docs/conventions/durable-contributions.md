@@ -43,7 +43,7 @@ contributions must not depend on them.
 ```ts
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
-import type { Context } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 
 interface DurableContribution {
   /** Durable extension name; unique across contributions. */
@@ -83,6 +83,8 @@ interface DurableContributionHost {
   onClose(dispose: () => void | Promise<void>): void;
   /** Everything the host installs. Complete before the first `create()` call. */
   readonly inventory: DurableInventory;
+  /** Commit independent contributed work without an answer route to this host. */
+  readonly launchIndependent: IndependentCommandLaunch;
 }
 
 interface DurableInventory {
@@ -107,6 +109,8 @@ interface DurableCommand {
 
 interface DurableCommandCall {
   readonly args: string;
+  /** Structured invocation input; the owning contribution validates it. */
+  readonly data?: JsonValue;
   readonly conversation: Durable.Conversation;
   /** The host's open Harness, for task-level control such as `abortTask()`. */
   readonly harness: Durable.Harness;
@@ -124,6 +128,83 @@ interface DurableCommandCall {
   readonly invocationId: string;
 }
 ```
+
+## Independent command admission
+
+An ordinary extension command starts independent background work without a model
+acknowledgment through this package-level contract. It does not call a sibling
+agent tool, import sibling source, or encode structured input in command text.
+
+```ts
+interface IndependentCommandInput {
+  readonly invocationId: string;
+  readonly creatorId: string;
+  readonly cwd: string;
+  readonly name?: string;
+  readonly command: {
+    readonly name: string;
+    readonly args?: string;
+    readonly data?: JsonValue;
+  };
+}
+interface IndependentCommandReceipt {
+  readonly sessionId: string;
+  readonly cwd: string;
+  readonly admission: {
+    readonly name: string;
+    readonly conversationId: number;
+    readonly identity: string;
+    readonly text: string;
+  };
+}
+type IndependentCommandLaunch =
+  (input: IndependentCommandInput) => Promise<IndependentCommandReceipt>;
+```
+
+Ordinary callers discover a launch provider synchronously:
+
+```ts
+const providers: IndependentCommandLaunch[] = [];
+pi.events.emit("durable:launch-provider", {
+  provide: (launch: IndependentCommandLaunch) => providers.push(launch),
+});
+if (providers.length !== 1) {
+  throw new Error("Independent work requires exactly one launch provider");
+}
+const receipt = await providers[0](input);
+```
+
+Discovery has no asynchronous effects. No provider and multiple providers fail
+before launch. The Durable contribution host exposes the same function as
+`host.launchIndependent`. No new model tool or slash command is registered.
+
+The host reads fresh cwd-bound Pi settings after normal project-trust
+resolution. It resolves `enabledModels` through Pi's public scope resolver,
+prefers a saved default inside that scope, and otherwise uses its first model.
+With no resolved scope, Pi's public SDK supplies model fallback. An unprompted
+in-memory SDK session supplies per-model/default thinking and capability
+clamping, then is disposed. The host neither prompts that session nor writes
+model defaults. It does not inherit invocation flags or caller model/thinking.
+
+The creator and invocation identities select one existing catalog root. The
+host records the chosen model/thinking, input digest, and evaluated project
+trust before opening it. A session-only trust answer remains session-only; the
+host carries its evaluated result without writing it into the trust store.
+Replay uses those retained choices and rejects different command input. The
+owning contribution commits replay-safe native work keyed by `invocationId` and
+rejects conflicting data before returning its admission text.
+
+Admission uses the existing independent host process and command dispatch. It
+never uses answer-bearing task submission, a Reporter, a check-in, or a parent
+status subscription. The temporary launch link closes after command admission;
+caller exit does not cancel committed work. `creatorId` is provenance for
+discovery and trust routing only, not a result destination.
+
+Setup and admission errors return to the command caller. Successful admission
+stays silent in the main conversation. The owning contribution records terminal
+outcomes in native entries for existing agent inspection, including skip and
+publication failure. Its normal external store remains the artifact discovery
+surface. A model answer or an idle root does not prove publication succeeded.
 
 ## Rules
 

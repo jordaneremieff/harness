@@ -36,6 +36,9 @@ import {
 	ProjectTrustStore,
 	SettingsManager,
 	createAgentSessionServices,
+	createAgentSessionFromServices,
+	resolveModelScopeWithDiagnostics,
+	SessionManager,
 	createEventBus,
 	createReadTool,
 	formatSkillsForPrompt,
@@ -48,10 +51,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createProjectTrustResolver, type ProjectTrustDecision } from "./trust-support.ts";
 import { CheckInTask } from "./durable-checkins.ts";
+import type { IndependentCommandLaunch } from "./independent-launch.ts";
 
 /** One command invocation as the host dispatches it. */
 export interface DurableCommandCall {
 	readonly args: string;
+	readonly data?: JsonValue;
 	readonly conversation: Durable.Conversation;
 	/** The host's open Harness, for task-level control such as `abortTask()`. */
 	readonly harness: Durable.Harness;
@@ -110,6 +115,8 @@ export interface DurableContributionHost {
 	onClose(dispose: () => void | Promise<void>): void;
 	/** Everything the host installs. Complete before the first `create()` call. */
 	readonly inventory: DurableInventory;
+	/** Admit independent contributed work, with no answer route to this storage. */
+	readonly launchIndependent: IndependentCommandLaunch;
 }
 
 /** What the host installs, complete before the first contribution `create()` call. */
@@ -168,6 +175,7 @@ export interface CreateDurableServicesOptions {
 	readonly resolveProjectTrust?: (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean>;
 	/** Receives non-fatal bootstrap failures: load errors and unmatched contributions. Must not throw. */
 	readonly onReport?: (error: unknown) => void;
+	readonly launchIndependent?: IndependentCommandLaunch;
 }
 
 /** Native built-in extensions plus the release for the resources they hold. */
@@ -204,6 +212,9 @@ export interface DurableServices {
 /** The public Pi package exports this bootstrap needs from the selected installation. */
 interface PiRuntime {
 	createAgentSessionServices: typeof createAgentSessionServices;
+	createAgentSessionFromServices: typeof createAgentSessionFromServices;
+	resolveModelScopeWithDiagnostics: typeof resolveModelScopeWithDiagnostics;
+	SessionManager: typeof SessionManager;
 	createEventBus: typeof createEventBus;
 	createReadTool: typeof createReadTool;
 	formatSkillsForPrompt: typeof formatSkillsForPrompt;
@@ -215,6 +226,9 @@ interface PiRuntime {
 
 const localRuntime: PiRuntime = {
 	createAgentSessionServices,
+	createAgentSessionFromServices,
+	resolveModelScopeWithDiagnostics,
+	SessionManager,
 	createEventBus,
 	createReadTool,
 	formatSkillsForPrompt,
@@ -252,10 +266,39 @@ async function loadPiRuntime(packageDir: string | undefined): Promise<PiRuntime>
 	if (packageDir === undefined) return localRuntime;
 	const entry = resolvePackageEntry(packageDir);
 	const loaded = await import(pathToFileURL(entry).href) as Record<string, unknown>;
-	for (const name of ["createAgentSessionServices", "createEventBus", "createReadTool", "formatSkillsForPrompt", "getAgentDir", "hasTrustRequiringProjectResources", "ProjectTrustStore", "SettingsManager"] as const) {
+	for (const name of ["createAgentSessionServices", "createAgentSessionFromServices", "resolveModelScopeWithDiagnostics", "SessionManager", "createEventBus", "createReadTool", "formatSkillsForPrompt", "getAgentDir", "hasTrustRequiringProjectResources", "ProjectTrustStore", "SettingsManager"] as const) {
 		if (typeof loaded[name] !== "function") throw new Error(`packageDir ${packageDir} does not export ${name}`);
 	}
 	return loaded as unknown as PiRuntime;
+}
+
+/** Resolve a fresh CLI-style selection using only public Pi scope and SDK contracts. */
+export async function resolveConfiguredAgent(options: Pick<CreateDurableServicesOptions, "cwd" | "agentDir" | "packageDir" | "modelRuntime" | "extensionPaths" | "askPrimary" | "onReport"> & { readonly command?: string }): Promise<{ model: { provider: string; modelId: string }; thinkingLevel: string; projectTrusted: boolean }> {
+	const pi = await loadPiRuntime(options.packageDir);
+	const agentDir = options.agentDir ?? pi.getAgentDir();
+	const settingsManager = pi.SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
+	const prepared = await createDurableServices({ ...options, agentDir, settingsManager, storageId: "independent-selection" });
+	try {
+		const errors = settingsManager.drainErrors();
+		if (errors.length) throw new Error(errors.map(({ scope, error }) => `Could not read ${scope} settings: ${error.message}`).join("; "));
+		if (options.command !== undefined && !prepared.commands.has(options.command)) throw new Error(`durable command ${options.command} is not registered`);
+		const patterns = settingsManager.getEnabledModels();
+		const scope = patterns?.length ? (await pi.resolveModelScopeWithDiagnostics(patterns, prepared.services.modelRuntime)).scopedModels : [];
+		const savedProvider = settingsManager.getDefaultProvider();
+		const savedModel = settingsManager.getDefaultModel();
+		const scoped = scope.find(({ model }) => model.provider === savedProvider && model.id === savedModel) ?? scope[0];
+		const { session } = await pi.createAgentSessionFromServices({
+			services: prepared.services,
+			sessionManager: pi.SessionManager.inMemory(options.cwd),
+			noTools: "all",
+			...(scoped === undefined ? {} : { model: scoped.model, thinkingLevel: scoped.thinkingLevel }),
+		});
+		try {
+			// Agent core has a fallback model even when SDK startup found no available model.
+			if (!session.model || !prepared.services.modelRuntime.hasConfiguredAuth(session.model.provider)) throw new Error("No configured model is available for independent work");
+			return { model: { provider: session.model.provider, modelId: session.model.id }, thinkingLevel: session.thinkingLevel, projectTrusted: settingsManager.isProjectTrusted() };
+		} finally { session.dispose(); }
+	} finally { await prepared.close(); }
 }
 
 /** Read a required non-empty string field of a contribution record. */
@@ -642,6 +685,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 				return harnessValue;
 			},
 			signal: controller.signal,
+			launchIndependent: options.launchIndependent ?? (async () => { throw new Error("This host has no independent launch capability"); }),
 			onClose,
 			inventory,
 		};

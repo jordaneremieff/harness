@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { launchIndependentCommand, type IndependentCommandInput, type IndependentCommandReceipt } from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { admittedResult } from "./result-reference.ts";
 import { readFleetStatus } from "./fleet-status.ts";
@@ -344,6 +345,18 @@ export class AgentManager {
 		if (!validate) throw new Error("Spawn requires the caller's configured model catalog");
 		await validate(model, thinkingLevel);
 		return { cwd, model, thinkingLevel, name: input.name, trust: input.trust, ownerId: caller.id, agentDir: this.options.agentDir, packageDir: this.options.packageDir };
+	}
+
+	/** Admit independent contributed work without adopting its link or subscribing the primary. */
+	launchIndependent(input: IndependentCommandInput): Promise<IndependentCommandReceipt> {
+		if (this.shuttingDown) throw new Error("Agent manager is closed");
+		const primary = this.primaries.get(input.creatorId);
+		const askPrimary = primary?.promptTrust?.bind(primary);
+		return launchIndependentCommand(input, {
+			root: this.options.root, agentDir: this.options.agentDir, packageDir: this.options.packageDir,
+			...(this.options.acquire === undefined ? {} : { acquire: this.options.acquire }),
+			...(askPrimary === undefined ? {} : { askPrimary }),
+		});
 	}
 
 	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {

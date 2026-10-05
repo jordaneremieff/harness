@@ -86,6 +86,36 @@ continuations.
 Agent hosts have process lifetimes independent of the primary. There is no
 separate detach operation or detached-run registry.
 
+### Independent contributed work
+
+An extension command also starts independent Durable work through the
+[package contribution contract](../../docs/conventions/durable-contributions.md#independent-command-admission).
+This is not an answer-bearing agent tool. Successful admission sends no message
+to the primary and installs no parent status subscription, Reporter, or check-in.
+The creator identity supplies provenance and trust routing, not a result
+destination. Existing agent discovery, inspection, and cancellation controls
+expose the independent root and its native evidence.
+
+Each admission reads fresh Pi settings at the requested cwd after normal project
+trust resolution. Startup prefers a saved default inside the resolved
+`enabledModels` scope, then its first available scoped model. With no scope, Pi's
+public SDK supplies its normal model fallback. Thinking uses the selected scope
+suffix, per-model setting, default setting, then Pi's built-in default and
+capability clamping. Caller model flags and current model/thinking do not enter
+this path. An unprompted in-memory SDK session resolves these choices and is
+disposed before launch; selection sends no generation request or settings write.
+The chosen values remain fixed for replay of that invocation.
+
+A retained ordinary manager must match the loaded manager contract. After that
+contract changes, `/reload` does not replace the retained manager: agent controls
+refuse it and require a new Pi process. Starting a new primary does not restart
+or cancel its independent Durable workers. A command request also requires the
+current host contract so an older host cannot discard structured input silently.
+
+Setup or command admission failures return to the command caller. After
+admission, the contributed command owns durable work and inspectable terminal
+evidence. Closing the caller's temporary connection does not cancel that work.
+
 ### Tool cards
 
 All tool and peer cards use one two-tier layout. The first header line shows

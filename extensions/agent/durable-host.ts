@@ -741,6 +741,7 @@ export class DurableHost {
 		if (this.contributionHost === undefined) throw new Error("no contribution host is bound to this durable host");
 		const text = await command.run({
 			args: requestString(params, "args") ?? "",
+			...(params?.data === undefined ? {} : { data: params.data as import("@earendil-works/chord").JsonValue }),
 			conversation,
 			context,
 			host: this.contributionHost,
