@@ -130,7 +130,7 @@ script, including data-bearing error results. Other successful calls resolve
 to text; failed calls without structured data reject. Scripts must distinguish
 promise rejection from structured tool errors. Agent observations, stash
 listing/search, memory search, and registry provide their bounded public data
-through this contract. The [composition guide](codemode-reconnaissance.md)
+through this contract. The [composition guide](codemode.md)
 keeps each source's errors, coverage, and continuation fields.
 
 Installed `dist/core/tools/read.js` returns image content without an output
@@ -166,7 +166,7 @@ Verified 2026-10-04 against installed coding-agent 1.0.2
 `dist/extensions/codemode/{tool,execute}.js`, and
 `dist/extensions/tool-search/tool.js`. These are source and documentation
 contracts; no runtime trial of them is recorded here. The
-[codemode guide](codemode-reconnaissance.md#find-mcp-and-deferred-tools) shows
+[codemode guide](codemode.md#find-mcp-and-deferred-tools) shows
 how a script uses them.
 
 - **Exposure.** An MCP server's `exposure` is `codemode` (default), `deferred`,
