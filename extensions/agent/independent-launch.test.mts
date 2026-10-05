@@ -54,11 +54,17 @@ it("commits structured command admission without a requester, task, subscription
 it("replays one invocation with its retained defaults and rejects changed input before dispatch", async (t) => {
 	const f = fixture(t);
 	const first = await launchIndependentCommand(f.input, f.options);
+	const catalog = new AgentCatalog(f.root); const retained = catalog.read(first.sessionId);
+	const callerPackageDir = join(f.root, "caller-install");
+	f.options.packageDir = callerPackageDir;
 	f.selected({ model: { provider: "agent-test", modelId: "second" }, thinkingLevel: "off", projectTrusted: true });
 	const again = await launchIndependentCommand(f.input, f.options);
-	assert.deepEqual(again, first); assert.equal(f.counts().selections, 1); assert.deepEqual(f.metadata[1], f.metadata[0]);
+	assert.deepEqual(again, first); assert.equal(f.counts().selections, 1);
+	assert.notEqual(callerPackageDir, retained.packageDir);
+	assert.deepEqual(f.metadata[1], { ...f.metadata[0], packageDir: callerPackageDir });
+	assert.deepEqual(catalog.read(first.sessionId), retained);
 	await assert.rejects(launchIndependentCommand({ ...f.input, command: { ...f.input.command, data: { source: "Changed source" } } }, f.options), /different command input/u);
-	assert.equal(f.calls.length, 2);
+	assert.equal(f.calls.length, 2); assert.equal(f.metadata.length, 2);
 	const next = await launchIndependentCommand({ ...f.input, invocationId: "invocation-two" }, f.options);
 	assert.notEqual(next.sessionId, first.sessionId); assert.equal(f.counts().selections, 2); assert.equal(f.metadata[2].thinkingLevel, "off");
 });

@@ -93,7 +93,7 @@ export async function launchIndependentCommand(input: IndependentCommandInput, o
 	}
 	if (record.independent?.inputDigest !== digest) throw new Error("Independent invocation already belongs to different command input");
 	let client: Awaited<ReturnType<typeof acquireHost>>;
-	try { client = await (options.acquire ?? acquireHost)(hostMetadata(record), { retryAttempts: 0 }); }
+	try { client = await (options.acquire ?? acquireHost)(hostMetadata(record, options.packageDir), { retryAttempts: 0 }); }
 	catch (error) { if (created) catalog.discardUnopened(record); throw error; }
 	try {
 		const versionError = hostRequestVersionError("command", client.runtimeContract);
