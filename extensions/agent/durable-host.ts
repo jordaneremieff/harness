@@ -535,7 +535,7 @@ export class DurableHost {
 			const receipts = Object.values((await tx.doc(AgentDeliveryDoc)).receipts);
 			const selected = receipts.find((receipt) => receipt.submissionId === status.id && receipt.ownerId === ownerId);
 			if (selected === undefined) return undefined;
-			const group = receipts.filter((receipt) => receipt.ownerId === ownerId && (selected.answerEntryId === null ? receipt.submissionId === selected.submissionId : receipt.answerEntryId === selected.answerEntryId));
+			const group = receipts.filter((receipt) => selected.answerEntryId === null ? receipt.submissionId === selected.submissionId : receipt.answerEntryId === selected.answerEntryId);
 			const key = selected.answerEntryId === null ? `submission:${selected.submissionId}` : `answer:${selected.answerEntryId}`;
 			return { requestId: `deliver:${this.storageId}:${key}`, results: group.slice(0, 16).map((receipt) => ({ sessionId: this.identity(receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId })), complete: group.length <= 16 };
 		}, context);

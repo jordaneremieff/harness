@@ -36,7 +36,7 @@ import { AgentMetaDoc, AgentDeliveryDoc, AwaitInputSuppressed, readOutcome, subm
 import { AwaitDoc, type AwaitState, type AwaitOutcome } from "./awaited-results.ts";
 
 import { DurableHost } from "./durable-host.ts";
-import { fixtureRegistry } from "./durable-host-fixture.mts";
+import { fixtureRegistry, gateTool } from "./durable-host-fixture.mts";
 import { readInspection } from "./durable-observation.ts";
 import { AgentTimerDoc, scheduleTimer } from "./durable-timers.ts";
 
@@ -864,6 +864,43 @@ it("withdraws a queued same-storage Reporter input by its actual request ID", { 
 	const report = await harness.commit((tx) => tx.submissionByRequest(root.id, reportId), context);
 	assert.equal(report?.status, "unanswered"); if (report?.status === "unanswered") assert.equal(report.reason, "aborted");
 	assert.equal((await userTexts(harness, root.id)).some((text) => text.startsWith("[agent report-producer answered]")), false);
+});
+
+it("retains a queued shared-answer group when another owner's result is not awaited", { timeout: 10000 }, async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "multi-owner-await-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
+	let start!: () => void; const started = new Promise<void>((resolve) => { start = resolve; });
+	let releaseSource!: () => void; const sourceGate = new Promise<void>((resolve) => { releaseSource = resolve; });
+	let sourceCalls = 0;
+	const source = await DurableHost.open({ storageId: "foreign", storagePath: join(directory, "source.sqlite"), cwd: directory, registry: fixtureRegistry([gateTool(sourceGate, start)]), models: createTestModels(() => sourceCalls++ === 0 ? fauxAssistantMessage([fauxToolCall("gate", {})], { stopReason: "toolUse" }) : fauxAssistantMessage("SHARED-ANSWER")), agent: { model } }, context);
+	t.after(async () => { releaseSource(); await source.close(); });
+	const a = await source.request("submit", { message: "work A", requestId: "multi-a", ownerId: storageId, origin: "operator" }, context) as { submissionId: number };
+	await started;
+	const b = await source.request("submit", { message: "work B", requestId: "multi-b", ownerId: "other-owner", origin: "operator", whenBusy: "steer" }, context) as { submissionId: number };
+	releaseSource(); const first = await source.wait(a.submissionId as Durable.SubmissionId, context); const second = await source.wait(b.submissionId as Durable.SubmissionId, context);
+	assert.equal(first.answerEntryId, second.answerEntryId);
+	const result = { sessionId: "foreign", submissionId: a.submissionId, requestId: "multi-a" };
+	const description = await source.request("receipts", { ownerId: storageId, result }, context) as { delivery: { requestId: string; results: { submissionId: number }[]; complete: boolean } };
+	assert.equal(description.delivery.complete, true); assert.deepEqual(description.delivery.results.map((item) => item.submissionId).sort((left, right) => left - right), [a.submissionId, b.submissionId]);
+	const route = createRoute(); const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
+	let resume!: () => void; const gate = new Promise<void>((resolve) => { resume = resolve; });
+	const dispatch: AgentControlDispatch = async (method, params, ctx = context) => { if (method !== "receipts") return base(method, params, ctx); await gate; return source.request(method, params, ctx); };
+	let copy: Durable.Submission | undefined; let atReturn: string | undefined;
+	const callerModels = createTestModels(async (...args) => {
+		if (copy !== undefined && args[0].messages.at(-1)?.role === "toolResult") atReturn = (await copy.status(context)).status;
+		return route.route(...args);
+	});
+	const { registry } = buildRegistry(dispatch); const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, callerModels); holder.harness = harness;
+	t.after(async () => { resume(); await harness.close(context); });
+	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
+	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
+	route.script.push({ tool: "agent_await", args: { results: [result] } });
+	const original = await root.submit({ type: "input", content: "Await only A" }, context); await ready;
+	copy = await root.submit({ type: "input", content: `SHARED-COPY submissions ${a.submissionId}, ${b.submissionId}`, requestId: description.delivery.requestId, whenBusy: "followUp" }, context);
+	assert.equal((await copy.status(context)).status, "queued");
+	resume(); await original.wait(context); await root.waitForIdle(context);
+	assert.equal(atReturn, "queued", "the uncovered member preserves the queued input at await return");
+	assert.equal((await copy.status(context)).status, "done", "normal later delivery places the group");
+	assert.equal((await userTexts(harness, root.id)).filter((text) => text.startsWith("SHARED-COPY")).length, 1);
 });
 
 for (const receiptFirst of [false, true]) it(`awaits a foreign recipient result and follows its exact continuation with receipt-first=${receiptFirst}`, { timeout: 10000 }, async (t) => {

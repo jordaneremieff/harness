@@ -274,7 +274,8 @@ runs.
 
 Normal result delivery is independent of `agent_await`. At return, the tool
 withdraws only still-queued delivery inputs wholly covered by returned results,
-using their actual receipt or Reporter request IDs. A partially covered group
+using their actual receipt or Reporter request IDs. Coverage includes every
+receipt in the shared-answer group, even for other recipients. A partially covered group
 stays queued; already-placed inputs remain untouched. Late or placed copies can
 appear and cost an additional model turn. No recipient consumption ledger or
 exactly-once contextual-delivery guarantee applies. Original-request replay is

@@ -258,7 +258,8 @@ later; queued follow-ups retain their normal later runs.
 
 When `agent_await` returns, it withdraws only still-queued delivery inputs wholly
 covered by its returned results. It matches actual receipt and Reporter request
-IDs. A grouped input that also carries other results stays queued. Original
+IDs. Coverage includes the full receipt group, even results for other recipients.
+A grouped input that also carries other results stays queued. Original
 request replay does not release its own wait.
 
 Normal delivery stays independent. A late or already-placed copy remains possible
