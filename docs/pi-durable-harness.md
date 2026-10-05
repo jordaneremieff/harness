@@ -1,19 +1,19 @@
 # Pi durable-harness track
 
-Pi 1.0.2 has distinct ordinary and Durable contracts. Agent execution uses
+Pi 1.0.3 has distinct ordinary and Durable contracts. Agent execution uses
 `@earendil-works/pi-durable` natively. The ordinary primary remains the terminal
 host. Each agent storage has an independent process, an exclusive writer claim,
 and native conversations. Public coding-agent services supply resources, trust,
 settings, and configured providers; native contributions supply capabilities.
 
-Verified 2026-10-04 against the installed public package contracts and the agent
+Verified 2026-10-05 against the installed public package contracts and the agent
 slice sources. `pi-agent-core` exports its root and package metadata, not an
 AgentHarness lane runtime. Agent execution uses the separate Durable package;
 it does not patch core or emulate ordinary extension contexts.
 
 ## Release review coverage
 
-<!-- pi-release-reviewed-through: 1.0.2 -->
+<!-- pi-release-reviewed-through: 1.0.3 -->
 
 The declaration above records the latest Pi release through which the harness
 completed cumulative release intake. Its value is a numeric major.minor.patch
@@ -47,7 +47,7 @@ establishes the first numeric declaration. No runtime command writes it.
 
 ## Standalone distillation boundary
 
-Verified 2026-10-04 against installed coding-agent 1.0.2.
+Verified 2026-10-05 against installed coding-agent 1.0.3.
 Installed `docs/extensions.md`,
 `dist/core/model-registry.{js,d.ts}`, and `dist/core/model-runtime.js` establish
 that `ModelRegistry.streamSimple()` uses the configured provider and resolves
@@ -69,12 +69,14 @@ AgentSession also owns automatic overflow/length recovery and cache warming
 keeps its captured transcript fixed and returns overflow or incomplete-output
 failure instead of inheriting session recovery. Its controlled stream tests and
 real-registry synthetic-provider command test establish the request, usage,
-cancellation, and storage boundaries, not live-model output quality. Those
-runtime trials were not repeated for 1.0.2.
+cancellation, and storage boundaries, not live-model output quality. The
+real-registry synthetic-provider command trial was not repeated by this
+source comparison.
+Controlled stream tests establish only their exercised setup.
 
 ## Policy pre-call guidance boundary
 
-Verified 2026-10-04 against installed coding-agent 1.0.2.
+Verified 2026-10-05 against installed coding-agent 1.0.3.
 Policy's `before_agent_start` handler returns a custom message before command
 selection: installed `dist/core/extensions/runner.js`
 `emitBeforeAgentStart()` awaits handlers and collects messages;
@@ -84,8 +86,8 @@ The public contract is `BeforeAgentStartEventResult.message` in
 Policy uses that ordinary hook for its bounded shell-contract snapshot rather
 than a tool-call interception that occurs after the model selects a command.
 The policy hook tests exercise the real runner, custom-message conversion, and
-first controlled model request. Those trials were not repeated for 1.0.2 and
-do not establish model compliance.
+first controlled model request. Those trials were not repeated by this source
+comparison and do not establish model compliance.
 
 Nested calls through `ctx.executeTool()` use the ordinary argument-validation,
 `tool_call`, and `tool_result` pipeline. Installed `dist/core/agent-session.js`
@@ -98,7 +100,7 @@ pre-selection guidance and execution interception remain separate boundaries.
 
 ## Native codemode composition
 
-Verified 2026-10-04 against installed coding-agent 1.0.2
+Verified 2026-10-05 against installed coding-agent 1.0.3
 `docs/{sdk,extensions,settings,codemode}.md`, `examples/sdk/14-codemode-mcp.ts`, and
 `dist/extensions/codemode/{index,tool,execute}.js`. The CLI supplies the built-in
 factory; SDK hosts supply the exported `createCodemodeExtension()` themselves.
@@ -159,7 +161,7 @@ contract requires a model-issued tool call.
 
 ## MCP and deferred tool discovery
 
-Verified 2026-10-04 against installed coding-agent 1.0.2
+Verified 2026-10-05 against installed coding-agent 1.0.3
 `docs/{mcp,extensions,cli,settings,sdk}.md`, `dist/core/mcp-servers.js`,
 `dist/core/extensions/{types.d.ts,loader.js}`, `dist/core/agent-session.js`,
 `dist/extensions/mcp/{index,tools,config,oauth,runtime}.js`,
@@ -285,8 +287,8 @@ how a script uses them.
 
 ## Checked source boundary
 
-Verified 2026-10-04 against running coding-agent 1.0.2, its nested public
-packages, and the separate published Durable 1.0.2 package. This source review
+Verified 2026-10-05 against running coding-agent 1.0.3, its public
+dependencies, and the separate published Durable 1.0.3 package. This source review
 does not advance the release-coverage declaration above.
 
 The manifest retains wildcard Pi declarations; the lockfile records one resolved
@@ -295,35 +297,39 @@ dependency trees are separate facts. Dependency installation remains separate
 from worktree source synchronization; each checkout needs `npm ci` after a
 lockfile update. Loaded extensions resolve non-aliased dependencies separately.
 
-| Source | Checked state (2026-10-04) |
+| Source | Checked state (2026-10-05) |
 |---|---|
-| Running coding agent | 1.0.2 |
-| Running nested packages | AI, agent-core, TUI, Codemode, MCP, Chord, and Telemetry are 1.0.2 |
-| Public release packages | Coding-agent, AI, agent-core, TUI, Durable, Codemode, MCP, Chord, Client, Server, Protocol, and Telemetry are 1.0.2 |
-| npm publication | Explicit `@earendil-works/pi-coding-agent@1.0.2` and `@earendil-works/pi-durable@1.0.2` metadata both name gitHead `cd32f7725fdbddbaecdff5b1e68491563394e0ca` |
-| Published Durable exports | 1.0.2 retains root, environment, tools, memory, JSONL, SQLite, and testing surfaces, including Node adapters; the root adds `ProviderDoc` and `ProviderState` |
-| Release source | [v1.0.2][release], not ahead-of-release branch state |
+| Running coding agent | 1.0.3 |
+| Running dependency packages | AI, agent-core, TUI, Codemode, MCP, Chord, and Telemetry are 1.0.3 |
+| Public release packages | Coding-agent, AI, agent-core, TUI, Durable, Codemode, MCP, Chord, Client, Server, Protocol, and Telemetry are 1.0.3 |
+| npm publication | Explicit `@earendil-works/pi-coding-agent@1.0.3` and `@earendil-works/pi-durable@1.0.3` metadata both name gitHead `d78dc83d633229d12f8b79631384c4c2717c399f` |
+| Published Durable exports | 1.0.3 retains root, environment, tools, memory, JSONL, SQLite, and testing surfaces, including Node adapters; `ProviderDoc` and `ProviderState` remain exported |
+| Release source | [v1.0.3][release], not ahead-of-release branch state |
 
-The checked defining sources cover model configuration and provider composition,
-per-level sampling, Durable provider identity, conversation creation, generation,
-compaction, views, and exports. Source maps and dependency subtrees are outside
-that check. Coding-agent's generated bundle carries the same release changes;
-it is not independent runtime evidence. Catalog updates remain upstream-owned.
-The 2026-10-04 source check found no executable-source changes from published
-1.0.1 in agent-core, TUI, Codemode, MCP, Chord, Client, Server, Protocol, or
-Telemetry; package metadata and, where present, changelog headings differ.
+The checked defining sources cover the contracts below. The file comparison
+uses the checkout's resolved 1.0.2 packages and current 1.0.3 packages; checked
+files present in the managed install match the latter. Source maps, dependency
+subtrees, and coding-agent's generated release bundle are outside the comparison.
+Unchanged defining files carry forward their source contracts; changed defining
+hunks were re-read. This is not independent runtime evidence. Catalog updates
+remain upstream-owned. Agent-core, Codemode, MCP, Chord, Client, Server, Protocol,
+and Telemetry have no executable-source changes in this comparison. TUI changes
+its default keybindings. Coding-agent, AI, and Durable have the changes described
+below. Durable is checked as a separate dependency, not a guessed managed-install
+subdirectory.
 
 These are source checks, not cumulative intake acceptance or package-wide
 runtime equivalence. The declaration above records cumulative intake separately.
 Repository-specific implementation and test claims are not independently
-re-established by those checks. Earlier runtime trials were not repeated for
-1.0.2. Interactive behavior, live provider compatibility, durable recovery, and
-crash or power-loss behavior retain their stated runtime limits.
+re-established by those checks. Earlier runtime trials were not repeated by
+this source comparison. Interactive behavior, live provider compatibility,
+durable recovery, and crash or power-loss behavior retain their stated runtime
+limits.
 
 Installed paths below are relative to the running
 `@earendil-works/pi-coding-agent` package root. `pi-agent-core/`, `pi-ai/`,
-`pi-codemode/`, `pi-mcp/`, and `pi-tui/` identify separate 1.0.2 package roots;
-`pi-durable/` identifies the separate published 1.0.2 package. A source check
+`pi-codemode/`, `pi-mcp/`, and `pi-tui/` identify separate 1.0.3 package roots;
+`pi-durable/` identifies the separate published 1.0.3 package. A source check
 establishes that version's contract and implementation, not which dependency
 instance another process loads.
 
@@ -332,7 +338,7 @@ instance another process loads.
 | Runtime | Available boundary | Consequence |
 |---|---|---|
 | Ordinary coding-agent SDK | Installed `dist/core/sdk.js` constructs `Agent` and `AgentSession`; `dist/core/agent-session-services.js` supplies reusable services; `dist/core/agent-session-runtime.js` owns session replacement | Keep full extension/resource behavior through public session services and runtime construction |
-| Pi Durable 1.0.2 | Separate package publishes `Harness`, tasks, tool turns, inboxes, retained outcomes, conversation and task-graph watches, ownership, compaction, and storage/environment/tool subpaths | Experimental runtime; adoption requires a complete host capability match, not just a published primitive |
+| Pi Durable 1.0.3 | Separate package publishes `Harness`, tasks, tool turns, inboxes, retained outcomes, conversation and task-graph watches, ownership, compaction, and storage/environment/tool subpaths | Experimental runtime; adoption requires a complete host capability match, not just a published primitive |
 
 Coding-agent exports its ordinary root and `./rpc-entry` as runtime entrypoints.
 Its `./client` and `./experimental/plugin` remain source-condition-only. Do not
@@ -344,8 +350,8 @@ The installed extension loader binds Pi core imports to the running install.
 `dist/core/extensions/loader.js` aliases coding-agent, agent-core, TUI, AI and
 its named compatibility/provider subpaths, plus TypeBox root/compile/value.
 Durable, Codemode, MCP, and Chord are not in that alias map. The harness declares
-them as runtime dependencies, not host-supplied peers. Verified 2026-10-04 against
-installed 1.0.2 `docs/packages.md` and `dist/core/package-manager.js`:
+them as runtime dependencies, not host-supplied peers. Verified 2026-10-05 against
+installed 1.0.3 `docs/packages.md` and `dist/core/package-manager.js`:
 `getGitDependencyInstallArgs()` uses `--omit=dev --legacy-peer-deps` for npm,
 `--omit=dev --omit=peer` for Bun, and `--prod` with peer/build configuration
 flags for pnpm. Managed package installation also suppresses automatic peer
@@ -366,7 +372,7 @@ call tasks rather than invoke an ordinary extension runner.
 
 ## Terminal rendering boundary
 
-Verified 2026-10-04 against pi-tui 1.0.2 `dist/index.d.ts`,
+Verified 2026-10-05 against pi-tui 1.0.3 `dist/index.d.ts`,
 `dist/tui.js`, `dist/tui-alt-screen.js`, `dist/components/image.js`, and
 `dist/terminal-image.js`, plus coding-agent
 `dist/modes/interactive/interactive-mode.js` and `dist/utils/image-convert.js`.
@@ -384,9 +390,9 @@ images use text fallback. Fullscreen WezTerm draws Kitty placements after text
 writes and tracks all covered rows when it decides to redraw. These are source
 boundaries, not a new terminal trial.
 
-## Pi Durable 1.0.2
+## Pi Durable 1.0.3
 
-Verified 2026-10-04 against the published 1.0.2 package's `README.md`,
+Verified 2026-10-05 against the published 1.0.3 package's `README.md`,
 `package.json`, `dist/index.d.ts`, `dist/types.d.ts`,
 `dist/harness/{types,harness,view,task-graph}.d.ts`, and the storage and progress
 implementations cited below. The [release README][durable-readme] marks the
@@ -432,9 +438,48 @@ ownership. Coding tools require explicit installation; their read tool does not
 return images. Those are host integration requirements, not capabilities granted
 by similarly named durable types.
 
+### Environment and tool contracts
+
+Shipped in 1.0.3. Verified 2026-10-05 against
+`pi-durable/dist/env/{index.d.ts,node.js,decode.js,line-scan.js,node-watch.js}`,
+`dist/harness/{types.d.ts,tool.js,output.js}`,
+`dist/tools/{read,bash,image}.js`, and `dist/testing/index.{js,d.ts}`.
+
+- `FileSystem` requires `openBinaryReader()`, `openDirReader()`, and `watch()`;
+  `BinaryReader` requires `scanLines()`. Positional reads share one opened regular
+  file; `noFollow` refuses a final-component symlink, not every ancestor link.
+  Directory readers page entries and fetch metadata only for returned entries.
+  Line scanners measure the selected span in one pass. Public decoding and
+  scanning helpers support matching custom environments.
+- `Shell.exec()` accepts a shell string or an argv array. Argv executes without
+  shell parsing. `onOutput(text, context, info)` names stdout or stderr. Optional
+  output windows let an environment omit output outside the retained tail;
+  `info.skipped` and `ToolExecutionApi.output(chunk, skipped)` preserve omission
+  accounting. Durable's bash tool forwards the window. Tail snapshots preserve
+  the margin needed to make later retained output independent of commit timing.
+- `watch()` reports paths, uncertain coverage through `overflow`, and terminal
+  errors. Native and polling modes have different guarantees: polling misses
+  changes undone between snapshots. Node uses polling on Windows and network
+  or FUSE filesystems. Its macOS native watcher rescans after installation to
+  cover early FSEvents gaps. Mode, polling interval, and directory limit are
+  environment options, not a new harness watcher or scheduler.
+- The Durable read tool reads a header, scans line positions, and reads the
+  displayed span instead of loading the whole file. It still returns text, not
+  images. Node's streaming decoders preserve U+FEFF at chunk boundaries. Directory
+  flushes report `is_directory` on Windows as on POSIX.
+- `createEnvConformance()` and `registerEnvConformance()` are testing exports for
+  custom environments. The agent host already uses upstream `NodeExecutionEnv`
+  (`extensions/agent/durable-services.ts`), so it requires no custom environment
+  repair. Its image-capable read remains a host tool over coding-agent services,
+  not an inherited image feature of Durable's read tool.
+
+These are source contracts. Type compatibility and selected controlled tests
+reach their exercised setup, not universal filesystem, watcher, remote-shell,
+or power-loss behavior.
+
 ### Provider session identity
 
-Shipped in 1.0.2. Verified 2026-10-04 against
+Shipped in 1.0.2. Verified 2026-10-05 against
 `pi-durable/dist/harness/{provider,harness,generation,compaction,view}.js`,
 `pi-durable/dist/index.{js,d.ts}`, and the release README.
 `ProviderDoc` stores a UUIDv7 in the conversation-scoped `pi.provider` document.
@@ -452,17 +497,24 @@ Durable's value; it must not replace it with a storage-keyed identity or make
 forks share that key. Stash's standalone request supplies its own UUIDv7 and
 stays outside this conversation identity contract.
 
-The native host also forwards configured transport, provider timeout, provider
-retry count, and maximum retry delay. Provider timeout overrides the HTTP idle
-timeout; idle zero maps to 2147483647 ms. These request options are separate from
-Durable generation retries. Installed Pi AI's Codex SSE transport bounds response
-headers with that timeout, not the response-body read; WebSocket transport uses
-an idle timeout. There is no additional shared-stream timeout. Source-checked
-2026-10-05 against `extensions/agent/durable-services.ts`, Durable 1.0.2
-`dist/harness/{generation,compaction}.js`, and Pi AI 1.0.2
-`dist/api/{openai-codex-responses,lazy}.js`. These transport-specific source
-contracts establish neither a universal whole-request deadline nor a live
-provider trial.
+The native host forwards configured transport, provider timeout, provider retry
+count, and maximum provider retry delay. Provider timeout overrides the HTTP
+idle timeout; idle zero maps to 2147483647 ms. These request options are separate
+from Durable generation retries. Codex WebSocket reads use an idle timeout.
+Its SSE fetch creates a header timeout, then removes combined-signal forwarding
+after headers when both a caller signal and that timeout exist. The SSE reader
+has no provider-owned reset-on-progress idle timer. With no caller signal, the
+timeout signal itself remains attached to fetch and can affect the body; that
+is still not an inactivity timer. Coding-agent separately configures Undici
+`bodyTimeout` and `headersTimeout`. Actual body protection therefore depends on
+the fetch and dispatcher, not only this provider option. There is no additional
+shared-stream timeout. Source-checked 2026-10-05 against
+`extensions/agent/durable-services.ts`, Durable 1.0.3
+`dist/harness/{generation,compaction}.js`, Pi AI 1.0.3
+`dist/api/{openai-codex-responses,lazy}.js` and
+`dist/utils/abort-signals.js`, and coding-agent
+`dist/core/http-dispatcher.js`. These source contracts establish neither a
+universal whole-request deadline nor a live provider trial.
 
 The persisted identity establishes request affinity, not provider cache hits, retained cache
 lifetimes, or measured cost savings. The real-host regression in
@@ -471,7 +523,7 @@ UUID across four turns, each with a tool round, and a host restart, plus the
 configured transport and `reasoning` present for high and absent for off.
 It checks neither provider cache hits nor fork or child identity separation;
 the historical process-recovery tests below do not establish this new identity
-contract on 1.0.2.
+contract on 1.0.3.
 
 ### Native task ownership and agent placement
 
@@ -512,7 +564,7 @@ copies withdrawn at return. Late or placed copies can cost another model turn.
 Local self and result cycles are refused; remote graph completeness is not
 inferred. These agent-host contracts were source-checked 2026-10-05 against
 `extensions/agent/{awaited-results,await-execution,await-observation}.ts` on
-Pi Durable 1.0.2, not by a new runtime trial.
+Pi Durable 1.0.3, not by a new runtime trial.
 
 The agent slice projects semantic `awaiting` separately from native task state.
 Status, dashboard rows, and existing check-ins include held requests, bounded
@@ -527,10 +579,13 @@ Creation records use `createdAgents.agents`; adapted fork ancestry uses
 ### Durability limits
 
 Only committed state is observable, but that does not establish a fixed
-crash-loss window. `pi-durable/dist/harness/output.js` makes progress commits
-adaptive: at least 100 ms between commits, extended by written size at
-100 KiB/s. Uncommitted progress can be lost. The README's fixed-window wording
-does not override that implementation.
+crash-loss window. `settings.progress.partialIntervalMs` controls generation
+partials; `outputIntervalMs` controls running tool output. Both default to
+100 ms (`pi-durable/dist/harness/{agent,generation,tool}.js`). Tool-output commits
+remain adaptive: `dist/harness/output.js` also extends their interval by written
+size at 100 KiB/s. The host supplies no progress override. Uncommitted progress
+can be lost. Configured intervals, in-flight writes, and adaptive output pauses
+prevent the README's fixed-window wording from establishing a crash-loss bound.
 
 JSONL defaults `fsync` to false. With it enabled,
 `pi-durable/dist/storage/jsonl/storage.js` flushes affected sidecars before
@@ -568,7 +623,7 @@ remain authoritative. Old ordinary agent files stay untouched and unread.
 
 ### Storage host retirement
 
-The installed boundary is rechecked 2026-10-04 against Durable 1.0.2
+The installed boundary is rechecked 2026-10-05 against Durable 1.0.3
 `dist/harness/harness.js`. The local host/runtime descriptions retain their
 source-defined scope, not a new runtime trial. Public `inspect()` includes queued and placed
 submissions; `taskGraph()` includes all live tasks. Native waiting tasks,
@@ -610,15 +665,19 @@ or retirement runtime trial was repeated.
 Pi windows and hosts retain loaded code on independent timelines. The manager
 does not replace a host because its source release differs. Natural idle
 retirement permits new code on the next control, while operation contracts
-keep unchanged methods usable. A missing or incompatible contract refuses with
+keep unchanged methods usable. Retained catalog metadata still supplies the host's
+coding-agent `packageDir`; if that installation disappears, a new host fails at
+public-root resolution before work starts. Idle retirement does not select a new
+Pi installation (`extensions/agent/{manager,catalog,durable-services}.ts`).
+A missing or incompatible contract refuses with
 restart guidance, without translating retired state or interrupting work. An
 open live observation intentionally keeps its host alive. This extension-owned
 policy does not change Pi Durable's storage or replay guarantees.
 
 ### Process contracts and peer threads
 
-The installed boundary is rechecked 2026-10-04 against coding-agent and
-Pi Durable 1.0.2 public contracts, `pi-durable/dist/harness/{types,harness}.d.ts`,
+The installed boundary is rechecked 2026-10-05 against coding-agent and
+Pi Durable 1.0.3 public contracts, `pi-durable/dist/harness/{types,harness}.d.ts`,
 and `pi-durable/dist/types.d.ts`. Repository descriptions refer to the agent
 slice's `version-contract.ts`, `collaboration.ts`, `durable-host.ts`, and
 `durable-delivery.ts`; this source comparison does not repeat their runtime tests.
@@ -631,7 +690,7 @@ experimental Durable release. Both sides refuse incompatible operations before
 dispatch. Other operations continue. Retained manager, native contribution, and
 primary notice interfaces have independent identities. This permits concurrent
 current processes, not backward readers or predecessor migrations. Source-checked
-2026-10-05 on Pi Durable 1.0.2, `extensions/agent/version-contract.ts` declares
+2026-10-05 on Pi Durable 1.0.3, `extensions/agent/version-contract.ts` declares
 `manager/1.5.0`, `recovery-state/1.1.0` for the response, and
 `native-controls/1.2.0` bound to the loaded Durable release. Submit and receipts
 requests and responses use 1.1.0; the task-submit response uses 1.1.0; await-state
@@ -682,10 +741,10 @@ controls, status presentation, timestamps, and failed-refresh behavior.
 
 ## Released ordinary-session changes
 
-Verified 2026-10-04 against installed 1.0.2 `CHANGELOG.md`,
+Verified 2026-10-05 against installed 1.0.3 `CHANGELOG.md`,
 `docs/{sdk,extensions,settings,providers}.md`, and the
 implementation paths below. The first list shipped in 0.99.0 and remains a
-release contract in 1.0.2. The second list shipped in 0.99.2; its MCP and
+release contract in 1.0.3. The second list shipped in 0.99.2; its MCP and
 codemode discovery changes are in
 [MCP and deferred tool discovery](#mcp-and-deferred-tool-discovery).
 
@@ -845,12 +904,60 @@ Shipped in 1.0.2:
   model APIs, not chat-only registry queries. The harness keeps no parallel
   model ID or pricing table.
 
-These 1.0.2 boundaries are source-verified 2026-10-04. No paid model or provider
+These 1.0.3 boundaries are source-verified 2026-10-05. No paid model or provider
 cache trial was repeated for them.
+
+Shipped in 1.0.3:
+
+- The Azure provider ID is `azure`; its Responses API ID remains
+  `azure-openai-responses`. It also serves Foundry Chat Completions through
+  `openai-completions`, including `azure/deepseek-v4-pro`. Rename provider keys
+  in authentication, model configuration, default-provider selection, enabled
+  model patterns, and per-model thinking keys. Existing Azure environment
+  variable names stay unchanged. Resumed sessions with the old provider fall
+  back to another model and do not reuse their old prompt cache. The harness
+  owns no provider-ID alias or parallel Azure catalog
+  (`pi-ai/dist/providers/azure.js`, `dist/api/azure-openai-config.js`,
+  `dist/providers/data/azure.json`, `dist/env-api-keys.js`, and
+  coding-agent `dist/core/model-resolver.js`).
+- Ordinary codemode `image()` saves each displayed image to an output file and
+  names its path beside the image after text truncation. Repeated identical
+  image data share one file per result; a failed save preserves the image and
+  returns an explicit error label. Coding-agent creates truncated text, binary
+  MCP resource, and codemode image files with mode 0600 and exclusive creation
+  (`dist/extensions/codemode/execute.js`, `dist/extensions/mcp/tools.js`,
+  `dist/core/{bash-executor.js,tools/output-accumulator.js}`, and
+  `dist/utils/output-files.js`). The native host uses `CodemodeSandbox` with its
+  own result wrapper; the ordinary wrapper's file-save feature and permissions
+  do not automatically apply there (`extensions/agent/durable-execution.ts`).
+- Default `Home`/`End` keys select the editor line start/end. Fullscreen
+  transcript top/bottom use `Ctrl+Home`/`Ctrl+End`, which are no longer editor
+  line keys (`pi-tui/dist/keybindings.js`, coding-agent
+  `dist/core/keybindings.d.ts`, and `docs/keybindings.md`). These are upstream
+  defaults, not a new terminal interaction trial or a dashboard key override.
+- OAuth refresh that already started uses its own bounded timeout and persists
+  rotated credentials under the store lock despite caller cancellation. The
+  caller signal still cancels lock admission; canceled waiters do not erase
+  the new refresh token (`pi-ai/dist/auth/resolve.js` and `dist/models.js`).
+  Ordinary and native hosts inherit this shared model-runtime path; no sign-in
+  or cancellation trial is implied.
+- In the Node release bundle, coding-agent caches the codemode worker source as
+  a data URL when first resolved. Later removal of the install does not remove
+  that cached worker code. After relevant errors,
+  InteractiveMode detects a changed or removed installation and gives restart
+  guidance (`dist/config.js` and `dist/modes/interactive/interactive-mode.js`).
+  This does not repair a separate retained agent host's stored installation path.
+- InteractiveMode handles dead-terminal stdin errors as well as stdout/stderr
+  errors, including EIO and ENOTTY, and exits without a crash report
+  (`dist/modes/interactive/interactive-mode.js`). No terminal-loss trial was
+  repeated.
+
+These 1.0.3 changes are source-checked 2026-10-05. No historical manual terminal,
+OAuth, paid-model, or provider-cache trial was repeated.
 
 ## Current ordinary-session contracts
 
-Verified 2026-10-04 against installed 1.0.2 `docs/{sdk,extensions,virtual-models}.md`,
+Verified 2026-10-05 against installed 1.0.3 `docs/{sdk,extensions,virtual-models}.md`,
 `dist/core/{sdk,agent-session,agent-session-services,model-runtime}.js`,
 `dist/core/extensions/{types.d.ts,runner.js}`,
 `dist/core/session-manager.d.ts`, `pi-ai/dist/types.d.ts`, and
@@ -938,7 +1045,7 @@ remain ordinary-host responsibilities.
 
 ## Ordinary custom-message presentation
 
-Verified 2026-10-04 against installed coding-agent 1.0.2
+Verified 2026-10-05 against installed coding-agent 1.0.3
 `dist/modes/interactive/components/custom-message.js`,
 `dist/modes/interactive/interactive-mode.js`, `dist/core/agent-session.js`,
 `dist/core/messages.js`, and the public `MessageRenderer` declarations.
@@ -960,12 +1067,13 @@ Peer-operation outcomes remain separate from primary-session state and task
 acceptance. Arbitrary message arrivals prevent a permanent-visibility promise.
 Controlled provider tests establish content and turn behavior; isolated terminal
 trials establish display and expansion behavior, not model
-judgment about the evidence. Those runtime trials were not repeated for 1.0.2.
+judgment about the evidence. Those runtime trials were not repeated by this
+source comparison.
 
 ## Configuration and source context
 
-Ordinary resource and message boundaries checked 2026-10-04 against installed
-1.0.2 `dist/core/resource-loader.js`, `dist/core/messages.js`,
+Ordinary resource and message boundaries checked 2026-10-05 against installed
+1.0.3 `dist/core/resource-loader.js`, `dist/core/messages.js`,
 `docs/message-types.md`, and `docs/sdk.md`.
 
 - Ordinary discovery accepts additional skill paths. Reusable source selection
@@ -982,7 +1090,7 @@ Ordinary resource and message boundaries checked 2026-10-04 against installed
 
 ## Resource contributions and interactive lifecycle
 
-Verified 2026-10-04 against installed coding-agent 1.0.2.
+Verified 2026-10-05 against installed coding-agent 1.0.3.
 Current installed extension and keybinding documents supply the public guidance;
 resource, skill, runner, cache-warmer, session, and extension type files define
 the detailed behavior below.
@@ -1066,7 +1174,7 @@ delivery. Each accepted normal-owner route acknowledges independently when
 another route fails. Direct thread notices stay pending without broadcast.
 Canceled observation waits release their listeners without canceling tasks.
 
-On Pi Durable 1.0.2, queued-input recovery requires no live run, a queued non-write
+On Pi Durable 1.0.3, queued-input recovery requires no live run, a queued non-write
 input, and the latest retained assistant task's failed `model_error` outcome.
 One replay-safe passive write names that failed generation and adds a host status
 notice, not an operator instruction or an extension of the failed run. Recovery
@@ -1083,7 +1191,7 @@ restart. The host never reads old ordinary agent sessions as Durable records.
 
 ## Automatic owner check-ins
 
-The installed boundary is rechecked 2026-10-04 against Pi Durable 1.0.2
+The installed boundary is rechecked 2026-10-05 against Pi Durable 1.0.3
 `dist/{types.d.ts,harness/types.d.ts,harness/live.d.ts,harness/usage.d.ts}` and
 `dist/harness/{harness.js,scheduler.js}`. The agent extension's real Harness and
 ordinary-primary faux-provider tests retain their earlier runtime scope; those
@@ -1122,7 +1230,7 @@ pending. The marker is set only after complete discovery and accepted deliveries
 and settlement removes it with the task's check-in rows. Reports and check-ins
 delivered into native owners arm no recursive check-ins. This suppression contract
 was source-checked 2026-10-05 against `extensions/agent/durable-delivery.ts` on
-Pi Durable 1.0.2, not by a new runtime trial.
+Pi Durable 1.0.3, not by a new runtime trial.
 
 The native tool slots and task records expose no exact tool-start timestamp.
 The digest labels the tool-call age instead. Native usage is cumulative per
@@ -1133,7 +1241,7 @@ presentation says still working, not finished; check-ins are not final results.
 ## Current-session evidence retrieval
 
 Bounded access, discovery, read-only capture, and context projection verified
-2026-10-04 against installed 1.0.2 `dist/core/session-manager.{d.ts,js}`,
+2026-10-05 against installed 1.0.3 `dist/core/session-manager.{d.ts,js}`,
 `dist/core/extensions/types.d.ts`, and `docs/session-format.md`.
 
 - `ExtensionContext.sessionManager` exposes `ReadonlySessionManager`.
@@ -1167,7 +1275,7 @@ Bounded access, discovery, read-only capture, and context projection verified
 
 ## Ordinary-session completion delivery
 
-Verified 2026-10-04 against installed 1.0.2 `dist/core/agent-session.js`,
+Verified 2026-10-05 against installed 1.0.3 `dist/core/agent-session.js`,
 `dist/core/messages.js`, and `dist/core/extensions/{runner.js,types.d.ts}`.
 
 - `turn_end` and `agent_before_settle` are actionable extension boundaries.
@@ -1209,7 +1317,7 @@ Verified 2026-10-04 against installed 1.0.2 `dist/core/agent-session.js`,
   A report view does not itself require another durable inbox, receipt journal,
   or terminal renderer. Preserve exact result access when the host changes.
 
-**Extension-launched prompt lifetime.** In installed 1.0.2,
+**Extension-launched prompt lifetime.** In installed 1.0.3,
 `ExtensionAPI.sendUserMessage()` returns `void`
 (`dist/core/extensions/types.d.ts`). The callback supplied to `bindCore()` in
 `dist/core/agent-session.js` catches errors but does not return the underlying
@@ -1227,7 +1335,7 @@ wait for `agent_settled` would wait for a run those commands never start.
 
 ## Fork and result boundaries
 
-Verified 2026-10-04 against installed 1.0.2 `dist/core/session-manager.js`,
+Verified 2026-10-05 against installed 1.0.3 `dist/core/session-manager.js`,
 `dist/core/agent-session-runtime.js`, `dist/modes/interactive/interactive-mode.js`,
 and `dist/main.js`. Ordinary `/fork`, `/clone`, and `--fork` use
 SessionManager. A durable conversation fork uses its own storage, entries, and
@@ -1280,8 +1388,8 @@ After each Pi upgrade and before a host-dependent decision:
 - Replace dated claims in place. If a defining source is unavailable, mark the
   affected claim unverified rather than preserve a stale verification date.
 
-[release]: https://github.com/earendil-works/pi/releases/tag/v1.0.2
-[durable-readme]: https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/durable/README.md
-[durable-package]: https://github.com/earendil-works/pi/blob/cd32f7725fdbddbaecdff5b1e68491563394e0ca/packages/durable/package.json
+[release]: https://github.com/earendil-works/pi/releases/tag/v1.0.3
+[durable-readme]: https://github.com/earendil-works/pi/blob/d78dc83d633229d12f8b79631384c4c2717c399f/packages/durable/README.md
+[durable-package]: https://github.com/earendil-works/pi/blob/d78dc83d633229d12f8b79631384c4c2717c399f/packages/durable/package.json
 [durable-post]: https://earendil.com/posts/pi-durable/
 [pi-one-post]: https://earendil.com/posts/pi-1-0/
