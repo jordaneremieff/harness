@@ -47,13 +47,14 @@ establishes the first numeric declaration. No runtime command writes it.
 
 ## Independent Stash creation
 
-Source-checked 2026-10-05 against installed coding-agent 1.0.3 and Durable 1.0.2.
+Source-checked 2026-10-05 against installed coding-agent and Durable 1.0.3.
 Stash captures a bounded, redacted context projection, the operator's hint, source
 metadata, and destination before independent work starts. Ordinary and native
 commands use the package-level
 [independent-command admission contract](conventions/durable-contributions.md).
-Successful admission adds no caller model input, Stash status key, or automatic
-result or check-in route. Setup failures remain command errors.
+Successful admission adds no caller model acknowledgment, Stash status key, or
+automatic result or check-in route. Nonzero input redaction adds a one-time safety
+notice without starting a model turn. Setup failures remain command errors.
 
 The host resolves the model and thinking level from fresh cwd-bound Pi
 configuration under the normal project-trust decision, not from the caller's
@@ -696,11 +697,12 @@ dispatch. Other operations continue. Retained manager, native contribution, and
 primary notice interfaces have independent identities. This permits concurrent
 current processes, not backward readers or predecessor migrations. Source-checked
 2026-10-05 on Pi Durable 1.0.3, `extensions/agent/version-contract.ts` declares
-`manager/1.5.0`, `recovery-state/1.1.0` for the response, and
+`manager/1.6.0`, `recovery-state/1.1.0` for the response, and
 `native-controls/1.2.0` bound to the loaded Durable release. Submit and receipts
-requests and responses use 1.1.0; the task-submit response uses 1.1.0; await-state
-and await-release requests and responses use 1.0.0. These independent identities
-do not follow source-release ordering. The
+requests and responses use 1.1.0; the task-submit response uses 1.1.0; command
+requests use 1.1.0 and responses use 1.0.0; await-state and await-release requests
+and responses use 1.0.0. Primary delivery remains `primary-delivery/1.0.0`.
+These independent identities do not follow source-release ordering. The
 [agent README](../extensions/agent/README.md#current-process-contracts) defines
 maintenance and restart behavior.
 
