@@ -1,12 +1,12 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentConversationEntry } from "./dashboard-types.ts";
 import { updateDraft, subscribeAgentState, type AgentDraftState } from "./dashboard-state.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { ConversationView } from "./conversation-view.ts";
-import { modelSubheading, formatCost } from "./agent-footer.ts";
+import { agentStatusLines, type AgentModelInfo, type DelegatedFigures } from "./agent-footer.ts";
 import type { UsageState } from "@earendil-works/pi-durable";
-import { compactTokens, contextTokens, usageFacts } from "./agent-usage.ts";
+import { contextTokens } from "./agent-usage.ts";
 export class AgentConsole {
 	readonly composer: AgentComposer;
 	readonly conversation: ConversationView;
@@ -59,32 +59,16 @@ export class AgentConsole {
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[] = []): void {
 		this.conversation.setContent(entries, live, this.row.cwd);
 	}
-	messageLabel(width: number, window?: number): string {
-		const usage = usageFacts(this.context, window, this.usage);
-		const facts: string[] = [];
-		if (usage.context !== undefined) {
-			const context = compactTokens(usage.context) + (usage.window === undefined ? "" : `/${compactTokens(usage.window)} (${Math.round(usage.context / usage.window * 100)}%)`);
-			facts.push(`${context} ctx`);
-		}
-		if (Number.isFinite(this.row.cost)) facts.push(formatCost(this.row.cost, this.row.partial));
-		const tokens = [usage.input === undefined ? "" : `${compactTokens(usage.input)} in`, usage.output === undefined ? "" : `${compactTokens(usage.output)} out`].filter(Boolean).join(" · ");
-		if (tokens) facts.push(tokens);
-		let label = this.messageMode().toLowerCase();
-		// Retain the effect, then capacity, budget, and cumulative traffic as whole groups.
-		for (const fact of facts) {
-			const next = `${label} · ${fact}`;
-			if (visibleWidth(next) > width) break;
-			label = next;
-		}
-		return label;
+	messageLabel(): string {
+		return this.messageMode().toLowerCase();
 	}
 	messageMode(): string {
 		return this.row.state === "working"
 			? this.state.mode === "steer" ? "Steer at next step" : "Follow-up after answer"
 			: "Send";
 	}
-	subheading(width: number): string {
-		return modelSubheading(this.row, width, this.theme);
+	statusLines(width: number, info?: AgentModelInfo, branch?: string, delegated?: DelegatedFigures): string[] {
+		return agentStatusLines(this.row, width, this.theme, this.context, info, this.usage, branch, delegated);
 	}
 	save(): void {
 		updateDraft(this.state, this.composer.getText());

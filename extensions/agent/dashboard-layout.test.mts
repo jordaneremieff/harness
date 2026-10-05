@@ -158,14 +158,15 @@ for (const width of [80, 140]) {
 			const paneX = width >= 100 ? dashboardGeometry(width, 32, 3).rosterWidth + 1 : 0;
 			const pane = () => render().map((line) => line.slice(paneX));
 			const lines = pane();
-			const model = lines.findIndex((line) => /test\/model · high/.test(line));
+			const model = lines.findIndex((line) => /^model │/.test(line));
 			const composer = lines.findIndex((line) => line.includes("╭─ send"));
-			assert.ok(model > 0 && model < composer);
-			assert.doesNotMatch(lines[model + 1] ?? "", /ctx|\$/);
-			assert.match(lines[composer] ?? "", /\$0\.42/);
+			assert.ok(model > composer);
+			assert.doesNotMatch(lines[composer] ?? "", /ctx|\$|model/);
+			assert.match(lines[model] ?? "", /~\$0\.42/);
+			assert.match(lines[model + 1] ?? "", /\/work/);
 			assert.equal(lines[composer - 1]?.trim(), "", "output has bottom padding");
 			assert.match(lines[composer + 1] ?? "", /^│.*│$/);
-			assert.match(lines.at(-2) ?? "", /^╰─+╯$/);
+			assert.match(lines.at(-4) ?? "", /^╰─+╯$/);
 			assert.doesNotMatch(lines.join("\n"), /Lines \d|End of loaded view|Partial history/);
 			assert.ok(lines.some((line) => line.endsWith("┃")), "long output has a scroll thumb");
 			f.ui.handleInput("\x1b[5~");
@@ -174,7 +175,7 @@ for (const width of [80, 140]) {
 			assert.ok(state);
 			state.receipt = "Delivery receipt";
 			const updated = pane();
-			assert.match(updated.at(-2) ?? "", /^╰─ Delivery receipt/);
+			assert.match(updated.at(-4) ?? "", /^╰─ Delivery receipt/);
 			assert.equal(updated.length, 32);
 		} finally {
 			f.ui.dispose();

@@ -80,7 +80,7 @@ it("the dashboard gets its context window and session figures from the current p
 		mode: "tui",
 		hasUI: true,
 		sessionManager: { getSessionId: () => "current-primary" },
-		modelRegistry: { find: (provider: string, id: string) => { lookups.push([provider, id]); return { contextWindow: 1000000 }; } },
+		modelRegistry: { find: (provider: string, id: string) => { lookups.push([provider, id]); return { name: "Example model", reasoning: true, contextWindow: 1000000 }; } },
 		ui: { custom: async (factory: (tui: TUI, currentTheme: typeof theme, currentKeys: typeof keys, done: () => void) => AgentDashboard) => new Promise<void>((resolve) => {
 			finish = resolve;
 			dashboard = factory({ terminal: { rows: 45, columns: 160 }, requestRender() {} } as unknown as TUI, theme, keys, resolve);
@@ -100,7 +100,7 @@ it("the dashboard gets its context window and session figures from the current p
 		const text = stripVTControlCharacters(dashboard.render(160).join("\n"));
 		assert.deepEqual(lookups, [["test", "model"]]);
 		assert.equal(reads, 1);
-		assert.match(text, /163k\/1.0M \(16%\) ctx/);
+		assert.match(text, /Example model \[high\].*16%.*163k\/1.0M/);
 		assert.match(text, /Agents: 1\/1 active · ~\$0.42/);
 	} finally { dashboard?.dispose(); finish(); await opened; }
 });

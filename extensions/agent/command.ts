@@ -3,6 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { dashboardSessionState } from "./dashboard-state.ts";
+import { readAgentBranch } from "./agent-git.ts";
 import type { DashboardPreferences } from "./dashboard-preferences.ts";
 import { showAgentDashboard, type DashboardResult } from "./dashboard.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
@@ -216,7 +217,8 @@ export function createAgentCommand(
 					efforts: effortWiring ? () => effortWiring.efforts(ctx) : undefined,
 					messageEffort: effortWiring ? (id, text) => effortWiring.messageEffort(id, text, ctx) : undefined,
 					sessionFigures: sessionFigures ? (page) => sessionFigures(ctx, page) : undefined,
-					contextWindow: (provider, modelId) => ctx.modelRegistry.find(provider, modelId)?.contextWindow,
+					modelInfo: (provider, modelId) => ctx.modelRegistry.find(provider, modelId),
+					branch: readAgentBranch,
 					collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
 					chooseConversation: async (labels, surface) =>
 						hideAround(surface, async () => {

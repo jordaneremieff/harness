@@ -6,7 +6,7 @@ import type { AgentConversationEntry } from "./dashboard-types.ts";
 function assistantTokens(message: Message): number | undefined {
 	if (message.role !== "assistant" || ["pending", "error", "aborted"].includes(message.stopReason)) return undefined;
 	const tokens = calculateContextTokens(message.usage);
-	return tokens > 0 && Number.isFinite(tokens) ? tokens : undefined;
+	return tokens >= 0 && Number.isFinite(tokens) ? tokens : undefined;
 }
 /** Latest completed assistant usage, invalidated by a newer context rewrite. */
 export function contextTokens(entries: readonly AgentConversationEntry[]): number | undefined {

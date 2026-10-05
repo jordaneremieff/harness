@@ -52,7 +52,7 @@ for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 1
 			const headerY = wide ? 1 : 5;
 			const header = lines.slice(headerY, headerY + 4).map((line) => line.slice(paneX));
 			assert.doesNotMatch(header.join("\n"), /Coverage|unreadable|omitted|Incomplete/);
-			assert.match(header[2], /^─+$/);
+			assert.match(header[1], /^─+$/);
 			const roster = wide ? lines.slice(1, -1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 5);
 			assert.match(roster.join("\n"), skipped ? /18 unreadable/ : /Incomplete/);
 			assert.match(lines[0], /1\/31\+ ╮$/);
@@ -70,7 +70,7 @@ it("selected status keeps live usage and receipts separate from conversation and
 	const observed = source([row("one")]);
 	observed.frame = () => frame;
 	observed.availability = () => ({ state: "live", at: frame.observedAt });
-	const f = fixture(160, 45, observed, { contextWindow: () => 1000, sessionFigures: async () => "agents: 1/1 active · ~$0.42" });
+	const f = fixture(160, 45, observed, { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }), sessionFigures: async () => "agents: 1/1 active · ~$0.42" });
 	try {
 		await turn();
 		const state = f.state.agents.get("one");
@@ -81,12 +81,14 @@ it("selected status keeps live usage and receipts separate from conversation and
 		const status = lines.slice(1, 5).map((line) => line.slice(dashboardGeometry(160, 45, 3).rosterWidth + 1)).join("\n");
 		assert.doesNotMatch(status, /LIVE|RETAINED|Earlier messages available|Roster/);
 		assert.match(status, /● Working/);
-		assert.match(status, /test\/model · high/);
+		assert.doesNotMatch(status, /Example model|high/);
 		assert.doesNotMatch(status, /ctx| in| out|\$/);
 		const caption = lines.find((line) => line.includes("╭─ steer at next step"));
-		assert.match(caption ?? "", /160\/1.0k \(16%\) ctx · \$0.42 · 140 in · 20 out/);
+		assert.doesNotMatch(caption ?? "", /%|\$|model|high|ctx/);
+		assert.match(lines.at(-3) ?? "", /Example model \[high\].*16%.*160\/1.0k.*~\$0.42.*21% hit/);
+		assert.match(lines.at(-2) ?? "", /\/work/);
 		assert.doesNotMatch(status, /Message admitted/);
-		assert.match(lines.at(-2) ?? "", /╰─ Message admitted/);
+		assert.match(lines.at(-4) ?? "", /╰─ Message admitted/);
 	} finally { f.ui.dispose(); }
 });
 it("dashboard reconciliation and roster events reuse the scanned page for session figures", async (t) => {

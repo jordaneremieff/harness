@@ -923,11 +923,10 @@ to the roster. Resize cancels on terminal dimensions or screen changes, hiding,
 or disposal. After a lost release, subsequent input clears the local gesture.
 
 The conversation header shows the selected agent's handle and name, with its
-state mark on the right. A muted `provider/model · level` subheading shows known
-model identity. Identifiers shorten only when they overflow the actual pane
-width. An attention reason or conversation warning appears under the identity.
-The header contains no usage line, including in the full console. No status
-band separates the transcript from the composer.
+state mark on the right. An attention reason or conversation warning appears
+under the identity. Model and usage facts appear only below the composer,
+including in the full console. No status band separates the transcript from
+the composer.
 
 Heading counters describe the loaded selection or current thread page, not an
 unknown global total. A `+` marks incomplete loaded coverage. A scrollbar shows
@@ -943,27 +942,58 @@ A quiet hidden-line count marks omitted output. Ctrl+O expands arguments and
 output; Ctrl+T controls thinking. Stored tools never load another extension's
 renderer or execute through the display definition.
 
-The native editor caption describes the message effect first: `steer at next
-step` or `follow-up after answer` for a busy target, and `send` otherwise. Known
-usage follows in priority order: context, dollar cost, and cumulative input/output
-tokens as one group. Context gives the capacity signal; cost reports cumulative
-spend; cumulative traffic is less important to the next message. The caption
-never repeats the identity or state from the header. The same split applies in
-the roster preview, message view, and full console, including idle and failed
-agents. The delivery receipt uses the bottom border.
+The native editor caption contains only the delivery effect: `steer at next
+step` or `follow-up after answer` for a busy target, and `send` otherwise. Native
+hidden-row counts and the resize grip retain their space. The delivery receipt
+uses the bottom border.
 
-The caption reserves space for native hidden-row counts and the resize grip.
-Narrow widths remove whole groups from the end: traffic first, cost next, then
-context. The message effect remains. Unknown facts and placeholder values stay
-absent. Context comes from the newest completed assistant usage and becomes
-unknown after a newer compaction or reset until another assistant reports usage.
-The primary model registry supplies the context window once per render. An
-unknown window shows only the known context count. A live frame supplies
-cumulative input/output tokens from its usage ledger, including cached input.
-Headings and captions display metadata on one line; body text and drafts retain
-their line breaks. The frame preserves native keyboard input, text selection,
-and caret placement. Below side-by-side widths, compact roster rows sit above
-the same header, transcript, and composer.
+A two-line status block sits under the composer in roster preview, message view,
+and full console. Its first line uses the primary footer's presentation: the
+model registry display name, a colored `[level]` only for a reasoning-capable
+model, a ten-cell `█░` context bar and percent, context tokens over model window,
+`~$` recorded cost, and `● NN% hit`. Dim `│` separators divide the fields. The
+bar uses success through 60%, warning through 80%, and error above; it fills at
+100% but retains overflow percentages. These are display bands, not compaction
+thresholds or a safe remaining budget. The current registry model is resolved
+once per render. An unknown registry model retains its known model ID without
+inventing a name or reasoning capability.
+
+Context comes from the newest completed assistant usage and becomes unknown
+after a newer compaction or reset until another assistant reports usage. An
+unknown window leaves the known token count alone. Cost is the conversation's
+recorded estimate across model and tool calls, including compaction; estimates
+below half a cent are hidden. A `+` preserves a known incomplete cost. It is not
+a billing statement. Cache hit is `cacheRead / (input + cacheRead + cacheWrite)`
+across every model call in the agent's live `UsageState.models` totals,
+**including compaction calls**, and excludes tool totals. The dot is green
+when those totals contain cache reads and red for write-only cache use. It does
+not establish a recent assistant cache result or a cache that is alive now.
+Cache-free or unavailable totals produce no cache field.
+
+Elapsed, when available, means time since the agent's placed input started its
+current run, not process attach age. The current host observation exposes no
+placed-run start, so elapsed is omitted. The UI never substitutes overlay age,
+last activity, or the latest user-turn duration. Unknown facts have no
+placeholders. Narrow widths remove cache rate, cache dot, token count, then
+cost; model and context bar stay to the end, with width clipping as a final
+guard.
+
+Line two shows the agent's home-relative cwd and its cached Git branch. It
+shortens the path from the left before shortening or omitting the branch.
+A `+1` cell marks a delegate segment hidden by width.
+When loaded catalog rows identify that agent as their creating owner, a final
+`agents: active/total active · ~$cost` segment counts only those delegates.
+A `+` marks incomplete loaded coverage; unavailable child costs are absent.
+An absent child observation is not a zero global count. These figures never
+use the primary's own fleet total. Git reads use a bounded subprocess without
+a shell, cache a bounded set of cwd values per overlay, and refresh only on
+selection, cwd changes, or committed-entry events. In-flight events coalesce; disposal and
+cache eviction abort pending reads. No Git polling or duration tick exists.
+
+The frame preserves native keyboard input, text selection, caret placement,
+and drafts. The status block reserves its own rows outside the editor's mouse
+target. Below side-by-side widths, compact roster rows sit above the same
+header, transcript, composer, and status block.
 
 In Pi fullscreen mode, click a roster or task row to select it, then click the
 `enter` hint to open it. In Threads, click a row to select it; click the selected

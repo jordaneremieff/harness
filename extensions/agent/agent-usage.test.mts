@@ -16,6 +16,9 @@ it("context uses the newest assistant usage and becomes unknown after compaction
 		assert.equal(contextTokens([rewrite, assistant]), 160);
 	}
 	assert.equal(contextTokens([]), undefined);
+	const message = assistant.model?.[0];
+	assert.ok(message?.role === "assistant");
+	assert.equal(contextTokens([{ ...assistant, model: [{ ...message, usage: { ...usage, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } }] }]), 0);
 });
 it("usage facts keep unknown values and total model and tool usage once", () => {
 	assert.deepEqual(usageFacts(160, 1000, { models: { "test/model": usage }, tools: { read: usage } }), { context: 160, window: 1000, input: 280, output: 40 });

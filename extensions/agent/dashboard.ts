@@ -38,6 +38,8 @@ import type { NativeSurface } from "./action-dialogs.ts";
 import { CollaborationView, createCollaborationViewState, type Collaborate } from "./collaboration-view.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import { EffortView } from "./effort-view.ts";
+import { AgentBranchCache, type AgentBranchReader } from "./agent-git.ts";
+import type { AgentModelInfo, DelegatedFigures } from "./agent-footer.ts";
 
 export interface DashboardResult {
 	text: string;
@@ -48,7 +50,8 @@ export interface DashboardOperations {
 	efforts?(): Promise<EffortAwareness>;
 	messageEffort?(id: string, text: string): Promise<DashboardResult>;
 	sessionFigures?(page: AgentConversationPage): Promise<string>;
-	contextWindow?(provider: string, modelId: string): number | undefined;
+	modelInfo?(provider: string, modelId: string): AgentModelInfo | undefined;
+	branch?: AgentBranchReader;
 	collaborate?: Collaborate;
 	submit(input: { id: string; text: string; mode: "steer" | "followUp" }): Promise<DashboardResult>;
 	newAgent(input: { prompt: string; onCreated: (row: AgentConversationSummary) => void }): Promise<DashboardResult>;
@@ -158,6 +161,8 @@ export class AgentDashboard implements Component, Focusable {
 	private readonly operations: DashboardOperations;
 	private readonly surface: NativeSurface;
 	private readonly primaryId?: string;
+	private readonly branches: AgentBranchCache;
+	private branchChanges = 0;
 	constructor(
 		tui: TUI,
 		theme: Theme,
@@ -180,6 +185,7 @@ export class AgentDashboard implements Component, Focusable {
 		});
 		this.source = source;
 		this.operations = operations;
+		this.branches = new AgentBranchCache(operations.branch, () => this.redraw());
 		this.surface = surface;
 		this.primaryId = primaryId;
 		this.navigation = new DashboardNavigation(state);
@@ -339,6 +345,7 @@ export class AgentDashboard implements Component, Focusable {
 		const id = this.navigation.target ?? this.state.selected;
 		const row = this.page?.rows.find((item) => item.id === id);
 		if (row && this.console && this.console.row.id === id) {
+			if (this.console.row.cwd !== row.cwd) this.branches.refresh(row.cwd, `cwd:${++this.branchChanges}`);
 			this.console.row = row;
 			this.rereadIfStale(row);
 		} else if (row) this.select(row);
@@ -383,6 +390,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.snapshot = undefined;
 		this.source.select(undefined);
 		const generation = ++this.sourceGeneration;
+		this.branches.refresh(row.cwd, `selection:${row.id}:${generation}`);
 		queueMicrotask(() => {
 			if (this.closed || generation !== this.sourceGeneration) return;
 			this.source.select(row.id);
@@ -412,6 +420,7 @@ export class AgentDashboard implements Component, Focusable {
 			console.status = snapshot.partial ? "Partial history" : "";
 			console.warning = this.source.availability(row.id)?.state === "unavailable" ? "Conversation unavailable; stored messages shown" : undefined;
 			console.observeUsage(snapshot.entries);
+			this.branches.refresh(console.row.cwd, `${console.row.id}:${snapshot.entries.at(-1)?.id ?? "empty"}`);
 			this.redraw();
 		} catch (error) {
 			if (
@@ -477,6 +486,7 @@ export class AgentDashboard implements Component, Focusable {
 			console.warning = availability?.state === "unavailable" ? "Conversation unavailable; last messages shown" : undefined;
 			console.observeUsage(frame.entries, availability?.state === "live" ? frame.status.usage : undefined);
 			this.updateObservedRow(console, frame);
+			this.branches.refresh(console.row.cwd, `${console.row.id}:${frame.entries.at(-1)?.id ?? "empty"}`);
 		}
 		if (!frame && this.source.availability(console.row.id)?.state === "unavailable")
 			console.warning = "Conversation unavailable; stored messages shown";
@@ -1149,11 +1159,11 @@ export class AgentDashboard implements Component, Focusable {
 			mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), this.theme),
 		];
 	}
-	private messageLabel(width: number, window?: number): string {
+	private messageLabel(): string {
 		if (this.navigation.screen === "new") return `New agent · Enter starts · ${this.creating ? "Starting…" : "Task"}`;
 		if (this.navigation.screen === "find") return "Find loaded agents · Enter keeps filter · Esc cancels";
 		return (
-			this.console?.messageLabel(width, window) ??
+			this.console?.messageLabel() ??
 			(this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent")
 		);
 	}
@@ -1297,8 +1307,6 @@ export class AgentDashboard implements Component, Focusable {
 		const state = truncateToWidth(`${appearance.glyph} ${appearance.label}`, Math.floor(width / 2), "…");
 		const name = this.theme.bold(this.theme.fg("text", titleOf(row)));
 		const lines = [`${fitLine(name, Math.max(1, width - visibleWidth(state) - 2))}  ${this.theme.fg(appearance.color, state)}`];
-		const model = console.subheading(width);
-		if (model) lines.push(model);
 		const reason = attentionReason(row);
 		if (reason) lines.push(this.theme.fg("error", reason));
 		if (console.warning) lines.push(this.theme.fg("warning", console.warning));
@@ -1333,9 +1341,9 @@ export class AgentDashboard implements Component, Focusable {
 		composer.setViewportRows(requested === undefined ? undefined : clamp(requested, MIN_COMPOSER_ROWS, maxRows));
 		composer.grip = this.resize.active("composer") ? "active" : this.resize.hover === "composer" ? "hover" : "normal";
 	}
-	private renderComposer(composer: AgentComposer | undefined, width: number, maxRows: number, window?: number): { editor: string[]; maxRows: number } {
+	private renderComposer(composer: AgentComposer | undefined, width: number, maxRows: number): { editor: string[]; maxRows: number } {
 		if (!composer) return { editor: [], maxRows };
-		const render = () => composer.render(width, (captionWidth) => this.messageLabel(captionWidth, window), "", this.navigation.screen === "new" ? this.notice : this.console?.state.receipt);
+		const render = () => composer.render(width, this.messageLabel(), "", this.navigation.screen === "new" ? this.notice : this.console?.state.receipt);
 		this.sizeComposer(composer, maxRows);
 		let editor = render();
 		if (composer.autocompleteRows) { maxRows -= composer.autocompleteRows; this.sizeComposer(composer, maxRows); editor = render(); }
@@ -1354,15 +1362,17 @@ export class AgentDashboard implements Component, Focusable {
 		const shape = dashboardGeometry(width, height, 0, screen === "console", reserved, 4, this.state.layout);
 		const paneWidth = shape.conversationWidth;
 		const model = screen === "new" ? undefined : this.console?.row.model;
-		const window = model ? this.operations.contextWindow?.(model.provider, model.modelId) : undefined;
+		const info = model ? this.operations.modelInfo?.(model.provider, model.modelId) : undefined;
 		const header = this.selectedHeader(paneWidth - 2).map((line) => ` ${line} `);
-		const budget = dashboardPaneGeometry(shape.paneHeight, header.length + 2, 0);
-		const { editor, maxRows } = this.renderComposer(composer, paneWidth, budget.composerMaxRows, window);
-		const geometry = { ...shape, ...dashboardPaneGeometry(shape.paneHeight, header.length + 2, editor.length) };
+		const status = screen === "new" ? [] : this.console?.statusLines(paneWidth, info, this.branches.get(this.console.row.cwd), this.delegatedFigures()) ?? [];
+		const available = shape.paneHeight - status.length;
+		const budget = dashboardPaneGeometry(available, header.length + 2, 0);
+		const { editor, maxRows } = this.renderComposer(composer, paneWidth, budget.composerMaxRows);
+		const geometry = { ...shape, ...dashboardPaneGeometry(available, header.length + 2, editor.length) };
 		this.resizeColumns = { roster: geometry.rosterWidth, detail: geometry.conversationWidth };
 		this.bodyHeight = geometry.bodyHeight;
 		const transcript = this.transcriptLines(paneWidth, geometry.bodyHeight);
-		const pane = [...header, this.conversationBoundary(paneWidth), ...transcript, "", ...editor];
+		const pane = [...header, this.conversationBoundary(paneWidth), ...transcript, "", ...editor, ...status];
 		const bodyY = 1 + reserved;
 		const paneX = geometry.wide ? geometry.rosterWidth + 1 : 0;
 		const paneY = bodyY + geometry.rosterHeight;
@@ -1405,6 +1415,14 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		return [this.heading(width), ...body, this.hintLine(width)];
 	}
+	private delegatedFigures(): DelegatedFigures | undefined {
+		const parent = this.console?.row.id;
+		if (!parent || !this.page) return undefined;
+		const children = this.page.rows.filter((row) => row.creatingOwnerId === parent);
+		if (!children.length) return undefined;
+		const incomplete = !this.page.coverage.complete || this.page.coverage.skipped > 0 || this.page.coverage.omitted > 0 || this.page.coverage.nextCursor !== null;
+		return { active: children.filter((row) => row.state === "working" || row.state === "starting").length, total: children.length, incomplete, cost: children.every((row) => !row.partial && Number.isFinite(row.cost)) ? children.reduce((sum, row) => sum + row.cost, 0) : undefined };
+	}
 	private resizeScreen(): string { return `${this.navigation.screen}:${this.effortsOpen}:${this.hidden}`; }
 	render(width: number): string[] {
 		const height = this.tui.terminal.rows;
@@ -1440,6 +1458,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.resize.clear();
 		this.saveConsole();
 		this.closed = true;
+		this.branches.dispose();
 		this.console?.dispose();
 		this.sourceGeneration++;
 		for (const off of this.unsubscribe) off();

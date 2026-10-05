@@ -194,7 +194,8 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		send(0, 161, y); render(); send(32, 161, y - 4); const dragged = render(); send(0, 161, y - 4, true);
 		assert.equal(f.state.layout.composerRows, 9);
 		assert.ok(dragged.some((line) => line.includes("━━━")));
-		assert.ok(dragged.some((line) => line.includes("test/model")));
+		assert.ok(dragged.some((line) => line.includes("model │")));
+		assert.ok(dragged.some((line) => line.includes("steer at next step")));
 		const resetY = render().findIndex((line) => line.includes("┄┄┄"));
 		send(0, 161, resetY); send(0, 161, resetY, true); render(); send(0, 161, resetY); send(0, 161, resetY, true); render();
 		assert.equal(f.state.layout.composerRows, undefined);

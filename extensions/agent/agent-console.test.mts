@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { fixture, turn, row, source, conversationFrame } from "./dashboard-test-fixture.mts";
+import { fixture, turn, row, source, page, conversationFrame } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 import { stripVTControlCharacters } from "node:util";
 import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
@@ -56,75 +56,77 @@ function factSource(state: "working" | "idle" | "failed") {
 	return observed;
 }
 for (const state of ["working", "idle", "failed"] as const) {
-	for (const width of [164, 100, 80, 60]) {
-		for (const consoleView of [false, true]) {
-			it(`${state} right pane assigns each fact once at ${width} columns in ${consoleView ? "console" : "roster"}`, async () => {
-				const f = fixture(width, 30, factSource(state), { contextWindow: () => 1000 });
-				try {
-					await turn(); if (consoleView) f.ui.handleInput("\r");
-					const lines = f.ui.render(width).map(stripVTControlCharacters);
-					assert.equal(lines.length, 30); assert.ok(lines.every((line) => visibleWidth(line) === width));
-					const geometry = dashboardGeometry(width, 30, 0, consoleView);
-					const paneX = geometry.wide ? geometry.rosterWidth + 1 : 0;
-					const paneY = consoleView || geometry.wide ? 1 : 5;
-					const right = lines.slice(paneY, -1).map((line) => sliceByColumn(line, paneX, width)).join("\n");
-					const header = lines.slice(paneY, paneY + 2).map((line) => sliceByColumn(line, paneX, width));
-					assert.match(header[0] ?? "", /@recipient · Recipient/);
-					assert.match(header[1] ?? "", /test\/model · high/);
-					assert.doesNotMatch(header.join("\n"), /ctx| in| out|\$/);
-					for (const fact of ["test/model", "high", sessionAppearance[state].label, "160/1.0k (16%) ctx", "$0.42"]) assert.equal(right.split(fact).length - 1, 1, `${fact}: ${right}`);
-					const caption = lines.slice(paneY).find((line) => line.includes("╭─")) ?? "";
-					const effect = state === "working" ? "steer at next step" : "send";
-					assert.match(caption, new RegExp(`╭─ ${effect}`));
-					assert.doesNotMatch(caption, /working|idle|failed|test\/model|high|…/);
-					const full = `${effect} · 160/1.0k (16%) ctx · $0.42 · 140 in · 20 out`;
-					const count = visibleWidth(full) <= geometry.conversationWidth - 10 ? 1 : 0;
-					for (const fact of ["140 in", "20 out"]) assert.equal(right.split(fact).length - 1, count, right);
-				} finally { f.ui.dispose(); }
-			});
-		}
+	for (const width of [164, 100, 80, 60]) for (const consoleView of [false, true]) {
+		it(`${state} right pane assigns facts once below the composer at ${width} in ${consoleView ? "console" : "roster"}`, async () => {
+			const f = fixture(width, 30, factSource(state), { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }) });
+			try {
+				await turn(); if (consoleView) f.ui.handleInput("\r");
+				const lines = f.ui.render(width).map(stripVTControlCharacters);
+				assert.equal(lines.length, 30); assert.ok(lines.every((line) => visibleWidth(line) === width));
+				const geometry = dashboardGeometry(width, 30, 0, consoleView);
+				const paneX = geometry.wide ? geometry.rosterWidth + 1 : 0;
+				const paneY = consoleView || geometry.wide ? 1 : 5;
+				const pane = lines.slice(paneY, -1).map((line) => sliceByColumn(line, paneX, width));
+				const right = pane.join("\n");
+				assert.match(pane[0], /@recipient · Recipient/);
+				assert.match(pane[0], new RegExp(sessionAppearance[state].label));
+				assert.doesNotMatch(pane[0], /model|high|%|\$/);
+				assert.match(pane.at(-2) ?? "", /Example model \[high\].*16%.*160\/1.0k/);
+				assert.match(pane.at(-1) ?? "", /\/work/);
+				for (const fact of ["Example model", "[high]", "16%", "160/1.0k", "~$0.42"]) assert.equal(right.split(fact).length - 1, 1, right);
+				const caption = pane.find((line) => line.includes("╭─")) ?? "";
+				const effect = state === "working" ? "steer at next step" : "send";
+				assert.match(caption, new RegExp(`╭─ ${effect} ─`));
+				assert.doesNotMatch(caption, /working|idle|failed|model|high|%|\$|hit|ctx| in| out|…/);
+				assert.equal(right.split("21% hit").length - 1, geometry.conversationWidth >= visibleWidth("Example model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit") ? 1 : 0);
+			} finally { f.ui.dispose(); }
+		});
 	}
 }
-it("caption drops traffic then cost then context while preserving the effect beside native hidden rows", async () => {
-	const f = fixture(100, 30, factSource("working"), { contextWindow: () => 1000 });
+it("effect-only caption preserves mode and draft beside native hidden rows", async () => {
+	const f = fixture(100, 30, factSource("working"), { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }) });
 	try {
-		await turn();
-		const state = agentState(f.state, "one");
-		const caption = () => stripVTControlCharacters(f.ui.render(100).slice(1).find((line) => line.includes("╭─")) ?? "");
-		assert.match(caption(), /steer at next step · 160\/1.0k \(16%\) ctx · \$0.42/);
-		assert.doesNotMatch(caption(), / in| out/);
+		await turn(); const state = agentState(f.state, "one");
 		f.ui.handleInput("\t"); f.ui.handleInput("\t");
-		assert.match(caption(), /follow-up after answer/);
 		updateDraft(state, Array.from({ length: 30 }, (_, index) => `draft ${index}`).join("\n"));
-		assert.match(caption(), /follow-up after answer · 160\/1.0k \(16%\) ctx/);
-		assert.doesNotMatch(caption(), /\$| in| out|…/);
-		assert.match(caption(), /↑ \d+ lines/);
+		const caption = () => stripVTControlCharacters(f.ui.render(f.tui.terminal.columns).slice(1).find((line) => line.includes("╭─")) ?? "");
+		assert.match(caption(), /follow-up after answer/); assert.match(caption(), /↑ \d+ lines/);
+		assert.doesNotMatch(caption(), /model|high|ctx|%|\$| in| out|…/);
 		(f.tui.terminal as { columns: number }).columns = 60;
-		const narrow = stripVTControlCharacters(f.ui.render(60).slice(1).find((line) => line.includes("╭─")) ?? "");
-		assert.match(narrow, /follow-up after answer/); assert.doesNotMatch(narrow, /ctx|\$| in| out|…/);
+		assert.match(caption(), /follow-up after answer/);
 		assert.equal(state.mode, "followUp"); assert.equal(state.draft.split("\n").length, 30);
 	} finally { f.ui.dispose(); }
 });
-it("composer caption shows delivery and usage without repeating identity or state", async () => {
-	const observed = source([row("one", { name: "Recipient" })]);
-	const base = conversationFrame();
-	const usage = { input: 160, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-	observed.frame = () => conversationFrame({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", provider: "test", model: "model", api: "openai-responses", timestamp: 0, content: [], stopReason: "stop", usage }] }], status: { ...base.status, usage: { models: { "test/model": usage }, tools: {} } } });
-	observed.availability = () => ({ state: "live", at: base.observedAt });
-	const f = fixture(164, 30, observed, { contextWindow: () => 1000 });
+it("project statistics include only the selected agent's loaded delegates", async () => {
+	const observed = source([row("one", { modifiedAt: 100 }), row("child", { creatingOwnerId: "one", cost: 1 }), row("other", { creatingOwnerId: "primary", cost: 99 })]);
+	const list = observed.list; observed.list = async () => { const page = await list(); return { ...page, coverage: { ...page.coverage, complete: false } }; };
+	const f = fixture(164, 30, observed, { branch: async () => "main" });
 	try {
-		await turn();
-		assert.match(f.ui.render(164).join("\n"), /steer at next step · 160\/1.0k \(16%\) ctx · \$0.42 · 160 in · 0 out/);
-		f.ui.handleInput("\t");
-		f.ui.handleInput("\t");
-		assert.match(f.ui.render(164).join("\n"), /follow-up after answer/);
-		assert.doesNotMatch(f.ui.render(164).join("\n"), /Message Recipient/);
+		await turn(); await turn();
+		assert.match(f.ui.render(164).at(-2) ?? "", /\/work \(main\) │ agents: 1\/1\+ active · ~\$1.00/);
+		const before = f.ui.navigation.screen;
+		f.ui.handleMouse({ type: "press", button: "left", x: 100, y: 28, screenX: 100, screenY: 28, width: 164, height: 30, shift: false, alt: false, ctrl: false });
+		assert.equal(f.ui.navigation.screen, before);
 	} finally { f.ui.dispose(); }
-	const absent = fixture(100, 30, source([row("empty", { state: "idle", model: undefined, cost: Number.NaN })]));
+});
+
+it("cwd events refresh the branch, while ordinary renders never launch reads", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	let current = row("one", { cwd: "/one" });
+	let notify = () => {};
+	const observed = source([current]);
+	observed.list = async () => page([current]);
+	observed.subscribeRoster = (listener) => { notify = listener; return () => {}; };
+	const reads: string[] = [];
+	const f = fixture(80, 24, observed, { branch: async (cwd) => { reads.push(cwd); return cwd === "/one" ? "main" : "topic"; } });
 	try {
-		await turn();
-		const caption = absent.ui.render(100).find((line) => line.includes("╭─ send"));
-		assert.ok(caption);
-		assert.doesNotMatch(caption, /unknown|unavailable|\?|Model|ctx|\$/);
-	} finally { absent.ui.dispose(); }
+		await turn(); const count = reads.length;
+		for (let index = 0; index < 10; index++) f.ui.render(80);
+		assert.equal(reads.length, count);
+		current = { ...current, cwd: "/two" }; notify(); t.mock.timers.tick(250); await turn();
+		assert.equal(reads.at(-1), "/two");
+		assert.match(f.ui.render(80).at(-2) ?? "", /\/two \(topic\)/);
+		const updated = reads.length; notify(); t.mock.timers.tick(250); await turn();
+		assert.equal(reads.length, updated);
+	} finally { f.ui.dispose(); }
 });

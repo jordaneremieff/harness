@@ -240,7 +240,7 @@ for (const [width, height] of [
 				assert.equal(f.state.selected, "branch");
 				const branch = f.ui.render(width).join("\n");
 				assert.match(branch, /╭─ send/);
-				assert.match(branch, /Idle/); assert.match(branch, /test\/model · high/);
+				assert.match(branch, /Idle/); assert.match(branch, /model │/);
 				assert.equal(agentState(f.state, "one").draft, "source draft");
 			} finally {
 				f.ui.dispose();
@@ -341,7 +341,7 @@ it("a created branch outside the published roster never retains the source as it
 		await turn();
 		assert.equal(f.ui.navigation.screen, "console");
 		assert.doesNotMatch(f.ui.render(80).join("\n"), /\$\?/);
-		assert.doesNotMatch(f.ui.render(80).join("\n"), /test\/model · high/);
+		assert.doesNotMatch(f.ui.render(80).join("\n"), /model │/);
 		f.ui.handleInput("branch instruction");
 		f.ui.handleInput("\r");
 		await turn();
@@ -521,7 +521,7 @@ it("new agent selects its task and starting conversation before host readiness",
 			assert.doesNotMatch(screen, /retained/);
 			assert.match(screen, /Write the startup note/);
 			assert.match(screen, /╭─ send/);
-			assert.match(screen, /test\/model · high/);
+			assert.match(screen, /model │/);
 			assert.doesNotMatch(
 				screen,
 				/Conversation unavailable|Unavailable|Attention|need attention|Message two|model \?|reasoning \?/,
@@ -555,7 +555,7 @@ it("a busy live frame updates the header, roster, and footer together", async ()
 		const screen = f.ui.render(140).join("\n");
 		assert.match(screen, /╭─ steer at next step/);
 		assert.match(screen, /Working/);
-		assert.match(screen, /test\/model · high/);
+		assert.match(screen, /model │/);
 		assert.doesNotMatch(screen, /Done|0 working/);
 		f.ui.handleInput("/");
 		assert.match(f.ui.render(140).join("\n"), /● Working/);
@@ -589,7 +589,7 @@ it("a late cold snapshot error never replaces a live conversation", async () => 
 		fail(new Error("ENOENT: source was absent before the host started"));
 		await turn();
 		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /test\/model · high/);
+		assert.match(screen, /model │/);
 		assert.match(screen, /Live task/);
 		assert.doesNotMatch(screen, /Conversation unavailable|ENOENT/);
 	} finally {
@@ -649,7 +649,7 @@ it("a retained conversation reattaches and rereads when a stopped host restarts"
 	const f = fixture(80, 24, observed);
 	await turn();
 	await turn();
-	assert.match(f.ui.render(80).join("\n"), /test\/model · high/);
+	assert.match(f.ui.render(80).join("\n"), /model │/);
 	assert.match(f.ui.render(80).join("\n"), /Stored task/);
 	rosterChange();
 	t.mock.timers.tick(250);
@@ -768,30 +768,30 @@ it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc re
 });
 
 for (const width of [80, 164]) {
-	it(`composer resolves the current model window once per render at ${width}`, async () => {
+	it(`status block resolves the current model once per render at ${width}`, async () => {
 		const observed = source([row("one"), row("two", { model: { provider: "other", modelId: "second", thinkingLevel: "high" } })]);
 		observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
 		const lookups: Array<[string, string]> = [];
 		let capacity: number | undefined = 1000;
-		const f = fixture(width, 30, observed, { contextWindow: (provider, modelId) => { lookups.push([provider, modelId]); return capacity; } });
+		const f = fixture(width, 30, observed, { modelInfo: (provider, modelId) => { lookups.push([provider, modelId]); return capacity === undefined ? undefined : { name: modelId, reasoning: true, contextWindow: capacity }; } });
 		try {
 			await turn();
 			let screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
 			assert.deepEqual(lookups, [["test", "model"]]);
-			assert.match(screen, /160\/1.0k \(16%\)/);
-			assert.match(screen, /\(16%\) ctx/);
+			assert.match(screen, /160\/1.0k/);
+			assert.match(screen, /16%/);
 			capacity = 2000;
 			f.ui.handleInput("\x1b[B");
 			await turn();
 			screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
 			assert.deepEqual(lookups, [["test", "model"], ["other", "second"]]);
-			assert.match(screen, /160\/2.0k \(8%\)/);
-			assert.match(screen, /\(8%\) ctx/);
+			assert.match(screen, /160\/2.0k/);
+			assert.match(screen, /8%/);
 			capacity = undefined;
 			screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
 			assert.equal(lookups.length, 3);
-			assert.match(screen, /160 ctx/);
-			assert.doesNotMatch(screen, /8% ctx|2.0k/);
+			assert.match(screen, /│ 160 │/);
+			assert.doesNotMatch(screen, /8%|2.0k/);
 		} finally { f.ui.dispose(); }
 	});
 }
