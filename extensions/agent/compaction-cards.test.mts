@@ -92,7 +92,7 @@ it("keeps complete target, operation, thread and revision identities at wide wid
 	const cards = createAgentToolCards();
 	for (const [name, card] of Object.entries(cards)) {
 		if (name === "agent_list") continue;
-		const args = { sessionId: `${identity}:12345678901234567890`, action: "read", message: "Task", name: "command" };
+		const args = { results: [{ sessionId: `${identity}:12345678901234567890`, submissionId: 1 }], sessionId: `${identity}:12345678901234567890`, action: "read", message: "Task", name: "command" };
 		const callArgs = name === "agent_intent" ? { action: "clear" } : args;
 		const state = name === "agent_intent" ? { observation: { identity: args.sessionId } } : undefined;
 		const rendered = screen(card.renderCall(callArgs, theme, context({ state })), 600);

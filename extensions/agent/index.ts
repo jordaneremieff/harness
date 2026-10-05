@@ -3,6 +3,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { DispatchOutputSchema } from "./result-reference.ts";
+import { AwaitParams, AwaitOutputSchema } from "./awaited-results.ts";
 import { profileCommand } from "./profile-dialog.ts";
 import { join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,7 +182,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		"durable:contribution",
 		createAgentContribution({
 			source: fileURLToPath(import.meta.url),
-			dispatch: (method, params) => resolveAgentControlDispatch()(method, params),
+			dispatch: (method, params, context) => resolveAgentControlDispatch()(method, params, context),
 		}),
 	);
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
@@ -215,7 +216,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		modelOnly = false,
 	): void => {
 		const guidance = AGENT_CONTROL_GUIDANCE[name];
-		const schema = observationSchemas[name];
+		const schema = name === "agent_await" ? AwaitOutputSchema : observationSchemas[name];
 		pi.registerTool({
 			name,
 			label: name.replace("agent_", "Agent "),
@@ -250,6 +251,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		renderCall: cards.agent_intent.renderCall,
 		renderResult: cards.agent_intent.renderResult,
 	});
+	register("agent_await", "Await exact admitted results on an open native Durable request. Ordinary primary sessions keep asynchronous delivery and do not block.", AwaitParams, async () => { throw new Error("agent_await requires a native Durable conversation. This primary stays responsive and receives ordinary asynchronous results."); });
 	register(
 		"agent_collaborate",
 		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Join, leave and exchange sourced contributions. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read the frame and paged exchange without starting a host.",

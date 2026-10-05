@@ -31,7 +31,7 @@ function nativeTool(name: string, args: Record<string, unknown>, details: unknow
 }
 
 it("all native tool rows share two-tier known headers, native padding and one hint", () => {
-	const args = { sessionId: identity, action: "read", name: "reload", message: "Task", summary: "Keep facts", view: "history" };
+	const args = { results: [{ sessionId: identity, submissionId: 1 }], sessionId: identity, action: "read", name: "reload", message: "Task", summary: "Keep facts", view: "history" };
 	const cards = createAgentToolCards(() => [row]);
 	for (const name of Object.keys(cards)) {
 		const component = name === "agent_intent" ? nativeTool(name, { action: "publish", purpose: "Review the parser" }, { arbitrary: true, published: { id: identity, name: row.name, model, thinkingLevel: model.thinkingLevel, intentClaim: { purpose: "Review the parser" } } }) : nativeTool(name, args, { arbitrary: true, sessionId: identity });

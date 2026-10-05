@@ -15,13 +15,13 @@ stopping work.
 
 ## Runtime and identity
 
-- A root agent's immutable external ID is its storage ID. A fork or child has
+- A root agent's immutable external ID is its storage ID. Another conversation in that storage has
   the ID `<storageId>:<conversationId>`. An optional creation-time `@handle`
   addresses a standing concern separately from its mutable, nonunique display name.
   Controls accept canonical identities or `@handle`, never a bare display name.
-- A native fork stays in its source storage. A child at the same cwd is a
-  conversation owned by a background task in that storage. A child at a
-  different cwd gets new storage and its own cwd-bound services and host.
+- A native fork stays in its source storage. An agent created at the same cwd is
+  a conversation owned by a background task in that storage. An agent created at
+  a different cwd gets new storage and its own cwd-bound services and host.
   Native documents retain the creating owner as provenance. Each task's results
   return to its own reply recipient as deduplicated follow-ups. A separate root
   gets new storage; a handle always selects an independent root, even at the same cwd.
@@ -178,52 +178,96 @@ interface. A retained manager with a different interface requires a Pi restart.
 Effort awareness is a tool-only status addition; native host observation response
 contracts and the primary channel's delivery contract remain unchanged.
 
-## Agents that run their own agents
+## Agent collaboration and placement
 
 Agent controls reach native conversations whose effective selection includes
 them, so an agent can run its own agents. Placement without a handle is
 decided at spawn time and stated in the result. An omitted cwd selects the
 caller's cwd. The same canonical directory (compared by real path, with a
-lexical fallback if realpath resolution fails) creates a native child
-conversation in the caller's storage: `Spawned <name> as native child
-conversation <id> in your storage.` A different cwd creates a new storage
-with its own host: `Spawned <name> in <cwd> as <sessionId> with its own
-storage and host.` A native child inherits its parent's stored agent
-configuration and a fresh profile; there is no generation-depth gate in the
-creation paths.
+lexical fallback if realpath resolution fails) creates a conversation in the
+caller's storage. A different cwd creates a new storage with its own host.
+A new conversation inherits its creator's stored agent configuration and a
+fresh profile; there is no generation-depth gate in the creation paths.
 
 A no-target `agent_status` inside an agent appends a bounded newest-first
 `Your agents` section and structured `lineage` read from the caller's retained
-child record, with each direct child's identity, creation label, and kind,
+creation record, with each recorded agent's identity, creation label, and kind,
 and an explicit omitted count. This includes native spawns, recorded forks
 and rewinds, and foreign spawns, not handles resolved as independent roots.
-It is absent when the caller has none. It is not a recursive descendant tree
+It is absent when the caller has none. It is not a recursive creation tree
 or a current task roster. Live state and current names come from selecting
 that identity. The public snapshot reads the retained document before the
 projection bounds its output; it is not a bounded storage scan.
 
-Lifecycle boundaries stay with the spawning conversation. A parent's reset or
-ordinary abort does not reach background child work or its reporters; a
-background abort crosses those boundaries within the storage. Compacting
-another conversation aborts its reached native children first; self-compaction
-does not. Idle host retirement cannot proceed while same-storage descendants
-hold live work, and a foreign child's detached host survives the spawning
-host's retirement. Result delivery reacquires a retired owner host. Answers,
+Lifecycle boundaries stay with the creating conversation. Its reset or ordinary
+abort does not reach background agent work or its reporters; a background abort
+crosses those boundaries within the storage. Compacting another conversation
+aborts the native agents it reaches first; self-compaction does not. Idle host
+retirement cannot proceed while same-storage agents hold live work. An agent's
+foreign detached host survives its creator's host retirement. Result delivery reacquires a retired owner host. Answers,
 reports, and check-ins follow each task's retained request route; the
 creating owner is provenance, not a substitute when request routing is
 unavailable.
 
-Descendants are eligible for the operator's bounded roster, without a
-depth-based exclusion. Catalog, storage-scan, and display limits still apply.
-The operator can steer, abort, or reset a retained descendant by canonical
-identity without routing through the parent agent.
+Agents are eligible for the operator's bounded roster without a depth-based
+exclusion. Catalog, storage-scan, and display limits still apply. The operator
+can steer, abort, or reset a retained agent by canonical identity without routing
+through its creator.
 
 An answer settles a request; it does not represent a pause for later work.
 Use report mode for interim progress. Put the substantive result or exact
 blocker in the terminal answer, not a waiting note or a closing message that
 points to an earlier answer. Settlement alone does not establish task
-acceptance. This guidance does not hold a parent run open or stop independent
-background agents; native submissions and tasks retain their normal lifecycle.
+acceptance. Native `agent_await` holds the original request open for exact peer
+results. Creation records do not define dependencies or authorize cancellation.
+
+### Await exact peer results
+
+Dispatch work in the background, retain each `result`, then call
+`agent_await({ results: [resultA, resultB] })` in a native Durable conversation.
+The request remains placed while its generation waits on the live tool. The
+same request resumes with accepted outcomes and eventually receives one final
+answer. The wait retains a host process, tool invocation, native documents, and
+bounded observers; it makes no provider calls merely to wait. Storage usage is
+not the awaited request's cost.
+
+The tool accepts a bounded unique batch of admitted references. Same-storage
+outcomes use native submission settlement. Foreign results use native settlement
+only when their normal reply route names this recipient. A result addressed to
+another recipient returns `unavailable`; observation does not steal its receipt.
+Creation-only calls, reports, scheduled inputs, names, and thread posts are not
+result references. Ordinary primary sessions keep background delivery and never
+block on this tool.
+
+Explicit send or steer, direct operator input, and a report from an awaited
+agent release the wait after input admission. The input reaches the original
+post-tools boundary. Apply it and await unresolved references again on the same
+request. Failed admission does not release the wait. A failed or aborted
+producer returns a typed non-success outcome and releases parallel waits from
+that tool round without canceling other producers. A real conversation abort
+stops the original request. Late named results remain retained without starting
+another model run; a new explicit request still reads them.
+
+Named-result check-ins are suppressed at the waiting recipient. Other check-ins
+and scheduled messages remain queued follow-ups, even if their original mode
+was steer. Requester check-ins about the waiting agent remain active. Passive
+writes, including reset, wait for their normal native boundary; they do not
+release the wait. Each return includes `queuedInputCount` from a committed inbox
+snapshot, excluding writes and suppressed check-ins. More inputs may arrive
+later; queued follow-ups retain their normal later runs.
+
+Recipient acceptance commits before source acknowledgment. It reconciles owned
+queued synthetic result inputs through public withdrawal, preserving unrelated
+results in a receipt group. Already placed result bodies are not repeated;
+`representedBy` names the retained contextual entry. Capped answers and receipt
+excerpts include an exact `agent_inspect` continuation. Start at its supplied
+entry and offset, then follow each returned `nextOffset` until it is null.
+
+Local cycle admission uses one consistent native transaction, including named
+request lookup and bare-reference live/inbox membership. It refuses self-waits
+and cycles inside this storage. Foreign edges end that traversal; it does not
+refuse or solve cross-storage cycles. Safe replay reacquires observers from
+retained declarations and accepted outcomes without redispatching work.
 
 ## Standing agents and expertise
 
@@ -286,8 +330,8 @@ that fails to import or whose factory throws is named in the same places as
 Each conversation has its own persisted provider session ID, separate from the
 storage identity. Durable supplies this UUID on model requests. It stays stable
 across turns, tool rounds, host restarts, reset, compaction, and model changes.
-A fork or child receives a fresh ID, so its first request does not reuse the
-parent's provider session key. Providers such as OpenAI Codex derive prompt-cache
+A fork or newly created agent receives a fresh ID, so its first request does not
+reuse its source conversation's provider session key. Providers such as OpenAI Codex derive prompt-cache
 keys and session headers from this ID; cache reuse remains provider-dependent.
 
 Requests also carry the configured transport and thinking level as `reasoning`,
@@ -314,7 +358,7 @@ The host supplies:
 - A native `read` around Pi's public stateless reader, including image blocks.
 - Prompt sections for the coding task, context files, skills, appended system
   prompts, cwd, date, and capability limits.
-- Agent controls as a native contribution. Child ownership and reports use
+- Agent controls as a native contribution. Background ownership and reports use
   native tasks, documents, and submission request IDs.
 - Codemode through public `CodemodeSandbox`, and MCP through public `McpClient`.
   Nested calls are Durable tasks with committed intent, validation, hooks, and
@@ -361,7 +405,8 @@ An ordinary primary remains responsive and receives normal routed results.
 
 | Tool | Effect |
 |---|---|
-| `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native child and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
+| `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
+| `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries refuse this native-only operation. |
 | `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default; For Durable agents, `mode: "followUp"` and `mode: "report"` wait for the current run to end. Model-origin reports to ordinary primaries use steer. Report receipts state this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. |
@@ -1293,8 +1338,8 @@ when rows remain available; repeated failures or an empty roster show a notice
 on the roster’s last line. A successful refresh clears that notice.
 
 The primary status line and dashboard heading use the same session scope:
-agents created by the current primary session plus their descendants through
-catalog ownership. Other primary sessions and unrelated retained agents do not
+agents created by the current primary session plus agents reached through
+retained creation records. Other primary sessions and unrelated retained agents do not
 contribute to these figures. The roster still lists discovered agents across
 sessions. The status says `agents: <working>/<total> active · ~$<cost>`
 and disappears when no session-scoped rows are found. The numerator counts only

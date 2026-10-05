@@ -23,7 +23,7 @@ describe("human-readable agent targets", () => {
 	it("uses observed names, model and provider on every targeted call, with full IDs expanded", () => {
 		const cards = createAgentToolCards(() => [row]);
 		for (const [name, card] of Object.entries(cards).filter(([name]) => name !== "agent_list" && name !== "agent_place" && name !== "agent_intent")) {
-			const args = { sessionId: id, name: "reload", message: "Task", action: "read" };
+			const args = { results: [{ sessionId: id, submissionId: 1 }], sessionId: id, name: "reload", message: "Task", action: "read" };
 			const collapsed = screen(card.renderCall(args, theme, context({ executionStarted: true })));
 			assert.match(collapsed, /Parser review\nprovider\/model · high/u, name);
 			assert.doesNotMatch(collapsed, new RegExp(id), name);

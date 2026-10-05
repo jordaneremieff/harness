@@ -15,9 +15,12 @@
  */
 import { randomUUID } from "node:crypto";
 import { StrandedInputRecovery } from "./stranded-inputs.ts";
-import { admittedResult } from "./result-reference.ts";
+import { admittedResult, type ResultReference } from "./result-reference.ts";
+import { AwaitOutcomeSchema, type InputProvenance, type AwaitOutcome } from "./awaited-results.ts";
+import { Value } from "typebox/value";
+import { deliverAcceptedResults } from "./result-acceptance.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
-import { richSubmitConversation } from "./durable-controls.ts";
+import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -407,9 +410,13 @@ export class DurableHost {
 				return { ...submitted, identity: this.identity(conversation.id), result: admittedResult(this.identity(conversation.id), submitted, requestRequiredString(params, "requestId")) };
 			}
 			case "submit":
-				return this.submitRequest(params, requestContext);
+				return this.submitRequest(params, requestContext).catch((error) => {
+					if (error instanceof AwaitInputSuppressed) return { suppressed: true };
+					throw error;
+				});
 			case "receipts":
 				return this.receiptsRequest(params, requestContext);
+			case "receive-result": return this.receiveResults(params, requestContext);
 			case "report":
 				return this.reportRequest(params, requestContext);
 			case "acknowledge":
@@ -478,14 +485,24 @@ export class DurableHost {
 		};
 	}
 
+	private async receiveResults(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const recipient = await this.target(params, context);
+		const outcomes = params?.outcomes as AwaitOutcome[];
+		if (!Array.isArray(outcomes) || outcomes.length < 1 || outcomes.length > 128 || !outcomes.every((outcome) => Value.Check(AwaitOutcomeSchema, outcome))) throw new Error("Result delivery requires a bounded typed outcome group");
+		const dispositions = await deliverAcceptedResults(this.harness, recipient.id, outcomes, requestRequiredString(params, "requestId"), requestRequiredString(params, "message"), context);
+		return { dispositions: dispositions.map((record) => record.disposition) };
+	}
+
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
 		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
+		const provenance = params?.provenance as Omit<InputProvenance, "conversationId" | "requestId" | "submissionId"> | undefined;
 		const submitted = await submitConversation(
 			conversation,
 			{
 				message: messageFrom(params?.message),
 				requestId: requestRequiredString(params, "requestId"),
+				...(provenance === undefined ? {} : { provenance }),
 				...optionalParam("ownerId", requestString(params, "ownerId")),
 				...optionalParam("whenBusy", this.busyMode(params)),
 				...optionalParam("operationId", requestString(params, "operationId")),
@@ -514,8 +531,23 @@ export class DurableHost {
 		throw new TypeError("origin must be operator or model");
 	}
 
+	private async selectedReceipt(reference: ResultReference, ownerId: string, context: Context): Promise<unknown> {
+		const submission = await this.harness.submission(reference.submissionId as SubmissionId, context);
+		const status = await submission?.status(context);
+		if (status?.type !== "input" || this.identity(status.conversationId) !== reference.sessionId || (reference.requestId !== undefined && status.requestId !== reference.requestId)) throw new Error("The exact receipt does not identify the selected native input");
+		const routed = await this.harness.commit(async (tx) => {
+			const delivery = await tx.doc(AgentDeliveryDoc);
+			return delivery.receipts[String(status.id)]?.ownerId === ownerId || delivery.intents.some((intent) => intent.conversationId === status.conversationId && intent.requestId === status.requestId && intent.ownerId === ownerId);
+		}, context);
+		if (!routed) throw new Error("The selected result is not addressed to this recipient");
+		const { usage: _storageUsage, ...outcome } = await readOutcome(this.harness, status.id, context);
+		await reconcileDeliveries(this.harness, context);
+		return { outcome };
+	}
+
 	private async receiptsRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const ownerId = requestRequiredString(params, "ownerId");
+		if (params?.result !== undefined) return this.selectedReceipt(params.result as ResultReference, ownerId, context);
 		const wait = requestBoolean(params, "wait") ?? false;
 		const deliveries = wait ? await waitForReceipts(this.harness, ownerId, context, this.lifecycle.signal) : await undeliveredForOwner(this.harness, ownerId, context);
 		const pending = await pendingDeliveries(this.harness, ownerId, context);

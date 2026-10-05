@@ -19,6 +19,9 @@
  */
 
 import { realpathSync } from "node:fs";
+import { AwaitParams, AwaitOutputSchema, boundedAwaitAnswer, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease, type AwaitOutcome } from "./awaited-results.ts";
+import { executeAwait } from "./await-execution.ts";
+import { deliverAcceptedResult } from "./result-acceptance.ts";
 import { readAgentLineage, renderAgentLineage } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile } from "./profile.ts";
 import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
@@ -33,6 +36,7 @@ import { AgentCatalog } from "./catalog.ts";
 import { readFleetStatus } from "./fleet-status.ts";
 import { readEffortAwareness, formatEffortAwareness } from "./effort-awareness.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -56,6 +60,7 @@ import {
 export type AgentControlMethod =
 	| "profile-read" | "profile-update" | "profile-list" | "resolve-agent" | "task-submit" | "report"
 	| "submit"
+	| "await-native"
 	| "spawn"
 	| "place"
 	| "inspect"
@@ -82,6 +87,7 @@ export type AgentControlMethod =
 export type AgentControlDispatch = (
 	method: AgentControlMethod,
 	params: Readonly<Record<string, unknown>>,
+	context?: Context,
 ) => Promise<unknown>;
 
 /** Version of the in-process control binding between one host runtime and the contributions it installs. */
@@ -698,7 +704,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		/** Conversation that receives the answer; absent: the reporter's conversation. */
 		reportTo?: Durable.ConversationId;
 	};
-	type ReporterState = { phase: "deliver" } | { phase: "report"; report?: string };
+	type ReporterState = { phase: "deliver" } | { phase: "report"; report?: string; outcome?: AwaitOutcome };
 
 	const reporterInput = (
 		name: string,
@@ -724,9 +730,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		ownerConversationId: Durable.ConversationId,
 		settled: Durable.SettledSubmissionRecord,
 	): Promise<ReporterState> => {
-		const next = (report?: string): ReporterState => ({ phase: "report", report });
+		const result = { sessionId: identity(conversationId), submissionId: settled.id, ...(settled.requestId === undefined ? {} : { requestId: settled.requestId }) };
+		const next = (report?: string, outcome?: AwaitOutcome): ReporterState => ({ phase: "report", report, ...(outcome === undefined ? {} : { outcome }) });
 		if (settled.status === "unanswered") {
-			return next(settled.reason === "aborted" ? undefined : `[agent ${name} failed: ${settled.reason}]`);
+			return next(`[agent ${name} stopped without an answer: ${settled.reason}]`, { result, status: "unanswered", reason: settled.reason });
 		}
 		if (settled.type !== "input") return next(`[agent ${name} failed: unexpected settlement]`);
 		const registry = await tx.doc(Children, ownerConversationId);
@@ -735,7 +742,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		record?.reported.push(settled.answer);
 		const answer = await tx.entry(durable.AssistantEntry, settled.answer);
 		const text = messageText(answer?.model);
-		return next(`[agent ${name} answered] ${text === "" ? "(no text)" : text}`);
+		return next(`[agent ${name} answered] ${text === "" ? "(no text)" : text}`, { result, status: "done", answerEntryId: settled.answer, entryId: settled.entry, ...boundedAwaitAnswer(result, text, settled.answer) });
 	};
 
 	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({ kind: "agent.local-admission", version: 1, scope: "task", initial: () => ({ armed: false }) });
@@ -754,13 +761,18 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		await api.commit(async (tx) => {
 			const admission = await tx.doc(LocalAdmission, reporterTaskId);
 			await recordRequestContext(tx, input.conversationId, request, "retained");
+			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
 			if (admission.armed) return undefined;
 			await recordAdmissionMeta(tx, input.conversationId, input.message);
 			await createCheckIn(tx, { conversationId: input.conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(input.conversationId), message: input.message, whenBusy: input.whenBusy, origin: "model", admittedAt: now }, api.registry.task(CheckInTask.definition.name) === undefined ? 0 : input.checkInMinutes ?? 0);
 			admission.armed = true;
 			return undefined;
 		}, context);
-		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: input.whenBusy, requestId: request.requestId }, context);
+		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: input.whenBusy, requestId: request.requestId }, context).catch(async (error) => {
+			await api.commit(async (tx) => { await forgetFailedAdmission(tx, input.conversationId, request.requestId); return undefined; }, BACKGROUND_CONTEXT);
+			throw error;
+		});
+		await api.commit(async (tx) => { await reconcileInputRelease(tx, input.conversationId, request.requestId); return undefined; }, context);
 		const status = await submission.status(context);
 		if (status.id !== submission.id || status.requestId !== request.requestId || status.conversationId !== input.conversationId) throw new Error("Native admission identifiers disagree");
 		return { submission, result: admittedResult(identity(input.conversationId), { submissionId: submission.id, conversationId: status.conversationId, requestId: status.requestId }, request.requestId) };
@@ -803,10 +815,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					const destination = reporter.input.reportTo ?? runtime.conversationId;
 					const owner = await runtime.conversation(destination, context);
 					if (owner !== undefined) {
-						await owner.submit(
-							{ type: "input", content: report, whenBusy: "followUp", requestId: `agent-report:${reporter.id}` },
-							context,
-						);
+						const outcome = reporter.state.checkpoint.outcome;
+						if (outcome === undefined) await owner.submit({ type: "input", content: report, whenBusy: "followUp", requestId: `agent-report:${reporter.id}` }, context);
+						else await deliverAcceptedResult(runtime, destination, outcome, `agent-report:${reporter.id}`, report, context);
 					}
 				}
 				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
@@ -1626,6 +1637,18 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		),
 	});
 
+	const awaitTool = durable.defineTool({
+		name: "agent_await",
+		description: "Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. Explicit input or release returns partial results and unresolved references on this same request. Abort stops the original request, not its producers.",
+		parameters: AwaitParams,
+		replay: "safe",
+		execute: async (args, api, context) => {
+			if (dispatch === undefined) return errorResult("Await requires the current native host control binding");
+			const response = await executeAwait(args, api, context, host.storageId, dispatch);
+			return textResult(JSON.stringify(response), response);
+		},
+	});
+
 	const guidance = durable.section("agent-controls", (input) => {
 		const selected = input.agent.tools.map((tool) => tool.name);
 		const anyControl = selected.some((name) => (AGENT_CONTROL_TOOL_NAMES as readonly string[]).includes(name));
@@ -1647,6 +1670,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		tasks: [Anchor, Reporter, TimerTask],
 		tools: [
 			spawnTool,
+			{ ...awaitTool, outputSchema: AwaitOutputSchema },
 			profileTool,
 			{ ...sendTool, outputSchema: DispatchOutputSchema },
 			{ ...steerTool, outputSchema: DispatchOutputSchema },

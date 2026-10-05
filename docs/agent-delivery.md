@@ -253,6 +253,40 @@ The reference identifies work, not its completion or acceptance. Local dispatch
 and its background Reporter share the admitted native request; an ordinary
 primary still receives normal asynchronous results.
 
+When a native agent's original answer depends on peer results, dispatch them in
+the background and call `agent_await` once with their exact references. The
+original request stays open without model calls merely to wait. A failed or
+aborted dependency returns a typed non-success outcome; unavailable observation
+is a separate outcome, not an invented remote failure. A final answer settles
+the original request once. Never answer with a waiting note and depend on a
+later manual report to complete that commitment.
+
+Explicit input or an awaited agent's report releases the wait with partial
+results and puts that input at the same request's post-tools boundary. Apply it
+and await unresolved references again as needed. Real abort stops the original
+request without canceling independent peer work. Late named results remain
+retained without an automatic model restart. A new explicit request still reads
+them. Automatic named-result
+check-ins are suppressed at the awaiting recipient; other check-ins and timers
+stay queued follow-ups. Requester check-ins remain active. The result states its
+committed queued-input snapshot; queued follow-ups retain their normal later
+runs.
+
+Recipient acceptance prevents duplicate contextual delivery. Owned queued
+synthetic result inputs are withdrawn through the public native operation, with
+unrelated grouped results retained. Already placed results return retained entry
+references rather than repeat their bodies. Capped answers and receipt excerpts
+include exact entry continuations. Follow their native inspection offsets for
+the remaining source text. Safe replay retains result identities and accepted
+outcomes without dispatching work again.
+
+Await is native-only. Ordinary primaries remain responsive and refuse blocking
+wait calls. Foreign results require a normal reply route to this recipient;
+other recipients' receipts remain untouched. Local admission refuses self-waits
+and cycles inside one storage. Cross-storage cycles are not automatically
+refused or solved by the local check. Creation provenance never grants a result
+dependency or cancellation authority.
+
 Prompt admission, idle state, provider completion, and task acceptance are
 different facts. After an execution unit settles, inspect its real changes and
 the defining sources for consequential claims. Reconcile checks and release

@@ -15,11 +15,13 @@
  * defining a second copy.
  */
 import { randomUUID } from "node:crypto";
+import { classifyAwaitInput, forgetFailedAdmission, reconcileInputRelease } from "./awaited-results.ts";
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, type RequestContext } from "./request-context.ts";
 import { refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	AssistantEntry,
@@ -192,7 +194,12 @@ export class DurableConversationBusyError extends Error {
 	}
 }
 
+export class AwaitInputSuppressed extends Error {
+	constructor() { super("The active wait already represents this named-result check-in"); }
+}
+
 export interface DurableSubmitParams {
+	readonly provenance?: Omit<import("./awaited-results.ts").InputProvenance, "conversationId" | "requestId" | "submissionId">;
 	readonly message: UserInput;
 	readonly requestId: string;
 	/** When absent, the submission runs but retains no external receipt. */
@@ -341,6 +348,18 @@ function writeFirstMessage(meta: AgentMeta, message: UserInput | DeliveryMessage
 	(meta as { firstMessage: string | null }).firstMessage = text.length > 1200 ? text.slice(0, 1200) : text;
 }
 
+function admissionProvenance(conversationId: ConversationId, params: DurableSubmitParams): import("./awaited-results.ts").InputProvenance {
+	return { conversationId, requestId: params.requestId, ...(params.provenance ?? { classification: "explicit", ...(params.requestContext === undefined ? {} : { sender: params.requestContext.requester }) }) };
+}
+function awaitInputMode(classification: { defer: boolean; release: boolean }, mode: DurableSubmitParams["whenBusy"]): "steer" | "followUp" | "reject" | undefined {
+	if (classification.defer) return "followUp";
+	return classification.release ? "steer" : mode;
+}
+async function suppressAdmittedCheckIn(conversation: Conversation, submission: import("@earendil-works/pi-durable").Submission, provenance: import("./awaited-results.ts").InputProvenance, context: Context): Promise<void> {
+	const decision = await conversation.commit((tx) => classifyAwaitInput(tx, provenance), context);
+	if (decision.suppress && await submission.abort(context) === "aborted") throw new AwaitInputSuppressed();
+}
+
 /**
  * Admit one input. A supplied owner writes the delivery intent before the
  * submission, so a crash between the two commits leaves a durable record that
@@ -352,8 +371,20 @@ export async function submitConversation(
 	context: Context,
 	now: () => number = Date.now,
 ): Promise<DurableSubmitResult> {
+	try { return await admitConversation(conversation, params, context, now); }
+	catch (error) {
+		try { await conversation.commit((tx) => forgetFailedAdmission(tx, conversation.id, params.requestId), BACKGROUND_CONTEXT); }
+		catch (cleanup) { throw new AggregateError([error, cleanup], "Input admission failed and its provenance cleanup was unavailable"); }
+		throw error;
+	}
+}
+
+async function admitConversation(conversation: Conversation, params: DurableSubmitParams, context: Context, now: () => number): Promise<DurableSubmitResult> {
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
 	await conversation.commit((tx) => refreshManagedInstructions(tx, conversation.id), context);
+	const provenance = admissionProvenance(conversation.id, params);
+	const classification = await conversation.commit((tx) => classifyAwaitInput(tx, provenance), context);
+	if (classification.suppress) throw new AwaitInputSuppressed();
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
 	if (ownerId !== undefined) {
 		// An owned admission requires an explicit origin before its delivery intent is recorded.
@@ -374,10 +405,12 @@ export async function submitConversation(
 			type: "input",
 			content: message,
 			requestId,
-			...(whenBusy === undefined ? {} : { whenBusy }),
+			whenBusy: awaitInputMode(classification, whenBusy),
 		},
 		context,
 	);
+	await suppressAdmittedCheckIn(conversation, submission, provenance, context);
+	await conversation.commit((tx) => reconcileInputRelease(tx, conversation.id, requestId), context);
 	if (ownerId !== undefined) {
 		const relinked = await conversation.commit((tx) => linkDeliveryIntent(tx, conversation.id, requestId, submission.id), context);
 		if (relinked) deduped = true;

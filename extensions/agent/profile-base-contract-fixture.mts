@@ -18,7 +18,7 @@ const DURABLE_VERSION: string = JSON.parse(readFileSync(require.resolve("@earend
 /** Fixed operation identities isolate feature additions from upstream release changes. */
 export const BASE_OPERATIONS: Readonly<Record<string, OperationContract>> = {
 	status: { request: "status/1.0.0", response: "04082e4c23cf4ca78ca4529658060f615a4bfdeeb4d019cf3ed6c409e7fa84ae", durable: DURABLE_VERSION },
-	submit: { request: "submit/1.0.0", response: "submit/1.0.0" },
+	submit: { request: "submit/1.1.0", response: "submit/1.1.0" },
 	configure: { request: "configure/1.0.0", response: "configure/1.0.0" },
 	reset: { request: "reset/1.0.0", response: "reset/1.0.0" },
 	list: { request: "list/1.0.0", response: "3dd4ce5e2b550ef084b274c8a434f06775ea56ed287ceb226aa470f5df80f833" },

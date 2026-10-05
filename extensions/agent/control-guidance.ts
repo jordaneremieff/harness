@@ -10,6 +10,7 @@
 /** Control names in prompt order. */
 export const AGENT_CONTROL_TOOL_NAMES = [
 	"agent_spawn",
+	"agent_await",
 	"agent_send",
 	"agent_steer",
 	"agent_abort",
@@ -45,6 +46,7 @@ export const REPORT_DELIVERY_BOUNDARY = "If the recipient is a busy Durable agen
 
 /** Per-tool snippets and guidelines for the current controls. */
 export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, AgentToolGuidance>> = {
+	agent_await: { snippet: "Await exact admitted peer results on the original request", guidelines: ["Dispatch work in the background, retain each result reference, then call agent_await once with the results you need. The native wait keeps this request open without provider calls merely to wait. Explicit input or release returns partial results and unresolved references. Apply the input and await unresolved references again on this same request. A terminal answer settles it once; never answer only to wait.", "Creation records, reports, timers, names, and latest answers are not result references. Preserve known request IDs. Waiting retains a live tool invocation, native records, observers, and the host process. Storage usage is not per-request usage."] },
 	agent_spawn: {
 		snippet: "Spawn a background full agent session",
 		guidelines: [

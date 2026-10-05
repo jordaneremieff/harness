@@ -95,7 +95,7 @@ function fakeTarget(target: DurableHost, calls: SubmitRecord[], gate?: Promise<v
 		async request(method, params, options) {
 			const record = params as Record<string, unknown>;
 			const index =
-				method === "submit"
+				(method === "submit" || method === "receive-result")
 					? calls.push({
 							params: record,
 							...(options?.requestId === undefined ? {} : { requestId: options.requestId }),
@@ -556,7 +556,7 @@ for (const route of ["catalog", "same-storage"] as const) it(`routes a check-in 
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	const request = source.request.bind(source);
 	if (route === "same-storage") source.request = async (method, params, context) => {
-		if (method === "submit") { calls.push({ params: params as Record<string, unknown>, result: undefined }); await gate; }
+		if (method === "submit" || method === "receive-result") { calls.push({ params: params as Record<string, unknown>, result: undefined }); await gate; }
 		return request(method, params, context);
 	};
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog,
@@ -761,7 +761,7 @@ it("resumes after reopen and native dedup keeps one submission", { timeout: 3000
 	assert.ok(routed, "the routed submission is recorded");
 	assert.equal(routed.requestId, expected, "the reopened watcher reuses the derived request ID");
 	assert.equal(
-		(routed.result as { submissionId: number }).submissionId,
+		(await target.harness.commit((tx) => tx.submissionByRequest(1 as import("@earendil-works/pi-durable").ConversationId, expected), BACKGROUND_CONTEXT))?.id,
 		preAdmission.submissionId,
 		"the target deduplicates the resent request",
 	);

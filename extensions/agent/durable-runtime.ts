@@ -1,4 +1,16 @@
 import { randomUUID } from "node:crypto";
+
+function controlRequestId(params: Readonly<Record<string, unknown>>): string { return typeof params.requestId === "string" ? params.requestId : randomUUID(); }
+async function nativeResult(host: DurableHost, reference: ResultReference, context: Context): Promise<unknown> {
+	const submission = await host.harness.submission(reference.submissionId as SubmissionId, context);
+	if (submission === undefined) throw new Error("The native input is not retained");
+	const status = await submission.status(context);
+	if (status.type !== "input" || host.identity(status.conversationId) !== reference.sessionId || (reference.requestId !== undefined && reference.requestId !== status.requestId)) throw new Error("The exact native result does not identify this conversation's admitted input");
+	return host.wait(submission.id, context);
+}
+import type { Context } from "@earendil-works/chord";
+import type { SubmissionId } from "@earendil-works/pi-durable";
+import type { ResultReference } from "./result-reference.ts";
 import { projectCollaboration, collaborationStorage } from "./collaboration.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { dirname } from "node:path";
@@ -212,7 +224,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		}
 		return client.request("status", { sessionId });
 	}
-	async function foreignControl(method: string, params: Record<string, unknown>, sessionId: string): Promise<unknown> {
+	async function foreignControl(method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
 		let record: CatalogRecord;
 		try { record = catalog.read(sessionId); }
 		catch (error) {
@@ -222,7 +234,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const client = await acquireHost(hostMetadata(record));
 		try {
 			if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity });
-			if (method !== "attach") return await client.request(method, params);
+			if (method !== "attach") return await client.request(method, params, { signal: context?.abortSignal });
 			return await attachForeign(client, params, sessionId);
 		} finally { await client.close(); }
 	}
@@ -241,21 +253,22 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		} finally { await manager.close(); }
 		return params;
 	}
-	async function dispatchForeign(method: string, params: Record<string, unknown>, sessionId: string): Promise<unknown> {
+	async function dispatchForeign(method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
 		if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
 		activeRequests++;
 		activityGeneration++;
-		try { return await foreignControl(method, params, sessionId); }
+		try { return await foreignControl(method, params, sessionId, context); }
 		finally { activeRequests--; notifyActivity(); }
 	}
-	const dispatch: AgentControlDispatch = async (method, input) => {
+	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {
 		const params = await resolveSelectors(input);
-		if (method === "report") return request("report", { ...params, ownerId: params.sessionId }, typeof params.requestId === "string" ? params.requestId : randomUUID());
+		if (method === "await-native") return nativeResult(host, params.result as ResultReference, context);
+		if (method === "report") return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
 		if (["collaboration-list", "collaboration-read"].includes(method)) return collaborationObservation(method, params);
 		if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
-		if (storageIdOf(sessionId) !== metadata.storageId) return dispatchForeign(method, params, sessionId);
-		return request(method, params, typeof params.requestId === "string" ? params.requestId : randomUUID());
+		if (storageIdOf(sessionId) !== metadata.storageId) return dispatchForeign(method, params, sessionId, context);
+		return request(method, params, controlRequestId(params), context.abortSignal);
 	};
 	const restoreDispatch = publishAgentControlDispatch(dispatch);
 	/** Mark recovery due before scheduling when committed work or delivery is pending. */

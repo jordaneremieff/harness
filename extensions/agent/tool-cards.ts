@@ -306,6 +306,13 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 	return cardLayout({ title: name, label, metadata: [targetConfiguration(identity, context), requestedConfiguration(name, args, context) ?? ""], body: lines, hint: argsHidden(args, subjectKey, subjectValue) ? cardHint(context, "call", "arguments") : "" }, theme, { expanded: context.expanded, previous: context.lastComponent });
 }
 
+function renderAwaitCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
+	const args = record(value);
+	const references = Array.isArray(args.results) ? args.results.slice(0, 16).map(record) : [];
+	const lines = references.map((reference) => `${context.expanded ? displayText(text(reference.sessionId)) : targetLabel(text(reference.sessionId), context)} · submission ${String(reference.submissionId)}${text(reference.requestId) ? ` · request ${displayText(text(reference.requestId))}` : ""}`);
+	return cardLayout({ title: "agent_await", label: targetLabel(text(references[0]?.sessionId), context), metadata: [targetConfiguration(text(references[0]?.sessionId), context)], body: lines.map((line) => theme.fg("toolOutput", line)), hint: cardHint(context, "call", "results") }, theme, { expanded: context.expanded, previous: context.lastComponent });
+}
+
 function messageMetadata(args: Record<string, unknown>, context: AgentCardContext): string[] {
 	const reply = text(args.replyTo) ? targetLabel(text(args.replyTo), context) : "";
 	return [targetConfiguration(text(args.sessionId), context), reply ? `reply to ${reply}` : "", text(args.mode) ? `mode ${displayText(text(args.mode))}` : ""];
@@ -1179,6 +1186,7 @@ function observeResult(result: AgentToolResult<unknown>, context: AgentCardConte
 export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
 	const cards: Record<string, AgentToolCard> = {
 		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult },
+		agent_await: { renderCall: renderAwaitCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Await error", partial: "Awaiting results" }, (value) => [text(value.decision) ? `Wait ${displayText(text(value.decision))} · ${Array.isArray(value.results) ? value.results.length : 0} results · ${Array.isArray(value.unresolved) ? value.unresolved.length : 0} unresolved` : "Await result"]) },
 		agent_attach: { renderCall: bindCall("agent_attach"), renderResult: renderAgentResult },
 		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult },
 		agent_intent: { renderCall: renderIntentCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, { ...context, isPartial: options.isPartial }, { error: "Intent error", partial: "Intent pending" }, intentLines) },

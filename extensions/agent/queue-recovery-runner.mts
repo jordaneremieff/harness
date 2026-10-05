@@ -7,6 +7,7 @@ import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { answerMessage, completed, fixtureRegistry, hostOptions, pending } from "./durable-host-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import type { HostMetadata } from "./host-protocol.ts";
+import type { DurableHost as DurableHostType } from "./durable-host.ts";
 
 const [source, encoded] = process.argv.slice(2);
 if (!source || !encoded) throw new Error("Expected source directory and host metadata");
@@ -35,11 +36,18 @@ models.registerNativeProvider({
 	auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
 	stream: streamSimple, streamSimple,
 });
+async function seedQueue(host: DurableHostType, input: Record<string, unknown>): Promise<unknown> {
+	const messages = input.messages as string[]; const requestIds = input.requestIds as string[];
+	if (!Array.isArray(messages) || messages.length > 129 || requestIds.length !== messages.length) throw new Error("Expected a bounded queue seed");
+	for (const [index, message] of messages.entries()) await host.request("submit", { sessionId: metadata.storageId, requestId: requestIds[index], ownerId: metadata.ownerId, origin: "operator", message, whenBusy: "followUp", checkInMinutes: 0 });
+	return host.request("receipts", { ownerId: metadata.ownerId, wait: false });
+}
 const running = await runHost(async () => {
 	const host = await DurableHost.open({ ...hostOptions(metadata.storagePath, models, fixtureRegistry(), metadata.cwd), storageId: metadata.storageId, meta: { owner: metadata.ownerId } }, context);
 	return {
 		request: async (method, params) => {
 			const input = params as Record<string, unknown> | undefined;
+			if (method === "command" && input?.name === "seed") return seedQueue(host, input);
 			if (method !== "command" || input?.name !== "drain") return host.request(method, input);
 			released = true;
 			for (const stream of streams.splice(0)) {

@@ -57,10 +57,8 @@ it("recovers every input in a pre-profile process queue above the explicit-route
 	assert.equal(client.runtimeContract.operations["profile-read"], undefined, "the producer runs the source before profiles");
 	const messages = Array.from({ length: 129 }, (_, index) => `Retained base task ${index}`);
 	const requestIds = messages.map((_, index) => index === messages.length - 1 ? "r".repeat(1025) : `queued-${index}`);
-	for (const [index, message] of messages.entries()) {
-		await client.request("submit", { sessionId: metadata.storageId, requestId: requestIds[index], ownerId: metadata.ownerId, origin: "operator", message, whenBusy: "followUp", checkInMinutes: 0 });
-	}
-	assert.equal((await client.request("receipts", { ownerId: metadata.ownerId, wait: false }) as Receipts).pending, messages.length);
+	const seeded = await client.request("command", { sessionId: metadata.storageId, name: "seed", messages, requestIds }) as Receipts;
+	assert.equal(seeded.pending, messages.length, "the producer seeds its own storage without crossing a changed submit or receipt contract");
 	await stop();
 	client = await launch(fileURLToPath(new URL("./", import.meta.url)));
 	assert.equal((await client.request("receipts", { ownerId: metadata.ownerId, wait: false }) as Receipts).pending, messages.length);
