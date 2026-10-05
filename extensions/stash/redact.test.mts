@@ -11,6 +11,60 @@ import {
 } from "./redact.ts";
 
 describe("redactSecrets", () => {
+	it("preserves nonsecret UUID coordinates in bare inline weak-label references", () => {
+		const id = "12345678-1234-5678-9abc-123456789abc";
+		const reference = `Use the saved reference {sessionId: ${id}, revision: 13, source: example}.`;
+		const result = redactSecretsWithReport(reference);
+		assert.equal(result.text, reference);
+		assert.equal(result.report.count, 0);
+		for (const key of ["token", "cookie", "sessionId", "session_id", "session-id"]) {
+			for (const suffix of ["", ")", "}", ".", "!", "?"]) {
+				const prose = `Use ${key}: ${id}${suffix}`;
+				assert.equal(redactSecrets(prose), prose);
+			}
+		}
+	});
+
+	it("protects weak UUID credentials inside quoted fragments", () => {
+		const id = "12345678-1234-5678-9abc-123456789abc";
+		for (const quote of ["'", '"']) {
+			for (const key of ["Cookie", "token", "sessionId"]) {
+				for (const suffix of ["", "   ", "; Path=/"]) {
+					const result = redactSecretsWithReport(`curl -H ${quote}${key}: ${id}${suffix}${quote} https://example.com`);
+					assert.equal(result.report.count, 1);
+					assert.ok(!result.text.includes(id));
+					assert.ok(!redactionNotice(result.report).includes(id));
+				}
+			}
+			const prose = `Use ${quote}saved${quote} reference {sessionId: ${id}, revision: 13}.`;
+			assert.equal(redactSecrets(prose), prose);
+		}
+	});
+
+	it("protects UUID credential assignments and non-UUID inline tokens", () => {
+		const id = "12345678-1234-5678-9abc-123456789abc";
+		for (const key of ["token", "cookie", "sessionId"]) {
+			for (const input of [
+				`${key}: ${id}`,
+				`${key}=${id}`,
+				`export APP_${key}=${id}`,
+				`Use ${key}=${id}`,
+				`Use ${key}: ${id}tail`,
+				`Use ${key}: ${id}.tail`,
+			]) {
+				const result = redactSecretsWithReport(input);
+				assert.ok(!result.text.includes(id));
+				assert.equal(result.report.count, 1);
+				assert.ok(!redactionNotice(result.report).includes(id));
+			}
+		}
+		for (const input of [`Use secret: ${id}`, `password: ${id}`, `{"secret": "${id}"}`]) {
+			assert.equal(redactSecretsWithReport(input).report.count, 1);
+			assert.ok(!redactSecrets(input).includes(id));
+		}
+		assert.equal(redactSecrets("Used token: 1234567890abcdef1234567890abcdef"), `Used token: ${REDACTED}`);
+	});
+
 	it("retains prior redactions in preserved assignment suffixes and URL prefixes", () => {
 		const token = "sk-abcdefgh" + "ijklmnop";
 		const inline = redactSecretsWithReport(`Use password: abc12345 and key ${token}`);

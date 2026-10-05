@@ -116,6 +116,35 @@ function inlineTokenLength(value: string, inner: string, quoted: boolean, weak: 
 	return token.length;
 }
 
+function quotedContext(source: string, offset: number, end: number): boolean {
+	const start = source.lastIndexOf("\n", offset - 1) + 1;
+	const nextLine = source.indexOf("\n", end);
+	const line = source.slice(start, nextLine < 0 ? source.length : nextLine);
+	for (const quote of line.matchAll(/"[^"\r\n]*(?:"|$)|'[^'\r\n]*(?:'|$)/g)) {
+		const begin = start + quote.index;
+		if (begin < offset && end <= begin + quote[0].length) return true;
+	}
+	return false;
+}
+
+function inlineUuidReference(
+	weak: boolean,
+	separator: string,
+	value: string,
+	explicit: boolean,
+	offset: number,
+	end: number,
+	source: string,
+): boolean {
+	return (
+		weak &&
+		separator.trim() === ":" &&
+		!explicit &&
+		/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}[)\]}.!?]*$/i.test(value) &&
+		!quotedContext(source, offset, end)
+	);
+}
+
 function redactAssignment(
 	match: string,
 	key: string,
@@ -136,7 +165,9 @@ function redactAssignment(
 	const inner = value.replace(/^["']|["']$/g, "").trim();
 	if (inner === REDACTED) return;
 	const weak = WEAK_KEYS.has(key.toLowerCase().replace(/[_-]/g, ""));
-	if (weak || !explicitAssignment(separator, offset, offset + match.length, source)) {
+	const explicit = explicitAssignment(separator, offset, offset + match.length, source);
+	if (inlineUuidReference(weak, separator, value, explicit, offset, offset + match.length, source)) return;
+	if (weak || !explicit) {
 		const quoted = value[0] === '"' || value[0] === "'";
 		const length = inlineTokenLength(value, inner, quoted, weak);
 		if (length === undefined) return;
