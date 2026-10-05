@@ -6,9 +6,12 @@ store.
 
 ## Surface
 
-| Surface | Kind | Purpose |
-|---|---|---|
-| `registry` | tool | Discover resources, chat model capabilities, tool parameters, and observed context paths with explicit evidence boundaries. |
+The read-only `registry` tool discovers resources, chat model capabilities, tool
+parameters, and observed context paths with explicit evidence boundaries.
+
+The main description covers ordinary Pi sessions. See [Durable agents](#durable-agents)
+for the native contribution to hosts with persistent conversations, including
+its unavailable fields and different result carrier.
 
 With no arguments, the tool returns the current model, thinking level, context
 usage, cwd, mode, trust, installed-version, package, documentation-location,
@@ -17,32 +20,6 @@ session-file accessor with no file means an ephemeral session; a failed accessor
 means unavailable. Missing accessors remain explicitly
 unavailable. The agent-directory fact is Pi's process default, not proof of an
 embedding's configured agent directory.
-
-## Terminal cards
-
-The `registry` tool renders its own card in the interactive transcript. A
-collapsed card shows the request on its heading row and at most one qualifier
-row (kind, match mode, detail, provider, filters, limit, continuation), then
-one or two outcome rows built from the structured details: the outcome, the
-returned count against the matched total, the returned resource kinds, page
-bounds, and any continuation. A single-record page replaces the kind tally with
-that record's key facts: a model's cached availability, configured auth, context
-window, and supported thinking levels, or a tool's configured and active state.
-A bounded kind tally reports the number of omitted kinds. The host context
-percent is a whole number. The argument and result expansion
-hints appear only when the collapsed view hides or clips content, and each
-rides the row it belongs to. An expanded card shows the full arguments or the
-bounded result text.
-
-Cards with `catalogBoundary` state `chat models only`, including no-match cards.
-A model page with no matched records also points to native codemode `models.*`
-discovery; expansion shows the complete catalog boundary and API names.
-
-Resource and model list cards do not repeat the requested name, search, or
-content phrase. Content-scan cards name the resolved resource. Counts are page
-counts, not an inventory; the result text carries the evidence and observation
-boundaries, and a bounded or partial page never reads as an absence result.
-Terminal controls are escaped and long values are clipped.
 
 ## Parameters
 
@@ -75,6 +52,32 @@ Examples:
 {"cursor":"<cursor from the preceding result>"}
 ```
 
+## Terminal cards
+
+The `registry` tool renders its own card in the interactive transcript. A
+collapsed card shows the request on its heading row and at most one qualifier
+row (kind, match mode, detail, provider, filters, limit, continuation), then
+one or two outcome rows built from the structured details: the outcome, the
+returned count against the matched total, the returned resource kinds, page
+bounds, and any continuation. A single-record page replaces the kind tally with
+that record's key facts: a model's cached availability, configured auth, context
+window, and supported thinking levels, or a tool's configured and active state.
+A bounded kind tally reports the number of omitted kinds. The host context
+percent is a whole number. The argument and result expansion
+hints appear only when the collapsed view hides or clips content, and each
+rides the row it belongs to. An expanded card shows the full arguments or the
+bounded result text.
+
+Cards with `catalogBoundary` state `chat models only`, including no-match cards.
+A model page with no matched records also points to native codemode `models.*`
+discovery; expansion shows the complete catalog boundary and API names.
+
+Resource and model list cards do not repeat the requested name, search, or
+content phrase. Content-scan cards name the resolved resource. Counts are page
+counts, not an inventory; the result text carries the evidence and observation
+boundaries, and a bounded or partial page never reads as an absence result.
+Terminal controls are escaped and long values are clipped.
+
 ## Compact results and exact records
 
 List-style text favors discovery. Resource lists show name, invocation when
@@ -99,9 +102,8 @@ ordinary sessions or `providerNamedInSettings === true` in Durable hosts. Each
 group sorts alphabetically by canonical `provider/id`, independently of selected
 model, scope position, price, or past use. Without provider configuration evidence,
 all available records remain one alphabetical group. No record is hidden or
-filtered by this order. Configuration does not establish operator preference.
-The result header states the rule. Search tokens match across canonical and
-display names without aliases or model-family rules.
+filtered by this order. The result header states the rule. Search tokens match
+across canonical and display names without aliases or model-family rules.
 
 Lists show canonical and display names, input modalities, selected state,
 catalog membership, cached availability, configured-auth presence, scope
@@ -126,9 +128,10 @@ list pages. Failed or malformed price reads stay null, not zero.
 These are catalog and configuration facts, not a billing account view. OAuth
 does not by itself establish subscription access. An unrecognized subscription
 does not establish metered billing, and nominal catalog prices are not invoices.
-Configured access and scope do not establish operator preference. Current task
-directions and operator route, budget, and role preferences govern selection;
-quota, balance, and remote health remain unchecked.
+The tool holds no preference data. Configured access and scope do not establish
+operator preference. Current task directions and operator route, budget, and
+role preferences govern selection; quota, balance, and remote health remain
+unchecked.
 
 ### Non-chat model discovery
 
@@ -282,9 +285,8 @@ its schema and registered guidance without activating it.
   `models_json_command`. Labels, configuration values, and resolved credentials
   are never returned. `catalogCost` copies only public catalog price fields,
   including request-wide tiers for exact lookups. Unknown facts remain null.
-  Model records contain no operator preference data. Scope order describes the
-  session cycle order, with unavailable entries skipped by Pi, not operator
-  preference. When no scope is configured, scope order is absent and models
+  Scope order describes the session cycle order, with unavailable entries skipped
+  by Pi. When no scope is configured, scope order is absent and models
   remain unrestricted.
 - Availability is a synchronous local snapshot, not remote health or valid
   credentials. The tool performs no refresh, credential resolution, or network
@@ -404,8 +406,6 @@ to mutate them after that validation.
   listeners close handles during active reads; final cleanup is repeatable.
 - The tool accepts no arbitrary path, crawls no directory, performs no mutation,
   activation, credential resolution, network operation, or watch.
-- The tool holds no preference data. Model scope order, when present, is the
-  session cycle order, not operator preference.
 - Source records identify registration origins, not immutable executing bytes.
   Hook-only extensions, complete settings, resource load rejection reasons, and
   built-in interactive commands are not an enumerated inventory. Theme enumeration
