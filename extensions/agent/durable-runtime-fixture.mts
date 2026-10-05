@@ -32,7 +32,7 @@ export interface RuntimeFixture {
 	/** Unix socket that is accepting marker names before a host starts. */
 	readonly notifyPath: string;
 	/** Child environment for one fixture mode. */
-	env(mode: "request" | "effect" | "answer" | "spawn" | "tool-round"): Record<string, string>;
+	env(mode: "request" | "effect" | "answer" | "spawn" | "tool-round" | "await-local" | "await-reference"): Record<string, string>;
 	/** Resolve when the host publishes this marker name. The file is not the signal. */
 	marker(name: string): Promise<void>;
 }

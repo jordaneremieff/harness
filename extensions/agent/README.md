@@ -190,7 +190,7 @@ A new conversation inherits its creator's stored agent configuration and a
 fresh profile; there is no generation-depth gate in the creation paths.
 
 A no-target `agent_status` inside an agent appends a bounded newest-first
-`Your agents` section and structured `lineage` read from the caller's retained
+`Created agents` section and structured `createdAgents.agents` read from the caller's retained
 creation record, with each recorded agent's identity, creation label, and kind,
 and an explicit omitted count. This includes native spawns, recorded forks
 and rewinds, and foreign spawns, not handles resolved as independent roots.
@@ -272,7 +272,23 @@ Local cycle admission uses one consistent native transaction, including named
 request lookup and bare-reference live/inbox membership. It refuses self-waits
 and cycles inside this storage. Foreign edges end that traversal; it does not
 refuse or solve cross-storage cycles. Safe replay reacquires observers from
-retained declarations and accepted outcomes without redispatching work.
+retained declarations and durable outcomes without redispatching work.
+
+Status, the dashboard, and existing check-ins project semantic `awaiting`
+separately from native task state. Facts name held requests, exact result
+references and outcomes, committed queued-input counts, and one-hop producer
+waits. Producer facts state their source and observation time. Known reverse
+edges to held requests show a likely mutual wait, not a complete remote graph.
+Vector and byte bounds report omitted requests, results, and producers.
+Unchanged semantic observations do not write new durable facts. Existing commit
+notifications refresh the projection; no extra timer or recursive watch exists.
+
+The dashboard shows Awaiting rather than Responding and offers Release await
+for that selected run. A stale run selection does nothing. Release returns
+partial results on the original request without a new input or producer cancel.
+Real abort remains separate. Native agent tool cards use the shared display-only
+renderers; transcript rendering never grants execution. Adapted status and list
+rows expose `forkSource`; exact upstream records retain their native fields.
 
 ## Standing agents and expertise
 

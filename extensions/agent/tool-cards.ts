@@ -7,6 +7,8 @@
  */
 import { stripVTControlCharacters } from "node:util";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
+import { awaitFactLines, AwaitFactSchema } from "./await-facts.ts";
+import { Value } from "typebox/value";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, keyText } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Spacer, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
@@ -203,7 +205,7 @@ function resultText(result: AgentToolResult<unknown>): string {
 }
 
 function resultDetails(result: AgentToolResult<unknown>): Record<string, unknown> {
-	return record(firstDefined(result.details, result.structuredContent));
+	return record(firstDefined(record(result.details).structuredContent, result.structuredContent, result.details));
 }
 
 function resultPreview(value: string, limit = PREVIEW_UNITS): string {
@@ -644,6 +646,7 @@ function newestTextLabel(working: boolean, role: string | undefined): string {
 }
 
 function activityLines(status: Record<string, unknown>, readOnly: boolean, theme: Theme): string[] {
+	if (status.awaiting !== undefined) return Value.Check(AwaitFactSchema, status.awaiting) ? awaitFactLines(status.awaiting).map((line) => muted(theme, displayText(line))) : [muted(theme, "Await state unavailable: invalid native fact")];
 	const live = record(status.live);
 	const working = status.busy === true || Object.keys(record(live.run)).length > 0;
 	const running = runningSlots(live);
@@ -1182,11 +1185,18 @@ function observeResult(result: AgentToolResult<unknown>, context: AgentCardConte
 	return snapshotFacts(context, snapshot);
 }
 
+function awaitReplyLines(value: Record<string, unknown>): string[] {
+	const lines = [text(value.decision) ? `Wait ${displayText(text(value.decision))} · ${array(value.results).length} results · ${array(value.unresolved).length} unresolved` : "Await result"];
+	if (typeof value.queuedInputCount === "number") lines.push(`${value.queuedInputCount} queued inputs · committed InboxDoc`);
+	if (text(value.releaseReason)) lines.push(displayText(text(value.releaseReason)));
+	return lines;
+}
+
 /** Call and result renderers for every registered agent tool, keyed by tool name. */
 export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
 	const cards: Record<string, AgentToolCard> = {
 		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult },
-		agent_await: { renderCall: renderAwaitCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Await error", partial: "Awaiting results" }, (value) => [text(value.decision) ? `Wait ${displayText(text(value.decision))} · ${Array.isArray(value.results) ? value.results.length : 0} results · ${Array.isArray(value.unresolved) ? value.unresolved.length : 0} unresolved` : "Await result"]) },
+		agent_await: { renderCall: renderAwaitCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Await error", partial: "Awaiting results" }, awaitReplyLines) },
 		agent_attach: { renderCall: bindCall("agent_attach"), renderResult: renderAgentResult },
 		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult },
 		agent_intent: { renderCall: renderIntentCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, { ...context, isPartial: options.isPartial }, { error: "Intent error", partial: "Intent pending" }, intentLines) },

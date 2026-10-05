@@ -108,7 +108,7 @@ they are selection cues, not a substitute for version grounding.
 For nested model calls, pass the owning abort signal, inspect the final message
 for errors, and return nested usage through the tool's supported `usage` field
 when the call belongs to a tool. Do not reconstruct authentication, copy secrets
-into child prompts, or treat a stream's creation as successful completion.
+into agent prompts, or treat a stream's creation as successful completion.
 
 A current tool loadout is not historical evidence. Use Pi's retained session
 entries for historical prompt and tool changes, and retain source entry IDs.

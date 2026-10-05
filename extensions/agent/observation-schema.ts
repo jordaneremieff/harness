@@ -18,7 +18,8 @@ import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { FleetStatusSchema } from "./fleet-status.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
-import { AgentLineageSchema } from "./agent-lineage.ts";
+import { CreatedAgentsSchema } from "./agent-lineage.ts";
+import { AwaitFactSchema } from "./await-facts.ts";
 
 const object = <T extends Record<string, TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const string = Type.String();
@@ -181,7 +182,8 @@ export const ConversationStatusSchema = object({
 	),
 	/** Bounded pending scheduled inputs, nearest deadline first. */
 	timers: Type.Optional(Type.Array(timerStatusRow)),
-	parent: Type.Optional(object({ conversationId: id, at: id })),
+	awaiting: Type.Optional(AwaitFactSchema),
+	forkSource: Type.Optional(object({ conversationId: id, at: id })),
 	ownerTaskId: Type.Optional(id),
 });
 
@@ -209,6 +211,7 @@ export const AgentConversationSummarySchema = object({
 	currentTool: Type.Optional(object({ name: string, argument: string })),
 	durationMs: Type.Optional(number),
 	health: Type.Optional(dashboardHealth),
+	awaiting: Type.Optional(AwaitFactSchema),
 });
 
 /** What one session host installed, as reported by status. */
@@ -227,7 +230,7 @@ export const ListRowSchema = object({
 	owner: Type.Optional(string),
 	firstMessage: Type.Optional(string),
 	busy: boolean,
-	parent: Type.Optional(object({ conversationId: id, at: id })),
+	forkSource: Type.Optional(object({ conversationId: id, at: id })),
 	ownerTaskId: Type.Optional(id),
 	sessionId: string,
 	storageId: string,
@@ -294,7 +297,7 @@ export type StatusOutput = Static<typeof StatusOutputSchema>;
 const ToolStatusSchema = Type.Union(StatusOutputSchema.anyOf.map((schema) => {
 	const properties = (schema as TSchema & { properties: Record<string, TSchema> }).properties;
 	return object({ ...properties, awareness: Type.Optional(EffortAwarenessSchema),
-		...("conversations" in properties ? { lineage: Type.Optional(AgentLineageSchema) } : {}),
+		...("conversations" in properties ? { createdAgents: Type.Optional(CreatedAgentsSchema) } : {}),
 	});
 }));
 export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema]);

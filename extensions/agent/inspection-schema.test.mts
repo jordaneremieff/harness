@@ -15,7 +15,7 @@ function declarations(): Map<string, ToolDeclaration> {
 	register({
 		events: { emit() {} }, on: () => () => {},
 		registerTool: (tool: ToolDeclaration) => tools.set(tool.name, tool),
-		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {},
 	} as unknown as ExtensionAPI);
 	return tools;
 }

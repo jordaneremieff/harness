@@ -3,12 +3,12 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import * as Durable from "@earendil-works/pi-durable";
-import { readAgentLineage, renderAgentLineage } from "./agent-lineage.ts";
+import { readCreatedAgents, renderCreatedAgents } from "./agent-lineage.ts";
 
 const context = BACKGROUND_CONTEXT;
 async function lineageText(harness: Durable.Harness, caller: { storageId: string; conversationId: Durable.ConversationId }): Promise<string> {
-	const lineage = await readAgentLineage(harness, Children, caller, context);
-	return lineage === undefined ? "" : renderAgentLineage(lineage);
+	const lineage = await readCreatedAgents(harness, Children, caller, context);
+	return lineage === undefined ? "" : renderCreatedAgents(lineage);
 }
 type Child = { name?: string; conversationId?: Durable.ConversationId; foreignSessionId?: string };
 const Children = Durable.defineDoc<{ children: Child[] }>({
@@ -40,10 +40,10 @@ it("renders native and foreign children newest first with retained names", async
 		);
 	}, context);
 	assert.equal(await lineageText(harness, caller), [
-		"Your agents (direct children, newest first; retained creation labels):",
-		"- lineage-storage:3: native child conversation",
+		"Created agents (newest first; retained creation labels):",
+		"- lineage-storage:3: conversation in this storage",
 		'- foreign-storage "writer": storage with own host',
-		'- lineage-storage:2 "reader": native child conversation',
+		'- lineage-storage:2 "reader": conversation in this storage',
 	].join("\n"));
 	assert.equal((await harness.snapshot(Children, root.id, context))?.children[0]?.name, "reader", "rendering does not reorder retained state");
 });
@@ -72,6 +72,6 @@ it("bounds and escapes retained names without creating extra rows", async (t) =>
 	assert.equal(block.split("\n").length, 2);
 	assert.ok(block.includes("line\\nbreak"));
 	assert.ok(block.includes("…"));
-	assert.equal((await readAgentLineage(harness, Children, caller, context))?.children[0]?.name?.length, 161);
+	assert.equal((await readCreatedAgents(harness, Children, caller, context))?.agents[0]?.name?.length, 161);
 	assert.ok((block.split("\n")[1]?.length ?? 0) < 220);
 });

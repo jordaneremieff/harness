@@ -289,6 +289,19 @@ and cycles inside one storage. Cross-storage cycles are not automatically
 refused or solved by the local check. Creation provenance never grants a result
 dependency or cancellation authority.
 
+Status, the dashboard, and existing check-ins expose bounded `awaiting` facts,
+separate from native task state. They name held requests, result outcomes,
+queued inputs excluding writes and suppressed check-ins, and one-hop producer
+waits. Each producer fact carries source and observation time. Known mutual
+waits show a likely cycle; missing remote graph coverage is not refusal.
+Existing commit notifications refresh facts without recursive observation.
+Bounds report omissions. The dashboard Release await action checks the selected
+live run, returns partial results on that original request, admits no new input,
+and leaves producers active. Real abort still stops the original request.
+
+Creation records appear as `createdAgents.agents`; adapted fork ancestry appears
+as `forkSource`. Neither identifies a result dependency or a current requester.
+
 Prompt admission, idle state, provider completion, and task acceptance are
 different facts. After an execution unit settles, inspect its real changes and
 the defining sources for consequential claims. Reconcile checks and release

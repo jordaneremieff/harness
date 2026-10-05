@@ -21,7 +21,7 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 	const originalStatus = AgentManager.prototype.status;
 	AgentManager.prototype.control = async (method: string, input: Record<string, unknown>) => {
 		calls.push({ method, input });
-		return {};
+		return method === "await-release" ? { released: true } : {};
 	};
 	AgentManager.prototype.status = async () => ({ conversation: { name: "poem task" } });
 	t.after(() => {
@@ -37,7 +37,7 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 		on: () => () => {},
 		registerTool() {},
 		registerShortcut() {},
-		registerMessageRenderer() {},
+		registerMessageRenderer() {}, registerToolRenderer() {},
 		getThinkingLevel: () => "off",
 		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => {
 			commands.set(name, command);
@@ -53,6 +53,7 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 	assert.ok(command);
 	await command.handler("send target-session keep going", ctx);
 	await command.handler("steer target-session change course", ctx);
+	await command.handler("await-release target-session 42", ctx);
 	assert.deepEqual(calls, [
 		{
 			method: "submit",
@@ -62,6 +63,7 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 			method: "submit",
 			input: { sessionId: "target-session", message: "change course", whenBusy: "steer", origin: "operator" },
 		},
+		{ method: "await-release", input: { sessionId: "target-session", expectedRunId: 42 } },
 	]);
-	assert.equal(notices.length, 2);
+	assert.equal(notices.length, 3);
 });

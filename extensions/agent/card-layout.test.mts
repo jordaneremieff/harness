@@ -17,7 +17,7 @@ const clean = (component: { render(width: number): string[] }, width = 240) => c
 const text = (component: { render(width: number): string[] }, width = 240) => clean(component, width).join("\n");
 function registeredTools(): Map<string, ToolDefinition> {
 	const tools = new Map<string, ToolDefinition>();
-	register({ events: { emit() {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => { assert.equal(tools.has(tool.name), false, tool.name); tools.set(tool.name, tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, getThinkingLevel: () => "xhigh" } as unknown as ExtensionAPI);
+	register({ events: { emit() {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => { assert.equal(tools.has(tool.name), false, tool.name); tools.set(tool.name, tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "xhigh" } as unknown as ExtensionAPI);
 	return tools;
 }
 

@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { StrandedInputRecovery } from "./stranded-inputs.ts";
 import { admittedResult, type ResultReference } from "./result-reference.ts";
 import type { InputProvenance } from "./awaited-results.ts";
+import { ownAwaitFact, releaseAwait } from "./await-observation.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
 import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
@@ -414,6 +415,8 @@ export class DurableHost {
 				});
 			case "receipts":
 				return this.receiptsRequest(params, requestContext);
+			case "await-state": return this.awaitStateRequest(params, requestContext);
+			case "await-release": return this.awaitReleaseRequest(params, requestContext);
 			case "report":
 				return this.reportRequest(params, requestContext);
 			case "acknowledge":
@@ -482,6 +485,15 @@ export class DurableHost {
 		};
 	}
 
+	private async awaitStateRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const target = await this.target(params, context);
+		const awaiting = await this.harness.commit((tx) => ownAwaitFact(tx, target.id), context);
+		return { ...(awaiting === undefined ? {} : { awaiting }) };
+	}
+	private async awaitReleaseRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const target = await this.target(params, context);
+		return this.harness.commit((tx) => releaseAwait(tx, this.storageId, target.id, requestRequiredId(params?.expectedRunId, "expectedRunId")), context);
+	}
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
 		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);

@@ -8,6 +8,7 @@
  */
 import type { Message } from "@earendil-works/pi-ai";
 import type { ProfileHint } from "./profile-schema.ts";
+import type { AwaitFact } from "./await-facts.ts";
 
 /** Dashboard lifecycle bucket for one durable conversation. */
 export type AgentConversationState =
@@ -97,6 +98,7 @@ export interface AgentConversationSummary {
 	durationMs?: number;
 	/** Retained recovery detail from the host-published view; absent when the publication carries none. */
 	health?: DashboardHealth;
+	awaiting?: AwaitFact;
 }
 
 /**

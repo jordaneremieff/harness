@@ -462,17 +462,18 @@ It checks neither provider cache hits nor fork or child identity separation;
 the historical process-recovery tests below do not establish this new identity
 contract on 1.0.2.
 
-### Subagent ownership
+### Native task ownership and agent placement
 
 The [README's subagent pattern][durable-readme] is a conversation owned by a
-tool task, not a built-in subagent product. The foreground example creates a
-task-owned child and waits for its answer. Aborting the call reaches the child;
-owned foreground work keeps its parent busy. The background example gives each
-persistent child a background anchor task and uses a background reporter task
-to submit answers to the parent as follow-up input. A background ownership
-boundary does not mean a separate operating-system process.
+tool task, not a built-in agent product. The foreground example creates a
+task-owned conversation and waits for its answer. Aborting the call reaches
+that conversation; owned foreground work keeps the owning task busy. The
+background example gives each persistent conversation a background anchor task
+and uses a background reporter task to submit answers to the creating
+conversation as follow-up input. A background ownership boundary does not mean
+a separate operating-system process.
 
-Replay-safe tools find their child through `ownerTaskId` and reuse the input
+Replay-safe tools find their created conversation through `ownerTaskId` and reuse the input
 through `requestId`. The background example also deduplicates reports by request
 ID. Those patterns depend on installed definitions and the storage owner; they
 do not supply ordinary extensions or detached-process control.
@@ -482,8 +483,22 @@ native result reference after public submission admission. The tool and its
 background Reporter share one stable request ID and a task-scoped admission
 marker; the reference contains the admitted submission ID, not the Reporter ID.
 Creation-only dispatch and ordinary-primary messages carry no native result
-reference. This source contract does not establish result settlement or a
-foreground wait.
+reference. The reference does not establish settlement. Native `agent_await` separately
+retains the original request for exact results without provider work merely to
+wait. It returns partial outcomes on explicit interaction or selected-run
+release; real abort stops the request without canceling independent producers.
+Normal delivery remains ordinary, with only wholly covered queued copies
+withdrawn at return. Late or placed copies can cost another model turn.
+
+The agent slice projects semantic `awaiting` separately from native task state.
+Status, dashboard rows, and existing check-ins include held requests, bounded
+result outcomes, and a committed queued-input count excluding writes and
+suppressed named check-ins. Existing commit notifications refresh one-hop
+producer facts with source and observation time. Known reverse edges identify
+a likely mutual wait, not complete remote graph coverage. The dashboard release
+checks the selected live run and admits no input or producer cancellation.
+Creation records use `createdAgents.agents`; adapted fork ancestry uses
+`forkSource`. Raw upstream ownership and exact inspection fields stay native.
 
 ### Durability limits
 

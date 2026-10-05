@@ -27,6 +27,8 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
 import { AgentDeliveryDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
 import { timerStatusRows } from "./durable-timers.ts";
+import { readAwaitFact } from "./await-observation.ts";
+import type { AwaitFact } from "./await-facts.ts";
 
 /** Byte/unit bounds used by every projection in this module. */
 export const ENTRY_PREVIEW_UNITS = 1200;
@@ -102,7 +104,7 @@ export interface ConversationSummary {
 	/** First input text, so a manager query can match it without reading entries. */
 	readonly firstMessage?: string;
 	readonly busy: boolean;
-	readonly parent?: { readonly conversationId: ConversationId; readonly at: EntryId };
+	readonly forkSource?: { readonly conversationId: ConversationId; readonly at: EntryId };
 	readonly ownerTaskId?: number;
 }
 
@@ -110,6 +112,7 @@ export interface ConversationSummary {
 export type DurableTextRole = "user" | "assistant" | "toolResult" | "system";
 
 export interface ConversationStatus extends ConversationSummary {
+	readonly awaiting?: AwaitFact;
 	readonly cwd?: string;
 	readonly lastText: string | null;
 	/** Author role of `lastText`, so a card can label the retained tail accurately. */
@@ -562,7 +565,7 @@ async function conversationSummary(harness: Harness, storageId: string, record: 
 		...(meta.owner === undefined ? {} : { owner: meta.owner }),
 		...(meta.firstMessage === undefined ? {} : { firstMessage: meta.firstMessage }),
 		busy: live?.run !== undefined,
-		...(record.parent === undefined ? {} : { parent: { conversationId: record.parent.conversationId, at: record.parent.at } }),
+		...(record.parent === undefined ? {} : { forkSource: { conversationId: record.parent.conversationId, at: record.parent.at } }),
 		...(record.owner === undefined ? {} : { ownerTaskId: record.owner.taskId }),
 	};
 }
@@ -670,7 +673,9 @@ export async function readConversationStatus(
 		harness.inspect(context),
 	]);
 	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
+	const awaiting = await harness.commit((tx) => readAwaitFact(tx, storageId, conversationId), context);
 	return {
+		...(awaiting === undefined ? {} : { awaiting }),
 		...summary,
 		cwd: agent.cwd ?? options.cwd,
 		lastText: messageTextOf(newest.items[0]),
@@ -969,6 +974,7 @@ async function dashboardSummary(
 	const replyText = latestReplyOf(entries);
 	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
 	const error = state === "failed" || state === "stopped" ? await terminalError(harness, receipt, entries, context) : undefined;
+	const awaiting = await harness.commit((tx) => readAwaitFact(tx, storageId, record.id), context);
 	const row: AgentConversationSummary = {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
 		storageId,
@@ -985,6 +991,7 @@ async function dashboardSummary(
 		...(replyText === undefined ? {} : { latestReply: replyText }),
 		...(error === undefined ? {} : { error }),
 		...liveExtras,
+		...(awaiting === undefined ? {} : { awaiting }),
 		toolCalls: countToolCalls(entries),
 	};
 	options.modelEvidence?.observe(record.id, row, usage, entries);

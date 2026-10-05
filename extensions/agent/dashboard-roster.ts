@@ -74,7 +74,7 @@ function stateLabel(row: AgentConversationSummary): string {
 			: row.owner === "unknown" && row.state !== "starting"
 				? " · stored"
 				: "";
-	return `${sessionAppearance[row.state].label}${owner}`;
+	return `${row.awaiting === undefined ? sessionAppearance[row.state].label : "Awaiting"}${owner}`;
 }
 /** Attention means the operator must act; a terminal outcome alone is a record. */
 export function needsAttention(row: AgentConversationSummary): boolean {
@@ -182,6 +182,7 @@ export function argumentSummary(argument: string): string {
 export function activityOf(row: AgentConversationSummary): string {
 	const reason = attentionReason(row);
 	if (reason) return reason;
+	if (row.awaiting !== undefined) return `Awaiting ${row.awaiting.results.filter((item) => item.status === "pending").length} results · ${row.awaiting.queuedInputCount} queued inputs${row.awaiting.likelyCycle.length ? " · likely mutual wait" : ""}`;
 	if (row.state === "working") return row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding";
 	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
 }

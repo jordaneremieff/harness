@@ -60,6 +60,19 @@ const user = (id: string, content: string): AgentConversationEntry => ({
 const screen = (conversation: AgentConversation, width = 80) =>
 	stripVTControlCharacters(conversation.render(width).lines.join("\n"));
 
+it("renders native await references and release outcomes through display-only agent cards", () => {
+	const reference = { sessionId: "full-canonical-peer-identity:2", submissionId: 23, requestId: "exact-request" };
+	const reply = { decision: "released", results: [], unresolved: [reference], originalInputs: [12], queuedInputCount: 1, releaseReason: "dashboard release" };
+	const completed = result("done", "await-call", "agent_await", JSON.stringify(reply));
+	const message = completed.model?.[0]; assert.ok(message?.role === "toolResult"); message.details = { structuredContent: reply };
+	const entries = [assistant("call", [{ type: "toolCall", id: "await-call", name: "agent_await", arguments: { results: [reference] } }]), completed];
+	const text = screen(new AgentConversation(entries, "/work", tui, false, false), 120);
+	assert.match(text, /agent_await/u); assert.match(text, /full-canonical-peer-identity:2/u); assert.match(text, /submission 23/u);
+	assert.match(text, /Wait released.*1 unresolved/u); assert.match(text, /1 queued inputs/u); assert.match(text, /dashboard release/u);
+	assert.doesNotMatch(text, /Await error|Responding/u);
+	assert.ok(new AgentConversation(entries, "/work", tui, false, false).render(35).lines.every((line) => visibleWidth(line) <= 35));
+});
+
 it("uses native built-in tools, generic unknown tools and unmatched results without execution", () => {
 	const entries: AgentConversationEntry[] = [
 		assistant("a", [

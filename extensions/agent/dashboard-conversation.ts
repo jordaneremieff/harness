@@ -19,6 +19,8 @@ import {
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
+import { createAgentToolCards } from "./tool-cards.ts";
+const agentCards = createAgentToolCards();
 
 export function cleanDashboardText(text: string): string {
 	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
@@ -69,9 +71,11 @@ const nativeTools = (cwd: string) => [
 
 /** Display-only definition: stored tools never acquire an executable renderer from another extension. */
 function transcriptTool(name: string): ToolDefinition {
+	const display = { name, label: name, description: "Retained tool display", parameters: Type.Object({}), execute: async () => { throw new Error("Transcript tools cannot execute"); } };
+	const agent = agentCards[name];
+	if (agent !== undefined) return { ...display, ...agent };
 	return {
-		name, label: name, description: "Retained tool display", parameters: Type.Object({}),
-		execute: async () => { throw new Error("Transcript tools cannot execute"); },
+		...display,
 		renderCall: (args, theme, context) => ({
 			render: (width) => {
 				const values = args && typeof args === "object" ? Object.values(args) : [args];

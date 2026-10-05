@@ -4,6 +4,8 @@ import { withCancel } from "@earendil-works/chord/context";
 import { InboxDoc, type ToolExecutionApi, type TaskId, type DocumentWatch } from "@earendil-works/pi-durable";
 import { AwaitDoc, boundedAwaitAnswer, declareAwait, commitAwaitOutcome, localProducer, referenceKey, type AwaitDeclaration, type AwaitOutcome, type AwaitInput, type AwaitDelivery } from "./awaited-results.ts";
 import type { ResultReference } from "./result-reference.ts";
+import type { ProducerAwaitFact } from "./await-facts.ts";
+import { recordProducerAwait, queuedAwaitInputCount } from "./await-observation.ts";
 import type { AgentControlDispatch } from "./durable-agents.ts";
 
 export type AwaitReply = { decision: AwaitDeclaration["decision"]; results: AwaitOutcome[]; unresolved: ResultReference[]; originalInputs: number[]; queuedInputCount: number; queueSnapshot: { source: "committed InboxDoc"; conversationId: number; runId: number }; releaseReason?: string };
@@ -78,6 +80,7 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 	const owned = withCancel(context);
 	let watch: DocumentWatch<import("./awaited-results.ts").AwaitState> | undefined;
 	const jobs: Promise<void>[] = [];
+	const producerJobs: Promise<unknown>[] = [];
 	try {
 	await withdrawNamedCheckIns(api, context);
 	watch = await api.watchDoc(AwaitDoc, owned.context);
@@ -96,8 +99,11 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 	const initial = await api.snapshot(AwaitDoc, context);
 	check(initial);
 	if (declaration(initial, api.taskId)?.decision === "awaiting") {
+		for (const sessionId of new Set(args.results.map((reference) => reference.sessionId))) producerJobs.push(dispatch("observe-producer-await", { sessionId, publish: (fact: ProducerAwaitFact) => api.commit((tx) => recordProducerAwait(tx, api.taskId, fact), owned.context) }, owned.context).catch(async (error) => {
+			if (!owned.context.abortSignal?.aborted) await api.commit((tx) => recordProducerAwait(tx, api.taskId, { sessionId, source: "producer await-state", observedAt: Date.now(), unavailable: (error instanceof Error ? error.message : String(error)).slice(0, 512) }), owned.context);
+		}));
 		jobs.push(...args.results.map((reference) => observeOutcome(api, storageId, dispatch, reference, owned.context)));
-		for (const job of jobs) void job.catch((error) => reject(error instanceof Error ? error : new Error(String(error))));
+		for (const job of [...jobs, ...producerJobs]) void job.catch((error) => reject(error instanceof Error ? error : new Error(String(error))));
 	}
 		await Promise.race([decided, closed]);
 		owned.cancel();
@@ -108,7 +114,7 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 		const snapshot = await api.commit(async (tx) => {
 			const current = declaration(await tx.doc(AwaitDoc), api.taskId);
 			if (current === undefined) throw new Error("The original await round ended");
-			const queue = (await tx.doc(InboxDoc, api.conversationId)).items.filter((item) => item.mode !== "write").length;
+			const queue = await queuedAwaitInputCount(tx, api.conversationId, current.results);
 			return { current: JSON.parse(JSON.stringify(current)) as AwaitDeclaration, queue };
 		}, context);
 		const { current, queue } = snapshot;
@@ -116,6 +122,6 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 	} finally {
 		owned.cancel();
 		await watch?.stop();
-		await Promise.allSettled(jobs);
+		await Promise.allSettled([...jobs, ...producerJobs]);
 	}
 }

@@ -11,6 +11,8 @@ async function nativeResult(host: DurableHost, reference: ResultReference, conte
 import type { Context } from "@earendil-works/chord";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import type { ResultReference } from "./result-reference.ts";
+import type { ProducerAwaitFact } from "./await-facts.ts";
+import { observeProducerAwait } from "./await-producer-observer.ts";
 import { projectCollaboration, collaborationStorage } from "./collaboration.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { dirname } from "node:path";
@@ -260,9 +262,23 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		try { return await foreignControl(method, params, sessionId, context); }
 		finally { activeRequests--; notifyActivity(); }
 	}
+	async function observeAwaitProducer(params: Record<string, unknown>, context: Context): Promise<unknown> {
+		const sessionId = String(params.sessionId);
+		if (typeof params.publish !== "function") throw new Error("Producer observation requires an in-process callback");
+		const publish = params.publish as (fact: ProducerAwaitFact) => Promise<void>;
+		if (storageIdOf(sessionId) === metadata.storageId) return observeProducerAwait(sessionId, async () => await host.request("await-state", { sessionId }, context) as { awaiting?: import("./await-facts.ts").OwnAwaitFact }, async (changed) => host.harness.subscribeCommits((publication) => { if (publication.changes.length) changed(); }), publish, context);
+		const record = catalog.read(sessionId);
+		const client = await acquireHost(hostMetadata(record));
+		try {
+			const subscribe = client.subscribeChanges?.bind(client);
+			if (subscribe === undefined) throw new Error("Producer host has no commit observation capability");
+			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId }, { signal: context.abortSignal }) as { awaiting?: import("./await-facts.ts").OwnAwaitFact }, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
+		} finally { await client.close(); }
+	}
 	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {
 		const params = await resolveSelectors(input);
 		if (method === "await-native") return nativeResult(host, params.result as ResultReference, context);
+		if (method === "observe-producer-await") return observeAwaitProducer(params, context);
 		if (method === "report") return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
 		if (["collaboration-list", "collaboration-read"].includes(method)) return collaborationObservation(method, params);
 		if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);

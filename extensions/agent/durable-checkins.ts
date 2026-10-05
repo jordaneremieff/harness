@@ -2,6 +2,8 @@
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { AgentDeliveryDoc, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
+import { readAwaitFact } from "./await-observation.ts";
+import { awaitFactLines } from "./await-facts.ts";
 
 export const CHECK_IN_MAX_MINUTES = 35791;
 /** Only model tool admissions apply the environment default. */
@@ -81,6 +83,8 @@ async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefin
 	const id = input.conversationId as ConversationId;
 	const live = await tx.doc(LiveDoc, id);
 	const usage = await tx.doc(UsageDoc, id);
+	const awaiting = await readAwaitFact(tx, input.senderIdentity.split(":")[0], id);
+	if (awaiting !== undefined) return { cost: retainedCost(usage), digest: bounded(awaitFactLines(awaiting).join("\n"), 2400) };
 	const recent = await recentActivity(tx, id, inputEntry);
 	// Native input placement follows the prior tool round and clears its live tools.
 	const running = (inputEntry === undefined ? [] : live.tools ?? []).filter((tool) => tool.status === "running").slice(0, 4);

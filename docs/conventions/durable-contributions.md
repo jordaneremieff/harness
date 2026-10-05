@@ -62,7 +62,7 @@ interface DurableContributionHost {
   readonly services: AgentSessionServices;
   readonly cwd: string;
   readonly agentDir: string;
-  /** The agent storage: one root conversation plus its forks and child agents. */
+  /** The agent storage: one root conversation plus its forks and created agents. */
   readonly storageId: string;
   /**
    * The host's open Harness. The host opens it before the first `create()` call

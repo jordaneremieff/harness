@@ -9,7 +9,7 @@ it("gives ordinary coordination tools completion and low-message guidance", () =
 		events: { emit() {} },
 		on: () => () => {},
 		registerTool: (tool: { name: string; description: string }) => descriptions.set(tool.name, tool.description),
-		registerShortcut() {}, registerMessageRenderer() {}, registerCommand() {},
+		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
 	assert.match(descriptions.get("agent_intent") ?? "", /update or clear intent when integration completes/u);

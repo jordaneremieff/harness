@@ -188,6 +188,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
 	let observedManager: AgentManager | undefined;
 	const cards = createAgentToolCards(() => observedManager?.observedToolCardRows() ?? []);
+	pi.registerToolRenderer((name, next) => next() ?? cards[name]);
 	const primaries = new Map<string, AbortController>();
 	const getManager = (): AgentManager => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
@@ -519,6 +520,16 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 				},
 			}),
 		),
+		{
+			name: "await-release",
+			description: "Return partial awaited results; keep producers active",
+			help: `${sessionHelp} The selected native run ID prevents release of a later request.`,
+			args: [{ name: "session", complete: "session-control" }, { name: "run" }],
+			run: async ([sessionId, runId], ctx) => {
+				const result = await control("await-release", { sessionId, expectedRunId: Number(runId) }, ctx) as { released: boolean };
+				return outcome(result.released ? "Released the selected await" : "The selected await is no longer active", sessionId);
+			},
+		},
 		{
 			name: "abort",
 			description: "Stop current work; keep the agent",

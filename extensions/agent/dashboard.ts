@@ -101,7 +101,7 @@ const HELP = [
 ];
 /** Roster fields that change when an agent's host starts, works, finishes, or stops. */
 function rosterMark(row: AgentConversationSummary): string {
-	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}`;
+	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}|${JSON.stringify(row.awaiting)}`;
 }
 /** The root owns source handles and async generations. Rendering performs no source reads. */
 export class AgentDashboard implements Component, Focusable {

@@ -370,6 +370,12 @@ export async function runActionDialog(
 		command: () => commandDialog(context),
 		schedule: () => scheduleDialog(context),
 		timers: () => timersDialog(context),
+		"await-release": async () => {
+			const runId = context.row.awaiting?.runId;
+			if (runId === undefined) return undefined;
+			if (!await confirm(context.ctx, `Release await for ${context.label}?`, "The original request resumes with partial results. Producers stay active.", "Release await")) return undefined;
+			return runNative(context, "await-release", [String(runId)]);
+		},
 		abort: () => stopDialog(context),
 		attach: () => reconnectDialog(context),
 	};

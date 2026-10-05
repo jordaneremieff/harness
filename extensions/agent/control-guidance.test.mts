@@ -96,12 +96,12 @@ it("describes retained delivery and automatic unfinished-task check-ins", () => 
 
 it("teaches nested spawn placement and lineage status", () => {
 	const spawn = AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "";
-	assert.match(spawn, /without a handle in the same cwd creates a native child conversation in your storage/u);
+	assert.match(spawn, /without a handle in the same cwd creates a conversation in your storage/u);
 	assert.match(spawn, /a storage with its own host/u);
 	assert.match(spawn, /selected controls permit further delegation/u);
 	assert.ok(spawn.includes("bounded /agent roster"));
 	const status = AGENT_CONTROL_GUIDANCE.agent_status.guidelines?.join("\n") ?? "";
-	assert.match(status, /Your agents section/u);
+	assert.match(status, /Created agents section/u);
 });
 
 it("renders only the selected controls in control order", () => {

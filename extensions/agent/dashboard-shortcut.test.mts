@@ -58,7 +58,7 @@ it("the sole entry shortcut names the dashboard and registers no primary observe
 	register({
 		events: { emit() {} },
 		registerTool() {},
-		registerMessageRenderer() {},
+		registerMessageRenderer() {}, registerToolRenderer() {},
 		registerCommand(_name: string, _value: RegisteredCommand) {},
 		registerShortcut: (key: string, value: { description: string }) =>
 			shortcuts.push({ key, description: value.description }),

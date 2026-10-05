@@ -3,6 +3,7 @@ import { Type, type Static } from "typebox";
 import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { canonicalIdentity } from "./identity.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
+import type { ProducerAwaitFact } from "./await-facts.ts";
 
 export const AwaitParams = Type.Object({ results: Type.Array(ResultReferenceSchema, { minItems: 1, maxItems: 16, uniqueItems: true }) }, { additionalProperties: false });
 export type AwaitInput = Static<typeof AwaitParams>;
@@ -28,7 +29,7 @@ export const AwaitOutputSchema = Type.Object({
 }, { additionalProperties: false });
 export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
 export type AwaitDecision = "awaiting" | "settled" | "released" | "failed";
-export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[] };
+export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[]; producers?: ProducerAwaitFact[] };
 export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number };
 export type AwaitDelivery = { requestId: string; results: ResultReference[]; complete: boolean };
 export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[] };

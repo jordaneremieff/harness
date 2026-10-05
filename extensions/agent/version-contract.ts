@@ -38,6 +38,7 @@ for (const method of ["profile-read", "profile-update", "profile-list", "resolve
 operations["task-submit"] = { ...operations["task-submit"], response: "task-submit/1.1.0" };
 operations.submit = { request: "submit/1.1.0", response: "submit/1.1.0" };
 operations.receipts = { request: "receipts/1.1.0", response: "receipts/1.1.0" };
+for (const method of ["await-state", "await-release"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations["profile-list"] = { ...operations["profile-list"], response: schemaId(ProfiledListOutputSchema) };
 operations["profile-read"] = { ...operations["profile-read"], response: schemaId(AgentProfileSchema) };
 operations["profile-update"] = { ...operations["profile-update"], response: schemaId(ProfileUpdateSchema) };
@@ -60,7 +61,7 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
 export const MANAGER_CONTRACT = "manager/1.4.0";
-export const CONTROL_BINDING_CONTRACT = `native-controls/1.1.0;durable=${durableVersion}`;
+export const CONTROL_BINDING_CONTRACT = `native-controls/1.2.0;durable=${durableVersion}`;
 export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.0.0";
 
 function record(value: unknown): value is Record<string, unknown> {

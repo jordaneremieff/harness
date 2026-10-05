@@ -8,6 +8,7 @@ export interface DashboardActionChoice {
 }
 export function dashboardActions(row: AgentConversationSummary): DashboardActionChoice[] {
 	return [
+		...(row.awaiting === undefined ? [] : [{ name: "await-release", label: "Release await", description: "Return partial results on this request; producers continue." }]),
 		{
 			name: "abort",
 			label: "Stop current work",

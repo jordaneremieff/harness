@@ -34,6 +34,7 @@ import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, reque
 import { handleStorageId } from "./identity.ts";
 import { AgentMetaDoc, AgentDeliveryDoc, AwaitInputSuppressed, readOutcome, submitConversation } from "./durable-controls.ts";
 import { AwaitDoc, type AwaitState, type AwaitOutcome } from "./awaited-results.ts";
+import { readAwaitFact, releaseAwait, recordProducerAwait } from "./await-observation.ts";
 
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, gateTool } from "./durable-host-fixture.mts";
@@ -531,7 +532,7 @@ it("accepts every shared thinking level in native spawn, configure, and attach s
 
 it("forwards native await cancellation through the registered entrypoint contribution", { timeout: 30000 }, async (t) => {
 	let contribution: ReturnType<typeof createAgentContribution> | undefined;
-	registerAgentExtension({ events: { emit(event: string, value: unknown) { if (event === "durable:contribution") contribution = value as ReturnType<typeof createAgentContribution>; } }, on() {}, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {} } as unknown as ExtensionAPI);
+	registerAgentExtension({ events: { emit(event: string, value: unknown) { if (event === "durable:contribution") contribution = value as ReturnType<typeof createAgentContribution>; } }, on() {}, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	assert.ok(contribution);
 	let observed!: () => void;
 	const observing = new Promise<void>((resolve) => { observed = resolve; });
@@ -864,6 +865,35 @@ it("withdraws a queued same-storage Reporter input by its actual request ID", { 
 	const report = await harness.commit((tx) => tx.submissionByRequest(root.id, reportId), context);
 	assert.equal(report?.status, "unanswered"); if (report?.status === "unanswered") assert.equal(report.reason, "aborted");
 	assert.equal((await userTexts(harness, root.id)).some((text) => text.startsWith("[agent report-producer answered]")), false);
+});
+
+it("projects native awaiting facts and releases only the selected live run without stopping its producer", { timeout: 10000 }, async (t) => {
+	const route = createRoute(); let finish!: (message: AssistantMessage) => void; let producerDone = false;
+	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
+	const models = createTestModels((...args) => messageText(args[0].messages.findLast((message) => message.role !== "system")) === "HELD-FACTS" ? held.then((value) => { producerDone = true; return value; }) : route.route(...args));
+	const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
+	const { registry } = buildRegistry((method, params, ctx) => method === "observe-producer-await" ? Promise.resolve(undefined) : base(method, params, ctx));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
+	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
+	route.script.push({ tool: "agent_spawn", args: { prompt: "HELD-FACTS", name: "facts-producer", checkInMinutes: 0 } }); await say(root, "Dispatch fact work");
+	const admission = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(admission);
+	const result = (admission.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
+	route.script.push({ tool: "agent_await", args: { results: [result] } }); const original = await root.submit({ type: "input", content: "Await facts" }, context); await ready;
+	const automatic = await root.submit({ type: "input", content: "ORDINARY-QUEUED", whenBusy: "followUp", requestId: "ordinary-fact" }, context);
+	const fact = await harness.commit((tx) => readAwaitFact(tx, storageId, root.id), context); assert.ok(fact);
+	assert.deepEqual(fact.heldInputs, [original.id]); assert.equal(fact.results[0].status, "pending"); assert.equal(fact.queuedInputCount, 1);
+	const current = (await harness.snapshot(AwaitDoc, context))?.declarations.find((item) => item.runId === fact.runId); assert.ok(current);
+	await harness.commit((tx) => recordProducerAwait(tx, current.taskId as Durable.TaskId, { sessionId: result.sessionId, observedAt: 1, source: "producer await-state", awaiting: { runId: 999, heldInputs: [result.submissionId], results: [{ result: { sessionId: storageId, submissionId: original.id }, status: "pending" }], queuedInputCount: 0, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 } } }), context);
+	const mutual = await harness.commit((tx) => readAwaitFact(tx, storageId, root.id), context); assert.deepEqual(mutual?.likelyCycle, [result.sessionId]);
+	assert.equal((await harness.commit((tx) => releaseAwait(tx, storageId, root.id, fact.runId + 1), context)).released, false);
+	assert.equal((await original.status(context)).status, "placed");
+	const released = await harness.commit((tx) => releaseAwait(tx, storageId, root.id, fact.runId), context);
+	assert.equal(released.released, true); assert.equal(released.awaiting?.queuedInputCount, 1);
+	await original.wait(context); await automatic.wait(context); await root.waitForIdle(context);
+	assert.equal(producerDone, false); assert.equal(await harness.commit((tx) => readAwaitFact(tx, storageId, root.id), context), undefined);
+	const output = (await toolOutcomes(harness, root.id)).findLast((item) => item.name === "agent_await"); assert.ok(output); assert.equal(JSON.parse(output.text).decision, "released");
+	finish(fauxAssistantMessage("RESULT"));
 });
 
 it("retains a queued shared-answer group when another owner's result is not awaited", { timeout: 10000 }, async (t) => {
@@ -1598,7 +1628,7 @@ it("adds only the caller's retained children to storage status text and structur
 		return outcome;
 	};
 	const empty = await status();
-	assert.ok(!empty.text.includes("Your agents"));
+	assert.ok(!empty.text.includes("Created agents"));
 	route.script.push({ tool: "agent_spawn", args: { name: "native" } });
 	await say(root, "SPAWN");
 	route.script.push({ tool: "agent_spawn", args: { name: "foreign", cwd: "/elsewhere" } });
@@ -1606,15 +1636,15 @@ it("adds only the caller's retained children to storage status text and structur
 	const local = (await harness.snapshot(TestChildren, root.id, context))?.children[0];
 	assert.ok(local?.conversationId !== undefined);
 	const populated = await status();
-	assert.equal(populated.text, `${empty.text}\n\nYour agents (direct children, newest first; retained creation labels):\n- foreign-child "foreign": storage with own host\n- ${storageId}:${local.conversationId} "native": native child conversation`);
-	assert.deepEqual(populated.details, { ...(empty.details as object), structuredContent: { ...(empty.details as { structuredContent: object }).structuredContent, lineage: {
-		children: [{ identity: "foreign-child", name: "foreign", kind: "storage" }, { identity: `${storageId}:${local.conversationId}`, name: "native", kind: "native-child" }], omitted: 0,
+	assert.equal(populated.text, `${empty.text}\n\nCreated agents (newest first; retained creation labels):\n- foreign-child "foreign": storage with own host\n- ${storageId}:${local.conversationId} "native": conversation in this storage`);
+	assert.deepEqual(populated.details, { ...(empty.details as object), structuredContent: { ...(empty.details as { structuredContent: object }).structuredContent, createdAgents: {
+		agents: [{ identity: "foreign-child", name: "foreign", kind: "storage" }, { identity: `${storageId}:${local.conversationId}`, name: "native", kind: "conversation" }], omitted: 0,
 	} } }, "lineage is available to structured tool consumers without changing host fields");
 	assert.deepEqual(calls.filter((call) => call.method === "status").map((call) => call.params), [{}, {}]);
 	const child = await harness.conversation(local.conversationId, context);
 	assert.ok(child);
-	assert.ok(!(await status(child)).text.includes("Your agents"), "a childless caller does not inherit its owner's registry");
-	assert.ok(!(await status(root, { sessionId: storageId })).text.includes("Your agents"), "selected status stays unchanged");
+	assert.ok(!(await status(child)).text.includes("Created agents"), "a childless caller does not inherit its owner's registry");
+	assert.ok(!(await status(root, { sessionId: storageId })).text.includes("Created agents"), "selected status stays unchanged");
 });
 
 it("refuses a self abort and continues the run", async (t) => {

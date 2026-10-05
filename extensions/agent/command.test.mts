@@ -38,7 +38,7 @@ function registration() {
 		events: { emit() {} },
 		registerShortcut() {},
 		registerTool() {},
-		registerMessageRenderer() {},
+		registerMessageRenderer() {}, registerToolRenderer() {},
 		on() {},
 		getThinkingLevel: () => "off",
 		registerCommand(name: string, options: typeof command) {
@@ -322,7 +322,7 @@ describe("agent command discovery and help", () => {
 			events: { emit() {} },
 			registerShortcut() {},
 			registerTool() {},
-			registerMessageRenderer() {},
+			registerMessageRenderer() {}, registerToolRenderer() {},
 			on: () => () => {},
 			registerCommand(name: string, command: unknown) {
 				assert.equal(commands.has(name), false);

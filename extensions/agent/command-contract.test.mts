@@ -46,7 +46,7 @@ it("the production observation adapter forwards cancellation and releases late a
 		on: () => () => {},
 		registerTool() {},
 		registerShortcut() {},
-		registerMessageRenderer() {},
+		registerMessageRenderer() {}, registerToolRenderer() {},
 		getThinkingLevel: () => "off",
 		registerCommand: (name: string, value: typeof command) => {
 			if (name === "agent") command = value;
@@ -102,7 +102,7 @@ it("native agent commands retain their complete multiline result", async (t) => 
 		on: () => () => {},
 		registerTool() {},
 		registerShortcut() {},
-		registerMessageRenderer() {},
+		registerMessageRenderer() {}, registerToolRenderer() {},
 		getThinkingLevel: () => "off",
 		registerCommand: (name: string, value: typeof command) => {
 			if (name === "agent") command = value;
@@ -155,7 +155,7 @@ it("preserves optional command inputs and resolves directory commands at the pri
 		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) =>
 			commands.set(name, command),
 		registerShortcut() {},
-		registerMessageRenderer() {},
+		registerMessageRenderer() {}, registerToolRenderer() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
 	const notices: string[] = [];

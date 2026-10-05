@@ -324,7 +324,7 @@ it("refreshes the registered primary identity on model, thinking, and name chang
 	registerAgentExtension({
 		events: { emit() {} },
 		registerTool() {},
-		registerMessageRenderer() {},
+		registerMessageRenderer() {}, registerToolRenderer() {},
 		registerShortcut() {},
 		registerCommand() {},
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {

@@ -22,7 +22,7 @@ import type { FleetStatus } from "./fleet-status.ts";
 
 function primaryTools(): Map<string, ToolDefinition> {
 	const tools = new Map<string, ToolDefinition>();
-	register({ events: { emit() {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {} } as unknown as ExtensionAPI);
+	register({ events: { emit() {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	return tools;
 }
 

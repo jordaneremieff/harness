@@ -26,6 +26,7 @@ import { AgentManager } from "./manager.ts";
 import { observeDurableStorage } from "./durable-runtime.ts";
 import { childCatalogRecord, killHost, markerFixture, runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
+import type { AwaitFact } from "./await-facts.ts";
 
 interface SubmitResult {
 	readonly submissionId: string | number;
@@ -66,6 +67,53 @@ async function within(ready: Promise<void>, timeoutMs: number, message: string):
 		);
 	});
 }
+
+async function publishedAwait(client: HostConnection, sessionId: string, predicate: (fact: AwaitFact) => boolean): Promise<AwaitFact> {
+	assert.ok(client.subscribeChanges);
+	let resolve!: (fact: AwaitFact) => void; let reject!: (error: unknown) => void;
+	const ready = new Promise<AwaitFact>((yes, no) => { resolve = yes; reject = no; });
+	const signal = AbortSignal.timeout(15000);
+	const stalled = () => { void client.request("status", { sessionId }).then((value) => reject(new Error(`Await observation deadline: ${JSON.stringify(value)}`)), reject); };
+	signal.addEventListener("abort", stalled, { once: true });
+	const stop = await client.subscribeChanges(() => {
+		void client.request("status", { sessionId }).then((value) => {
+			const fact = (value as { conversation?: { awaiting?: AwaitFact } }).conversation?.awaiting;
+			if (fact !== undefined && predicate(fact)) resolve(fact);
+		}, reject);
+	}, signal);
+	try { return await ready; } finally { stop(); signal.removeEventListener("abort", stalled); }
+}
+
+it("observes a foreign native await in one hop and releases the selected source request through RPC", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t, { withAgentExtension: true });
+	const remoteRecord = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off", name: "foreign await observer", trust: true, ownerId: f.ownerId }, "foreign-observer");
+	const source = await acquireHost(f.metadata, { env: f.env("await-local") }); trackHost(t, source.pid);
+	const consumer = await acquireHost(hostMetadata(remoteRecord), { env: f.env("await-reference") }); trackHost(t, consumer.pid);
+	try {
+		const sourceReady = publishedAwait(source, f.metadata.storageId, () => true);
+		const admitted = await source.request("submit", { message: "START_AWAIT_LOCAL", requestId: "source-original", ownerId: remoteRecord.storageId, origin: "operator" }) as SubmitResult;
+		const own = await sourceReady;
+		const consumerReady = publishedAwait(consumer, remoteRecord.storageId, (fact) => fact.producers.some((item) => item.sessionId === f.metadata.storageId && item.awaiting?.runId === own.runId));
+		const reference = { sessionId: f.metadata.storageId, submissionId: Number(admitted.submissionId), requestId: "source-original" };
+		const requested = await consumer.request("submit", { message: `AWAIT_REFERENCE:${JSON.stringify(reference)}`, requestId: "consumer-original", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+		const observed = await consumerReady;
+		const producer = observed.producers.find((item) => item.sessionId === f.metadata.storageId); assert.ok(producer?.awaiting);
+		assert.deepEqual(producer.awaiting.heldInputs, [Number(admitted.submissionId)]);
+		assert.equal(producer.awaiting.results[0].status, "pending"); assert.equal("producers" in producer.awaiting, false);
+		assert.equal(producer.source, "producer await-state"); assert.ok(producer.observedAt > 0); assert.equal(observed.coverage, "one hop; remote graph incomplete");
+		assert.deepEqual(await source.request("await-release", { expectedRunId: own.runId + 1 }), { released: false });
+		const released = await source.request("await-release", { expectedRunId: own.runId }) as { released: boolean; awaiting: AwaitFact };
+		assert.equal(released.released, true); assert.equal(released.awaiting.runId, own.runId);
+		const settled = await waitForReceipt(consumer, f.ownerId, requested.submissionId, 5000); assert.equal(settled.status, "done"); assert.equal(settled.answer, "AWAIT_FINISHED");
+		const after = await source.request("await-state", {}); assert.deepEqual(after, {});
+		const child = own.results[0].result;
+		const childStatus = await source.request("status", { sessionId: child.sessionId }) as { conversation: { busy: boolean } };
+		assert.equal(childStatus.conversation.busy, true, "release does not cancel or dispatch the producer");
+	} catch (error) {
+		const states = await Promise.allSettled([observeDurableStorage(f.metadata, "status", { sessionId: f.metadata.storageId }), observeDurableStorage(hostMetadata(remoteRecord), "status", { sessionId: remoteRecord.storageId })]);
+		throw new Error(`${String(error)}\nNative source/consumer states: ${JSON.stringify(states).slice(0, 16000)}`);
+	} finally { await consumer.close().catch(() => {}); await source.close().catch(() => {}); }
+});
 
 it("reads a cold observation without bootstrapping contributions", { timeout: 180000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });

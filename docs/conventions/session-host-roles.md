@@ -11,10 +11,15 @@ prompts.
 
 One independent process owns each Durable storage. It takes the exclusive writer
 claim before storage opens, and it alone resumes the native scheduler. A root
-agent uses the storage ID; its forks and same-directory children use conversation
-IDs within that storage. A child at a different directory receives a new storage
-host with cwd-bound resources. Child conversations belong to native background
-tasks, not to another ordinary primary.
+agent uses the storage ID; its forks and same-directory agents use conversation
+IDs within that storage. An agent at a different directory receives a new
+storage host with cwd-bound resources. Created conversations belong to native
+background tasks, not to another ordinary primary. Creation records and fork
+ancestry describe provenance, not result dependencies or current request routes.
+Native awaited results retain the original request; the ordinary primary stays
+responsive. Semantic awaiting facts are separate from native task state.
+The selected-run release returns partial results without dispatch or producer
+cancellation; a real abort still stops the original request.
 
 Loading configured extension factories into cwd-bound public services does not
 run an ordinary session lifecycle. Factories emit native capability bundles

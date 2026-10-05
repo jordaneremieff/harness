@@ -21,7 +21,7 @@
 import { realpathSync } from "node:fs";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
-import { readAgentLineage, renderAgentLineage } from "./agent-lineage.ts";
+import { readCreatedAgents, renderCreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile } from "./profile.ts";
 import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
@@ -60,6 +60,9 @@ export type AgentControlMethod =
 	| "profile-read" | "profile-update" | "profile-list" | "resolve-agent" | "task-submit" | "report"
 	| "submit"
 	| "await-native"
+	| "observe-producer-await"
+	| "await-state"
+	| "await-release"
 	| "spawn"
 	| "place"
 	| "inspect"
@@ -309,11 +312,11 @@ const SpawnParams = Type.Object(
 		handle: Type.Optional(HandleSchema),
 		role: Type.Optional(Type.String({ maxLength: 2000 })),
 		prompt: Type.Optional(
-			Type.String({ description: "Initial assignment for the child. Without one the child stays idle." }),
+			Type.String({ description: "Initial assignment for the agent. Without one the agent stays idle." }),
 		),
-		name: Type.Optional(Type.String({ description: "Display name for the child. Names may repeat." })),
+		name: Type.Optional(Type.String({ description: "Display name for the agent. Names may repeat." })),
 		cwd: Type.Optional(
-			Type.String({ description: "Working directory for the child. Default: inherited from the owner." }),
+			Type.String({ description: "Working directory for the agent. Default: inherited from the creating conversation." }),
 		),
 		model: Type.Optional(
 			Type.String({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
@@ -877,7 +880,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const existing = registry.children.find((child) => child.createdBy === api.taskId);
 		if (existing !== undefined) {
 			if (existing.conversationId === undefined || existing.anchorTaskId === undefined)
-				return { kind: "error", message: "This call already created a child in another storage." };
+				return { kind: "error", message: "This call already created an agent in another storage." };
 			return {
 				kind: "local",
 				child: { ...existing, conversationId: existing.conversationId, anchorTaskId: existing.anchorTaskId },
@@ -925,7 +928,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		);
 		if (known?.foreignSessionId !== undefined) return retainedForeignSpawn(known, known.foreignSessionId, args.prompt);
 		if (dispatch === undefined)
-			return { kind: "error", message: "A child with a different cwd needs the host dispatch callback." };
+			return { kind: "error", message: "An agent with a different cwd needs the host dispatch callback." };
 		let result: unknown;
 		try {
 			result = await dispatch("spawn", {
@@ -1006,7 +1009,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const spawnTool = { ...durable.defineTool({
 		name: "agent_spawn",
 		description:
-			"Create a child agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts a child in a new storage owned by you. Answers report back to you. Unanswered tasks also send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. Names may repeat.",
+			"Create an agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts an agent in a new storage. Answers report back to you. Unanswered tasks also send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. Names may repeat.",
 		parameters: SpawnParams,
 		replay: "safe",
 		execute: async (args: SpawnInput, api, context) => {
@@ -1224,7 +1227,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const existing = registry.children.find((child) => child.createdBy === api.taskId);
 		if (existing !== undefined) {
 			if (existing.conversationId === undefined || existing.anchorTaskId === undefined)
-				return { kind: "error", message: "This call already created a child in another storage." };
+				return { kind: "error", message: "This call already created an agent in another storage." };
 			return {
 				kind: "child",
 				child: { ...existing, conversationId: existing.conversationId, anchorTaskId: existing.anchorTaskId },
@@ -1267,7 +1270,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const forkTool = durable.defineTool({
 		name: "agent_fork",
 		description:
-			"Create a child conversation from one point of another conversation's history. The source is unchanged; the fork starts idle unless a prompt is given.",
+			"Create a conversation branch from one point of another conversation's history. The source is unchanged; the fork starts idle unless a prompt is given.",
 		parameters: ForkParams,
 		replay: "safe",
 		execute: async (args: ForkInput, api, context) => {
@@ -1306,7 +1309,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const rewindTool = durable.defineTool({
 		name: "agent_rewind",
 		description:
-			"Repair a wrong decision in a new child conversation. It drops the named entry and its descendants and redoes the work under the correction. The source stays unchanged.",
+			"Repair a wrong decision in a new conversation branch. It drops the named entry and its descendants and redoes the work under the correction. The source stays unchanged.",
 		parameters: RewindParams,
 		replay: "safe",
 		execute: async (args: RewindInput, api, context) => {
@@ -1465,17 +1468,17 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				if (args.view === "fleet") return fleetObservation(host.catalogRoot, args.sessionId);
 				const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusOutputSchema);
 				if (args.sessionId !== undefined || result.isError) return result;
-				const lineage = await readAgentLineage(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
-				if (lineage === undefined && host.catalogRoot === undefined) return result;
+				const createdAgents = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
+				if (createdAgents === undefined && host.catalogRoot === undefined) return result;
 				const observed: Record<string, unknown> = { ...result.details?.structuredContent };
 				if (host.catalogRoot !== undefined) {
 					const agent = await api.agent(context);
 					observed.awareness = await readEffortAwareness(dirname(host.catalogRoot), { id: identity(api.conversationId), cwd: agent.cwd ?? host.cwd });
 				}
 				const text = [controlText(observed)];
-				if (lineage !== undefined) {
-					observed.lineage = lineage;
-					text.push(renderAgentLineage(lineage));
+				if (createdAgents !== undefined) {
+					observed.createdAgents = createdAgents;
+					text.push(renderCreatedAgents(createdAgents));
 				}
 				const structured = structuredObservation(StatusToolOutputSchema, observed) as Record<string, JsonValue>;
 				return { ...result, content: [{ type: "text" as const, text: text.join("\n\n") }], details: { ...result.details, structuredContent: structured } };
