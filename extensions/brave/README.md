@@ -1,7 +1,8 @@
 # brave: bounded general web search and public-page reading
 
-This extension gives the agent public-page reading and web search without an extension-local SDK, package manifest, lockfile, or
-`node_modules` tree.
+Search the public web with Brave Search and read public HTTP(S) pages as bounded
+static text or exact HTML source links. Search locates candidate sources; the
+reader opens them as evidence without a browser or stored credentials.
 
 ## Surface
 
@@ -10,37 +11,27 @@ This extension gives the agent public-page reading and web search without an ext
 | `web_read` | tool | Read one public HTTP(S) page as bounded static text, locate a literal phrase, or discover exact HTML source links, with the final URL, retrieval time, and snapshot references. |
 | `web_search` | tool | Search the public web with optional country, language, freshness, SafeSearch, spellcheck, extra excerpts, and pagination controls. |
 
-`web_read` registers first, then `web_search`. The reader covers the observed
-job of opening a public primary page as evidence; the search tool covers
-discovery. No other browser, image, video, news, or local tool is registered
-without a demonstrated need, which keeps the model-facing schema and
-maintenance surface small.
+Use [Configuration](#configuration) for search access, [Use](#use) for calls and
+continuation, [Source links](#source-links) for link discovery, and
+[web_read boundaries](#web_read-boundaries) for security and coverage limits.
 
-## Tool cards
+## Configuration
 
-Each tool draws a compact TUI card. A collapsed call shows one heading row
-(`web_read · <url>` or `web_search · <query>`) plus, when the call sets other
-fields, one dim qualifier row with the view, find phrase, offsets, source id,
-byte budget, or search controls. The argument expansion hint appears only when
-the URL or query is clipped.
-
-A collapsed result leads with the outcome the response establishes:
-
-- `web_read` text reads show the status, the excerpt count, whether a continuation
-  exists, an exact label range when no `find` applies, and the first matched label
-  for a `find`. Coverage flags state extraction or output truncation. A redirect
-  shows the final URL when it differs from the request.
-- `web_read` links reads show the link count, page offset, coverage flags, and
-  the `max_bytes` the next complete record needs.
-- `web_search` shows the returned result count, whether more pages are
-  available, an altered query, and output truncation.
-
-Expansion shows the full result text with a display bound; terminal controls
-escape to text in every collapsed value.
+The `web_search` subscription token comes from `PI_BRAVE_API_KEY` in the Pi
+process environment. The extension reads no configuration file; the token never
+sits inside the repository tree. An explicit key passed to the client options
+overrides the variable for tests and programmatic callers. `web_read` requires
+no key or configuration; it fetches only public pages with no credential.
 
 ## Use
 
-Call `web_search` to find a source, then open its public URL:
+Call `web_search` to find public sources:
+
+```json
+{"query":"Git worktree repair documentation","count":5}
+```
+
+Open a selected public URL with `web_read`:
 
 ```json
 {"url":"https://example.com/","max_bytes":16000}
@@ -101,12 +92,11 @@ reconstructing a destination from its label:
 {"url":"https://docs.python.org/3/whatsnew/3.14.html","view":"links","find":"PEP 734","max_bytes":4000}
 ```
 
-The default remains `view: "text"`. Its output, extraction rules, excerpt
-segmentation, and source identities are unchanged. Links support `text/html`
+The default is `view: "text"`. Links support `text/html`
 only. XHTML (`application/xhtml+xml`), plain text, Markdown, and other content
 types are refused. The HTML parser does not implement XML namespace semantics;
 using it for XHTML anchors would invent links from non-HTML elements. Text mode
-retains its existing XHTML support.
+supports XHTML.
 
 Each `[<sourceId>:L<n>]` reference precedes a JSON record with `label`,
 `labelSource`, `labelTruncated`, and `url`. The URL is the complete serialized
@@ -116,7 +106,7 @@ separate source-order occurrences. A link proves a relationship on the fetched
 source, not the destination's contents or safety. Open the selected URL with a
 separate ordinary `web_read` call before relying on destination evidence.
 
-- **Selection.** The existing parser collects links during the text traversal.
+- **Selection.** The parser collects links during the text traversal.
   It uses exactly the same main/article/body selection and hidden-element
   exclusions, not a separate navigation scan. Only selected `<a href>` elements
   contribute records; resource `<link>` elements, scripts, SVG, MathML, and
@@ -145,11 +135,11 @@ separate ordinary `web_read` call before relying on destination evidence.
   backslashes are rejected rather than silently repaired.
 - **No destination traffic.** Resolution and validation make no requests or
   DNS lookups for listed destinations. Complete resolved URLs must pass the
-  existing HTTP(S), no-userinfo, default-port, length, and literal-address
+  HTTP(S), no-userinfo, default-port, length, and literal-address
   restrictions. Hostnames are not DNS-vetted during listing. Every later
-  explicit read retains the full existing DNS, address, redirect, and transport
+  explicit read retains the full DNS, address, redirect, and transport
   restrictions. Skipped destinations are counted, not echoed.
-- **Bounds and coverage.** The existing download, decode, parser, and deadline
+- **Bounds and coverage.** The download, decode, parser, and deadline
   limits apply. Each body/main/article bucket retains at most 2048 candidate
   records and 256 KiB of JSON-encoded candidate data. The selected bucket also
   caps resolved record data at 256 KiB. The byte calculation includes the label
@@ -191,48 +181,6 @@ truncation. Search adds `find: { query, firstMatchOffset }`, where the offset is
 the first returned match or `null`. It contains no duplicate record list, raw
 HTML, or raw base. `outputTruncated` means another eligible record remains or
 extraction reached a limit; URL-policy omissions remain separately visible.
-
-## Durable agents
-
-The extension has a native Pi Durable form beside its ordinary entrypoint. The
-factory emits its contribution on the `durable:contribution` channel with the
-absolute `index.ts` entrypoint path as its source. The
-[agent extension](../agent/README.md) owns contribution discovery and host
-installation.
-
-`extensions/brave/durable.ts` builds the native extension from the shared
-`capability.ts` surface: parameter schemas, descriptions, model guidance, and
-the `web_search` execution. It adds no documents, hooks, tasks, or commands,
-and `create()` uses no ordinary session API. The native form registers
-`web_read`, then `web_search`, and one prompt section, `web-guidance`, carrying
-in one section the same guidance text as the ordinary prompt snippet and
-prompt guidelines.
-
-Replay classes:
-
-| Tool | Replay | Why |
-|---|---|---|
-| `web_read` | `safe` | A rerun repeats an idempotent public GET with no credential and no external mutation. Each call rebuilds the snapshot from the live page and checks the same source digest, so a continuation still refuses a changed source. |
-| `web_search` | `unsafe` | A rerun would repeat a billed Brave query. If the process dies after intent and before the result, the model receives an interrupted result instead. |
-
-The native tool result carries the same text and details data as the ordinary
-tool. Durable results must be strict JSON, so an optional details key with no
-value (`alteredQuery`, `nextOffset`) is absent instead of `undefined`. The
-Durable form has no terminal cards: `renderCall` and `renderResult` are
-ordinary-session surfaces.
-
-`extensions/brave/durable.test.mts` runs the contribution in a real Durable
-Harness over `MemoryStorage` with the pi-ai faux provider. It drives one
-model-issued call per tool and checks both replay classes across a close and
-reopen over retained storage.
-
-## Configuration
-
-The `web_search` subscription token comes from `PI_BRAVE_API_KEY` in the Pi
-process environment. The extension reads no configuration file; the token never
-sits inside the repository tree. An explicit key passed to the client options
-overrides the variable for tests and programmatic callers. `web_read` requires
-no key or configuration; it fetches only public pages with no credential.
 
 ## web_read boundaries
 
@@ -339,7 +287,7 @@ no key or configuration; it fetches only public pages with no credential.
   source check, and excerpt segmentation as sequential reads.
   `downloadedBytes` counts the final response body, not headers or transfer framing.
   Redirect bodies are discarded, and URLs are normalized without fragments.
-- **Failures.** Failures still throw, so Pi produces an error result with text
+- **Failures.** Failures throw, so Pi produces an error result with text
   and empty `details`. Failure text names
   the failed stage or limit and the final URL of the failed hop. If URL validation
   rejects a redirect, the URL identifies the last response, not the rejected
@@ -383,7 +331,7 @@ no key or configuration; it fetches only public pages with no credential.
   diagnostics omit arbitrary parameters and redact the configured API key.
 - Search strings are stripped of terminal and bidi controls before presentation.
   Individual fields and final output are bounded; final model-visible output
-  never exceeds Pi's 50 KB / 2000-line tool-output truncation limits
+  never exceeds Pi's 50 KiB / 2000-line tool-output truncation limits
   (`dist/core/tools/truncate.js`, exported as `DEFAULT_MAX_BYTES` /
   `DEFAULT_MAX_LINES`).
 - Successful tool-result details contain only query and pagination metadata,
@@ -393,6 +341,62 @@ no key or configuration; it fetches only public pages with no credential.
   content rather than instructions. Snippets locate candidate evidence; the tool
   guidance tells the agent to open primary sources before using a result for a
   load-bearing claim.
+
+## Durable agents
+
+The extension has a native Pi Durable form beside its ordinary entrypoint. The
+factory emits its contribution on the `durable:contribution` channel with the
+absolute `index.ts` entrypoint path as its source. The
+[agent extension](../agent/README.md) owns contribution discovery and host
+installation.
+
+`extensions/brave/durable.ts` builds the native extension from the shared
+`capability.ts` surface: parameter schemas, descriptions, model guidance, and
+the `web_search` execution. It adds no documents, hooks, tasks, or commands,
+and `create()` uses no ordinary session API. The native form registers
+`web_read`, then `web_search`, and one prompt section, `web-guidance`, carrying
+in one section the same guidance text as the ordinary prompt snippet and
+prompt guidelines.
+
+Replay classes:
+
+| Tool | Replay | Why |
+|---|---|---|
+| `web_read` | `safe` | A rerun repeats an idempotent public GET with no credential and no external mutation. Each call rebuilds the snapshot from the live page and checks the same source digest, so a continuation still refuses a changed source. |
+| `web_search` | `unsafe` | A rerun would repeat a billed Brave query. If the process dies after intent and before the result, the model receives an interrupted result instead. |
+
+The native tool result carries the same text and details data as the ordinary
+tool. Durable results must be strict JSON, so an optional details key with no
+value (`alteredQuery`, `nextOffset`) is absent instead of `undefined`. The
+Durable form has no terminal cards: `renderCall` and `renderResult` are
+ordinary-session surfaces.
+
+`extensions/brave/durable.test.mts` runs the contribution in a real Durable
+Harness over `MemoryStorage` with the pi-ai faux provider. It drives one
+model-issued call per tool and checks both replay classes across a close and
+reopen over retained storage.
+
+## Tool cards
+
+Each tool draws a compact TUI card. A collapsed call shows one heading row
+(`web_read · <url>` or `web_search · <query>`) plus, when the call sets other
+fields, one dim qualifier row with the view, find phrase, offsets, source id,
+byte budget, or search controls. The argument expansion hint appears only when
+the URL or query is clipped.
+
+A collapsed result leads with the outcome the response establishes:
+
+- `web_read` text reads show the status, the excerpt count, whether a continuation
+  exists, an exact label range when no `find` applies, and the first matched label
+  for a `find`. Coverage flags state extraction or output truncation. A redirect
+  shows the final URL when it differs from the request.
+- `web_read` links reads show the link count, page offset, coverage flags, and
+  the `max_bytes` the next complete record needs.
+- `web_search` shows the returned result count, whether more pages are
+  available, an altered query, and output truncation.
+
+Expansion shows the full result text with a display bound; terminal controls
+escape to text in every collapsed value.
 
 ## Dependencies
 
