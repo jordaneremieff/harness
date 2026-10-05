@@ -25,7 +25,7 @@ import type { AgentConversationPage, AgentConversationSummary } from "./dashboar
 import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
-import { MANAGER_CONTRACT } from "./version-contract.ts";
+import { MANAGER_CONTRACT, operationContractMismatch } from "./version-contract.ts";
 import { collaborationStorage } from "./collaboration.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
@@ -210,6 +210,7 @@ export class AgentManager {
 	private readonly failures: BoundedMap<string>;
 	private readonly crashes = new BoundedMap<{ times: number[]; stopped: boolean }>(DEFAULT_FAILURE_LIMIT);
 	private readonly recoveryErrors = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
+	private readonly recoveryNotes = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
 	private readonly queuedRecovery = new Set<string>();
 	private shuttingDown = false;
 	constructor(options: AgentManagerOptions) {
@@ -563,8 +564,10 @@ export class AgentManager {
 				coverage.skipped += projection.skipped;
 				coverage.omitted += projection.omitted;
 				const recoveryError = this.recoveryErrors.get(record.storageId);
-				const hostLabel = recoveryError;
-				rows.push(...projection.rows.map((row) => ({ ...row, ...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}), ...(hostLabel === undefined ? {} : { health: { ...row.health, lastError: hostLabel } }) })));
+				const note = this.recoveryNotes.get(record.storageId);
+				rows.push(...projection.rows.map((row) => ({ ...row, ...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}),
+					...(note === undefined || row.owner !== "here" ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
+					...(recoveryError === undefined ? {} : { health: { ...row.health, lastError: recoveryError } }) })));
 			}
 			coverage.nextCursor = page.nextCursor;
 			if (!page.nextCursor) { coverage.complete = true; break; }
@@ -797,7 +800,7 @@ export class AgentManager {
 		if (this.crashes.get(record.storageId)?.stopped) return;
 		const cached = this.clients.get(record.storageId);
 		if (cached) {
-			try { await cached.request("recovery-state"); }
+			try { await this.readRecoveryState(record.storageId, cached); }
 			catch (error) { this.recordRecoveryError(record.storageId, errorText(error)); }
 			return;
 		}
@@ -817,6 +820,30 @@ export class AgentManager {
 		} catch (error) {
 			this.recovering.delete(record.storageId);
 			this.recordRecoveryError(record.storageId, errorText(error));
+		}
+	}
+
+	/** An advertised interface difference is a live-host fact, never a transport loss. */
+	private recoveryCompatible(storageId: string, client: HostConnection): boolean {
+		if (client.closed) return true;
+		this.recoveryErrors.delete(storageId);
+		this.failures.delete(storageId);
+		const mismatch = operationContractMismatch("recovery-state", client.runtimeContract.operations["recovery-state"]);
+		if (!mismatch) { this.recoveryNotes.delete(storageId); return true; }
+		const note = `${mismatch} Host code updates on its next start.`;
+		if (this.recoveryNotes.get(storageId) !== note) {
+			this.recoveryNotes.set(storageId, note);
+			void this.refreshFooter();
+		}
+		return false;
+	}
+
+	private async readRecoveryState(storageId: string, client: HostConnection): Promise<{ workPending?: boolean; deliveriesPending?: boolean; deliveriesActive?: boolean } | undefined> {
+		if (!this.recoveryCompatible(storageId, client)) return undefined;
+		try { return await client.request("recovery-state") as { workPending?: boolean; deliveriesPending?: boolean; deliveriesActive?: boolean }; }
+		catch (error) {
+			if (this.recoveryCompatible(storageId, client)) throw error;
+			return undefined;
 		}
 	}
 
@@ -863,6 +890,7 @@ export class AgentManager {
 			removeClose();
 			primary.signal.removeEventListener("abort", close);
 			this.recoveryClients.delete(storageId);
+			this.recoveryNotes.delete(storageId);
 			this.recovering.delete(storageId);
 			void client.close().catch((error) => this.failures.set(storageId, errorText(error)));
 		};
@@ -881,8 +909,8 @@ export class AgentManager {
 			try {
 				do {
 					again = false;
-					const state = await client.request("recovery-state") as { workPending?: boolean; deliveriesPending?: boolean; deliveriesActive?: boolean };
-					if (state.workPending === false && state.deliveriesActive === false) {
+					const state = await this.readRecoveryState(storageId, client);
+					if (state?.workPending === false && state.deliveriesActive === false) {
 						close();
 					}
 					void this.refreshFooter();
@@ -913,6 +941,7 @@ export class AgentManager {
 			if (this.clients.get(storageId) !== client) return;
 			this.clients.delete(storageId);
 			this.launchRows.delete(storageId);
+			this.recoveryNotes.delete(storageId);
 			this.subscriptions.get(storageId)?.();
 			this.subscriptions.delete(storageId);
 			this.failures.delete(`changes:${storageId}`);

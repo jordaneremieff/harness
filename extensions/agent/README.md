@@ -765,6 +765,16 @@ and top-level host metadata remain unchanged. Optional profile hints live inside
 catalog `view`, outside those base schemas. An older host refuses only unsupported
 features; ordinary base operations remain available in both process directions.
 
+A live host with a different `recovery-state` contract is an expected state during
+independent restarts. The manager retains the link without requesting an
+unsupported response. It charges no crash budget and leaves automatic recovery
+enabled. Fleet status and dashboard metadata put the exact contract difference
+and the next host start in `ownerLabel`, not `health.lastError` or the failure
+list. Active work stays intact. A compatible connection clears that neutral
+fact and resumes ordinary recovery checks. Actual transport loss still uses the
+writer claim and the bounded crash budget. No timer, polling, or older-response
+reader waits for an upgrade.
+
 An unavailable change feed leaves compatible reads and controls usable;
 `agent_status` reports the live-update failure.
 

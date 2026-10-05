@@ -554,6 +554,64 @@ it("returns a failed attach configuration instead of a recovery status", async (
 	} finally { manager.close(); }
 });
 
+for (const cached of [false, true]) it(`keeps a live host's recovery contract difference neutral (${cached ? "cached" : "transient"} link)`, { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	let current = false;
+	const recoveryReads = eventLog<void>();
+	let openings = 0;
+	const clients: HostConnection[] = [];
+	const open = async (metadata: HostMetadata): Promise<HostConnection> => {
+		openings++;
+		const client = await connectHost(metadata, { retryAttempts: 0 });
+		const subscribeChanges = client.subscribeChanges;
+		assert.ok(subscribeChanges);
+		const peer = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, "recovery-state": { ...HOST_CONTRACT.operations["recovery-state"], response: "recovery-state/1.0.0" } } };
+		// Control the handshake snapshot and its local refusal while preserving the real live transport.
+		const connection: HostConnection = current ? client : {
+			pid: client.pid, socketPath: client.socketPath, storageId: client.storageId, metadata: client.metadata, runtimeContract: peer,
+			get closed() { return client.closed; },
+			request: async (method, params, options) => { const refusal = contractRefusal(method, peer); if (refusal) throw refusal; return client.request(method, params, options); },
+			onClose: (listener) => client.onClose(listener), subscribeChanges: (listener, signal) => subscribeChanges.call(client, listener, signal), close: () => client.close(),
+		};
+		clients.push(connection);
+		return connection;
+	};
+	const manager = new AgentManager(managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }));
+	t.after(() => manager.close());
+	t.after(() => Promise.all(clients.map((client) => client.close())).then(() => {}));
+	const record = createRecord(manager, root);
+	manager.catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "here", state: "working", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
+	const runtime = { request: async (method: string) => {
+		if (method === "recovery-state") { recoveryReads.push(undefined); return { workPending: !current, deliveriesPending: false, deliveriesActive: false }; }
+		return { busy: !current };
+	}, close: async () => {}, isIdle: () => false };
+	const host = await runHost(() => runtime, { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
+	t.after(() => host.close());
+	if (cached) await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	const crashes = (manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes;
+	assert.equal([...crashes.entries].length, 0, "an operation refusal is not a host loss");
+	assert.equal(openings, 1);
+	assert.equal(recoveryReads.length, 0, "the caller never requests a response shape it cannot read");
+	const page = await manager.dashboardPage();
+	assert.equal(page.rows[0]?.state, "working");
+	assert.equal(page.rows[0]?.health?.lastError, undefined);
+	assert.match(page.rows[0]?.ownerLabel ?? "", /recovery-state.*1\.0\.0.*next start/iu);
+	const status = await manager.status() as { sessions: Array<{ ownerLabel?: string }>; failures: unknown[] };
+	assert.deepEqual(status.failures, []);
+	assert.match(status.sessions[0]?.ownerLabel ?? "", /next start/u);
+	await host.close();
+	await Promise.all(clients.map((client) => waitForConnectionClose(client)));
+	current = true;
+	const updated = await runHost(() => runtime, { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
+	t.after(() => updated.close());
+	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+	await recoveryReads.waitForCount(1);
+	assert.equal([...crashes.entries].length, 0);
+	assert.doesNotMatch((await manager.dashboardPage()).rows[0]?.ownerLabel ?? "", /next start/u);
+});
+
 it("stops repeated live host losses in Attention and permits an explicit attach retry", async (t) => {
 	const root = fixtureRoot(t);
 	const connections = eventLog<FakeConnection>();
