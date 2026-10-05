@@ -111,7 +111,7 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
 	if (!peer) {
 		const component = options.previous instanceof CardText ? options.previous : new CardText("", 0, 0);
 		component.expanded = options.expanded;
-		component.setText([...header, ...content.filter((line): line is string => typeof line === "string"), ...(sections.outcome ?? []), ...(sections.hint ? [theme.fg("dim", sections.hint)] : [])].join("\n"));
+		component.setText([...header, ...content.filter((line): line is string => typeof line === "string"), ...(sections.outcome ?? []), ...(sections.hint ? [theme.fg("muted", sections.hint)] : [])].join("\n"));
 		return component;
 	}
 	const box = new Box(options.peerPadding, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg"))));
@@ -120,7 +120,7 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
 			const lines = content.flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width));
 			const limit = options.expanded ? lines.length : sections.previewLines ?? lines.length;
 			const hidden = Math.max(0, lines.length - limit);
-			return [...header.map((line) => truncateToWidth(line, width, "…")), ...(header.length ? [""] : []), ...lines.slice(0, limit), ...(sections.outcome ?? []), ...(hidden || sections.hint ? [truncateToWidth(theme.fg("muted", sections.hint || expansionHint()), width, "…")] : [])];
+			return [...header.map((line) => clipCardLine(line, width)), ...(header.length ? [""] : []), ...lines.slice(0, limit), ...(sections.outcome ?? []), ...(hidden || sections.hint ? [clipCardLine(theme.fg("muted", sections.hint || expansionHint()), width)] : [])];
 		},
 		invalidate() { for (const part of content) if (typeof part !== "string") part.invalidate(); },
 	};

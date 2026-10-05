@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { defineTool, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { CustomMessageComponent, defineTool, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { createAgentToolCards, type AgentCardContext } from "./tool-cards.ts";
+import { createAgentToolCards, renderAgentPeerMessage, type AgentCardContext } from "./tool-cards.ts";
 import { fixtures, fixtureResult, rows } from "./tool-card-fixture.mts";
 
 process.env.PI_TRUE_COLOR = "1";
@@ -48,6 +48,63 @@ function foregroundAt(line: string, index: number): string | undefined {
 }
 
 for (const themeName of ["dark", "light"] as const) {
+	for (const rowName of ["metadata", "hint"] as const) it(`${themeName} clipped peer ${rowName} keeps muted through its ellipsis`, (t) => {
+		initTheme(themeName, false);
+		const previousKeys = nativeTui.getKeybindings();
+		nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
+		t.after(() => nativeTui.setKeybindings(previousKeys));
+		const modelId = `model-${"界é🙂".repeat(24)}`;
+		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content: "First body line\nSecond body line\nThird body line\nFinal body line", details: { kind: "report", threadId: "source/thread", threadTitle: `Parser contract ${"界é🙂".repeat(24)}`, name: "Parser review", provider: "provider", modelId, thinkingLevel: "xhigh" } };
+		const mutedAnsi = themeModule.theme.getFgAnsi("muted");
+		const muted = foregroundAt(mutedAnsi, mutedAnsi.length);
+		assert.ok(muted);
+		for (const padding of [0, 1]) {
+			const component = new CustomMessageComponent(message, renderAgentPeerMessage, undefined, padding);
+			const wide = component.render(240);
+			const wideFirst = wide.findIndex((line) => plain(line));
+			assert.equal(plain(wide[wideFirst + 1]), `from Parser review · provider/${modelId} · xhigh`);
+			assert.equal(wide.filter((line) => plain(line) === "... (ctrl+o to expand)").length, 1);
+			const widths = [2, 3, 4, 5, 8, 16, 20];
+			if (rowName === "metadata") widths.push(60);
+			for (const width of widths) {
+				const lines = component.render(width);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width), `${padding} padding at ${width} columns`);
+				const first = lines.findIndex((line) => plain(line));
+				const line = rowName === "metadata" ? lines[first + 1] : lines.at(-2);
+				assert.ok(line);
+				const ellipsis = line.lastIndexOf("…");
+				assert.ok(ellipsis >= 0, `${rowName} clips at ${width} columns`);
+				assert.doesNotMatch(line.slice(0, ellipsis), /\x1b\[(?:0|49)?m/u, "the clipped prefix does not reset the foreground or background");
+				if (width - padding * 2 > 1) assert.equal(foregroundAt(line, ellipsis), muted, "the ellipsis retains muted when a styled prefix fits");
+				assert.equal(foregroundAt(line, line.lastIndexOf("\x1b[49m")), undefined, "padding does not inherit the foreground");
+			}
+			component.setExpanded(true);
+			assert.doesNotMatch(component.render(240).map(plain).join("\n"), /to expand/u);
+		}
+	});
+
+	it(`${themeName} all native tool hints use muted without changing their text or count`, (t) => {
+		initTheme(themeName, false);
+		const previousKeys = nativeTui.getKeybindings();
+		nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
+		t.after(() => nativeTui.setKeybindings(previousKeys));
+		const mutedAnsi = themeModule.theme.getFgAnsi("muted");
+		const muted = foregroundAt(mutedAnsi, mutedAnsi.length);
+		assert.ok(muted);
+		for (const [name, fixture] of Object.entries(fixtures)) {
+			const component = nativeRow(name, fixture.args);
+			component.updateResult({ ...fixtureResult(fixture.details), isError: false });
+			for (const width of [80, 160, 240]) {
+				const hints = component.render(width).filter((line) => plain(line) === "... (ctrl+o to expand)");
+				assert.equal(hints.length, 1, `${name} has one native hint`);
+				const line = hints[0];
+				for (const text of ["...", "ctrl+o", "expand"]) assert.equal(foregroundAt(line, line.indexOf(text)), muted, `${name} hint uses muted at ${text}`);
+			}
+			component.setExpanded(true);
+			assert.doesNotMatch(component.render(240).map(plain).join("\n"), /to expand/u);
+		}
+	});
+
 	for (const state of ["pending", "success", "error"] as const) it(`${themeName} clipped call and result rows preserve the ${state} background and foreground`, () => {
 		initTheme(themeName, false);
 		const component = nativeRow();

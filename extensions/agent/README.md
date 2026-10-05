@@ -111,8 +111,9 @@ Expanded cards retain full IDs and the complete result within the display bound.
 A collapsed card has at most one expansion hint across its call and result.
 Before execution, the call owns the hint; after execution starts, the result
 owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole
-card, not just its result. Peer notices show the same hint only when their
-visual-line preview hides body text. Expanded cards show no expansion hint.
+card, not just its result. All card expansion hints use theme `muted`. Peer
+notices show the same hint only when their visual-line preview hides body text.
+Expanded cards show no expansion hint.
 Expanded messages use the plain `Message:` label.
 
 Collapsed results use plain outcomes rather than raw JSON. Expanded results
@@ -1469,10 +1470,11 @@ requesting tool batch. It uses the ordinary `turn_end` boundary. A native Durabl
 agent uses Durable compaction and its own task boundary, not an ordinary
 SessionManager.
 
-Tool cards keep complete identities, including operation, thread, and revision
-identifiers. Collapsed lines clip at the rendered width with `…`, matching content
-previews. The clipped text and ellipsis retain their foreground where a styled
-prefix fits, while the whole row keeps Pi's pending, success, or error background.
+Tool and peer cards keep complete identities, including operation, thread, and
+revision identifiers. Collapsed lines clip at the rendered width with `…`,
+matching content previews. The clipped text and ellipsis retain their foreground
+where a styled prefix fits, while the whole row keeps Pi's selected tool or
+custom-message background.
 The native expansion hint stays unchanged. Expanded source wraps and retains full
 identities within the explicit source-display safety bound.
 Compaction cards use execution-specific facts. A self request copies the public
