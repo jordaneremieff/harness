@@ -7,7 +7,7 @@ import { Check } from "typebox/value";
 import register from "./index.ts";
 import { parseInspectParams } from "./durable-observation.ts";
 import { AGENT_CONTROL_TOOL_NAMES, AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
-import { StatusToolOutputSchema, InspectOutputSchema } from "./observation-schema.ts";
+import { StatusToolOutputSchema, InspectToolOutputSchema } from "./observation-schema.ts";
 
 interface ToolDeclaration { name: string; parameters: TSchema; outputSchema?: TSchema; promptSnippet?: string; promptGuidelines?: string[] }
 function declarations(): Map<string, ToolDeclaration> {
@@ -30,7 +30,7 @@ it("declares shared task guidance and exact observation results on primary tools
 	}
 	assert.deepEqual(tools.get("agent_list")?.outputSchema, ProfiledListOutputSchema);
 	assert.deepEqual(tools.get("agent_status")?.outputSchema, StatusToolOutputSchema);
-	assert.deepEqual(tools.get("agent_inspect")?.outputSchema, InspectOutputSchema);
+	assert.deepEqual(tools.get("agent_inspect")?.outputSchema, InspectToolOutputSchema);
 });
 
 it("declares native result, exact-entry, and cursor inspection inputs on the primary", () => {
