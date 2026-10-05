@@ -68,12 +68,18 @@ function boundedSource(value: string, limit = SOURCE_DISPLAY_LIMIT): string {
 	return displayText(prefix) + (value.length > prefix.length ? `\n[Display limit: ${value.length - prefix.length} more UTF-16 code units. Full text remains in native history.]` : "");
 }
 
+/** Pi owns the row background; clipping must close text styles without ending it. */
+function clipCardLine(line: string, width: number): string {
+	return truncateToWidth(line, Math.max(0, width), "…")
+		.replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
+}
+
 class CardText extends Text {
 	private source = "";
 	expanded = false;
 	override setText(value: string): void { this.source = value; super.setText(value); }
 	override render(width: number): string[] {
-		return this.expanded ? super.render(width) : this.source.split("\n").map((line) => truncateToWidth(line, Math.max(0, width)));
+		return this.expanded ? super.render(width) : this.source.split("\n").map((line) => clipCardLine(line, width));
 	}
 }
 

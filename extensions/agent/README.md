@@ -1470,8 +1470,11 @@ agent uses Durable compaction and its own task boundary, not an ordinary
 SessionManager.
 
 Tool cards keep complete identities, including operation, thread, and revision
-identifiers. Collapsed lines clip at the rendered width; expanded source wraps
-and retains full identities within the explicit source-display safety bound.
+identifiers. Collapsed lines clip at the rendered width with `…`, matching content
+previews. The clipped text and ellipsis retain their foreground where a styled
+prefix fits, while the whole row keeps Pi's pending, success, or error background.
+The native expansion hint stays unchanged. Expanded source wraps and retains full
+identities within the explicit source-display safety bound.
 Compaction cards use execution-specific facts. A self request copies the public
 context estimate, session name, selected provider/model/thinking, and supplied
 summary size before it queues the boundary request. Later redraws do not read
