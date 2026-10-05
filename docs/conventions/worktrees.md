@@ -113,13 +113,35 @@ npm run worktrees -- promote clipboard
 npm run worktrees -- promote extension/clipboard
 ```
 
-Both spellings work: slice names are unique across kinds, so a bare name resolves
-to one branch, and `<kind>/<name>` names it outright. Run the command from a
-worktree and the slice name is inferred from the directory.
+To promote completed parallel changes together, select all their slices in one
+invocation:
 
-The command refuses to start unless `main` is checked out in the main repository,
-no tracked file there is modified, and `origin/main` holds nothing that `main`
-lacks. It then classifies every commit in `main..<branch>`:
+```bash
+npm run worktrees -- promote extension/clipboard skill/audit feature/scripts --dry-run --json
+npm run worktrees -- promote extension/clipboard skill/audit feature/scripts
+```
+
+Select only completed work whose combined result is ready for publication. The
+command processes slices in the order supplied. It does not discover a batch
+from dirty worktrees or select every branch automatically. Duplicate references
+to the same branch, including a bare name and its qualified spelling, are refused.
+
+Both spellings work: slice names are unique across kinds, so a bare name resolves
+to one branch, and `<kind>/<name>` names it outright. With no name, the command
+infers one slice from the current worktree directory; it does not infer a batch.
+
+The command refuses to start unless `main` is checked out in the main repository
+and no tracked file there is modified. It also refuses when `origin/main` holds
+commits that `main` lacks. A publishing invocation refuses preexisting local
+`main` commits absent from `origin/main`, so selecting a slice does not publish
+unrelated outgoing history. This rule applies to one slice and to a batch.
+
+Every selected worktree must contain no tracked changes or nonignored untracked
+files, including for a dry run. The main checkout and selected worktrees must
+also contain no paused Git operation. The command checks every selection before
+it changes any branch.
+
+The command classifies every commit in each selected `main..<branch>` range:
 
 - a commit touching only shipped paths is replayed onto `main`;
 - a commit touching only development records stays on the branch;
@@ -129,7 +151,9 @@ Development records are `AGENTS.md`, `LOG.md`, `PLAN.md`, `REWRITE-SPEC.md`,
 `SOLUTION.md`, and `*FINDINGS.md` directly under the slice's dev-record root.
 The roots are `extensions/<name>/` and `skills/<name>/` for those kinds, and
 `<name>/` for features. A prompt slice is a single file with no dev records;
-every prompt commit ships.
+every prompt commit ships. A batch filters development records from all selected
+roots, including records present on another selected branch. Final branch rebuilds
+restore each slice's own records from its original tip.
 
 The reserved names bind every kind the same way: a slice cannot ship a file with
 one of those names directly under its own root. A feature root is a top-level
@@ -140,16 +164,33 @@ A prompt branch reaches a byte-identical steady state: promotion holds nothing
 back, so after a successful run the branch and `main` carry the same tree and
 `worktrees:status` reports the slice as current and clean.
 
-After replaying, the command confirms that nothing but development records
-separates the branch from `main`, runs the repository gates, rebuilds the
-promoted branch, verifies that boundary again, and pushes. Sibling
-synchronization follows publication. The gates are `test`, `typecheck`, `check`,
-and `lint` for every kind. Extension promotion additionally runs the entrypoint
-load check; skill promotion additionally runs the skill validator.
+Before changing branches, the command saves the starting `main` commit and every
+selected branch tip. For each slice after the first, it rebases that branch onto
+the accumulated local `main` before replay. This composes nonconflicting changes
+in shared files through Git's normal rebase behavior. A conflict stops the batch;
+the command does not resolve conflicts automatically.
 
-When a feature's replayed commits conflict with `main`'s shared files, the
-command aborts at the cherry-pick stage, attempts to restore `main`, and
-reports whether recovery succeeded.
+After each slice's replay, the command compares its complete tree with the
+accumulated `main`. Only development records are exempt from this comparison;
+files shipped by another selected slice are not ignored. The next slice starts
+only after that comparison passes.
+
+If every selected slice has no shipped changes, the command returns without
+gates, push, or synchronization. Otherwise, once all selected changes form one
+tree, the command runs `test`, `typecheck`, `check`, and `lint` once for the
+combined result. It also runs an entrypoint load
+check for every selected extension and the skill validator for every selected
+skill. Prompts and features have no additional resource check. Docs-only changes
+use the same shared gates; there is no reduced docs gate.
+
+The command then rebuilds every selected branch onto the final `main` with that
+slice's original development records, verifies each full-tree boundary again,
+and pushes once. One sibling synchronization follows. Each selected branch now
+contains the combined shipped changes, not only its own changes.
+
+This removes repeated shared gate sets, pushes, and synchronization runs from
+separate promotions. It does not cache gate results or measure elapsed-time
+savings.
 
 `PI_PROMOTE_GATES` replaces the repository gates the command runs before the
 push: a JSON array of `{ "name": string, "command": string[] }` entries, each
@@ -157,21 +198,43 @@ executed in the repository root and required to exit 0. Unset, the command runs
 the default gates (`scripts/worktrees.mts`). `--no-gates` still skips them
 entirely.
 
-A replay, verification, gate, or promoted-branch rebuild failure triggers
-rollback to the starting commits. Check the report: `recover` names manual
-recovery when rollback fails. A failed push leaves the promotion committed
-locally; running the command again retries publication.
+A rebase, replay, verification, gate, or promoted-branch rebuild failure before
+push triggers rollback of `main` and every changed selected branch to their
+starting commits. Check the report: `recover` names manual recovery when rollback
+fails. The command aborts only Git operations that it started.
+
+A failed push leaves the combined promotion committed locally and the selected
+branches rebuilt. A repeated publishing invocation refuses those unpublished
+`main` commits; it does not infer that a no-op slice authorizes their publication.
+Inspect `origin/main..main` and its complete outgoing diff before using the
+report's direct Git push recovery. After the push succeeds, run
+`npm run worktrees:sync`.
 
 | Flag | Effect |
 | --- | --- |
-| `--dry-run` | Report the plan and change nothing |
+| `--dry-run` | Report the plan without changing checkout or settings content; remote refs may refresh |
 | `--json` | Emit one machine-readable report |
-| `--no-push` | Promote locally and stop |
-| `--no-gates` | Skip the repository gates |
+| `--no-push` | Promote and synchronize locally without a push |
+| `--no-gates` | Skip shared and resource gates |
 
-The JSON report always carries `ok`, `name`, and `kind`, and on failure carries
-`stage`, `reason`, and `recover`. `recover` is `null` when the command already
-restored the repository itself.
+The JSON report carries `ok`. After successful preflight resolution, `slices`
+contains one entry per selection, in input order, for both single and batch
+invocations. Each entry carries `name`, `kind`, `branch`, `promoted`, `held`, and
+`gates`; a dry run also carries its `wouldPromote` plan. A dry run shows the
+original commit IDs. Rebase can rewrite the IDs reported by an actual replay.
+The dry run does not rebase or replay, so its plan does not prove that the
+selected changes compose without conflicts.
+
+For a single selection, top-level `name` and `kind` identify the slice, and its
+resource gate results also appear in top-level `gates`. For a batch, top-level
+`gates` contains only shared gate results; each slice's `gates` contains its
+resource results. Preflight failures need not contain a `slices` list when
+resolution or validation did not finish.
+
+Failures carry `stage`, `reason`, and `recover`, plus `failedSlice` when a
+particular slice caused the failure. `recover` is `null` when no manual recovery
+is needed. A rollback failure names the required recovery commands; a push
+failure names publication and synchronization recovery.
 
 After the push, the command synchronizes the sibling worktrees. A deferred
 sibling appears only in the report's `deferred` list; deferral does not affect

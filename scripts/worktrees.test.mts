@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { delimiter, dirname, join } from "node:path";
+import { after, before, describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -26,6 +26,16 @@ interface ReconcileOverrides {
 }
 
 interface SerializedPromotionReport {
+	slices: Array<{
+		name: string;
+		kind: string;
+		branch: string;
+		promoted: string[];
+		held: unknown[];
+		gates: Record<string, string>;
+		wouldPromote?: Array<{ dropped: string[] }>;
+	}>;
+	failedSlice?: string;
 	name: string;
 	kind: string;
 	wouldPromote: Array<{ dropped: string[] }>;
@@ -241,7 +251,7 @@ describe("development record classification", () => {
 describe("promotion arguments", () => {
 	it("defaults to pushing with gates and human output", () => {
 		assert.deepEqual(parsePromoteArguments(["clipboard"]), {
-			name: "clipboard",
+			names: ["clipboard"],
 			options: { push: true, gates: true, json: false, dryRun: false },
 		});
 	});
@@ -253,13 +263,13 @@ describe("promotion arguments", () => {
 			json: true,
 			dryRun: false,
 		});
-		assert.equal(parsePromoteArguments(["--dry-run", "stash"]).name, "stash");
+		assert.deepEqual(parsePromoteArguments(["--dry-run", "stash"]).names, ["stash"]);
+		assert.deepEqual(parsePromoteArguments(["a", "--no-push", "feature/b"]).names, ["a", "feature/b"]);
 	});
 
-	it("rejects unknown, repeated, and surplus arguments", () => {
+	it("rejects unknown and repeated flags", () => {
 		assert.throws(() => parsePromoteArguments(["--force"]), /Unknown promote flag/);
 		assert.throws(() => parsePromoteArguments(["--json", "--json"]), /Repeated promote flag/);
-		assert.throws(() => parsePromoteArguments(["a", "b"]), /Unexpected extra argument/);
 	});
 
 	it("reads the slice name from a worktree directory only", () => {
@@ -360,7 +370,12 @@ describe("promotion internal checkout hooks", () => {
 					PI_PROMOTE_GATES: JSON.stringify([
 						{
 							name: "test",
-							command: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'passed')", gateMarker],
+							command: [
+								process.execPath,
+								"-e",
+								"require('node:fs').writeFileSync(process.argv[1], 'passed')",
+								gateMarker,
+							],
 						},
 					]),
 				};
@@ -384,20 +399,25 @@ describe("promotion internal checkout hooks", () => {
 				writeFileSync(join(sibling, "target/code.txt"), "uncommitted sibling\n");
 				const siblingBefore = git(repo, ["rev-parse", "feature/sibling"]);
 				writeFileSync(settings, JSON.stringify({ packages: [{ source: repo, extensions: [] }] }));
-				writeFileSync(join(hooks, "post-checkout"), '#!/bin/sh\nprintf "%s\\n" "$PWD" >> "$CHECKOUT_MARKER"\nexit 1\n', {
-					mode: 0o755,
-				});
+				writeFileSync(
+					join(hooks, "post-checkout"),
+					'#!/bin/sh\nprintf "%s\\n" "$PWD" >> "$CHECKOUT_MARKER"\nexit 1\n',
+					{
+						mode: 0o755,
+					},
+				);
 				const control = spawnSync("git", ["checkout", "HEAD", "--", "target/code.txt"], { cwd: repo, env });
 				assert.equal(control.status, 1);
 				assert.equal(readFileSync(marker, "utf8"), `${repo}\n`);
 				rmSync(marker);
 
 				const script = fileURLToPath(new URL("./worktrees.mts", import.meta.url));
-				const result = spawnSync(
-					process.execPath,
-					[script, "promote", "feature/target", "--no-push", ...outputFlags],
-					{ cwd: repo, env, encoding: "utf8", timeout: 30_000 },
-				);
+				const result = spawnSync(process.execPath, [script, "promote", "feature/target", "--no-push", ...outputFlags], {
+					cwd: repo,
+					env,
+					encoding: "utf8",
+					timeout: 30_000,
+				});
 				assert.equal(existsSync(marker), false, result.stderr || result.stdout);
 				assert.equal(result.status, 0, result.stderr || result.stdout);
 				assert.equal(result.stderr, "");
@@ -735,6 +755,7 @@ describe("promotion against a real repository", () => {
 	it("finds main from a linked worktree without root overrides", () => {
 		const linkedScript = join(demoTree, "scripts", "worktrees.mts");
 		writeIn(demoTree, "scripts/worktrees.mts", readFileSync(script, "utf8"));
+		writeIn(repo, ".git/info/exclude", "/scripts/\n");
 		const directEnv = { ...env };
 		delete directEnv.PI_HARNESS_ROOT;
 		delete directEnv.PI_WORKTREE_ROOT;
@@ -896,5 +917,360 @@ describe("promotion against a real repository", () => {
 		const unknown = promote(["nope"]);
 		assert.equal(unknown.report.stage, "preflight");
 		assert.match(unknown.report.reason, /branch does not exist/);
+	});
+});
+
+function batchFixture(t: TestContext) {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "worktree-batch-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const repo = join(root, "harness"),
+		trees = join(root, "harness.worktrees"),
+		origin = join(root, "origin.git");
+	const settings = join(root, "settings.json"),
+		gates = join(root, "gates"),
+		trace = join(root, "git-trace");
+	const env = {
+		...cleanGitEnvironment(process.env),
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_AUTHOR_NAME: "Fixture",
+		GIT_AUTHOR_EMAIL: "fixture@example.com",
+		GIT_COMMITTER_NAME: "Fixture",
+		GIT_COMMITTER_EMAIL: "fixture@example.com",
+		PI_HARNESS_ROOT: repo,
+		PI_WORKTREE_ROOT: trees,
+		PI_SETTINGS_PATH: settings,
+		PI_PROMOTE_GATES: JSON.stringify(
+			["test", "typecheck", "check", "lint"].map((name) => ({
+				name,
+				command: [
+					process.execPath,
+					"-e",
+					"const fs=require('node:fs'); if(process.env.EXPECT_COMPOSED) { for(const file of ['first/file.txt','second/file.txt']) if(!fs.existsSync(file)) process.exit(1); } fs.appendFileSync(process.argv[1], process.argv[2]+'\\n')",
+					gates,
+					name,
+				],
+			})),
+		),
+	};
+	const git = (args: string[], cwd = repo) =>
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+			cwd,
+			env,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
+	const write = (path: string, content: string, cwd = repo) => {
+		mkdirSync(dirname(join(cwd, path)), { recursive: true });
+		writeFileSync(join(cwd, path), content);
+	};
+	const commit = (cwd: string, message = "Fixture change") => {
+		git(["add", "."], cwd);
+		git(["commit", "-qm", message], cwd);
+	};
+	const add = (branch: string, base = "main") => {
+		const tree = join(trees, branch.split("/")[1]);
+		git(["worktree", "add", "-qb", branch, tree, base]);
+		return tree;
+	};
+	const promote = (args: string[], overrides: NodeJS.ProcessEnv = {}) => {
+		const result = spawnSync(
+			process.execPath,
+			[fileURLToPath(new URL("./worktrees.mts", import.meta.url)), "promote", ...args, "--json"],
+			{ cwd: repo, env: { ...env, GIT_TRACE: trace, ...overrides }, encoding: "utf8", timeout: 30_000 },
+		);
+		assert.ok(result.stdout, result.stderr);
+		return { ...result, report: JSON.parse(result.stdout) as SerializedPromotionReport };
+	};
+	mkdirSync(repo);
+	git(["init", "-qb", "main"]);
+	write("extensions/.keep", "");
+	write("extensions/existing/index.ts", "export default function existing() {}\n");
+	write("shared.txt", "top\n\na\nb\nc\nd\ne\n\nbottom\n");
+	commit(repo, "Initial tree");
+	git(["init", "-q", "--bare", origin]);
+	git(["remote", "add", "origin", origin]);
+	git(["push", "-q", "origin", "main"]);
+	writeFileSync(settings, JSON.stringify({ packages: [{ source: repo, extensions: [] }] }));
+	const first = add("feature/first"),
+		second = add("feature/second");
+	write("shared.txt", "FIRST\n\na\nb\nc\nd\ne\n\nbottom\n", first);
+	write("first/LOG.md", "first held bytes\n", first);
+	write("first/file.txt", "first shipped\n", first);
+	commit(first, "First slice");
+	write("shared.txt", "top\n\na\nb\nc\nd\ne\n\nSECOND\n", second);
+	write("second/PLAN.md", "second held bytes\n", second);
+	write("second/file.txt", "second shipped\n", second);
+	commit(second, "Second slice");
+	const snapshot = () => ({
+		main: git(["rev-parse", "main"]),
+		first: git(["rev-parse", "feature/first"]),
+		second: git(["rev-parse", "feature/second"]),
+		remote: git(["rev-parse", "refs/heads/main"], origin),
+		settings: readFileSync(settings, "utf8"),
+	});
+	return {
+		root,
+		repo,
+		trees,
+		origin,
+		settings,
+		gates,
+		trace,
+		env,
+		git,
+		write,
+		commit,
+		add,
+		promote,
+		first,
+		second,
+		snapshot,
+	};
+}
+
+function invalidBatchSelection(f: ReturnType<typeof batchFixture>, problem: string): string[] {
+	if (problem === "unknown") return ["first", "nope"];
+	if (problem === "duplicate") return ["first", "feature/first"];
+	if (problem === "dirty") f.write("shared.txt", "dirty\n", f.second);
+	if (problem === "untracked") f.write("first/file.txt", "do not overwrite\n", f.second);
+	if (problem === "missing") f.git(["worktree", "remove", f.second]);
+	if (problem === "paused") f.write(".git/CHERRY_PICK_HEAD", `${f.git(["rev-parse", "main"])}\n`);
+	return ["first", "second"];
+}
+
+describe("batch promotion", () => {
+	it("composes shared-file edits and halves shared gate, push, and sync calls", (t) => {
+		const batch = batchFixture(t),
+			serial = batchFixture(t);
+		const unselected = batch.add("feature/unselected");
+		batch.write("unselected/private.txt", "not selected\n", unselected);
+		batch.commit(unselected);
+		const before = batch.snapshot();
+		const plan = batch.promote(["first", "feature/second", "--dry-run"]);
+		assert.equal(plan.status, 0, plan.stdout);
+		assert.deepEqual(batch.snapshot(), before);
+		assert.deepEqual(
+			plan.report.slices.map((s) => s.branch),
+			["feature/first", "feature/second"],
+		);
+		assert.deepEqual(
+			plan.report.slices.map((s) => s.wouldPromote?.[0].dropped),
+			[["first/LOG.md"], ["second/PLAN.md"]],
+		);
+		rmSync(batch.trace);
+		const result = batch.promote(["first", "feature/second"], { EXPECT_COMPOSED: "1" });
+		assert.equal(result.status, 0, result.stdout);
+		assert.equal(result.report.pushed, true);
+		assert.equal(result.report.syncOk, true);
+		assert.deepEqual(result.report.gates, { test: "pass", typecheck: "pass", check: "pass", lint: "pass" });
+		assert.equal(batch.git(["rev-parse", "main"]), batch.git(["rev-parse", "refs/heads/main"], batch.origin));
+		assert.equal(readFileSync(join(batch.repo, "shared.txt"), "utf8"), "FIRST\n\na\nb\nc\nd\ne\n\nSECOND\n");
+		assert.equal(existsSync(join(batch.repo, "unselected/private.txt")), false);
+		for (const tree of [batch.first, batch.second]) {
+			assert.equal(readFileSync(join(tree, "first/file.txt"), "utf8"), "first shipped\n");
+			assert.equal(readFileSync(join(tree, "second/file.txt"), "utf8"), "second shipped\n");
+			assert.equal(batch.git(["status", "--porcelain"], tree), "");
+		}
+		assert.equal(readFileSync(join(batch.first, "first/LOG.md"), "utf8"), "first held bytes\n");
+		assert.equal(readFileSync(join(batch.second, "second/PLAN.md"), "utf8"), "second held bytes\n");
+		assert.equal(existsSync(join(batch.first, "second/PLAN.md")), false);
+		assert.equal(existsSync(join(batch.second, "first/LOG.md")), false);
+		assert.equal(existsSync(join(batch.repo, "first/LOG.md")), false);
+		assert.equal(existsSync(join(batch.repo, "second/PLAN.md")), false);
+		assert.equal(serial.promote(["first"]).status, 0);
+		assert.equal(serial.promote(["second"]).status, 0);
+		for (const [f, expected] of [
+			[batch, 1],
+			[serial, 2],
+		] as const) {
+			assert.equal(readFileSync(f.gates, "utf8").trim().split("\n").length, expected * 4);
+			const commands = readFileSync(f.trace, "utf8").split("\n");
+			assert.equal(
+				commands.filter((line) => line.includes("built-in: git") && line.includes(" push origin main")).length,
+				expected,
+			);
+			assert.equal(
+				commands.filter(
+					(line) =>
+						line.includes("built-in: git for-each-ref") &&
+						/refs\/heads\/(extension|skill|prompt|feature)\/\*/.test(line),
+				).length,
+				expected * 4,
+				commands.filter((line) => line.includes("built-in: git for-each-ref")).join("\n"),
+			);
+		}
+	});
+	for (const problem of ["unknown", "duplicate", "dirty", "untracked", "missing", "paused"] as const) {
+		it(`refuses ${problem} selections before mutations`, (t) => {
+			const f = batchFixture(t);
+			const args = invalidBatchSelection(f, problem);
+			const before = f.snapshot(),
+				result = f.promote(args);
+			assert.equal(result.status, 1, result.stdout);
+			assert.equal(result.report.stage, "preflight");
+			assert.deepEqual(f.snapshot(), before);
+			assert.equal(existsSync(f.gates), false);
+			if (problem === "untracked")
+				assert.equal(readFileSync(join(f.second, "first/file.txt"), "utf8"), "do not overwrite\n");
+			if (problem === "missing") assert.equal(existsSync(f.second), false);
+		});
+	}
+	it("restores all selected tips and main after a later rebase conflict", (t) => {
+		const f = batchFixture(t);
+		f.write("shared.txt", "CONFLICT\n", f.second);
+		f.commit(f.second);
+		const before = f.snapshot(),
+			result = f.promote(["first", "second"]);
+		assert.equal(result.status, 1, result.stdout);
+		assert.equal(result.report.stage, "rebase");
+		assert.equal(result.report.failedSlice, "feature/second");
+		assert.equal(result.report.recover, null);
+		assert.deepEqual(f.snapshot(), before);
+		assert.equal(f.git(["status", "--porcelain"], f.second), "");
+		assert.equal(existsSync(f.gates), false);
+	});
+	it("rolls back thrown gate failures after both slices compose", (t) => {
+		const f = batchFixture(t),
+			before = f.snapshot();
+		const result = f.promote(["first", "second"], {
+			PI_PROMOTE_GATES: JSON.stringify([{ name: "test", command: [process.execPath, "-e", "process.exit(42)"] }]),
+		});
+		assert.equal(result.status, 1, result.stdout);
+		assert.equal(result.report.stage, "gates");
+		assert.deepEqual(f.snapshot(), before);
+	});
+	it("filters combined development roots across shared selected history", (t) => {
+		const f = batchFixture(t);
+		f.git(["rebase", "feature/first"], f.second);
+		const result = f.promote(["first", "second"]);
+		assert.equal(result.status, 0, result.stdout);
+		assert.equal(readFileSync(join(f.first, "first/LOG.md"), "utf8"), "first held bytes\n");
+		assert.equal(readFileSync(join(f.second, "second/PLAN.md"), "utf8"), "second held bytes\n");
+		assert.equal(existsSync(join(f.repo, "first/LOG.md")), false);
+		assert.equal(existsSync(join(f.repo, "second/PLAN.md")), false);
+		assert.equal(f.git(["diff", "--name-only", "main", "feature/first"]), "first/LOG.md");
+		assert.equal(f.git(["diff", "--name-only", "main", "feature/second"]), "second/PLAN.md");
+	});
+
+	it("checks every selected resource including an unchanged extension on the final tree", (t) => {
+		const f = batchFixture(t);
+		f.add("extension/existing");
+		const widget = f.add("extension/widget");
+		f.write("extensions/widget/index.ts", "export default function widget() {}\n", widget);
+		f.commit(widget);
+		const guide = f.add("skill/guide");
+		f.write(
+			"skills/guide/SKILL.md",
+			"---\nname: guide\ndescription: Use when a fixture guide is required. Do not use outside tests.\n---\n\n# Guide\n\nFixture instructions.\n",
+			guide,
+		);
+		f.commit(guide);
+		const result = f.promote(["existing", "widget", "guide", "first", "second"], { EXPECT_COMPOSED: "1" });
+		assert.equal(result.status, 0, result.stdout);
+		assert.deepEqual(
+			result.report.slices.map((slice) => slice.gates),
+			[{ load: "pass" }, { load: "pass" }, { skill: "pass" }, {}, {}],
+		);
+		assert.deepEqual(result.report.slices[0].promoted, []);
+		assert.equal(readFileSync(f.gates, "utf8").trim().split("\n").length, 4);
+	});
+
+	for (const fault of ["rebuild", "abort", "probe"] as const) {
+		it(`keeps rollback honest after a failed ${fault}`, (t) => {
+			const f = batchFixture(t);
+			if (fault !== "rebuild") {
+				f.write("shared.txt", "CONFLICT\n", f.second);
+				f.commit(f.second);
+			}
+			const before = f.snapshot();
+			const bin = join(f.root, "bin");
+			mkdirSync(bin);
+			const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+			const marker = join(f.root, "failed-rebase");
+			writeFileSync(
+				join(bin, "git"),
+				`#!${process.execPath}
+import { spawnSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const second = process.cwd() === ${JSON.stringify(f.second)};
+const fault = ${JSON.stringify(fault)};
+const marker = ${JSON.stringify(marker)};
+if (second && fault === "rebuild" && args.slice(-3).join(" ") === "reset --hard main") process.exit(42);
+if (second && fault === "abort" && args.slice(-2).join(" ") === "rebase --abort") process.exit(42);
+if (second && fault === "probe" && existsSync(marker) && args.at(-1) === "rebase-merge") process.exit(42);
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
+if (second && args.slice(-2).join(" ") === "rebase main" && result.status !== 0) writeFileSync(marker, "failed");
+process.exitCode = result.status ?? 1;
+`,
+				{ mode: 0o755 },
+			);
+			const result = f.promote(["first", "second"], { PATH: `${bin}${delimiter}${process.env.PATH}` });
+			assert.equal(result.status, 1, result.stdout);
+			const after = f.snapshot();
+			assert.equal(after.main, before.main);
+			assert.equal(after.first, before.first);
+			assert.equal(after.remote, before.remote);
+			assert.equal(after.settings, before.settings);
+			if (fault === "rebuild") {
+				assert.deepEqual(after, before);
+				assert.equal(result.report.recover, null);
+			} else {
+				assert.match(result.report.recover ?? "", /rebase --abort/);
+				assert.match(result.report.recover ?? "", /switch feature\/second/);
+				assert.equal(
+					existsSync(f.git(["rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"], f.second)),
+					true,
+				);
+			}
+		});
+	}
+
+	it("rolls back a later resource gate failure and keeps no-gates explicit", (t) => {
+		const f = batchFixture(t);
+		const broken = f.add("skill/broken");
+		f.write("skills/broken/SKILL.md", "# Missing skill metadata\n", broken);
+		f.commit(broken);
+		const before = f.snapshot();
+		const brokenBefore = f.git(["rev-parse", "skill/broken"]);
+		const result = f.promote(["first", "broken"]);
+		assert.equal(result.status, 1, result.stdout);
+		assert.equal(result.report.stage, "gates");
+		assert.equal(result.report.failedSlice, "skill/broken");
+		assert.deepEqual(result.report.slices[1].gates, { skill: "fail" });
+		assert.deepEqual(f.snapshot(), before);
+		assert.equal(f.git(["rev-parse", "skill/broken"]), brokenBefore);
+		const skipped = f.promote(["first", "broken", "--no-gates", "--no-push"]);
+		assert.equal(skipped.status, 0, skipped.stdout);
+		assert.deepEqual(skipped.report.gates, {});
+		assert.equal(skipped.report.pushed, false);
+		assert.equal(skipped.report.syncOk, true);
+	});
+
+	it("keeps accepted local changes after a rejected push and refuses an implicit retry", (t) => {
+		const f = batchFixture(t);
+		writeFileSync(join(f.origin, "hooks/pre-receive"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		const before = f.snapshot();
+		const result = f.promote(["first", "second"]);
+		assert.equal(result.status, 1, result.stdout);
+		assert.equal(result.report.stage, "push");
+		assert.match(result.report.recover ?? "", /diff origin\/main/);
+		assert.equal(f.snapshot().remote, before.remote);
+		assert.notEqual(f.snapshot().main, before.main);
+		assert.equal(f.promote(["first", "second"]).report.stage, "preflight");
+	});
+
+	it("refuses unpublished main history for one or many selections", (t) => {
+		const f = batchFixture(t);
+		f.write("unrelated.txt", "unpublished\n");
+		f.commit(f.repo);
+		const before = f.snapshot();
+		for (const args of [["first"], ["first", "second"]]) {
+			const result = f.promote(args);
+			assert.equal(result.status, 1, result.stdout);
+			assert.match(result.report.reason, /unpublished commits/);
+			assert.deepEqual(f.snapshot(), before);
+		}
 	});
 });

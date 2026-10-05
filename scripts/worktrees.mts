@@ -7,8 +7,8 @@ import {
 	existsSync,
 	mkdirSync,
 	openSync,
-	readFileSync,
 	readdirSync,
+	readFileSync,
 	realpathSync,
 	renameSync,
 	statSync,
@@ -113,7 +113,19 @@ interface HeldPlanEntry {
 	subject: string;
 }
 
+interface SlicePromotionReport {
+	name: string;
+	kind: SliceKindName;
+	branch: string;
+	promoted: string[];
+	held: Array<string | HeldPlanEntry>;
+	wouldPromote?: PromotionPlanEntry[];
+	gates: GateResults;
+}
+
 interface PromotionReport {
+	slices?: SlicePromotionReport[];
+	failedSlice?: string;
 	ok: boolean;
 	name?: string;
 	kind?: SliceKindName;
@@ -687,7 +699,7 @@ export function promoteNameFromCwd(cwd: string, worktreeRoot: string): string | 
 }
 
 export function parsePromoteArguments(args: readonly string[]): {
-	name: string | undefined;
+	names: string[];
 	options: PromoteOptions;
 } {
 	const options: PromoteOptions = { push: true, gates: true, json: false, dryRun: false };
@@ -698,7 +710,7 @@ export function parsePromoteArguments(args: readonly string[]): {
 		["--dry-run", "dryRun"],
 	]);
 	const seen = new Set<string>();
-	let name: string | undefined;
+	const names: string[] = [];
 	for (const arg of args) {
 		if (arg.startsWith("--")) {
 			const key = flags.get(arg);
@@ -708,10 +720,9 @@ export function parsePromoteArguments(args: readonly string[]): {
 			options[key] = !(arg === "--no-push" || arg === "--no-gates");
 			continue;
 		}
-		if (name !== undefined) throw new Error(`Unexpected extra argument: ${arg}`);
-		name = arg;
+		names.push(arg);
 	}
-	return { name, options };
+	return { names, options };
 }
 
 function noHooks(args: readonly string[]): string[] {
@@ -735,10 +746,7 @@ function runLoadGate(repoRoot: string, entrypoint: string): { status: "pass" } |
 	return { status: "fail", detail: (result.stderr || result.stdout).trim() };
 }
 
-function promoteGates(
-	context: HarnessContext,
-	record: WorktreeRecord,
-): { results: GateResults; failure?: { gate: string; detail: string } } {
+function promoteGates(context: HarnessContext): { results: GateResults; failure?: { gate: string; detail: string } } {
 	const override = process.env.PI_PROMOTE_GATES;
 	const commands: GateCommand[] = override
 		? JSON.parse(override)
@@ -757,6 +765,14 @@ function promoteGates(
 			return { results, failure: { gate: entry.name, detail: (outcome.stdout + outcome.stderr).trim().slice(-2000) } };
 		}
 	}
+	return { results };
+}
+
+function promoteResourceGate(
+	context: HarnessContext,
+	record: WorktreeRecord,
+): { results: GateResults; failure?: { gate: string; detail: string } } {
+	const results: GateResults = {};
 	if (record.kind === "extension") {
 		const entrypoint = join(context.repoRoot, "extensions", record.name, "index.ts");
 		const load = runLoadGate(context.repoRoot, entrypoint);
@@ -819,7 +835,6 @@ interface PreparedPromotion {
 	branch: string;
 	kind: SliceKind;
 	devRecordRoot: string | null;
-	remote: ReturnType<typeof remoteMainState>;
 	shipping: ReplayCommit[];
 	held: ReplayCommit[];
 	mainBefore: string;
@@ -834,6 +849,14 @@ function requestedPromotionBranch(
 	return branchExists(repoRoot, candidate) ? candidate : undefined;
 }
 
+function pausedGitOperation(path: string): string | undefined {
+	for (const name of ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"]) {
+		const location = git(path, ["rev-parse", "--path-format=absolute", "--git-path", name]).stdout.trim();
+		if (existsSync(location)) return `unfinished Git operation in ${path}: ${name}`;
+	}
+	return undefined;
+}
+
 function promotionReadiness(context: HarnessContext, branch: string): string | undefined {
 	const head = git(context.repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"], {
 		accept: [0, 1],
@@ -841,6 +864,8 @@ function promotionReadiness(context: HarnessContext, branch: string): string | u
 	if (head !== "main") {
 		return `main must be checked out at ${context.repoRoot} (found: ${head || "detached"})`;
 	}
+	const paused = pausedGitOperation(context.repoRoot);
+	if (paused) return paused;
 	if (hasTrackedChanges(context.repoRoot)) return `uncommitted tracked changes in ${context.repoRoot}`;
 	if (!branchHasCommonHistory(context.repoRoot, branch)) return `${branch} shares no history with main`;
 	return undefined;
@@ -886,65 +911,36 @@ function preparePromotion(
 	const problem = promotionReadiness(context, branch);
 	if (problem) return fail(problem);
 
-	const remote = remoteMainState(context);
-	if (remote.present && remote.behindRemote) {
-		return fail("origin/main has commits that main does not; sync before promoting");
-	}
-
 	const merges = git(context.repoRoot, ["rev-list", "--merges", `main..${branch}`]).stdout.trim();
 	if (merges) return fail(`${branch} contains merge commits; promote cannot replay them`);
 
 	const devRecordRoot = kind.devRecordRoot(name);
-	const shas = git(context.repoRoot, ["rev-list", "--reverse", "--topo-order", `main..${branch}`])
-		.stdout.trim()
-		.split("\n")
-		.filter(Boolean);
-	const plan = shas.map((sha) => {
-		const files = commitFiles(context.repoRoot, sha);
-		const classified = classifyCommitFiles(files, devRecordRoot);
-		return {
-			sha: sha.slice(0, 7),
-			full: sha,
-			subject: git(context.repoRoot, ["log", "-1", "--format=%s", sha]).stdout.trim(),
-			...classified,
-		};
-	});
+	const plan = promotionCommits(context.repoRoot, branch, [devRecordRoot]);
 	const shipping = plan.filter((entry) => entry.kind !== "held");
 	const held = plan.filter((entry) => entry.kind === "held");
 	const mainBefore = git(context.repoRoot, ["rev-parse", "main"]).stdout.trim();
-	return { name, branch, kind, remote, shipping, held, mainBefore, devRecordRoot };
+	return { name, branch, kind, shipping, held, mainBefore, devRecordRoot };
 }
 
-function promoteWithoutCommits(
-	context: HarnessContext,
-	prepared: PreparedPromotion,
-	options: PromoteOptions,
-): PromotionReport {
-	const { name, kind, remote, held, mainBefore } = prepared;
-	let pushed = false;
-	if (options.push && remote.present && remote.ahead) {
-		const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1] });
-		if (push.status !== 0) {
-			return failedPromotion(name, "push", (push.stderr || push.stdout).trim(), {
-				held: held.map((entry) => entry.sha),
-				mainBefore,
-				mainAfter: mainBefore,
-				recover: `git -C ${context.repoRoot} push origin main`,
-			});
-		}
-		pushed = true;
-	}
-	return {
-		ok: true,
-		name,
-		kind: kind.name,
-		promoted: [],
-		held: held.map((entry) => entry.sha),
-		mainBefore,
-		mainAfter: mainBefore,
-		gates: {},
-		pushed,
-	};
+function promotionCommits(repoRoot: string, branch: string, roots: Array<string | null>): ReplayCommit[] {
+	const shas = git(repoRoot, ["rev-list", "--reverse", "--topo-order", `main..${branch}`])
+		.stdout.trim()
+		.split("\n")
+		.filter(Boolean);
+	return shas.map((sha) => {
+		const files = commitFiles(repoRoot, sha);
+		const devRecords = files.filter((path) => roots.some((root) => isDevRecordPath(path, root)));
+		const shipped = files.filter((path) => !devRecords.includes(path));
+		const kind = shipped.length === 0 ? "held" : devRecords.length === 0 ? "ship" : "filter";
+		return {
+			sha: sha.slice(0, 7),
+			full: sha,
+			subject: git(repoRoot, ["log", "-1", "--format=%s", sha]).stdout.trim(),
+			kind,
+			devRecords,
+			shipped,
+		};
+	});
 }
 
 function replayPromotionCommit(repoRoot: string, entry: ReplayCommit): { committed: boolean; reason?: string } {
@@ -987,158 +983,306 @@ function replayPromotion(repoRoot: string, shipping: ReplayCommit[]): { promoted
 
 function completePromotion(
 	context: HarnessContext,
-	prepared: PreparedPromotion,
+	report: PromotionReport,
 	options: PromoteOptions,
-	records: WorktreeRecord[],
-	promoted: string[],
-	gates: GateResults,
+	remote: ReturnType<typeof remoteMainState>,
 ): PromotionReport {
-	const { name, kind, remote, held, mainBefore } = prepared;
-	let pushed = false;
+	const completed = { ...report, mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(), pushed: false };
 	if (options.push && remote.present) {
-		const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1] });
+		const push = git(context.repoRoot, noHooks(["push", "origin", "main"]), { accept: [0, 1, 128] });
 		if (push.status !== 0) {
-			return failedPromotion(name, "push", (push.stderr || push.stdout).trim(), {
-				kind: kind.name,
-				promoted,
-				held: held.map((entry) => entry.sha),
-				mainBefore,
-				mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
-				gates,
-				recover: `git -C ${context.repoRoot} push origin main`,
-			});
-		}
-		pushed = true;
-	}
-	const branchResult = syncBranches(context, records);
-	reconcileSettings(context, records);
-	return {
-		ok: true,
-		name,
-		kind: kind.name,
-		promoted,
-		held: held.map((entry) => entry.sha),
-		mainBefore,
-		mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
-		gates,
-		pushed,
-		syncOk: branchResult.failures.length === 0,
-		branchFailures: branchResult.failures,
-		deferred: branchResult.deferred,
-	};
-}
-
-function promote(
-	context: HarnessContext,
-	requestedReference: string | undefined,
-	options: PromoteOptions,
-): PromotionReport {
-	const prepared = preparePromotion(context, requestedReference);
-	if ("ok" in prepared) return prepared;
-	const { name, branch, kind, shipping, held, mainBefore, devRecordRoot } = prepared;
-	const fail = (stage: string, reason: string, extra: Partial<PromotionReport> = {}) =>
-		failedPromotion(name, stage, reason, extra);
-
-	if (options.dryRun) {
-		return {
-			ok: true,
-			dryRun: true,
-			name,
-			kind: kind.name,
-			wouldPromote: shipping.map((entry) => ({
-				sha: entry.sha,
-				subject: entry.subject,
-				ships: entry.shipped,
-				dropped: entry.devRecords,
-			})),
-			held: held.map((entry) => ({ sha: entry.sha, subject: entry.subject })),
-			wouldRunGates: options.gates,
-			wouldPush: options.push,
-			mainBefore,
-		};
-	}
-
-	if (shipping.length === 0) return promoteWithoutCommits(context, prepared, options);
-
-	const records = repositoryState(context.repoRoot, context.worktreeRoot).records;
-	const record = records.find((candidate) => candidate.name === name && candidate.kind === kind.name);
-	if (!record) return fail("preflight", `worktree does not exist for ${branch}`);
-	if (hasTrackedChanges(record.path)) {
-		return fail("preflight", `uncommitted tracked changes in ${record.path}`);
-	}
-	const branchBefore = git(context.repoRoot, ["rev-parse", branch]).stdout.trim();
-
-	let branchRebuilt = false;
-	const rollback = () => {
-		git(context.repoRoot, ["cherry-pick", "--abort"], { accept: [0, 1, 128] });
-		git(context.repoRoot, ["cherry-pick", "--quit"], { accept: [0, 1, 128] });
-		const branchReset = branchRebuilt
-			? git(context.repoRoot, noHooks(["reset", "--hard", branchBefore]), {
-					cwd: record.path,
-					accept: [0, 1, 128],
-				})
-			: { status: 0 };
-		const reset = git(context.repoRoot, noHooks(["reset", "--hard", mainBefore]), {
-			accept: [0, 1, 128],
-		});
-		return reset.status === 0 && branchReset.status === 0;
-	};
-	const abandon = (stage: string, reason: string, extra: Partial<PromotionReport> = {}): PromotionReport => {
-		const restored = rollback();
-		return {
-			...fail(stage, reason, extra),
-			kind: kind.name,
-			held: held.map((entry) => entry.sha),
-			mainBefore,
-			mainAfter: restored ? mainBefore : git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
-			recover: restored ? null : `git -C ${context.repoRoot} reset --hard ${mainBefore}`,
-		};
-	};
-
-	const replay = replayPromotion(context.repoRoot, shipping);
-	if (replay.reason !== undefined) return abandon("cherry-pick", replay.reason);
-
-	const boundary = git(context.repoRoot, ["diff", "--name-only", "--no-renames", "main", branch])
-		.stdout.trim()
-		.split("\n")
-		.filter(Boolean);
-	const leaked = boundary.filter((path) => !isDevRecordPath(path, devRecordRoot));
-	if (leaked.length > 0) {
-		return abandon("verify", `${branch} still differs from main outside dev records: ${leaked.join(", ")}`);
-	}
-
-	let gates: GateResults = {};
-	if (options.gates) {
-		const outcome = promoteGates(context, record);
-		gates = outcome.results;
-		if (outcome.failure) {
 			return {
-				...abandon("gates", `${outcome.failure.gate} failed: ${outcome.failure.detail}`),
-				gates,
+				...completed,
+				ok: false,
+				stage: "push",
+				reason: (push.stderr || push.stdout).trim(),
+				recover: `Inspect git -C ${context.repoRoot} diff origin/main..${completed.mainAfter}; then git -C ${context.repoRoot} push origin main && npm run worktrees:sync`,
 			};
 		}
+		completed.pushed = true;
 	}
-
-	branchRebuilt = true;
 	try {
-		rebuildPromotedBranch(context, record, branchBefore);
+		const { records, problems } = repositoryState(context.repoRoot, context.worktreeRoot);
+		const branchResult = syncBranches(context, records);
+		branchResult.failures.unshift(...problems);
+		reconcileSettings(context, records);
+		return {
+			...completed,
+			syncOk: branchResult.failures.length === 0,
+			branchFailures: branchResult.failures,
+			deferred: branchResult.deferred,
+		};
 	} catch (error) {
-		const detail = error instanceof Error ? error.message : String(error);
-		return abandon("sync", `${name}: ${detail}`);
+		return { ...completed, syncOk: false, branchFailures: [error instanceof Error ? error.message : String(error)] };
 	}
-	const rebuiltBoundary = git(context.repoRoot, ["diff", "--name-only", "--no-renames", "main", branch])
-		.stdout.trim()
-		.split("\n")
-		.filter(Boolean);
-	const rebuiltLeak = rebuiltBoundary.filter((path) => !isDevRecordPath(path, devRecordRoot));
-	if (rebuiltLeak.length > 0) {
-		return abandon("verify", `${branch} still differs from main outside dev records: ${rebuiltLeak.join(", ")}`);
-	}
+}
 
-	return completePromotion(context, prepared, options, records, replay.promoted, gates);
+function promotionBoundary(repoRoot: string, branch: string, roots: Array<string | null>): string[] {
+	return git(repoRoot, ["diff", "--name-only", "--no-renames", "-z", "main", branch])
+		.stdout.split("\0")
+		.filter((path) => path !== "" && !roots.some((root) => isDevRecordPath(path, root)));
+}
+
+interface PromotionSelection {
+	prepared: PreparedPromotion;
+	record: WorktreeRecord;
+	before: string;
+}
+
+function preparePromotions(
+	context: HarnessContext,
+	requestedReferences: string[],
+): PromotionSelection[] | PromotionReport {
+	const prepared: PreparedPromotion[] = [];
+	for (const reference of requestedReferences.length > 0 ? requestedReferences : [undefined]) {
+		const selection = preparePromotion(context, reference);
+		if ("ok" in selection) return selection;
+		if (prepared.some((entry) => entry.branch === selection.branch)) {
+			return failedPromotion(selection.name, "preflight", `duplicate slice selection: ${selection.branch}`);
+		}
+		prepared.push(selection);
+	}
+	const roots = prepared.map((entry) => entry.devRecordRoot);
+	const worktrees = parseWorktreePorcelain(git(context.repoRoot, ["worktree", "list", "--porcelain"]).stdout);
+	const selected: PromotionSelection[] = [];
+	for (const entry of prepared) {
+		const worktree = worktrees.find((candidate) => candidate.branch === `refs/heads/${entry.branch}`);
+		if (!worktree) return failedPromotion(entry.name, "preflight", `worktree does not exist for ${entry.branch}`);
+		const paused = pausedGitOperation(worktree.path);
+		if (paused) return failedPromotion(entry.name, "preflight", paused);
+		if (isDirty(worktree.path)) {
+			return failedPromotion(
+				entry.name,
+				"preflight",
+				`uncommitted tracked changes or untracked files in ${worktree.path}`,
+			);
+		}
+		const record: WorktreeRecord = {
+			name: entry.name,
+			kind: entry.kind.name,
+			branch: entry.branch,
+			path: worktree.path,
+			entrypoint: entry.kind.entrypoint(worktree.path, entry.name),
+			devRecordRoot: entry.devRecordRoot,
+		};
+		const plan = promotionCommits(context.repoRoot, entry.branch, roots);
+		entry.shipping = plan.filter((commit) => commit.kind !== "held");
+		entry.held = plan.filter((commit) => commit.kind === "held");
+		selected.push({
+			prepared: entry,
+			record,
+			before: git(context.repoRoot, ["rev-parse", entry.branch]).stdout.trim(),
+		});
+	}
+	return selected;
+}
+
+function promote(context: HarnessContext, requestedReferences: string[], options: PromoteOptions): PromotionReport {
+	const selected = preparePromotions(context, requestedReferences);
+	if (!Array.isArray(selected)) return selected;
+	const prepared = selected.map((selection) => selection.prepared);
+	const { mainBefore } = prepared[0];
+	const slices: SlicePromotionReport[] = prepared.map((entry) => ({
+		name: entry.name,
+		kind: entry.kind.name,
+		branch: entry.branch,
+		promoted: [],
+		held: entry.held.map((commit) => (options.dryRun ? { sha: commit.sha, subject: commit.subject } : commit.sha)),
+		gates: {},
+		...(options.dryRun
+			? {
+					wouldPromote: entry.shipping.map((commit) => ({
+						sha: commit.sha,
+						subject: commit.subject,
+						ships: commit.shipped,
+						dropped: commit.devRecords,
+					})),
+				}
+			: {}),
+	}));
+	const report: PromotionReport = {
+		ok: true,
+		slices,
+		...(slices.length === 1 ? { name: slices[0].name, kind: slices[0].kind } : {}),
+		promoted: [],
+		held: slices.flatMap((slice) => slice.held),
+		gates: {},
+		mainBefore,
+		mainAfter: mainBefore,
+		pushed: false,
+	};
+	const remote = remoteMainState(context);
+	if (remote.present && remote.behindRemote) {
+		return {
+			...report,
+			ok: false,
+			stage: "preflight",
+			reason: "origin/main has commits that main does not; sync before promoting",
+			recover: null,
+		};
+	}
+	if (options.push && remote.present && remote.ahead) {
+		return {
+			...report,
+			ok: false,
+			stage: "preflight",
+			reason: "main has unpublished commits; inspect and publish them separately before promotion",
+			recover: null,
+		};
+	}
+	if (options.dryRun) {
+		return {
+			...report,
+			dryRun: true,
+			wouldPromote: slices.flatMap((slice) => slice.wouldPromote ?? []),
+			wouldRunGates: options.gates,
+			wouldPush: options.push,
+		};
+	}
+	if (prepared.every((entry) => entry.shipping.length === 0)) return report;
+
+	const result = applyPromotions(context, selected, report, options);
+	if (!result.ok) return result;
+	return completePromotion(context, result, options, remote);
+}
+
+function restorePromotionBranch(selection: PromotionSelection, rebasing: boolean): string | undefined {
+	const { path, branch } = selection.record;
+	let abort = rebasing;
+	try {
+		abort = rebasing && Boolean(pausedGitOperation(path)?.includes("rebase-"));
+		if (abort) git(path, noHooks(["rebase", "--abort"]));
+		git(path, noHooks(["reset", "--hard", selection.before]));
+		if (
+			pausedGitOperation(path) ||
+			git(path, ["symbolic-ref", "--short", "HEAD"]).stdout.trim() !== branch ||
+			git(path, ["rev-parse", branch]).stdout.trim() !== selection.before
+		)
+			throw new Error("incomplete rollback");
+		return undefined;
+	} catch {
+		return `${abort ? `git -C ${path} rebase --abort && ` : ""}git -C ${path} switch ${branch} && git -C ${path} reset --hard ${selection.before}`;
+	}
+}
+
+function assertPromotionBoundary(context: HarnessContext, branch: string, roots: Array<string | null>): void {
+	const leaked = promotionBoundary(context.repoRoot, branch, roots);
+	if (leaked.length) throw new Error(`${branch} still differs from main outside dev records: ${leaked.join(", ")}`);
+}
+
+function promotionResourceGates(
+	context: HarnessContext,
+	selected: PromotionSelection[],
+	slices: SlicePromotionReport[],
+	gates: GateResults,
+): { branch: string; reason: string } | undefined {
+	for (const [index, selection] of selected.entries()) {
+		const resource = promoteResourceGate(context, selection.record);
+		slices[index].gates = resource.results;
+		if (slices.length === 1) Object.assign(gates, resource.results);
+		if (resource.failure)
+			return { branch: selection.record.branch, reason: `${resource.failure.gate} failed: ${resource.failure.detail}` };
+	}
+	return undefined;
+}
+
+function applyPromotions(
+	context: HarnessContext,
+	selected: PromotionSelection[],
+	report: PromotionReport,
+	options: PromoteOptions,
+): PromotionReport {
+	const mainBefore = selected[0].prepared.mainBefore;
+	const roots = selected.map((selection) => selection.prepared.devRecordRoot);
+	const slices = report.slices ?? [];
+	const changed = new Set<PromotionSelection>();
+	let stage = "cherry-pick";
+	let failedSlice: string | undefined;
+	let rebasing: PromotionSelection | undefined;
+	const abandon = (reason: string): PromotionReport => {
+		const recovery: string[] = [];
+		for (const selection of changed) {
+			const instruction = restorePromotionBranch(selection, rebasing === selection);
+			if (instruction) recovery.push(instruction);
+		}
+		try {
+			git(context.repoRoot, noHooks(["cherry-pick", "--quit"]));
+			git(context.repoRoot, noHooks(["reset", "--hard", mainBefore]));
+			if (
+				pausedGitOperation(context.repoRoot) ||
+				git(context.repoRoot, ["rev-parse", "main"]).stdout.trim() !== mainBefore
+			) {
+				throw new Error("incomplete rollback");
+			}
+		} catch {
+			recovery.push(
+				`git -C ${context.repoRoot} cherry-pick --quit && git -C ${context.repoRoot} reset --hard ${mainBefore}`,
+			);
+		}
+		return {
+			...report,
+			ok: false,
+			stage,
+			reason,
+			failedSlice,
+			promoted: [],
+			slices: slices.map((slice) => ({ ...slice, promoted: [] })),
+			mainAfter: git(context.repoRoot, ["rev-parse", "main"]).stdout.trim(),
+			recover: recovery.length ? recovery.join(" && ") : null,
+		};
+	};
+	try {
+		for (const [index, selection] of selected.entries()) {
+			const { record, prepared: entry } = selection;
+			failedSlice = entry.branch;
+			if (index > 0) {
+				stage = "rebase";
+				changed.add(selection);
+				rebasing = selection;
+				git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
+				rebasing = undefined;
+			}
+			stage = "cherry-pick";
+			const shipping = promotionCommits(context.repoRoot, entry.branch, roots).filter(
+				(commit) => commit.kind !== "held",
+			);
+			const replay = replayPromotion(context.repoRoot, shipping);
+			if (replay.reason !== undefined) return abandon(replay.reason);
+			slices[index].promoted = replay.promoted;
+			stage = "verify";
+			assertPromotionBoundary(context, entry.branch, roots);
+		}
+		failedSlice = undefined;
+		stage = "gates";
+		if (options.gates) {
+			const outcome = promoteGates(context);
+			report.gates = outcome.results;
+			if (outcome.failure) return abandon(`${outcome.failure.gate} failed: ${outcome.failure.detail}`);
+			const failure = promotionResourceGates(context, selected, slices, outcome.results);
+			if (failure) {
+				failedSlice = failure.branch;
+				return abandon(failure.reason);
+			}
+		}
+		for (const selection of selected) {
+			failedSlice = selection.record.branch;
+			stage = "sync";
+			changed.add(selection);
+			rebuildPromotedBranch(context, selection.record, selection.before);
+			stage = "verify";
+			assertPromotionBoundary(context, selection.record.branch, [selection.record.devRecordRoot]);
+		}
+	} catch (error) {
+		return abandon(error instanceof Error ? error.message : String(error));
+	}
+	return { ...report, promoted: slices.flatMap((slice) => slice.promoted) };
 }
 
 function printPromotionPlan(report: PromotionReport): void {
+	if (report.slices && report.slices.length > 1) {
+		for (const slice of report.slices) printPromotionPlan({ ...report, ...slice, slices: undefined });
+		return;
+	}
 	console.log(`promote ${report.name} (dry run)`);
 	const wouldPromote = report.wouldPromote ?? [];
 	for (const entry of wouldPromote) {
@@ -1152,10 +1296,20 @@ function printPromotionPlan(report: PromotionReport): void {
 	console.log(`  gates: ${report.wouldRunGates ? "yes" : "no"}  push: ${report.wouldPush ? "yes" : "no"}`);
 }
 
+function printSliceOutcomes(slices: SlicePromotionReport[]): void {
+	if (slices.length < 2) return;
+	for (const slice of slices)
+		console.log(
+			`${slice.branch}: promoted ${slice.promoted.join(", ") || "none"}; held ${slice.held.join(", ") || "none"}`,
+		);
+}
+
 function printPromotionOutcome(report: PromotionReport): void {
 	const promoted = report.promoted ?? [];
 	const held = report.held ?? [];
-	if (promoted.length === 0) console.log(`Nothing to promote from ${report.kind ?? ""}/${report.name}`);
+	printSliceOutcomes(report.slices ?? []);
+	if (promoted.length === 0)
+		console.log(`Nothing to promote from ${report.slices?.map((slice) => slice.branch).join(", ") ?? report.name}`);
 	else console.log(`Promoted to main: ${promoted.join(", ")}`);
 	if (held.length > 0) console.log(`Held on the branch: ${held.join(", ")}`);
 	if (report.mainAfter && report.mainBefore && report.mainAfter !== report.mainBefore) {
@@ -1179,7 +1333,7 @@ function reportPromotion(report: PromotionReport, json: boolean): number {
 		return 0;
 	}
 	if (!report.ok) {
-		console.error(`promote ${report.name ?? ""} failed at ${report.stage}: ${report.reason}`);
+		console.error(`promote ${report.failedSlice ?? report.name ?? ""} failed at ${report.stage}: ${report.reason}`);
 		if (report.recover) console.error(`recover: ${report.recover}`);
 		else console.error(`main is unchanged at ${report.mainAfter ?? report.mainBefore ?? "its original commit"}`);
 		return 1;
@@ -1299,7 +1453,13 @@ function main(): void {
 		if (command === "promote" && args.includes("--json")) {
 			const parsed = parsePromoteArguments(args.slice(args.indexOf(command) + 1));
 			process.exitCode = reportPromotion(
-				{ ok: false, name: parsed.name, stage: "coordination", reason: error.message, recover: null },
+				{
+					ok: false,
+					name: parsed.names.join(", "),
+					stage: "coordination",
+					reason: error.message,
+					recover: null,
+				},
 				true,
 			);
 		} else {
@@ -1384,7 +1544,7 @@ function executeCommand(context: HarnessContext, args: string[]): void {
 	}
 	if (command === "promote") {
 		const parsed = parsePromoteArguments(args.slice(commandIndex + 1));
-		const report = promote(context, parsed.name, parsed.options);
+		const report = promote(context, parsed.names, parsed.options);
 		process.exitCode = reportPromotion(report, parsed.options.json);
 		return;
 	}
