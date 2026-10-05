@@ -1341,19 +1341,20 @@ export class AgentDashboard implements Component, Focusable {
 		composer.setViewportRows(requested === undefined ? undefined : clamp(requested, MIN_COMPOSER_ROWS, maxRows));
 		composer.grip = this.resize.active("composer") ? "active" : this.resize.hover === "composer" ? "hover" : "normal";
 	}
-	private renderComposer(composer: AgentComposer | undefined, width: number, maxRows: number): { editor: string[]; maxRows: number } {
+	private renderComposer(composer: AgentComposer | undefined, width: number, maxRows: number, availableRows: number): { editor: string[]; maxRows: number } {
 		if (!composer) return { editor: [], maxRows };
 		const render = () => composer.render(width, this.messageLabel(), "", this.navigation.screen === "new" ? this.notice : this.console?.state.receipt);
 		this.sizeComposer(composer, maxRows);
 		let editor = render();
 		if (composer.autocompleteRows) { maxRows -= composer.autocompleteRows; this.sizeComposer(composer, maxRows); editor = render(); }
+		if (editor.length > availableRows) { composer.setViewportRows(MIN_COMPOSER_ROWS); editor = render(); }
 		return { editor, maxRows };
 	}
 	private composerHandle(composer: AgentComposer | undefined, geometry: ReturnType<typeof dashboardGeometry>, paneX: number, paneY: number, headerRows: number, editorRows: number, maxRows: number): void {
 		if (!composer || maxRows < MIN_COMPOSER_ROWS) return;
 		const requested = this.state.layout.composerRows;
 		const value = requested === undefined ? Math.max(MIN_COMPOSER_ROWS, editorRows - 2 - composer.autocompleteRows) : clamp(requested, MIN_COMPOSER_ROWS, maxRows);
-		this.resize.add({ kind: "composer", x: paneX + geometry.conversationWidth - 4, y: paneY + headerRows + geometry.bodyHeight + 2, width: 3, height: 1, value, min: MIN_COMPOSER_ROWS, max: maxRows });
+		this.resize.add({ kind: "composer", x: paneX + geometry.conversationWidth - 4, y: paneY + headerRows + geometry.bodyHeight, width: 3, height: 1, value, min: MIN_COMPOSER_ROWS, max: maxRows });
 	}
 	private renderDashboard(width: number, height: number): string[] {
 		const screen = this.navigation.screen;
@@ -1367,20 +1368,24 @@ export class AgentDashboard implements Component, Focusable {
 		const status = screen === "new" ? [] : this.console?.statusLines(paneWidth, info, this.branches.get(this.console.row.cwd), this.delegatedFigures()) ?? [];
 		const available = shape.paneHeight - status.length;
 		const budget = dashboardPaneGeometry(available, header.length + 2, 0);
-		const { editor, maxRows } = this.renderComposer(composer, paneWidth, budget.composerMaxRows);
-		const geometry = { ...shape, ...dashboardPaneGeometry(available, header.length + 2, editor.length) };
+		const editorLimit = Math.max(MIN_COMPOSER_ROWS + 2, available - header.length - 2);
+		const { editor, maxRows } = this.renderComposer(composer, paneWidth, budget.composerMaxRows, editorLimit);
+		const separators = Math.max(0, Math.min(2, available - header.length - editor.length));
+		const boundaryRows = Math.min(1, separators);
+		const headerRows = header.length + separators;
+		const geometry = { ...shape, ...dashboardPaneGeometry(available, headerRows, editor.length) };
 		this.resizeColumns = { roster: geometry.rosterWidth, detail: geometry.conversationWidth };
 		this.bodyHeight = geometry.bodyHeight;
 		const transcript = this.transcriptLines(paneWidth, geometry.bodyHeight);
-		const pane = [...header, this.conversationBoundary(paneWidth), ...transcript, "", ...editor, ...status];
+		const pane = [...header, ...[this.conversationBoundary(paneWidth)].slice(0, boundaryRows), ...transcript, ...Array<string>(separators - boundaryRows).fill(""), ...editor, ...status];
 		const bodyY = 1 + reserved;
 		const paneX = geometry.wide ? geometry.rosterWidth + 1 : 0;
 		const paneY = bodyY + geometry.rosterHeight;
 		if (geometry.wide) this.resize.add({ kind: "roster", x: geometry.rosterWidth - 1, y: bodyY, width: 2, height: geometry.paneHeight, value: geometry.rosterWidth, min: 24, max: width - 1 - 60 });
-		this.composerHandle(composer, geometry, paneX, paneY, header.length, editor.length, maxRows);
+		this.composerHandle(composer, geometry, paneX, paneY, headerRows, editor.length, maxRows);
 		this.resize.end();
 		this.mouse.add({
-			x: paneX, y: paneY + header.length, width: paneWidth, height: geometry.bodyHeight + 1,
+			x: paneX, y: paneY + header.length, width: paneWidth, height: geometry.bodyHeight + boundaryRows,
 			click: () => {
 				if (!this.console || screen === "new" || screen === "find") return false;
 				if (screen !== "console") this.navigation.enter("console", this.console.row.id);
@@ -1388,7 +1393,7 @@ export class AgentDashboard implements Component, Focusable {
 			wheel: (delta) => this.wheelConversation(delta),
 		});
 		this.mouse.add({
-			x: paneX, y: paneY + header.length + geometry.bodyHeight + 2, width: paneWidth, height: editor.length,
+			x: paneX, y: paneY + headerRows + geometry.bodyHeight, width: paneWidth, height: editor.length,
 			click: (event) => {
 				if (!composer) return false;
 				if (screen !== "new" && screen !== "console" && screen !== "message" && this.console)

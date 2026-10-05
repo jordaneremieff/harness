@@ -6,6 +6,7 @@ import { visibleWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { dashboardGeometry, dashboardHeading, fitHints } from "./dashboard-layout.ts";
 import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
+import { agentState, updateDraft } from "./dashboard-state.ts";
 
 it("the roster stays narrow and owns the full body beside the conversation", () => {
 	for (const [width, expected] of [[100, 30], [120, 30], [164, 36], [240, 40]]) {
@@ -68,6 +69,45 @@ it("each surface occupies the exact terminal rectangle and keeps Esc last", asyn
 	}
 	assert.match(fitHints(["one", "two", "three"], "esc back", 12), /esc back/);
 });
+for (const width of [60, 80]) for (const height of [20, 21]) for (const mode of ["roster", "find", "message", "console"] as const) for (const notice of [false, true]) {
+	it(`compact failed conversations retain warnings, draft, status and mouse targets at ${width}x${height} in ${mode}, notice ${notice}`, async () => {
+		const observed = source([row("one", { state: "failed", error: "quota limit" })]);
+		observed.availability = () => ({ state: "unavailable", at: new Date(0).toISOString() });
+		const f = fixture(width, height, observed);
+		try {
+			await turn();
+			const state = agentState(f.state, "one");
+			const draft = Array.from({ length: 10 }, (_, index) => `draft ${index}`).join("\n");
+			updateDraft(state, draft);
+			if (mode === "find") f.ui.handleInput("/");
+			if (mode === "message") f.ui.handleInput("\t");
+			if (mode === "console") f.ui.handleInput("\r");
+			if (notice) Reflect.set(f.ui, "notice", "Layout could not be saved");
+			f.ui.focused = true;
+			const lines = f.ui.render(width);
+			const plain = lines.map(stripVTControlCharacters);
+			assert.equal(lines.length, height, `${width}x${height} ${mode}`);
+			assert.ok(plain.every((line) => visibleWidth(line) === width));
+			assert.match(plain.join("\n"), /quota limit/);
+			assert.match(plain.join("\n"), /Conversation unavailable; stored messages shown/);
+			if (notice) assert.match(plain.join("\n"), /Layout could not be saved/);
+			assert.match(plain.at(-3) ?? "", /model │ ~\$0.42/);
+			assert.match(plain.at(-2) ?? "", /\/work/);
+			assert.match(plain.at(-1) ?? "", /esc/);
+			const click = (y: number, x = 2) => f.ui.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+			for (const y of [height - 3, height - 2]) assert.equal(click(y), undefined, "status rows are not editor targets");
+			const top = plain.findIndex((line, index) => index > 0 && line.startsWith("╭─"));
+			assert.ok(top >= 0, mode);
+			assert.equal(click(top + 1)?.focus, true, "visible draft rows target the native editor");
+			const updated = f.ui.render(width);
+			assert.equal(updated.length, height);
+			assert.ok(updated.some((line) => line.includes(CURSOR_MARKER)));
+			assert.equal(state.draft, draft);
+			const hint = stripVTControlCharacters(updated.at(-1) ?? "");
+			assert.equal(click(height - 1, hint.indexOf("esc"))?.handled, true, "footer hint stays clickable");
+		} finally { f.ui.dispose(); }
+	});
+}
 const painted = {
 	...theme,
 	fg: (color: string, text: string) => `\x1b[${color === "accent" ? 36 : color === "muted" ? 90 : 37}m${text}\x1b[39m`,

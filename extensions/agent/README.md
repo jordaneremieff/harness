@@ -910,9 +910,10 @@ wider window. Temporary clamps never replace the saved preference.
 Where height permits, drag the small three-cell grip at the composer's top-right
 corner upward for more draft rows or downward for more transcript rows. Explicit
 height reserves at least five draft rows and six transcript rows, plus the
-native frames and blank separator. Short windows use compact automatic height
-without discarding the saved row preference. The useful caption and native
-editor remain intact. Double-click either handle to reset only that split.
+native frames and blank separator. Short windows bound the automatic draft
+height without discarding the saved row preference. Optional transcript separators
+disappear only when the height needs that space for warnings, the editor, the
+status block, and the hint line. The useful caption and native editor remain intact. Double-click either handle to reset only that split.
 Other rules and borders remain decorative.
 
 From roster navigation, `r resize` enters keyboard resize mode. `tab` selects an
