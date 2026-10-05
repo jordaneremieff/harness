@@ -2,8 +2,9 @@
  * Deterministic credential redaction for the distillation path.
  *
  * Credential-shaped values are replaced before the transcript reaches the
- * distiller and again before the artifact is published, so no secret can pass
- * through on a model's discretion. The policy is deliberately conservative:
+ * distiller and again before the artifact is published, so redaction of these
+ * recognized shapes does not depend on a model's discretion. Values outside these
+ * patterns pass through unchanged. The policy is deliberately conservative:
  * shaped patterns (prefixed tokens, JWTs, bearer headers, private keys,
  * assignment values, URL userinfo) are redacted, while high-entropy strings
  * without a shape — git SHAs, UUIDs, hashes — are preserved because they are
