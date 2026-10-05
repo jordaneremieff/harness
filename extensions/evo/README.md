@@ -80,10 +80,11 @@ its configured upstream. Dirty files, provisional branches, and an unpublished
 marker on local main do not suppress pending intake. Local upstream tracking is
 conservative evidence, not a fresh network check; evo does not fetch.
 
-The declaration starts as `unknown` because targeted contract checks do not
-establish exhaustive release coverage. A bare run first recovers a defensible
-published baseline from repository evidence. If none exists, it reads the
-available cumulative changelog through the running version in bounded pages and
+If the declaration is `unknown` or coverage evidence is unavailable, a bare run
+first recovers a defensible published baseline from repository evidence.
+Targeted contract checks alone do not establish exhaustive release coverage.
+If no published baseline exists, the run reads the available cumulative changelog
+through the running version in bounded pages and
 reviews its effects on the current harness. Superseded changes are assessed
 against the current host, not implemented again. The operator does not need to
 paste notes or select a topic.
@@ -129,19 +130,16 @@ The command itself never writes the marker.
 ## Session-history expertise
 
 When orientation needs earlier operator directions or session evidence, the
-coordinator uses a retained session-history expert through the
-[delivery workflow](../../docs/agent-delivery.md#orient-to-the-operators-work).
-The [corpus reference](../../docs/session-history.md) owns its charter, public
-source access, provenance, coverage, and correction handling. The coordinator
-supplies the current question and restrictions instead of repeating the corpus
-brief. Relevant expertise supports reuse; unrelated work, independent judgment,
-or conflicting ownership can require a fresh session.
+kickoff directs the coordinator to resolve and task `@session-history` through
+the [delivery workflow](../../docs/agent-delivery.md#orient-to-the-operators-work).
+The coordinator supplies the current question and restrictions instead of
+repeating the corpus brief. Relevant expertise supports reuse; unrelated work,
+independent judgment, or conflicting ownership can require a fresh session.
 
-When orientation needs session history, the kickoff directs the coordinator to
-resolve and task `@session-history` through the delivery workflow. The
-[agent extension](../agent/README.md) owns discovery, profiles, and request
-reply routes. The [corpus reference](../../docs/session-history.md) owns the
-read-only evidence boundary.
+The [corpus reference](../../docs/session-history.md) owns the expert's charter,
+public source access, read-only evidence boundary, provenance, coverage, and
+correction handling. The [agent extension](../agent/README.md) owns discovery,
+profiles, and request reply routes.
 
 Evo does not create an agent itself, pre-create a team, keep an expert running,
 or require history work on every invocation. It remains one request through the
