@@ -1129,11 +1129,11 @@ export class AgentDashboard implements Component, Focusable {
 			mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), this.theme),
 		];
 	}
-	private messageLabel(): string {
+	private messageLabel(window?: number): string {
 		if (this.navigation.screen === "new") return `New agent · Enter starts · ${this.creating ? "Starting…" : "Task"}`;
 		if (this.navigation.screen === "find") return "Find loaded agents · Enter keeps filter · Esc cancels";
 		return (
-			this.console?.messageLabel(this.console.row.model ? this.operations.contextWindow?.(this.console.row.model.provider, this.console.row.model.modelId) : undefined) ??
+			this.console?.messageLabel(window) ??
 			(this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent")
 		);
 	}
@@ -1259,7 +1259,7 @@ export class AgentDashboard implements Component, Focusable {
 		const text = parts.join(" · ");
 		return this.theme.fg("muted", fitLine(visibleWidth(text) <= width ? text : parts.join("  "), width));
 	}
-	private selectedHeader(width: number): string[] {
+	private selectedHeader(width: number, window?: number): string[] {
 		if (this.navigation.screen === "new") return [this.theme.bold("New agent"), this.theme.fg("muted", "Primary model and directory")];
 		const console = this.console;
 		if (!console) return [this.statusText(), this.notice].filter((line): line is string => Boolean(line)).map((line) => this.theme.fg("muted", line));
@@ -1269,7 +1269,6 @@ export class AgentDashboard implements Component, Focusable {
 		const state = truncateToWidth(`${appearance.glyph} ${appearance.label}${activity}`, Math.floor(width / 2), "…");
 		const name = this.theme.bold(this.theme.fg("text", titleOf(row)));
 		const lines = [`${fitLine(name, Math.max(1, width - visibleWidth(state) - 2))}  ${this.theme.fg(appearance.color, state)}`];
-		const window = row.model ? this.operations.contextWindow?.(row.model.provider, row.model.modelId) : undefined;
 		lines.push(...console.footer(width, window).split("\n"));
 		const reason = attentionReason(row);
 		if (reason) lines.push(this.theme.fg("error", reason));
@@ -1304,8 +1303,10 @@ export class AgentDashboard implements Component, Focusable {
 		const reserved = screen === "find" ? 1 : 0;
 		const shape = dashboardGeometry(width, height, 0, screen === "console", reserved);
 		const paneWidth = shape.conversationWidth;
-		const header = this.selectedHeader(paneWidth - 2).map((line) => ` ${line} `);
-		const editor = composer?.render(paneWidth, this.messageLabel(), "", screen === "new" ? this.notice : this.console?.state.receipt) ?? [];
+		const model = screen === "new" ? undefined : this.console?.row.model;
+		const window = model ? this.operations.contextWindow?.(model.provider, model.modelId) : undefined;
+		const header = this.selectedHeader(paneWidth - 2, window).map((line) => ` ${line} `);
+		const editor = composer?.render(paneWidth, this.messageLabel(window), "", screen === "new" ? this.notice : this.console?.state.receipt) ?? [];
 		const geometry = dashboardGeometry(width, height, editor.length, screen === "console", reserved, header.length + 2);
 		this.bodyHeight = geometry.bodyHeight;
 		const transcript = this.transcriptLines(paneWidth, geometry.bodyHeight);

@@ -884,8 +884,9 @@ renderer or execute through the display definition.
 
 Context comes from the newest completed assistant usage and becomes unknown
 after a newer compaction or reset until another assistant reports usage. The
-primary model registry supplies the context window; an unknown model window
-stays unknown. A live frame adds cumulative input/output tokens from its usage
+primary model registry supplies the context window once per render; the detail
+header and editor caption share that value. An unknown model window stays
+unknown. A live frame adds cumulative input/output tokens from its usage
 ledger, including cached input. An unknown window shows only the known context
 count. The header keeps unknown values explicit.
 

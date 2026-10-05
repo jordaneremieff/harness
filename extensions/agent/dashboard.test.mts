@@ -761,3 +761,32 @@ it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc re
 	assert.equal(f.ui.navigation.screen, "roster");
 	f.ui.dispose();
 });
+
+for (const width of [80, 164]) {
+	it(`detail and composer share one current model window per render at ${width}`, async () => {
+		const observed = source([row("one"), row("two", { model: { provider: "other", modelId: "second", thinkingLevel: "high" } })]);
+		observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
+		const lookups: Array<[string, string]> = [];
+		let capacity: number | undefined = 1000;
+		const f = fixture(width, 30, observed, { contextWindow: (provider, modelId) => { lookups.push([provider, modelId]); return capacity; } });
+		try {
+			await turn();
+			let screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
+			assert.deepEqual(lookups, [["test", "model"]]);
+			assert.match(screen, /160\/1.0k \(16%\)/);
+			assert.match(screen, /16% ctx/);
+			capacity = 2000;
+			f.ui.handleInput("\x1b[B");
+			await turn();
+			screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
+			assert.deepEqual(lookups, [["test", "model"], ["other", "second"]]);
+			assert.match(screen, /160\/2.0k \(8%\)/);
+			assert.match(screen, /8% ctx/);
+			capacity = undefined;
+			screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
+			assert.equal(lookups.length, 3);
+			assert.match(screen, /160 ctx/);
+			assert.doesNotMatch(screen, /8% ctx|2.0k/);
+		} finally { f.ui.dispose(); }
+	});
+}
