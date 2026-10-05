@@ -12,6 +12,8 @@ through `ctx.ui.setStatus()`.
 | footer | `ctx.ui.setFooter` | Two-line statusline, installed on `session_start` in TUI mode only. |
 | `/statusline` | command | Toggle between the custom statusline and Pi's default footer. |
 
+No extension-specific configuration is required. The custom footer starts
+enabled; use `/statusline` to switch to Pi's default footer or back.
 There are no tools, timers beyond one footer-owned tick, background work, or
 configuration overlays.
 
@@ -20,10 +22,9 @@ configuration overlays.
 Segments join with a dim `│` separator:
 
 1. **Model + thinking.** `ctx.model.name`, accent-colored, plus a
-   `[<level>]` bracket (for example `[high]`) in the per-level theme color. The bracket follows the
-   model's declared `reasoning` capability, not a provider-name check:
-   providers whose Pi thinking level is inert (for example ACP-bridged
-   models, which register `reasoning: false`) simply never show it.
+   `[<level>]` bracket (for example `[high]`) in the per-level theme color.
+   The bracket appears only when the model declares `reasoning: true` and a
+   thinking level is present; it does not depend on the provider name.
 2. **Context bar + tokens.** A ten-cell block bar (`██████░░░░ 62%`) rendered
    with theme foregrounds so it works in dark and light terminals, plus
    `tokens/contextWindow`. Zero usage shows `0%`. Unknown usage after compaction
@@ -135,7 +136,10 @@ set the window title, write the clipboard, or emit a hyperlink.
 
 ## Verification
 
+From the repository root, run the focused statusline tests:
+
 ```bash
-npm test
-# full suite passes; statusline coverage in extensions/statusline/*.test.mts
+node --test extensions/statusline/*.test.mts
 ```
+
+See [repository instructions](../../AGENTS.md) for the full development gates.
