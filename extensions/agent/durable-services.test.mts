@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext, type StreamOptions } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { ProjectTrustStore, getPackageDir } from "@earendil-works/pi-coding-agent";
 import { createDurableServices, LOAD_FAILURE_MAX_CHARS } from "./durable-services.ts";
@@ -172,6 +172,39 @@ it("collects contributions, matches sources, and installs the built-in registry"
 		await installed.close();
 	}
 	assert.throws(() => services.env({ conversationId: "fixture" } as never, BACKGROUND_CONTEXT), /closed/u);
+});
+
+for (const sample of [
+	{ name: "provider overrides", settings: { transport: "sse", httpIdleTimeoutMs: 45000, retry: { provider: { timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678 } } }, expected: { transport: "sse", timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678 } },
+	{ name: "HTTP idle fallback", settings: { httpIdleTimeoutMs: 45000 }, expected: { transport: "auto", timeoutMs: 45000, maxRetries: undefined, maxRetryDelayMs: 60000 } },
+	{ name: "default timeout", settings: {}, expected: { transport: "auto", timeoutMs: 300000, maxRetries: undefined, maxRetryDelayMs: 60000 } },
+	{ name: "disabled HTTP idle timeout", settings: { httpIdleTimeoutMs: 0 }, expected: { transport: "auto", timeoutMs: 2147483647, maxRetries: undefined, maxRetryDelayMs: 60000 } },
+	{ name: "explicit zero provider timeout", settings: { retry: { provider: { timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0 } } }, expected: { transport: "auto", timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0 } },
+]) it(`forwards ${sample.name} to the native Durable model stream`, async (t) => {
+	const f = fixture(t);
+	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ ...sample.settings, cacheWarming: { mode: "off" } }));
+	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-options", extensionPaths: [f.silentPath], trusted: true });
+	const runtime = await createTestRuntime();
+	const received: StreamOptions[] = [];
+	const stream = (_model: unknown, _transcript: TranscriptContext, options?: StreamOptions) => {
+		received.push(options ?? {});
+		const message: AssistantMessage = { role: "assistant", content: [{ type: "text", text: "done" }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "stop", timestamp: Date.now() };
+		const events = createAssistantMessageEventStream();
+		events.push({ type: "done", reason: "stop", message });
+		events.end(message);
+		return events;
+	};
+	runtime.registerNativeProvider({ id: testModel.provider, name: "Stream option fixture", getModels: () => [testModel], auth: { apiKey: { name: "Synthetic", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	const harness = await Harness.open(new MemoryStorage(), { models: runtime, registry: services.registry, settings: services.settings, env: services.env }, BACKGROUND_CONTEXT);
+	try {
+		await services.install(harness);
+		const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+		const result = await (await conversation.submit({ type: "input", content: "check options" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(result.status, "done");
+		assert.equal(received.length, 1);
+		const options = received[0];
+		assert.deepEqual({ transport: options?.transport, timeoutMs: options?.timeoutMs, maxRetries: options?.maxRetries, maxRetryDelayMs: options?.maxRetryDelayMs }, sample.expected);
+	} finally { await services.close(); await harness.close(BACKGROUND_CONTEXT); }
 });
 
 it("installs native built-in extras from buildBuiltin before contributions", async (t) => {

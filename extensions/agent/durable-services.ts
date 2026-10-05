@@ -521,6 +521,17 @@ function projectTrustResolver(pi: PiRuntime, options: CreateDurableServicesOptio
 	});
 }
 
+function providerStreamSettings(settings: SettingsManager): NonNullable<Durable.HarnessSettings["stream"]> {
+	const provider = settings.getProviderRetrySettings();
+	const idle = settings.getHttpIdleTimeoutMs();
+	return {
+		transport: settings.getTransport(),
+		timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2147483647 : idle),
+		maxRetries: provider.maxRetries,
+		maxRetryDelayMs: provider.maxRetryDelayMs,
+	};
+}
+
 /**
  * Create cwd-bound Pi services, collect native Durable contributions from the
  * loaded configured extensions, and install the Durable registry.
@@ -655,8 +666,8 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		};
 
 		const settings: Durable.HarnessSettings = {
-			/** Match an ordinary session's request transport so providers take their configured caching path. */
-			get stream() { return { transport: services.settingsManager.getTransport() }; },
+			/** Match ordinary request options; each provider owns its timeout and retry semantics. */
+			get stream() { return providerStreamSettings(services.settingsManager); },
 			get retry() { return services.settingsManager.getRetrySettings(); },
 			get compaction() { return services.settingsManager.getCompactionSettings(); },
 			get steeringMode() { return services.settingsManager.getSteeringMode(); },

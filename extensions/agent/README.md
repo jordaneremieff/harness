@@ -295,6 +295,19 @@ with `reasoning` absent when the level is `off`. Pi AI resolves the model's
 `samplingParamsByThinkingLevel` overrides for `openai-completions`,
 `openai-responses`, and `azure-openai-responses` requests.
 
+Provider request options match ordinary Pi sessions: `retry.provider.timeoutMs`
+falls back to `httpIdleTimeoutMs`; `retry.provider.maxRetries` and
+`retry.provider.maxRetryDelayMs` pass through unchanged. An idle timeout of zero
+uses Pi's effectively unlimited value. Generation retries remain a separate
+native policy and still use the operator's retry settings.
+
+In Pi AI 1.0.2, the Codex idle timeout covers WebSocket reads
+(`dist/api/openai-codex-responses.js:1087–1103,1205`). SSE responses are limited
+only at headers (`:264–282`); SSE body reads use only the abort signal
+(`:479,596–598`). An SSE body stall has no inactivity timeout from these options.
+The shared stream path forwards events without an additional timeout
+(`pi-ai/dist/api/lazy.js:24–29`).
+
 The host supplies:
 
 - Native `write`, `edit`, and `bash`, with unsafe replay classifications.
