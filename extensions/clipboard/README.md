@@ -17,55 +17,36 @@ Each tool is one operation; there is no action multiplexer, and the model-facing
 API has no transient index addressing — stable ids are the only entry handle.
 `clipboard_paste` and `clipboard_get` return at most 8,000 Unicode characters per page, subject to the stricter 50 KiB and 2000-line output bounds. A `nextOffset` tells the caller how to continue.
 
-## Durable agents
+## Use
 
-Durable agent sessions receive their tools from native Pi Durable
-contributions, not from ordinary Pi extensions. The ordinary factory emits a
-contribution from `index.ts`; `durable.ts` builds the native extension from it.
-Both entrypoints call the same operations, parameter schemas, and archive
-functions, so the archive stays the external store and the contribution holds
-no Durable documents.
+Call `clipboard_copy` with the text to write:
 
-| Tool | Replay class | Reason |
-|---|---|---|
-| `clipboard_copy` | unsafe | A rerun overwrites newer clipboard content and appends a duplicate archive record. |
-| `clipboard_paste` | safe | A rerun only reads the clipboard. |
-| `clipboard_list` | safe | A rerun only reads the archive. |
-| `clipboard_get` | safe | A rerun only reads the archive. |
-| `clipboard_restore` | unsafe | A rerun overwrites newer clipboard content and appends a duplicate archive record. |
+```json
+{"content":"Rollback instructions: restore the saved revision.","label":"rollback instructions"}
+```
 
-An interrupted unsafe call returns an interrupted result instead of rerunning.
-Model-facing guidance renders as the prompt section `clipboard`, composed from
-the same snippets and guidelines the ordinary registration exposes. The native
-tools return the same result text and details object as the ordinary tools; the
-ordinary tool cards do not apply because a Durable session renders its own
-transcript. The `/clipboard` overlay is a TUI operator surface and has no
-Durable form.
+Call `clipboard_paste` only when you need the current clipboard:
 
-## Tool cards
+```json
+{"max_chars":8000}
+```
 
-Each tool draws a compact TUI card. A collapsed card never shows copied, pasted, or
-archived content; it shows the label, size, id, and outcome instead. Expansion reveals the
-full arguments or result text with a display bound, and terminal controls escape to text
-in every collapsed value.
+If a read returns `nextOffset`, pass it as `offset` to continue. Use
+`clipboard_list` to find archived text, then `clipboard_get` to inspect it
+or `clipboard_restore` to write it back. Archive search alone does not
+access the clipboard.
 
-- `clipboard_copy` names the label and reports the content size in UTF-16 code units
-  (or that the content is still streaming), then the copied size and any archive warning.
-- `clipboard_paste` names only the requested page bounds, then the page size, any
-  continuation offset, the escaped-control note, and the empty state.
-- `clipboard_list` names the query or date and its bounds, then the entry or match count,
-  whether more is available, and whether a continuation exists.
-- `clipboard_get` names the entry id and page bounds, then the entry size, any
-  continuation offset, and the escaped-control note.
-- `clipboard_restore` names the entry id, then the restored size and any archive warning.
+## Configuration
 
-A result that hides content carries the expansion hint; a restore result, which repeats no
-hidden content, carries none.
+`PI_CLIPBOARD_DIR` selects the archive directory. Otherwise, the extension uses
+`<agentDir>/clipboard`. See the [configuration convention](../../docs/conventions/extension-config.md)
+for environment setup, [Storage](#storage) for file handling, and
+[Retention and deletion](#retention-and-deletion) for removal limits.
 
 ## Find text from a remembered phrase
 
 Use `clipboard_list` with `query` when the date and id are unknown. Without
-`query`, the tool retains its recent-list behavior: default `limit: 10`, maximum
+`query`, the tool lists recent entries: default `limit: 10`, maximum
 50, and optional `date`.
 
 For example: “Recover the rollback instructions I copied; I remember the phrase
@@ -189,14 +170,13 @@ search state is saved. A caller can reuse its previous cursor while the archive
 remains unchanged. Archive bytes are read-only; normal private-mode enforcement
 still applies.
 
-The implementation adds only on-demand scanning inside this extension. There is
+Search scans the archive on demand. There is
 no index, watcher, background work, new state store, archive migration, or runtime
 dependency. Each page repeats bounded directory/metadata discovery. Candidate
 checks can revisit a large prefix once per candidate, so broad queries and older
 hits cost more reads and pages than narrow queries. All those reads share the
 same per-call budgets. This cost buys correct duplicate resolution without an
-unbounded id set or persistent index. The browser and copy/paste behavior remain
-unchanged.
+unbounded id set or persistent index. Search is separate from browser filtering and clipboard I/O.
 
 ## Storage
 
@@ -208,7 +188,7 @@ History is one append-only JSONL file per local calendar day at `<agentDir>/clip
 - Archive opens use `O_NOFOLLOW` and `O_NONBLOCK`, then verify the descriptor is a regular file before changing its mode or accessing content. A pipe at an archive path is refused without waiting for a peer.
 - Reads reject a symlinked store, ignore symlinked archives, skip blank or malformed records, and recompute derived metadata from validated content.
 - Readers scan files and records newest-first in bounded chunks and check cancellation between reads and records. Lists stop after the requested page and retain no body content; the browser retains at most 32,768 characters per entry. Stable-id lookup refetches the full selected record without materializing a whole daily archive.
-- Individual JSONL records are capped at 64 MiB. This contains malformed or unexpectedly large historical data while accommodating the tool's 8 MiB input limit and JSON escaping.
+- Individual JSONL records are capped at 64 MiB. This contains malformed or unexpectedly large historical data while accommodating the tool's string-length input limit of 8 × 1024 × 1024 and JSON escaping.
 - Restores append a new `(restored)` entry because they are real clipboard writes.
 
 A successful `pbcopy` followed by an archive failure is reported as a successful copy or restore with a warning. A `pbcopy` failure remains an error and does not append a false history event. Archival continues after a confirmed copy even if cancellation arrives afterward.
@@ -219,7 +199,7 @@ Clipboard subprocesses use asynchronous, shell-free I/O with a 30-second timeout
 
 History is retained until the operator removes it; there is no silent age-based pruning. Physical deletion is intentionally daily-file granular. A closed day's `<agentDir>/clipboard/YYYY-MM-DD.jsonl` can be removed directly on an explicit operator request. The current day's file should not be removed while sessions may be appending to it.
 
-Entry-level deletion would require coordinated rewrites or tombstones across processes. That machinery is deferred until an observed need justifies it; an unsafe rewrite would reintroduce the cross-session data-loss race this store removed.
+The extension provides no entry-level deletion. Daily-file removal avoids rewriting an archive while other processes append to it.
 
 ## Browser behavior
 
@@ -228,6 +208,51 @@ The overlay is available in TUI mode. RPC receives a notification that directs t
 The overlay loads the newest 200 entries and marks the count with `+` when older history exists. It supports live filtering across labels, ids, and loaded body prefixes. Up/Down selects entries, Left/Right scrolls the preview by a page, Enter restores, and Escape clears or closes. Escape cancels an active restore. Disposal also cancels active work and suppresses late component callbacks. A completed copy remains a success if cancellation arrives only during archival. A truncated preview is labeled. Restore resolves the selected stable id again and writes the full archived content, so preview bounds never truncate the clipboard result.
 
 The component is the sole height authority. It reads the host TUI row count and the overlay host does not impose `maxHeight`, which prevents Pi from slicing away the footer. Every rendered row paints the full width inside a background-backed frame. The footer is always the final row, including `40x10` and `50x12` terminals. Labels, previews, content, and error text have terminal and bidi controls escaped before custom rendering.
+
+## Durable agents
+
+Durable agent sessions receive their tools from native Pi Durable
+contributions, not from ordinary Pi extensions. The ordinary factory emits a
+contribution from `index.ts`; `durable.ts` builds the native extension from it.
+Both entrypoints call the same operations, parameter schemas, and archive
+functions, so the archive stays the external store and the contribution holds
+no Durable documents.
+
+| Tool | Replay class | Reason |
+|---|---|---|
+| `clipboard_copy` | unsafe | A rerun overwrites newer clipboard content and appends a duplicate archive record. |
+| `clipboard_paste` | safe | A rerun only reads the clipboard. |
+| `clipboard_list` | safe | A rerun only reads the archive. |
+| `clipboard_get` | safe | A rerun only reads the archive. |
+| `clipboard_restore` | unsafe | A rerun overwrites newer clipboard content and appends a duplicate archive record. |
+
+An interrupted unsafe call returns an interrupted result instead of rerunning.
+Model-facing guidance renders as the prompt section `clipboard`, composed from
+the same snippets and guidelines the ordinary registration exposes. The native
+tools return the same result text and details object as the ordinary tools; the
+ordinary tool cards do not apply because a Durable session renders its own
+transcript. The `/clipboard` overlay is a TUI operator surface and has no
+Durable form.
+
+## Tool cards
+
+Each tool draws a compact TUI card. A collapsed card never shows copied, pasted, or
+archived content; it shows the label, size, id, and outcome instead. Expansion reveals the
+full arguments or result text with a display bound, and terminal controls escape to text
+in every collapsed value.
+
+- `clipboard_copy` names the label and reports the content size in UTF-16 code units
+  (or that the content is still streaming), then the copied size and any archive warning.
+- `clipboard_paste` names only the requested page bounds, then the page size, any
+  continuation offset, the escaped-control note, and the empty state.
+- `clipboard_list` names the query or date and its bounds, then the entry or match count,
+  whether more is available, and whether a continuation exists.
+- `clipboard_get` names the entry id and page bounds, then the entry size, any
+  continuation offset, and the escaped-control note.
+- `clipboard_restore` names the entry id, then the restored size and any archive warning.
+
+A result that hides content carries the expansion hint; a restore result, which repeats no
+hidden content, carries none.
 
 ## Files
 
@@ -248,24 +273,7 @@ node --test extensions/clipboard/*.test.mts
 npm test
 ```
 
-The focused suite covers synthetic subprocess copy and restore, cancellation,
-early stdin closure, stable-id recovery, bounded pages, concurrent large appends,
-torn-record isolation, nonregular-file refusal, private storage, RPC command
-routing, and browser behavior. Query tests cover phrase recovery beyond recent
-lists and body prefixes, duplicate resolution across pages and files, malformed
-and oversized records, byte/record/file/directory/output bounds, changed archives,
-Unicode, control escaping, invalid input, cancellation, and empty pages.
-
-The native test loads the actual extension entrypoint in an isolated ordinary Pi
-session. A controlled provider drives list, query continuation, get, restore,
-and error results through native tool execution. Synthetic archive files and
-replacement clipboard executables keep the test off the operator's archive and
-system clipboard. This establishes exercised execution, not live-model search
-judgment. Browser tests drive keyboard input, narrow layouts, disposal, and late
-results with controlled I/O; the query change does not alter that interface.
-
-The durable test builds the emitted contribution in a real Pi Durable Harness
-over MemoryStorage with the faux provider, drives a model-issued call for every
-tool, checks the declared replay classes, and verifies the rendered prompt
-section and the archive and clipboard effects. This establishes the native
-registration and exercise, not crash recovery at the storage layer.
+`native.test.mts` and `durable.test.mts` exercise tool execution through ordinary
+Pi and Durable hosts with controlled providers, synthetic archives, and replacement
+clipboard executables. Their evidence concerns exercised execution, not live-model
+search judgment or storage-layer crash recovery.
