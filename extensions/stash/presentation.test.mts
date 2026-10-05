@@ -47,6 +47,42 @@ function registeredTools(): Map<string, ToolDefinition> {
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
 
+describe("redaction notice cards", () => {
+	it("shows counts and classes in collapsed mutation results", () => {
+		const result = {
+			content: [
+				{
+					type: "text" as const,
+					text: "Receipt\nRedaction notice: 1 credential value(s) removed.\nsummary: Used [REDACTED]",
+				},
+			],
+			details: {
+				id: "stash-id",
+				path: "/workspace/stash.md",
+				state: "open",
+				changed: true,
+				redactions: { count: 1, classes: { "provider token": 1 }, contexts: ["summary: Used [REDACTED]"] },
+			},
+		};
+		for (const render of [renderWriteResult, renderEditResult, renderCompleteResult]) {
+			const shown = screen(render(result, { expanded: false, isPartial: false }, theme, { isError: false }));
+			assert.match(shown, /Redaction notice: 1 credential value\(s\) removed \(provider token: 1\)/);
+			assert.match(shown, /expand/i);
+			const expanded = screen(render(result, { expanded: true, isPartial: false }, theme, { isError: false }));
+			assert.match(expanded, /summary: Used \[REDACTED\]/);
+		}
+		const checkpoint = screen(
+			renderWriteResult(
+				{ ...result, details: { ...result.details, checkpoint: true } },
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: false },
+			),
+		);
+		assert.match(checkpoint, /Redaction notice:/);
+	});
+});
+
 describe("stash tool registration", () => {
 	it("attaches call and result renderers to every stash tool", () => {
 		const tools = registeredTools();

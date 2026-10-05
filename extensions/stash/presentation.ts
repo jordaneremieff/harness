@@ -78,6 +78,16 @@ function record(value: unknown): Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+function redactionSummary(details: Record<string, unknown>): string {
+	const report = record(details.redactions);
+	if (typeof report.count !== "number" || report.count <= 0) return "";
+	const classes = Object.entries(record(report.classes))
+		.filter(([, count]) => typeof count === "number" && count > 0)
+		.map(([kind, count]) => `${previewMark(kind, 40).text}: ${count}`)
+		.join(", ");
+	return `Redaction notice: ${report.count} credential value(s) removed${classes ? ` (${classes})` : ""}.`;
+}
+
 function textComponent(text: string, previous?: Component): Text {
 	const component = previous instanceof Text ? previous : new Text("", 0, 0);
 	component.setText(text);
@@ -215,11 +225,12 @@ export function renderWriteResult(
 	if (context.isError) return errorCard("stash_write", result, options, theme, context);
 	const details = record(result.details);
 	const path = typeof details.path === "string" ? previewMark(details.path, 160).text : "";
+	const notice = redactionSummary(details);
 	if (details.checkpoint === true) {
 		return resultCard(
 			{ color: "success", line: "checkpoint saved · not listed for pickup" },
-			path,
-			false,
+			joinedParts([notice, path]),
+			notice !== "",
 			textContent(result),
 			options,
 			theme,
@@ -241,8 +252,8 @@ export function renderWriteResult(
 	const state = typeof details.state === "string" ? previewMark(details.state, 40).text : "";
 	return resultCard(
 		{ color: "success", line: `${id} written${state ? ` · ${state}` : ""}` },
-		"",
-		false,
+		notice,
+		notice !== "",
 		textContent(result),
 		options,
 		theme,
@@ -451,7 +462,15 @@ export function renderEditResult(
 	const details = record(result.details);
 	const outcome = details.changed === true ? "updated" : details.changed === false ? "unchanged" : "edit result";
 	const state = typeof details.state === "string" ? `state: ${previewMark(details.state, 40).text} (unchanged)` : "";
-	return resultCard({ color: "success", line: outcome }, state, true, textContent(result), options, theme, context);
+	return resultCard(
+		{ color: "success", line: outcome },
+		joinedParts([redactionSummary(details), state]),
+		true,
+		textContent(result),
+		options,
+		theme,
+		context,
+	);
 }
 
 export interface CompleteDisplayArgs {
@@ -487,8 +506,8 @@ export function renderCompleteResult(
 	if (context.isError) return errorCard("stash_complete", result, options, theme, context);
 	return resultCard(
 		{ color: "success", line: "closed · artifact retained" },
-		"",
-		false,
+		redactionSummary(record(result.details)),
+		redactionSummary(record(result.details)) !== "",
 		textContent(result),
 		options,
 		theme,

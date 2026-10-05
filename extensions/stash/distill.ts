@@ -1,7 +1,7 @@
 /** Snapshot preparation and validated payloads for independent stash creation. */
 
-import { type SessionProjection, convertToLlm } from "@earendil-works/pi-coding-agent";
-import { redactSecrets, REDACTED } from "./redact.ts";
+import { convertToLlm, type SessionProjection } from "@earendil-works/pi-coding-agent";
+import { REDACTED, type RedactionReport, redactSecrets, redactSecretsWithReport } from "./redact.ts";
 
 const TRANSCRIPT_MAX_CHARS = 150_000;
 const SKIP_MARKER = "SKIP_STASH";
@@ -407,6 +407,7 @@ export function validatePayload(value: unknown): DistillPayload {
 export interface DistillSource {
 	transcript: string;
 	artifacts: string[];
+	redactions: RedactionReport;
 }
 
 /**
@@ -418,7 +419,9 @@ export interface DistillSource {
  * stays as defense in depth).
  */
 export function prepareDistillSource(projection: DistillProjection): DistillSource {
-	const transcript = boundTranscript(redactSecrets(projectionToTranscript(projection)));
+	const scanned = redactSecretsWithReport(projectionToTranscript(projection));
+	const transcript = boundTranscript(scanned.text);
 	const artifacts = extractArtifacts(toolResultTexts(projection).map(redactSecrets)).map(redactSecrets);
-	return { transcript, artifacts };
+	// Tool references duplicate transcript source, so their defensive scans do not add counts.
+	return { transcript, artifacts, redactions: scanned.report };
 }

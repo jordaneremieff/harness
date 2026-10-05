@@ -17,19 +17,12 @@ import type * as Durable from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { CAPACITY_NOTICE_HEADER, capacityConfig, capacityDirectiveLines } from "./capacity.ts";
 import {
-	type DistillPayload,
 	buildDistillPrompt,
 	DISTILL_SYSTEM_PROMPT,
+	type DistillPayload,
 	parseDistillPayload,
 	prepareDistillSource,
 } from "./distill.ts";
-import {
-	type DistillInput,
-	type IndependentCommandLaunch,
-	captureBranch,
-	creationRequest,
-	readDistillInput,
-} from "./launch.ts";
 import { resumeCommand } from "./format.ts";
 import {
 	STASH_COMPLETE_DESCRIPTION,
@@ -40,11 +33,25 @@ import {
 	STASH_SECTION_TEXT,
 	STASH_WRITE_DESCRIPTION,
 } from "./guidance.ts";
+import {
+	captureBranch,
+	captureHint,
+	creationRequest,
+	type DistillInput,
+	type IndependentCommandLaunch,
+	readDistillInput,
+} from "./launch.ts";
 import { emptyListText, ListOutputSchema, recentListResult } from "./list-result.ts";
 import { CompleteParams, EditParams, ListParams, ReadParams, RotateParams, WriteParams } from "./params.ts";
 import { buildPickupMessage } from "./pickup.ts";
 import { readStashResult } from "./read-result.ts";
-import { redactPayload } from "./redact.ts";
+import {
+	mergeRedactionReports,
+	type RedactionReport,
+	redactionNotice,
+	redactPayloadWithReport,
+	redactSecretsWithReport,
+} from "./redact.ts";
 import { searchStashes } from "./search.ts";
 import {
 	editStash,
@@ -356,6 +363,7 @@ type DistillReceipt = {
 	path?: string;
 	title?: string;
 	message?: string;
+	redactions: RedactionReport;
 };
 
 type DistillReceiptState = { invocationId?: string; taskId?: number; last?: DistillReceipt };
@@ -363,7 +371,7 @@ type CapturedCreation = { input?: Durable.JsonObject };
 
 type DistillTaskState =
 	| { phase: "generate"; attempt: number }
-	| { phase: "write"; payload: DistillPayload; createdAtMs: number };
+	| { phase: "write"; payload: DistillPayload; redactions: RedactionReport; createdAtMs: number };
 
 // ─── Commands ───────────────────────────────────────────────────────────────
 
@@ -430,6 +438,13 @@ async function runStashCommand(call: StashDurableCommandCall): Promise<string> {
 	}
 }
 
+function creationError(error: unknown, input: RedactionReport): Error {
+	const message = redactSecretsWithReport(error instanceof Error ? error.message : String(error));
+	return new Error(
+		[safe(message.text), redactionNotice(mergeRedactionReports(input, message.report))].filter(Boolean).join("\n"),
+	);
+}
+
 /** Capture on the caller; structured input admits work only in the independent root. */
 async function startDistillCommand(
 	binding: StashBinding,
@@ -438,37 +453,46 @@ async function startDistillCommand(
 ): Promise<string> {
 	if (call.data !== undefined) {
 		const input = readDistillInput(call.data);
-		const taskId = await call.conversation.commit(async (tx) => {
-			const receipt = await tx.doc(binding.receiptDoc, call.conversation.id);
-			if (receipt.invocationId !== undefined) {
-				if (receipt.invocationId !== call.invocationId)
-					throw new Error("This stash worker already owns another invocation.");
-				return receipt.taskId;
-			}
-			await call.host.durable.configure(tx, call.conversation.id, {
-				extensions: [],
-				tools: [],
-				instructions: DISTILL_SYSTEM_PROMPT,
+		const taskId = await call.conversation
+			.commit(async (tx) => {
+				const receipt = await tx.doc(binding.receiptDoc, call.conversation.id);
+				if (receipt.invocationId !== undefined) {
+					if (receipt.invocationId !== call.invocationId)
+						throw new Error("This stash worker already owns another invocation.");
+					return receipt.taskId;
+				}
+				await call.host.durable.configure(tx, call.conversation.id, {
+					extensions: [],
+					tools: [],
+					instructions: DISTILL_SYSTEM_PROMPT,
+				});
+				const id = await binding.createDistillTask(tx, call.conversation.id, input);
+				receipt.invocationId = call.invocationId;
+				receipt.taskId = id;
+				return id;
+			}, call.context)
+			.catch((error: unknown) => {
+				throw creationError(error, input.redactions);
 			});
-			const id = await binding.createDistillTask(tx, call.conversation.id, input);
-			receipt.invocationId = call.invocationId;
-			receipt.taskId = id;
-			return id;
-		}, call.context);
-		return `Stash creation admitted as task ${taskId}.`;
+		return `Stash creation admitted as task ${taskId}.${input.redactions.count ? `\n${redactionNotice(input.redactions)}` : ""}`;
 	}
 	const hint = parts.slice(1).join(" ").trim();
 	if (!hint) throw new Error("Usage: /stash new <hint>");
 	if (typeof call.host.launchIndependent !== "function")
 		throw new Error("Stash creation requires an independent Durable host provider.");
 	const input = await captureNativeCreation(binding, call, hint);
-	await call.host.launchIndependent(creationRequest(input, call.invocationId));
-	return "";
+	try {
+		await call.host.launchIndependent(creationRequest(input, call.invocationId));
+	} catch (error) {
+		throw creationError(error, input.redactions);
+	}
+	return redactionNotice(input.redactions);
 }
 
 function matchingCreation(data: JsonValue, hint: string): DistillInput {
 	const input = readDistillInput(data);
-	if (input.hint !== hint) throw new Error("This stash invocation already owns a different hint.");
+	if (input.hintDigest !== captureHint(hint).hintDigest)
+		throw new Error("This stash invocation already owns a different hint.");
 	return input;
 }
 
@@ -491,7 +515,16 @@ async function captureNativeCreation(
 			: `${call.host.storageId}:${call.conversation.id}`;
 	const storeDir = resolve(project, binding.storeDir);
 	const branch = await captureBranch(project, call.context.abortSignal);
-	const input = jsonDetails({ ...source, hint, project, sessionId, storeDir, ...(branch ? { branch } : {}) });
+	const capturedHint = captureHint(hint);
+	const input = jsonDetails({
+		...source,
+		...capturedHint,
+		redactions: mergeRedactionReports(source.redactions, capturedHint.redactions),
+		project,
+		sessionId,
+		storeDir,
+		...(branch ? { branch } : {}),
+	});
 	return call.conversation.commit(async (tx) => {
 		const doc = await tx.doc(binding.launchDoc, call.conversation.id, call.invocationId, null);
 		doc.input ??= input;
@@ -530,7 +563,7 @@ async function completeCommand(binding: StashBinding, context: Context, parts: s
 	const transitioned = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
 		transitionStash(dir, targetId, { action: "close", outcome }),
 	);
-	return `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? outcome.trim())}`;
+	return `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? outcome.trim())}${transitioned.redactions.count ? `\n${redactionNotice(transitioned.redactions)}` : ""}`;
 }
 
 async function lifecycleCommand(
@@ -705,9 +738,9 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 			const intent = await api.memo("stash.write", { createdAtMs: Date.now() }, context);
 			try {
 				const destination = params.checkpoint ? await checkpointDirectory(cwd, storeDir) : storeDir;
-				const { record, path } = await writeReplayableStash(
+				const { record, path, redactions } = await writeReplayableStash(
 					destination,
-					{ ...redactPayload(params), project: cwd, branch, sessionId },
+					{ ...params, project: cwd, branch, sessionId },
 					new Date(intent.createdAtMs),
 				);
 				if (params.checkpoint) {
@@ -715,10 +748,10 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 						content: [
 							{
 								type: "text" as const,
-								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nRead this file to recover the synthesis. It is not listed by stash_list and has no /stash pickup shortcut.`,
+								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nRead this file to recover the synthesis. It is not listed by stash_list and has no /stash pickup shortcut.${redactions.count ? `\n${redactionNotice(redactions)}` : ""}`,
 							},
 						],
-						details: { path, checkpoint: true },
+						details: { path, checkpoint: true, redactions },
 					};
 				}
 				const text = [
@@ -727,10 +760,11 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 					"",
 					"Resume in a new session:",
 					`  ${resumeCommand(record.id)}`,
+					...(redactions.count ? [redactionNotice(redactions)] : []),
 				].join("\n");
 				return {
 					content: [{ type: "text" as const, text }],
-					details: jsonDetails({ id: record.id, path, state: record.state }),
+					details: jsonDetails({ id: record.id, path, state: record.state, redactions }),
 				};
 			} catch (error) {
 				throw new Error(`stash_write failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -787,6 +821,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 							`${result.changed ? "Updated" : "Unchanged"} stash ${result.id}.`,
 							`State: ${result.meta.state} (unchanged).`,
 							`Digest: ${result.digest}`,
+							...(result.redactions.count ? [redactionNotice(result.redactions)] : []),
 						].join("\n"),
 					},
 				],
@@ -796,6 +831,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 					state: result.meta.state,
 					digest: result.digest,
 					changed: result.changed,
+					redactions: result.redactions,
 				}),
 			};
 		},
@@ -815,7 +851,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 				content: [
 					{
 						type: "text" as const,
-						text: `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? params.outcome.trim())}`,
+						text: `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? params.outcome.trim())}${transitioned.redactions.count ? `\n${redactionNotice(transitioned.redactions)}` : ""}`,
 					},
 				],
 				details: jsonDetails({
@@ -824,6 +860,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 					state: transitioned.meta.state,
 					closedAt: transitioned.meta.closedAt,
 					outcome: transitioned.meta.outcome,
+					redactions: transitioned.redactions,
 				}),
 			};
 		},
@@ -885,7 +922,11 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 					const parsed = parseDistillPayload(await distillAnswer(runtime, context, content, attempt));
 					switch (parsed.kind) {
 						case "skip":
-							await finishDistill(runtime, context, { status: "skipped", message: "No content to preserve." });
+							await finishDistill(runtime, context, {
+								status: "skipped",
+								message: "No content to preserve.",
+								redactions: task.input.redactions,
+							});
 							return;
 						case "invalid":
 							if (attempt === 0) {
@@ -894,51 +935,86 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 									context,
 								);
 							} else {
-								await finishDistill(runtime, context, { status: "invalid", message: parsed.error });
+								await finishDistill(runtime, context, {
+									status: "invalid",
+									message: parsed.error,
+									redactions: task.input.redactions,
+								});
 							}
 							return;
-						case "payload":
+						case "payload": {
+							const scanned = redactPayloadWithReport(parsed.payload);
 							await runtime.commit(
 								() => ({
 									status: "running",
-									checkpoint: { phase: "write", payload: redactPayload(parsed.payload), createdAtMs: runtime.now() },
+									checkpoint: {
+										phase: "write",
+										payload: scanned.payload,
+										redactions: scanned.report,
+										createdAtMs: runtime.now(),
+									},
 								}),
 								context,
 							);
+						}
 					}
 				} catch (error) {
 					if (runtime.signal.aborted) throw error;
 					await finishDistill(runtime, context, {
 						status: "failed",
 						message: error instanceof Error ? error.message : String(error),
+						redactions: task.input.redactions,
 					});
 				}
 			},
 			write: async (task, runtime, context) => {
 				const state = task.state.checkpoint;
+				const publication = redactPayloadWithReport({
+					...state.payload,
+					project: task.input.project,
+					branch: task.input.branch,
+					sessionId: task.input.sessionId,
+				});
+				const redactions = mergeRedactionReports(task.input.redactions, state.redactions, publication.report);
 				try {
-					const { record, path } = await writeReplayableStash(
+					const notice = redactionNotice(redactions);
+					const {
+						record,
+						path,
+						redactions: published,
+					} = await writeReplayableStash(
 						task.input.storeDir,
 						{
-							...state.payload,
-							project: task.input.project,
-							branch: task.input.branch,
-							sessionId: task.input.sessionId,
+							...publication.payload,
+							summary: `${publication.payload.summary}${notice ? `\n\n## Redaction notice\n\n${notice}` : ""}`,
 						},
 						new Date(state.createdAtMs),
 					);
-					await finishDistill(runtime, context, { status: "completed", id: record.id, path, title: record.title });
+					await finishDistill(runtime, context, {
+						status: "completed",
+						id: record.id,
+						path,
+						title: record.title,
+						redactions: mergeRedactionReports(redactions, published),
+					});
 				} catch (error) {
 					if (runtime.signal.aborted) throw error;
 					await finishDistill(runtime, context, {
 						status: "failed",
 						message: `Stash publication failed: ${error instanceof Error ? error.message : String(error)}`,
+						redactions,
 					});
 				}
 			},
 		},
-		abort: async (_task, runtime, context) => {
-			await finishDistill(runtime, context, { status: "aborted" });
+		abort: async (task, runtime, context) => {
+			await finishDistill(runtime, context, {
+				status: "aborted",
+				redactions: mergeRedactionReports(
+					task.input.redactions,
+					...(task.state.checkpoint.phase === "write" ? [task.state.checkpoint.redactions] : []),
+				),
+			});
 		},
 	});
 
@@ -947,6 +1023,10 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		context: Context,
 		receipt: DistillReceipt,
 	): Promise<void> {
+		const message = redactSecretsWithReport(receipt.message ?? "");
+		const redactions = mergeRedactionReports(receipt.redactions, message.report);
+		const notice = [safe(message.text), redactionNotice(redactions)].filter(Boolean).join("\n");
+		receipt = { ...receipt, redactions, ...(notice ? { message: notice } : {}) };
 		await runtime.commit(async (tx) => {
 			(await tx.doc(receiptDoc, runtime.conversationId)).last = receipt;
 			await tx.appendEntry(runtime.conversationId, { kind: "stash.creation", data: jsonDetails(receipt) });

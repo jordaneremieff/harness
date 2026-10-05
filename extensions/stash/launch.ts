@@ -1,9 +1,11 @@
 /** Structural copies of the package-level independent-command contract. */
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DistillSource } from "./distill.ts";
+import { mergeRedactionReports, readRedactionReport, redactSecretsWithReport } from "./redact.ts";
 
 export interface IndependentCommandInput {
 	invocationId: string;
@@ -38,11 +40,22 @@ export function captureBranch(cwd: string, signal?: AbortSignal): Promise<string
 /** Source and publication destination belong to the invocation, never the model. */
 export type DistillInput = DistillSource & {
 	hint: string;
+	hintDigest: string;
 	project: string;
 	branch?: string;
 	sessionId: string;
 	storeDir: string;
 };
+
+/** Bind retries to the original hint without retaining removed credential bytes. */
+export function captureHint(hint: string): Pick<DistillInput, "hint" | "hintDigest" | "redactions"> {
+	const scanned = redactSecretsWithReport(hint);
+	return {
+		hint: scanned.text,
+		hintDigest: createHash("sha256").update(hint).digest("hex"),
+		redactions: scanned.report,
+	};
+}
 
 /** Discover before launch so absence or duplicate providers cause no launch effect. */
 export function independentLauncher(events: ExtensionAPI["events"]): IndependentCommandLaunch {
@@ -66,6 +79,12 @@ export function creationRequest(input: DistillInput, invocationId: string): Inde
 	};
 }
 
+function readHintDigest(value: unknown): string {
+	if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value))
+		throw new Error("Invalid stash creation hint digest.");
+	return value;
+}
+
 /** Validate structured command input before any worker configuration or admission. */
 export function readDistillInput(data: JsonValue | undefined): DistillInput {
 	if (data === null || typeof data !== "object" || Array.isArray(data))
@@ -79,10 +98,17 @@ export function readDistillInput(data: JsonValue | undefined): DistillInput {
 	if (data.branch !== undefined && typeof data.branch !== "string") throw new Error("Invalid stash creation branch.");
 	if (!isAbsolute(data.project as string) || !isAbsolute(data.storeDir as string))
 		throw new Error("Stash creation requires absolute project and store paths.");
+	const hintDigest = readHintDigest(data.hintDigest);
+	const prior = readRedactionReport(data.redactions);
+	const hint = redactSecretsWithReport(data.hint as string);
+	const transcript = redactSecretsWithReport(data.transcript);
+	const artifacts = (data.artifacts as string[]).map(redactSecretsWithReport);
 	return {
-		hint: data.hint as string,
-		transcript: data.transcript,
-		artifacts: [...data.artifacts] as string[],
+		hint: hint.text,
+		hintDigest,
+		transcript: transcript.text,
+		artifacts: artifacts.map((item) => item.text),
+		redactions: mergeRedactionReports(prior, hint.report, transcript.report, ...artifacts.map((item) => item.report)),
 		project: data.project as string,
 		sessionId: data.sessionId as string,
 		storeDir: data.storeDir as string,

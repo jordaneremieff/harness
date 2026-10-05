@@ -5,16 +5,40 @@ import {
 	boundTranscript,
 	buildDistillPrompt,
 	DISTILL_SYSTEM_PROMPT,
-	projectionToTranscript,
+	type DistillPayload,
 	escapeRawControlChars,
 	extractArtifacts,
 	isHintedDistill,
 	parseDistillPayload,
 	prepareDistillSource,
+	projectionToTranscript,
 	validatePayload,
-	type DistillPayload,
 } from "./distill.ts";
 import { testAssistantMessage, transcriptProjection } from "./test-fixtures.mts";
+
+it("retains input redaction reports without double-counting extracted references", () => {
+	const token = "sk-abcdefgh" + "ijklmnop1234";
+	const source = prepareDistillSource({
+		entries: [
+			{
+				messages: [
+					{
+						role: "toolResult",
+						toolCallId: "call",
+						toolName: "read",
+						content: [{ type: "text", text: `Saved /workspace/${token}.md` }],
+						isError: false,
+						timestamp: 0,
+					},
+				],
+			},
+		],
+	});
+	assert.equal(source.redactions.count, 1);
+	assert.deepEqual(source.redactions.classes, { "provider token": 1 });
+	assert.ok(!JSON.stringify(source).includes(token));
+	assert.ok(source.redactions.contexts[0].includes("Saved /workspace/[REDACTED].md"));
+});
 
 function sessionProjection() {
 	return transcriptProjection([

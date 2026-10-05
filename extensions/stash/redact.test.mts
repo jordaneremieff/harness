@@ -1,9 +1,104 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
-import { redactPayload, redactSecrets, REDACTED } from "./redact.ts";
+import {
+	REDACTED,
+	redactionNotice,
+	redactPayload,
+	redactPayloadWithReport,
+	redactSecrets,
+	redactSecretsWithReport,
+} from "./redact.ts";
 
 describe("redactSecrets", () => {
+	it("retains prior redactions in preserved assignment suffixes and URL prefixes", () => {
+		const token = "sk-abcdefgh" + "ijklmnop";
+		const inline = redactSecretsWithReport(`Use password: abc12345 and key ${token}`);
+		assert.equal(inline.text, `Use password: ${REDACTED} and key ${REDACTED}`);
+		assert.equal(inline.report.count, 2);
+		assert.deepEqual(inline.report.classes, { "labeled credential": 1, "provider token": 1 });
+		const url = redactSecretsWithReport(`https://${token}:p4ssw0rd@example.test`);
+		assert.equal(url.text, `https://${REDACTED}:${REDACTED}@example.test`);
+		assert.equal(url.report.count, 2);
+		assert.deepEqual(url.report.classes, { "provider token": 1, "URL password": 1 });
+		assert.ok(!JSON.stringify([inline, url]).includes(token));
+	});
+	it("preserves inline task prose after sensitive labels", () => {
+		for (const prose of [
+			"On authorization: send @project-owner a task contract to build the step-0 trial at /workspace/project (TypeScript, macOS only...)",
+			"The secret: keep the source intact.",
+			"The password: use the documented sign-in process.",
+			'The private key: "keep the source intact" is prose.',
+			"password:\nKeep the source intact.",
+		])
+			assert.equal(redactSecrets(prose), prose);
+	});
+
+	it("protects explicit passphrases and inline tokens without consuming prose", () => {
+		assert.equal(
+			redactSecrets("  export DB_PASSWORD=correct horse battery staple"),
+			`  export DB_PASSWORD=${REDACTED}`,
+		);
+		assert.equal(redactSecrets('  {"secret": "correct horse battery staple"}'), `  {"secret": "${REDACTED}"}`);
+		assert.equal(
+			redactSecrets("Use api_key: 0123456789abcdef0123456789abcdef for the request."),
+			`Use api_key: ${REDACTED} for the request.`,
+		);
+		assert.equal(
+			redactSecrets("The secret: IdentifierName remains visible."),
+			"The secret: IdentifierName remains visible.",
+		);
+	});
+
+	it("preserves next-line prose but protects token-only wrapped continuations", () => {
+		const prefix = "sk-abcdefgh" + "ijklmnop1234";
+		const jwt = "eyJabcdefghijk.abcdefghijk.abcdefghijk";
+		for (const token of [prefix, jwt]) {
+			assert.equal(
+				redactSecrets(`${token}\nNext action: preserve context.`),
+				`${REDACTED}\nNext action: preserve context.`,
+			);
+		}
+		assert.equal(redactSecrets("sk-abc\ndefghijklmnop"), REDACTED);
+		assert.equal(redactSecrets("Bearer\nKeep the source intact."), "Bearer\nKeep the source intact.");
+	});
+
+	it("counts removed spans once and excludes preexisting markers", () => {
+		assert.equal(redactSecretsWithReport(REDACTED).report.count, 0);
+		const existing = redactSecretsWithReport(`password = 'hunter2hunter2 ${REDACTED}'`);
+		assert.equal(existing.text, `password = '${REDACTED}'`);
+		assert.equal(existing.report.count, 1);
+		const nested = redactSecretsWithReport('secret: "two words sk-abcdefghijklmnop1234"');
+		assert.equal(nested.text, `secret: "${REDACTED}"`);
+		assert.equal(nested.report.count, 1);
+		assert.deepEqual(nested.report.classes, { "labeled credential": 1 });
+		assert.ok(!redactionNotice(nested.report).includes("two words"));
+		assert.equal(redactSecretsWithReport(nested.text).report.count, 0);
+		const bare = redactSecretsWithReport("secret: two words sk-abcdefghijklmnop1234");
+		assert.equal(bare.text, `secret: ${REDACTED}`);
+		assert.equal(bare.report.count, 1);
+		assert.ok(!redactionNotice(bare.report).includes("two words"));
+		assert.equal(
+			redactSecrets("password: correct horse battery staple\r\nNext action: preserve context."),
+			`password: ${REDACTED}\r\nNext action: preserve context.`,
+		);
+	});
+
+	it("sanitizes all recognized secrets before any notice excerpt", () => {
+		const token = "sk-abcdefgh" + "ijklmnop1234";
+		const password = "fakepassword";
+		const input = `${token}\u001b near https://u:${password}@host/path ${REDACTED}`;
+		const result = redactSecretsWithReport(input);
+		assert.equal(result.report.count, 2);
+		assert.deepEqual(result.report.classes, { "provider token": 1, "URL password": 1 });
+		const notice = redactionNotice(result.report);
+		assert.ok(!notice.includes(token));
+		assert.ok(!notice.includes(password));
+		assert.ok(!notice.includes("\u001b"));
+		assert.ok(notice.includes("\\x1b near https://u:"));
+		assert.equal(redactionNotice(redactSecretsWithReport("plain prose").report), "");
+	});
+
 	it("redacts embedded URL userinfo after scheme-character prefixes", () => {
 		for (const prefix of ["", "123", "+.-", "1+2.-", "abc", "ABC123"]) {
 			assert.equal(
@@ -68,7 +163,7 @@ assert.equal(redactSecrets(prefix + "https://user:fake-value@host"), prefix + "h
 		assert.equal(redactSecrets("authorization: basic dXNlcjpwYXNz"), `authorization: ${REDACTED}`);
 		assert.equal(redactSecrets("AWS_ACCESS_KEY_ID=ABCDEFGHIJKLMNOPQRSTUVWX123456"), `AWS_ACCESS_KEY_ID=${REDACTED}`);
 		assert.equal(redactSecrets("password: correct horse battery staple"), `password: ${REDACTED}`);
-		assert.equal(redactSecrets("password: hunter2 # keep the comment"), `password: ${REDACTED}# keep the comment`);
+		assert.equal(redactSecrets("password: hunter2 # keep the comment"), `password: ${REDACTED} # keep the comment`);
 	});
 
 	it("redacts labeled credentials with compound and spaced keys", () => {
@@ -205,6 +300,23 @@ assert.equal(redactSecrets(prefix + "https://user:fake-value@host"), prefix + "h
 });
 
 describe("redactPayload", () => {
+	it("reports payload and metadata fields without exposing removed values", () => {
+		const token = "sk-abcdefgh" + "ijklmnop1234";
+		const result = redactPayloadWithReport({
+			title: "Title",
+			summary: "Summary",
+			project: `/workspace/${token}`,
+			branch: token,
+			sessionId: token,
+			tags: [token],
+			files: [token],
+		});
+		assert.equal(result.report.count, 5);
+		assert.equal(result.payload.project, `/workspace/${REDACTED}`);
+		assert.ok(result.report.contexts.some((context) => context.startsWith("project:")));
+		assert.ok(!JSON.stringify(result).includes(token));
+	});
+
 	it("redacts every string field", () => {
 		const payload = {
 			title: "Auth setup sk-abcdef" + "ghijklmnop",

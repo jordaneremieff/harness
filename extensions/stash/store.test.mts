@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import fs, { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fs, { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +33,28 @@ describe("resolveStoreDir", () => {
 });
 
 describe("writeStash + listStashes", () => {
+	it("redacts payload and metadata at publication and returns safe reports", async () => {
+		const token = "sk-abcdefgh" + "ijklmnop1234";
+		const written = await writeStash(join(dir, "reported-write"), {
+			title: "Safe title",
+			summary: `Used ${token}`,
+			project: `/workspace/${token}`,
+			branch: token,
+			sessionId: token,
+		});
+		assert.equal(written.redactions.count, 4);
+		assert.deepEqual(written.redactions.classes, { "provider token": 4 });
+		assert.ok(!JSON.stringify(written).includes(token));
+		assert.ok(!(await readFile(written.path, "utf8")).includes(token));
+		const closed = await transitionStash(join(dir, "reported-write"), written.record.id, {
+			action: "close",
+			outcome: `Finished with ${token}`,
+		});
+		assert.equal(closed.redactions.count, 1);
+		assert.ok(closed.redactions.contexts[0].includes("Finished with [REDACTED]"));
+		assert.ok(!JSON.stringify(closed).includes(token));
+	});
+
 	it("writes a discoverable artifact named by timestamp and slug with private permissions", async () => {
 		const { record, path } = await writeStash(dir, { title: "First Stash", summary: "s1" }, at("2026-07-24T10:00:00Z"));
 		assert.equal(record.id, "20260724T100000Z-first-stash");

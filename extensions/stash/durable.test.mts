@@ -5,18 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
-import { type AssistantMessage, type Message, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { type AssistantMessage, getCurrentSystemPrompt, getCurrentTools, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { type StashDurableContribution, type StashDurableHost, stashDurableContribution } from "./durable.ts";
 import { DISTILL_SYSTEM_PROMPT } from "./distill.ts";
-import { type DistillInput, type IndependentCommandInput, readDistillInput } from "./launch.ts";
+import { type StashDurableContribution, type StashDurableHost, stashDurableContribution } from "./durable.ts";
+import { captureHint, type DistillInput, type IndependentCommandInput, readDistillInput } from "./launch.ts";
+import { mergeRedactionReports, redactSecretsWithReport } from "./redact.ts";
 import { listStashes, readStash, writeStash } from "./store.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -261,6 +262,47 @@ test("drives every stash tool from model-issued calls", { timeout: 30000 }, asyn
 	);
 });
 
+test("returns redaction notices and details through native mutation calls", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t);
+	capacityOff(t);
+	const token = "sk-abcdefgh" + "ijklmnop1234";
+	process.env.PI_STASH_CHECKPOINT_DIR = join(h.workdir, "checkpoints");
+	t.after(() => {
+		delete process.env.PI_STASH_CHECKPOINT_DIR;
+	});
+	const invoke = async (name: string, params: Durable.JsonObject) => {
+		await answerWith(
+			h.root,
+			h.faux,
+			[fauxAssistantMessage(fauxToolCall(name, params), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+			"Perform the mutation.",
+		);
+		const view = await h.root.context(context);
+		const result = view.messages.findLast((message) => message.role === "toolResult" && message.toolName === name);
+		assert.ok(result && result.role === "toolResult" && !result.isError);
+		assert.match(messageText(result), /Redaction notice: 1/);
+		assert.ok(!JSON.stringify(result).includes(token));
+		const details = (result as unknown as { details: { redactions: { count: number } } }).details;
+		assert.equal(details.redactions.count, 1);
+	};
+	await invoke("stash_write", { title: "Native safety", summary: `Receipt context. ${token}` });
+	const [entry] = await listStashes(h.storeDir, {});
+	assert.ok(entry);
+	const read = await readStash(h.storeDir, entry.meta.id);
+	assert.ok(read.ok);
+	await invoke("stash_edit", {
+		id: entry.meta.id,
+		expectedDigest: read.digest,
+		edits: [{ oldText: "Receipt context.", newText: `Receipt context. ${token}` }],
+	});
+	await invoke("stash_complete", { id: entry.meta.id, outcome: `Verified ${token}.` });
+	await invoke("stash_write", {
+		title: "Native checkpoint safety",
+		summary: `Receipt context. ${token}`,
+		checkpoint: true,
+	});
+});
+
 test("declares an explicit replay class for every tool", async (t) => {
 	const h = await startHarness(t);
 	const classes = new Map((h.extension.tools ?? []).map((tool) => [tool.name, tool.replay]));
@@ -404,7 +446,7 @@ test("estimates context from reported assistant usage and labels the source", { 
 
 function creationInput(h: TestHarness): DistillInput {
 	return {
-		hint: "focus on tests",
+		...captureHint("focus on tests"),
 		transcript: "[USER]\nCAPTURED_SOURCE",
 		artifacts: ["/source/reference.md"],
 		project: "/source/project",
@@ -512,6 +554,104 @@ test("native command retries retain the first snapshot after caller progress and
 	assert.equal(h.faux.state.callCount, 0);
 });
 
+test("native retries bind the original credential-bearing hint without retaining secret bytes", async (t) => {
+	const h = await startHarness(t);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	const token = "sk-abcdefgh" + "ijklmnop1234";
+	await h.root.commit(
+		(tx) =>
+			tx.appendEntry(h.root.id, {
+				kind: "pi.user",
+				model: [{ role: "user", content: `Source ${token}`, timestamp: 0 }],
+			}),
+		context,
+	);
+	const call = {
+		args: `new Focus ${token}`,
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "secret-retry",
+		harness: h.harness,
+	};
+	const launch = h.host.launchIndependent;
+	let attempts = 0;
+	t.mock.method(h.host, "launchIndependent", async (input: IndependentCommandInput) => {
+		const receipt = await launch(input);
+		if (++attempts === 1) throw new Error(`admission response lost ${token}`);
+		return receipt;
+	});
+	await assert.rejects(command.run(call), (error: unknown) => {
+		assert.ok(error instanceof Error);
+		assert.match(error.message, /response lost/);
+		assert.match(error.message, /Redaction notice: 3.*provider token/);
+		assert.ok(!error.message.includes(token));
+		return true;
+	});
+	await h.root.commit(
+		(tx) =>
+			tx.appendEntry(h.root.id, {
+				kind: "pi.user",
+				model: [{ role: "user", content: "Later caller progress.", timestamp: 1 }],
+			}),
+		context,
+	);
+	assert.match(await command.run(call), /Redaction notice: 2.*provider token/);
+	assert.deepEqual(h.launches[1], h.launches[0]);
+	const input = readDistillInput(h.launches[0].command.data);
+	assert.equal(input.redactions.count, 2);
+	assert.equal(input.hint, "Focus [REDACTED]");
+	assert.ok(!JSON.stringify(h.launches).includes(token));
+	await assert.rejects(command.run({ ...call, args: `new Focus ${token}other` }), /different hint/);
+	assert.equal(h.launches.length, 2);
+	assert.equal(h.faux.state.callCount, 0);
+});
+
+for (const output of ["clean", "credential", "skip", "failed"] as const) {
+	test(`native ${output} receipts retain source reports independently of generated markers`, {
+		timeout: 30000,
+	}, async (t) => {
+		const h = await startHarness(t);
+		const token = "sk-abcdefgh" + "ijklmnop1234";
+		const source = redactSecretsWithReport(`Captured ${token}`);
+		const hint = captureHint(`Focus ${token}`);
+		const input = {
+			...creationInput(h),
+			...hint,
+			transcript: source.text,
+			redactions: mergeRedactionReports(source.report, hint.redactions),
+			branch: `branch/${token}`,
+		};
+		h.faux.setResponses([
+			output === "skip"
+				? fauxAssistantMessage("SKIP_STASH")
+				: output === "failed"
+					? fauxAssistantMessage("", { stopReason: "error", errorMessage: "Invalid request" })
+					: fauxAssistantMessage(
+							JSON.stringify({
+								title: "Reported artifact",
+								summary: output === "clean" ? "Generated clean prose without markers." : `Generated ${token}`,
+							}),
+						),
+		]);
+		const taskId = await admitCreation(h, `reported-${output}`, input);
+		await h.harness.waitForTask(taskId, context);
+		const receipt = await creationReceipt(h.root);
+		const count = output === "clean" ? 3 : output === "credential" ? 4 : 2;
+		assert.equal((receipt.redactions as Durable.JsonObject).count, count);
+		assert.match(String(receipt.message), new RegExp(`Redaction notice: ${count}`));
+		assert.ok(!JSON.stringify(receipt).includes(token));
+		const entries = await listStashes(h.storeDir, {});
+		if (output === "clean" || output === "credential") {
+			const read = await readStash(h.storeDir, entries[0].meta.id);
+			assert.ok(read.ok);
+			assert.match(read.content, new RegExp(`Redaction notice: ${count}`));
+			assert.ok(!read.content.includes(token));
+		} else assert.equal(entries.length, 0);
+	});
+}
+
 test("native creation uses tool-free generation and captured publication metadata exactly once", {
 	timeout: 30000,
 }, async (t) => {
@@ -595,11 +735,53 @@ test("native creation records publication failure without another generation", {
 	const h = await startHarness(t);
 	const obstacle = join(h.workdir, "not-a-directory");
 	await writeFile(obstacle, "occupied");
+	const token = "sk-abcdefgh" + "ijklmnop1234";
 	h.faux.setResponses([fauxAssistantMessage('{"title":"Failure","summary":"Valid result."}')]);
-	await h.harness.waitForTask(await admitCreation(h, "failure", { ...creationInput(h), storeDir: obstacle }), context);
-	assert.equal((await creationReceipt(h.root)).status, "failed");
+	await h.harness.waitForTask(
+		await admitCreation(h, "failure", { ...creationInput(h), storeDir: obstacle, branch: `branch/${token}` }),
+		context,
+	);
+	const receipt = await creationReceipt(h.root);
+	assert.equal(receipt.status, "failed");
+	assert.equal((receipt.redactions as Durable.JsonObject).count, 1);
+	assert.match(String(receipt.message), /Redaction notice: 1.*provider token/);
+	assert.ok(!JSON.stringify(receipt).includes(token));
 	assert.equal(h.faux.state.callCount, 1);
 	assert.equal((await listStashes(h.storeDir, {})).length, 0);
+});
+
+test("native admission failures retain sanitized input and error notices", async (t) => {
+	const h = await startHarness(t);
+	const token = "sk-abcdefgh" + "ijklmnop1234";
+	const hint = captureHint(`Focus ${token}`);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	const commit = t.mock.method(h.root, "commit", async () => {
+		throw new Error(`Admission failed ${token}`);
+	});
+	try {
+		await assert.rejects(
+			command.run({
+				args: "new",
+				data: { ...creationInput(h), ...hint },
+				conversation: h.root,
+				context,
+				host: h.host,
+				invocationId: "admission-failure",
+				harness: h.harness,
+			}),
+			(error: unknown) => {
+				assert.ok(error instanceof Error);
+				assert.match(error.message, /Admission failed/);
+				assert.match(error.message, /Redaction notice: 2.*provider token/);
+				assert.ok(!error.message.includes(token));
+				return true;
+			},
+		);
+	} finally {
+		commit.mock.restore();
+	}
+	assert.equal(h.faux.state.callCount, 0);
 });
 
 test("native creation validates structured input before configuration or admission", async (t) => {
@@ -615,6 +797,9 @@ test("native creation validates structured input before configuration or admissi
 		{ ...creationInput(h), storeDir: "relative" },
 		{ ...creationInput(h), transcript: 3 },
 		{ ...creationInput(h), branch: 3 },
+		{ ...creationInput(h), redactions: { count: 2, classes: {}, contexts: [] } },
+		{ ...creationInput(h), redactions: { count: 1, classes: { hostile: 1 }, contexts: [] } },
+		{ ...creationInput(h), hintDigest: "invalid" },
 	]) {
 		await assert.rejects(admitCreation(h, "invalid-input", data));
 	}

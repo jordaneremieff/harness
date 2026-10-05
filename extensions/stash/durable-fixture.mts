@@ -15,7 +15,8 @@ import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, defineExtension, Harness, hook, ToolTask } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { stashDurableContribution, type StashDurableHost } from "./durable.ts";
+import { type StashDurableHost, stashDurableContribution } from "./durable.ts";
+import { captureHint } from "./launch.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -88,7 +89,7 @@ async function main(): Promise<number> {
 		await command.run({
 			args: "new",
 			data: {
-				hint: "replay",
+				...captureHint("replay"),
 				transcript: "Captured source.",
 				artifacts: [],
 				project: workdir,

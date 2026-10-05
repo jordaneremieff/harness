@@ -6,8 +6,8 @@ import { after, before, describe, it, mock } from "node:test";
 import { type ExtensionContext, SessionManager, type SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
 import { CAPACITY_STATE, capacityReset, readCapacityState } from "./capacity.ts";
 import { buildDistillPrompt } from "./distill.ts";
-import { type IndependentCommandInput, type IndependentCommandLaunch, readDistillInput } from "./launch.ts";
 import registerStash from "./index.ts";
+import { type IndependentCommandInput, type IndependentCommandLaunch, readDistillInput } from "./launch.ts";
 import type { PanelTheme, StashPanelResult } from "./panel.ts";
 import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
 import {
@@ -41,6 +41,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 	const commands = new RequiredMap<string, ReturnType<typeof captureCommand>>();
 	const shortcuts = new RequiredMap<string, ReturnType<typeof captureShortcut>>();
 	const sent: Array<{ content: string; options?: unknown }> = [];
+	const safety: Array<{ message: unknown; options?: unknown }> = [];
 	const events = new RequiredMap<
 		string,
 		(event: { type?: string; reason?: string }, ctx: TestContext) => Promise<void>
@@ -60,6 +61,9 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 			assert.ok(typeof content === "string");
 			sent.push({ content, options });
 		},
+		sendMessage: (message, options) => {
+			safety.push({ message, options });
+		},
 		appendEntry: () => {},
 		events: {
 			emit: (event, value) => {
@@ -78,8 +82,68 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		},
 	};
 	registerStash(pi, overrides);
-	return { tools, commands, shortcuts, sent, events, pi, launches };
+	return { tools, commands, shortcuts, sent, safety, events, pi, launches };
 }
+
+it("exposes safe reports for write, checkpoint, edit, and completion tools", async () => {
+	const { tools } = registry();
+	const token = "sk-abcdefgh" + "ijklmnop1234";
+	const ctx: TestContext = {
+		cwd: dir,
+		sessionManager: {
+			getSessionId: () => "report-owner",
+			buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
+		},
+	};
+	for (const checkpoint of [false, true]) {
+		const result = await tools
+			.get("stash_write")
+			.execute(
+				"write",
+				{ title: "Safe report", summary: `Receipt context. ${token}`, checkpoint },
+				undefined,
+				undefined,
+				ctx,
+			);
+		assert.match(result.content[0].text, /Redaction notice: 1.*provider token/);
+		assert.ok(!JSON.stringify(result).includes(token));
+		const report = result.details.redactions;
+		assert.ok(report && typeof report === "object" && "count" in report);
+		assert.equal(report.count, 1);
+		if (checkpoint) continue;
+		const read = await tools.get("stash_read").execute("read", { id: result.details.id });
+		const edited = await tools.get("stash_edit").execute("edit", {
+			id: result.details.id,
+			expectedDigest: read.details.digest,
+			edits: [{ oldText: "Receipt context.", newText: "Receipt context.\npassword: correct horse battery staple" }],
+		});
+		assert.match(edited.content[0].text, /Redaction notice: 1.*labeled credential/);
+		assert.ok(!JSON.stringify(edited).includes("correct horse battery staple"));
+		const closed = await tools
+			.get("stash_complete")
+			.execute("close", { id: result.details.id, outcome: `Verified ${token}.` });
+		assert.match(closed.content[0].text, /Redaction notice: 1.*provider token/);
+		assert.ok(!JSON.stringify(closed).includes(token));
+	}
+});
+
+it("retains command safety notices without a model acknowledgment in print mode", async () => {
+	const { record } = await writeStash(dir, { title: "Print safety", summary: "Completed." });
+	const { commands, safety, sent } = registry();
+	const token = "sk-abcdefgh" + "ijklmnop1234";
+	const stderr = mock.method(console, "error", () => {});
+	try {
+		await commands.get("stash").handler(`complete ${record.id} Verified ${token}`, { mode: "print" });
+		assert.match(String(stderr.mock.calls[0]?.arguments[0]), /Redaction notice: 1.*provider token/);
+	} finally {
+		stderr.mock.restore();
+	}
+	assert.equal(safety.length, 1);
+	assert.match(JSON.stringify(safety[0].message), /Redaction notice: 1.*provider token/);
+	assert.ok(!JSON.stringify(safety).includes(token));
+	assert.deepEqual(safety[0].options, { triggerTurn: false });
+	assert.deepEqual(sent, []);
+});
 
 const theme: PanelTheme = {
 	fg: (_color: string, text: string) => text,
@@ -954,6 +1018,8 @@ describe("stash entrypoint", () => {
 			{ title: "Direct browser completion", summary: "close from the browser" },
 			new Date("2026-07-26T10:00:00Z"),
 		);
+		const notifications: string[] = [];
+		const token = "sk-abcdefgh" + "ijklmnop1234";
 		await transitionStash(dir, record.id, { action: "activate" });
 		const { commands } = registry();
 		let panels = 0;
@@ -962,8 +1028,10 @@ describe("stash entrypoint", () => {
 			hasUI: true,
 			isIdle: () => true,
 			ui: {
-				notify: () => {},
-				input: async () => "The direct browser action closed this effort.",
+				notify: (message) => {
+					notifications.push(message);
+				},
+				input: async () => `The direct browser action closed this effort. ${token}`,
 				custom: async (factory) =>
 					new Promise((resolve) => {
 						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
@@ -983,6 +1051,8 @@ describe("stash entrypoint", () => {
 			},
 		});
 		assert.ok((await listStashes(dir, { state: "closed" })).some((entry) => entry.meta.id === record.id));
+		assert.match(notifications.join("\n"), /Redaction notice: 1.*provider token/);
+		assert.ok(!notifications.join("\n").includes(token));
 	});
 
 	it("offers lifecycle actions through a separate browser dialog without stealing filter text", async () => {
@@ -1040,6 +1110,28 @@ function creationCtx(ui: TestUi = {}, extra: TestContext = {}): TestContext {
 }
 
 describe("stash creation", () => {
+	it("reports captured source and hint removals without a caller model turn in print mode", async () => {
+		const manager = SessionManager.inMemory(dir);
+		const token = "sk-abcdefgh" + "ijklmnop1234";
+		manager.appendMessage({ role: "user", content: `Source ${token}`, timestamp: 0 });
+		const { commands, launches, safety, sent } = registry();
+		const stderr = mock.method(console, "error", () => {});
+		try {
+			await commands
+				.get("stash")
+				.handler(`new Focus ${token}`, creationCtx({}, { mode: "print", hasUI: false, sessionManager: manager }));
+			assert.match(String(stderr.mock.calls[0]?.arguments[0]), /Redaction notice: 2.*provider token/);
+		} finally {
+			stderr.mock.restore();
+		}
+		const input = readDistillInput(launches[0].command.data);
+		assert.equal(input.redactions.count, 2);
+		assert.equal(input.hint, "Focus [REDACTED]");
+		assert.equal(safety.length, 1);
+		assert.ok(!JSON.stringify([launches, safety]).includes(token));
+		assert.deepEqual(safety[0].options, { triggerTurn: false });
+		assert.deepEqual(sent, []);
+	});
 	it("captures branch-relative projected text and references without changing raw history", async () => {
 		const manager = SessionManager.inMemory(dir);
 		manager.appendMessage({ role: "user", content: "KEEP_USER", timestamp: 0 });

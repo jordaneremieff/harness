@@ -519,8 +519,12 @@ a skip response, or a generation failure writes no artifact. Only a complete
 text answer reaches publication.
 
 The command returns after durable admission, not after generation or publication.
-Success is silent in TUI, RPC, print, JSON, and native Durable callers: no model
-acknowledgment, completion message, check-in, status key, or timer. Each invocation
+Ordinary success is silent in TUI, RPC, print, JSON, and native Durable callers:
+no model acknowledgment, completion message, check-in, status key, or timer.
+A nonzero input redaction report produces a one-time safety notice, not status.
+Ordinary callers retain a displayed custom message without a model turn;
+non-UI callers also receive the notice on stderr because text print ignores
+custom messages. Native callers receive the notice in the command result. Each invocation
 owns separate work. The caller neither tracks it nor cancels it on shutdown.
 Admission errors still use the command's normal error channel. The independent
 agent remains discoverable through the host's existing agent controls; use those
@@ -532,8 +536,8 @@ to discover ids; the explicit `get` and lifecycle verbs remain usable without th
 browser. RPC receives actionable notifications; bare JSON/print browser
 invocations fail with directions to the direct commands and model-facing tools rather
 than silently returning or writing to Pi-owned stdout. In JSON/print, a successful
-direct verb is silent because fire-and-forget UI is a no-op in those modes; failures
-still throw. `stash_complete` remains the feedback-bearing closure surface for
+direct verb is silent because fire-and-forget UI is a no-op in those modes,
+except for a one-time completion redaction notice; failures still throw. `stash_complete` remains the feedback-bearing closure surface for
 headless callers. A state filter matches only artifacts whose header was actually
 read; an artifact that vanishes or fails mid-listing, or whose lifecycle value is not
 a recognized state, is excluded from state-filtered results instead of being reported
@@ -611,7 +615,9 @@ then uses the same independent-host contract as the ordinary command. The
 conversation-scoped `stash.launch` document family retains the first snapshot
 under its invocation ID, including after an uncertain admission response. A
 retry reuses that input despite later caller progress; a changed hint with the
-same ID refuses. This retained input is not job monitoring. Neither entrypoint
+same ID refuses. The captured hint is credential-redacted; a digest of its
+original bytes binds retries without retaining removed values. This retained
+input is not job monitoring. Neither entrypoint
 creates a distillation task in the caller.
 
 The worker receives validated structured command data with the captured source,
@@ -626,8 +632,10 @@ The task commits its validated payload and publication timestamp before the
 external write. The replayable writer reuses a byte-identical artifact after a
 restart between publication and receipt. The task stores its terminal outcome
 in the document and a passive `stash.creation` entry with status and any artifact
-id, path, title, or failure message. This entry has no model message and starts
-no follow-up turn. Native generation retains its normal usage evidence.
+id, path, title, or failure message. It also retains the combined input, generated
+payload, and published metadata redaction report and safety notice. A completed
+artifact includes that notice in its body, even if generation omits input markers.
+This entry has no model message and starts no follow-up turn. Native generation retains its normal usage evidence.
 
 The remaining command verbs operate directly on the external store: `get`
 activates an artifact and queues the pickup message as the next user input,
@@ -657,7 +665,9 @@ with plain-text content available for direct inspection.
 
 Each artifact is `<utcTimestamp>-<slug>[-<collision>].md` with JSON-valued frontmatter and a Markdown body. The store provides these guarantees:
 
-- Credential-shaped content is redacted deterministically: before distillation, the transcript and observed references are scanned and credential-shaped values (prefixed provider tokens, JWTs, bearer headers, private keys, `key: value` assignments, URL userinfo passwords) are replaced with `[REDACTED]`; the same pass runs over the generated payload before the artifact is written. Redaction of these recognized shapes does not depend on the model's discretion. This is not a general secret classifier: values outside the patterns pass through unchanged. The operator hint is trusted input and is never redacted. Existing artifacts receive no automatic scrub.
+- Recognized credentials are replaced with `[REDACTED]` before distillation and at artifact publication, including payload strings and project, branch, and session metadata. Recognized shapes include prefixed provider tokens, JWTs, Bearer and Basic credentials, private key blocks, URL userinfo passwords, and labeled assignments. Wrapped token continuations must occupy token-only lines; a next line with ordinary words is preserved. Assignment separators use horizontal whitespace and never consume the next line. Existing artifacts receive no automatic scrub.
+- Strong labels such as password, secret, and API key protect whole-line YAML/env assignments and quoted JSON members, including spaced passphrases. Inline bare values protect only the first token when it meets the existing minimum value length and contains a digit or is at least 20 characters long; trailing prose survives. Inline quoted single-token values retain the minimum length rule. Inline multi-word prose survives. Weak labels such as token and cookie retain the digit/length test, not the spaced-passphrase rule. HTTP URL values remain intact apart from userinfo passwords. A whole-line assignment and prose with the same form are inherently ambiguous; Stash protects that form. A token-only continuation line is also ambiguous and remains protected. This is not a general secret classifier, and values outside the patterns pass through unchanged.
+- Writes, checkpoints, body edits, and completion outcomes return a redaction notice when content changes under this policy. The notice reports removed credential spans by count and class, plus bounded surrounding context from fully redacted text with terminal controls escaped. Existing markers do not count as new redactions, and nested matches count once. Collapsed mutation cards show the count and classes; expanded results include the context. Distillation retains input reports independently of the generated artifact, so an omitted marker does not erase the input notice. These safety notices are not progress status.
 
 - Directory mode is enforced as `0700`. Ordinary discovery sweeps regular artifacts to `0600` once per process; reads enforce `0600` per open. Bounded search hardens only the artifacts it opens and leaves any pending whole-store sweep pending.
 - Completed temporary files are hard-linked into place. Existing names are never replaced; concurrent same-second writes receive numeric suffixes.

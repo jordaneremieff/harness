@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import fs, { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import fs, { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -137,6 +137,10 @@ describe("exact stash body edits", () => {
 		});
 		assert.match(edited.content, /\[REDACTED\]/);
 		assert.doesNotMatch(edited.content, /sk-ant-oat01-/);
+		assert.equal(edited.redactions.count, 1);
+		assert.deepEqual(edited.redactions.classes, { "provider token": 1 });
+		assert.match(edited.redactions.contexts[0], /edits\[0\]: token: \[REDACTED\]/);
+		assert.ok(!JSON.stringify(edited.redactions).includes("sk-ant-oat01-"));
 	});
 
 	it("refuses oversized UTF-8 output without an artifact rewrite", async () => {

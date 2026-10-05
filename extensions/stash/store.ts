@@ -16,7 +16,13 @@ import {
 	updateFrontmatter,
 	utcTimestamp,
 } from "./format.ts";
-import { redactSecrets } from "./redact.ts";
+import {
+	mergeRedactionReports,
+	type RedactionReport,
+	redactPayloadWithReport,
+	redactSecrets,
+	redactSecretsWithReport,
+} from "./redact.ts";
 
 const HEADER_SCAN_BYTES = 16 * 1024;
 export const MAX_STASH_BYTES = 256 * 1024;
@@ -45,6 +51,7 @@ export interface StashEditInput {
 }
 
 export interface StashEditResult {
+	redactions: RedactionReport;
 	id: string;
 	path: string;
 	content: string;
@@ -215,7 +222,9 @@ async function publishStash(
 	input: StashInput,
 	now: Date,
 	reuseExisting: boolean,
-): Promise<{ record: StashRecord; path: string }> {
+): Promise<{ record: StashRecord; path: string; redactions: RedactionReport }> {
+	const scanned = redactPayloadWithReport(input);
+	input = scanned.payload;
 	await secureStore(dir, true);
 	const created = utcTimestamp(now);
 	const baseId = `${created}-${slugify(input.title)}`;
@@ -230,8 +239,8 @@ async function publishStash(
 		}
 		const path = join(dir, `${id}.md`);
 		const temporary = join(dir, `.${id}.${randomUUID()}.tmp`);
-		if (await publishArtifact(temporary, path, serialized)) return { record, path };
-		if (reuseExisting && (await reusePublished(path, serialized))) return { record, path };
+		if (await publishArtifact(temporary, path, serialized)) return { record, path, redactions: scanned.report };
+		if (reuseExisting && (await reusePublished(path, serialized))) return { record, path, redactions: scanned.report };
 	}
 	throw new Error(`could not allocate a unique stash id for ${baseId}`);
 }
@@ -241,7 +250,7 @@ export async function writeStash(
 	dir: string,
 	input: StashInput,
 	now: Date = new Date(),
-): Promise<{ record: StashRecord; path: string }> {
+): Promise<{ record: StashRecord; path: string; redactions: RedactionReport }> {
 	return publishStash(dir, input, now, false);
 }
 
@@ -255,7 +264,7 @@ export async function writeReplayableStash(
 	dir: string,
 	input: StashInput,
 	now: Date = new Date(),
-): Promise<{ record: StashRecord; path: string }> {
+): Promise<{ record: StashRecord; path: string; redactions: RedactionReport }> {
 	return publishStash(dir, input, now, true);
 }
 
@@ -475,6 +484,7 @@ export interface StashRotateResult {
 }
 
 interface StashTransitionResult {
+	redactions: RedactionReport;
 	id: string;
 	path: string;
 	content: string;
@@ -679,13 +689,16 @@ export async function transitionStash(
 		}
 		const state = currentState(parsed.meta);
 		const stamp = utcTimestamp(now);
-		const patch = lifecyclePatch(located.id, state, change, stamp);
+		const scanned = redactSecretsWithReport(change.action === "close" ? change.outcome.trim() : "");
+		const safeChange = change.action === "close" ? { ...change, outcome: scanned.text } : change;
+		const patch = lifecyclePatch(located.id, state, safeChange, stamp);
 		if (!patch) {
 			return {
 				...located,
 				content: source.content,
 				meta: normalizeMeta(`${located.id}.md`, parsed.meta),
 				changed: false,
+				redactions: scanned.report,
 			};
 		}
 
@@ -696,6 +709,7 @@ export async function transitionStash(
 			content,
 			meta: normalizeMeta(`${located.id}.md`, parseFrontmatter(content).meta),
 			changed: true,
+			redactions: scanned.report,
 		};
 	});
 }
@@ -776,7 +790,11 @@ function bodyTitle(body: string): string | undefined {
 	return first !== undefined && /^#(?:[ \t]+|$)/.test(first) ? first : undefined;
 }
 
-function replaceBody(content: string, edits: StashEditInput["edits"]): string {
+function replaceBody(
+	content: string,
+	edits: StashEditInput["edits"],
+): { content: string; redactions: RedactionReport } {
+	const reports: RedactionReport[] = [];
 	const offset = bodyOffset(content);
 	const body = content.slice(offset);
 	const replacements = edits
@@ -786,7 +804,12 @@ function replaceBody(content: string, edits: StashEditInput["edits"]): string {
 			if (body.indexOf(oldText, start + 1) >= 0) {
 				throw new Error(`stash edit ${index + 1} oldText matches more than once; supply a unique body anchor`);
 			}
-			return { start, end: start + oldText.length, text: redactSecrets(newText) };
+			const scanned = redactSecretsWithReport(newText);
+			reports.push({
+				...scanned.report,
+				contexts: scanned.report.contexts.map((context) => `edits[${index}]: ${context}`),
+			});
+			return { start, end: start + oldText.length, text: scanned.text };
 		})
 		.sort((left, right) => left.start - right.start);
 	let position = 0;
@@ -801,7 +824,7 @@ function replaceBody(content: string, edits: StashEditInput["edits"]): string {
 	if (bodyTitle(updatedBody) !== bodyTitle(body)) {
 		throw new Error("stash edits must preserve the body title heading");
 	}
-	return content.slice(0, offset) + updatedBody;
+	return { content: content.slice(0, offset) + updatedBody, redactions: mergeRedactionReports(...reports) };
 }
 
 /** Apply all exact body replacements under the shared artifact mutation lock. */
@@ -833,7 +856,7 @@ export async function editStash(
 				`stash ${located.id} is active; allowActive: true explicitly acknowledges an edit to the active handover`,
 			);
 		}
-		const content = replaceBody(source.content, input.edits);
+		const { content, redactions } = replaceBody(source.content, input.edits);
 		const changed = content !== source.content;
 		if (changed) await publishRevision(dir, located, source, content, signal);
 		return {
@@ -843,6 +866,7 @@ export async function editStash(
 			digest: changed ? artifactDigest(Buffer.from(content, "utf8")) : source.digest,
 			meta: normalizeMeta(`${located.id}.md`, parsed.meta),
 			changed,
+			redactions,
 		};
 	});
 }

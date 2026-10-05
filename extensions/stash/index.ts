@@ -15,7 +15,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { CAPACITY_STATE, capacityConfig, capacityReset, capacityStatus, capacityTurnEnd } from "./capacity.ts";
 import { prepareDistillSource } from "./distill.ts";
-import { creationRequest, independentLauncher } from "./launch.ts";
 import { stashDurableContribution } from "./durable.ts";
 import { resumeCommand, stateLabel } from "./format.ts";
 import {
@@ -31,6 +30,7 @@ import {
 	STASH_WRITE_DESCRIPTION,
 	STASH_WRITE_GUIDANCE,
 } from "./guidance.ts";
+import { captureHint, creationRequest, independentLauncher } from "./launch.ts";
 import { emptyListText, ListOutputSchema, recentListResult } from "./list-result.ts";
 import { StashPanel, type StashPanelResult } from "./panel.ts";
 import { CompleteParams, EditParams, ListParams, ReadParams, RotateParams, WriteParams } from "./params.ts";
@@ -50,7 +50,7 @@ import {
 	renderWriteResult,
 } from "./presentation.ts";
 import { readStashResult } from "./read-result.ts";
-import { redactPayload } from "./redact.ts";
+import { mergeRedactionReports, type RedactionReport, redactionNotice, redactSecretsWithReport } from "./redact.ts";
 import { searchStashes } from "./search.ts";
 import {
 	editStash,
@@ -69,7 +69,15 @@ type StashExecutionApi = Pick<ExtensionAPI, "exec">;
 type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
 type StashExtensionApi = Pick<
 	ExtensionAPI,
-	"events" | "exec" | "registerCommand" | "registerShortcut" | "registerTool" | "sendUserMessage" | "on" | "appendEntry"
+	| "events"
+	| "exec"
+	| "registerCommand"
+	| "registerShortcut"
+	| "registerTool"
+	| "sendUserMessage"
+	| "sendMessage"
+	| "on"
+	| "appendEntry"
 >;
 
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
@@ -92,6 +100,22 @@ async function checkpointDirectory(cwd: string): Promise<string> {
 }
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
+const noticeSuffix = (report: RedactionReport) => (report.count ? `\n${redactionNotice(report)}` : "");
+
+function notifyCommandRedactions(
+	pi: Pick<ExtensionAPI, "sendMessage">,
+	ctx: Pick<ExtensionContext, "hasUI">,
+	redactions: RedactionReport,
+): void {
+	if (!redactions.count) return;
+	const notice = redactionNotice(redactions);
+	pi.sendMessage(
+		{ customType: "stash-redaction", content: notice, display: true, details: { redactions } },
+		{ triggerTurn: false },
+	);
+	// Text print ignores custom messages; stderr is its direct notice transport.
+	if (!ctx.hasUI) console.error(notice);
+}
 
 async function currentBranch(pi: StashExecutionApi, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
 	try {
@@ -114,6 +138,9 @@ async function startCreation(pi: StashExtensionApi, ctx: ExtensionCommandContext
 	try {
 		// Materialize before the first await; subsequent caller turns cannot alter this source.
 		const source = prepareDistillSource(ctx.sessionManager.buildSessionProjection());
+		const capturedHint = captureHint(hint);
+		const redactions = mergeRedactionReports(source.redactions, capturedHint.redactions);
+		notifyCommandRedactions(pi, ctx, redactions);
 		const project = ctx.cwd;
 		const sessionId = currentSessionId(ctx);
 		if (!sessionId) throw new Error("The source session identity is unavailable.");
@@ -123,12 +150,22 @@ async function startCreation(pi: StashExtensionApi, ctx: ExtensionCommandContext
 		const branch = await currentBranch(pi, project);
 		await launch(
 			creationRequest(
-				{ ...source, hint, project, sessionId, storeDir: destination, ...(branch ? { branch } : {}) },
+				{
+					...source,
+					...capturedHint,
+					redactions,
+					project,
+					sessionId,
+					storeDir: destination,
+					...(branch ? { branch } : {}),
+				},
 				invocationId,
 			),
 		);
 	} catch (error) {
-		const message = `Could not start stash creation: ${safeLine(error instanceof Error ? error.message : String(error))}`;
+		const scanned = redactSecretsWithReport(error instanceof Error ? error.message : String(error));
+		notifyCommandRedactions(pi, ctx, scanned.report);
+		const message = `Could not start stash creation: ${safeLine(scanned.text)}`;
 		if (ctx.hasUI) ctx.ui.notify(message, "error");
 		else throw new Error(message);
 	}
@@ -359,6 +396,7 @@ async function closeFromBrowser(ctx: ExtensionContext, id: string): Promise<void
 	if (outcome?.trim()) {
 		const transitioned = await changeLifecycle(id, { action: "close", outcome });
 		ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
+		if (transitioned.redactions.count) ctx.ui.notify(redactionNotice(transitioned.redactions), "warning");
 	}
 }
 
@@ -487,8 +525,8 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 				// published on the model's discretion on any write path.
 				const destination = params.checkpoint ? await checkpointDirectory(ctx.cwd) : storeDir();
 				if (signal?.aborted) throw new Error("stash_write cancelled");
-				const { record, path } = await writeStash(destination, {
-					...redactPayload(params),
+				const { record, path, redactions } = await writeStash(destination, {
+					...params,
 					project: ctx.cwd,
 					branch,
 					sessionId,
@@ -498,20 +536,24 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 						content: [
 							{
 								type: "text" as const,
-								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nRead this file to recover the synthesis. It is not listed by stash_list and has no /stash pickup shortcut.`,
+								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nRead this file to recover the synthesis. It is not listed by stash_list and has no /stash pickup shortcut.${noticeSuffix(redactions)}`,
 							},
 						],
-						details: { path, checkpoint: true },
+						details: { path, checkpoint: true, redactions },
 					};
 				}
-				const text = [
-					`Stashed "${safeLine(record.title)}" as ${record.id}`,
-					safeLine(path),
-					"",
-					"Resume in a new session:",
-					`  ${resumeCommand(record.id)}`,
-				].join("\n");
-				return { content: [{ type: "text" as const, text }], details: { id: record.id, path, state: record.state } };
+				const text =
+					[
+						`Stashed "${safeLine(record.title)}" as ${record.id}`,
+						safeLine(path),
+						"",
+						"Resume in a new session:",
+						`  ${resumeCommand(record.id)}`,
+					].join("\n") + noticeSuffix(redactions);
+				return {
+					content: [{ type: "text" as const, text }],
+					details: { id: record.id, path, state: record.state, redactions },
+				};
 			} catch (error) {
 				throw new Error(`stash_write failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
@@ -604,6 +646,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 							`${result.changed ? "Updated" : "Unchanged"} stash ${result.id}.`,
 							`State: ${result.meta.state} (unchanged).`,
 							`Digest: ${result.digest}`,
+							...(result.redactions.count ? [redactionNotice(result.redactions)] : []),
 						].join("\n"),
 					},
 				],
@@ -613,6 +656,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 					state: result.meta.state,
 					digest: result.digest,
 					changed: result.changed,
+					redactions: result.redactions,
 				},
 			};
 		},
@@ -634,7 +678,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 				content: [
 					{
 						type: "text" as const,
-						text: `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? params.outcome.trim())}`,
+						text: `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? params.outcome.trim())}${transitioned.redactions.count ? `\n${redactionNotice(transitioned.redactions)}` : ""}`,
 					},
 				],
 				details: {
@@ -643,6 +687,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 					state: transitioned.meta.state,
 					closedAt: transitioned.meta.closedAt,
 					outcome: transitioned.meta.outcome,
+					redactions: transitioned.redactions,
 				},
 			};
 		},
@@ -732,7 +777,7 @@ async function handleStashCommand(
 		case "get":
 			return getCommand(pi, ctx, parts, fail);
 		case "complete":
-			return completeCommand(ctx, parts, fail);
+			return completeCommand(pi, ctx, parts, fail);
 		case "release":
 		case "rotate":
 		case "reopen":
@@ -808,7 +853,12 @@ async function getCommand(
 	await deliverPickup(pi, ctx, id, fail, note);
 }
 
-async function completeCommand(ctx: ExtensionCommandContext, parts: string[], fail: CommandFailure): Promise<void> {
+async function completeCommand(
+	pi: Pick<ExtensionAPI, "sendMessage">,
+	ctx: ExtensionCommandContext,
+	parts: string[],
+	fail: CommandFailure,
+): Promise<void> {
 	const id = parts[1];
 	const outcome = parts.slice(2).join(" ");
 	if (!id || !outcome) {
@@ -818,6 +868,7 @@ async function completeCommand(ctx: ExtensionCommandContext, parts: string[], fa
 	try {
 		const transitioned = await changeLifecycle(id, { action: "close", outcome });
 		if (ctx.hasUI) ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
+		notifyCommandRedactions(pi, ctx, transitioned.redactions);
 	} catch (error) {
 		fail(safeLine(error instanceof Error ? error.message : String(error)));
 	}
