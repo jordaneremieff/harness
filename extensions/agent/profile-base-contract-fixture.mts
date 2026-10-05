@@ -17,12 +17,12 @@ const DURABLE_VERSION: string = JSON.parse(readFileSync(require.resolve("@earend
 
 /** Fixed operation identities isolate feature additions from upstream release changes. */
 export const BASE_OPERATIONS: Readonly<Record<string, OperationContract>> = {
-	status: { request: "status/1.0.0", response: "04082e4c23cf4ca78ca4529658060f615a4bfdeeb4d019cf3ed6c409e7fa84ae", durable: DURABLE_VERSION },
+	status: { request: "status/1.0.0", response: "f01e526863f86e3b9665f2ae21222b0d7af6b61085718f5a2b27ffcef3918c15", durable: DURABLE_VERSION },
 	submit: { request: "submit/1.1.0", response: "submit/1.1.0" },
 	configure: { request: "configure/1.0.0", response: "configure/1.0.0" },
 	reset: { request: "reset/1.0.0", response: "reset/1.0.0" },
-	list: { request: "list/1.0.0", response: "3dd4ce5e2b550ef084b274c8a434f06775ea56ed287ceb226aa470f5df80f833" },
-	dashboard: { request: "dashboard/1.0.0", response: "9b3b0eba7308aa7d031cf8bf86d1ad5cbfdecf0e2d9b8971186b842f8feea8f8" },
+	list: { request: "list/1.0.0", response: "76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600" },
+	dashboard: { request: "dashboard/1.0.0", response: "45e81def525244f0c696a37894dd3ab431646d0bd4d78c1ca12d2c0d9ef66a3f" },
 };
 const baseContract: RuntimeContract = {
 	format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: CODING_AGENT_VERSION, durable: DURABLE_VERSION },

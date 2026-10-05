@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
+import type { AwaitFact } from "./await-facts.ts";
+
+const awaiting: AwaitFact = {
+	runId: 1, heldInputs: [2], results: [{ result: { sessionId: "producer:3", submissionId: 4, requestId: "exact-request" }, status: "pending" }],
+	queuedInputCount: 1, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 },
+	producers: [{ sessionId: "producer:3", observedAt: 1, source: "producer await-state", unavailable: "Source connection closed" }],
+	omittedProducers: 0, likelyCycle: [], coverage: "one hop; remote graph incomplete",
+};
 import {
 	AgentConversationSummarySchema,
 	AssistantMessageSchema,
@@ -93,6 +101,7 @@ it("retains every coordinator field on live rows with short Unicode-safe text ex
 	const row = summary(1, {
 		state: "working",
 		name: "worker",
+		awaiting,
 		firstMessage: text,
 		latestReply: text,
 		model: { provider: "test", modelId: "model", thinkingLevel: "high" },
@@ -565,7 +574,8 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 			},
 		],
 		timers: [{ id: 20, target: "storage:2", deadline: 21, mode: "followUp", status: "pending", overdue: false }],
-		parent: { conversationId: 1, at: 22 },
+		forkSource: { conversationId: 1, at: 22 },
+		awaiting,
 		ownerTaskId: 23,
 	};
 	const inventory = {
