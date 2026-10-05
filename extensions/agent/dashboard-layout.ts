@@ -42,7 +42,8 @@ export function fitHints(
 	onHint?: (hint: string, x: number, width: number) => void,
 	theme?: Paint,
 ): string {
-	const kept = [...items];
+	const kept = items.map((hint) => hint.toLowerCase());
+	backHint = backHint.toLowerCase();
 	while (kept.length && visibleWidth([...kept, backHint].join(" · ")) > width) kept.pop();
 	let x = 0;
 	for (const hint of [...kept, backHint]) {

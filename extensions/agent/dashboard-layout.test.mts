@@ -56,7 +56,7 @@ it("each surface occupies the exact terminal rectangle and keeps Esc last", asyn
 					lines.every((line) => visibleWidth(line) <= width),
 					key,
 				);
-				assert.match(lines.at(-1) ?? "", /Esc/);
+				assert.match(lines.at(-1) ?? "", /esc/);
 			}
 			f.ui.handleInput("first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth");
 			const lines = f.ui.render(width);
@@ -66,7 +66,7 @@ it("each surface occupies the exact terminal rectangle and keeps Esc last", asyn
 			f.ui.dispose();
 		}
 	}
-	assert.match(fitHints(["one", "two", "three"], "Esc back", 12), /Esc back/);
+	assert.match(fitHints(["one", "two", "three"], "esc back", 12), /esc back/);
 });
 const painted = {
 	...theme,
@@ -99,21 +99,21 @@ it("framed headings keep multiline metadata within one physical row", () => {
 });
 it("plain hint bars decorate keys after hit geometry and preserve the escape destination", () => {
 	const regions: Array<[string, number, number]> = [];
-	const line = fitHints(["Enter open", "r refresh"], "Esc back", 25, (...area) => regions.push(area), painted);
+	const line = fitHints(["enter open", "r refresh"], "esc back", 25, (...area) => regions.push(area), painted);
 	assert.equal(visibleWidth(line), 25);
-	assert.equal(stripVTControlCharacters(line).trim(), "Enter open · Esc back");
+	assert.equal(stripVTControlCharacters(line).trim(), "enter open · esc back");
 	assert.deepEqual(regions, [
-		["Enter open", 0, 10],
-		["Esc back", 13, 8],
+		["enter open", 0, 10],
+		["esc back", 13, 8],
 	]);
 	assert.doesNotMatch(line, /\x1b\[45m/);
-	assert.match(line, /\x1b\[36mEnter\x1b\[39m/);
+	assert.match(line, /\x1b\[36menter\x1b\[39m/);
 	assert.match(line, /\x1b\[90m open/);
 	const mouse = new DashboardMouse();
 	const keys: string[] = [];
 	mouse.reset(80, 24);
-	const hints = mouseHints(mouse, 23, ["↑↓ select", "Enter open"], "Esc back", 80, (key) => keys.push(key), painted);
-	const x = stripVTControlCharacters(hints).indexOf("Enter");
+	const hints = mouseHints(mouse, 23, ["↑↓ select", "enter open"], "esc back", 80, (key) => keys.push(key), painted);
+	const x = stripVTControlCharacters(hints).indexOf("enter");
 	mouse.handle({
 		type: "click",
 		button: "left",
@@ -159,7 +159,7 @@ for (const width of [80, 140]) {
 			const pane = () => render().map((line) => line.slice(paneX));
 			const lines = pane();
 			const model = lines.findIndex((line) => /Model +model/.test(line));
-			const composer = lines.findIndex((line) => line.includes("╭─ Message Recipient"));
+			const composer = lines.findIndex((line) => line.includes("╭─ idle · send"));
 			assert.ok(model > 0 && model < composer);
 			assert.match(lines[model + 1] ?? "", /Context/);
 			assert.equal(lines[composer - 1]?.trim(), "", "output has bottom padding");
@@ -191,7 +191,7 @@ for (const width of [80, 140]) {
 			assert.ok(lines.every((line) => visibleWidth(line) === width));
 			assert.match(stripVTControlCharacters(lines[0] ?? ""), /^╭─ Agents/);
 			assert.doesNotMatch(lines.at(-1) ?? "", /\x1b\[45m/);
-			assert.match(stripVTControlCharacters(lines.at(-1) ?? ""), /Esc /);
+			assert.match(stripVTControlCharacters(lines.at(-1) ?? ""), /esc /);
 			return lines.map(stripVTControlCharacters);
 		};
 		try {
@@ -207,7 +207,7 @@ for (const width of [80, 140]) {
 			f.ui.handleInput("\x1b");
 			f.ui.handleInput("a");
 			assert.match(render()[0] ?? "", /1\/\d+ actions ╮$/);
-			assert.match(render().at(-1) ?? "", /^PgUp\/PgDn read/);
+			assert.match(render().at(-1) ?? "", /^pgup\/pgdn read/);
 			assert.match(f.ui.render(width).join("\n"), /\x1b\[44m/);
 			f.ui.handleInput("\x1b");
 			f.ui.handleInput("?");

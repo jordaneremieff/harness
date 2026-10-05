@@ -1133,7 +1133,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (this.navigation.screen === "new") return `New agent · Enter starts · ${this.creating ? "Starting…" : "Task"}`;
 		if (this.navigation.screen === "find") return "Find loaded agents · Enter keeps filter · Esc cancels";
 		return (
-			this.console?.messageLabel() ??
+			this.console?.messageLabel(this.console.row.model ? this.operations.contextWindow?.(this.console.row.model.provider, this.console.row.model.modelId) : undefined) ??
 			(this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent")
 		);
 	}
@@ -1300,13 +1300,12 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	private renderDashboard(width: number, height: number): string[] {
 		const screen = this.navigation.screen;
-		const focused = screen === "message" || screen === "console";
 		const composer = screen === "new" ? this.newComposer : this.console?.composer;
 		const reserved = screen === "find" ? 1 : 0;
 		const shape = dashboardGeometry(width, height, 0, screen === "console", reserved);
 		const paneWidth = shape.conversationWidth;
 		const header = this.selectedHeader(paneWidth - 2).map((line) => ` ${line} `);
-		const editor = composer?.render(paneWidth, this.messageLabel(), focused ? this.console?.messageMode() : "", screen === "new" ? this.notice : this.console?.state.receipt) ?? [];
+		const editor = composer?.render(paneWidth, this.messageLabel(), "", screen === "new" ? this.notice : this.console?.state.receipt) ?? [];
 		const geometry = dashboardGeometry(width, height, editor.length, screen === "console", reserved, header.length + 2);
 		this.bodyHeight = geometry.bodyHeight;
 		const transcript = this.transcriptLines(paneWidth, geometry.bodyHeight);

@@ -127,7 +127,7 @@ for (const [width, height] of [
 			assert.equal(lines.length, height);
 			assert.ok(lines.every((line) => !/[\r\n]/.test(line) && visibleWidth(line) <= width));
 			assert.match(lines[0] ?? "", /Threads > First Second/);
-			assert.match(lines.at(-1) ?? "", /Esc back/);
+			assert.match(lines.at(-1) ?? "", /esc back/);
 			return lines;
 		};
 		try {
@@ -170,7 +170,7 @@ for (const [width, height] of [
 			assert.match(f.ui.render(width)[0] ?? "", /^╭─ Agents > Threads/);
 			assert.match(f.ui.render(width)[0] ?? "", /Frame 2 ╮$/);
 			assert.match(text(f, width), /Lines \d+–\d+ of \d+ loaded/);
-			assert.match(f.ui.render(width).at(-1) ?? "", /^PgUp\/PgDn read.*p post.*Esc back/);
+			assert.match(f.ui.render(width).at(-1) ?? "", /^pgup\/pgdn read.*p post.*esc back/);
 			assert.ok(f.ui.render(width).every((line) => visibleWidth(line) <= width));
 		} finally {
 			f.ui.dispose();
@@ -369,10 +369,10 @@ it("mouse follows thread rows, timestamps, notify choices and hints without cons
 		mouse("n notify");
 		mouse("[ ] Reviewer");
 		assert.deepEqual(f.state.threads?.drafts.get(threadId)?.notify, ["two"]);
-		mouse("Tab write");
+		mouse("tab write");
 		f.ui.handleInput("draft");
 		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "draft");
-		mouse("Esc back");
+		mouse("esc back");
 		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "draft");
 		mouse("Time: ", { type: "wheel", wheelDelta: -5 });
 		assert.match(text(f), /Purpose: Choose a usable contract/);

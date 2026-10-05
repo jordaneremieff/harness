@@ -4,10 +4,11 @@ import type { AgentConversationSummary, AgentConversationEntry } from "./dashboa
 import { updateDraft, subscribeAgentState, type AgentDraftState } from "./dashboard-state.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { ConversationView } from "./conversation-view.ts";
-import { footerText } from "./agent-footer.ts";
-import { agentDisplayName } from "./action-outcome.ts";
+import { footerText, formatCost } from "./agent-footer.ts";
+import { sessionAppearance } from "./dashboard-roster.ts";
+import { cleanDashboardText } from "./dashboard-conversation.ts";
 import type { UsageState } from "@earendil-works/pi-durable";
-import { contextTokens, usageFacts } from "./agent-usage.ts";
+import { compactTokens, contextTokens, usageFacts } from "./agent-usage.ts";
 export class AgentConsole {
 	readonly composer: AgentComposer;
 	readonly conversation: ConversationView;
@@ -60,8 +61,16 @@ export class AgentConsole {
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[] = []): void {
 		this.conversation.setContent(entries, live, this.row.cwd);
 	}
-	messageLabel(): string {
-		return `Message ${agentDisplayName(this.row)}`;
+	messageLabel(window?: number): string {
+		const model = this.row.model;
+		const facts = [sessionAppearance[this.row.state].label.toLowerCase(), this.messageMode().toLowerCase()];
+		if (model) facts.push(`${model.provider}/${model.modelId}`, model.thinkingLevel);
+		if (this.context !== undefined) {
+			const capacity = usageFacts(this.context, window).window;
+			facts.push(capacity === undefined ? `${compactTokens(this.context)} ctx` : `${Math.round(this.context / capacity * 100)}% ctx`);
+		}
+		if (Number.isFinite(this.row.cost)) facts.push(formatCost(this.row.cost, this.row.partial));
+		return facts.filter(Boolean).map((fact) => cleanDashboardText(fact).replace(/\s+/g, " ").trim()).join(" · ");
 	}
 	messageMode(): string {
 		return this.row.state === "working"

@@ -839,7 +839,7 @@ that marker and queues recovery through the same bounded pool. The manager owns
 these relaunches; managed connections do not independently relaunch on request
 retries. Three automatic replacements are permitted per storage within sixty
 seconds. Further losses stop automatic recovery and put a host error in the
-dashboard roster's Attention group. Inspect the error, then use `agent_attach` to clear the
+dashboard roster. Inspect the error, then use `agent_attach` to clear the
 stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 
 ## Dashboard and agent console
@@ -854,9 +854,10 @@ dashboard reopens; newer text stays. Every truncated dashboard list keeps the
 focused entry and nearby entries visible and states the hidden count.
 
 Each view has a framed heading and one plain hint line at the bottom. Keys use
-an accent color; action words and metadata use a quieter color. Scroll controls
-come first and Esc comes last. Time format remains available through `i`, a
-click on a time, and Help. The roster omits the time-format hint.
+an accent color; action words and metadata use a quieter color. All key hints
+use lowercase text, including subviews, and retain their click actions. Scroll
+controls come first and `esc` comes last. Time format remains available through
+`i`, a click on a time, and Help. The roster omits the time-format hint.
 
 At side-by-side widths, the narrow roster occupies the full body height. The
 selected agent's name and state lead the conversation header. A compact grid
@@ -888,16 +889,19 @@ stays unknown. A live frame adds cumulative input/output tokens from its usage
 ledger, including cached input. An unknown window shows only the known context
 count. The header keeps unknown values explicit.
 
-The native editor has a captioned frame with the recipient. The message mode
-appears on the right when focused; the delivery receipt uses the bottom border.
+The native editor caption shows the target's state and delivery mode, followed
+by known provider/model, thinking level, context use, and cost. It omits absent
+facts and does not repeat the recipient's name from the selected header. A busy
+target shows `steer at next step` or `follow-up after answer`; an idle target
+shows `send`. The delivery receipt uses the bottom border.
 Headings and captions display metadata on one line; body text and drafts retain
 their line breaks. The frame preserves native keyboard input, text selection,
 and caret placement. Below side-by-side widths, compact roster rows sit above
 the same header, transcript, and composer.
 
 In Pi fullscreen mode, click a roster or task row to select it, then click the
-`Enter` hint to open it. In Threads, click a row to select it; click the selected
-row or the `Enter` hint to open it. Click action rows to select, then the `Enter`
+`enter` hint to open it. In Threads, click a row to select it; click the selected
+row or the `enter` hint to open it. Click action rows to select, then the `enter`
 hint to run the action through its usual confirmation flow. Click a message
 field to focus it and place its caret. A click in the conversation opens the
 agent console. Visible hint labels retain their keyboard actions; arrow and
@@ -917,7 +921,7 @@ The New agent field accepts a task in your own words and treats it literally,
 including text such as `--help`. Enter starts the agent
 with the primary's current directory and model, selects it, and keeps the
 dashboard open. Its task, model, and reasoning appear immediately with a
-Starting state in the Working group, before the host is ready. The conversation
+Starting state in the flat roster, before the host is ready. The conversation
 then follows the host's live output. A late startup completion never moves a
 selection the operator has changed since. Esc keeps the unsent task. Configure
 changes name, model, and reasoning afterwards; staged fields change nothing
@@ -1102,13 +1106,13 @@ instead.
 The roster reads bounded host-published metadata through `dashboard-types.ts`.
 It parses no ordinary JSONL, opens no conversation database, and starts no host.
 Roster blocks show a bold name and state glyph with the last-change time at the
-right, the activity below, then model and thinking level with cost at the right.
-The provider belongs in the selected header, not in each roster block. Quiet
-section labels include their loaded counts. A continuous marker identifies the
-selected block. Working activity uses normal text; finished excerpts use muted
+right. The model and thinking level appear on the second line with cost at the
+right; activity or the latest text appears on the third line. Compact rows use
+the same fact order on one line. The provider belongs in the selected header,
+not in each roster block. A continuous marker identifies the selected block. Working activity uses normal text; finished excerpts use muted
 text. State glyphs and written state words retain their state colors. Attention
 reasons stay prominent and use the plain background for readable error text.
-Working and Done labels do not repeat the group or glyph. A footer distinguishes
+Working and Done labels do not repeat the glyph. A footer distinguishes
 more loaded rows outside the viewport from the Load more agents catalog action.
 Times default to `just now`, `15m ago`, `3h ago`, or `1d ago`, with no seconds
 counter. These ages describe recorded changes, not current activity.
@@ -1125,10 +1129,13 @@ identity suffixes. Unknown cost shows `$?`; a known partial cost shows a trailin
 use the same marker, such as `$1.50+ retained`, for a known subtotal with incomplete
 cost or inventory coverage. These totals keep their roster scope.
 
-Working and Attention precede retained date groups. Attention names unavailable
-or conflicted storage, a host error, failed compaction, failed work with an
-error, or exhausted retries. Done and deliberately stopped work do not require
-attention by themselves. The selected view shows the one concrete Attention
+The roster is one flat list ordered by recent activity, with identity as the
+tie-breaker. State glyphs replace group headers. Failure text uses the actual
+retained error, without a `Work failed:` prefix. The host publishes the native
+unanswered submission's error detail, or the last assistant error, in the
+existing error field. Attention names unavailable or conflicted storage, a host
+error, failed compaction, failed work with an error, or exhausted retries. Done
+and deliberately stopped work do not require attention by themselves. The selected view shows the one concrete Attention
 reason. Selection follows identity, not roster index, and roster order stays
 fixed during an arrow sequence. Text entry locks its recipient even while
 published metadata changes.

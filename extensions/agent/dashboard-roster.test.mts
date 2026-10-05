@@ -29,11 +29,11 @@ it("selected exact-time blocks close their styles before the adjacent pane", () 
 	assert.ok(selected.every((line) => line.endsWith("\x1b[0m")));
 });
 
-it("starting agents show their launch state in the Working group", () => {
+it("starting agents show their launch state without a group header", () => {
 	const starting = row("starting", { state: "starting", owner: "unknown" });
-	const snapshot = { observedAt: 0, sessions: [row("done", { state: "done" }), starting] };
+	const snapshot = { observedAt: 0, sessions: [row("done", { state: "done" }), { ...starting, modifiedAt: 1 }] };
 	assert.equal(dashboardRecords(snapshot, "")[0]?.id, starting.id);
-	assert.match(rosterLines([starting], starting.id, 80, 10, 0, theme, false).join("\n"), /Working[\s\S]*Starting/);
+	assert.match(rosterLines([starting], starting.id, 80, 10, 0, theme, false).join("\n"), /◌ starting[\s\S]*Starting agent/);
 	assert.equal(rosterTotals(snapshot), "1 working · $0.84 retained");
 	assert.match(dashboardText(snapshot), /◌ Starting/);
 	assert.doesNotMatch(dashboardText(snapshot), /Starting · stored/);
@@ -65,16 +65,16 @@ it("incomplete roster coverage qualifies a known subtotal", () => {
 		"1 working · $0.42+ retained",
 	);
 });
-it("roster order separates working, attention, and retained results", () => {
+it("roster order follows recent activity across states and breaks ties by identity", () => {
 	const rows = [
-		row("done", { state: "done" }),
-		row("failed", { state: "failed", error: "failure" }),
-		row("working"),
-		row("stopped", { state: "stopped" }),
+		row("done", { state: "done", modifiedAt: 4 }),
+		row("failed", { state: "failed", error: "failure", modifiedAt: 1 }),
+		row("working", { modifiedAt: 2 }),
+		row("stopped", { state: "stopped", modifiedAt: 2 }),
 	];
 	assert.deepEqual(
 		dashboardRecords({ observedAt: 0, sessions: rows }, "").map((item) => item.id),
-		["working", "failed", "done", "stopped"],
+		["done", "stopped", "working", "failed"],
 	);
 	assert.deepEqual(dashboardRecords({ observedAt: 0, sessions: rows }, "test model").length, 4);
 	assert.match(dashboardText({ observedAt: 0, sessions: rows }), /\$0.42/);
@@ -108,7 +108,7 @@ it("roster ages use coarse minutes and absolute dates stay fixed for every state
 		}
 	}
 });
-it("wide roster budgets every group header and timestamp before it clips the selected row", () => {
+it("wide roster budgets flat blocks and timestamps before it clips the selected row", () => {
 	const now = new Date(2026, 9, 3, 12).getTime();
 	const rows = [
 		row("work"),
@@ -120,8 +120,8 @@ it("wide roster budgets every group header and timestamp before it clips the sel
 	const lines = rosterLines(rows, "earlier", 64, 18, now, theme, false);
 	assert.match(lines.join("\n"), /▌ ✓ earlier/);
 	assert.match(lines.join("\n"), /yesterday/);
-	assert.match(lines.join("\n"), /↑ 1 more/);
-	assert.equal(lines.filter((line) => /\$0.42/.test(line)).length, 4);
+	assert.match(lines.join("\n"), /5 loaded/);
+	assert.equal(lines.filter((line) => /\$0.42/.test(line)).length, 5);
 });
 it("timestamp hit areas do not use a name that impersonates an Updated label", () => {
 	let timeX = -1;
@@ -168,5 +168,22 @@ it("creating-session provenance stays muted while roster names retain bold empha
 		assert.ok(title.includes("\x1b[90m[other] \x1b[39m\x1b[1m"));
 		assert.ok(title.indexOf("[other]") < title.indexOf("\x1b[1m"));
 		assert.ok(lines.every((line) => visibleWidth(line) <= 60));
+	}
+});
+
+it("flat roster keeps model second, failure text third, and hit areas on each block", () => {
+	const rows = [row("work"), row("done", { state: "done", latestReply: "Result ready" }), row("failed", { state: "failed", error: "quota limit" })];
+	for (const compact of [false, true]) {
+		const hits: Array<[string, number, number]> = [];
+		const times: Array<[string, number]> = [];
+		const lines = rosterLines(rows, "failed", 100, 15, 0, theme, compact, { row: (item, line, height) => hits.push([item.id, line, height]), timestamp: (item, line) => times.push([item.id, line]) });
+		assert.deepEqual(hits, rows.map((item, index) => [item.id, index * (compact ? 1 : 3), compact ? 1 : 3]));
+		assert.deepEqual(times, rows.map((item, index) => [item.id, index * (compact ? 1 : 3)]));
+		assert.doesNotMatch(lines.join("\n"), /Working ·|Attention ·|Today ·|Yesterday ·|Earlier ·|Work failed:|model_error/);
+		assert.match(lines.join("\n"), /quota limit/);
+		if (!compact) {
+			assert.match(lines[7], /model high/);
+			assert.match(lines[8], /quota limit/);
+		}
 	}
 });

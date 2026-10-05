@@ -166,8 +166,8 @@ it("keyboard and mouse contact entry read the existing Threads view without list
 			await turn(); f.ui.handleInput("b"); await turn();
 			if (mouse) {
 				const lines = f.ui.render(100);
-				const y = lines.findIndex((line) => line.includes("Enter thread"));
-				f.ui.handleMouse(click(lines[y].indexOf("Enter thread"), y, 100, 30));
+				const y = lines.findIndex((line) => line.includes("enter thread"));
+				f.ui.handleMouse(click(lines[y].indexOf("enter thread"), y, 100, 30));
 			} else f.ui.handleInput("\r");
 			await turn();
 			assert.deepEqual(calls, [{ action: "read", threadId: "store/thread" }]);
@@ -299,7 +299,7 @@ it("multiline effort drafts keep the send receipt and escape hint inside the nar
 		for (let index = 0; index < 20; index++) { f.ui.handleInput("Draft line"); f.ui.handleInput("\x1b[106;5u"); }
 		const lines = f.ui.render(60);
 		assert.equal(lines.length, 20);
-		assert.match(lines[19], /Esc back/);
+		assert.match(lines[19], /esc back/);
 		assert.match(lines.join("\n"), /Operator message to effort/);
 		assert.match(lines.join("\n"), /Draft line/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= 60));

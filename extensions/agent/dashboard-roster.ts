@@ -84,7 +84,7 @@ export function needsAttention(row: AgentConversationSummary): boolean {
 	if (retry !== undefined && retry.attempt >= retry.maxAttempts) return true;
 	return row.state === "failed" && Boolean(row.error);
 }
-/** One governing Attention reason; full recovery records belong in Details. */
+/** One governing failure reason; full recovery records belong in Details. */
 export function attentionReason(row: AgentConversationSummary): string | undefined {
 	if (row.owner === "unavailable" || row.state === "unavailable")
 		return `Unavailable: ${oneLine(row.error || row.ownerLabel || "Storage cannot be read")}`;
@@ -93,37 +93,21 @@ export function attentionReason(row: AgentConversationSummary): string | undefin
 	if (failure) return `Compaction failed (${failure.reason}): ${oneLine(failure.errorMessage || "No error text")}`;
 	const retry = row.health?.autoRetry;
 	if (retry && retry.attempt >= retry.maxAttempts) return `Retries exhausted: ${oneLine(retry.errorMessage)}`;
-	if (row.state === "failed" && row.error) return `Work failed: ${oneLine(row.error)}`;
+	if (row.state === "failed" && row.error) return oneLine(row.error);
 	return undefined;
-}
-export function sectionOf(row: AgentConversationSummary, now: number): string {
-	if (needsAttention(row)) return "Attention";
-	if (row.state === "working" || row.state === "starting") return "Working";
-	const today = new Date(now);
-	today.setHours(0, 0, 0, 0);
-	const yesterday = new Date(today);
-	yesterday.setDate(yesterday.getDate() - 1);
-	return row.modifiedAt >= today.getTime() ? "Today" : row.modifiedAt >= yesterday.getTime() ? "Yesterday" : "Earlier";
 }
 export function dashboardRecords(
 	snapshot: AgentDashboardSnapshot | undefined,
 	filter: string,
 ): AgentConversationSummary[] {
 	const terms = oneLine(filter).toLocaleLowerCase().split(" ").filter(Boolean);
-	const sections = ["Working", "Attention", "Today", "Yesterday", "Earlier"];
 	return (snapshot?.sessions ?? [])
 		.filter((row) => {
 			const text =
 				`${titleOf(row)} ${row.profile?.role ?? ""} ${row.firstMessage ?? ""} ${row.cwd} ${row.id} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
 			return terms.every((term) => text.includes(term));
 		})
-		.sort(
-			(a, b) =>
-				sections.indexOf(sectionOf(a, snapshot?.observedAt ?? Date.now())) -
-					sections.indexOf(sectionOf(b, snapshot?.observedAt ?? Date.now())) ||
-				b.modifiedAt - a.modifiedAt ||
-				a.id.localeCompare(b.id),
-		);
+		.sort((a, b) => b.modifiedAt - a.modifiedAt || a.id.localeCompare(b.id));
 }
 /** Coverage of the returned page; an empty or bounded page is not proof of absence. */
 export function coverageText(coverage: AgentDashboardCoverage | undefined): string {
@@ -138,9 +122,8 @@ export function coverageText(coverage: AgentDashboardCoverage | undefined): stri
 }
 export function rosterTotals(snapshot: AgentDashboardSnapshot | undefined): string {
 	const rows = snapshot?.sessions ?? [];
-	const now = snapshot?.observedAt ?? Date.now();
-	const working = rows.filter((row) => sectionOf(row, now) === "Working").length;
-	const attention = rows.filter((row) => sectionOf(row, now) === "Attention").length;
+	const attention = rows.filter(needsAttention).length;
+	const working = rows.filter((row) => !needsAttention(row) && (row.state === "working" || row.state === "starting")).length;
 	const coverage = snapshot?.coverage;
 	const incomplete =
 		rows.some((row) => row.partial || !Number.isFinite(row.cost)) ||
@@ -213,7 +196,7 @@ function rosterActivity(row: AgentConversationSummary, size: number, theme: Them
 	return theme.fg(state.color, state.label) + theme.fg("muted", clip(rest, Math.max(0, size - visibleWidth(state.label))));
 }
 function rosterModel(row: AgentConversationSummary, size: number): string {
-	if (!row.model) return clip("model ?", size);
+	if (!row.model) return "";
 	const thinking = ` ${oneLine(row.model.thinkingLevel)}`;
 	return clip(oneLine(row.model.modelId), Math.max(1, size - visibleWidth(thinking))) + thinking;
 }
@@ -224,7 +207,7 @@ function highlightRow(line: string, width: number, prefix: number, theme: Theme)
 }
 function paintRosterBlock(lines: string[], row: AgentConversationSummary, selected: boolean, width: number, theme: Theme): string[] {
 	return lines.map((line, index) => {
-		if (!selected || ((index === 1 || lines.length === 1) && (needsAttention(row) || row.state === "failed"))) return pad(line, width);
+		if (!selected || ((index === 2 || lines.length === 1) && (needsAttention(row) || row.state === "failed"))) return pad(line, width);
 		return highlightRow(line, width, index === 0 ? 4 : 2, theme);
 	});
 }
@@ -256,15 +239,15 @@ function rosterRow(
 		const cost = costOf(row);
 		const modelWidth = Math.max(6, Math.floor((width - titleWidth - timeWidth - visibleWidth(cost) - 9) / 2));
 		const activityWidth = Math.max(1, width - titleWidth - timeWidth - visibleWidth(cost) - modelWidth - 8);
-		lines = [`${rail + glyph + title} ${pad(rosterActivity(row, activityWidth, theme), activityWidth)} ${theme.fg("muted", `${pad(rosterModel(row, modelWidth), modelWidth)} ${cost} ${time}`)}`];
+		lines = [`${rail + glyph + title} ${theme.fg("muted", pad(rosterModel(row, modelWidth), modelWidth))} ${pad(rosterActivity(row, activityWidth, theme), activityWidth)} ${theme.fg("muted", `${cost} ${time}`)}`];
 	} else {
 		const identity = rail + glyph + title;
 		const cost = costOf(row);
 		const modelWidth = Math.max(1, width - visibleWidth(cost) - 3);
 		lines = [
 			exactRow ? identity : pad(identity, timeX) + theme.fg("muted", time),
-			rail + rosterActivity(row, width - 2, theme),
 			rail + theme.fg("muted", `${pad(rosterModel(row, modelWidth), modelWidth)} ${cost}`),
+			rail + rosterActivity(row, width - 2, theme),
 		];
 		if (exactRow) lines.push(rail + theme.fg("muted", pad("", timeX - 2) + time));
 	}
@@ -278,7 +261,6 @@ function rosterWindow(
 	selected: string | undefined,
 	height: number,
 	compact: boolean,
-	now: number,
 	requested?: number,
 	exactTime = false,
 ): { capacity: number; start: number; maxStart: number } {
@@ -290,25 +272,10 @@ function rosterWindow(
 		const maxStart = Math.max(0, rows.length - 3);
 		return { capacity: 3, maxStart, start: Math.min(maxStart, Math.max(0, requested ?? index - 1)) };
 	}
-	const capacityAt = (start: number) => {
-		let used = 1;
-		let capacity = 0;
-		let section = "";
-		for (const row of rows.slice(start)) {
-			const next = sectionOf(row, now);
-			const cost = (exactTime ? 4 : 3) + (next !== section ? 1 : 0);
-			if (used + cost > height) break;
-			used += cost;
-			section = next;
-			capacity++;
-		}
-		return Math.max(1, capacity);
-	};
-	let maxStart = rows.length;
-	while (maxStart > 0 && capacityAt(maxStart - 1) >= rows.length - maxStart + 1) maxStart--;
-	let start = Math.min(maxStart, Math.max(0, requested ?? index - Math.floor((height - 3) / 6)));
-	if (requested === undefined && index >= start + capacityAt(start)) start = Math.min(maxStart, index);
-	return { capacity: capacityAt(start), maxStart, start };
+	const capacity = Math.max(1, Math.floor((height - 1) / (exactTime ? 4 : 3)));
+	const maxStart = Math.max(0, rows.length - capacity);
+	const start = Math.min(maxStart, Math.max(0, requested ?? index - Math.floor(capacity / 2)));
+	return { capacity, maxStart, start };
 }
 interface RosterViewport {
 	primaryId?: string;
@@ -342,16 +309,10 @@ export function rosterLines(
 	compact: boolean,
 	viewport?: RosterViewport,
 ): string[] {
-	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, now, viewport?.start, viewport?.exactTime);
+	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, viewport?.start, viewport?.exactTime);
 	viewport?.range?.(start, maxStart);
 	const lines: string[] = [];
-	let section = "";
 	for (const row of rows.slice(start, start + capacity)) {
-		const group = sectionOf(row, now);
-		if (!compact && group !== section) {
-			lines.push(theme.fg("muted", `${group} · ${rows.filter((item) => sectionOf(item, now) === group).length}`));
-			section = group;
-		}
 		const block = rosterRow(row, rows, selected, width, theme, compact, viewport?.exactTime ?? false, now, viewport?.primaryId);
 		rosterHit(viewport, row, block, lines.length, width, height);
 		lines.push(...block.lines);

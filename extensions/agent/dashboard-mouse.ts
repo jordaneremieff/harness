@@ -96,15 +96,15 @@ export class DashboardMouse {
 	}
 }
 const inputs: Record<string, string> = {
-	Enter: "\r",
-	Tab: "\t",
-	Esc: "\x1b",
-	Space: " ",
-	"Ctrl+J": "\x1b[106;5u",
-	"Ctrl+O": "\x0f",
-	"Ctrl+T": "\x14",
-	PgUp: "\x1b[5~",
-	PgDn: "\x1b[6~",
+	enter: "\r",
+	tab: "\t",
+	esc: "\x1b",
+	space: " ",
+	"ctrl+j": "\x1b[106;5u",
+	"ctrl+o": "\x0f",
+	"ctrl+t": "\x14",
+	pgup: "\x1b[5~",
+	pgdn: "\x1b[6~",
 };
 function addHint(
 	mouse: DashboardMouse,

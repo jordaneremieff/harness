@@ -83,13 +83,13 @@ it("hint hit areas include only visible hints and split paired keys", () => {
 	const mouse = new DashboardMouse();
 	const calls: string[] = [];
 	mouse.reset(80, 24);
-	const line = mouseHints(mouse, 23, ["↑↓ select", "PgUp/PgDn read", "Enter choose"], "Esc back", 80, (key) =>
+	const line = mouseHints(mouse, 23, ["↑↓ select", "PgUp/PgDn read", "enter choose"], "esc back", 80, (key) =>
 		calls.push(key),
 	);
-	for (const text of ["↑", "↓", "PgUp", "PgDn", "Enter", "Esc"]) mouse.handle(event(line.indexOf(text), 23, 80, 24));
+	for (const text of ["↑", "↓", "pgup", "pgdn", "enter", "esc"]) mouse.handle(event(line.indexOf(text), 23, 80, 24));
 	assert.deepEqual(calls, ["\x1b[A", "\x1b[B", "\x1b[5~", "\x1b[6~", "\r", "\x1b"]);
 	mouse.reset(20, 24);
-	const clipped = mouseHints(mouse, 23, ["Enter choose", "r refresh"], "Esc back", 20, (key) => calls.push(key));
+	const clipped = mouseHints(mouse, 23, ["enter choose", "r refresh"], "esc back", 20, (key) => calls.push(key));
 	assert.doesNotMatch(clipped, /refresh/);
 	assert.equal(mouse.handle(event(19, 23, 20, 24)), undefined);
 });
@@ -108,9 +108,9 @@ it("the Ctrl+J hint inserts a native newline without submission in either termin
 			});
 			const mouse = new DashboardMouse();
 			mouse.reset(80, 24);
-			const line = mouseHints(mouse, 23, ["Ctrl+J newline"], "Esc back", 80, (data) => composer.handleInput(data));
+			const line = mouseHints(mouse, 23, ["Ctrl+J newline"], "esc back", 80, (data) => composer.handleInput(data));
 			composer.handleInput("First");
-			assert.equal(mouse.handle(event(line.indexOf("Ctrl+J"), 23, 80, 24))?.handled, true);
+			assert.equal(mouse.handle(event(line.indexOf("ctrl+j"), 23, 80, 24))?.handled, true);
 			assert.deepEqual(sent, []);
 			composer.handleInput("Second");
 			assert.equal(composer.getText(), "First\nSecond");
@@ -139,7 +139,7 @@ it("action clicks select before execution and help wheel preserves the native ba
 		click("a actions");
 		click("Configure");
 		assert.deepEqual(actions, []);
-		click("Enter choose");
+		click("enter choose");
 		await turn();
 		assert.deepEqual(actions, ["configure"]);
 		f.ui.handleInput("\x1b");
@@ -147,7 +147,7 @@ it("action clicks select before execution and help wheel preserves the native ba
 		const before = lines().join("\n");
 		f.ui.handleMouse(event(5, 5, 140, 24, { type: "wheel", wheelDelta: 5 }));
 		assert.notEqual(lines().join("\n"), before);
-		click("Esc back");
+		click("esc back");
 		assert.equal(f.ui.navigation.screen, "roster");
 	} finally {
 		f.ui.dispose();
@@ -172,7 +172,7 @@ it("the Actions wheel reaches Details after scrolling past the last action", asy
 		const p = point(lines(), "Configure");
 		assert.equal(f.ui.handleMouse(event(p.x, p.y, 140, 24, { type: "wheel", wheelDelta: 100 }))?.handled, true);
 		assert.deepEqual(actions, []);
-		click("Enter choose");
+		click("enter choose");
 		await turn();
 		assert.deepEqual(actions, ["status"]);
 	} finally {
@@ -205,11 +205,11 @@ for (const width of [80, 140]) {
 			assert.ok(lines().join("\n").includes(new Date(0).toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })));
 			f.ui.handleInput("i");
 			assert.equal(f.state.exactTime, false);
-			click("Enter open");
+			click("enter open");
 			assert.equal(f.ui.navigation.screen, "console");
 			f.ui.handleInput("\x1b");
 			lines();
-			click("Message");
+			click("done · send");
 			assert.equal(f.ui.navigation.screen, "message");
 			f.ui.handleInput("draft retained");
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");
@@ -217,7 +217,7 @@ for (const width of [80, 140]) {
 			assert.equal(f.ui.handleMouse(event(p.x, p.y, width, 30, { type: "drag" })), undefined);
 			assert.equal(f.state.exactTime, false);
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");
-			click("Message");
+			click("done · send");
 			click("draft retained");
 			f.ui.handleInput("\x1b");
 			assert.equal(f.ui.navigation.screen, "roster");
@@ -266,5 +266,34 @@ for (const width of [80, 140]) {
 		} finally {
 			f.ui.dispose();
 		}
+	});
+}
+
+it("lowercase hints retain click actions for every named key", () => {
+	const mouse = new DashboardMouse();
+	const calls: string[] = [];
+	mouse.reset(200, 24);
+	const line = mouseHints(mouse, 23, ["Enter open", "Tab message", "Space toggle", "Ctrl+J newline", "Ctrl+O tools", "Ctrl+T thinking", "PgUp/PgDn read"], "Esc back", 200, (key) => calls.push(key));
+	assert.equal(line, line.toLowerCase());
+	for (const key of ["enter", "tab", "space", "ctrl+j", "ctrl+o", "ctrl+t", "pgup", "pgdn", "esc"]) {
+		assert.equal(mouse.handle(event(line.indexOf(key), 23, 200, 24))?.handled, true, key);
+	}
+	assert.deepEqual(calls, ["\r", "\t", " ", "\x1b[106;5u", "\x0f", "\x14", "\x1b[5~", "\x1b[6~", "\x1b"]);
+});
+
+for (const width of [80, 140]) {
+	it(`flat roster block clicks select the correct agent at ${width}`, async () => {
+		const f = fixture(width, 30, source([row("work", { name: "Worker", modifiedAt: 3 }), row("done", { name: "Finished", state: "done", modifiedAt: 2 }), row("failed", { name: "Failure", state: "failed", error: "quota limit", modifiedAt: 1 })]));
+		try {
+			await turn();
+			const lines = f.ui.render(width).map(stripVTControlCharacters);
+			const block = point(lines, "Failure");
+			assert.equal(f.ui.handleMouse(event(5, block.y + (width >= 100 ? 2 : 0), width, 30))?.handled, true);
+			assert.equal(f.state.selected, "failed");
+			await turn();
+			const next = point(f.ui.render(width).map(stripVTControlCharacters), "Finished");
+			assert.equal(f.ui.handleMouse(event(5, next.y + (width >= 100 ? 1 : 0), width, 30))?.handled, true);
+			assert.equal(f.state.selected, "done");
+		} finally { f.ui.dispose(); }
 	});
 }

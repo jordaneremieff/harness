@@ -871,3 +871,23 @@ it("prioritizes failure rows within the digest bound and exposes excluded failur
   for(const failure of excluded){assert.ok(history.entries.some(e=>e.id===failure.id));const exact=await obs.request("inspect",{view:"exact",entryId:failure.id}) as {text:string};assert.match(exact.text,/large intentional failure/u);}
  } finally {await obs.close();}
 });
+
+it("dashboard failure causes use retained model error text in live and cold reads", async (t) => {
+	const storagePath = join(fixtureRoot(t), "failure.sqlite");
+	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([{ ...answerMessage(), content: [], stopReason: "error", errorMessage: "Insufficient credits for this request" }]), fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+	try {
+		const submitted = await host.submit({ message: "task", requestId: "failure-cause" });
+		const outcome = await host.wait(submitted.submissionId, BACKGROUND_CONTEXT);
+		assert.equal(outcome.status, "unanswered");
+		assert.equal(outcome.reason, "model_error");
+		const live = await host.request("dashboard") as Array<{ state: string; error?: string }>;
+		assert.equal(live[0]?.state, "failed");
+		assert.equal(live[0]?.error, "Insufficient credits for this request");
+	} finally { await host.close(); }
+	const observation = await observationFor(storagePath);
+	try {
+		const rows = await observation.request("dashboard") as Array<{ state: string; error?: string }>;
+		assert.equal(rows[0]?.state, "failed");
+		assert.equal(rows[0]?.error, "Insufficient credits for this request");
+	} finally { await observation.close(); }
+});

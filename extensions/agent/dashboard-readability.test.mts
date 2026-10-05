@@ -21,9 +21,9 @@ it("activity summarizes string arguments without raw JSON, including published p
 it("roster rows show identity, state, activity, model, thinking, cost and relative time", () => {
 	const agent = row("worker", { name: "Research", modifiedAt: 0, currentTool: { name: "read", argument: "notes.md" }, profile: { identity: "worker", role: "Research", handle: "@research", revision: "1", hasExpertise: false, updatedAt: 0 } });
 	const text = rosterLines([agent], agent.id, 64, 12, 15 * 60000, theme, false).join("\n");
-	for (const fact of ["@research · Research", "Working", "read notes.md", "model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
+	for (const fact of ["@research · Research", "●", "read notes.md", "model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
 	assert.ok(dashboardGeometry(160, 45, 3).rosterWidth <= 40);
-	assert.match(rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme, true).join("\n"), /Work.*read.*model high.*\$0.42.*just now/);
+	assert.match(rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme, true).join("\n"), /Work.*model high.*read.*\$0.42.*just now/);
 });
 it("selected status uses the same state labels as the roster", async () => {
 	for (const state of Object.keys(sessionAppearance) as Array<keyof typeof sessionAppearance>) {

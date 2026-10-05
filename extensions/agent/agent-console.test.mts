@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { fixture, turn } from "./dashboard-test-fixture.mts";
+import { fixture, turn, row, source, conversationFrame } from "./dashboard-test-fixture.mts";
 import { agentState } from "./dashboard-state.ts";
 it("opened console focuses the editor and routes all letters and slash text only to the agent", async () => {
 	const sent: Array<{ id: string; text: string; mode: string }> = [];
@@ -41,4 +41,28 @@ it("refused admission retains the draft and disposition", async () => {
 	assert.equal(state.mode, "followUp");
 	assert.match(state.receipt ?? "", /Delivery not confirmed/);
 	f.ui.dispose();
+});
+
+it("composer caption shows target state, delivery mode and known model, context and cost facts", async () => {
+	const observed = source([row("one", { name: "Recipient" })]);
+	const base = conversationFrame();
+	const usage = { input: 160, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	observed.frame = () => conversationFrame({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", provider: "test", model: "model", api: "openai-responses", timestamp: 0, content: [], stopReason: "stop", usage }] }], status: { ...base.status, usage: { models: { "test/model": usage }, tools: {} } } });
+	observed.availability = () => ({ state: "live", at: base.observedAt });
+	const f = fixture(164, 30, observed, { contextWindow: () => 1000 });
+	try {
+		await turn();
+		assert.match(f.ui.render(164).join("\n"), /working · steer at next step · test\/model · high · 16% ctx · \$0.42/);
+		f.ui.handleInput("\t");
+		f.ui.handleInput("\t");
+		assert.match(f.ui.render(164).join("\n"), /working · follow-up after answer/);
+		assert.doesNotMatch(f.ui.render(164).join("\n"), /Message Recipient/);
+	} finally { f.ui.dispose(); }
+	const absent = fixture(100, 30, source([row("empty", { state: "idle", model: undefined, cost: Number.NaN })]));
+	try {
+		await turn();
+		const caption = absent.ui.render(100).find((line) => line.includes("╭─ idle · send"));
+		assert.ok(caption);
+		assert.doesNotMatch(caption, /unknown|unavailable|\?|Model|ctx|\$/);
+	} finally { absent.ui.dispose(); }
 });

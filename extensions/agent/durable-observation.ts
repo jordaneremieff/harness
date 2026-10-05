@@ -781,7 +781,11 @@ function dashboardState(busy: boolean, entries: readonly EntryRecord[], receipt:
 	if (receipt?.status === "done") return "done";
 	if (receipt?.status === "unanswered") return receipt.reason === "aborted" ? "stopped" : "failed";
 	const newest = entries[entries.length - 1];
-	if (newest?.kind === "pi.assistant") return newest.model?.some((message) => message.role === "assistant" && message.stopReason === "aborted") === true ? "stopped" : "done";
+	if (newest?.kind === "pi.assistant") {
+		if (newest.model?.some((message) => message.role === "assistant" && message.stopReason === "aborted")) return "stopped";
+		if (newest.model?.some((message) => message.role === "assistant" && message.stopReason === "error")) return "failed";
+		return "done";
+	}
 	if (newest?.kind === "pi.tool-result") return "interrupted";
 	return "idle";
 }
@@ -905,6 +909,23 @@ function latestReplyOf(entries: readonly EntryRecord[]): string | undefined {
 	return undefined;
 }
 
+async function terminalError(harness: Harness, receipt: DeliveryReceipt | undefined, entries: readonly EntryRecord[], context: Context): Promise<string | undefined> {
+	if (receipt) {
+		const submission = await harness.submission(receipt.submissionId, context);
+		const status = await submission?.status(context);
+		if (status?.type === "input" && status.status === "unanswered" && typeof status.detail === "string" && status.detail.trim()) return status.detail;
+	}
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.kind === "pi.user") break;
+		for (const message of [...(entry.model ?? [])].reverse()) {
+			if (message.role !== "assistant") continue;
+			return message.errorMessage || undefined;
+		}
+	}
+	return receipt?.reason ?? undefined;
+}
+
 /** Live-only dashboard fields: recovery health, current tool, and turn duration. */
 async function dashboardLiveExtras(
 	harness: Harness,
@@ -944,6 +965,7 @@ async function dashboardSummary(
 	const firstMessage = firstMessageOf(meta, entries);
 	const replyText = latestReplyOf(entries);
 	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
+	const error = state === "failed" || state === "stopped" ? await terminalError(harness, receipt, entries, context) : undefined;
 	const row: AgentConversationSummary = {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
 		storageId,
@@ -958,7 +980,7 @@ async function dashboardSummary(
 		cost: cost.cost,
 		partial: cost.partial,
 		...(replyText === undefined ? {} : { latestReply: replyText }),
-		...(state === "failed" || state === "stopped" ? { error: receipt?.reason ?? state } : {}),
+		...(error === undefined ? {} : { error }),
 		...liveExtras,
 		toolCalls: countToolCalls(entries),
 	};

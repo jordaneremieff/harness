@@ -60,7 +60,7 @@ for (const [width, height] of [
 				frame = { ...frame, revision: frame.revision + 1, status: { ...frame.status, busy } };
 				notify();
 				f.ui.handleInput("\t");
-				assert.match(f.ui.render(width).join("\n"), busy ? /Steer at next step/ : /Send/);
+				assert.match(f.ui.render(width).join("\n"), busy ? /working · steer at next step/ : /idle · send/);
 				f.ui.handleInput("\x1b");
 				f.ui.handleInput("a");
 				const screen = f.ui.render(width).join("\n");
@@ -181,8 +181,8 @@ for (const [width, height] of [
 			f.ui.handleInput("\r");
 			const screen = f.ui.render(width).join("\n");
 			assert.match(screen, /0 matches of 1 loaded/);
-			assert.match(screen, /Esc clear find/);
-			assert.doesNotMatch(screen, /Enter (new agent|or n starts)/);
+			assert.match(screen, /esc clear find/);
+			assert.doesNotMatch(screen, /enter (new agent|or n starts)/);
 			f.ui.handleInput("\r");
 			assert.equal(f.ui.navigation.screen, "roster");
 			f.ui.handleInput("\x1b");
@@ -235,7 +235,7 @@ for (const [width, height] of [
 				await turn();
 				assert.equal(f.ui.navigation.screen, "console");
 				assert.equal(f.state.selected, "branch");
-				assert.match(f.ui.render(width).join("\n"), /Message New branch.*Send/);
+				assert.match(f.ui.render(width).join("\n"), /idle · send · test\/model · high/);
 				assert.equal(agentState(f.state, "one").draft, "source draft");
 			} finally {
 				f.ui.dispose();
@@ -515,7 +515,7 @@ it("new agent selects its task and starting conversation before host readiness",
 			assert.match(screen, /◌ Starting/);
 			assert.doesNotMatch(screen, /retained/);
 			assert.match(screen, /Write the startup note/);
-			assert.match(screen, /Message Write the startup note/);
+			assert.match(screen, /starting · send · test\/model · high/);
 			assert.match(screen, /Model +model · high · test[\s\S]*Context/);
 			assert.doesNotMatch(
 				screen,
@@ -548,12 +548,12 @@ it("a busy live frame updates the header, roster, and footer together", async ()
 		frame = conversationFrame();
 		changed();
 		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /Working ·/);
+		assert.match(screen, /working · steer at next step/);
 		assert.match(screen, /Working/);
 		assert.match(screen, /Model +model · high · test[\s\S]*Context/);
 		assert.doesNotMatch(screen, /Done|0 working/);
 		f.ui.handleInput("/");
-		assert.match(f.ui.render(140).join("\n"), /Working ·/);
+		assert.match(f.ui.render(140).join("\n"), /● Working/);
 	} finally {
 		f.ui.dispose();
 	}
