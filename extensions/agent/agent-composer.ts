@@ -9,6 +9,7 @@ import {
 	matchesKey,
 	parseKey,
 	sliceByColumn,
+	visibleWidth,
 	type Component,
 	type Focusable,
 	type TUI,
@@ -138,14 +139,17 @@ export class AgentComposer implements Component, Focusable {
 		return this.editor.handleMouse({ ...event, x: event.x - 1, y, width: event.width - 2, height: event.height - this.paddingRows });
 	}
 
-	private topFrame(width: number, caption: string, mode: string): string {
+	private topFrame(width: number, caption: string | ((width: number) => string), mode: string): string {
 		const theme = this.options.theme;
 		const position = [mode, this.editor.topHidden ? `↑ ${this.editor.topHidden} lines` : ""].filter(Boolean).join(" · ");
-		const top = dashboardHeading(caption, position, this.grip ? width - 4 : width, theme);
+		const frameWidth = this.grip ? width - 4 : width;
+		const captionWidth = Math.max(1, frameWidth - visibleWidth(position ? ` ${position} ` : "") - 6);
+		const label = typeof caption === "function" ? caption(captionWidth) : caption;
+		const top = dashboardHeading(label, position, frameWidth, theme);
 		if (!this.grip) return top;
 		return sliceByColumn(top, 0, width - 5, true) + theme.fg(this.grip === "normal" ? "borderMuted" : "accent", `─${this.grip === "active" ? "━━━" : "┄┄┄"}╮`);
 	}
-	render(width: number, caption = "Message", mode = "", receipt = ""): string[] {
+	render(width: number, caption: string | ((width: number) => string) = "Message", mode = "", receipt = ""): string[] {
 		const lines = this.editor.render(Math.max(1, width - 2));
 		const bottom = lines.findIndex((line, index) => index > 0 && line === "");
 		this.autocompleteRows = Math.max(0, lines.length - bottom - 1);

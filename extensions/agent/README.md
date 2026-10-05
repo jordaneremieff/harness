@@ -912,12 +912,12 @@ split. Message fields keep `r` literal. Escape first returns from a full console
 to the roster. Resize cancels on terminal dimensions or screen changes, hiding,
 or disposal. After a lost release, subsequent input clears the local gesture.
 
-The selected agent's name and state lead the conversation header. Known model,
-provider, thinking level, context, cumulative tokens, and cost stay together.
-Identifiers shorten only when they overflow the actual pane width.
-The console also shows the current activity beside the state. An attention reason or
-conversation warning appears under the facts. No status band separates the
-transcript from the composer.
+The conversation header shows the selected agent's handle and name, with its
+state mark on the right. A muted `provider/model · level` subheading shows known
+model identity. Identifiers shorten only when they overflow the actual pane
+width. An attention reason or conversation warning appears under the identity.
+The header contains no usage line, including in the full console. No status
+band separates the transcript from the composer.
 
 Heading counters describe the loaded selection or current thread page, not an
 unknown global total. A `+` marks incomplete loaded coverage. A scrollbar shows
@@ -933,22 +933,23 @@ A quiet hidden-line count marks omitted output. Ctrl+O expands arguments and
 output; Ctrl+T controls thinking. Stored tools never load another extension's
 renderer or execute through the display definition.
 
-Context comes from the newest completed assistant usage and becomes unknown
-after a newer compaction or reset until another assistant reports usage. The
-primary model registry supplies the context window once per render; the detail
-header and editor caption share that value. An unknown model window stays
-unknown. A live frame adds cumulative input/output tokens from its usage
-ledger, including cached input. An unknown window shows only the known context
-count. The detail header shows a muted `provider/model · level` subheading,
-then known context, input/output, and dollar cost. It omits unknown facts,
-placeholder values, and redundant `Model`, `Tokens`, `Context`, or `Cost` prefixes.
-Identifiers shorten only at the available render width.
+The native editor caption describes the message effect first: `steer at next
+step` or `follow-up after answer` for a busy target, and `send` otherwise. Known
+usage follows in priority order: context, dollar cost, and cumulative input/output
+tokens as one group. Context gives the capacity signal; cost reports cumulative
+spend; cumulative traffic is less important to the next message. The caption
+never repeats the identity or state from the header. The same split applies in
+the roster preview, message view, and full console, including idle and failed
+agents. The delivery receipt uses the bottom border.
 
-The native editor caption shows the target's state and delivery mode, followed
-by known provider/model, thinking level, context use, and cost. It omits absent
-facts and does not repeat the recipient's name from the selected header. A busy
-target shows `steer at next step` or `follow-up after answer`; an idle target
-shows `send`. The delivery receipt uses the bottom border.
+The caption reserves space for native hidden-row counts and the resize grip.
+Narrow widths remove whole groups from the end: traffic first, cost next, then
+context. The message effect remains. Unknown facts and placeholder values stay
+absent. Context comes from the newest completed assistant usage and becomes
+unknown after a newer compaction or reset until another assistant reports usage.
+The primary model registry supplies the context window once per render. An
+unknown window shows only the known context count. A live frame supplies
+cumulative input/output tokens from its usage ledger, including cached input.
 Headings and captions display metadata on one line; body text and drafts retain
 their line breaks. The frame preserves native keyboard input, text selection,
 and caret placement. Below side-by-side widths, compact roster rows sit above

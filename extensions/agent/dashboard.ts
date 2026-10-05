@@ -20,7 +20,7 @@ import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { dashboardActions } from "./dashboard-actions.ts";
 import { clamp, MIN_COMPOSER_ROWS, dashboardGeometry, dashboardPaneGeometry, dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
-import { dashboardRecords, rosterLines, activityOf, sessionAppearance, titleOf, attentionReason, needsAttention } from "./dashboard-roster.ts";
+import { dashboardRecords, rosterLines, activityOf, sessionAppearance, titleOf, attentionReason } from "./dashboard-roster.ts";
 import {
 	agentState,
 	dashboardSessionState,
@@ -1149,11 +1149,11 @@ export class AgentDashboard implements Component, Focusable {
 			mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), this.theme),
 		];
 	}
-	private messageLabel(window?: number): string {
+	private messageLabel(width: number, window?: number): string {
 		if (this.navigation.screen === "new") return `New agent · Enter starts · ${this.creating ? "Starting…" : "Task"}`;
 		if (this.navigation.screen === "find") return "Find loaded agents · Enter keeps filter · Esc cancels";
 		return (
-			this.console?.messageLabel(window) ??
+			this.console?.messageLabel(width, window) ??
 			(this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent")
 		);
 	}
@@ -1288,18 +1288,17 @@ export class AgentDashboard implements Component, Focusable {
 		const text = parts.join(" · ");
 		return this.theme.fg("muted", fitLine(visibleWidth(text) <= width ? text : parts.join("  "), width));
 	}
-	private selectedHeader(width: number, window?: number): string[] {
+	private selectedHeader(width: number): string[] {
 		if (this.navigation.screen === "new") return [this.theme.bold("New agent"), this.theme.fg("muted", "Primary model and directory")];
 		const console = this.console;
 		if (!console) return [this.statusText(), this.notice].filter((line): line is string => Boolean(line)).map((line) => this.theme.fg("muted", line));
 		const row = console.row;
 		const appearance = sessionAppearance[row.state];
-		const activity = this.navigation.screen === "console" && row.state === "working" && !needsAttention(row) ? ` · ${activityOf(row)}` : "";
-		const state = truncateToWidth(`${appearance.glyph} ${appearance.label}${activity}`, Math.floor(width / 2), "…");
+		const state = truncateToWidth(`${appearance.glyph} ${appearance.label}`, Math.floor(width / 2), "…");
 		const name = this.theme.bold(this.theme.fg("text", titleOf(row)));
 		const lines = [`${fitLine(name, Math.max(1, width - visibleWidth(state) - 2))}  ${this.theme.fg(appearance.color, state)}`];
-		const facts = console.footer(width, window);
-		if (facts) lines.push(...facts.split("\n"));
+		const model = console.subheading(width);
+		if (model) lines.push(model);
 		const reason = attentionReason(row);
 		if (reason) lines.push(this.theme.fg("error", reason));
 		if (console.warning) lines.push(this.theme.fg("warning", console.warning));
@@ -1336,7 +1335,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	private renderComposer(composer: AgentComposer | undefined, width: number, maxRows: number, window?: number): { editor: string[]; maxRows: number } {
 		if (!composer) return { editor: [], maxRows };
-		const render = () => composer.render(width, this.messageLabel(window), "", this.navigation.screen === "new" ? this.notice : this.console?.state.receipt);
+		const render = () => composer.render(width, (captionWidth) => this.messageLabel(captionWidth, window), "", this.navigation.screen === "new" ? this.notice : this.console?.state.receipt);
 		this.sizeComposer(composer, maxRows);
 		let editor = render();
 		if (composer.autocompleteRows) { maxRows -= composer.autocompleteRows; this.sizeComposer(composer, maxRows); editor = render(); }
@@ -1356,7 +1355,7 @@ export class AgentDashboard implements Component, Focusable {
 		const paneWidth = shape.conversationWidth;
 		const model = screen === "new" ? undefined : this.console?.row.model;
 		const window = model ? this.operations.contextWindow?.(model.provider, model.modelId) : undefined;
-		const header = this.selectedHeader(paneWidth - 2, window).map((line) => ` ${line} `);
+		const header = this.selectedHeader(paneWidth - 2).map((line) => ` ${line} `);
 		const budget = dashboardPaneGeometry(shape.paneHeight, header.length + 2, 0);
 		const { editor, maxRows } = this.renderComposer(composer, paneWidth, budget.composerMaxRows, window);
 		const geometry = { ...shape, ...dashboardPaneGeometry(shape.paneHeight, header.length + 2, editor.length) };

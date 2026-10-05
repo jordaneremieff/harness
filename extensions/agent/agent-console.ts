@@ -1,12 +1,10 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentConversationEntry } from "./dashboard-types.ts";
 import { updateDraft, subscribeAgentState, type AgentDraftState } from "./dashboard-state.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { ConversationView } from "./conversation-view.ts";
-import { footerText, formatCost } from "./agent-footer.ts";
-import { sessionAppearance } from "./dashboard-roster.ts";
-import { cleanDashboardText } from "./dashboard-conversation.ts";
+import { modelSubheading, formatCost } from "./agent-footer.ts";
 import type { UsageState } from "@earendil-works/pi-durable";
 import { compactTokens, contextTokens, usageFacts } from "./agent-usage.ts";
 export class AgentConsole {
@@ -61,24 +59,32 @@ export class AgentConsole {
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[] = []): void {
 		this.conversation.setContent(entries, live, this.row.cwd);
 	}
-	messageLabel(window?: number): string {
-		const model = this.row.model;
-		const facts = [sessionAppearance[this.row.state].label.toLowerCase(), this.messageMode().toLowerCase()];
-		if (model) facts.push(`${model.provider}/${model.modelId}`, model.thinkingLevel);
-		if (this.context !== undefined) {
-			const capacity = usageFacts(this.context, window).window;
-			facts.push(capacity === undefined ? `${compactTokens(this.context)} ctx` : `${Math.round(this.context / capacity * 100)}% ctx`);
+	messageLabel(width: number, window?: number): string {
+		const usage = usageFacts(this.context, window, this.usage);
+		const facts: string[] = [];
+		if (usage.context !== undefined) {
+			const context = compactTokens(usage.context) + (usage.window === undefined ? "" : `/${compactTokens(usage.window)} (${Math.round(usage.context / usage.window * 100)}%)`);
+			facts.push(`${context} ctx`);
 		}
 		if (Number.isFinite(this.row.cost)) facts.push(formatCost(this.row.cost, this.row.partial));
-		return facts.filter(Boolean).map((fact) => cleanDashboardText(fact).replace(/\s+/g, " ").trim()).join(" · ");
+		const tokens = [usage.input === undefined ? "" : `${compactTokens(usage.input)} in`, usage.output === undefined ? "" : `${compactTokens(usage.output)} out`].filter(Boolean).join(" · ");
+		if (tokens) facts.push(tokens);
+		let label = this.messageMode().toLowerCase();
+		// Retain the effect, then capacity, budget, and cumulative traffic as whole groups.
+		for (const fact of facts) {
+			const next = `${label} · ${fact}`;
+			if (visibleWidth(next) > width) break;
+			label = next;
+		}
+		return label;
 	}
 	messageMode(): string {
 		return this.row.state === "working"
 			? this.state.mode === "steer" ? "Steer at next step" : "Follow-up after answer"
 			: "Send";
 	}
-	footer(width: number, window?: number): string {
-		return footerText(this.row, width, usageFacts(this.context, window, this.usage), this.theme);
+	subheading(width: number): string {
+		return modelSubheading(this.row, width, this.theme);
 	}
 	save(): void {
 		updateDraft(this.state, this.composer.getText());

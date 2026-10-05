@@ -61,7 +61,9 @@ for (const [width, height] of [
 				frame = { ...frame, revision: frame.revision + 1, status: { ...frame.status, busy } };
 				notify();
 				f.ui.handleInput("\t");
-				assert.match(f.ui.render(width).join("\n"), busy ? /working · steer at next step/ : /idle · send/);
+				const message = f.ui.render(width).join("\n");
+				assert.match(message, busy ? /╭─ steer at next step/ : /╭─ send/);
+				assert.match(message, busy ? /Working/ : /Idle/);
 				f.ui.handleInput("\x1b");
 				f.ui.handleInput("a");
 				const screen = f.ui.render(width).join("\n");
@@ -236,7 +238,9 @@ for (const [width, height] of [
 				await turn();
 				assert.equal(f.ui.navigation.screen, "console");
 				assert.equal(f.state.selected, "branch");
-				assert.match(f.ui.render(width).join("\n"), /idle · send · test\/model · high/);
+				const branch = f.ui.render(width).join("\n");
+				assert.match(branch, /╭─ send/);
+				assert.match(branch, /Idle/); assert.match(branch, /test\/model · high/);
 				assert.equal(agentState(f.state, "one").draft, "source draft");
 			} finally {
 				f.ui.dispose();
@@ -516,7 +520,7 @@ it("new agent selects its task and starting conversation before host readiness",
 			assert.match(screen, /◌ Starting/);
 			assert.doesNotMatch(screen, /retained/);
 			assert.match(screen, /Write the startup note/);
-			assert.match(screen, /starting · send · test\/model · high/);
+			assert.match(screen, /╭─ send/);
 			assert.match(screen, /test\/model · high/);
 			assert.doesNotMatch(
 				screen,
@@ -549,7 +553,7 @@ it("a busy live frame updates the header, roster, and footer together", async ()
 		frame = conversationFrame();
 		changed();
 		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /working · steer at next step/);
+		assert.match(screen, /╭─ steer at next step/);
 		assert.match(screen, /Working/);
 		assert.match(screen, /test\/model · high/);
 		assert.doesNotMatch(screen, /Done|0 working/);
@@ -764,7 +768,7 @@ it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc re
 });
 
 for (const width of [80, 164]) {
-	it(`detail and composer share one current model window per render at ${width}`, async () => {
+	it(`composer resolves the current model window once per render at ${width}`, async () => {
 		const observed = source([row("one"), row("two", { model: { provider: "other", modelId: "second", thinkingLevel: "high" } })]);
 		observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
 		const lookups: Array<[string, string]> = [];
@@ -775,14 +779,14 @@ for (const width of [80, 164]) {
 			let screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
 			assert.deepEqual(lookups, [["test", "model"]]);
 			assert.match(screen, /160\/1.0k \(16%\)/);
-			assert.match(screen, /16% ctx/);
+			assert.match(screen, /\(16%\) ctx/);
 			capacity = 2000;
 			f.ui.handleInput("\x1b[B");
 			await turn();
 			screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
 			assert.deepEqual(lookups, [["test", "model"], ["other", "second"]]);
 			assert.match(screen, /160\/2.0k \(8%\)/);
-			assert.match(screen, /8% ctx/);
+			assert.match(screen, /\(8%\) ctx/);
 			capacity = undefined;
 			screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
 			assert.equal(lookups.length, 3);

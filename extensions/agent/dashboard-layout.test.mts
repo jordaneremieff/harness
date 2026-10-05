@@ -19,7 +19,7 @@ it("the roster stays narrow and owns the full body beside the conversation", () 
 	assert.equal(dashboardGeometry(164, 44, 3, true).conversationWidth, 164);
 });
 
-it("console activity leaves room for the selected identity", async () => {
+it("console header keeps identity and state without activity", async () => {
 	const observed = source([row("one", { name: "Selected recipient", state: "working", currentTool: { name: "read", argument: JSON.stringify({ path: `/${"long-path/".repeat(40)}` }) } })]);
 	const f = fixture(60, 20, observed);
 	try {
@@ -27,8 +27,8 @@ it("console activity leaves room for the selected identity", async () => {
 		f.ui.handleInput("\r");
 		const lines = f.ui.render(60).map(stripVTControlCharacters);
 		assert.match(lines[1], /Selected recipient/);
-		assert.match(lines[1], /Working · read/);
-		assert.match(lines[1], /…/);
+		assert.match(lines[1], /● Working/);
+		assert.doesNotMatch(lines[1], /read|long-path|…/);
 		assert.equal(visibleWidth(lines[1]), 60);
 	} finally { f.ui.dispose(); }
 });
@@ -159,9 +159,10 @@ for (const width of [80, 140]) {
 			const pane = () => render().map((line) => line.slice(paneX));
 			const lines = pane();
 			const model = lines.findIndex((line) => /test\/model · high/.test(line));
-			const composer = lines.findIndex((line) => line.includes("╭─ idle · send"));
+			const composer = lines.findIndex((line) => line.includes("╭─ send"));
 			assert.ok(model > 0 && model < composer);
-			assert.match(lines[model + 1] ?? "", /\$0\.42/);
+			assert.doesNotMatch(lines[model + 1] ?? "", /ctx|\$/);
+			assert.match(lines[composer] ?? "", /\$0\.42/);
 			assert.equal(lines[composer - 1]?.trim(), "", "output has bottom padding");
 			assert.match(lines[composer + 1] ?? "", /^│.*│$/);
 			assert.match(lines.at(-2) ?? "", /^╰─+╯$/);

@@ -52,7 +52,7 @@ for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 1
 			const headerY = wide ? 1 : 5;
 			const header = lines.slice(headerY, headerY + 4).map((line) => line.slice(paneX));
 			assert.doesNotMatch(header.join("\n"), /Coverage|unreadable|omitted|Incomplete/);
-			assert.match(header[3], /^─+$/);
+			assert.match(header[2], /^─+$/);
 			const roster = wide ? lines.slice(1, -1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 5);
 			assert.match(roster.join("\n"), skipped ? /18 unreadable/ : /Incomplete/);
 			assert.match(lines[0], /1\/31\+ ╮$/);
@@ -82,8 +82,9 @@ it("selected status keeps live usage and receipts separate from conversation and
 		assert.doesNotMatch(status, /LIVE|RETAINED|Earlier messages available|Roster/);
 		assert.match(status, /● Working/);
 		assert.match(status, /test\/model · high/);
-		assert.match(status, /160\/1.0k \(16%\) ctx/);
-		assert.match(status, /140 in · 20 out/);
+		assert.doesNotMatch(status, /ctx| in| out|\$/);
+		const caption = lines.find((line) => line.includes("╭─ steer at next step"));
+		assert.match(caption ?? "", /160\/1.0k \(16%\) ctx · \$0.42 · 140 in · 20 out/);
 		assert.doesNotMatch(status, /Message admitted/);
 		assert.match(lines.at(-2) ?? "", /╰─ Message admitted/);
 	} finally { f.ui.dispose(); }
