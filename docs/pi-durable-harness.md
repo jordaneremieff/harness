@@ -18,14 +18,17 @@ it does not patch core or emulate ordinary extension contexts.
 The declaration above records the latest Pi release through which the harness
 completed cumulative release intake. Its value is a numeric major.minor.patch
 version or `unknown`. Targeted contract checks and dependency versions do not
-establish that coverage; the initial declaration is unknown.
+establish that coverage. Baseline recovery is required only when prior complete
+coverage is unknown or cannot be established.
 
 Evo reads this declaration from the common ancestor of local main and main's
 configured upstream, using the immutable commit. This excludes dirty files,
 provisional branch declarations, and local-main coverage not present in the
 upstream history. Upstream tracking refs are conservative local evidence, not
 a fresh remote check. Missing Git evidence or an invalid declaration requires
-baseline recovery; never substitute the installed version or lockfile.
+baseline recovery; never substitute the installed version or lockfile. The reader
+contract was source-checked 2026-10-05 against `extensions/evo/release.ts`;
+no release-intake runtime trial was repeated.
 
 The coordinator owns advancement. Review every cumulative changelog entry after
 the prior declaration through the running release, resolve applicable findings,
@@ -283,43 +286,39 @@ how a script uses them.
 ## Checked source boundary
 
 Verified 2026-10-04 against running coding-agent 1.0.2, its nested public
-packages, and the separate published Durable 1.0.2 package. The installed files
-checked here match the extracted 1.0.2 releases. This source review does not
-advance the release-coverage declaration above.
+packages, and the separate published Durable 1.0.2 package. This source review
+does not advance the release-coverage declaration above.
 
-The comparison baseline is the published 1.0.1 packages, not an older lockfile.
 The manifest retains wildcard Pi declarations; the lockfile records one resolved
-graph, not a supported-version ceiling. Dependency installation remains separate
+graph, not a supported-version ceiling. The repository lockfile and installed
+dependency trees are separate facts. Dependency installation remains separate
 from worktree source synchronization; each checkout needs `npm ci` after a
 lockfile update. Loaded extensions resolve non-aliased dependencies separately.
 
 | Source | Checked state (2026-10-04) |
 |---|---|
-| Running coding agent | 1.0.2; checked files match the extracted published package |
+| Running coding agent | 1.0.2 |
 | Running nested packages | AI, agent-core, TUI, Codemode, MCP, Chord, and Telemetry are 1.0.2 |
-| Extracted release packages | Coding-agent, AI, agent-core, TUI, Durable, Codemode, MCP, Chord, Client, Server, Protocol, and Telemetry are 1.0.2 |
-| Consumer validation checkout | All of those Pi packages are 1.0.2; its checked files match the extracted releases |
-| Comparison baseline | Published 1.0.1 packages; repository lockfile and installed dependency trees remain separate facts |
+| Public release packages | Coding-agent, AI, agent-core, TUI, Durable, Codemode, MCP, Chord, Client, Server, Protocol, and Telemetry are 1.0.2 |
 | npm publication | Explicit `@earendil-works/pi-coding-agent@1.0.2` and `@earendil-works/pi-durable@1.0.2` metadata both name gitHead `cd32f7725fdbddbaecdff5b1e68491563394e0ca` |
 | Published Durable exports | 1.0.2 retains root, environment, tools, memory, JSONL, SQLite, and testing surfaces, including Node adapters; the root adds `ProviderDoc` and `ProviderState` |
 | Release source | [v1.0.2][release], not ahead-of-release branch state |
 
-The file-by-file comparison excludes source maps and dependency subtrees.
-Unchanged cited files support the current source check. Changed defining files
-were re-read: model configuration and provider composition, per-level sampling,
-Durable provider identity, conversation creation, generation, compaction, views,
-and exports. Coding-agent's generated bundle carries the same release changes;
+The checked defining sources cover model configuration and provider composition,
+per-level sampling, Durable provider identity, conversation creation, generation,
+compaction, views, and exports. Source maps and dependency subtrees are outside
+that check. Coding-agent's generated bundle carries the same release changes;
 it is not independent runtime evidence. Catalog updates remain upstream-owned.
-Agent-core, TUI, Codemode, MCP, Chord, Client, Server, Protocol, and Telemetry
-executable sources are unchanged from 1.0.1; package metadata and, where present,
-changelog headings differ.
+The 2026-10-04 source check found no executable-source changes from published
+1.0.1 in agent-core, TUI, Codemode, MCP, Chord, Client, Server, Protocol, or
+Telemetry; package metadata and, where present, changelog headings differ.
 
 These are source checks, not cumulative intake acceptance or package-wide
 runtime equivalence. The declaration above records cumulative intake separately.
 Repository-specific implementation and test claims are not independently
-re-established by this source comparison. Earlier runtime trials were not
-repeated for 1.0.2. Interactive behavior, live provider compatibility, durable
-recovery, and crash or power-loss behavior retain their stated runtime limits.
+re-established by those checks. Earlier runtime trials were not repeated for
+1.0.2. Interactive behavior, live provider compatibility, durable recovery, and
+crash or power-loss behavior retain their stated runtime limits.
 
 Installed paths below are relative to the running
 `@earendil-works/pi-coding-agent` package root. `pi-agent-core/`, `pi-ai/`,
@@ -453,7 +452,19 @@ Durable's value; it must not replace it with a storage-keyed identity or make
 forks share that key. Stash's standalone request supplies its own UUIDv7 and
 stays outside this conversation identity contract.
 
-This establishes request affinity, not provider cache hits, retained cache
+The native host also forwards configured transport, provider timeout, provider
+retry count, and maximum retry delay. Provider timeout overrides the HTTP idle
+timeout; idle zero maps to 2147483647 ms. These request options are separate from
+Durable generation retries. Installed Pi AI's Codex SSE transport bounds response
+headers with that timeout, not the response-body read; WebSocket transport uses
+an idle timeout. There is no additional shared-stream timeout. Source-checked
+2026-10-05 against `extensions/agent/durable-services.ts`, Durable 1.0.2
+`dist/harness/{generation,compaction}.js`, and Pi AI 1.0.2
+`dist/api/{openai-codex-responses,lazy}.js`. These transport-specific source
+contracts establish neither a universal whole-request deadline nor a live
+provider trial.
+
+The persisted identity establishes request affinity, not provider cache hits, retained cache
 lifetimes, or measured cost savings. The real-host regression in
 `extensions/agent/durable-runtime.test.mts` establishes one persisted non-storage
 UUID across four turns, each with a tool round, and a host restart, plus the
@@ -485,10 +496,23 @@ marker; the reference contains the admitted submission ID, not the Reporter ID.
 Creation-only dispatch and ordinary-primary messages carry no native result
 reference. The reference does not establish settlement. Native `agent_await` separately
 retains the original request for exact results without provider work merely to
-wait. It returns partial outcomes on explicit interaction or selected-run
-release; real abort stops the request without canceling independent producers.
-Normal delivery remains ordinary, with only wholly covered queued copies
-withdrawn at return. Late or placed copies can cost another model turn.
+wait. It accepts 1–16 exact references, each keyed by canonical session identity
+and native submission ID; a supplied request ID must agree. Answers are bounded
+to 16000 UTF-16 units without splitting a surrogate pair; truncation or an excerpt
+requires an exact `agent_inspect` continuation. A `done` outcome differs from
+`unanswered` or `unavailable`; `settled` means every named result is done, not
+that its outcome was accepted.
+
+Explicit admitted input or a report from a named producer releases the same
+native await cohort. Automatic inputs defer while awaiting, and check-ins matching
+a named producer and request are suppressed. Selected-run release returns partial
+outcomes without admitting input; real abort stops the request without canceling independent
+producers. Normal delivery remains ordinary, with only wholly covered queued
+copies withdrawn at return. Late or placed copies can cost another model turn.
+Local self and result cycles are refused; remote graph completeness is not
+inferred. These agent-host contracts were source-checked 2026-10-05 against
+`extensions/agent/{awaited-results,await-execution,await-observation}.ts` on
+Pi Durable 1.0.2, not by a new runtime trial.
 
 The agent slice projects semantic `awaiting` separately from native task state.
 Status, dashboard rows, and existing check-ins include held requests, bounded
@@ -553,9 +577,12 @@ passive connections.
 
 The agent host's current lifetime contract ignores passive primary and peer
 connections and footer subscriptions. Retirement waits for the configured idle
-interval with no native work, pending delivery row or in-flight delivery effect,
-request, local control, or open
-conversation/task observation. Observation tokens cover the open-to-subscribe
+interval with no native work, active delivery row or in-flight delivery effect,
+request, local control, or open conversation/task observation. Pending and active
+delivery are separate facts: unsettled intents remain active, but rows for
+proven-dead ordinary recipients retain the recovery marker without alone
+preventing retirement or requiring a recovery monitor.
+Observation tokens cover the open-to-subscribe
 gap and release on close, abort, setup failure, and disconnect. Token operations
 serialize native watch ownership, and failed setup releases only its own reference.
 A failed live frame reports unavailable and releases its token without closing the
@@ -567,11 +594,18 @@ snapshots; a synchronous seal closes process, local, and delivery admission befo
 shutdown begins. A delivery effect remains work even if another caller already
 acknowledged its row. Completion of that effect starts a new idle interval.
 
-Final catalog publication precedes recovery-marker clearance, runtime cleanup,
-writer release, and transport close. Publication or marker failure rejects the
-clean close and retains the claim until process death. Clean retirement preserves
-catalog costs and causes no recovery acquisition or crash-budget charge. Cold
+Final catalog publication precedes recovery-marker settlement, runtime cleanup,
+writer release, and transport close. The marker clears only when native work and
+all pending delivery are absent. Publication or marker failure rejects the clean
+close and retains the claim until process death. Clean retirement preserves
+catalog costs and causes no recovery acquisition or crash-budget charge, even
+when a delivery marker remains: writer release before transport close identifies
+clean retirement. Unexpected host loss with a retained claim is separate. Cold
 reads stay writer-free; later controls acquire a fresh host.
+
+The local lifetime and marker contracts were source-checked 2026-10-05 against
+`extensions/agent/{durable-runtime,host-process,manager}.ts`. No crash, power-loss,
+or retirement runtime trial was repeated.
 
 Pi windows and hosts retain loaded code on independent timelines. The manager
 does not replace a host because its source release differs. Natural idle
@@ -596,7 +630,13 @@ supply hashes; operations carrying opaque native data also bind to the exact
 experimental Durable release. Both sides refuse incompatible operations before
 dispatch. Other operations continue. Retained manager, native contribution, and
 primary notice interfaces have independent identities. This permits concurrent
-current processes, not backward readers or predecessor migrations. The
+current processes, not backward readers or predecessor migrations. Source-checked
+2026-10-05 on Pi Durable 1.0.2, `extensions/agent/version-contract.ts` declares
+`manager/1.5.0`, `recovery-state/1.1.0` for the response, and
+`native-controls/1.2.0` bound to the loaded Durable release. Submit and receipts
+requests and responses use 1.1.0; the task-submit response uses 1.1.0; await-state
+and await-release requests and responses use 1.0.0. These independent identities
+do not follow source-release ordering. The
 [agent README](../extensions/agent/README.md#current-process-contracts) defines
 maintenance and restart behavior.
 
@@ -1016,11 +1056,25 @@ hosts remain independent processes. The next primary startup reconnects and
 registers its primary channel, receives retained reports and outcomes through
 host durable-delivery, and relaunches dead hosts with unfinished work. The host
 routes catalog owners as untrusted follow-ups; a noncatalog owner is reached
-through its registered primary channel, and only an absent or proven-dead owner
-endpoint permits a labeled fallback that broadcasts to every live registered
-primary within one bounded discovery, preserves the original owner identity,
-and stays pending unless discovery and every delivery complete.
+through its registered primary channel. Only an absent or proven-dead ordinary
+owner endpoint permits a labeled informational fallback to every live registered
+primary within one bounded discovery. Unknown or incompatible endpoints refuse
+fallback, and incomplete discovery refuses before dispatch. Copies preserve the
+original owner identity and retain each accepted recipient independently; they
+never acknowledge the original owner's row, even after complete discovery and
+delivery. Each accepted normal-owner route acknowledges independently when
+another route fails. Direct thread notices stay pending without broadcast.
 Canceled observation waits release their listeners without canceling tasks.
+
+On Pi Durable 1.0.2, queued-input recovery requires no live run, a queued non-write
+input, and the latest retained assistant task's failed `model_error` outcome.
+One replay-safe passive write names that failed generation and adds a host status
+notice, not an operator instruction or an extension of the failed run. Recovery
+checks once on open and follows commit notifications, not periodic retry. The
+host opens without scheduling, installs every native contribution and its
+request-context section, then resumes and checks the queued inputs. Source-checked
+2026-10-05 against `extensions/agent/{durable-delivery,stranded-inputs,durable-host,durable-runtime}.ts`;
+no reload or recovery runtime trial was repeated.
 
 A native `agent_command` reload requires idle storage and settled controls.
 It reloads cwd-bound resources and native registrations, then reopens the same
@@ -1061,9 +1115,14 @@ fallback contract. Pending rows coalesce per watched task and owner, and
 settlement suppresses stale rows before dispatch and removes every corresponding
 check-in row across owners, including acknowledgements and fallback markers.
 The digest exists only in `report.message`. A live model owner wakes;
-operator notices and fallback broadcasts stay quiet. One accepted fallback
-broadcast per task and owner prevents repeat broadcast noise. Reports and
-check-ins delivered into native owners arm no recursive check-ins.
+operator notices and fallback broadcasts stay quiet. A retained accepted fallback
+broadcast per task and owner suppresses later check-in broadcasts independently
+of original-owner acknowledgment; informational copies leave that owner's row
+pending. The marker is set only after complete discovery and accepted deliveries,
+and settlement removes it with the task's check-in rows. Reports and check-ins
+delivered into native owners arm no recursive check-ins. This suppression contract
+was source-checked 2026-10-05 against `extensions/agent/durable-delivery.ts` on
+Pi Durable 1.0.2, not by a new runtime trial.
 
 The native tool slots and task records expose no exact tool-start timestamp.
 The digest labels the tool-call age instead. Native usage is cumulative per
@@ -1180,9 +1239,8 @@ lookups support reacquisition after reopen
 (`pi-durable/dist/{types.d.ts,harness/types.d.ts}`). These are substantive
 retention primitives, not just status labels. The agent host adds bounded
 inspection and owner-directed receipts over those public records. Each native
-fork retains the source unchanged in the same storage. The former ordinary
-worker and detached-run implementations are removed; their old files on disk
-remain untouched.
+fork retains the source unchanged in the same storage. Ordinary agent files on
+disk remain untouched and unread by the Durable host.
 
 ## Convergence decisions
 
@@ -1196,7 +1254,7 @@ scheduler or transcript. The ordinary SDK remains the primary terminal host.
 | Process ownership | Agent host writer claim before storage open; same-user Unix control socket over the public `pi-server`/`pi-client` transport (private 0700 directory, owner-only 0600 socket, exact `serverId` handshake) and automatic dead-owner recovery |
 | Nested tools | Native call tasks, selected ToolTask hook chain, argument validation, committed intent, replay policy, and structured results |
 | Observation | Public native entries, documents, submissions, and task views; bounded catalog projections with explicit coverage. [Agent controls](../extensions/agent/README.md#controls) distinguish status summaries, fleet model evidence, and discovery; cold inspection uses a bounded SQLite snapshot without resume |
-| Owner delivery | Host durable-delivery owns retained intents, receipts, reports, and automatic unanswered-task check-ins; catalog follow-up or registered primary channel; labeled broadcast fallback only for an absent or dead owner, acknowledged only over complete discovery and deliveries; no exactly-once cross-host promise |
+| Owner delivery | Host durable-delivery owns retained intents, receipts, reports, and automatic unanswered-task check-ins; catalog follow-up or registered primary channel; labeled informational broadcast only for an absent or proven-dead ordinary owner, with complete discovery and accepted deliveries; copies never acknowledge the original owner, and accepted normal routes acknowledge independently; direct thread notices remain pending without broadcast; no exactly-once cross-host promise |
 | UI | Dashboard over an untouched native primary; roster and selected live conversation, full-window agent console, contextual actions, and explicit coverage. Host-owned Durable view and task-graph watches supply live frames. An embeddable InteractiveMode view and the experimental coding-agent client remain unpublished |
 | Handover and doctrine | Native transport and retention carry content; its meaning and authority remain application concerns |
 
