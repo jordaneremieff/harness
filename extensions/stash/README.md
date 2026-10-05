@@ -27,6 +27,35 @@ Pickup is one system action. The command reads the selected artifact and sends i
 pi "/stash get <id>"
 ```
 
+## Use
+
+A handover is a saved description of an effort for another session. A checkpoint
+is a working synthesis saved outside normal handover discovery.
+
+1. Save your current effort with `stash_write`, including its outcome so far,
+   decisions, open questions, sources, and exact next actions. Saving does not
+   complete the effort.
+2. Find a handover with `stash_list`, then inspect it with `stash_read` and the
+   returned id. Continue a truncated read through its file path.
+3. For an authorized body correction, use [stash_edit](#edit-a-saved-handover)
+   with the current digest and unique exact text. A pickup note accompanies a
+   request without changing the saved body; an edit changes that body.
+4. Close finished work with `stash_complete` and a concrete outcome. Use
+   [Lifecycle](#lifecycle) for deliberate release, reopen, and archive actions.
+
+For operator pickup, `/stash get <id>` activates the handover and delivers it as
+one request. The browser requires Pi's interactive terminal (TUI) mode; direct
+commands provide the non-browser path.
+
+## Configuration
+
+See [Storage](#storage) for `PI_STASH_DIR` and the default artifact location,
+[Capacity configuration](#capacity-configuration) for checkpoint directories and
+pressure thresholds, and [Distillation model and thinking](#distillation-model-and-thinking)
+for model selection. Each table owns its defaults and refusal rules. The
+[configuration convention](../../docs/conventions/extension-config.md) owns
+environment setup.
+
 ## Terminal cards
 
 The stash tools render their own cards in the interactive transcript. A collapsed
@@ -73,8 +102,8 @@ states, the first matched field, and an excerpt. Then use `stash_read` with the
 selected ID before resuming work. Search never picks up, closes, reopens, rotates,
 or claims an effort. Artifact text remains evidence, not fresh authority.
 
-Without `query`, the existing newest-first list, filters, limits, and output
-remain unchanged. `cursor` requires `query`. With a query:
+Without `query`, the tool lists recent artifacts newest first with optional
+filters and a result limit. `cursor` requires `query`. With a query:
 
 - Matching is literal and case-insensitive through JavaScript Unicode `iu`
   simple case folding. Regular-expression punctuation is literal. There is no
@@ -207,7 +236,9 @@ before selecting exact edit text.
 `stash_edit` accepts `id`, `expectedDigest`, and an `edits` array of
 `{ oldText, newText }` replacements. Every nonempty `oldText` must occur exactly
 once in the original body. Edits must not overlap; later edits do not match
-text introduced by earlier edits. An empty `newText` deletes its matched text.
+text introduced by earlier edits. Requests contain 1–32 replacements; each
+`oldText` and `newText` is at most 100,000 UTF-16 code units and must contain no
+unpaired surrogate. An empty `newText` deletes its matched text.
 To append an amendment, replace a unique existing anchor with that anchor plus
 the new information. Replacement text receives credential redaction. The tool
 preserves the leading title heading and all frontmatter bytes, including
@@ -261,9 +292,10 @@ before injecting its full handover; repeated pickup of an active artifact is
 idempotent, and the pickup message then disowns the earlier activation: it names
 the recorded activation time and states that any prior session's claim is
 superseded, so a fresh session never wastes effort reconciling a phantom
-predecessor. `release` returns an active artifact to pristine `open` — the
+predecessor. `release` returns an active artifact to `open` — the
 operator-initiated inverse of pickup for a session that died or polluted its
-context; it keeps every durable byte and clears the activation claim. The
+context. It preserves the handover body and unrelated metadata, sets the state
+to `open`, and removes the activation timestamp. The
 pickup message names `stash_complete` and the exact id so the resumed
 agent has a deterministic closure path. `stash_read` only reads; it does not activate
 or claim an effort. `stash_complete` accepts open or active artifacts, requires an
@@ -310,15 +342,14 @@ The first token always selects an action. Creation therefore requires `new`, so
 hints such as `abort the plan` and `help me` remain unambiguous as
 `/stash new abort the plan` and `/stash new help me`. Unknown actions show
 replacement guidance instead of silently starting a distiller. A bare token shaped
-like a full stash id is treated as a stale `pi "/stash <id>"` resume string and
-rejected with `use /stash get <id>`. The previous `pickup` verb is hard-rejected
+like a full stash id is rejected with `use /stash get <id>`. The `pickup` verb is hard-rejected
 with its replacement syntax; it is not aliased. Typing `/stash ` autocompletes the
 actions; after an id-bearing action it completes stash id prefixes.
 
 Rotation is the operator-initiated archive path for stale efforts: an open or
 closed artifact moves into the store's dot-hidden `.trash` directory
 (see Storage), where it no longer appears in listings, pickup, or lifecycle
-changes. Active artifacts cannot be rotated while a session owns them;
+changes. Rotation refuses active artifacts until deliberate completion or release;
 completion remains the only close path for an active effort, and release the
 only way back to open. The file is retained byte-for-byte and restoring it is
 a plain move back into the store.
@@ -571,23 +602,27 @@ stash capability as a primary session. The ordinary factory emits one
 discovery and host installation.
 
 The native extension supplies `stash_write`, `stash_list`, `stash_read`,
-`stash_complete`, and `stash_rotate` with the same parameter schemas, tool
-descriptions, and model guidance as the ordinary tools. The external stash
-store and its artifacts remain the single source of truth; no stash state is
-copied into Durable documents. Each tool declares its replay class explicitly:
+`stash_edit`, `stash_complete`, and `stash_rotate` with the same parameter schemas,
+tool descriptions, and model guidance as the ordinary tools. Artifacts remain
+files in the external store; Durable documents hold capacity and distillation
+control/outcome state. Each tool declares its replay class explicitly:
 
 | Tool | Replay | Why |
 |---|---|---|
 | `stash_write` | `safe` | The call records its creation timestamp in a durable memo before the effect, and writes through the store's replayable publication. A rerun with the same memo and input reuses its byte-identical artifact instead of allocating a suffixed duplicate. |
 | `stash_list` | `safe` | Read-only; a rerun repeats no external effect. |
 | `stash_read` | `safe` | Read-only; a rerun repeats no external effect. |
+| `stash_edit` | `unsafe` | Body publication is not automatically replayed after interruption. Read the current artifact before another attempt. |
 | `stash_complete` | `unsafe` | A lifecycle mutation. An interrupted call leaves the model an interrupted result and is never rerun; the store's own identity checks protect the artifact. |
 | `stash_rotate` | `unsafe` | A lifecycle mutation with the same boundary as completion. |
 
 `stash_list` carries the native structured result that the ordinary tool
 returns as `structuredContent` on `details.structuredContent`, and declares the
-same `outputSchema` for nested-call consumers. `stash_complete` and
-`stash_rotate` keep the ordinary sequential execution mode.
+same `outputSchema` for nested-call consumers. `stash_edit`, `stash_complete`,
+and `stash_rotate` use sequential execution. An edit error does not always mean
+no write: lock cleanup can fail after publication. Read the current artifact
+before repair or retry; the [edit contract](#edit-a-saved-handover) owns revision
+checks and the cooperating-writer limit.
 
 ### Capacity guidance
 
@@ -660,11 +695,12 @@ Durable differences from the ordinary entrypoint:
 
 Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments. `PI_STASH_MODEL` and `PI_STASH_THINKING` configure `/stash new` distillation (see Background distillation). `PI_SESSION_ID` is read as a fallback when the session manager supplies no session id.
 
-Flat files are the store of record because handovers must outlive sessions and remain greppable. Session entries were rejected because their lifecycle is the session. Project-local storage was rejected because it fragments cross-project continuity and pollutes checkouts.
+Flat files keep handovers independent of session lifetimes and project checkouts,
+with plain-text content available for direct inspection.
 
 Each artifact is `<utcTimestamp>-<slug>[-<collision>].md` with JSON-valued frontmatter and a Markdown body. The store provides these guarantees:
 
-- Credential-shaped content is redacted deterministically: before distillation, the transcript and observed references are scanned and credential-shaped values (prefixed provider tokens, JWTs, bearer headers, private keys, `key: value` assignments, URL userinfo passwords) are replaced with `[REDACTED]`; the same pass runs over the generated payload before the artifact is written, so no secret depends on the model's discretion. The operator hint is trusted input and is never redacted. Artifacts written before this version are not retroactively scrubbed.
+- Credential-shaped content is redacted deterministically: before distillation, the transcript and observed references are scanned and credential-shaped values (prefixed provider tokens, JWTs, bearer headers, private keys, `key: value` assignments, URL userinfo passwords) are replaced with `[REDACTED]`; the same pass runs over the generated payload before the artifact is written. Redaction of these recognized shapes does not depend on the model's discretion. This is not a general secret classifier: values outside the patterns pass through unchanged. The operator hint is trusted input and is never redacted. Existing artifacts receive no automatic scrub.
 
 - Directory mode is enforced as `0700`. Ordinary discovery sweeps regular artifacts to `0600` once per process; reads enforce `0600` per open. Bounded search hardens only the artifacts it opens and leaves any pending whole-store sweep pending.
 - Completed temporary files are hard-linked into place. Existing names are never replaced; concurrent same-second writes receive numeric suffixes.
@@ -678,7 +714,7 @@ Each artifact is `<utcTimestamp>-<slug>[-<collision>].md` with JSON-valued front
 Artifacts are retained until the operator explicitly removes their exact `.md`
 files, or rotates them into `.trash`. There is no automatic pruning: continuity
 data should not disappear because of an age default or an accidental keypress.
-Rotation is the only lifecycle move; it is operator-initiated, requires
+Rotation moves an artifact out of the discoverable store; it is operator-initiated, requires
 confirmation in the browser, and is recoverable — archived files stay in place
 at 0600 under the store's `.trash` directory until the operator moves them back
 or removes them. Rotated artifacts are invisible to discovery, listing, pickup,
@@ -701,7 +737,7 @@ The overlay loads the newest 200 artifacts and marks the count with `+` when old
 
 Up/Down selects artifacts, `b`/Space pages the preview, Enter picks up, `a` picks up with an operator note collected in the host (an empty note degrades to a plain pickup), `c` copies the resume command with an in-footer success or failure flash, and `o` closes an active effort after the operator supplies its required outcome. `h` opens a self-contained explanation of the browser, its lifecycle effects, and the safe-close contract; Up/Down and `b`/Space scroll it, and `h` or Escape returns. Tab remains the discovery and uncommon-action path. Its dialog offers pick up or rotate (open), close with outcome or release back to open (active), and reopen or rotate (closed); rotation asks for explicit confirmation and notes that the artifact remains recoverable.
 
-The browser does not provide mechanical state cycling. Copy is the only safe lifecycle-independent mutation that can remain inside the overlay. Pickup must inject the handover (plain or with a note — the note needs the host's input dialog), completion must collect an outcome, and reopen or rotation requires deliberate confirmation; release is reachable only through the actions dialog, where it sits behind an explicit choice and loses nothing durable, so those paths resolve to the host and reopen with refreshed store data.
+The browser does not provide mechanical state cycling. Copy is the only safe lifecycle-independent mutation that can remain inside the overlay. Pickup must inject the handover (plain or with a note — the note needs the host's input dialog), completion must collect an outcome, and reopen or rotation requires deliberate confirmation; release is reachable only through the actions dialog, where it sits behind an explicit choice and retains the handover body, so those paths resolve to the host and reopen with refreshed store data.
 
 The component derives its row budget from the host TUI and the overlay's height margin. Every framed line paints the full overlay width, the key footer sits above a closing border, and very narrow or short terminals fall back to a bounded list with an explicit close line. The fallback list scrolls with the selected row, including after a resize, whenever a row fits above the footer. Stored terminal and bidi controls are rendered as inert escape text.
 
@@ -732,10 +768,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 node --test extensions/stash/*.test.mts
 npm test
 
-npx --yes --package typescript@5.9.3 tsc --noEmit \
-  --allowImportingTsExtensions --module ESNext --moduleResolution Bundler \
-  --target ES2022 --types node --skipLibCheck --strict \
-  extensions/stash/*.ts
+npm run typecheck
 
 printf '%s\n' '{"id":"commands","type":"get_commands"}' \
   | pi -e . --mode rpc --no-session --offline
@@ -755,10 +788,9 @@ reference section; capture-failure tests cover TUI, RPC, print, and JSON modes.
 These tests use synthetic sessions and controlled replies, not provider-quality
 evaluation.
 
-The stash files type-check clean against the installed Pi declarations.
-Lifecycle behavior is covered by the focused and full tests in
-`extensions/stash/*.test.mts` and by TypeScript against the installed Pi
-declarations. The runtime layer is declared by the peer dependencies in
+`npm run typecheck` checks TypeScript against the installed Pi declarations;
+it does not establish lifecycle execution. The runtime layer is declared by
+the peer dependencies in
 `package.json`; verify the installed package versions with `npm ls` before
 repeating any version-specific claim.
 
