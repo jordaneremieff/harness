@@ -38,7 +38,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
-import { AGENT_CONTROL_TOOL_NAMES, MODEL_SELECTION_GUIDANCE, agentControlGuidanceLines } from "./control-guidance.ts";
+import { AGENT_CONTROL_TOOL_NAMES, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
 import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
 import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
@@ -647,7 +647,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		if (dispatch === undefined) return errorResult(`${failure}: no dispatch callback.`);
 		try {
-			return textResult(controlText(await dispatch(method, params)));
+			const value = controlText(await dispatch(method, params));
+			return textResult(method === "report" ? `${value}\n${REPORT_DELIVERY_BOUNDARY}` : value);
 		} catch (error) {
 			return errorResult(`${failure}: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -1115,7 +1116,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const sendTool = durable.defineTool({
 		name: "agent_send",
 		description:
-			"Send a message to an agent conversation. A busy conversation receives steering at its next boundary; mode followUp waits for its current answer. The answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
+			"Send a message to an agent conversation. A busy conversation receives steer at its next tool boundary; mode followUp or report waits for its current run to end. The answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) => {

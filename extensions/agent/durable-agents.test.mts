@@ -937,6 +937,24 @@ it("spawns a native child through the existing temporary-directory alias", async
 	assert.equal(outcome?.text, `Spawned linked as native child conversation ${child.conversationId} in your storage. The prompt was delivered and the answer will report back.`);
 });
 
+it("includes the busy-run boundary in native report receipts", async (t) => {
+	const route = createRoute();
+	const calls: DispatchCalls = [];
+	const { registry } = buildRegistry(async (method, params) => {
+		calls.push({ method, params: { ...params } });
+		return { sourceId: "report-source", acknowledged: false };
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(async () => { await harness.close(context); });
+	route.script.push({ tool: "agent_send", args: { sessionId: "other-storage", message: "Progress", mode: "report" } });
+	await say(root, "REPORT");
+	assert.equal(calls[0]?.method, "report");
+	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_send");
+	assert.ok(outcome && !outcome.isError);
+	assert.match(outcome.text, /report waits for its current run to end/u);
+	assert.match(outcome.text, /Use steer.*next tool boundary/u);
+});
+
 it("spawns a child in a new storage when the cwd differs", async (t) => {
 	const route = createRoute();
 	const holder: DispatchHolder = {};

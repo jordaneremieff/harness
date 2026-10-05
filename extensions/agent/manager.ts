@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { readFleetStatus } from "./fleet-status.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 import type { AgentProfile } from "./profile-schema.ts";
@@ -422,7 +423,10 @@ export class AgentManager {
 		const versionError = hostRequestVersionError(requested, client.runtimeContract);
 		if (versionError) throw versionError;
 		if (method === "attach") return this.attachClient(client, sessionId, params.model);
-		if (method === "report") return client.request("submit", { sessionId, message: `Report from ${caller.id}:\n${String(params.message ?? "")}`, requestId: params.requestId ?? randomUUID(), whenBusy: "followUp" });
+		if (method === "report") {
+			const receipt = await client.request("submit", { sessionId, message: `Report from ${caller.id}:\n${String(params.message ?? "")}`, requestId: params.requestId ?? randomUUID(), whenBusy: "followUp" });
+			return { ...(receipt as Record<string, unknown>), boundary: REPORT_DELIVERY_BOUNDARY };
+		}
 		if (["submit", "rewind", "fork"].includes(method)) params.requestId ??= randomUUID();
 		const outcome = requested === "task-submit"
 			? await client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" })

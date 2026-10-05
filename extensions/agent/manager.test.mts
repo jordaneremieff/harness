@@ -227,6 +227,26 @@ it("preserves a successful spawn admission when its status snapshot fails", asyn
 	} finally { manager.close(); }
 });
 
+it("explains report consumption without changing follow-up admission", async (t) => {
+	const root = fixtureRoot(t);
+	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+			seen.push({ method, params: params as Record<string, unknown> });
+			return { submissionId: 7 };
+		}),
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	const receipt = await manager.control("report", { sessionId: record.storageId, message: "Progress", requestId: "report-progress" }, { id: "caller", cwd: root }) as { submissionId: number; boundary: string };
+	assert.equal(receipt.submissionId, 7);
+	assert.match(receipt.boundary, /report waits for its current run to end/u);
+	assert.match(receipt.boundary, /steer.*next tool boundary/u);
+	const admission = seen.find((call) => call.method === "submit");
+	assert.equal(admission?.params.whenBusy, "followUp");
+	assert.equal(admission?.params.requestId, "report-progress");
+});
+
 for (const operation of ["submit", "task-submit"] as const) it(`preserves caller admission keys and creates absent keys through ${operation}`, async (t) => {
 	const root = fixtureRoot(t);
 	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];

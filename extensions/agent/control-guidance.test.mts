@@ -70,6 +70,8 @@ it("keeps the contract, reporting, polling, live-work, and authority guidance", 
 	assert.match(all, /substantive result or exact blocker, not a waiting note/u);
 	assert.match(all, /Never poll with sleeps or repeated status\/inspection calls/u);
 	assert.match(all, /Settlement notices arrive automatically/u);
+	assert.match(all, /report waits for its current run to end/u);
+	assert.match(all, /Use steer to change a busy agent's work at its next tool boundary/u);
 });
 
 it("describes retained delivery and automatic unfinished-task check-ins", () => {

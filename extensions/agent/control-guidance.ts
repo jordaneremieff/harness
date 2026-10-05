@@ -40,6 +40,9 @@ export interface AgentToolGuidance {
 /** Selection is a current task decision, not a fixed provider roster. */
 export const MODEL_SELECTION_GUIDANCE = "Use an exact provider/model identity. Apply current task directions and the operator's route, budget, and role preferences before selection. Verify the exact model and its supported thinking level. Configured access is not operator use; past use is not preference.";
 
+/** Admission is not model consumption; reports keep the follow-up delivery mode. */
+export const REPORT_DELIVERY_BOUNDARY = "If the recipient is busy, this report waits for its current run to end. Use steer to change a busy agent's work at its next tool boundary; steer does not interrupt a running tool.";
+
 /** Per-tool snippets and guidelines for the current controls. */
 export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, AgentToolGuidance>> = {
 	agent_spawn: {
@@ -57,6 +60,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		snippet: "Send a task to an agent session",
 		guidelines: [
 			"Send interim reports, blocking questions, and corrections with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. Do not replace the terminal result with an interim report. A terminal answer settles the current request: include the substantive result or exact blocker, not a waiting note, closing pleasantry, or promise of a later answer. Use followUp for unrelated new work on a reused expert.",
+			REPORT_DELIVERY_BOUNDARY,
 			"Unanswered model tool tasks get automatic owner check-ins. checkInMinutes overrides the default and 0 disables. Check-ins wake a model owner, not an operator owner; delivered reports and check-ins do not start another check-in task. Assess the unfinished task rather than treat the notice as an answer.",
 			"With deliverAt, the input is scheduled at that absolute time instead of being admitted now; the storage host must run at the deadline.",
 		],

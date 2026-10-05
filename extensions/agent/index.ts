@@ -294,7 +294,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_send",
-		"Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Coordinate with one concise proposal containing its conditions and one answer, not repeated acknowledgments. Put agreements that others must see in a thread when a participant storage exists. Idle agents start; busy agents receive durable steering. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
+		"Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Coordinate with one concise proposal containing its conditions and one answer, not repeated acknowledgments. Put agreements that others must see in a thread when a participant storage exists. Idle agents start; busy agents receive steer at the next tool boundary. Reports and follow-ups wait for the current run to end. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
 		send,
 		(input, ctx, callId) => {
 			if (input.mode === "report") {
