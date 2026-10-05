@@ -1119,9 +1119,11 @@ counter. These ages describe recorded changes, not current activity.
 Press `i` in the roster or a thread, or click a visible time in fullscreen mode,
 to switch every dashboard time to the absolute local date and time, such as
 `Oct 4, 2026, 12:01 PM`. Neither form has an `Updated` label or a local suffix.
-Exact time adds a line to each wide roster block so the full date does not
-consume the name. The same choice applies to thread event times and survives close and reopen
-in the same Pi session and process; it is not saved to disk. A retained
+Exact time shares the activity line at the right of each wide roster block;
+activity shortens to fit, and the name and model retain their own lines. Both
+time modes keep three-line wide blocks and one-line compact rows. The same
+choice applies to thread event times and survives close and reopen in the same
+Pi session and process; it is not saved to disk. A retained
 `@handle` leads the label, followed by the display name when it fits. A historical
 first input is a labeled fallback, never a standing role. Duplicate labels receive unique
 identity suffixes. Unknown cost shows `$?`; a known partial cost shows a trailing
@@ -1133,8 +1135,9 @@ The roster is one flat list ordered by recent activity, with identity as the
 tie-breaker. State glyphs replace group headers. Failure text uses the actual
 retained error, without a `Work failed:` prefix. The host publishes the native
 unanswered submission's error detail, or the last assistant error, in the
-existing error field. Attention names unavailable or conflicted storage, a host
-error, failed compaction, failed work with an error, or exhausted retries. Done
+existing error field. A delivery receipt defines the outcome only while no
+newer input supersedes it; an unowned report still changes the current outcome.
+Attention names unavailable or conflicted storage, a host error, failed compaction, failed work with an error, or exhausted retries. Done
 and deliberately stopped work do not require attention by themselves. The selected view shows the one concrete Attention
 reason. Selection follows identity, not roster index, and roster order stays
 fixed during an arrow sequence. Text entry locks its recipient even while

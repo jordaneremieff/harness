@@ -765,13 +765,16 @@ function newestTimestamp(entry: EntryRecord | undefined): number | undefined {
 	return undefined;
 }
 
-function latestReceipt(delivery: AgentDeliveryState | undefined, conversationId: ConversationId): DeliveryReceipt | undefined {
+/** A newer input without a delivery owner still supersedes an older owned outcome. */
+function currentReceipt(delivery: AgentDeliveryState | undefined, conversationId: ConversationId, entries: readonly EntryRecord[]): DeliveryReceipt | undefined {
 	if (!delivery) return undefined;
 	let latest: DeliveryReceipt | undefined;
 	for (const receipt of Object.values(delivery.receipts)) {
 		if (receipt.conversationId !== conversationId) continue;
 		if (latest === undefined || receipt.submissionId > latest.submissionId) latest = receipt;
 	}
+	const newestInput = [...entries].reverse().find((entry) => entry.kind === "pi.user");
+	if (latest && newestInput && (latest.entryId === null || latest.entryId < newestInput.id)) return undefined;
 	return latest;
 }
 
@@ -959,7 +962,7 @@ async function dashboardSummary(
 	]);
 	const agent = conversation ? await conversation.agent(context) : undefined;
 	const entries = conversation ? await activeEntries(conversation, context) : [];
-	const receipt = latestReceipt(delivery, record.id);
+	const receipt = currentReceipt(delivery, record.id, entries);
 	const state = dashboardState(live?.run !== undefined, entries, receipt);
 	const cost = usageCost(usage);
 	const firstMessage = firstMessageOf(meta, entries);

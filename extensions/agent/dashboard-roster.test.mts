@@ -25,7 +25,7 @@ it("selected exact-time blocks close their styles before the adjacent pane", () 
 	colored.bold = (text: string) => `\x1b[1m${text}\x1b[22m`;
 	const lines = rosterLines([row("one", { name: "Recipient" })], "one", 29, 10, 0, colored, false, { exactTime: true });
 	const selected = lines.filter((line) => line.includes("▌"));
-	assert.equal(selected.length, 4);
+	assert.equal(selected.length, 3);
 	assert.ok(selected.every((line) => line.endsWith("\x1b[0m")));
 });
 
@@ -187,3 +187,33 @@ it("flat roster keeps model second, failure text third, and hit areas on each bl
 		}
 	}
 });
+
+for (const exactTime of [false, true]) {
+	it(`flat mixed-state rows appear once and keep their height with exact time ${exactTime}`, () => {
+		const now = new Date(2026, 9, 5, 13, 41).getTime();
+		const rows = dashboardRecords({ observedAt: now, sessions: [
+			row("alpha", { name: "UniqueAlpha", modifiedAt: now, state: "working" }),
+			row("bravo", { name: "UniqueBravo", modifiedAt: now - 1000, state: "failed", error: "quota limit" }),
+			row("charlie", { name: "UniqueCharlie", modifiedAt: now - 2000, state: "working" }),
+			row("delta", { name: "UniqueDelta", modifiedAt: now - 3000, state: "done", latestReply: "Result ready" }),
+			row("echo", { name: "UniqueEcho", modifiedAt: now - 4000, state: "starting" }),
+		] }, "");
+		for (const compact of [false, true]) {
+			const shown = compact ? rows.slice(0, 3) : rows;
+			const hits: Array<[string, number, number]> = [];
+			const timeHits: Array<[string, number]> = [];
+			const lines = rosterLines(shown, "alpha", 80, compact ? 4 : 16, now, theme, compact, { exactTime, row: (item, line, height) => hits.push([item.id, line, height]), timestamp: (item, line) => timeHits.push([item.id, line]) });
+			assert.equal(lines.length, compact ? 4 : 16);
+			for (const item of shown) {
+				const name = item.name;
+				assert.ok(name);
+				assert.equal(lines.filter((line) => line.includes(name)).length, 1, item.id);
+			}
+			assert.deepEqual(hits, shown.map((item, index) => [item.id, index * (compact ? 1 : 3), compact ? 1 : 3]));
+			assert.deepEqual(timeHits, shown.map((item, index) => [item.id, index * (compact ? 1 : 3) + (exactTime && !compact ? 2 : 0)]));
+			assert.ok(lines.every((line) => visibleWidth(line) <= 80));
+			assert.doesNotMatch(lines.join("\n"), /Working ·|Attention ·|Today ·/);
+			if (exactTime) assert.match(lines[compact ? 0 : 2], /Oct 5, 2026, 1:41 PM/);
+		}
+	});
+}

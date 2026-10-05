@@ -8,6 +8,7 @@ import { LiveDoc, SystemEntry, UserEntry, type EntryRecord, type ConversationId,
 import type { Message } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DurableHost } from "./durable-host.ts";
+import { settleDeliveries } from "./durable-controls.ts";
 import { InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
 import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
@@ -891,3 +892,39 @@ it("dashboard failure causes use retained model error text in live and cold read
 		assert.equal(rows[0]?.error, "Insufficient credits for this request");
 	} finally { await observation.close(); }
 });
+
+for (const ownedFails of [true, false]) {
+	it(`live and cold outcomes supersede an owned ${ownedFails ? "failure" : "success"} after unowned reports`, async (t) => {
+		const storagePath = join(fixtureRoot(t), "report-outcomes.sqlite");
+		const failure = (text: string) => ({ ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: text });
+		const models = await scriptedRuntime([ownedFails ? failure("Old quota failure") : answerMessage("Old successful answer"), failure("New connection failure"), answerMessage("Recovered successfully")]);
+		const host = await DurableHost.open({ ...hostOptions(storagePath, models, fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+		const check = async (state: string, error?: string, reply?: string) => {
+			const live = await host.request("dashboard") as Array<{ state: string; error?: string; latestReply?: string }>;
+			assert.equal(live[0]?.state, state);
+			assert.equal(live[0]?.error, error);
+			if (reply) assert.equal(live[0]?.latestReply, reply);
+			const observation = await observationFor(storagePath);
+			try {
+				const cold = await observation.request("dashboard") as Array<{ state: string; error?: string; latestReply?: string }>;
+				assert.equal(cold[0]?.state, state);
+				assert.equal(cold[0]?.error, error);
+				if (reply) assert.equal(cold[0]?.latestReply, reply);
+			} finally { await observation.close(); }
+		};
+		try {
+			const first = await host.submit({ message: "owned task", requestId: "owned", ownerId: "owner", origin: "operator" });
+			await host.wait(first.submissionId, BACKGROUND_CONTEXT);
+			await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
+			await check(ownedFails ? "failed" : "done", ownedFails ? "Old quota failure" : undefined);
+			const second = await host.submit({ message: "unowned failure report", requestId: "unowned-failure", origin: "model" });
+			await host.wait(second.submissionId, BACKGROUND_CONTEXT);
+			await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
+			await check("failed", "New connection failure");
+			const third = await host.submit({ message: "unowned success report", requestId: "unowned-success", origin: "model" });
+			await host.wait(third.submissionId, BACKGROUND_CONTEXT);
+			await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
+			await check("done", undefined, "Recovered successfully");
+		} finally { await host.close(); }
+	});
+}

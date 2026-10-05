@@ -247,13 +247,14 @@ function rosterRow(
 		lines = [
 			exactRow ? identity : pad(identity, timeX) + theme.fg("muted", time),
 			rail + theme.fg("muted", `${pad(rosterModel(row, modelWidth), modelWidth)} ${cost}`),
-			rail + rosterActivity(row, width - 2, theme),
+			exactRow
+				? pad(rail + rosterActivity(row, Math.max(0, timeX - 3), theme), timeX) + theme.fg("muted", time)
+				: rail + rosterActivity(row, width - 2, theme),
 		];
-		if (exactRow) lines.push(rail + theme.fg("muted", pad("", timeX - 2) + time));
 	}
 	return {
 		lines: paintRosterBlock(lines, row, chosen, width, theme),
-		timeX, timeWidth, timeLine: exactRow ? 3 : 0,
+		timeX, timeWidth, timeLine: exactRow ? 2 : 0,
 	};
 }
 function rosterWindow(
@@ -262,7 +263,6 @@ function rosterWindow(
 	height: number,
 	compact: boolean,
 	requested?: number,
-	exactTime = false,
 ): { capacity: number; start: number; maxStart: number } {
 	const index = Math.max(
 		0,
@@ -272,7 +272,7 @@ function rosterWindow(
 		const maxStart = Math.max(0, rows.length - 3);
 		return { capacity: 3, maxStart, start: Math.min(maxStart, Math.max(0, requested ?? index - 1)) };
 	}
-	const capacity = Math.max(1, Math.floor((height - 1) / (exactTime ? 4 : 3)));
+	const capacity = Math.max(1, Math.floor((height - 1) / 3));
 	const maxStart = Math.max(0, rows.length - capacity);
 	const start = Math.min(maxStart, Math.max(0, requested ?? index - Math.floor(capacity / 2)));
 	return { capacity, maxStart, start };
@@ -309,7 +309,7 @@ export function rosterLines(
 	compact: boolean,
 	viewport?: RosterViewport,
 ): string[] {
-	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, viewport?.start, viewport?.exactTime);
+	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, viewport?.start);
 	viewport?.range?.(start, maxStart);
 	const lines: string[] = [];
 	for (const row of rows.slice(start, start + capacity)) {
