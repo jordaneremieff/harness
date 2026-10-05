@@ -84,13 +84,13 @@ async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefin
 	const id = input.conversationId as ConversationId;
 	const live = await tx.doc(LiveDoc, id);
 	const usage = await tx.doc(UsageDoc, id);
-	const awaiting = await readAwaitFact(tx, input.senderIdentity.split(":")[0], id);
+	const watched = await tx.submissionByRequest(id, input.requestId);
+	const awaiting = watched === undefined ? undefined : await readAwaitFact(tx, input.senderIdentity.split(":")[0], id, watched.id);
 	if (awaiting !== undefined) return { cost: retainedCost(usage), digest: bounded(awaitFactLines(awaiting).join("\n"), 2400) };
 	const recent = await recentActivity(tx, id, inputEntry);
 	// Native input placement follows the prior tool round and clears its live tools.
 	const running = (inputEntry === undefined ? [] : live.tools ?? []).filter((tool) => tool.status === "running").slice(0, 4);
 	const generation = inputEntry === undefined ? undefined : live.generation;
-	const watched = await tx.submissionByRequest(id, input.requestId);
 	const retry = watched === undefined ? undefined : await producerRetryFact(tx, id, [{ sessionId: input.senderIdentity, submissionId: watched.id, requestId: input.requestId }], maxAttempts);
 	const lines = [...(retry === undefined ? [] : retryFactLines(retry)), recent.truncated
 		? `Tool calls: at least ${recent.calls} (bounded retained entries for watched task).`

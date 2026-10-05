@@ -55,36 +55,99 @@ async function activeDeclarations(tx: Tx, conversationId: ConversationId): Promi
 	return active;
 }
 
-export async function ownAwaitFact(tx: Tx, conversationId: ConversationId): Promise<OwnAwaitFact | undefined> {
-	const active = await activeDeclarations(tx, conversationId);
+function exactReferenceKey(result: ResultReference): string {
+	return JSON.stringify([result.sessionId, result.submissionId, result.requestId ?? null]);
+}
+
+function matchesReference(expected: ResultReference, observed: ResultReference): boolean {
+	return referenceKey(expected) === referenceKey(observed) && (expected.requestId === undefined || expected.requestId === observed.requestId);
+}
+
+async function ownFact(tx: Tx, conversationId: ConversationId, active: AwaitDeclaration[]): Promise<{ own: OwnAwaitFact; producers: ProducerAwaitFact[] } | undefined> {
 	if (active.length === 0) return undefined;
 	const results = new Map<string, OwnAwaitFact["results"][number]>();
 	for (const declaration of active) for (const result of declaration.results) {
 		const outcome = declaration.outcomes.find((item) => referenceKey(item.result) === referenceKey(result));
-		results.set(referenceKey(result), { result, status: outcome?.status ?? "pending", ...(outcome?.reason === undefined ? {} : { reason: safeFactText(outcome.reason).text }), ...(outcome?.answerEntryId === undefined ? {} : { answerEntryId: outcome.answerEntryId }) });
+		results.set(exactReferenceKey(result), { result, status: outcome?.status ?? "pending", ...(outcome?.reason === undefined ? {} : { reason: safeFactText(outcome.reason).text }), ...(outcome?.answerEntryId === undefined ? {} : { answerEntryId: outcome.answerEntryId }) });
 	}
 	const held = [...new Set(active.flatMap((item) => item.inputs))];
-	const retryKeys = new Set(active.flatMap((item) => (item.producers ?? []).flatMap((producer) => producer.execution?.results.map(referenceKey) ?? [])));
-	const ranked = [...results.values()].sort((left, right) => Number(retryKeys.has(referenceKey(right.result))) - Number(retryKeys.has(referenceKey(left.result))));
+	const producers = mergedProducers(active, [...results.values()]);
+	const retryKeys = new Set(producers.flatMap((producer) => producer.execution?.results.map(exactReferenceKey) ?? []));
+	const ranked = [...results.values()].sort((left, right) => Number(retryKeys.has(exactReferenceKey(right.result))) - Number(retryKeys.has(exactReferenceKey(left.result))));
 	const fact: OwnAwaitFact = { runId: active[0].runId, heldInputs: held.slice(0, 16), results: ranked.slice(0, 16), queuedInputCount: await queuedAwaitInputCount(tx, conversationId, [...results.values()].map((item) => item.result)), queueSnapshot: "committed InboxDoc", omitted: { heldInputs: Math.max(0, held.length - 16), results: Math.max(0, results.size - 16) } };
 	while (Buffer.byteLength(JSON.stringify(fact), "utf8") > OWN_AWAIT_BYTE_LIMIT && fact.results.length > 0) { fact.results.pop(); fact.omitted.results++; }
-	return JSON.parse(JSON.stringify(fact)) as OwnAwaitFact;
+	return { own: JSON.parse(JSON.stringify(fact)) as OwnAwaitFact, producers };
 }
 
-export async function readAwaitFact(tx: Tx, storageId: string, conversationId: ConversationId): Promise<AwaitFact | undefined> {
-	const own = await ownAwaitFact(tx, conversationId);
-	if (own === undefined) return undefined;
-	const all = [...new Map((await activeDeclarations(tx, conversationId)).flatMap((item) => item.producers ?? []).map((fact) => [fact.sessionId, fact])).values()];
-	const producers = all.map((producer) => {
-		const results = producer.execution?.results.filter((result) => own.results.some((item) => item.status === "pending" && referenceKey(item.result) === referenceKey(result) && (item.result.requestId === undefined || item.result.requestId === result.requestId)));
-		const { execution, ...rest } = producer;
-		return { ...rest, ...(execution === undefined || !results?.length ? {} : { execution: { ...execution, results } }) };
-	}).sort((left, right) => Number(right.execution !== undefined) - Number(left.execution !== undefined)).slice(0, 16);
+export async function ownAwaitFact(tx: Tx, conversationId: ConversationId): Promise<OwnAwaitFact | undefined> {
+	return (await ownFact(tx, conversationId, await activeDeclarations(tx, conversationId)))?.own;
+}
+
+/** A read with no retry clears only its declared references, not another await's inputs. */
+function mergedProducers(active: AwaitDeclaration[], results: OwnAwaitFact["results"]): ProducerAwaitFact[] {
+	const pending = new Set(results.filter((item) => item.status === "pending").map((item) => exactReferenceKey(item.result)));
+	const groups = new Map<string, { latest: ProducerAwaitFact; references: Map<string, { result: ResultReference; fact: ProducerAwaitFact }> }>();
+	const observations = active.flatMap((declaration) => (declaration.producers ?? []).map((fact) => ({ declaration, fact })));
+	for (const { declaration, fact } of observations) {
+		let group = groups.get(fact.sessionId);
+		if (group === undefined) { group = { latest: fact, references: new Map() }; groups.set(fact.sessionId, group); }
+		if (fact.observedAt >= group.latest.observedAt) group.latest = fact;
+		for (const result of declaration.results.filter((result) => result.sessionId === fact.sessionId)) {
+			const key = exactReferenceKey(result); const prior = group.references.get(key);
+			const retries = (value: ProducerAwaitFact) => value.unavailable === undefined && value.execution?.results.some((item) => matchesReference(result, item));
+			if (prior === undefined || fact.observedAt > prior.fact.observedAt || (fact.observedAt === prior.fact.observedAt && !retries(fact))) group.references.set(key, { result, fact });
+		}
+	}
+	return [...groups.values()].map<ProducerAwaitFact>(({ latest, references }) => {
+		const { execution: _execution, awaiting, ...base } = latest;
+		const rest = { ...base, ...(awaiting === undefined ? {} : { awaiting: { ...awaiting, results: [...awaiting.results], heldInputs: [...awaiting.heldInputs], omitted: { ...awaiting.omitted } } }) };
+		const retries = [...references.values()].filter(({ result, fact }) => fact.unavailable === undefined && fact.execution?.results.some((item) => matchesReference(result, item)) && pending.has(exactReferenceKey(result)));
+		const newest = retries.reduce<typeof retries[number] | undefined>((prior, item) => prior === undefined || item.fact.observedAt > prior.fact.observedAt ? item : prior, undefined);
+		if (latest.unavailable !== undefined || newest?.fact.execution === undefined) return rest;
+		const current = retries.filter((item) => item.fact.execution?.runId === newest.fact.execution?.runId);
+		// The merged timestamp never makes older reference evidence appear fresher.
+		return { ...rest, observedAt: Math.min(...current.map((item) => item.fact.observedAt)), execution: { ...newest.fact.execution, results: current.map((item) => item.result) } };
+	}).sort((left, right) => Number(right.execution !== undefined) - Number(left.execution !== undefined));
+}
+
+export async function readAwaitFact(tx: Tx, storageId: string, conversationId: ConversationId, heldInput?: SubmissionId): Promise<AwaitFact | undefined> {
+	const active = await activeDeclarations(tx, conversationId);
+	if (heldInput !== undefined && !active.some((declaration) => declaration.inputs.includes(heldInput))) return undefined;
+	const projected = await ownFact(tx, conversationId, active);
+	if (projected === undefined) return undefined;
+	const { own, producers: all } = projected;
+	retainRetryReferences(all, own.results);
+	const producers = all.sort((left, right) => Number(right.execution !== undefined) - Number(left.execution !== undefined)).slice(0, 16);
 	const identity = canonicalIdentity(storageId, conversationId);
-	const cycles = () => producers.filter((producer) => own.results.some((item) => item.status === "pending" && item.result.sessionId === producer.sessionId) && producer.awaiting?.results.some((item) => item.status === "pending" && item.result.sessionId === identity && own.heldInputs.includes(item.result.submissionId))).map((item) => item.sessionId);
-	const fact: AwaitFact = { ...own, producers, omittedProducers: Math.max(0, all.length - 16), likelyCycle: cycles(), coverage: "one hop; remote graph incomplete" };
-	while (Buffer.byteLength(JSON.stringify(fact), "utf8") > AWAIT_BYTE_LIMIT && producers.length > 0) { producers.pop(); fact.omittedProducers++; fact.likelyCycle = cycles(); }
+	const fact: AwaitFact = { ...own, producers, omittedProducers: Math.max(0, all.length - 16), likelyCycle: [], coverage: "one hop; remote graph incomplete" };
+	fact.likelyCycle = likelyCycles(fact, identity);
+	while (Buffer.byteLength(JSON.stringify(fact), "utf8") > AWAIT_BYTE_LIMIT && producers.length > 0) {
+		trimAwaitDetail(fact);
+		fact.likelyCycle = likelyCycles(fact, identity);
+	}
 	return JSON.parse(JSON.stringify(fact)) as AwaitFact;
+}
+
+function retainRetryReferences(producers: ProducerAwaitFact[], results: OwnAwaitFact["results"]): void {
+	const pending = new Set(results.filter((item) => item.status === "pending").map((item) => exactReferenceKey(item.result)));
+	for (const producer of producers) if (producer.execution !== undefined) {
+		producer.execution.results = producer.execution.results.filter((result) => pending.has(exactReferenceKey(result)));
+		if (producer.execution.results.length === 0) delete producer.execution;
+	}
+}
+
+function likelyCycles(fact: AwaitFact, identity: string): string[] {
+	return fact.producers.filter((producer) => fact.results.some((item) => item.status === "pending" && item.result.sessionId === producer.sessionId) && producer.awaiting?.results.some((item) => item.status === "pending" && item.result.sessionId === identity && fact.heldInputs.includes(item.result.submissionId))).map((item) => item.sessionId);
+}
+
+/** Spend the shared byte budget on retry identity before generic dependency detail. */
+function trimAwaitDetail(fact: AwaitFact): void {
+	const generic = fact.producers.findLastIndex((producer) => producer.execution === undefined);
+	if (generic >= 0) { fact.producers.splice(generic, 1); fact.omittedProducers++; return; }
+	const detail = fact.producers.find((producer) => producer.execution !== undefined && producer.awaiting !== undefined && producer.awaiting.results.length > 0)?.awaiting;
+	if (detail !== undefined) { detail.results.pop(); detail.omitted.results++; return; }
+	if (fact.results.length > 1) { fact.results.pop(); fact.omitted.results++; retainRetryReferences(fact.producers, fact.results); return; }
+	fact.producers.pop(); fact.omittedProducers++;
 }
 
 export async function recordProducerAwait(tx: Tx, taskId: TaskId, fact: ProducerAwaitFact): Promise<void> {
@@ -94,7 +157,11 @@ export async function recordProducerAwait(tx: Tx, taskId: TaskId, fact: Producer
 	if (declaration === undefined || !declaration.results.some((result) => result.sessionId === fact.sessionId)) return;
 	const prior = declaration.producers?.find((item) => item.sessionId === fact.sessionId);
 	const semantic = (item: ProducerAwaitFact) => JSON.stringify({ awaiting: item.awaiting, execution: item.execution, unavailable: item.unavailable });
-	if (prior !== undefined && semantic(prior) === semantic(fact)) return;
+	if (prior !== undefined && semantic(prior) === semantic(fact)) {
+		// A repeated read still clears a newer conflicting observation of the same input.
+		const supersedes = (await tx.doc(AwaitDoc)).declarations.some((other) => other.taskId !== declaration.taskId && other.decision === "awaiting" && other.conversationId === declaration.conversationId && other.runId === declaration.runId && other.results.some((result) => result.sessionId === fact.sessionId && declaration.results.some((own) => exactReferenceKey(own) === exactReferenceKey(result))) && other.producers?.some((item) => item.sessionId === fact.sessionId && item.observedAt > prior.observedAt && item.observedAt <= fact.observedAt && semantic(item) !== semantic(fact)));
+		if (!supersedes) return;
+	}
 	declaration.producers ??= [];
 	const index = declaration.producers.findIndex((item) => item.sessionId === fact.sessionId);
 	if (index < 0) declaration.producers.push(fact); else declaration.producers[index] = fact;

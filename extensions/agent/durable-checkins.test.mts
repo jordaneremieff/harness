@@ -224,6 +224,20 @@ it("excludes the answered task from the watched task's reply and tool count", { 
 	assert.match(report.message, /Last tool lines:\nline one\nline two\nline three/u);
 });
 
+it("does not give a queued watched input the active held input's dependency retry", { timeout: 60000 }, async (t) => {
+	const { report } = await digestFixture(t, async (tx, conversationId) => {
+		const entry = await tx.appendEntry(UserEntry, conversationId, { model: [{ role: "user", content: "active task", timestamp: Date.now() }] });
+		const held = await tx.createSubmission({ conversationId, requestId: "active-task", type: "input", status: "placed", entry: entry.id });
+		await placeWatched(tx, conversationId, true);
+		const owner = await tx.createTask(CheckInTask, { conversationId, requestId: "holding", ownerId: "owner", senderIdentity: "producer", message: "held", whenBusy: "followUp", origin: "operator", admittedAt: Date.now(), intervalMs: 300000 }, { ownership: { kind: "conversation" }, conversationId, background: true });
+		const live = await tx.doc(LiveDoc, conversationId); live.run = { taskId: owner, inputs: [held.id] };
+		const result = { sessionId: "producer:2", submissionId: 23, requestId: "active-worker" };
+		(await tx.doc(AwaitDoc)).declarations.push({ taskId: owner, callId: "await", conversationId, runId: owner, cohort: [owner], inputs: [held.id], results: [result], outcomes: [], decision: "awaiting", producers: [{ sessionId: result.sessionId, observedAt: 1, source: "producer await-state", execution: { state: "provider-retry", runId: 20, results: [result], attempt: 18, maxAttempts: 21, nextRetryAt: Date.now() + 300000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false } }] });
+	});
+	assert.doesNotMatch(report.message, /Awaiting|provider retry|Weekly\/Monthly|active-worker/u);
+	assert.equal(report.message, "Tool calls: 0 (watched task).\nCurrent step: queued or between steps.\nLatest reply excerpt (not a result): No reply text yet.");
+});
+
 it("does not report the active task's live state while the watched input is queued", { timeout: 60000 }, async (t) => {
 	const { report } = await digestFixture(t, async (tx, conversationId) => {
 		await tx.appendEntry(AssistantEntry, conversationId, { model: [assistant("Earlier answer.", 5)] });

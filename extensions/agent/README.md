@@ -812,14 +812,21 @@ bounded credential-redacted, control-escaped provider error with an explicit
 truncation flag. Queued inputs and other runs do not inherit the retry. Submission
 status stays pending. Provider reset text remains a provider claim; it is never
 parsed into a scheduling guarantee or quota diagnosis. Producer facts state their
-source and observation time. Unavailable observations remain unknown. Known reverse
-edges to held requests show a likely mutual wait, not a complete remote graph.
-Vector and byte bounds report omitted requests, results, and producers.
-Unchanged semantic observations do not write new durable facts. Existing commit
-notifications refresh and clear retry facts on retry exit, run settlement, abort,
-or observation loss; no extra timer or recursive watch exists. Retry details
-precede generic wait lines in the bounded check-in body. Status and the dashboard
-use the same dependency lines. This does not change check-in cadence, native
+source and observation time. Parallel awaits merge retry facts by exact result
+reference. A newer observation clears only the references it covers. References
+from different producer runs do not merge. Merged observation times do not make
+older references appear fresh. Unavailable observations remain unknown. Known
+reverse edges to held requests show a likely mutual wait, not a complete remote
+graph. Vector and byte bounds preserve retry facts before generic details and
+report omitted requests, results, and producers. Repeated matching observations
+do not write new durable facts. Existing commit notifications refresh and clear
+retry facts on retry exit, run settlement, abort, or observation loss; no extra
+timer or recursive watch exists. Retry details
+precede generic wait lines in the bounded check-in body. A dependency check-in
+requires its watched submission to belong to the current run's held inputs. A
+queued watched input does not inherit another input's dependency retry. Status
+and the dashboard use the same dependency lines. This does not change check-in
+cadence, native
 suspension, named-result suppression, result routing, or control authority.
 
 Use existing controls to recover when authorized: inspect the provider claim,
