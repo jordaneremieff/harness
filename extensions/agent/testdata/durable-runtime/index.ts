@@ -139,7 +139,7 @@ function awaited(context: TranscriptContext, mode: string, signal?: AbortSignal)
 	const latestCall = context.messages.findLast((item) => item.role === "assistant" && item.content.some((part) => part.type === "toolCall"));
 	const toolName = latestCall?.role === "assistant" ? latestCall.content.find((part) => part.type === "toolCall")?.name : undefined;
 	const text = userText(context);
-	if (text.includes("HELD_AWAIT_SOURCE")) return pending(signal);
+	if (text.includes("HELD_AWAIT_SOURCE")) return process.env.DURABLE_TEST_RETRY === "1" ? retryError() : pending(signal);
 	if (last?.role === "toolResult" && toolName === "agent_await") return completed([{ type: "text", text: "AWAIT_FINISHED" }], "stop");
 	if (last?.role === "toolResult" && toolName === "agent_spawn") {
 		const body = typeof last.content === "string" ? last.content : last.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
@@ -151,10 +151,21 @@ function awaited(context: TranscriptContext, mode: string, signal?: AbortSignal)
 	return completed([{ type: "toolCall", id: "await-foreign-result", name: "agent_await", arguments: { results: [result] } }], "toolUse");
 }
 
+/** The native retry scheduler, not this provider fixture, owns the delay. */
+function retryError() {
+	mark("retry-requested");
+	const error = { ...message([], "error"), errorMessage: '429 {"code":1310,"message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-07 20:14:57"}' };
+	const events = createAssistantMessageEventStream();
+	events.push({ type: "error", reason: "error", error });
+	events.end(error);
+	return events;
+}
+
 function stream(_model: unknown, context: TranscriptContext, options?: RequestOptions) {
 	recordSessionOptions(options);
 	const mode = process.env.DURABLE_TEST_MODE ?? "answer";
 	if (mode === "request") return pending(options?.signal);
+	if (mode === "retry") return retryError();
 	if (mode === "spawn") return spawn(context);
 	if (mode === "await-local" || mode === "await-reference") return awaited(context, mode, options?.signal);
 	if (mode === "tool-round" && context.messages.at(-1)?.role !== "toolResult") {

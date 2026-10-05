@@ -5,6 +5,7 @@ import { InboxDoc, type ToolExecutionApi, type TaskId, type DocumentWatch } from
 import { AwaitDoc, boundedAwaitAnswer, declareAwait, commitAwaitOutcome, localProducer, referenceKey, type AwaitDeclaration, type AwaitOutcome, type AwaitInput, type AwaitDelivery } from "./awaited-results.ts";
 import type { ResultReference } from "./result-reference.ts";
 import type { ProducerAwaitFact } from "./await-facts.ts";
+import { safeFactText } from "./primary-observation.ts";
 import { recordProducerAwait, queuedAwaitInputCount } from "./await-observation.ts";
 import type { AgentControlDispatch } from "./durable-agents.ts";
 
@@ -99,8 +100,8 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 	const initial = await api.snapshot(AwaitDoc, context);
 	check(initial);
 	if (declaration(initial, api.taskId)?.decision === "awaiting") {
-		for (const sessionId of new Set(args.results.map((reference) => reference.sessionId))) producerJobs.push(dispatch("observe-producer-await", { sessionId, publish: (fact: ProducerAwaitFact) => api.commit((tx) => recordProducerAwait(tx, api.taskId, fact), owned.context) }, owned.context).catch(async (error) => {
-			if (!owned.context.abortSignal?.aborted) await api.commit((tx) => recordProducerAwait(tx, api.taskId, { sessionId, source: "producer await-state", observedAt: Date.now(), unavailable: (error instanceof Error ? error.message : String(error)).slice(0, 512) }), owned.context);
+		for (const sessionId of new Set(args.results.map((reference) => reference.sessionId))) producerJobs.push(dispatch("observe-producer-await", { sessionId, results: args.results.filter((result) => result.sessionId === sessionId), publish: (fact: ProducerAwaitFact) => api.commit((tx) => recordProducerAwait(tx, api.taskId, fact), owned.context) }, owned.context).catch(async (error) => {
+			if (!owned.context.abortSignal?.aborted) await api.commit((tx) => recordProducerAwait(tx, api.taskId, { sessionId, source: "producer await-state", observedAt: Date.now(), unavailable: safeFactText(error instanceof Error ? error.message : String(error)).text }), owned.context);
 		}));
 		jobs.push(...args.results.map((reference) => observeOutcome(api, storageId, dispatch, reference, owned.context)));
 		for (const job of [...jobs, ...producerJobs]) void job.catch((error) => reject(error instanceof Error ? error : new Error(String(error))));

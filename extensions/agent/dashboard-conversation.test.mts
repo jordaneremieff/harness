@@ -60,6 +60,16 @@ const user = (id: string, content: string): AgentConversationEntry => ({
 const screen = (conversation: AgentConversation, width = 80) =>
 	stripVTControlCharacters(conversation.render(width).lines.join("\n"));
 
+it("renders retry dependency facts before generic wait lines and removes them on the next native frame", () => {
+	const reference = { sessionId: "producer:2", submissionId: 23, requestId: "exact-request" };
+	const conversation = new AgentConversation([], "/work", tui, false, false);
+	conversation.setAwaiting({ runId: 10, heldInputs: [12], results: [{ result: reference, status: "pending" }], queuedInputCount: 0, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 }, omittedProducers: 0, likelyCycle: [], coverage: "one hop; remote graph incomplete", producers: [{ sessionId: reference.sessionId, observedAt: 1, source: "producer await-state", execution: { state: "provider-retry", runId: 20, results: [reference], model: { provider: "synthetic", modelId: "model" }, attempt: 18, maxAttempts: 21, nextRetryAt: 1791200000000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false } }] });
+	const text = screen(conversation, 160);
+	assert.match(text, /producer:2.*submission 23/u); assert.match(text, /provider retry/u); assert.match(text, /attempt 18\/21/u); assert.match(text, /Weekly\/Monthly Limit Exhausted/u);
+	assert.ok(text.indexOf("provider retry") < text.indexOf("Awaiting"));
+	conversation.setAwaiting(); assert.doesNotMatch(screen(conversation), /provider retry|Weekly\/Monthly/u);
+});
+
 it("renders native await references and release outcomes through display-only agent cards", () => {
 	const reference = { sessionId: "full-canonical-peer-identity:2", submissionId: 23, requestId: "exact-request" };
 	const reply = { decision: "released", results: [], unresolved: [reference], originalInputs: [12], queuedInputCount: 1, releaseReason: "dashboard release" };

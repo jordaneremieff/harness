@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { ConversationId, EntryId, HarnessInspection, SubmissionId, TaskGraph } from "@earendil-works/pi-durable";
+import { LiveDoc, type ConversationId, type EntryId, type HarnessInspection, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import { AgentDeliveryDoc, DurableHost, sessionIsIdle, type ConfigurationResult, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, reasoningRuntime, redactedAnswerMessage, scriptedRuntime, slowEffectTool, toolCallMessage } from "./durable-host-fixture.mts";
@@ -88,6 +88,29 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 }
 
 const wait = (host: DurableHost, submissionId: SubmissionId) => host.wait(submissionId, BACKGROUND_CONTEXT);
+
+it("clears a native retry after the next attempt settles the same exact input", { timeout: 15000 }, async (t) => {
+	const storagePath = join(fixtureRoot(t), "retry.sqlite");
+	let now = Date.now();
+	const error = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "429 Weekly/Monthly Limit Exhausted" };
+	const models = await scriptedRuntime([error, answerMessage("recovered")]);
+	const options = { ...hostOptions(storagePath, models, fixtureRegistry()), now: () => now, settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } }, retryMaxAttempts: 21 };
+	let host = await DurableHost.open(options, BACKGROUND_CONTEXT);
+	try {
+		let ready!: () => void; const retryReady = new Promise<void>((resolve) => { ready = resolve; });
+		const stop = host.harness.subscribeCommits(() => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
+		const submitted = await host.submit({ message: "task", requestId: "native-retry" });
+		await retryReady; stop();
+		const results = [{ sessionId: host.storageId, submissionId: submitted.submissionId, requestId: "native-retry" }];
+		options.settings.retry.maxRetries = 8;
+		const before = await host.request("await-state", { results }) as { execution?: { attempt: number; nextRetryAt: number; maxAttempts?: number } };
+		assert.equal(before.execution?.attempt, 1); assert.equal(before.execution.maxAttempts, 9, "the ceiling uses current native settings, not the cached dashboard hint");
+		now = before.execution.nextRetryAt + 1;
+		await host.close(); host = await DurableHost.open(options, BACKGROUND_CONTEXT);
+		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+		assert.deepEqual(await host.request("await-state", { results }), {});
+	} finally { await host.close(); }
+});
 
 it("runs a durable task and retains its answer, source IDs, and usage across reopen", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");

@@ -32,13 +32,13 @@ export interface RuntimeFixture {
 	/** Unix socket that is accepting marker names before a host starts. */
 	readonly notifyPath: string;
 	/** Child environment for one fixture mode. */
-	env(mode: "request" | "effect" | "answer" | "spawn" | "tool-round" | "await-local" | "await-reference"): Record<string, string>;
+	env(mode: "request" | "effect" | "answer" | "spawn" | "tool-round" | "await-local" | "await-reference" | "retry"): Record<string, string>;
 	/** Resolve when the host publishes this marker name. The file is not the signal. */
 	marker(name: string): Promise<void>;
 }
 
 /** Build an isolated agent home for one durable runtime test. */
-export function runtimeFixture(t: { after(fn: () => void): void }, options: { withAgentExtension?: boolean; transport?: "sse" | "auto" } = {}): RuntimeFixture {
+export function runtimeFixture(t: { after(fn: () => void): void }, options: { withAgentExtension?: boolean; transport?: "sse" | "auto"; retry?: boolean } = {}): RuntimeFixture {
 	const root = mkdtempSync(join(tmpdir(), "durable-runtime-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const cwd = join(root, "work");
@@ -52,7 +52,7 @@ export function runtimeFixture(t: { after(fn: () => void): void }, options: { wi
 	const extensionPath = fileURLToPath(new URL("./testdata/durable-runtime/index.ts", import.meta.url));
 	const extensions = [extensionPath];
 	if (options.withAgentExtension === true) extensions.push(fileURLToPath(new URL("./index.ts", import.meta.url)));
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, transport: options.transport ?? "auto", cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, transport: options.transport ?? "auto", cacheWarming: { mode: "off" }, retry: { enabled: options.retry === true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } }));
 	const ownerId = "primary-owner";
 	const record = new AgentCatalog(root).create({
 		cwd,
@@ -80,6 +80,7 @@ export function runtimeFixture(t: { after(fn: () => void): void }, options: { wi
 			DURABLE_TEST_DIR: testDir,
 			DURABLE_TEST_CHILD_CWD: childCwd,
 			DURABLE_TEST_MODE: mode,
+			...(options.retry === true ? { DURABLE_TEST_RETRY: "1" } : {}),
 			DURABLE_TEST_NOTIFY: markers.notifyPath,
 			PI_AGENT_IDLE_MINUTES: "0.05",
 		}),

@@ -1,9 +1,38 @@
 /** Read and release only the selected native run; producer facts never recurse. */
-import { InboxDoc, LiveDoc, type ConversationId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, LiveDoc, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { AwaitDoc, referenceKey, type AwaitDeclaration } from "./awaited-results.ts";
 import { canonicalIdentity } from "./identity.ts";
-import type { AwaitFact, OwnAwaitFact, ProducerAwaitFact } from "./await-facts.ts";
+import type { AwaitFact, OwnAwaitFact, ProducerAwaitFact, ProducerRetry } from "./await-facts.ts";
 import type { ResultReference } from "./result-reference.ts";
+
+import { safeFactText } from "./primary-observation.ts";
+
+async function retryInputMatches(tx: Tx, conversationId: ConversationId, result: ResultReference): Promise<boolean> {
+	if (result.requestId === undefined) return true;
+	const input = await tx.submissionByRequest(conversationId, result.requestId);
+	return input?.id === result.submissionId && input.status === "placed";
+}
+
+/** Retry belongs only to placed inputs of the current native run. */
+export async function producerRetryFact(tx: Tx, conversationId: ConversationId, results: readonly ResultReference[], maxAttempts?: number): Promise<ProducerRetry | undefined> {
+	const live = await tx.doc(LiveDoc, conversationId);
+	if (live.run === undefined || live.generation?.retry === undefined) return undefined;
+	const task = await tx.task(live.run.taskId);
+	if (task === undefined || task.abortRequested || task.state.status === "terminal") return undefined;
+	const correlated: ResultReference[] = [];
+	for (const result of results.slice(0, 16)) {
+		if (!live.run.inputs.includes(result.submissionId as SubmissionId)) continue;
+		if (!await retryInputMatches(tx, conversationId, result)) continue;
+		correlated.push(result);
+	}
+	if (correlated.length === 0) return undefined;
+	const agent = await tx.doc(AgentDoc, conversationId);
+	const error = safeFactText(live.generation.retry.error);
+	return { state: "provider-retry", runId: live.run.taskId, results: correlated,
+		...(agent.model === undefined ? {} : { model: { provider: safeFactText(agent.model.provider, 256).text, modelId: safeFactText(agent.model.modelId, 256).text } }),
+		attempt: live.generation.attempt, ...(maxAttempts === undefined ? {} : { maxAttempts }),
+		nextRetryAt: live.generation.retry.at, error: error.text, errorTruncated: error.truncated };
+}
 
 const OWN_AWAIT_BYTE_LIMIT = 8000;
 const AWAIT_BYTE_LIMIT = 12000;
@@ -32,10 +61,12 @@ export async function ownAwaitFact(tx: Tx, conversationId: ConversationId): Prom
 	const results = new Map<string, OwnAwaitFact["results"][number]>();
 	for (const declaration of active) for (const result of declaration.results) {
 		const outcome = declaration.outcomes.find((item) => referenceKey(item.result) === referenceKey(result));
-		results.set(referenceKey(result), { result, status: outcome?.status ?? "pending", ...(outcome?.reason === undefined ? {} : { reason: outcome.reason.slice(0, 512) }), ...(outcome?.answerEntryId === undefined ? {} : { answerEntryId: outcome.answerEntryId }) });
+		results.set(referenceKey(result), { result, status: outcome?.status ?? "pending", ...(outcome?.reason === undefined ? {} : { reason: safeFactText(outcome.reason).text }), ...(outcome?.answerEntryId === undefined ? {} : { answerEntryId: outcome.answerEntryId }) });
 	}
 	const held = [...new Set(active.flatMap((item) => item.inputs))];
-	const fact: OwnAwaitFact = { runId: active[0].runId, heldInputs: held.slice(0, 16), results: [...results.values()].slice(0, 16), queuedInputCount: await queuedAwaitInputCount(tx, conversationId, [...results.values()].map((item) => item.result)), queueSnapshot: "committed InboxDoc", omitted: { heldInputs: Math.max(0, held.length - 16), results: Math.max(0, results.size - 16) } };
+	const retryKeys = new Set(active.flatMap((item) => (item.producers ?? []).flatMap((producer) => producer.execution?.results.map(referenceKey) ?? [])));
+	const ranked = [...results.values()].sort((left, right) => Number(retryKeys.has(referenceKey(right.result))) - Number(retryKeys.has(referenceKey(left.result))));
+	const fact: OwnAwaitFact = { runId: active[0].runId, heldInputs: held.slice(0, 16), results: ranked.slice(0, 16), queuedInputCount: await queuedAwaitInputCount(tx, conversationId, [...results.values()].map((item) => item.result)), queueSnapshot: "committed InboxDoc", omitted: { heldInputs: Math.max(0, held.length - 16), results: Math.max(0, results.size - 16) } };
 	while (Buffer.byteLength(JSON.stringify(fact), "utf8") > OWN_AWAIT_BYTE_LIMIT && fact.results.length > 0) { fact.results.pop(); fact.omitted.results++; }
 	return JSON.parse(JSON.stringify(fact)) as OwnAwaitFact;
 }
@@ -44,7 +75,11 @@ export async function readAwaitFact(tx: Tx, storageId: string, conversationId: C
 	const own = await ownAwaitFact(tx, conversationId);
 	if (own === undefined) return undefined;
 	const all = [...new Map((await activeDeclarations(tx, conversationId)).flatMap((item) => item.producers ?? []).map((fact) => [fact.sessionId, fact])).values()];
-	const producers = all.slice(0, 16);
+	const producers = all.map((producer) => {
+		const results = producer.execution?.results.filter((result) => own.results.some((item) => item.status === "pending" && referenceKey(item.result) === referenceKey(result) && (item.result.requestId === undefined || item.result.requestId === result.requestId)));
+		const { execution, ...rest } = producer;
+		return { ...rest, ...(execution === undefined || !results?.length ? {} : { execution: { ...execution, results } }) };
+	}).sort((left, right) => Number(right.execution !== undefined) - Number(left.execution !== undefined)).slice(0, 16);
 	const identity = canonicalIdentity(storageId, conversationId);
 	const cycles = () => producers.filter((producer) => own.results.some((item) => item.status === "pending" && item.result.sessionId === producer.sessionId) && producer.awaiting?.results.some((item) => item.status === "pending" && item.result.sessionId === identity && own.heldInputs.includes(item.result.submissionId))).map((item) => item.sessionId);
 	const fact: AwaitFact = { ...own, producers, omittedProducers: Math.max(0, all.length - 16), likelyCycle: cycles(), coverage: "one hop; remote graph incomplete" };
@@ -53,10 +88,12 @@ export async function readAwaitFact(tx: Tx, storageId: string, conversationId: C
 }
 
 export async function recordProducerAwait(tx: Tx, taskId: TaskId, fact: ProducerAwaitFact): Promise<void> {
+	const error = fact.execution === undefined ? undefined : safeFactText(fact.execution.error);
+	fact = { ...fact, ...(fact.unavailable === undefined ? {} : { unavailable: safeFactText(fact.unavailable).text }), ...(fact.execution === undefined || error === undefined ? {} : { execution: { ...fact.execution, error: error.text, errorTruncated: fact.execution.errorTruncated || error.truncated } }) };
 	const declaration = (await tx.doc(AwaitDoc)).declarations.find((item) => item.taskId === taskId && item.decision === "awaiting");
 	if (declaration === undefined || !declaration.results.some((result) => result.sessionId === fact.sessionId)) return;
 	const prior = declaration.producers?.find((item) => item.sessionId === fact.sessionId);
-	const semantic = (item: ProducerAwaitFact) => JSON.stringify({ awaiting: item.awaiting, unavailable: item.unavailable });
+	const semantic = (item: ProducerAwaitFact) => JSON.stringify({ awaiting: item.awaiting, execution: item.execution, unavailable: item.unavailable });
 	if (prior !== undefined && semantic(prior) === semantic(fact)) return;
 	declaration.producers ??= [];
 	const index = declaration.producers.findIndex((item) => item.sessionId === fact.sessionId);

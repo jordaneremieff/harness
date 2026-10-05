@@ -2,10 +2,24 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import { observeProducerAwait } from "./await-producer-observer.ts";
-import type { OwnAwaitFact, ProducerAwaitFact } from "./await-facts.ts";
+import type { OwnAwaitFact, ProducerAwaitFact, ProducerState } from "./await-facts.ts";
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((yes) => { resolve = yes; }); return { promise, resolve }; }
 const waiting: OwnAwaitFact = { runId: 1, heldInputs: [2], results: [{ result: { sessionId: "consumer", submissionId: 3 }, status: "pending" }], queuedInputCount: 0, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 } };
+
+it("refreshes retry start, attempt update, exit, and unavailable through commit events", { timeout: 1000 }, async () => {
+	const owned = withCancel(BACKGROUND_CONTEXT); let changed!: () => void;
+	const execution = { state: "provider-retry" as const, runId: 1, results: [{ sessionId: "producer", submissionId: 2 }], attempt: 18, nextRetryAt: 1791200000000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false };
+	let current: ProducerState = { execution }; let unavailable = false;
+	let next = deferred<ProducerAwaitFact>();
+	const job = observeProducerAwait("producer", async () => { if (unavailable) throw Error("api_key=sk-abcdefghijklmnopqrstuv\\u001b[31m"); return current; }, async (listener) => { changed = listener; return () => {}; }, async (fact) => next.resolve(fact), owned.context);
+	const first = await next.promise; assert.equal(first.execution?.attempt, 18);
+	next = deferred(); current = { execution: { ...execution, attempt: 19 } }; changed(); assert.equal((await next.promise).execution?.attempt, 19);
+	next = deferred(); current = {}; changed(); assert.equal((await next.promise).execution, undefined);
+	next = deferred(); unavailable = true; changed(); const absent = await next.promise;
+	assert.equal(absent.execution, undefined); assert.match(absent.unavailable ?? "", /credential omitted/u); assert.doesNotMatch(absent.unavailable ?? "", /sk-abcdefghijkl|[\p{Cc}\p{Cf}]/u);
+	owned.cancel(); await job;
+});
 
 it("subscribes before reading and refreshes only its producer's own bounded wait", { timeout: 1000 }, async () => {
 	const owned = withCancel(BACKGROUND_CONTEXT); const first = deferred<void>(); const next = deferred<void>();

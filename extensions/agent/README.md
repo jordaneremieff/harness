@@ -804,11 +804,29 @@ retained declarations and durable outcomes without redispatching work.
 Status, the dashboard, and existing check-ins project semantic `awaiting`
 separately from native task state. Facts name held requests, exact result
 references and outcomes, committed queued-input counts, and one-hop producer
-waits. Producer facts state their source and observation time. Known reverse
+waits. A pending result has separate execution facts when its producer's current
+native run includes that exact input and `LiveDoc.generation.retry` is present.
+These facts name the producer, submission and known request ID, observed model,
+attempt, known configured attempt ceiling, next native retry timestamp, and a
+bounded credential-redacted, control-escaped provider error with an explicit
+truncation flag. Queued inputs and other runs do not inherit the retry. Submission
+status stays pending. Provider reset text remains a provider claim; it is never
+parsed into a scheduling guarantee or quota diagnosis. Producer facts state their
+source and observation time. Unavailable observations remain unknown. Known reverse
 edges to held requests show a likely mutual wait, not a complete remote graph.
 Vector and byte bounds report omitted requests, results, and producers.
 Unchanged semantic observations do not write new durable facts. Existing commit
-notifications refresh the projection; no extra timer or recursive watch exists.
+notifications refresh and clear retry facts on retry exit, run settlement, abort,
+or observation loss; no extra timer or recursive watch exists. Retry details
+precede generic wait lines in the bounded check-in body. Status and the dashboard
+use the same dependency lines. This does not change check-in cadence, native
+suspension, named-result suppression, result routing, or control authority.
+
+Use existing controls to recover when authorized: inspect the provider claim,
+abort active work before configuration, configure the idle conversation, then
+send a continuation and await its new exact result. Preserve an explicit model
+requirement. The extension does not substitute a model, abort, or release a wait
+automatically.
 
 The selected pane appends current dependency facts to its scrollable display,
 not to retained history. PgUp/PgDn reveals long dependency lists. Native frames
@@ -1421,7 +1439,9 @@ elapsed time and retained conversation-total cost. The bounded body covers only
 the watched task. Its retained-entry scan starts at the watched input's
 transcript entry. It shows the task's tool call count, current tools, their call
 age (not exact execution time), last tool lines, and a reply excerpt labeled as
-unfinished. The count is exact when
+unfinished. A direct producer check-in also puts a native retry ahead of those
+generic lines, only when the watched submission belongs to the current run.
+The count is exact when
 the scan covers that range; a cut-off scan labels it as a lower bound. A current
 tool stays visible when its call entry is outside the scan, with an unknown call
 age. A queued input has no task activity yet. Before the task's first reply text,
@@ -1451,6 +1471,18 @@ name when the ordinary session changes them, so `agent_status` and endpoint
 discovery report the identity the operator runs.
 
 ### Current process contracts
+
+`await-state/1.1.0` accepts exact producer result references and returns optional
+retry execution facts beside the producer's own wait. Status and dashboard
+schemas include those bounded facts, so their schema hashes identify the current
+shape. Older loaded callers refuse those changed operations before decoding.
+Their strict catalog readers also mark cached rows with retry fields unavailable
+and show restart instructions. Live-frame readers accept the
+additive nested facts; an older renderer does not show their retry details.
+Unchanged operations and existing controls remain available. Restart the caller
+and let an idle host retire before retrying affected reads. The retained manager,
+native control binding, primary delivery, and source-release identities do not
+change for these observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker

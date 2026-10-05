@@ -53,7 +53,8 @@ function object(value: unknown): value is Raw { return value !== null && typeof 
 function id(value: unknown): value is string { return typeof value === "string" && value.length <= 36 && ENTRY_ID.test(value); }
 function fromId(value: unknown): value is string { return value === "root" || id(value); }
 function timestamp(value: unknown): value is string { return typeof value === "string" && ISO.test(value) && Number.isFinite(Date.parse(value)); }
-function reason(result: OrdinaryPrimaryObservation, why: string): void {
+type TextObservation = Pick<OrdinaryPrimaryObservation, "coverage">;
+function reason(result: TextObservation, why: string): void {
 	result.coverage.complete = false;
 	if (!result.coverage.reasons.includes(why)) result.coverage.reasons.push(why);
 }
@@ -145,7 +146,7 @@ function mergeSpans(spans: Span[]): Span[] {
 	}
 	return merged;
 }
-function redact(escaped: string, result: OrdinaryPrimaryObservation): string {
+function redact(escaped: string, result: TextObservation): string {
 	const spans = credentialSpans(escaped);
 	const decoded = controlView(escaped);
 	for (const whitespace of [false, true]) {
@@ -160,7 +161,13 @@ function redact(escaped: string, result: OrdinaryPrimaryObservation): string {
 	chunks.push(escaped.slice(offset));
 	return chunks.join("");
 }
-function safe(value: unknown, result: OrdinaryPrimaryObservation, maxBytes = 512): string | undefined {
+/** Reuse credential recognition and control escaping before bounding displayed facts. */
+export function safeFactText(value: string, maxBytes = 512): { text: string; truncated: boolean } {
+	const result: TextObservation = { coverage: { complete: true, reasons: [], bytesRead: 0, linesVisited: 0, parentVisits: 0, textScanBytes: 0, omissions: { credentials: 0, fields: 0, text: 0 } } };
+	const text = safe(value, result, maxBytes);
+	return { text: text ?? "[text unavailable: scan budget exceeded]", truncated: text === undefined || result.coverage.reasons.includes("text-output-budget") };
+}
+function safe(value: unknown, result: TextObservation, maxBytes = 512): string | undefined {
 	if (typeof value !== "string") return undefined;
 	// Oversized fields are omitted intact so a credential is never cut before recognition.
 	const available = PRIMARY_OBSERVATION_LIMITS.textScanBytes - result.coverage.textScanBytes;

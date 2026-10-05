@@ -1,16 +1,22 @@
 /** One-hop refresh uses existing commit notifications, never a recursive watch. */
 import type { Context } from "@earendil-works/chord";
-import { OwnAwaitFactSchema, type OwnAwaitFact, type ProducerAwaitFact } from "./await-facts.ts";
+import { OwnAwaitFactSchema, ProducerRetrySchema, type ProducerState, type ProducerAwaitFact } from "./await-facts.ts";
 import { Value } from "typebox/value";
+import { safeFactText } from "./primary-observation.ts";
 
-async function producerFact(sessionId: string, read: () => Promise<{ awaiting?: OwnAwaitFact }>): Promise<ProducerAwaitFact> {
-	try { const value = await read(); if (value.awaiting !== undefined && !Value.Check(OwnAwaitFactSchema, value.awaiting)) throw new Error("Producer returned an invalid own await fact"); return { sessionId, observedAt: Date.now(), source: "producer await-state", ...(value.awaiting === undefined ? {} : { awaiting: value.awaiting }) }; }
-	catch (error) { return { sessionId, observedAt: Date.now(), source: "producer await-state", unavailable: (error instanceof Error ? error.message : String(error)).slice(0, 512) }; }
+async function producerFact(sessionId: string, read: () => Promise<ProducerState>): Promise<ProducerAwaitFact> {
+	try {
+		const value = await read();
+		if (value.awaiting !== undefined && !Value.Check(OwnAwaitFactSchema, value.awaiting)) throw new Error("Producer returned an invalid own await fact");
+		if (value.execution !== undefined && (!Value.Check(ProducerRetrySchema, value.execution) || value.execution.results.some((result) => result.sessionId !== sessionId))) throw new Error("Producer returned an invalid retry fact");
+		const error = value.execution === undefined ? undefined : safeFactText(value.execution.error);
+		return { sessionId, observedAt: Date.now(), source: "producer await-state", ...(value.awaiting === undefined ? {} : { awaiting: value.awaiting }), ...(value.execution === undefined || error === undefined ? {} : { execution: { ...value.execution, error: error.text, errorTruncated: value.execution.errorTruncated || error.truncated } }) };
+	} catch (error) { const text = safeFactText(error instanceof Error ? error.message : String(error), 500); return { sessionId, observedAt: Date.now(), source: "producer await-state", unavailable: `${text.text}${text.truncated ? " [truncated]" : ""}`.slice(0, 512) }; }
 }
 
 export async function observeProducerAwait(
 	sessionId: string,
-	read: () => Promise<{ awaiting?: OwnAwaitFact }>,
+	read: () => Promise<ProducerState>,
 	subscribe: (changed: () => void) => Promise<() => void>,
 	publish: (fact: ProducerAwaitFact) => Promise<void>,
 	context: Context,

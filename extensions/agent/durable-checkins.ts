@@ -2,8 +2,8 @@
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { AgentDeliveryDoc, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
-import { readAwaitFact } from "./await-observation.ts";
-import { awaitFactLines } from "./await-facts.ts";
+import { producerRetryFact, readAwaitFact } from "./await-observation.ts";
+import { awaitFactLines, retryFactLines } from "./await-facts.ts";
 
 export const CHECK_IN_MAX_MINUTES = 35791;
 /** Only model tool admissions apply the environment default. */
@@ -39,7 +39,8 @@ function textOf(model: unknown): string {
 	return model.flatMap((message) => typeof message.content === "string" ? [message.content] : Array.isArray(message.content) ? message.content.flatMap((part: { type?: string; text?: string }) => part.type === "text" && typeof part.text === "string" ? [part.text] : []) : []).join("\n");
 }
 function bounded(text: string, limit: number): string {
-	return text.length > limit ? `${text.slice(0, limit)}… [truncated]` : text;
+	const marker = "… [truncated]";
+	return text.length > limit ? `${text.slice(0, limit - marker.length)}${marker}` : text;
 }
 
 function retainedCost(usage: UsageState): number | null {
@@ -79,7 +80,7 @@ function runningToolLines(tool: ToolSlot, issuedAt: number | undefined, now: num
 }
 
 /** One bounded native snapshot; cost is retained conversation spend, not an estimate of an in-flight request. */
-async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefined, now: number): Promise<{ cost: number | null; digest: string }> {
+async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefined, now: number, maxAttempts: number): Promise<{ cost: number | null; digest: string }> {
 	const id = input.conversationId as ConversationId;
 	const live = await tx.doc(LiveDoc, id);
 	const usage = await tx.doc(UsageDoc, id);
@@ -89,7 +90,9 @@ async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefin
 	// Native input placement follows the prior tool round and clears its live tools.
 	const running = (inputEntry === undefined ? [] : live.tools ?? []).filter((tool) => tool.status === "running").slice(0, 4);
 	const generation = inputEntry === undefined ? undefined : live.generation;
-	const lines = [recent.truncated
+	const watched = await tx.submissionByRequest(id, input.requestId);
+	const retry = watched === undefined ? undefined : await producerRetryFact(tx, id, [{ sessionId: input.senderIdentity, submissionId: watched.id, requestId: input.requestId }], maxAttempts);
+	const lines = [...(retry === undefined ? [] : retryFactLines(retry)), recent.truncated
 		? `Tool calls: at least ${recent.calls} (bounded retained entries for watched task).`
 		: `Tool calls: ${recent.calls} (watched task).`];
 	for (const tool of running) lines.push(...runningToolLines(tool, recent.issuedAt.get(tool.callId), now));
@@ -121,6 +124,7 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 			try { winner = await Promise.race([settled, due]); }
 			finally { cancel.abort(); await Promise.allSettled([settled, due]); }
 			const now = runtime.now();
+			const maxAttempts = runtime.settings.retry.enabled ? runtime.settings.retry.maxRetries + 1 : 1;
 			await runtime.commit(async (tx) => {
 				const retained = await tx.submissionByRequest(id, input.requestId);
 				if (winner === "settled" || retained?.status === "done" || retained?.status === "unanswered")
@@ -135,7 +139,7 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 						const previous = state.reports[index];
 						if (previous?.checkIn?.conversationId === input.conversationId && previous.checkIn.requestId === input.requestId && previous.ownerId === input.ownerId && !previous.acknowledged) state.reports.splice(index, 1);
 					}
-					const snapshot = await digest(tx, input, retained?.entry, now);
+					const snapshot = await digest(tx, input, retained?.entry, now, maxAttempts);
 					state.reports.push({ sourceId, requestId: sourceId, ownerId: input.ownerId, senderIdentity: input.senderIdentity, message: snapshot.digest, replyTo: null, acknowledged: false, createdAt: now, checkIn: { origin: input.origin, elapsedMs: Math.max(0, now - input.admittedAt), cost: snapshot.cost, conversationId: input.conversationId, requestId: input.requestId, ...fallbackMarker(fallbackBroadcast) } });
 				}
 				return { status: "running", checkpoint: { phase: "watch", next: k + 1 } };

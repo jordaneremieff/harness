@@ -279,13 +279,13 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const sessionId = String(params.sessionId);
 		if (typeof params.publish !== "function") throw new Error("Producer observation requires an in-process callback");
 		const publish = params.publish as (fact: ProducerAwaitFact) => Promise<void>;
-		if (storageIdOf(sessionId) === metadata.storageId) return observeProducerAwait(sessionId, async () => await host.request("await-state", { sessionId }, context) as { awaiting?: import("./await-facts.ts").OwnAwaitFact }, async (changed) => host.harness.subscribeCommits((publication) => { if (publication.changes.length) changed(); }), publish, context);
+		if (storageIdOf(sessionId) === metadata.storageId) return observeProducerAwait(sessionId, async () => await host.request("await-state", { sessionId, results: params.results }, context) as import("./await-facts.ts").ProducerState, async (changed) => host.harness.subscribeCommits((publication) => { if (publication.changes.length) changed(); }), publish, context);
 		const record = catalog.read(sessionId);
 		const client = await acquireHost(hostMetadata(record, metadata.packageDir));
 		try {
 			const subscribe = client.subscribeChanges?.bind(client);
 			if (subscribe === undefined) throw new Error("Producer host has no commit observation capability");
-			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId }, { signal: context.abortSignal }) as { awaiting?: import("./await-facts.ts").OwnAwaitFact }, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
+			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId, results: params.results }, { signal: context.abortSignal }) as import("./await-facts.ts").ProducerState, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
 		} finally { await client.close(); }
 	}
 	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { InboxDoc, LiveDoc, type Tx, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, LiveDoc, type Tx, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { AwaitDoc, commitAwaitOutcome, type AwaitState } from "./awaited-results.ts";
-import { AwaitFactSchema, type OwnAwaitFact } from "./await-facts.ts";
-import { readAwaitFact, recordProducerAwait, releaseAwait } from "./await-observation.ts";
+import { AwaitFactSchema, awaitFactLines, type OwnAwaitFact } from "./await-facts.ts";
+import { producerRetryFact, readAwaitFact, recordProducerAwait, releaseAwait } from "./await-observation.ts";
 
 function fixture() {
 	const results = Array.from({ length: 16 }, (_, index) => ({ sessionId: `peer-${index}`, submissionId: index + 10, requestId: "😀".repeat(512) }));
@@ -14,6 +14,45 @@ function fixture() {
 	return { state, tx, results, end: () => { terminal = true; } };
 }
 const conversation = 1 as ConversationId;
+
+it("correlates retries with current run inputs and clears on exit, settlement, or abort", async () => {
+	const result = { sessionId: "producer", submissionId: 10, requestId: "active" };
+	const live: { run?: { taskId: number; inputs: number[] }; generation?: { attempt: number; retry: { at: number; error: string } } } = { run: { taskId: 9, inputs: [10] }, generation: { attempt: 18, retry: { at: 1791200000000, error: `429 Weekly/Monthly Limit Exhausted\napi_key=sk-abcdefghijklmnopqrstuv\u001b[31m ${"x".repeat(2000)}` } } };
+	let abortRequested = false; let terminal = false;
+	const tx = { doc: async (token: unknown) => token === LiveDoc ? live : token === AgentDoc ? { model: { provider: "synthetic", modelId: "model" } } : undefined,
+		task: async () => ({ abortRequested, state: { status: terminal ? "terminal" : "ready" } }),
+		submissionByRequest: async (_id: unknown, requestId: string) => ({ id: requestId === "active" ? 10 : 20, status: "placed" }) } as unknown as Tx;
+	const retry = await producerRetryFact(tx, conversation, [result, { ...result, submissionId: 20 }], 21); assert.ok(retry);
+	assert.deepEqual(retry.results, [result]); assert.equal(retry.attempt, 18); assert.equal(retry.maxAttempts, 21);
+	assert.equal(retry.errorTruncated, true); assert.ok(Buffer.byteLength(retry.error) <= 512);
+	assert.doesNotMatch(retry.error, /sk-abcdefghijkl|[\p{Cc}\p{Cf}]/u); assert.match(retry.error, /credential omitted/u);
+	assert.equal(await producerRetryFact(tx, conversation, [{ ...result, requestId: "wrong" }]), undefined);
+	assert.equal((await producerRetryFact(tx, conversation, [result]))?.maxAttempts, undefined);
+	abortRequested = true; assert.equal(await producerRetryFact(tx, conversation, [result]), undefined); abortRequested = false;
+	terminal = true; assert.equal(await producerRetryFact(tx, conversation, [result]), undefined); terminal = false;
+	delete live.generation; assert.equal(await producerRetryFact(tx, conversation, [result]), undefined);
+	delete live.run; assert.equal(await producerRetryFact(tx, conversation, [result]), undefined);
+});
+
+it("prioritizes retry text and drops its execution fact when the exact reference settles", async () => {
+	const f = fixture(); f.state.declarations[0].results = f.results.map((result) => ({ ...result, requestId: "request" }));
+	const result = f.state.declarations[0].results.at(-1); assert.ok(result);
+	const execution = { state: "provider-retry" as const, runId: 9, results: [result], attempt: 18, nextRetryAt: 1791200000000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false };
+	for (const ref of f.state.declarations[0].results) await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: ref.sessionId, observedAt: 1, source: "producer await-state" });
+	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: result.sessionId, observedAt: 2, source: "producer await-state", execution });
+	const fact = await readAwaitFact(f.tx, "consumer", conversation); assert.ok(fact);
+	assert.equal(fact.producers[0].sessionId, result.sessionId); assert.match(awaitFactLines(fact)[0], /submission 25.*pending.*provider retry.*attempt 18/u);
+	await commitAwaitOutcome(f.tx, 3 as TaskId, { result, status: "done", answer: "finished", answerEntryId: 100 });
+	assert.ok((await readAwaitFact(f.tx, "consumer", conversation))?.producers.every((producer) => producer.execution === undefined));
+});
+
+it("keeps a blocked reference ahead of generic facts under both byte bounds", async () => {
+	const f = fixture(); const result = f.results[15];
+	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: result.sessionId, observedAt: 1, source: "producer await-state", execution: { state: "provider-retry", runId: 9, results: [result], attempt: 18, nextRetryAt: 1791200000000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false } });
+	const fact = await readAwaitFact(f.tx, "consumer", conversation); assert.ok(fact);
+	assert.deepEqual(fact.results[0].result, result); assert.ok(fact.omitted.results > 0);
+	assert.deepEqual(fact.producers[0].execution?.results, [result]); assert.equal(Value.Check(AwaitFactSchema, fact), true);
+});
 
 it("bounds Unicode result and producer facts by bytes with exact omission counts", async () => {
 	const f = fixture(); const own = await readAwaitFact(f.tx, "consumer", conversation); assert.ok(own);

@@ -1,6 +1,26 @@
 /** Bounded semantic wait facts, separate from native task scheduling state. */
 import { Type, type Static } from "typebox";
 import { ResultReferenceSchema } from "./result-reference.ts";
+import { safeFactText } from "./primary-observation.ts";
+
+export const ProducerRetrySchema = Type.Object({
+	state: Type.Literal("provider-retry"),
+	runId: Type.Integer({ minimum: 1 }),
+	results: Type.Array(ResultReferenceSchema, { minItems: 1, maxItems: 16 }),
+	model: Type.Optional(Type.Object({ provider: Type.String({ maxLength: 256 }), modelId: Type.String({ maxLength: 256 }) }, { additionalProperties: false })),
+	attempt: Type.Integer({ minimum: 1 }),
+	maxAttempts: Type.Optional(Type.Integer({ minimum: 1 })),
+	nextRetryAt: Type.Integer({ minimum: 0, maximum: 8640000000000000 }),
+	error: Type.String({ maxLength: 512 }),
+	errorTruncated: Type.Boolean(),
+}, { additionalProperties: false });
+export type ProducerRetry = Static<typeof ProducerRetrySchema>;
+export type ProducerState = { awaiting?: OwnAwaitFact; execution?: ProducerRetry };
+
+/** Provider error text is a claim, not a scheduling guarantee or diagnosis. */
+export function retryFactLines(retry: ProducerRetry): string[] {
+	return retry.results.map((result) => `${result.sessionId} · submission ${result.submissionId}${result.requestId === undefined ? "" : ` · request ${safeFactText(result.requestId, 160).text}`} · pending · provider retry · ${retry.model === undefined ? "model unknown" : `${retry.model.provider}/${retry.model.modelId}`} · attempt ${retry.attempt}${retry.maxAttempts === undefined ? " (ceiling unknown)" : `/${retry.maxAttempts}`} · next retry ${new Date(retry.nextRetryAt).toISOString()} · provider error: ${safeFactText(retry.error).text}${retry.errorTruncated ? " [truncated]" : ""}`);
+}
 
 export const OwnAwaitFactSchema = Type.Object({
 	runId: Type.Integer({ minimum: 1 }),
@@ -16,6 +36,7 @@ export const ProducerAwaitFactSchema = Type.Object({
 	observedAt: Type.Integer({ minimum: 0 }),
 	source: Type.Literal("producer await-state"),
 	awaiting: Type.Optional(OwnAwaitFactSchema),
+	execution: Type.Optional(ProducerRetrySchema),
 	unavailable: Type.Optional(Type.String({ maxLength: 512 })),
 }, { additionalProperties: false });
 export type ProducerAwaitFact = Static<typeof ProducerAwaitFactSchema>;
@@ -30,7 +51,9 @@ export type AwaitFact = Static<typeof AwaitFactSchema>;
 
 /** Full retained identities and explicit coverage, not a scheduler-state label. */
 export function awaitFactLines(fact: AwaitFact): string[] {
-	return [`Awaiting · run ${fact.runId} · held requests ${fact.heldInputs.join(", ")} · ${fact.queuedInputCount} queued inputs (${fact.queueSnapshot})`,
+	return [
+		...fact.producers.flatMap((producer) => producer.execution === undefined ? [] : retryFactLines(producer.execution).map((line) => `${line} · ${producer.source} at ${producer.observedAt}`)),
+		`Awaiting · run ${fact.runId} · held requests ${fact.heldInputs.join(", ")} · ${fact.queuedInputCount} queued inputs (${fact.queueSnapshot})`,
 		...(fact.likelyCycle.length ? [`Likely mutual wait: ${fact.likelyCycle.join(", ")}; use steer or Release await.`] : []),
 		...fact.results.map((item) => `${item.result.sessionId} · submission ${item.result.submissionId} · ${item.status}${item.reason === undefined ? "" : ` · ${item.reason}`}`),
 		...fact.producers.map((item) => `${item.sessionId} · ${item.source} at ${item.observedAt} · ${item.unavailable ?? (item.awaiting === undefined ? "no own await observed" : `awaits ${item.awaiting.results.map((result) => `${result.result.sessionId}/${result.result.submissionId}`).join(", ")}`)}`),

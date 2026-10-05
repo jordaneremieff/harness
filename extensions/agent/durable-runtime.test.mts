@@ -84,6 +84,47 @@ async function publishedAwait(client: HostConnection, sessionId: string, predica
 	try { return await ready; } finally { stop(); signal.removeEventListener("abort", stalled); }
 }
 
+for (const locality of ["local", "foreign"] as const) it(`propagates native retry facts for a ${locality} producer and clears them on abort`, { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t, { withAgentExtension: true, retry: true });
+	const source = await acquireHost(f.metadata, { env: f.env(locality === "local" ? "await-local" : "retry") }); trackHost(t, source.pid);
+	let consumer: HostConnection | undefined;
+	try {
+		if (locality === "local") {
+			const ready = publishedAwait(source, f.metadata.storageId, (fact) => fact.producers.some((producer) => producer.execution !== undefined));
+			await source.request("submit", { message: "START_AWAIT_LOCAL", requestId: "retry-owner", ownerId: f.ownerId, origin: "operator" });
+			const fact = await ready;
+			const execution = fact.producers.find((producer) => producer.execution)?.execution; assert.ok(execution);
+			assert.deepEqual(execution.results, fact.results.map((item) => item.result));
+			assert.equal(fact.results[0].status, "pending"); assert.equal(execution.attempt, 1); assert.equal(execution.maxAttempts, 21);
+			assert.match(execution.error, /429.*Weekly\/Monthly Limit Exhausted/u);
+			const producer = execution.results[0].sessionId;
+			await source.request("abort", { sessionId: producer });
+			await waitForReceipt(source, f.ownerId, fact.heldInputs[0], 5000);
+			assert.deepEqual(await source.request("await-state", { sessionId: producer, results: execution.results }), {});
+			const status = await source.request("status", { sessionId: f.metadata.storageId }) as { conversation: { awaiting?: AwaitFact } };
+			assert.equal(status.conversation.awaiting, undefined);
+		} else {
+			const record = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off", name: "retry consumer", trust: true, ownerId: f.ownerId }, "retry-consumer");
+			consumer = await acquireHost(hostMetadata(record), { env: f.env("await-reference") }); trackHost(t, consumer.pid);
+			const admitted = await source.request("submit", { message: "HELD", requestId: "retry-source", ownerId: record.storageId, origin: "operator" }) as SubmitResult;
+			const reference = { sessionId: f.metadata.storageId, submissionId: Number(admitted.submissionId), requestId: "retry-source" };
+			const ready = publishedAwait(consumer, record.storageId, (fact) => fact.producers.some((producer) => producer.execution !== undefined));
+			const requested = await consumer.request("submit", { message: `AWAIT_REFERENCE:${JSON.stringify(reference)}`, requestId: "retry-consumer", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+			const fact = await ready; const producer = fact.producers[0]; assert.ok(producer.execution);
+			assert.deepEqual(producer.execution.results, [reference]); assert.equal(fact.results[0].status, "pending");
+			assert.equal(producer.execution.model?.provider, f.metadata.model.provider); assert.ok(producer.observedAt > 0);
+			const queued = await source.request("submit", { message: "QUEUED", requestId: "queued-source", ownerId: record.storageId, origin: "operator", whenBusy: "followUp" }) as SubmitResult;
+			const unrelated = await source.request("await-state", { results: [{ ...reference, submissionId: Number(queued.submissionId), requestId: "queued-source" }] });
+			assert.deepEqual(unrelated, {}, "a queued input does not own the active retry");
+			await source.request("abort", { sessionId: f.metadata.storageId });
+			const settled = await waitForReceipt(consumer, f.ownerId, requested.submissionId, 5000);
+			assert.equal(settled.status, "done"); assert.equal(settled.answer, "AWAIT_FINISHED");
+			const status = await consumer.request("status", { sessionId: record.storageId }) as { conversation: { awaiting?: AwaitFact } };
+			assert.equal(status.conversation.awaiting, undefined);
+		}
+	} finally { await consumer?.close().catch(() => {}); await source.close().catch(() => {}); }
+});
+
 it("observes a foreign native await in one hop and releases the selected source request through RPC", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });
 	const remoteRecord = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off", name: "foreign await observer", trust: true, ownerId: f.ownerId }, "foreign-observer");

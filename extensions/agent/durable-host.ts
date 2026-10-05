@@ -14,10 +14,12 @@
  * writer claim.
  */
 import { randomUUID } from "node:crypto";
+import { canonicalIdentity } from "./identity.ts";
+import { Value } from "typebox/value";
 import { StrandedInputRecovery } from "./stranded-inputs.ts";
-import { admittedResult, type ResultReference } from "./result-reference.ts";
+import { admittedResult, ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
 import type { InputProvenance } from "./awaited-results.ts";
-import { ownAwaitFact, releaseAwait } from "./await-observation.ts";
+import { ownAwaitFact, producerRetryFact, releaseAwait } from "./await-observation.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
 import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
@@ -26,7 +28,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
-import { Harness, ROOT_CONVERSATION_ID, UsageDoc, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
+import { Harness, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
@@ -204,13 +206,14 @@ export class DurableHost {
 	private readonly defaultCwd: string | undefined;
 	private readonly registry: HarnessOptions["registry"];
 	private readonly retryMaxAttempts: number | undefined;
+	private readonly retryCeiling: () => number;
 	private readonly now: () => number;
 	private deliveryError: string | undefined;
 	private recovery: StrandedInputRecovery | undefined;
 	private resumeWork: Promise<void> | undefined;
 	private recoveryError: ((error: unknown) => void) | undefined;
 
-	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, now: () => number) {
+	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, settings: HarnessOptions["settings"], now: () => number) {
 		this.harness = harness;
 		this.storageId = storageId;
 		this.rootConversation = root;
@@ -218,6 +221,7 @@ export class DurableHost {
 		this.storagePath = storagePath;
 		this.registry = registry;
 		this.retryMaxAttempts = retryMaxAttempts;
+		this.retryCeiling = () => { const retry = { ...DEFAULT_RETRY_POLICY, ...settings?.retry }; return retry.enabled ? retry.maxRetries + 1 : 1; };
 		this.now = now;
 		const commandMap = new Map<string, DurableHostCommand>();
 		if (Array.isArray(commands)) for (const command of commands as readonly DurableHostCommand[]) commandMap.set(command.name, command);
@@ -309,7 +313,7 @@ export class DurableHost {
 				},
 			});
 			await reconcileProfiles(harness, options.storageId, context, options.onReport);
-			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
+			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, options.settings, now);
 			host.recoveryError = (error) => {
 				host.deliveryError = `Queued-input recovery failed: ${error instanceof Error ? error.message : String(error)}`;
 				options.onReport?.(error);
@@ -487,8 +491,14 @@ export class DurableHost {
 
 	private async awaitStateRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const target = await this.target(params, context);
-		const awaiting = await this.harness.commit((tx) => ownAwaitFact(tx, target.id), context);
-		return { ...(awaiting === undefined ? {} : { awaiting }) };
+		const results = params?.results ?? [];
+		const identity = canonicalIdentity(this.storageId, target.id);
+		if (!Array.isArray(results) || results.length > 16 || results.some((result) => !Value.Check(ResultReferenceSchema, result) || result.sessionId !== identity)) throw new Error("Invalid producer result references");
+		return this.harness.commit(async (tx) => {
+			const awaiting = await ownAwaitFact(tx, target.id);
+			const execution = await producerRetryFact(tx, target.id, results, this.retryCeiling());
+			return { ...(awaiting === undefined ? {} : { awaiting }), ...(execution === undefined ? {} : { execution }) };
+		}, context);
 	}
 	private async awaitReleaseRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const target = await this.target(params, context);
