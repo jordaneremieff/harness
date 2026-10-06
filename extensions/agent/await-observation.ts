@@ -63,6 +63,23 @@ function matchesReference(expected: ResultReference, observed: ResultReference):
 	return referenceKey(expected) === referenceKey(observed) && (expected.requestId === undefined || expected.requestId === observed.requestId);
 }
 
+/** Reference coverage is not a change in the shared input's execution state. */
+function referenceState(fact: ProducerAwaitFact, result: ResultReference): string {
+	const execution = fact.execution?.results.some((item) => matchesReference(result, item)) ? fact.execution : undefined;
+	const state = execution === undefined ? undefined : (({ results: _results, ...value }) => value)(execution);
+	return JSON.stringify({ awaiting: fact.awaiting, execution: state, unavailable: fact.unavailable });
+}
+
+function newestObservation(observations: { result: ResultReference; fact: ProducerAwaitFact }[]): typeof observations[number] | undefined {
+	return observations.reduce<typeof observations[number] | undefined>((prior, item) => prior === undefined || item.fact.observedAt > prior.fact.observedAt ? item : prior, undefined);
+}
+
+function partialObservationLoss(losses: { result: ResultReference; fact: ProducerAwaitFact }[]): string {
+	const details = losses.slice(0, 4).map(({ result, fact }) => `submission ${result.submissionId}${result.requestId === undefined ? "" : ` request ${result.requestId}`} at ${fact.observedAt}: ${fact.unavailable}`).join("; ");
+	const text = safeFactText(`Partial observation loss (unavailable references: ${losses.length}; up to 4 shown): ${details}`, 500);
+	return `${text.text}${text.truncated ? " [truncated]" : ""}`;
+}
+
 async function ownFact(tx: Tx, conversationId: ConversationId, active: AwaitDeclaration[]): Promise<{ own: OwnAwaitFact; producers: ProducerAwaitFact[] } | undefined> {
 	if (active.length === 0) return undefined;
 	const results = new Map<string, OwnAwaitFact["results"][number]>();
@@ -99,14 +116,19 @@ function mergedProducers(active: AwaitDeclaration[], results: OwnAwaitFact["resu
 		}
 	}
 	return [...groups.values()].map<ProducerAwaitFact>(({ latest, references }) => {
-		const { execution: _execution, awaiting, ...base } = latest;
+		const supported = [...references.values()].filter(({ result, fact }) => fact.unavailable === undefined && pending.has(exactReferenceKey(result)));
+		const retries = supported.filter(({ result, fact }) => fact.execution?.results.some((item) => matchesReference(result, item)));
+		const newest = newestObservation(retries);
+		const successful = newestObservation(supported);
+		const observed = latest.unavailable !== undefined && successful !== undefined ? successful.fact : latest;
+		const { execution: _execution, awaiting, ...base } = observed;
 		const rest = { ...base, ...(awaiting === undefined ? {} : { awaiting: { ...awaiting, results: [...awaiting.results], heldInputs: [...awaiting.heldInputs], omitted: { ...awaiting.omitted } } }) };
-		const retries = [...references.values()].filter(({ result, fact }) => fact.unavailable === undefined && fact.execution?.results.some((item) => matchesReference(result, item)) && pending.has(exactReferenceKey(result)));
-		const newest = retries.reduce<typeof retries[number] | undefined>((prior, item) => prior === undefined || item.fact.observedAt > prior.fact.observedAt ? item : prior, undefined);
-		if (latest.unavailable !== undefined || newest?.fact.execution === undefined) return rest;
+		const losses = [...references.values()].filter(({ result, fact }) => fact.unavailable !== undefined && pending.has(exactReferenceKey(result)));
+		const scoped = successful !== undefined && losses.length > 0 ? { ...rest, unavailable: partialObservationLoss(losses) } : rest;
+		if (newest?.fact.execution === undefined) return scoped;
 		const current = retries.filter((item) => item.fact.execution?.runId === newest.fact.execution?.runId);
 		// The merged timestamp never makes older reference evidence appear fresher.
-		return { ...rest, observedAt: Math.min(...current.map((item) => item.fact.observedAt)), execution: { ...newest.fact.execution, results: current.map((item) => item.result) } };
+		return { ...scoped, observedAt: Math.min(...current.map((item) => item.fact.observedAt)), execution: { ...newest.fact.execution, results: current.map((item) => item.result) } };
 	}).sort((left, right) => Number(right.execution !== undefined) - Number(left.execution !== undefined));
 }
 
@@ -159,7 +181,7 @@ export async function recordProducerAwait(tx: Tx, taskId: TaskId, fact: Producer
 	const semantic = (item: ProducerAwaitFact) => JSON.stringify({ awaiting: item.awaiting, execution: item.execution, unavailable: item.unavailable });
 	if (prior !== undefined && semantic(prior) === semantic(fact)) {
 		// A repeated read still clears a newer conflicting observation of the same input.
-		const supersedes = (await tx.doc(AwaitDoc)).declarations.some((other) => other.taskId !== declaration.taskId && other.decision === "awaiting" && other.conversationId === declaration.conversationId && other.runId === declaration.runId && other.results.some((result) => result.sessionId === fact.sessionId && declaration.results.some((own) => exactReferenceKey(own) === exactReferenceKey(result))) && other.producers?.some((item) => item.sessionId === fact.sessionId && item.observedAt > prior.observedAt && item.observedAt <= fact.observedAt && semantic(item) !== semantic(fact)));
+		const supersedes = (await tx.doc(AwaitDoc)).declarations.some((other) => other.taskId !== declaration.taskId && other.decision === "awaiting" && other.conversationId === declaration.conversationId && other.runId === declaration.runId && other.producers?.some((item) => item.sessionId === fact.sessionId && item.observedAt > prior.observedAt && item.observedAt <= fact.observedAt && other.results.some((result) => result.sessionId === fact.sessionId && declaration.results.some((own) => exactReferenceKey(own) === exactReferenceKey(result)) && referenceState(item, result) !== referenceState(fact, result))));
 		if (!supersedes) return;
 	}
 	declaration.producers ??= [];

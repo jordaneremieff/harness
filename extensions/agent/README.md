@@ -815,19 +815,21 @@ parsed into a scheduling guarantee or quota diagnosis. Producer facts state thei
 source and observation time. Parallel awaits merge retry facts by exact result
 reference. A newer observation clears only the references it covers. References
 from different producer runs do not merge. Merged observation times do not make
-older references appear fresh. Unavailable observations remain unknown. Known
-reverse edges to held requests show a likely mutual wait, not a complete remote
-graph. Vector and byte bounds preserve retry facts before generic details and
-report omitted requests, results, and producers. Repeated matching observations
-do not write new durable facts. Existing commit notifications refresh and clear
-retry facts on retry exit, run settlement, abort, or observation loss; no extra
-timer or recursive watch exists. Retry details
-precede generic wait lines in the bounded check-in body. A dependency check-in
-requires its watched submission to belong to the current run's held inputs. A
+older references appear fresh. Each independent subscription's observation loss
+applies only to its covered references. Retry and producer wait facts from
+successful subscriptions remain visible; partial loss names the unavailable
+references in bounded text. Unavailable observations remain unknown. Known reverse
+edges to held requests show a likely mutual wait, not a complete remote graph. Vector and byte bounds preserve retry facts before generic details and
+report omitted requests, results, and producers. Overlapping subscriptions compare
+shared reference states, not their different reference arrays. Repeated matching
+observations do not write new durable facts. Existing commit notifications refresh
+and clear retry facts on retry exit, run settlement, abort, or observation loss; no extra
+timer or recursive watch exists. Retry details precede generic wait lines in the
+bounded check-in body. A dependency check-in requires its watched submission to belong to the current run's held inputs. A
 queued watched input does not inherit another input's dependency retry. Status
 and the dashboard use the same dependency lines. This does not change check-in
-cadence, native
-suspension, named-result suppression, result routing, or control authority.
+cadence, native suspension, named-result suppression, result routing, or control
+authority.
 
 Use existing controls to recover when authorized: inspect the provider claim,
 abort active work before configuration, configure the idle conversation, then
