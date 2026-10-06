@@ -1,5 +1,9 @@
 # Pillars access
 
+The ordinary extension publishes its registered tool renderers at factory load and
+on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
+The payload contains only tool names and renderer fields, never execution functions.
+
 The extension makes the Pillars corpus directly accessible to agents and the
 operator. The `pillars` tool is the single consultation surface: it reads current
 source and carries the conditions that tell the model when to consult the corpus.

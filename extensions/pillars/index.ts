@@ -1,3 +1,4 @@
+import { toolDisplayPublisher } from "./tool-display.ts";
 import { writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,7 @@ import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./r
 import { PillarsStore } from "./store.ts";
 
 export default function pillarsExtension(pi: ExtensionAPI): void {
+	const { registerTool, publish } = toolDisplayPublisher(pi);
 	pi.events.emit("durable:contribution", pillarsDurableContribution(fileURLToPath(import.meta.url)));
 	let catalog: Catalog | undefined;
 	let collector: Collector | undefined;
@@ -155,7 +157,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 	pi.on("tool_result", async (event, ctx) => {
 		await observe(event, ctx, "tool_result");
 	});
-	pi.registerTool({
+	registerTool({
 		name: "pillars",
 		label: "Pillars",
 		description: `${ACCESS_DESCRIPTION} ${DRAFT_GUIDANCE}`,
@@ -218,7 +220,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},
 	});
-	pi.registerTool({
+	registerTool({
 		name: "pillars_usage",
 		label: "Pillars access evidence",
 		description: TOOL_DESCRIPTION,
@@ -336,4 +338,5 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 			}
 		},
 	});
+	publish();
 }
