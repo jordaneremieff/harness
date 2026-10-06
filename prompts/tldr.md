@@ -52,7 +52,8 @@ is not a repair. Use no headings or bold labels by default. Use a simple list
 when requested or for genuinely separate items. Honor requested formatting.
 These examples are not exhaustive. Write a clear person-to-person explanation.
 Return only the summary, without a repair narrative, closing question, or menu.
-If anything waits on the operator, name it briefly in the last sentence.
+If anything waits on the operator, name it briefly in the last sentence, even
+if that drops a detail from an earlier sentence.
 Decisions labeled optional, later, or not blocking still count. Keep each
 decision's warning, hazard, irreversible step, or stated default with it.
 Combine small pending items in that sentence.
