@@ -1,5 +1,9 @@
 # policy
 
+The ordinary extension publishes its registered tool renderers at factory load and
+on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
+The payload contains only tool names and renderer fields, never execution functions.
+
 `policy` governs tool choice, argument validity, result interpretation, failure
 recovery, and resource use. Each rule declares its purpose, applicability,
 evidence, action, and authority. One extension owns decisions, corrections,

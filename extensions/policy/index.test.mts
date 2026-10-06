@@ -17,6 +17,7 @@ interface RegisteredTool {
 }
 
 class FakePi {
+	readonly events = { emit() {}, on: () => () => {} };
 	readonly handlers = new Map<string, Array<(event: never, ctx: never) => unknown>>();
 	readonly commands = new Map<
 		string,

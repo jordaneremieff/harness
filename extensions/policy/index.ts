@@ -1,5 +1,6 @@
 /** Policy registration and operator controls over the shared event interpreter. */
 import { fileURLToPath } from "node:url";
+import { toolDisplayPublisher } from "./tool-display.ts";
 import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -794,6 +795,7 @@ async function policyEffectVerb(
 }
 
 export default function registerPolicy(pi: ExtensionAPI): void {
+	const { registerTool, publish } = toolDisplayPublisher(pi);
 	// The contribution channel exists on the current Pi host; a host without it simply has no Durable form.
 	const eventBus = (pi as Partial<ExtensionAPI>).events;
 	eventBus?.emit("durable:contribution", {
@@ -858,7 +860,8 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		reset: (id, reason, revision) => runtime.reset(id === "--all" ? undefined : [id], reason, revision),
 		telemetry: async (from, to) => ({ report: formatTelemetry(await readTelemetry(dir, from, to)) }),
 		inspect: (view, params, ctx) => runtime.inspect(view, params, ctx as ExtensionContext),
-	});
+	}, registerTool);
+	publish();
 	runtime.attach();
 	let panelState: PolicyPanelResult = { view: "rules", filter: "" };
 	const output = (ctx: ExtensionContext, text: string, error = false): void => {

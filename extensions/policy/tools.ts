@@ -881,7 +881,7 @@ export const POLICY_PROPOSE_DESCRIPTION =
 export const POLICY_RULES_DESCRIPTION =
 	"Inspect policy rules (default), bundled starter catalog, capabilities, state, health, named data, explain, preview, authoring guidance, or a read-only draft check. authoring returns the canonical guide. check accepts an existing add/replace draft, optional bounded cases, and an explicit simulated effect for steer-or-block drafts; it validates and simulates with isolated state, without tool execution, proposals, or approval. id selects a rule, pending proposal (by rule ID or proposal ID), or data name. A pending lookup returns one complete compact artifact and exact revision, bounded by the stored event size plus lossless control-character escaping rather than the all-rules display cap. explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result (isError, details, and text-only content). It leads with the decision, retains matched or unavailable evaluations, and counts non-matching rules; recorded call explanations retain bounded per-rule metadata. Preview never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.";
 
-function registerApprovalTool(pi: ExtensionAPI, deps: ToolDeps): void {
+function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: ToolDeps): void {
 	pi.registerTool({
 		name: "policy_approve",
 		label: "Policy approve",
@@ -929,10 +929,14 @@ function registerApprovalTool(pi: ExtensionAPI, deps: ToolDeps): void {
 	});
 }
 
-export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
-	registerApprovalTool(pi, deps);
-	registerControlTool(pi, deps);
-	pi.registerTool<typeof PolicyProposeParams, Record<string, unknown>>({
+export function registerRuleTools(
+	pi: ExtensionAPI,
+	deps: ToolDeps,
+	registerTool: ExtensionAPI["registerTool"] = pi.registerTool.bind(pi),
+): void {
+	registerApprovalTool({ registerTool }, deps);
+	registerControlTool({ registerTool }, deps);
+	registerTool<typeof PolicyProposeParams, Record<string, unknown>>({
 		name: "policy_propose",
 		label: "Policy propose",
 		description: POLICY_PROPOSE_DESCRIPTION,
@@ -974,7 +978,7 @@ export function registerRuleTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		},
 	});
 
-	pi.registerTool<typeof PolicyRulesParams, Record<string, unknown>>({
+	registerTool<typeof PolicyRulesParams, Record<string, unknown>>({
 		name: "policy_rules",
 		label: "Policy rules",
 		description: POLICY_RULES_DESCRIPTION,

@@ -26,6 +26,7 @@ async function setup(t: TestContext, mode: "tui" | "json" = "tui") {
 	const messages: Array<{ text: string; type?: string }> = [];
 	let confirmations = 0;
 	const pi = {
+		events: { emit() {}, on: () => () => {} },
 		registerFlag() {},
 		getFlag: () => "observe",
 		registerTool() {},

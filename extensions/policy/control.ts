@@ -283,7 +283,7 @@ export function validateControl(params: unknown): asserts params is Input {
 export const POLICY_CONTROL_DESCRIPTION =
 	"Inspect and control policy through contextual operator decisions. Read operations: inspect (complete stored rule and control revision, or pending proposal if no rule exists; use policy_rules for a pending replacement/disable/retire), import-preview (selection: rule ID or --all), data-preview (complete explicit artifact or local path), reset-preview (id or --all), mode, telemetry (inclusive from/to dates). Mutations: reject (exact proposalId), disable/enable/retire/effect (id, reason), reset (id or --all, reason), import (selection), data-set (artifact), data-set-file (path), data-remove (name). Every mutation requires revision from the corresponding inspection and authorization explaining the operator decision. For reject use proposalRevision; data-remove uses the binding revision from policy_rules. Rule revisions bind full state including overrides; data-set binds the complete normalized artifact and prior binding revision. Preparation never authorizes mutation. No mode setter, arbitrary command execution, or proposal approval: use policy_approve for approval.";
 
-export function registerControlTool(pi: ExtensionAPI, deps: ToolDeps): void {
+export function registerControlTool(pi: Pick<ExtensionAPI, "registerTool">, deps: ToolDeps): void {
 	pi.registerTool({
 		name: "policy_control",
 		label: "Policy control",
