@@ -319,3 +319,23 @@ it("collapse from the middle of thinking keeps its label visible before trailing
 	view.setContent([{ ...entry, data: { revision: 2 } }], [], "/work");
 	assert.match(readText(view).join("\n"), /Thinking\.\.\./);
 });
+
+
+for (const header of [0, 12]) it(`a second thinking run stays visible after collapse with screen header ${header}`, () => {
+	const state = agentState(createDashboardState(), "one").view;
+	state.follow = false; state.scroll = 60; state.showThinking = true;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	view.setContent([assistantEntry("second-run", 1, [
+		{ type: "thinking", thinking: "earlier reasoning" },
+		{ type: "text", text: Array.from({ length: 30 }, (_, i) => `before ${i}`).join("\n") },
+		{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") },
+		{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") },
+	])], [], "/work");
+	assert.match(readText(view).join("\n"), /thought/);
+	assert.ok(view.handleMouse({ ...itemClick(2), screenY: header + 2 }));
+	const collapsed = readText(view);
+	const label = collapsed.findIndex((line) => line.includes("Thinking..."));
+	assert.ok(label >= 0);
+	assert.ok(view.handleMouse({ ...itemClick(label), screenY: header + label }));
+	assert.match(readText(view).join("\n"), /thought 0/);
+});

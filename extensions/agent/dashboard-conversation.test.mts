@@ -581,9 +581,12 @@ it("a result-first builtin acquires native presentation when its call arrives", 
 	assert.notEqual(matched, unmatched, "Pi has no public renderer-definition setter");
 	assert.deepEqual(document.lines, new AgentConversation([call, done], "/work", tui, true, false).render(80).lines);
 	assert.match(stripVTControlCharacters(document.lines.join("\n")), /source\.ts:3-4/);
+	assert.equal(state.toolExpanded.get("read-call"), true);
 	const args = t.mock.method(ToolExecutionComponent.prototype, "updateArgs");
-	conversation.update([assistant("call", [{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 4, limit: 1 } }]), done]);
+	conversation.update([assistant("call", [{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 4, limit: 1 } }]), result("done", "read-call", "read", "updated final output")]);
 	assert.equal(args.mock.calls.at(-1)?.this, matched);
+	assert.match(screen(conversation), /updated final output/);
+	assert.equal(state.toolExpanded.get("read-call"), true);
 });
 
 
