@@ -5,23 +5,13 @@ import {
 	CustomMessageComponent,
 	ToolExecutionComponent,
 	UserMessageComponent,
-	createBashToolDefinition,
-	createEditToolDefinition,
-	createFindToolDefinition,
-	createGrepToolDefinition,
-	createLsToolDefinition,
-	createPowerShellToolDefinition,
-	createReadToolDefinition,
-	createWriteToolDefinition,
 	getMarkdownTheme,
-	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Container, MouseRegion, Text, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
-import { createAgentToolCards } from "./tool-cards.ts";
+import { createDashboardToolDefinitions, normalizeCodemodeDetails } from "./dashboard-tool-definitions.ts";
+import type { AgentReadingState } from "./dashboard-state.ts";
 import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
-const agentCards = createAgentToolCards();
 
 export function cleanDashboardText(text: string): string {
 	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
@@ -59,48 +49,25 @@ export interface ConversationDocument {
 	lines: string[];
 	anchors: Array<{ id: string; line: number }>;
 }
-const nativeTools = (cwd: string) => [
-	createReadToolDefinition(cwd),
-	createBashToolDefinition(cwd),
-	createEditToolDefinition(cwd),
-	createWriteToolDefinition(cwd),
-	createGrepToolDefinition(cwd),
-	createFindToolDefinition(cwd),
-	createLsToolDefinition(cwd),
-	createPowerShellToolDefinition(cwd),
-];
-
-/** Display-only definition: stored tools never acquire an executable renderer from another extension. */
-function transcriptTool(name: string): ToolDefinition {
-	const display = { name, label: name, description: "Retained tool display", parameters: Type.Object({}), execute: async () => { throw new Error("Transcript tools cannot execute"); } };
-	const agent = agentCards[name];
-	if (agent !== undefined) return { ...display, ...agent };
-	return {
-		...display,
-		renderCall: (args, theme, context) => ({
-			render: (width) => {
-				const values = args && typeof args === "object" ? Object.values(args) : [args];
-				const summary = values.find((value) => typeof value === "string");
-				const title = theme.bold(theme.fg("toolTitle", cleanDashboardText(truncateToWidth(name, width, "…"))));
-				if (context.expanded && args !== undefined)
-					return [title, ...wrapTextWithAnsi(theme.fg("text", JSON.stringify(args, null, 2)), width)];
-				const shown = cleanDashboardText(truncateToWidth(typeof summary === "string" ? summary.replace(/\s+/g, " ").trim() : "", Math.max(0, width - visibleWidth(name) - 1), "…"));
-				return [title + (shown ? ` ${theme.fg("text", shown)}` : "")];
-			},
-			invalidate() {},
-		}),
-		renderResult: (result, options, theme) => ({
-			render: (width) => {
-				const text = result.content.flatMap((part) => part.type === "text" ? [part.text] : part.type === "image" ? ["[Image]"] : []).join("\n").trimEnd();
-				if (!text) return [];
-				const lines = wrapTextWithAnsi(theme.fg("text", text), width);
-				if (options.expanded || lines.length <= 3) return lines;
-				return [...lines.slice(0, 3), theme.fg("text", `… ${lines.length - 3} more lines`)];
-			},
-			invalidate() {},
-		}),
-	};
+/** Public container composition identifies nonempty thinking runs in source order. */
+export function thinkingRegions(component: Component): MouseRegion[] {
+	if (component instanceof MouseRegion) return [component];
+	return component instanceof Container ? component.children.flatMap(thinkingRegions) : [];
 }
+function regionLayout(component: Component, width: number, top = 0): Array<{ region: MouseRegion; line: number; height: number }> {
+	if (component instanceof MouseRegion) return [{ region: component, line: top, height: component.render(width).length }];
+	if (!(component instanceof Container)) return [];
+	const regions: ReturnType<typeof regionLayout> = [];
+	for (const child of component.children) {
+		regions.push(...regionLayout(child, width, top));
+		top += child.render(width).length;
+	}
+	return regions;
+}
+function isItemClick(event: TuiMouseEvent): boolean {
+	return event.type === "click" && event.button === "left" && !event.shift && !event.alt && !event.ctrl && (event.clickCount ?? 1) === 1;
+}
+const replayClick: TuiMouseEvent = { type: "click", button: "left", x: 0, y: 0, screenX: 0, screenY: 0, width: 1, height: 1, shift: false, alt: false, ctrl: false, clickCount: 1 };
 
 function contentText(content: Message["content"], includeImageLabels = true): string {
 	if (typeof content === "string") return content;
@@ -186,7 +153,9 @@ export class AgentConversation {
 	private signatures: string[] = [];
 	private readonly heights = new Map<Component, { width: number; height: number }>();
 	private cache?: { width: number; document: ConversationDocument };
-	private readonly definitions: ReturnType<typeof nativeTools>;
+	private readonly definitions: ReturnType<typeof createDashboardToolDefinitions>;
+	private readonly reading: Pick<AgentReadingState, "toolExpanded" | "thinkingVisible">;
+	private readonly assistantRuns = new WeakMap<Component, { keys: string[] }>();
 	private readonly tools = new Map<string, ToolExecutionComponent>();
 	private readonly cwd: string;
 	private readonly tui: TUI;
@@ -201,13 +170,15 @@ export class AgentConversation {
 		expanded: boolean,
 		showThinking: boolean,
 		renderCustom?: (entry: AgentConversationEntry) => Component | undefined,
+		reading?: Pick<AgentReadingState, "toolExpanded" | "thinkingVisible">,
 	) {
 		this.cwd = cwd;
 		this.tui = tui;
 		this.expanded = expanded;
 		this.showThinking = showThinking;
 		this.renderCustom = renderCustom;
-		this.definitions = nativeTools(cwd);
+		this.definitions = createDashboardToolDefinitions(cwd);
+		this.reading = reading ?? { toolExpanded: new Map(), thinkingVisible: new Map() };
 		this.update(entries);
 	}
 
@@ -301,7 +272,12 @@ export class AgentConversation {
 			}
 			if (entry.kind === "pi.reset")
 				this.blocks.push({ id: `${entry.id}:reset`, component: new Text("── New context ──", 1, 1) });
-			for (const message of entry.model ?? []) this.appendMessage(entry.id, message);
+			let runStart = 0;
+			let assistantIndex = 0;
+			for (const message of entry.model ?? []) {
+				if (message.role === "assistant") runStart += this.appendAssistant(entry.id, message, runStart, assistantIndex++);
+				else this.appendMessage(entry.id, message);
+			}
 		} catch {
 			this.blocks.push({ id: source.id, component: new Text("[Message unavailable: invalid stored content]", 1, 1) });
 		}
@@ -324,24 +300,37 @@ export class AgentConversation {
 		this.blocks.push({ id: entry.id, component });
 	}
 	private tool(name: string, id: string, args: unknown, known = true): ToolExecutionComponent {
-		const definition = (known ? this.definitions.find((item) => item.name === name) : undefined) ?? transcriptTool(name);
+		const definition = this.definitions(name, known);
 		// An absent call or empty arguments need no argument object in the display.
 		const shown =
 			args !== null && typeof args === "object" && !Array.isArray(args) && Object.keys(args).length === 0
 				? undefined
-				: args;
-		const tool = new ToolExecutionComponent(name, id, shown, { showImages: false }, definition, this.tui, this.cwd);
-		tool.setExpanded(this.expanded);
+				: displayValue(args);
+		let tool: ToolExecutionComponent;
+		const displayTui = Object.create(this.tui) as TUI;
+		displayTui.requestRender = () => {
+			this.rendered.delete(tool);
+			this.heights.delete(tool);
+			this.cache = undefined;
+			this.tui.requestRender();
+		};
+		tool = new ToolExecutionComponent(name, id, shown, { showImages: false }, definition, displayTui, this.cwd);
+		tool.setExpanded(this.reading.toolExpanded.get(id) ?? this.expanded);
 		return tool;
 	}
-	private appendAssistant(id: string, message: AssistantMessage): void {
-		this.blocks.push({
-			id,
-			component: new AssistantMessageComponent(message, !this.showThinking, getMarkdownTheme(), "Thinking..."),
+	private appendAssistant(id: string, message: AssistantMessage, runStart = 0, assistantIndex = 0): number {
+		const component = new AssistantMessageComponent(message, !this.showThinking, getMarkdownTheme(), "Thinking...");
+		const keys = thinkingRegions(component).map((_, index) => JSON.stringify([id, runStart + index]));
+		keys.forEach((key, index) => {
+			if ((this.reading.thinkingVisible.get(key) ?? this.showThinking) !== this.showThinking)
+				thinkingRegions(component)[index]?.handleMouse(replayClick);
 		});
+		this.assistantRuns.set(component, { keys });
+		this.blocks.push({ id: assistantIndex === 0 ? id : `${id}:assistant:${assistantIndex}`, component });
 		for (const part of message.content) {
 			if (part.type !== "toolCall") continue;
 			const tool = this.callCard(part);
+			if (!id.startsWith("live:")) tool.setArgsComplete();
 			if (message.stopReason === "error" || message.stopReason === "aborted")
 				tool.updateResult({
 					content: [
@@ -356,6 +345,7 @@ export class AgentConversation {
 			this.tools.set(part.id, tool);
 			this.blocks.push({ id: `${id}:${part.id}`, component: tool });
 		}
+		return keys.length;
 	}
 
 	private appendResult(id: string, message: ToolResultMessage, partial = false): void {
@@ -369,7 +359,8 @@ export class AgentConversation {
 		}
 		const signature = JSON.stringify([message, partial]);
 		if (this.resultKeys.get(tool) === signature) return;
-		tool.updateResult(message, partial);
+		tool.markExecutionStarted();
+		tool.updateResult(message.toolName === "codemode" ? { ...message, details: normalizeCodemodeDetails(message.details, message.toolCallId) } : message, partial);
 		this.resultKeys.set(tool, signature);
 		this.rendered.delete(tool);
 	}
@@ -405,10 +396,6 @@ export class AgentConversation {
 		} catch {
 			lines = ["[Message unavailable: renderer rejected stored content]"];
 		}
-		const first = lines.findIndex((line) => cleanDashboardText(line).trim() !== "");
-		let last = lines.length - 1;
-		while (last > first && cleanDashboardText(lines[last] ?? "").trim() === "") last--;
-		lines = first < 0 ? [] : lines.slice(first, last + 1);
 		this.rendered.set(component, { width, lines });
 		this.heights.set(component, { width, height: lines.length });
 		return lines;
@@ -419,10 +406,10 @@ export class AgentConversation {
 			const cached = this.heights.get(component);
 			const count = cached?.width === width ? cached.height : 3;
 			const anchor = { id, line: height };
-			if (count) height += count + 1;
+			height += count;
 			return anchor;
 		});
-		return { anchors, height: Math.max(0, height - 1) };
+		return { anchors, height };
 	}
 	private measureWindow(width: number, top: number, height: number, anchors: ConversationDocument["anchors"]): void {
 		const nearStart = Math.max(0, top - 2 * height);
@@ -433,19 +420,29 @@ export class AgentConversation {
 			if (end >= nearStart && start <= nearEnd) this.blockLines(component, width);
 		});
 	}
+	private anchorTop(width: number, anchors: ConversationDocument["anchors"], anchor: AgentReadingState["anchor"], requested: number): number {
+		const entry = anchor ? anchors.find((item) => item.id === anchor.id) : undefined;
+		if (!entry || !anchor) return requested;
+		const block = this.blocks.find((block) => block.id === entry.id);
+		if (!block) return requested;
+		this.blockLines(block.component, width);
+		const run = anchor.run === undefined ? undefined : regionLayout(block.component, width)[anchor.run];
+		const blockHeight = this.heights.get(block.component)?.height ?? 1;
+		const offset = Math.min(anchor.offset, Math.max(0, (run?.height ?? blockHeight) - 1));
+		return entry.line + (run?.line ?? 0) + offset;
+	}
 	/** Height estimates for unseen blocks are replaced only near the reading viewport. */
 	renderWindow(
 		width: number,
 		requested: number,
 		height: number,
 		follow: boolean,
-		anchor?: { id: string; offset: number },
+		anchor?: AgentReadingState["anchor"],
 	): { lines: string[]; anchors: ConversationDocument["anchors"]; height: number; top: number; estimated: boolean } {
 		let layout = this.layout(width);
 		let top = requested;
 		for (let pass = 0; pass <= this.blocks.length; pass++) {
-			const entry = anchor ? layout.anchors.find((item) => item.id === anchor.id) : undefined;
-			top = follow ? Math.max(0, layout.height - height) : entry ? entry.line + (anchor?.offset ?? 0) : requested;
+			top = follow ? Math.max(0, layout.height - height) : this.anchorTop(width, layout.anchors, anchor, requested);
 			top = Math.max(0, Math.min(top, Math.max(0, layout.height - height)));
 			this.measureWindow(width, top, height, layout.anchors);
 			const next = this.layout(width);
@@ -481,12 +478,51 @@ export class AgentConversation {
 		for (const { id, component } of this.blocks) {
 			const lines = this.blockLines(component, width);
 			if (!lines.length) continue;
-			if (document.lines.length) document.lines.push("");
 			document.anchors.push({ id, line: document.lines.length });
 			document.lines.push(...lines);
 		}
 		this.cache = { width, document };
 		return document;
+	}
+	/** Only measured blocks receive clicks; pending cards include their background padding. */
+	handleMouse(event: TuiMouseEvent): { id: string; line: number; run?: number } | undefined {
+		if (!isItemClick(event)) return;
+		const layout = this.layout(event.width);
+		const index = layout.anchors.findIndex((anchor, index) => {
+			const measured = this.rendered.get(this.blocks[index].component);
+			return measured?.width === event.width && event.y >= anchor.line && event.y < anchor.line + measured.lines.length;
+		});
+		if (index < 0) return;
+		const { id, component } = this.blocks[index];
+		const line = layout.anchors[index].line;
+		const measured = this.rendered.get(component);
+		if (!measured) return;
+		const local = { ...event, y: event.y - line, height: measured.lines.length };
+		let item: { id: string; line: number; run?: number } | undefined;
+		if (component instanceof ToolExecutionComponent) {
+			if (local.y === 0) return;
+			const call = [...this.tools].find(([, tool]) => tool === component)?.[0];
+			if (!call) return;
+			const next = !(this.reading.toolExpanded.get(call) ?? this.expanded);
+			component.handleMouse?.(local);
+			component.setExpanded(next);
+			this.reading.toolExpanded.set(call, next);
+			item = { id, line };
+		} else if (component instanceof AssistantMessageComponent) {
+			const regions = regionLayout(component, event.width);
+			const result = component.handleMouse(local);
+			const run = regions.findIndex((region) => region.region === result?.target.component);
+			const key = this.assistantRuns.get(component)?.keys[run];
+			if (run < 0 || !key || !result?.handled) return;
+			this.reading.thinkingVisible.set(key, !(this.reading.thinkingVisible.get(key) ?? this.showThinking));
+			item = { id, line: line + regions[run].line, run };
+		}
+		if (!item) return;
+		this.rendered.delete(component);
+		this.heights.delete(component);
+		this.cache = undefined;
+		this.tui.requestRender();
+		return item;
 	}
 	invalidate(): void {
 		this.rendered.clear();

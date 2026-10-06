@@ -121,7 +121,7 @@ evidence. Closing the caller's temporary connection does not cancel that work.
 
 ### Tool cards
 
-All tool and peer cards use one two-tier layout. The first header line shows
+Agent tool and peer cards use one two-tier layout. The first header line shows
 the tool name or message kind and the target or sender label. Thread notices
 use the thread title, or full thread identity when no title is known, as their
 subject; their second line starts with `from <sender>` when known. The muted
@@ -349,12 +349,20 @@ at the live tail; away from it, the rule states the distance below or the action
 to load an earlier or newer range. Estimated heights say `about`. The transcript
 keeps blank space above the composer, including at the tail.
 
-Conversation content uses Pi's native renderer. Built-in tools retain native
-cards. Other tools use an inert display definition owned by this extension,
-with a single-line call summary and an output preview bounded by visual rows.
-A quiet hidden-line count marks omitted output. Ctrl+O expands arguments and
-output; Ctrl+T controls thinking. Stored tools never load another extension's
-renderer or execute through the display definition.
+Conversation content uses Pi's native components. Built-in tools retain native
+cards; codemode uses Pi's public codemode presentation. Agent tools use the
+shared agent cards. Other tools use Pi's standard named-argument card and
+logical-line output preview with an expansion hint. Other extensions' custom
+renderers have no public lookup surface. All display definitions are inert.
+
+An unmodified single left click toggles one tool card or one thinking run,
+including its hidden label, in the preview, message view, and full console.
+The clicked item stays in view and suspends tail-follow. Outside-card clicks
+keep the preview's console action. Press, drag, release, modified clicks, and
+multiple clicks stay available for Pi's native text selection. Ctrl+O sets all
+tool cards and clears individual choices; Ctrl+T does the same for thinking.
+Thinking starts from the primary's effective setting. Dashboard Ctrl+T changes
+only dashboard state and never writes primary settings.
 
 The native editor caption contains only the delivery effect: `steer at next
 step` or `follow-up after answer` for a busy target, and `send` otherwise. Native
@@ -522,7 +530,13 @@ reload. Only a contiguous loaded range appears; newer gaps load before the live
 tail joins that range. Offscreen blocks retain height and anchor measurements,
 not every rendered line. A partial transcript also shows its first input from
 the published summary, explicitly labeled historical rather than the current
-role or task. Blank runs between chat blocks reduce to one blank line.
+role or task. Native separators and background padding remain intact without
+extra inter-block separators. Individual tool and thinking choices survive
+live updates, entry rebuilds, history reload, and dashboard close/reopen in the
+same primary process. Live thinking choices follow the matching committed
+turn, not subsequent turns. Legacy codemode details receive display-only
+normalization; stored records remain unchanged. Codemode nested calls use
+published result details; the dashboard does not generate live snapshots.
 The primary's no-target `agent_status` is a compact fleet overview. Working
 and starting rows without an attention reason come first, then attention rows,
 then recent quiet rows. Independent host, recovery, or availability faults make

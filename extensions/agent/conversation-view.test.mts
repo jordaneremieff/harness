@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { stripVTControlCharacters } from "node:util";
 import { ConversationView, ConversationHistory, boundedEntries } from "./conversation-view.ts";
 import { AgentConversation } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
@@ -70,7 +72,10 @@ it("loaded-line positions track the visible range, tail and an empty viewport", 
 	assert.ok(earlier.last < tail.last);
 	assert.equal(earlier.last - earlier.first, 4);
 	assert.equal(tail.estimated, true);
-	assert.equal(earlier.estimated, false);
+	assert.equal(earlier.estimated, true);
+	view.page(-100);
+	view.render(80, 5);
+	assert.equal(view.position().estimated, false);
 	view.render(80, 0);
 	assert.equal(view.position().first, 0);
 	assert.equal(view.position().last, 0);
@@ -182,4 +187,115 @@ it("the display bound returns the cursor immediately before its retained range",
 	history.entries();
 	assert.equal(history.earlier(), 9201);
 	assert.equal(history.loadedEntries, 800);
+});
+
+function assistantEntry(id: string, timestamp: number, content: AssistantMessage["content"]): AgentConversationEntry {
+	return { id, kind: "pi.assistant", model: [{ role: "assistant", content, api: "openai-responses", provider: "test", model: "test", timestamp, stopReason: "toolUse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] };
+}
+const itemClick = (y: number, width = 80, height = 8): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+const readText = (view: ConversationView, height = 8) => view.render(80, height).map(stripVTControlCharacters);
+
+it("individual tool choices survive live updates, eviction, rebuild and view reopen", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	const tui = { requestRender() {} } as TUI;
+	let view = new ConversationView(tui, state);
+	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } }]);
+	const done: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tool-id", toolName: "example_tool", content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `output ${i}`).join("\n") }], isError: false, timestamp: 2 }] };
+	view.setContent([call], [], "/work");
+	let lines = readText(view);
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("example_tool")))));
+	assert.equal(state.toolExpanded.get("tool-id"), true);
+	assert.equal(state.follow, false);
+	view.save(); assert.ok(state.anchor, "save before repaint keeps the click anchor");
+	view.setContent([call], [done], "/work");
+	lines = readText(view, 40);
+	assert.match(lines.join("\n"), /output 29/u);
+	view.setContent([], [], "/work"); readText(view);
+	view.setContent([call, done], [], "/work");
+	assert.match(readText(view, 40).join("\n"), /output 29/u);
+	state.showThinking = !state.showThinking;
+	view.setContent([call, done], [], "/work");
+	assert.match(readText(view, 40).join("\n"), /output 29/u);
+	view.save(); view = new ConversationView(tui, state);
+	view.setContent([call, done], [], "/work");
+	assert.match(readText(view, 40).join("\n"), /output 29/u);
+});
+
+it("live thinking choices transfer to the matching committed entry across close and reopen, not the next turn", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	state.showThinking = false;
+	const tui = { requestRender() {} } as TUI;
+	let view = new ConversationView(tui, state);
+	let live = assistantEntry("live:generation", 42, [{ type: "thinking", thinking: "reasoning sentinel" }]);
+	view.setContent([], [live], "/work");
+	let lines = readText(view);
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("Thinking...")))));
+	assert.equal(state.thinkingVisible.get(JSON.stringify(["live:generation:42", 0])), true);
+	live = assistantEntry("live:generation", 42, [{ type: "thinking", thinking: "updated reasoning sentinel" }]);
+	view.setContent([], [live], "/work");
+	assert.match(readText(view).join("\n"), /updated reasoning sentinel/u);
+	view.setContent([], [], "/work"); readText(view);
+	assert.equal(state.thinkingVisible.get(JSON.stringify(["live:generation:42", 0])), true, "a frame gap keeps the live choice until commit");
+	view.save(); view = new ConversationView(tui, state);
+	const committed = { ...live, id: "100" };
+	view.setContent([committed], [], "/work");
+	assert.match(readText(view).join("\n"), /updated reasoning sentinel/u);
+	assert.equal(state.thinkingVisible.get(JSON.stringify(["100", 0])), true);
+	assert.equal(state.thinkingVisible.has(JSON.stringify(["live:generation:42", 0])), false);
+	view.setContent([], [], "/work"); readText(view);
+	view.setContent([committed], [], "/work");
+	assert.match(readText(view).join("\n"), /updated reasoning sentinel/u);
+	const next = assistantEntry("live:generation", 43, [{ type: "thinking", thinking: "next turn sentinel" }]);
+	view.setContent([committed], [next], "/work");
+	lines = readText(view, 20);
+	assert.doesNotMatch(lines.join("\n"), /next turn sentinel/u);
+	assert.ok(lines.some((line) => line.includes("Thinking...")));
+});
+
+it("a thinking run at the tail stays visible through expand, collapse and updates", () => {
+	const state = agentState(createDashboardState(), "one").view; state.showThinking = false;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	const entry = assistantEntry("long", 1, [{ type: "text", text: Array.from({ length: 70 }, (_, i) => `earlier text ${i}`).join("\n") }, { type: "thinking", thinking: `clicked reasoning\n${"detail\n".repeat(30)}` }]);
+	view.setContent([entry], [], "/work");
+	let lines = readText(view);
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("Thinking...")))));
+	assert.ok(state.anchor);
+	const anchor = { ...state.anchor };
+	assert.equal(anchor.run, 0);
+	view.save(); assert.deepEqual(state.anchor, anchor);
+	lines = readText(view);
+	assert.match(lines.join("\n"), /clicked reasoning/u);
+	assert.equal(state.follow, false);
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("clicked reasoning")))));
+	lines = readText(view);
+	assert.match(lines.join("\n"), /Thinking/u);
+	view.setContent([{ ...entry, data: { updated: true } }], [], "/work");
+	assert.match(readText(view).join("\n"), /Thinking/u);
+});
+
+it("tool collapse clamps an anchor from the middle of a long card and disables follow", () => {
+	const state = agentState(createDashboardState(), "one").view; state.expanded = true;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "long-tool", name: "example_tool", arguments: {} }]);
+	const done: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "long-tool", toolName: "example_tool", content: [{ type: "text", text: Array.from({ length: 100 }, (_, i) => `output ${i}`).join("\n") }], isError: false, timestamp: 2 }] };
+	view.setContent([call, done], [], "/work"); readText(view);
+	assert.ok(view.handleMouse(itemClick(2)));
+	const lines = readText(view);
+	assert.equal(state.follow, false);
+	assert.equal(state.toolExpanded.get("long-tool"), false);
+	assert.match(lines.join("\n"), /expand/u);
+});
+
+it("transcript clicks leave selection gestures, outside blocks and stale viewport events unhandled", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	view.setContent([user(1)], [], "/work");
+	readText(view);
+	assert.equal(view.handleMouse(itemClick(1)), undefined);
+	view.setContent([assistantEntry("thinking", 1, [{ type: "thinking", thinking: "reason" }])], [], "/work");
+	const lines = readText(view); const y = lines.findIndex((line) => line.includes("reason"));
+	for (const patch of [{ type: "press" }, { type: "drag" }, { type: "release" }, { shift: true }, { alt: true }, { ctrl: true }, { clickCount: 2 }, { button: "right" }, { width: 79 }, { height: 7 }]) assert.equal(view.handleMouse({ ...itemClick(y), ...patch } as TuiMouseEvent), undefined);
+	assert.equal(state.thinkingVisible.size, 0);
+	assert.ok(view.handleMouse(itemClick(y)));
+	assert.equal(view.handleMouse(itemClick(y)), undefined, "layout must repaint after a toggle");
 });

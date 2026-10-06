@@ -756,6 +756,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			},
 		},
 		dashboardPreferences(process.env.PI_AGENT_DIR ?? getAgentDir()),
+		() => pi.getSettings().hideThinkingBlock ?? false,
 	);
 	pi.registerCommand("agent", command);
 	pi.registerShortcut("ctrl+alt+g", {

@@ -1,5 +1,5 @@
 import type { AwaitFact } from "./await-facts.ts";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { ScrollView } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry, AgentConversationSnapshot } from "./dashboard-types.ts";
 import type { AgentReadingState } from "./dashboard-state.ts";
@@ -161,6 +161,9 @@ export class ConversationHistory {
 		return this.pages.reduce((count, page) => count + (page.entries?.length ?? 0), 0);
 	}
 }
+function committedAssistant(entries: readonly AgentConversationEntry[], timestamp: number): AgentConversationEntry | undefined {
+	return entries.find((entry) => entry.model?.some((message) => message.role === "assistant" && message.timestamp === timestamp));
+}
 export class ConversationView {
 	private transcript?: AgentConversation;
 	private document: ConversationDocument = { lines: [], anchors: [] };
@@ -169,6 +172,7 @@ export class ConversationView {
 	private contentHeight = 0;
 	private estimatedHeight = false;
 	private optionsKey = "";
+	private viewport?: { width: number; height: number; top: number };
 	private readonly tui: TUI;
 	readonly state: AgentReadingState;
 	constructor(tui: TUI, state: AgentReadingState) {
@@ -179,13 +183,43 @@ export class ConversationView {
 			{ follow: "end", scrollbar: "hidden", overscroll: "contain" },
 		);
 	}
+	private transferLiveThinking(entries: readonly AgentConversationEntry[]): void {
+		const previous = this.state.liveThinking;
+		if (!previous) return;
+		const target = committedAssistant(entries, previous.timestamp);
+		if (!target) return;
+		for (const [key, visible] of this.state.thinkingVisible) {
+			const [id, run] = JSON.parse(key) as [string, number];
+			if (id !== previous.id) continue;
+			this.state.thinkingVisible.set(JSON.stringify([target.id, run]), visible);
+			this.state.thinkingVisible.delete(key);
+		}
+		const anchor = this.state.anchor;
+		if (anchor && (anchor.id === previous.id || anchor.id.startsWith(`${previous.id}:`))) anchor.id = target.id + anchor.id.slice(previous.id.length);
+		this.state.liveThinking = undefined;
+	}
+	private liveEntries(committed: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], ids: Set<string>): AgentConversationEntry[] {
+		const generation = live.find((entry) => entry.id === "live:generation");
+		const timestamp = generation?.model?.find((message) => message.role === "assistant")?.timestamp;
+		const identity = timestamp === undefined ? undefined : { id: `live:generation:${timestamp}`, timestamp };
+		const duplicate = timestamp !== undefined && committedAssistant(committed, timestamp) !== undefined;
+		if (identity && !duplicate && identity.id !== this.state.liveThinking?.id) {
+			const previous = this.state.liveThinking?.id;
+			for (const key of this.state.thinkingVisible.keys()) if ((JSON.parse(key) as [string, number])[0] === previous) this.state.thinkingVisible.delete(key);
+			this.state.liveThinking = identity;
+		}
+		return live.filter((entry) => !ids.has(entry.id) && !(entry === generation && duplicate))
+			.map((entry) => entry === generation && identity ? { ...entry, id: identity.id } : entry);
+	}
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], cwd: string, awaiting?: AwaitFact): void {
+		this.viewport = undefined;
 		const key = `${cwd}:${this.state.expanded}:${this.state.showThinking}`;
 		const committed = boundedEntries(entries);
 		const ids = new Set(committed.map((entry) => entry.id));
-		const merged = [...committed, ...live.filter((entry) => !ids.has(entry.id))];
+		this.transferLiveThinking(entries);
+		const merged = [...committed, ...this.liveEntries(committed, live, ids)];
 		if (!this.transcript || this.optionsKey !== key) {
-			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking);
+			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state);
 			this.optionsKey = key;
 		} else this.transcript.update(merged);
 		this.transcript.setAwaiting(awaiting);
@@ -201,7 +235,9 @@ export class ConversationView {
 			this.state.follow,
 			anchor,
 		);
+		this.viewport = { width, height, top: window.top };
 		this.document = { lines: [], anchors: window.anchors };
+		if (!this.state.follow) this.state.scroll = window.top;
 		this.contentHeight = window.height;
 		this.estimatedHeight = window.estimated;
 		this.scroll.updateLayout(window.height, height, () => this.tui.requestRender());
@@ -209,6 +245,19 @@ export class ConversationView {
 		this.scroll.scrollTo(window.top, { disableFollow: !this.state.follow });
 		if (this.state.follow) this.scroll.scrollToEnd();
 		return window.lines;
+	}
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const viewport = this.viewport;
+		if (!viewport || event.width !== viewport.width || event.height !== viewport.height || event.x < 0 || event.x >= viewport.width || event.y < 0 || event.y >= viewport.height) return;
+		const item = this.transcript?.handleMouse({ ...event, y: viewport.top + event.y });
+		if (!item) return;
+		this.state.follow = false;
+		this.scroll.scrollTo(viewport.top, { disableFollow: true });
+		this.state.scroll = viewport.top;
+		this.state.anchor = { id: item.id, offset: viewport.top - item.line, ...(item.run === undefined ? {} : { run: item.run }) };
+		this.restored = false;
+		this.viewport = undefined;
+		return { handled: true, render: true };
 	}
 	page(delta: number): void {
 		this.scroll.scrollBy(delta);
@@ -240,11 +289,13 @@ export class ConversationView {
 		if (!this.restored) return;
 		this.state.follow = this.scroll.isFollowingEnd;
 		this.state.scroll = this.scroll.scrollTop;
+		if (!this.state.follow && this.state.anchor && this.viewport?.top === this.state.scroll) return;
 		const anchor = [...this.document.anchors].reverse().find((item) => item.line <= this.state.scroll);
 		this.state.anchor =
 			!this.state.follow && anchor ? { id: anchor.id, offset: this.state.scroll - anchor.line } : undefined;
 	}
 	invalidate(): void {
+		this.viewport = undefined;
 		this.transcript?.invalidate();
 		this.restored = false;
 	}

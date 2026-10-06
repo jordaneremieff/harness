@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
-import { initTheme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { initTheme, createCodemodeExtension, AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent, getMarkdownTheme, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Container, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { createDashboardToolDefinitions, normalizeCodemodeDetails } from "./dashboard-tool-definitions.ts";
+import { thinkingRegions } from "./dashboard-conversation.ts";
+import { agentState, createDashboardState } from "./dashboard-state.ts";
 import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
 import { DurableHost } from "./durable-host.ts";
@@ -107,9 +111,9 @@ it("uses native built-in tools, generic unknown tools and unmatched results with
 	assert.ok(conversation.render(50).lines.every((line) => visibleWidth(line) <= 50));
 });
 
-it("unknown tool previews bound visual rows and expansion retains arguments and output", () => {
-	for (const width of [40, 80, 125]) {
-		const output = `${"界🙂".repeat(200)} output-end`;
+it("standard tool previews keep ten logical lines and native named arguments", () => {
+	for (const width of [30, 80, 120]) {
+		const output = Array.from({ length: 13 }, (_, i) => `row ${i + 1} ${"界🙂".repeat(20)}`).join("\n");
 		const entries = [
 			assistant("call", [{ type: "toolCall", id: "unknown", name: "extension_tool", arguments: { query: "first line\nsecond line", count: 23 } }]),
 			result("result", "unknown", "extension_tool", output),
@@ -117,14 +121,14 @@ it("unknown tool previews bound visual rows and expansion retains arguments and 
 		];
 		const collapsed = new AgentConversation(entries, "/work", tui, false, false).render(width).lines.map(stripVTControlCharacters);
 		assert.ok(collapsed.every((line) => visibleWidth(line) <= width));
-		assert.match(collapsed.join("\n"), /extension_tool first line second line/);
-		assert.match(collapsed.join("\n"), /… \d+ more lines/);
-		assert.doesNotMatch(collapsed.join("\n"), /ctrl\+o|output-end|"count"/i);
-		assert.ok(collapsed.findIndex((line) => line.includes("The agent answer")) <= 7);
+		assert.match(collapsed.join("\n"), /query=/u);
+		assert.match(collapsed.join("\n"), /row 10/u);
+		assert.match(collapsed.join("\n"), /expand/u);
+		assert.doesNotMatch(collapsed.join("\n"), /row 11/u);
 		const expanded = screen(new AgentConversation(entries, "/work", tui, true, false), width);
-		assert.match(expanded, /"count": 23/);
-		assert.match(expanded, /output-end/);
-		assert.doesNotMatch(expanded, /… \d+ more lines/);
+		assert.match(expanded, /count: 23/u);
+		assert.match(expanded, /row 13/u);
+		assert.doesNotMatch(expanded, /more lines/u);
 	}
 });
 
@@ -167,19 +171,26 @@ it("shows a retained result whose call is absent without an empty argument objec
 	assert.doesNotMatch(text, /\{\}/);
 });
 
-it("keeps one blank line between conversation blocks", () => {
+it("preserves adjacent native component rows without synthetic separators", () => {
 	const entries: AgentConversationEntry[] = [
 		user("u", "The task"),
 		assistant("a", [{ type: "text", text: "Working on it." }]),
 		result("t", "missing-call", "example_tool", "kept output"),
 	];
-	const lines = new AgentConversation(entries, "/work", tui, false, false)
-		.render(80)
-		.lines.map(stripVTControlCharacters);
-	assert.doesNotMatch(lines.join("\n"), /\n[ \t]*\n[ \t]*\n/);
-	for (let index = 1; index < lines.length; index++) {
-		assert.ok(!(lines[index]?.trim() === "" && lines[index - 1]?.trim() === ""), "two blank lines in a row");
-	}
+	const native = new Container();
+	native.addChild(new UserMessageComponent("The task", getMarkdownTheme()));
+	native.addChild(new AssistantMessageComponent(entries[1].model?.[0] as AssistantMessage, true, getMarkdownTheme(), "Thinking..."));
+	const tool = new ToolExecutionComponent("example_tool", "missing-call", undefined, { showImages: false }, createDashboardToolDefinitions("/work")("example_tool", false), tui, "/work");
+	tool.updateResult({ content: [{ type: "text", text: "kept output" }], isError: false });
+	native.addChild(tool);
+	for (const width of [30, 80, 120]) assert.deepEqual(new AgentConversation(entries, "/work", tui, false, false).render(width).lines, native.render(width));
+	const rows = tool.render(80);
+	assert.equal(rows[0], "");
+	assert.equal(visibleWidth(rows[1]), 80);
+	assert.equal(stripVTControlCharacters(rows[1]).trim(), "");
+	assert.notEqual(rows[1], stripVTControlCharacters(rows[1]), "background padding stays colored");
+	const bottom = rows.at(-1); assert.ok(bottom);
+	assert.equal(visibleWidth(bottom), 80);
 });
 
 it("recovers the first task from the session summary when the bounded transcript omits it", () => {
@@ -332,4 +343,105 @@ it("a committed result replaces its partial on the existing committed call", () 
 	assert.equal(text.match(/file\.txt/g)?.length, 1);
 	conversation.update([call, result("2", "call", "read", "final output")]);
 	assert.equal(screen(conversation), text);
+});
+
+const click = (width: number, height: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+
+it("matches a real native codemode component with normalized retained and partial details", () => {
+	const definitions: ToolDefinition[] = [];
+	const standIn = { registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] };
+	createCodemodeExtension()(standIn as ExtensionAPI);
+	assert.equal(definitions.length, 1);
+	assert.equal(definitions[0].name, "codemode");
+	assert.equal(typeof definitions[0].renderCall, "function");
+	assert.equal(typeof definitions[0].renderResult, "function");
+	assert.ok([undefined, "default", "self"].includes(definitions[0].renderShell));
+	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i}");`).join("\n") };
+	const details = { calls: Array.from({ length: 12 }, (_, i) => ({ name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", "running"][i % 4], ...(i === 0 ? {} : { args: "a".repeat(240), error: "failure ".repeat(100) }), cost: i === 0 ? 0 : 0.02, durationMs: i * 100 })), fullOutputPath: "output.txt" };
+	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const partial of [false, true]) for (const isError of [false, true]) {
+		const call = assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: args }]);
+		const completed = result(partial ? "live:tool:outer" : "result", "outer", "codemode", "", isError);
+		const message = completed.model?.[0]; assert.ok(message?.role === "toolResult");
+		message.content = [{ type: "text", text: "Script failed\nWall time 1.0 seconds\nOutput:\n" }, { type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") }];
+		message.details = details;
+		const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, definitions[0], tui, "/work");
+		native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
+		native.updateResult({ ...message, details: normalizeCodemodeDetails(details, "outer") }, partial);
+		const rendered = new AgentConversation([call, completed], "/work", tui, expanded, false).render(width).lines;
+		assert.deepEqual(rendered, native.render(width));
+		const after = assistant("after", [{ type: "text", text: "Adjacent answer" }]);
+		const adjacent = new Container();
+		adjacent.addChild(new UserMessageComponent("Adjacent question", getMarkdownTheme()));
+		adjacent.addChild(native);
+		adjacent.addChild(new AssistantMessageComponent(after.model?.[0] as AssistantMessage, true, getMarkdownTheme(), "Thinking..."));
+		assert.deepEqual(new AgentConversation([user("before", "Adjacent question"), call, completed, after], "/work", tui, expanded, false).render(width).lines, adjacent.render(width));
+		assert.match(stripVTControlCharacters(rendered.join("\n")), /lookup/u);
+		assert.equal("args" in details.calls[0], false);
+	}
+});
+
+it("retains whole-card and pending-card choices through result arrival and changed arguments", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	let call = assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: { topic: "first" } }]);
+	const conversation = new AgentConversation([call], "/work", tui, false, false, undefined, state);
+	let document = conversation.render(80);
+	assert.equal(conversation.handleMouse(click(80, document.lines.length, 0)), undefined, "outer spacer stays outside the card");
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 1)));
+	assert.equal(state.toolExpanded.get("outer"), true);
+	call = assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: { topic: "changed" } }]);
+	conversation.update([call, result("result", "outer", "example_tool", Array.from({ length: 13 }, (_, i) => `row ${i}`).join("\n"))]);
+	document = conversation.render(80);
+	assert.match(stripVTControlCharacters(document.lines.join("\n")), /row 12/u);
+	assert.match(stripVTControlCharacters(document.lines.join("\n")), /topic: changed/u);
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 1)));
+	assert.equal(state.toolExpanded.get("outer"), false);
+	assert.doesNotMatch(screen(conversation), /row 12/u);
+});
+
+it("public thinking regions match nonempty contiguous runs across text, empty thinking and diagnostics", () => {
+	const content: AssistantMessage["content"] = [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "first" }, { type: "thinking", thinking: "adjacent" }, { type: "text", text: "intervening text" }, { type: "thinking", thinking: "" }, { type: "text", text: "more text" }, { type: "thinking", thinking: "second" }];
+	for (const stopReason of ["length", "error", "aborted"] as const) {
+		const message = assistant("runs", content).model?.[0] as AssistantMessage;
+		message.stopReason = stopReason; message.errorMessage = "diagnostic text";
+		const native = new AssistantMessageComponent(message, true, getMarkdownTheme(), "Thinking...");
+		assert.equal(thinkingRegions(native).length, 2);
+		const state = agentState(createDashboardState(), "one").view;
+		const entries = [{ id: "runs", kind: "pi.assistant", model: [message, message] }];
+		const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
+		const document = conversation.render(80);
+		const labels = document.lines.flatMap((line, index) => stripVTControlCharacters(line).includes("Thinking...") ? [index] : []);
+		assert.equal(labels.length, 4);
+		assert.ok(conversation.handleMouse(click(80, document.lines.length, labels[3])));
+		assert.equal(state.thinkingVisible.get(JSON.stringify(["runs", 3])), true);
+		assert.match(screen(conversation), /second/u);
+		const rebuilt = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
+		assert.deepEqual(rebuilt.render(80).lines, conversation.render(80).lines);
+	}
+});
+
+it("dashboard codemode cards fall back to standard presentation when capture fails", () => {
+	const root = mkdtempSync(join(tmpdir(), "dashboard-capture-"));
+	try {
+		const entries = [assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: { code: "return 42;" } }]), result("result", "outer", "codemode", Array.from({ length: 13 }, (_, i) => `row ${i + 1}`).join("\n"))];
+		const code = 'import assert from "node:assert/strict"; import { mock } from "node:test"; import * as pi from "@earendil-works/pi-coding-agent"; import { stripVTControlCharacters } from "node:util";' +
+			'pi.initTheme("dark"); mock.module("@earendil-works/pi-coding-agent", { namedExports: { ...pi, createCodemodeExtension: () => () => {} } });' +
+			'const { AgentConversation } = await import(' + JSON.stringify(new URL("./dashboard-conversation.ts", import.meta.url).href) + ');' +
+			'const view = new AgentConversation(' + JSON.stringify(entries) + ', "/work", { requestRender() {} }, false, false); const text = stripVTControlCharacters(view.render(80).lines.join("\\n")); assert.match(text, /codemode code=/); assert.match(text, /row 10/); assert.doesNotMatch(text, /row 11/); assert.match(text, /expand/);';
+		const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 30000, env: { ...process.env, PI_AGENT_DIR: join(root, "agent"), PI_AGENT_SESSIONS_DIR: join(root, "sessions") } });
+		assert.equal(child.status, 0, child.stderr || String(child.error));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("native renderer render requests clear transcript string and height caches", (t) => {
+	const original = ToolExecutionComponent.prototype.render;
+	let native: ToolExecutionComponent | undefined;
+	t.mock.method(ToolExecutionComponent.prototype, "render", function(this: ToolExecutionComponent, width: number) { native = this; return original.call(this, width); });
+	const entries = [assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: {} }]), result("result", "outer", "example_tool", Array.from({ length: 13 }, (_, i) => `row ${i}`).join("\n"))];
+	const conversation = new AgentConversation(entries, "/work", tui, false, false);
+	const before = conversation.render(80).lines;
+	assert.doesNotMatch(stripVTControlCharacters(before.join("\n")), /row 12/u);
+	assert.ok(native);
+	native.setExpanded(true); native.markExecutionStarted();
+	assert.match(stripVTControlCharacters(conversation.render(80).lines.join("\n")), /row 12/u);
+	assert.ok(conversation.renderWindow(80, 0, 40, false).height > before.length);
 });

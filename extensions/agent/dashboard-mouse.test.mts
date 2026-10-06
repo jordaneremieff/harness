@@ -5,6 +5,8 @@ import { isKittyProtocolActive, setKittyProtocolActive, type TUI, type TuiMouseE
 import { AgentComposer } from "./agent-composer.ts";
 import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
 import { fixture, keys, row, source, theme, turn } from "./dashboard-test-fixture.mts";
+import { agentState, createDashboardState } from "./dashboard-state.ts";
+import type { AgentConversationEntry } from "./dashboard-types.ts";
 
 const event = (
 	x: number,
@@ -297,3 +299,79 @@ for (const width of [80, 140]) {
 		} finally { f.ui.dispose(); }
 	});
 }
+
+const interactiveEntries: AgentConversationEntry[] = [
+	{ id: "user", kind: "pi.user", model: [{ role: "user", content: "Outside card sentinel", timestamp: 1 }] },
+	{ id: "assistant", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "thinking", thinking: "Thinking run sentinel" }, { type: "toolCall", id: "clicked-tool", name: "example_tool", arguments: { topic: "named" } }], api: "openai-responses", provider: "test", model: "test", timestamp: 2, stopReason: "toolUse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] },
+];
+for (const [width, height] of [[140, 45], [80, 32]]) for (const screen of ["roster", "message", "console"] as const) {
+	it(`single transcript clicks toggle tools and thinking in ${screen} at ${width} without changing outside-card actions`, async () => {
+		const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "interactive", nextBefore: null });
+		const retained = createDashboardState(); retained.hideThinkingBlock = true;
+		const f = fixture(width, height, observed, undefined, retained);
+		try {
+			await turn();
+			if (screen !== "roster") f.ui.navigation.enter(screen, "storage:1");
+			const read = () => f.ui.render(width).map(stripVTControlCharacters);
+			const tool = point(read(), "example_tool");
+			for (const patch of [{ type: "press" }, { type: "drag" }, { type: "release" }, { ctrl: true }, { shift: true }, { alt: true }, { clickCount: 2 }]) assert.equal(f.ui.handleMouse(event(tool.x, tool.y, width, height, patch as Partial<TuiMouseEvent>)), undefined);
+			assert.ok(f.ui.handleMouse(event(tool.x, tool.y, width, height))?.handled);
+			assert.equal(f.ui.navigation.screen, screen);
+			const state = agentState(retained, "storage:1").view;
+			assert.equal(state.toolExpanded.get("clicked-tool"), true);
+			assert.equal(state.follow, false);
+			const thinking = point(read(), "Thinking...");
+			assert.ok(f.ui.handleMouse(event(thinking.x, thinking.y, width, height))?.handled);
+			assert.equal(f.ui.navigation.screen, screen);
+			assert.equal(state.thinkingVisible.get(JSON.stringify(["assistant", 0])), true);
+			const shown = point(read(), "Thinking run sentinel");
+			assert.ok(f.ui.handleMouse(event(shown.x, shown.y, width, height))?.handled);
+			assert.equal(state.thinkingVisible.get(JSON.stringify(["assistant", 0])), false);
+			const outside = point(read(), "Outside card sentinel");
+			assert.ok(f.ui.handleMouse(event(outside.x, outside.y, width, height))?.handled);
+			assert.equal(f.ui.navigation.screen, "console");
+			f.ui.render(width);
+			f.ui.handleInput("\x0f");
+			assert.equal(state.toolExpanded.size, 0);
+			assert.equal(state.expanded, true);
+			f.ui.handleInput("\x14");
+			assert.equal(state.thinkingVisible.size, 0);
+			assert.equal(state.showThinking, true);
+		} finally { f.ui.dispose(); }
+	});
+}
+it("a top region callback returning false never activates an earlier region", () => {
+	const mouse = new DashboardMouse(); mouse.reset(80, 24);
+	let earlier = 0;
+	mouse.add({ x: 0, y: 0, width: 10, height: 10, click: () => earlier++ });
+	mouse.add({ x: 0, y: 0, width: 10, height: 10, click: () => false });
+	assert.equal(mouse.handle(event(2, 2, 80, 24)), undefined);
+	assert.equal(earlier, 0);
+});
+
+it("dashboard close and reopen retain clicked items and their reading anchor", async () => {
+	const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "interactive", nextBefore: null });
+	const retained = createDashboardState(); retained.hideThinkingBlock = true;
+	let f = fixture(140, 45, observed, undefined, retained);
+	try {
+		await turn();
+		let lines = f.ui.render(140).map(stripVTControlCharacters);
+		let item = point(lines, "example_tool");
+		assert.ok(f.ui.handleMouse(event(item.x, item.y, 140, 45))?.handled);
+		lines = f.ui.render(140).map(stripVTControlCharacters);
+		item = point(lines, "Thinking...");
+		assert.ok(f.ui.handleMouse(event(item.x, item.y, 140, 45))?.handled);
+		const state = agentState(retained, "storage:1").view;
+		const anchor = state.anchor;
+		f.ui.dispose();
+		f = fixture(140, 45, observed, undefined, retained);
+		await turn();
+		lines = f.ui.render(140).map(stripVTControlCharacters);
+		assert.match(lines.join("\n"), /Thinking run sentinel/u);
+		assert.match(lines.join("\n"), /topic: named/u);
+		assert.equal(state.toolExpanded.get("clicked-tool"), true);
+		assert.equal(state.thinkingVisible.get(JSON.stringify(["assistant", 0])), true);
+		assert.deepEqual(state.anchor, anchor);
+		assert.equal(state.follow, false);
+	} finally { f.ui.dispose(); }
+});

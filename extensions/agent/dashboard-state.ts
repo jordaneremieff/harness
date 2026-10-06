@@ -15,10 +15,13 @@ export type DashboardScreen =
 export interface AgentReadingState {
 	follow: boolean;
 	scroll: number;
-	anchor?: { id: string; offset: number };
+	anchor?: { id: string; offset: number; run?: number };
 	before?: number;
 	expanded: boolean;
 	showThinking: boolean;
+	toolExpanded: Map<string, boolean>;
+	thinkingVisible: Map<string, boolean>;
+	liveThinking?: { id: string; timestamp: number };
 }
 export interface ScheduleDraft {
 	message: string;
@@ -42,6 +45,7 @@ export interface DashboardLayout {
 }
 export interface DashboardState {
 	layout: DashboardLayout;
+	hideThinkingBlock?: boolean;
 	selected?: string;
 	exactTime: boolean;
 	filter: string;
@@ -60,7 +64,7 @@ export function agentState(state: DashboardState, id: string): AgentDraftState {
 			draftRevision: 0,
 			mode: "steer",
 			history: [],
-			view: { follow: true, scroll: 0, expanded: false, showThinking: false },
+			view: { follow: true, scroll: 0, expanded: false, showThinking: !(state.hideThinkingBlock ?? false), toolExpanded: new Map(), thinkingVisible: new Map() },
 		};
 		state.agents.set(id, value);
 	}

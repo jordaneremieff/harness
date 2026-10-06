@@ -835,11 +835,13 @@ export class AgentDashboard implements Component, Focusable {
 		if (!console) return false;
 		if (this.keys.matches(data, "app.tools.expand") || matchesKey(data, "ctrl+o")) {
 			console.state.view.expanded = !console.state.view.expanded;
+			console.state.view.toolExpanded.clear();
 			this.reloadContent();
 			return true;
 		}
 		if (this.keys.matches(data, "app.thinking.toggle") || matchesKey(data, "ctrl+t")) {
 			console.state.view.showThinking = !console.state.view.showThinking;
+			console.state.view.thinkingVisible.clear();
 			this.reloadContent();
 			return true;
 		}
@@ -1398,8 +1400,12 @@ export class AgentDashboard implements Component, Focusable {
 		this.resize.end();
 		this.mouse.add({
 			x: paneX, y: paneY + header.length, width: paneWidth, height: geometry.bodyHeight + boundaryRows,
-			click: () => {
+			click: (event) => {
 				if (!this.console || screen === "new" || screen === "find") return false;
+				if (event.y >= boundaryRows && event.x < paneWidth - 1) {
+					const handled = this.console.conversation.handleMouse({ ...event, y: event.y - boundaryRows, width: Math.max(1, paneWidth - 1), height: geometry.bodyHeight });
+					if (handled?.handled) return handled;
+				}
 				if (screen !== "console") {
 					if (this.operations.enter) this.operations.enter(this.console.row.id);
 					else this.navigation.enter("console", this.console.row.id);

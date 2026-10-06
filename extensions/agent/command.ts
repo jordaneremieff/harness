@@ -166,6 +166,7 @@ export function createAgentCommand(
 		observeEffort?(id: string, ctx?: ExtensionContext): Promise<string>;
 	},
 	preferences?: DashboardPreferences,
+	readHideThinkingBlock?: () => boolean,
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
@@ -212,6 +213,7 @@ export function createAgentCommand(
 		if (!ctx.hasUI || dashboardOpen) return;
 		dashboardOpen = true;
 		const state = dashboardSessionState(ctx.sessionManager.getSessionId(), preferences?.load);
+		state.hideThinkingBlock = readHideThinkingBlock?.() ?? false;
 		try {
 			await showAgentDashboard({
 				ctx,
