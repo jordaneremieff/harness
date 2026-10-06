@@ -255,7 +255,7 @@ export class ConversationView {
 		this.state.follow = false;
 		this.scroll.scrollTo(viewport.top, { disableFollow: true });
 		this.state.scroll = viewport.top;
-		this.state.anchor = { id: item.id, offset: viewport.top - item.line };
+		this.state.anchor = { id: item.id, offset: Math.min(viewport.top - item.line, item.targetOffset ?? Infinity) };
 		this.restored = false;
 		this.viewport = undefined;
 		return { handled: true, render: true };

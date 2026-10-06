@@ -541,7 +541,9 @@ not every rendered line. A partial transcript also shows its first input from
 the published summary, explicitly labeled historical rather than the current
 role or task. Native separators and background padding remain intact without
 extra inter-block separators. Native assistant and tool instances stay stable
-through content, argument, and result updates. Tool expansion choices survive
+through content, argument, and result updates. When a missing call arrives, a
+built-in fallback card rebuilds once to acquire its native renderer. Pi exposes
+no renderer replacement setter. Tool expansion choices survive
 history eviction and dashboard close/reopen by call ID in the same primary
 process. Thinking choices belong only to the actual native assistant instance.
 They survive live updates and the matching live-to-committed transition, but

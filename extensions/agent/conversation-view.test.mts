@@ -301,3 +301,21 @@ it("transcript clicks leave selection gestures, outside blocks and stale viewpor
 	assert.ok(view.handleMouse(itemClick(y)));
 	assert.equal(view.handleMouse(itemClick(y)), undefined, "layout must repaint after a toggle");
 });
+
+
+it("collapse from the middle of thinking keeps its label visible before trailing text", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	state.follow = false; state.scroll = 25; state.showThinking = true;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	const entry = assistantEntry("deep", 1, [
+		{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") },
+		{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") },
+	]);
+	view.setContent([entry], [], "/work");
+	assert.match(readText(view).join("\n"), /thought 26/);
+	assert.ok(view.handleMouse(itemClick(2)));
+	assert.match(readText(view).join("\n"), /Thinking\.\.\./);
+	assert.equal(state.follow, false);
+	view.setContent([{ ...entry, data: { revision: 2 } }], [], "/work");
+	assert.match(readText(view).join("\n"), /Thinking\.\.\./);
+});

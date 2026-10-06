@@ -267,12 +267,23 @@ export class AgentConversation {
 			this.tools.set(part.id, block.component as ReadingToolComponent);
 		}
 	}
+	private matchedTool(name: string, id: string): ReadingToolComponent | undefined {
+		const component = this.unmatched.get(id);
+		if (!component) return;
+		const fallback = this.definitions(name, false);
+		const known = this.definitions(name);
+		if (fallback.renderCall === known.renderCall && fallback.renderResult === known.renderResult && fallback.renderShell === known.renderShell) return component;
+		// Pi has no definition setter. A newly available native renderer requires one replacement.
+		this.unmatched.delete(id);
+		return undefined;
+	}
 	private callCard(part: Extract<AssistantMessage["content"][number], { type: "toolCall" }>): ReadingToolComponent {
 		const signature = JSON.stringify(part);
 		const cached = this.callCards.get(part.id);
 		if (cached?.signature === signature) return cached.component;
-		const component = cached?.component ?? this.unmatched.get(part.id) ?? this.tool(part.name, part.id, part.arguments);
-		if (cached || this.unmatched.has(part.id)) {
+		const retained = cached?.component ?? this.matchedTool(part.name, part.id);
+		const component = retained ?? this.tool(part.name, part.id, part.arguments);
+		if (retained) {
 			component.updateArgs(part.arguments);
 			this.rendered.delete(component);
 			this.heights.delete(component);
@@ -507,7 +518,7 @@ export class AgentConversation {
 		return true;
 	}
 	/** Only measured blocks receive clicks; pending cards include their background padding. */
-	handleMouse(event: TuiMouseEvent): { id: string; line: number } | undefined {
+	handleMouse(event: TuiMouseEvent): { id: string; line: number; targetOffset?: number } | undefined {
 		if (!isItemClick(event)) return;
 		const layout = this.layout(event.width);
 		const index = layout.anchors.findIndex((anchor, index) => {
@@ -520,13 +531,14 @@ export class AgentConversation {
 		const measured = this.rendered.get(component);
 		if (!measured) return;
 		const local = { ...event, y: event.y - line, height: measured.lines.length };
-		let item: { id: string; line: number } | undefined;
+		let item: { id: string; line: number; targetOffset?: number } | undefined;
 		if (component instanceof ReadingToolComponent) {
 			if (!this.toolClick(component, local, measured.lines)) return;
 			item = { id, line };
 		} else if (component instanceof AssistantMessageComponent) {
-			if (!component.handleMouse(local)?.handled) return;
-			item = { id, line };
+			const dispatched = component.handleMouse(local);
+			if (!dispatched?.handled) return;
+			item = { id, line, targetOffset: dispatched.target.originY - (local.screenY - local.y) };
 		}
 		if (!item) return;
 		this.rendered.delete(component);

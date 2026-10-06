@@ -563,3 +563,38 @@ it("result removal and call eviction keep a retained card instance without stale
 	assert.equal(updates.mock.calls.at(-1)?.this, instance);
 	assert.match(screen(conversation), /visible result/);
 });
+
+
+it("a result-first builtin acquires native presentation when its call arrives", (t) => {
+	const renders = t.mock.method(ToolExecutionComponent.prototype, "render");
+	const state = agentState(createDashboardState(), "one").view;
+	const done = result("done", "read-call", "read", "source line 3\nsource line 4");
+	const conversation = new AgentConversation([done], "/work", tui, false, false, undefined, state);
+	let document = conversation.render(80);
+	const unmatched = renders.mock.calls.at(-1)?.this;
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 2)));
+	assert.equal(state.toolExpanded.get("read-call"), true);
+	const call = assistant("call", [{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 3, limit: 2 } }]);
+	conversation.update([call, done]);
+	document = conversation.render(80);
+	const matched = renders.mock.calls.at(-1)?.this;
+	assert.notEqual(matched, unmatched, "Pi has no public renderer-definition setter");
+	assert.deepEqual(document.lines, new AgentConversation([call, done], "/work", tui, true, false).render(80).lines);
+	assert.match(stripVTControlCharacters(document.lines.join("\n")), /source\.ts:3-4/);
+	const args = t.mock.method(ToolExecutionComponent.prototype, "updateArgs");
+	conversation.update([assistant("call", [{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 4, limit: 1 } }]), done]);
+	assert.equal(args.mock.calls.at(-1)?.this, matched);
+});
+
+
+it("a result-first custom card keeps its instance when the call adds no renderer capability", (t) => {
+	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
+	const args = t.mock.method(ToolExecutionComponent.prototype, "updateArgs");
+	const renderer: ToolRenderers = { renderCall: () => new Text("published card") };
+	const done = result("done", "published", "custom", "output");
+	const conversation = new AgentConversation([done], "/work", tui, false, false, undefined, undefined, () => renderer);
+	const instance = updates.mock.calls.at(-1)?.this;
+	conversation.update([assistant("call", [{ type: "toolCall", id: "published", name: "custom", arguments: { topic: "known" } }]), done]);
+	assert.equal(args.mock.calls.at(-1)?.this, instance);
+	assert.match(screen(conversation), /published card/);
+});
