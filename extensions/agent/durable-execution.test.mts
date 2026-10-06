@@ -6,11 +6,15 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { LiveDoc, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
-import type { CodemodeToolDetails } from "@earendil-works/pi-coding-agent";
+import { initTheme, type CodemodeToolDetails } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
+import { AgentConversation } from "./dashboard-conversation.ts";
+import type { AgentConversationEntry } from "./dashboard-types.ts";
 import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
@@ -948,6 +952,18 @@ it("aborts an owned nested call with the conversation and reaches idle", { timeo
 	const f = await executionFixture(t, { code: `try { await tools.hanging({}); return "ok"; } catch (error) { return { error: String(error.message ?? error) }; }` });
 	const publications: Array<{ status: string | undefined; aborted: boolean }> = [];
 	const rejections: unknown[] = [];
+	let stop = () => {};
+	const committed = new Promise<CodemodeToolDetails>((resolve, reject) => {
+		stop = f.harness.subscribeCommits(() => {
+			void f.harness.snapshot(LiveDoc, f.conversation.id, BACKGROUND_CONTEXT).then((live) => {
+				const slot = live?.tools?.find((tool) => tool.callId === "codemode-call" && tool.status === "running");
+				if (!slot?.details) return;
+				const details = slot.details as unknown as CodemodeToolDetails;
+				if (details.calls[0]?.status === "running") resolve(structuredClone(details));
+			}).catch(reject);
+		});
+	});
+	t.after(() => stop());
 	observeScriptApi(t, f, (api) => ({ ...api, details: (value, context) => {
 		publications.push({ status: (value as unknown as CodemodeToolDetails).calls.at(-1)?.status, aborted: context.abortSignal?.aborted === true });
 		return api.details(value, context).catch((error) => { rejections.push(error); throw error; });
@@ -956,6 +972,9 @@ it("aborts an owned nested call with the conversation and reaches idle", { timeo
 	try {
 		const submission = await f.conversation.submit({ type: "input", content: "hang the tool" }, BACKGROUND_CONTEXT);
 		await entered.promise;
+		const runningDetails = await committed;
+		stop();
+		assert.deepEqual(runningDetails, { calls: [{ id: "codemode-call/1", name: "hanging", args: "{}", status: "running", durationMs: 0 }] });
 		await f.conversation.abort(BACKGROUND_CONTEXT);
 		await f.conversation.waitForIdle(BACKGROUND_CONTEXT);
 		await submission.wait(BACKGROUND_CONTEXT);
@@ -963,6 +982,27 @@ it("aborts an owned nested call with the conversation and reaches idle", { timeo
 		const toolResults = view.messages.filter((message) => message.role === "toolResult");
 		assert.ok(toolResults.length >= 1, "the codemode call retained a result");
 		assert.ok(toolResults.some((result) => messageText(result).length > 0), "the result reports the aborted call");
+		const retained = toolResults.find((result) => result.toolCallId === "codemode-call");
+		assert.ok(retained);
+		assert.equal(retained.isError, true);
+		assert.match(messageText(retained), /Tool codemode was aborted/u);
+		assert.deepEqual(retained.details, runningDetails, "the terminal abort retains the last committed snapshot, not the rejected cancelled update");
+		const called = view.messages.find((message) => message.role === "assistant" && message.content.some((part) => part.type === "toolCall" && part.id === "codemode-call"));
+		assert.ok(called?.role === "assistant");
+		const entries: AgentConversationEntry[] = [
+			{ id: "committed-call", kind: "pi.assistant", model: [called] },
+			{ id: "committed-result", kind: "pi.tool-result", model: [retained] },
+		];
+		initTheme("dark");
+		const tui = { requestRender() {} } as TUI;
+		for (const expanded of [false, true]) {
+			const conversation = new AgentConversation(entries, f.cwd, tui, expanded, false);
+			const text = stripVTControlCharacters(conversation.render(80).lines.join("\n"));
+			assert.match(text, /⊘ hanging/u);
+			assert.doesNotMatch(text, /… hanging/u);
+			assert.match(text, /Tool codemode was aborted/u);
+		}
+		assert.deepEqual(retained.details, runningDetails, "terminal display never mutates the retained raw snapshot");
 		const inspection = await f.harness.inspect(BACKGROUND_CONTEXT);
 		assert.equal(inspection.tasks.length, 0, "the owned nested task settled with its owner");
 		const fixtureState = (globalThis as Record<string, unknown>).__execFixture as { aborted?: boolean };
