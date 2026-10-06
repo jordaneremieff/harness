@@ -17,6 +17,7 @@ provider, model ID, and thinking level before planning or execution.
 
 ```bash
 npm run evals -- validate prompts/wtf.eval.mts
+npm run evals -- validate prompts/tldr.eval.mts
 npm run evals -- validate prompts/seed.eval.mts
 npm run evals -- validate prompts/seed-transfer.eval.mts
 
@@ -129,6 +130,17 @@ also contrasts explicit summaries with bare repairs and checks retention of
 explicit unchanged state, the target's language, and complete approval artifacts
 within a feasible sentence budget. Both use human-required semantic review. Their empty tool lists isolate text behavior; they do not prove that a
 model declines an available tool.
+
+`prompts/tldr.eval.mts` compares the maintained short-by-default summary with
+a plain `tldr <hint>` message over identical synthetic context. It covers bare
+requests, long assessments, proposals, focus and form hints, whole-session
+scope, returning readers, receipts, delivery explanations, exact commands,
+missing context, repeated summaries, and rhetorical clutter. Character limits
+and exact-span checks establish deterministic floors; human-required review
+decides whether the operator understands the result and its material limits.
+The empty tool lists do not establish refusal of available tools.
+`prompts/tldr.eval.test.mts` checks resource resolution and passing and failing
+synthetic outputs without model inference.
 
 `prompts/templates.test.mts` checks discovery through the public Pi resource
 loader without model inference. Package discovery and an explicit candidate

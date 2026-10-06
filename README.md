@@ -15,8 +15,9 @@ the package, and machine configuration.
 - [Extensions](extensions/): executable tools, commands, and interface changes.
   Each extension directory has its own README.
 - [Skills](skills/): task procedures, each defined in a `SKILL.md` file.
-- [Prompt templates](prompts/): operator-invoked prompt shortcuts;
-  see the [prompt convention](docs/conventions/prompts.md) for use and ownership.
+- [Prompt templates](prompts/): operator-invoked shortcuts, including
+  [`/tldr [hint]`](prompts/tldr.md) for a short, plain-language summary.
+  See the [prompt convention](docs/conventions/prompts.md) for use and ownership.
 - [Pillars](pillars/README.md): principles, patterns, and heuristics that guide
   agent judgment.
 - [Documentation](docs/): [architecture](docs/architecture.md) and [repository conventions](docs/conventions/).

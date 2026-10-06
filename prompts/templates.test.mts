@@ -13,7 +13,7 @@ import { loadSuite } from "../evals/core.mts";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 it("maintained prompt behavior suites satisfy the evaluation and adapter contracts", async () => {
-	for (const name of ["drift", "seed", "wtf"]) {
+	for (const name of ["drift", "seed", "tldr", "wtf"]) {
 		const { suite, path } = await loadSuite(join(repositoryRoot, "prompts", `${name}.eval.mts`));
 		const adapter = getSubjectAdapter(suite.subject.adapter);
 		adapter.validate?.({
@@ -43,7 +43,7 @@ it("the package discovers only maintained prompt commands without other resource
 		await loader.reload();
 		const { prompts, diagnostics } = loader.getPrompts();
 		assert.deepEqual(diagnostics, []);
-		assert.deepEqual(prompts.map((prompt) => prompt.name).sort(), ["drift", "recap", "seed", "wtf"]);
+		assert.deepEqual(prompts.map((prompt) => prompt.name).sort(), ["drift", "recap", "seed", "tldr", "wtf"]);
 		for (const prompt of prompts) {
 			assert.equal(prompt.filePath, join(repositoryRoot, "prompts", `${prompt.name}.md`));
 			assert.ok(prompt.description.trim());
@@ -52,6 +52,7 @@ it("the package discovers only maintained prompt commands without other resource
 		}
 		assert.equal(prompts.find((prompt) => prompt.name === "wtf")?.argumentHint, "[your account of the problem]");
 		assert.equal(prompts.find((prompt) => prompt.name === "seed")?.argumentHint, "[your hint for the brief]");
+		assert.equal(prompts.find((prompt) => prompt.name === "tldr")?.argumentHint, "[focus, scope, or length]");
 		assert.equal(
 			prompts.find((prompt) => prompt.name === "recap")?.argumentHint,
 			"[work, topic, or session; optional focus or comparison]",
@@ -139,6 +140,54 @@ it("a recap candidate expands selections, focus, and comparisons through Pi's ar
 			['/recap "literal $1 and $ARGUMENTS"', "literal $1 and $ARGUMENTS"],
 		]) {
 			assert.equal(expandPromptTemplate(invocation, prompts), recap.content.replace("$ARGUMENTS", () => selection));
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+it("a tldr candidate expands optional focus, scope, form, and action text through Pi", async () => {
+	const root = await mkdtemp(join(tmpdir(), "tldr-candidate-"));
+	try {
+		const loader = new DefaultResourceLoader({
+			cwd: root,
+			agentDir: join(root, "agent"),
+			settingsManager: SettingsManager.inMemory(),
+			additionalPromptTemplatePaths: [join(repositoryRoot, "prompts", "tldr.md")],
+			noPromptTemplates: true,
+			noExtensions: true,
+			noSkills: true,
+			noThemes: true,
+			noContextFiles: true,
+		});
+		await loader.reload();
+		const { prompts, diagnostics } = loader.getPrompts();
+		assert.deepEqual(diagnostics, []);
+		assert.deepEqual(prompts.map((prompt) => prompt.name), ["tldr"]);
+		const tldr = prompts[0];
+		assert.ok(tldr);
+		assert.equal(tldr.filePath, join(repositoryRoot, "prompts", "tldr.md"));
+		assert.equal(tldr.description, "Summarize the current discussion in a few plain sentences");
+		assert.equal(tldr.argumentHint, "[focus, scope, or length]");
+		assert.ok(tldr.content.includes("Optional hint:\n$ARGUMENTS\n"));
+
+		const packageEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+		const promptTemplatesUrl = pathToFileURL(join(dirname(packageEntry), "core", "prompt-templates.js"));
+		const { expandPromptTemplate } = (await import(promptTemplatesUrl.href)) as {
+			expandPromptTemplate: (text: string, templates: Array<{ name: string; content: string }>) => string;
+		};
+		for (const [invocation, hint] of [
+			["/tldr", ""],
+			["/tldr why did it fail?", "why did it fail?"],
+			["/tldr whole session", "whole session"],
+			["/tldr since I left", "since I left"],
+			["/tldr one line", "one line"],
+			['/tldr "more detail" on the result', "more detail on the result"],
+			["/tldr the fix, then push it", "the fix, then push it"],
+			['/tldr "literal $1 and $ARGUMENTS"', "literal $1 and $ARGUMENTS"],
+		]) {
+			assert.equal(expandPromptTemplate(invocation, prompts), tldr.content.replace("$ARGUMENTS", () => hint));
+			assert.equal(expandPromptTemplate(invocation, [{ name: "tldr", content: "tldr $ARGUMENTS" }]), `tldr ${hint}`);
 		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
