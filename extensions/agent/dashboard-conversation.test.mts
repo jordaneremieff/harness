@@ -5,10 +5,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject, UserMessage } from "@earendil-works/pi-ai";
 import { initTheme, createCodemodeExtension, AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent, getMarkdownTheme, type ExtensionAPI, type ToolDefinition, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { Container, MouseRegion, Text, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
+import { buildLiveEntries } from "./live-frames.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
@@ -600,4 +601,49 @@ it("a result-first custom card keeps its instance when the call adds no renderer
 	conversation.update([assistant("call", [{ type: "toolCall", id: "published", name: "custom", arguments: { topic: "known" } }]), done]);
 	assert.equal(args.mock.calls.at(-1)?.this, instance);
 	assert.match(screen(conversation), /published card/);
+});
+
+it("live nested codemode details match native partial cards and retain the card through commit", (t) => {
+	const definitions: ToolDefinition[] = [];
+	createCodemodeExtension()({ registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] } as ExtensionAPI);
+	assert.equal(definitions.length, 1);
+	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
+	const args = { code: 'const value = await tools.lookup({ topic: "example" });\nconsole.log(value);' };
+	const call = assistant("call", [{ type: "toolCall", id: "script", name: "codemode", arguments: args }]);
+	const phases: JsonObject[] = [
+		{ calls: [{ id: "script/1", name: "lookup", args: '{"topic":"example"}', status: "running" }] },
+		{ calls: [{ id: "script/1", name: "lookup", args: '{"topic":"example"}', status: "ok", durationMs: 4 }, { id: "script/2", name: "other", args: "{}", status: "error", durationMs: 2, error: "rejected" }] },
+	];
+	for (const width of [40, 80, 120]) for (const expanded of [false, true]) {
+		const conversation = new AgentConversation([], "/work", tui, expanded, false);
+		const native = new ToolExecutionComponent("codemode", "script", args, { showImages: false }, definitions[0], tui, "/work");
+		native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
+		let instance: unknown;
+		for (const [index, details] of phases.entries()) {
+			const live = buildLiveEntries({ tools: [{ callId: "script", name: "codemode", status: "running", output: "partial-output-sentinel", details }] }, [call]);
+			conversation.update([call, ...live]);
+			const update = updates.mock.calls.at(-1); assert.ok(update);
+			instance ??= update.this;
+			assert.equal(update.this, instance);
+			assert.equal(update.arguments[1], true);
+			const message = live[0].model?.[0]; assert.ok(message?.role === "toolResult");
+			native.updateResult({ ...message, details }, true);
+			const lines = conversation.render(width).lines;
+			assert.deepEqual(lines, native.render(width));
+			const text = stripVTControlCharacters(lines.join("\n"));
+			assert.match(text, index === 0 ? /… lookup/u : /✓ lookup/u);
+			assert.equal(/✗ other/u.test(text), index === 1);
+			assert.doesNotMatch(text, /partial-output-sentinel/u);
+		}
+		const done = result("done", "script", "codemode", "");
+		const message = done.model?.[0]; assert.ok(message?.role === "toolResult");
+		message.content = [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }, { type: "text", text: "final-output-sentinel" }];
+		message.details = phases[1];
+		conversation.update([call, done]);
+		const update = updates.mock.calls.at(-1); assert.ok(update);
+		assert.equal(update.this, instance); assert.equal(update.arguments[1], false);
+		native.updateResult(message, false);
+		assert.deepEqual(conversation.render(width).lines, native.render(width));
+		assert.match(screen(conversation, width), /final-output-sentinel/u);
+	}
 });

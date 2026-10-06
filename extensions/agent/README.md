@@ -555,8 +555,12 @@ Codemode nested calls use published result details without normalization.
 Collapsed cards with old args-less details use Pi's generic result fallback,
 including the original output header, instead of the nested-call list.
 Expanded cards use Pi's native nested-call summary with names, status, and
-available durations. Missing arguments stay absent. The dashboard does not
-generate live snapshots.
+available durations. Missing arguments stay absent. The host publishes nested-call
+snapshots through Durable's `api.details`; live observation forwards each tool
+slot's details into its partial `ToolResultMessage`. Pi's native codemode card
+updates call status marks and suppresses partial output until the committed
+result arrives. Durable throttles these publications; the dashboard does not
+reconstruct nested-call details.
 The primary's no-target `agent_status` is a compact fleet overview. Working
 and starting rows without an attention reason come first, then attention rows,
 then recent quiet rows. Independent host, recovery, or availability faults make

@@ -123,6 +123,7 @@ export function buildLiveEntries(live: unknown, committed: readonly AgentConvers
 			toolCallId: slot.callId,
 			toolName: slot.name,
 			content: output === "" ? [] : [{ type: "text", text: output }],
+			details: slot.details,
 			isError: false,
 			timestamp: 0,
 		};
