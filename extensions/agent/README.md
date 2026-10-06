@@ -351,12 +351,21 @@ keeps blank space above the composer, including at the tail.
 
 Conversation content uses Pi's native components. Built-in tools retain native
 cards; codemode uses Pi's public codemode presentation. Agent tools use the
-shared agent cards. Other tools use Pi's standard named-argument card and
-logical-line output preview with an expansion hint. Other extensions' custom
-renderers have no public lookup surface. All display definitions are inert.
+shared agent cards. The dashboard requests custom renderers through the
+[tool-display contract](../../docs/conventions/tool-display.md). Native built-ins,
+codemode, and agent cards keep precedence; published custom tools use their
+owning extension renderers. Unpublished tools use Pi's standard named-argument
+card and logical-line output preview with an expansion hint. Display definitions
+never execute tools. The agent factory subscribes before it requests renderers.
+Publishers subscribe before their initial publication. Pi reload replaces
+subscriptions and the factory-local renderer registry; dashboard reopen creates
+new component instances.
 
-An unmodified single left click toggles one tool card or one thinking run,
-including its hidden label, in the preview, message view, and full console.
+An unmodified single left click reaches the native component in the preview,
+message view, and full console. Native handlers toggle one tool card or thinking
+run, including its hidden label; custom child controls keep their own actions.
+Unhandled clicks on pending cards and card padding toggle the card through
+Pi's public expansion setter. Empty outer spacer rows remain outside the card.
 The clicked item stays in view and suspends tail-follow. Outside-card clicks
 keep the preview's console action. Press, drag, release, modified clicks, and
 multiple clicks stay available for Pi's native text selection. Ctrl+O sets all
@@ -531,12 +540,19 @@ tail joins that range. Offscreen blocks retain height and anchor measurements,
 not every rendered line. A partial transcript also shows its first input from
 the published summary, explicitly labeled historical rather than the current
 role or task. Native separators and background padding remain intact without
-extra inter-block separators. Individual tool and thinking choices survive
-live updates, entry rebuilds, history reload, and dashboard close/reopen in the
-same primary process. Live thinking choices follow the matching committed
-turn, not subsequent turns. Legacy codemode details receive display-only
-normalization; stored records remain unchanged. Codemode nested calls use
-published result details; the dashboard does not generate live snapshots.
+extra inter-block separators. Native assistant and tool instances stay stable
+through content, argument, and result updates. Tool expansion choices survive
+history eviction and dashboard close/reopen by call ID in the same primary
+process. Thinking choices belong only to the actual native assistant instance.
+They survive live updates and the matching live-to-committed transition, but
+reset after instance eviction, selection changes, or dashboard close/reopen.
+Ctrl+T resets every retained assistant through Pi's thinking setter; Ctrl+O
+sets every retained card and clears recorded tool choices. Reopened dashboards
+create fresh components and use the current runtime's renderer definitions.
+Codemode nested calls use published result details without normalization. Old
+args-less details use Pi's generic result fallback, including the original
+output header, rather than a nested-call list. The dashboard does not generate
+live snapshots.
 The primary's no-target `agent_status` is a compact fleet overview. Working
 and starting rows without an attention reason come first, then attention rows,
 then recent quiet rows. Independent host, recovery, or availability faults make

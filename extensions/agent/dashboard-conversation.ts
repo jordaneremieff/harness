@@ -6,10 +6,11 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 	getMarkdownTheme,
+	type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
-import { Container, MouseRegion, Text, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Text, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
-import { createDashboardToolDefinitions, normalizeCodemodeDetails } from "./dashboard-tool-definitions.ts";
+import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import type { AgentReadingState } from "./dashboard-state.ts";
 import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
 
@@ -19,7 +20,7 @@ export function cleanDashboardText(text: string): string {
 	);
 }
 
-/** Native renderers receive display data only, never executable extension renderers or image payloads. */
+/** Render callbacks receive sanitized display data, never signatures or image payloads. */
 function displayValue(value: unknown, depth = 0): unknown {
 	if (typeof value === "string") {
 		const clean = cleanDashboardText(value);
@@ -49,25 +50,23 @@ export interface ConversationDocument {
 	lines: string[];
 	anchors: Array<{ id: string; line: number }>;
 }
-/** Public container composition identifies nonempty thinking runs in source order. */
-export function thinkingRegions(component: Component): MouseRegion[] {
-	if (component instanceof MouseRegion) return [component];
-	return component instanceof Container ? component.children.flatMap(thinkingRegions) : [];
-}
-function regionLayout(component: Component, width: number, top = 0): Array<{ region: MouseRegion; line: number; height: number }> {
-	if (component instanceof MouseRegion) return [{ region: component, line: top, height: component.render(width).length }];
-	if (!(component instanceof Container)) return [];
-	const regions: ReturnType<typeof regionLayout> = [];
-	for (const child of component.children) {
-		regions.push(...regionLayout(child, width, top));
-		top += child.render(width).length;
+/** Pi has no expansion getter; observe its public setter without replacing native click behavior. */
+class ReadingToolComponent extends ToolExecutionComponent {
+	choice = false;
+	onInvalidate?: () => void;
+	override invalidate(): void {
+		super.invalidate();
+		this.onInvalidate?.();
 	}
-	return regions;
+	override setExpanded(expanded: boolean): void {
+		this.choice = expanded;
+		super.setExpanded(expanded);
+		this.onInvalidate?.();
+	}
 }
 function isItemClick(event: TuiMouseEvent): boolean {
 	return event.type === "click" && event.button === "left" && !event.shift && !event.alt && !event.ctrl && (event.clickCount ?? 1) === 1;
 }
-const replayClick: TuiMouseEvent = { type: "click", button: "left", x: 0, y: 0, screenX: 0, screenY: 0, width: 1, height: 1, shift: false, alt: false, ctrl: false, clickCount: 1 };
 
 function contentText(content: Message["content"], includeImageLabels = true): string {
 	if (typeof content === "string") return content;
@@ -146,21 +145,19 @@ export class AgentConversation {
 	private blocks: ConversationBlock[] = [];
 	private entryBlocks = new Map<string, { signature: string; blocks: ConversationBlock[] }>();
 	private readonly resultKeys = new WeakMap<Component, string>();
-	private resultCalls = new Set<string>();
-	private readonly callCards = new Map<string, { signature: string; component: ToolExecutionComponent }>();
-	private readonly unmatched = new Map<string, ToolExecutionComponent>();
+	private readonly callCards = new Map<string, { signature: string; component: ReadingToolComponent }>();
+	private readonly unmatched = new Map<string, ReadingToolComponent>();
+	private readonly assistants = new Map<string, AssistantMessageComponent>();
 	private readonly rendered = new Map<Component, { width: number; lines: string[] }>();
 	private signatures: string[] = [];
 	private readonly heights = new Map<Component, { width: number; height: number }>();
-	private cache?: { width: number; document: ConversationDocument };
 	private readonly definitions: ReturnType<typeof createDashboardToolDefinitions>;
-	private readonly reading: Pick<AgentReadingState, "toolExpanded" | "thinkingVisible">;
-	private readonly assistantRuns = new WeakMap<Component, { keys: string[] }>();
-	private readonly tools = new Map<string, ToolExecutionComponent>();
+	private readonly reading: Pick<AgentReadingState, "toolExpanded">;
+	private readonly tools = new Map<string, ReadingToolComponent>();
 	private readonly cwd: string;
 	private readonly tui: TUI;
-	private readonly expanded: boolean;
-	private readonly showThinking: boolean;
+	private expanded: boolean;
+	private showThinking: boolean;
 	private awaitingSignature = "";
 	private readonly renderCustom?: (entry: AgentConversationEntry) => Component | undefined;
 	constructor(
@@ -170,15 +167,16 @@ export class AgentConversation {
 		expanded: boolean,
 		showThinking: boolean,
 		renderCustom?: (entry: AgentConversationEntry) => Component | undefined,
-		reading?: Pick<AgentReadingState, "toolExpanded" | "thinkingVisible">,
+		reading?: Pick<AgentReadingState, "toolExpanded">,
+		toolDisplay?: (name: string) => ToolRenderers | undefined,
 	) {
 		this.cwd = cwd;
 		this.tui = tui;
 		this.expanded = expanded;
 		this.showThinking = showThinking;
 		this.renderCustom = renderCustom;
-		this.definitions = createDashboardToolDefinitions(cwd);
-		this.reading = reading ?? { toolExpanded: new Map(), thinkingVisible: new Map() };
+		this.definitions = createDashboardToolDefinitions(cwd, toolDisplay);
+		this.reading = reading ?? { toolExpanded: new Map() };
 		this.update(entries);
 	}
 
@@ -190,11 +188,7 @@ export class AgentConversation {
 			signatures.every((signature, index) => signature === this.signatures[index])
 		)
 			return;
-		this.resultCalls = new Set(
-			entries.flatMap((entry) =>
-				(entry.model ?? []).flatMap((message) => (message.role === "toolResult" ? [message.toolCallId] : [])),
-			),
-		);
+
 		const next = new Map<string, { signature: string; blocks: ConversationBlock[] }>();
 		this.blocks = [];
 		this.tools.clear();
@@ -208,11 +202,42 @@ export class AgentConversation {
 			} else this.appendEntry(entry);
 			next.set(entry.id, { signature: signatures[index], blocks: this.blocks.slice(start) });
 		});
+		const resultIds = new Set(entries.flatMap((entry) => (entry.model ?? []).flatMap((message) => message.role === "toolResult" ? [message.toolCallId] : [])));
+		for (const [id, tool] of this.tools) {
+			if (!this.resultKeys.has(tool) || resultIds.has(id)) continue;
+			tool.updateResult({ content: [], isError: false }, true);
+			this.resultKeys.delete(tool);
+			this.rendered.delete(tool);
+			this.heights.delete(tool);
+		}
 		this.entryBlocks = next;
 		this.signatures = signatures;
-		this.cache = undefined;
 		this.pruneComponents();
 	}
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+		this.reading.toolExpanded.clear();
+		for (const { component } of this.blocks) {
+			if (component instanceof ToolExecutionComponent || component instanceof CustomMessageComponent) component.setExpanded(expanded);
+		}
+		this.rendered.clear();
+		this.heights.clear();
+	}
+	setShowThinking(show: boolean): void {
+		this.showThinking = show;
+		for (const component of this.assistants.values()) component.setHideThinkingBlock(!show);
+		this.rendered.clear();
+		this.heights.clear();
+	}
+	/** Move a live instance to its committed entry without replaying its private choices. */
+	renameEntry(previous: string, next: string): void {
+		for (const [key, component] of this.assistants) {
+			if (key !== previous && !key.startsWith(`${previous}:assistant:`)) continue;
+			this.assistants.delete(key);
+			this.assistants.set(next + key.slice(previous.length), component);
+		}
+	}
+
 	/** Current dependency facts share the selected pane's scroll, not retained history. */
 	setAwaiting(fact?: AwaitFact): void {
 		const id = "current-await-facts";
@@ -221,7 +246,6 @@ export class AgentConversation {
 		this.blocks = this.blocks.filter((block) => block.id !== id);
 		if (fact !== undefined) this.blocks.push({ id, component: new Text(awaitFactLines(fact).map(cleanDashboardText).join("\n"), 1, 1) });
 		this.awaitingSignature = signature;
-		this.cache = undefined;
 		this.pruneComponents();
 	}
 	private pruneComponents(): void {
@@ -230,6 +254,7 @@ export class AgentConversation {
 		for (const component of this.heights.keys()) if (!retained.has(component)) this.heights.delete(component);
 		for (const [id, card] of this.callCards) if (!retained.has(card.component)) this.callCards.delete(id);
 		for (const [id, component] of this.unmatched) if (!retained.has(component)) this.unmatched.delete(id);
+		for (const [id, component] of this.assistants) if (!retained.has(component)) this.assistants.delete(id);
 	}
 	private restoreEntryTools(entry: AgentConversationEntry): void {
 		const calls = (entry.model ?? []).flatMap((message) =>
@@ -238,21 +263,20 @@ export class AgentConversation {
 		for (const part of calls) {
 			const block = this.blocks.find((block) => block.id === `${entry.id}:${part.id}`);
 			if (!block || !(block.component instanceof ToolExecutionComponent)) continue;
-			if (this.resultKeys.has(block.component) && !this.resultCalls.has(part.id)) {
-				block.component = this.tool(part.name, part.id, part.arguments);
-				this.callCards.set(part.id, {
-					signature: JSON.stringify(part),
-					component: block.component as ToolExecutionComponent,
-				});
-			}
-			this.tools.set(part.id, block.component as ToolExecutionComponent);
+
+			this.tools.set(part.id, block.component as ReadingToolComponent);
 		}
 	}
-	private callCard(part: Extract<AssistantMessage["content"][number], { type: "toolCall" }>): ToolExecutionComponent {
+	private callCard(part: Extract<AssistantMessage["content"][number], { type: "toolCall" }>): ReadingToolComponent {
 		const signature = JSON.stringify(part);
 		const cached = this.callCards.get(part.id);
 		if (cached?.signature === signature) return cached.component;
-		const component = this.tool(part.name, part.id, part.arguments);
+		const component = cached?.component ?? this.unmatched.get(part.id) ?? this.tool(part.name, part.id, part.arguments);
+		if (cached || this.unmatched.has(part.id)) {
+			component.updateArgs(part.arguments);
+			this.rendered.delete(component);
+			this.heights.delete(component);
+		}
 		this.callCards.set(part.id, { signature, component });
 		return component;
 	}
@@ -272,10 +296,9 @@ export class AgentConversation {
 			}
 			if (entry.kind === "pi.reset")
 				this.blocks.push({ id: `${entry.id}:reset`, component: new Text("── New context ──", 1, 1) });
-			let runStart = 0;
 			let assistantIndex = 0;
 			for (const message of entry.model ?? []) {
-				if (message.role === "assistant") runStart += this.appendAssistant(entry.id, message, runStart, assistantIndex++);
+				if (message.role === "assistant") this.appendAssistant(entry.id, message, assistantIndex++);
 				else this.appendMessage(entry.id, message);
 			}
 		} catch {
@@ -299,34 +322,24 @@ export class AgentConversation {
 		component.setExpanded(this.expanded);
 		this.blocks.push({ id: entry.id, component });
 	}
-	private tool(name: string, id: string, args: unknown, known = true): ToolExecutionComponent {
+	private tool(name: string, id: string, args: unknown, known = true): ReadingToolComponent {
 		const definition = this.definitions(name, known);
-		// An absent call or empty arguments need no argument object in the display.
-		const shown =
-			args !== null && typeof args === "object" && !Array.isArray(args) && Object.keys(args).length === 0
-				? undefined
-				: displayValue(args);
-		let tool: ToolExecutionComponent;
-		const displayTui = Object.create(this.tui) as TUI;
-		displayTui.requestRender = () => {
-			this.rendered.delete(tool);
-			this.heights.delete(tool);
-			this.cache = undefined;
-			this.tui.requestRender();
-		};
-		tool = new ToolExecutionComponent(name, id, shown, { showImages: false }, definition, displayTui, this.cwd);
+		const tool = new ReadingToolComponent(name, id, args, { showImages: false }, definition, this.tui, this.cwd);
+		tool.onInvalidate = () => { this.rendered.delete(tool); this.heights.delete(tool); };
 		tool.setExpanded(this.reading.toolExpanded.get(id) ?? this.expanded);
 		return tool;
 	}
-	private appendAssistant(id: string, message: AssistantMessage, runStart = 0, assistantIndex = 0): number {
-		const component = new AssistantMessageComponent(message, !this.showThinking, getMarkdownTheme(), "Thinking...");
-		const keys = thinkingRegions(component).map((_, index) => JSON.stringify([id, runStart + index]));
-		keys.forEach((key, index) => {
-			if ((this.reading.thinkingVisible.get(key) ?? this.showThinking) !== this.showThinking)
-				thinkingRegions(component)[index]?.handleMouse(replayClick);
-		});
-		this.assistantRuns.set(component, { keys });
-		this.blocks.push({ id: assistantIndex === 0 ? id : `${id}:assistant:${assistantIndex}`, component });
+	private appendAssistant(id: string, message: AssistantMessage, assistantIndex = 0): void {
+		const key = assistantIndex === 0 ? id : `${id}:assistant:${assistantIndex}`;
+		let component = this.assistants.get(key);
+		if (!component) {
+			component = new AssistantMessageComponent(undefined, !this.showThinking, getMarkdownTheme(), "Thinking...");
+			this.assistants.set(key, component);
+		}
+		component.updateContent(message, id.startsWith("live:"));
+		this.rendered.delete(component);
+		this.heights.delete(component);
+		this.blocks.push({ id: key, component });
 		for (const part of message.content) {
 			if (part.type !== "toolCall") continue;
 			const tool = this.callCard(part);
@@ -345,14 +358,13 @@ export class AgentConversation {
 			this.tools.set(part.id, tool);
 			this.blocks.push({ id: `${id}:${part.id}`, component: tool });
 		}
-		return keys.length;
 	}
 
 	private appendResult(id: string, message: ToolResultMessage, partial = false): void {
 		let tool = this.tools.get(message.toolCallId);
 		if (!tool) {
 			tool =
-				this.unmatched.get(message.toolCallId) ?? this.tool(message.toolName, message.toolCallId, undefined, false);
+				this.callCards.get(message.toolCallId)?.component ?? this.unmatched.get(message.toolCallId) ?? this.tool(message.toolName, message.toolCallId, undefined, false);
 			this.unmatched.set(message.toolCallId, tool);
 			this.tools.set(message.toolCallId, tool);
 			this.blocks.push({ id, component: tool });
@@ -360,9 +372,10 @@ export class AgentConversation {
 		const signature = JSON.stringify([message, partial]);
 		if (this.resultKeys.get(tool) === signature) return;
 		tool.markExecutionStarted();
-		tool.updateResult(message.toolName === "codemode" ? { ...message, details: normalizeCodemodeDetails(message.details, message.toolCallId) } : message, partial);
+		tool.updateResult(message, partial);
 		this.resultKeys.set(tool, signature);
 		this.rendered.delete(tool);
+		this.heights.delete(tool);
 	}
 	private appendMessage(id: string, message: Message): void {
 		const markdown = getMarkdownTheme();
@@ -426,10 +439,9 @@ export class AgentConversation {
 		const block = this.blocks.find((block) => block.id === entry.id);
 		if (!block) return requested;
 		this.blockLines(block.component, width);
-		const run = anchor.run === undefined ? undefined : regionLayout(block.component, width)[anchor.run];
 		const blockHeight = this.heights.get(block.component)?.height ?? 1;
-		const offset = Math.min(anchor.offset, Math.max(0, (run?.height ?? blockHeight) - 1));
-		return entry.line + (run?.line ?? 0) + offset;
+		const offset = Math.min(anchor.offset, Math.max(0, blockHeight - 1));
+		return entry.line + offset;
 	}
 	/** Height estimates for unseen blocks are replaced only near the reading viewport. */
 	renderWindow(
@@ -473,7 +485,6 @@ export class AgentConversation {
 		return { lines, ...layout, top, estimated };
 	}
 	render(width: number): ConversationDocument {
-		if (this.cache?.width === width) return this.cache.document;
 		const document: ConversationDocument = { lines: [], anchors: [] };
 		for (const { id, component } of this.blocks) {
 			const lines = this.blockLines(component, width);
@@ -481,11 +492,22 @@ export class AgentConversation {
 			document.anchors.push({ id, line: document.lines.length });
 			document.lines.push(...lines);
 		}
-		this.cache = { width, document };
 		return document;
 	}
+	private toolClick(component: ReadingToolComponent, event: TuiMouseEvent, lines: string[]): boolean {
+		const call = [...this.tools].find(([, tool]) => tool === component)?.[0];
+		if (!call) return false;
+		const before = component.choice;
+		if (!component.handleMouse(event)?.handled) {
+			// Pi leaves pending cards and box padding unhandled. Empty spacer rows stay outside the card.
+			if (!lines[event.y]) return false;
+			component.setExpanded(!component.choice);
+		}
+		if (component.choice !== before) this.reading.toolExpanded.set(call, component.choice);
+		return true;
+	}
 	/** Only measured blocks receive clicks; pending cards include their background padding. */
-	handleMouse(event: TuiMouseEvent): { id: string; line: number; run?: number } | undefined {
+	handleMouse(event: TuiMouseEvent): { id: string; line: number } | undefined {
 		if (!isItemClick(event)) return;
 		const layout = this.layout(event.width);
 		const index = layout.anchors.findIndex((anchor, index) => {
@@ -498,36 +520,23 @@ export class AgentConversation {
 		const measured = this.rendered.get(component);
 		if (!measured) return;
 		const local = { ...event, y: event.y - line, height: measured.lines.length };
-		let item: { id: string; line: number; run?: number } | undefined;
-		if (component instanceof ToolExecutionComponent) {
-			if (local.y === 0) return;
-			const call = [...this.tools].find(([, tool]) => tool === component)?.[0];
-			if (!call) return;
-			const next = !(this.reading.toolExpanded.get(call) ?? this.expanded);
-			component.handleMouse?.(local);
-			component.setExpanded(next);
-			this.reading.toolExpanded.set(call, next);
+		let item: { id: string; line: number } | undefined;
+		if (component instanceof ReadingToolComponent) {
+			if (!this.toolClick(component, local, measured.lines)) return;
 			item = { id, line };
 		} else if (component instanceof AssistantMessageComponent) {
-			const regions = regionLayout(component, event.width);
-			const result = component.handleMouse(local);
-			const run = regions.findIndex((region) => region.region === result?.target.component);
-			const key = this.assistantRuns.get(component)?.keys[run];
-			if (run < 0 || !key || !result?.handled) return;
-			this.reading.thinkingVisible.set(key, !(this.reading.thinkingVisible.get(key) ?? this.showThinking));
-			item = { id, line: line + regions[run].line, run };
+			if (!component.handleMouse(local)?.handled) return;
+			item = { id, line };
 		}
 		if (!item) return;
 		this.rendered.delete(component);
 		this.heights.delete(component);
-		this.cache = undefined;
 		this.tui.requestRender();
 		return item;
 	}
 	invalidate(): void {
 		this.rendered.clear();
 		this.heights.clear();
-		this.cache = undefined;
 		for (const block of this.blocks) block.component.invalidate();
 	}
 }

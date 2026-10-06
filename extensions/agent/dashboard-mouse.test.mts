@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { isKittyProtocolActive, setKittyProtocolActive, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Text, isKittyProtocolActive, setKittyProtocolActive, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { AgentComposer } from "./agent-composer.ts";
 import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
 import { fixture, keys, row, source, theme, turn } from "./dashboard-test-fixture.mts";
@@ -323,10 +323,10 @@ for (const [width, height] of [[140, 45], [80, 32]]) for (const screen of ["rost
 			const thinking = point(read(), "Thinking...");
 			assert.ok(f.ui.handleMouse(event(thinking.x, thinking.y, width, height))?.handled);
 			assert.equal(f.ui.navigation.screen, screen);
-			assert.equal(state.thinkingVisible.get(JSON.stringify(["assistant", 0])), true);
+			assert.match(read().join("\n"), /Thinking run sentinel/u);
 			const shown = point(read(), "Thinking run sentinel");
 			assert.ok(f.ui.handleMouse(event(shown.x, shown.y, width, height))?.handled);
-			assert.equal(state.thinkingVisible.get(JSON.stringify(["assistant", 0])), false);
+			assert.doesNotMatch(read().join("\n"), /Thinking run sentinel/u);
 			const outside = point(read(), "Outside card sentinel");
 			assert.ok(f.ui.handleMouse(event(outside.x, outside.y, width, height))?.handled);
 			assert.equal(f.ui.navigation.screen, "console");
@@ -335,7 +335,7 @@ for (const [width, height] of [[140, 45], [80, 32]]) for (const screen of ["rost
 			assert.equal(state.toolExpanded.size, 0);
 			assert.equal(state.expanded, true);
 			f.ui.handleInput("\x14");
-			assert.equal(state.thinkingVisible.size, 0);
+			assert.match(read().join("\n"), /Thinking run sentinel/u);
 			assert.equal(state.showThinking, true);
 		} finally { f.ui.dispose(); }
 	});
@@ -349,7 +349,7 @@ it("a top region callback returning false never activates an earlier region", ()
 	assert.equal(earlier, 0);
 });
 
-it("dashboard close and reopen retain clicked items and their reading anchor", async () => {
+it("dashboard reopen retains tool choices and anchor but not discarded thinking instances", async () => {
 	const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "interactive", nextBefore: null });
 	const retained = createDashboardState(); retained.hideThinkingBlock = true;
 	let f = fixture(140, 45, observed, undefined, retained);
@@ -367,11 +367,27 @@ it("dashboard close and reopen retain clicked items and their reading anchor", a
 		f = fixture(140, 45, observed, undefined, retained);
 		await turn();
 		lines = f.ui.render(140).map(stripVTControlCharacters);
-		assert.match(lines.join("\n"), /Thinking run sentinel/u);
+		assert.doesNotMatch(lines.join("\n"), /Thinking run sentinel/u);
 		assert.match(lines.join("\n"), /topic: named/u);
 		assert.equal(state.toolExpanded.get("clicked-tool"), true);
-		assert.equal(state.thinkingVisible.get(JSON.stringify(["assistant", 0])), true);
+		assert.match(lines.join("\n"), /Thinking\.\.\./u);
 		assert.deepEqual(state.anchor, anchor);
 		assert.equal(state.follow, false);
 	} finally { f.ui.dispose(); }
+});
+
+
+it("dashboard reopen uses the current runtime renderer rather than a retained definition", async () => {
+	const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "custom", nextBefore: null });
+	const retained = createDashboardState();
+	for (const title of ["first runtime", "second runtime", undefined]) {
+		const f = fixture(140, 45, observed, { toolDisplay: () => title ? { renderCall: () => new Text(title) } : undefined }, retained);
+		try {
+			await turn();
+			const text = f.ui.render(140).map(stripVTControlCharacters).join("\n");
+			assert.ok(text.includes(title ?? "example_tool"));
+			if (title !== "first runtime") assert.doesNotMatch(text, /first runtime/);
+			if (title !== "second runtime") assert.doesNotMatch(text, /second runtime/);
+		} finally { f.ui.dispose(); }
+	}
 });

@@ -1,4 +1,4 @@
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import {
 	Input,
 	type KeybindingsManager,
@@ -48,6 +48,7 @@ export interface DashboardResult {
 	sessionId?: string;
 }
 export interface DashboardOperations {
+	toolDisplay?: (name: string) => ToolRenderers | undefined;
 	/** A terminal attachment enters the target instead of opening an embedded console. */
 	enter?(id: string): void;
 	saveLayout?(layout: DashboardLayout): void;
@@ -393,6 +394,7 @@ export class AgentDashboard implements Component, Focusable {
 			},
 			() => this.back(),
 		);
+		this.console.conversation.toolDisplay = this.operations.toolDisplay;
 		this.snapshot = undefined;
 		this.source.select(undefined);
 		const generation = ++this.sourceGeneration;
@@ -841,7 +843,6 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		if (this.keys.matches(data, "app.thinking.toggle") || matchesKey(data, "ctrl+t")) {
 			console.state.view.showThinking = !console.state.view.showThinking;
-			console.state.view.thinkingVisible.clear();
 			this.reloadContent();
 			return true;
 		}

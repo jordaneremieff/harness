@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { UserMessageComponent } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { stripVTControlCharacters } from "node:util";
@@ -221,35 +221,37 @@ it("individual tool choices survive live updates, eviction, rebuild and view reo
 	assert.match(readText(view, 40).join("\n"), /output 29/u);
 });
 
-it("live thinking choices transfer to the matching committed entry across close and reopen, not the next turn", () => {
+it("live thinking retains its native instance through commit but resets after eviction and reopen", (t) => {
 	const state = agentState(createDashboardState(), "one").view;
 	state.showThinking = false;
 	const tui = { requestRender() {} } as TUI;
+	const updates = t.mock.method(AssistantMessageComponent.prototype, "updateContent");
 	let view = new ConversationView(tui, state);
 	let live = assistantEntry("live:generation", 42, [{ type: "thinking", thinking: "reasoning sentinel" }]);
 	view.setContent([], [live], "/work");
+	const instance = updates.mock.calls.at(-1)?.this;
 	let lines = readText(view);
 	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("Thinking...")))));
-	assert.equal(state.thinkingVisible.get(JSON.stringify(["live:generation:42", 0])), true);
 	live = assistantEntry("live:generation", 42, [{ type: "thinking", thinking: "updated reasoning sentinel" }]);
 	view.setContent([], [live], "/work");
+	assert.equal(updates.mock.calls.at(-1)?.this, instance);
 	assert.match(readText(view).join("\n"), /updated reasoning sentinel/u);
-	view.setContent([], [], "/work"); readText(view);
-	assert.equal(state.thinkingVisible.get(JSON.stringify(["live:generation:42", 0])), true, "a frame gap keeps the live choice until commit");
-	view.save(); view = new ConversationView(tui, state);
 	const committed = { ...live, id: "100" };
 	view.setContent([committed], [], "/work");
-	assert.match(readText(view).join("\n"), /updated reasoning sentinel/u);
-	assert.equal(state.thinkingVisible.get(JSON.stringify(["100", 0])), true);
-	assert.equal(state.thinkingVisible.has(JSON.stringify(["live:generation:42", 0])), false);
-	view.setContent([], [], "/work"); readText(view);
-	view.setContent([committed], [], "/work");
+	assert.equal(updates.mock.calls.at(-1)?.this, instance);
 	assert.match(readText(view).join("\n"), /updated reasoning sentinel/u);
 	const next = assistantEntry("live:generation", 43, [{ type: "thinking", thinking: "next turn sentinel" }]);
 	view.setContent([committed], [next], "/work");
-	lines = readText(view, 20);
-	assert.doesNotMatch(lines.join("\n"), /next turn sentinel/u);
-	assert.ok(lines.some((line) => line.includes("Thinking...")));
+	assert.notEqual(updates.mock.calls.at(-1)?.this, instance);
+	assert.doesNotMatch(readText(view, 20).join("\n"), /next turn sentinel/u);
+	view.setContent([], [], "/work"); readText(view);
+	view.setContent([committed], [], "/work");
+	assert.doesNotMatch(readText(view).join("\n"), /updated reasoning sentinel/u);
+	lines = readText(view);
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("Thinking...")))));
+	view.save(); view = new ConversationView(tui, state);
+	view.setContent([committed], [], "/work");
+	assert.doesNotMatch(readText(view).join("\n"), /updated reasoning sentinel/u);
 });
 
 it("a thinking run at the tail stays visible through expand, collapse and updates", () => {
@@ -261,7 +263,7 @@ it("a thinking run at the tail stays visible through expand, collapse and update
 	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("Thinking...")))));
 	assert.ok(state.anchor);
 	const anchor = { ...state.anchor };
-	assert.equal(anchor.run, 0);
+	assert.equal(anchor.id, "long");
 	view.save(); assert.deepEqual(state.anchor, anchor);
 	lines = readText(view);
 	assert.match(lines.join("\n"), /clicked reasoning/u);
@@ -295,7 +297,7 @@ it("transcript clicks leave selection gestures, outside blocks and stale viewpor
 	view.setContent([assistantEntry("thinking", 1, [{ type: "thinking", thinking: "reason" }])], [], "/work");
 	const lines = readText(view); const y = lines.findIndex((line) => line.includes("reason"));
 	for (const patch of [{ type: "press" }, { type: "drag" }, { type: "release" }, { shift: true }, { alt: true }, { ctrl: true }, { clickCount: 2 }, { button: "right" }, { width: 79 }, { height: 7 }]) assert.equal(view.handleMouse({ ...itemClick(y), ...patch } as TuiMouseEvent), undefined);
-	assert.equal(state.thinkingVisible.size, 0);
+	assert.match(readText(view).join("\n"), /reason/u);
 	assert.ok(view.handleMouse(itemClick(y)));
 	assert.equal(view.handleMouse(itemClick(y)), undefined, "layout must repaint after a toggle");
 });

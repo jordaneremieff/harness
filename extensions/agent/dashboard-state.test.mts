@@ -53,16 +53,14 @@ it("new reading states use effective thinking defaults while existing dashboard 
 		assert.equal(agentState(state, "new").view.showThinking, false);
 	}
 });
-it("per-item expansion maps survive process-local dashboard close and reopen", () => {
+it("tool expansion choices survive process-local dashboard close and reopen", () => {
 	const state = dashboardSessionState("expansion-primary");
 	const reading = agentState(state, "one").view;
 	reading.toolExpanded.set("call", true);
-	reading.thinkingVisible.set(JSON.stringify(["entry", 1]), false);
 	reading.showThinking = false;
 	const reopened = dashboardSessionState("expansion-primary");
 	assert.equal(agentState(reopened, "one").view, reading);
 	assert.deepEqual([...reading.toolExpanded], [["call", true]]);
-	assert.deepEqual([...reading.thinkingVisible], [[JSON.stringify(["entry", 1]), false]]);
 	assert.equal(reading.showThinking, false);
 	assert.equal(agentState(reopened, "other").view.toolExpanded.size, 0);
 });
