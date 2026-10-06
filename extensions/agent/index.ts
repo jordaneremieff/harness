@@ -21,6 +21,7 @@ import { checkInMinutes } from "./durable-checkins.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { dashboardPreferences } from "./dashboard-preferences.ts";
+import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { configurationWithApply } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, parseConfigurationArguments } from "./configuration.ts";
 import { createAgentContribution, resolveAgentControlDispatch } from "./durable-agents.ts";
@@ -180,6 +181,7 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value, null, 2));
 
 export default function registerAgentExtension(pi: ExtensionAPI): void {
+	const toolDisplay = collectToolDisplay(pi.events);
 	pi.events.emit(
 		"durable:contribution",
 		createAgentContribution({
@@ -191,6 +193,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	let observedManager: AgentManager | undefined;
 	const cards = createAgentToolCards(() => observedManager?.observedToolCardRows() ?? []);
 	pi.registerToolRenderer((name, next) => next() ?? cards[name]);
+	publishToolDisplay(pi.events, Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })));
 	const primaries = new Map<string, AbortController>();
 	const getManager = (): AgentManager => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
@@ -757,6 +760,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		},
 		dashboardPreferences(process.env.PI_AGENT_DIR ?? getAgentDir()),
 		() => pi.getSettings().hideThinkingBlock ?? false,
+		toolDisplay,
 	);
 	pi.registerCommand("agent", command);
 	pi.registerShortcut("ctrl+alt+g", {

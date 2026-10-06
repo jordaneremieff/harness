@@ -6,18 +6,17 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import {
-	createCodemodeExtension, createReadToolDefinition, initTheme, ToolExecutionComponent, type Theme,
+	createCodemodeExtension, createReadToolDefinition, initTheme, ToolExecutionComponent,
 	type ExtensionAPI, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { captureCodemodeRenderers, createDashboardToolDefinitions, normalizeCodemodeDetails } from "./dashboard-tool-definitions.ts";
+import { captureCodemodeRenderers, createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import { createAgentToolCards } from "./tool-cards.ts";
 
 initTheme("dark");
 setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
 const tui = { requestRender() {} } as TUI;
-const theme = { fg: (_color: string, value: string) => value } as Theme;
 const cwd = "/work";
 function nativeCodemode(): ToolDefinition {
 	const definitions: ToolDefinition[] = [];
@@ -82,44 +81,24 @@ it("uses Pi standard named-argument calls and ten logical output lines for unkno
 	}
 });
 
-it("normalizes legacy records immutably and renders them directly without a swallowed error", () => {
-	const source = { calls: [{ name: "lookup", status: "ok", durationMs: 2 }], fullOutputPath: "output.txt", privateField: true };
-	const normalized = normalizeCodemodeDetails(source, "outer");
-	assert.deepEqual(normalized, { calls: [{ id: "outer/1", name: "lookup", args: "", status: "ok", durationMs: 2 }], fullOutputPath: "output.txt" });
-	assert.equal("args" in source.calls[0], false);
-	const renderers = captureCodemodeRenderers();
-	assert.ok(renderers.renderResult);
+it("uses Pi's result fallback for args-less codemode details without blank output", () => {
+	const definition = createDashboardToolDefinitions(cwd)("codemode");
 	for (const expanded of [false, true]) {
-		const component = renderers.renderResult({ content: [{ type: "text", text: "Script completed\nOutput:\nanswer" }], details: normalized }, { expanded, isPartial: false }, theme, {
-			args: { code: "return 42;" }, toolCallId: "outer", invalidate() {}, lastComponent: undefined, state: {}, cwd,
-			executionStarted: true, argsComplete: true, isPartial: false, expanded, showImages: false, isError: false,
-		});
-		assert.match(stripVTControlCharacters(component.render(80).join("\n")), /lookup/u);
+		const tool = new ToolExecutionComponent("codemode", "outer", { code: "return 42;" }, { showImages: false }, definition, tui, cwd);
+		tool.setExpanded(expanded);
+		tool.updateResult({ content: [{ type: "text", text: "Script completed\nOutput:\nanswer" }], details: { calls: [{ name: "lookup", status: "ok", durationMs: 2 }] }, isError: false });
+		const visible = stripVTControlCharacters(tool.render(80).join("\n"));
+		assert.match(visible, /return 42;/u);
+		assert.deepEqual(visible.split("\n").map((line) => line.trim()).filter(Boolean), ["codemode", "return 42;", ...(expanded ? ["✓ lookup 2ms"] : []), "Script completed", "Output:", "answer"]);
 	}
-});
-
-it("keeps only checked public fields and applies Pi string preview limits", () => {
-	const normalized = normalizeCodemodeDetails({ calls: [
-		null, { name: "bad", status: "other" },
-		{ name: "valid", status: "error", id: "kept", args: "a".repeat(201), error: "e".repeat(501), durationMs: Infinity, cost: NaN, privateField: true },
-		{ name: "zero", status: "ok", args: "a".repeat(200), error: "e".repeat(500), durationMs: 0, cost: 0 },
-		{ name: "legacy", status: "cancelled", cost: "1" },
-	], fullOutputPath: 2 }, "outer");
-	assert.deepEqual(normalized.calls[0], { id: "kept", name: "valid", status: "error", args: `${"a".repeat(197)}...`, error: `${"e".repeat(497)}...` });
-	assert.equal(normalized.calls[1].args.length, 200);
-	assert.equal(normalized.calls[1].error?.length, 500);
-	assert.equal(normalized.calls[1].cost, 0);
-	assert.equal(normalized.calls[1].durationMs, 0);
-	assert.deepEqual(normalized.calls[2], { id: "outer/5", name: "legacy", args: "", status: "cancelled" });
-	for (const details of [undefined, null, {}, { calls: {} }]) assert.deepEqual(normalizeCodemodeDetails(details, "outer"), { calls: [] });
 });
 
 it("matches a fresh native codemode card line for line at equal widths", () => {
 	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i + 1}");`).join("\n") };
-	const details = normalizeCodemodeDetails({ calls: Array.from({ length: 12 }, (_, i) => ({
-		name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", "running"][i % 4],
-		args: "a".repeat(240), error: "error ".repeat(100), cost: i === 0 ? 0 : 0.02, durationMs: i * 100,
-	})), fullOutputPath: "output.txt" }, "outer");
+	const details = { calls: Array.from({ length: 12 }, (_, i) => ({
+		id: `outer/${i + 1}`, name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", "running"][i % 4],
+		args: "a".repeat(200), error: "error ".repeat(80), cost: i === 0 ? 0 : 0.02, durationMs: i * 100,
+	})), fullOutputPath: "output.txt" };
 	const native = nativeCodemode();
 	const display = createDashboardToolDefinitions(cwd)("codemode");
 	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const partial of [false, true]) {

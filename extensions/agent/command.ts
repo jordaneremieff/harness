@@ -5,6 +5,7 @@ import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { dashboardSessionState } from "./dashboard-state.ts";
 import { readAgentBranch } from "./agent-git.ts";
 import type { DashboardPreferences } from "./dashboard-preferences.ts";
+import type { ToolDisplayLookup } from "./tool-display.ts";
 import { showAgentDashboard, type DashboardResult } from "./dashboard.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
@@ -167,6 +168,7 @@ export function createAgentCommand(
 	},
 	preferences?: DashboardPreferences,
 	readHideThinkingBlock?: () => boolean,
+	toolDisplay?: ToolDisplayLookup,
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
@@ -220,6 +222,7 @@ export function createAgentCommand(
 				state,
 				source: sources,
 				operations: {
+					toolDisplay,
 					saveLayout: preferences ? (layout) => preferences.save(layout) : undefined,
 					efforts: effortWiring ? () => effortWiring.efforts(ctx) : undefined,
 					messageEffort: effortWiring ? (id, text) => effortWiring.messageEffort(id, text, ctx) : undefined,
