@@ -1,7 +1,7 @@
 /** macOS clipboard tools, stable history retrieval, and the /clipboard overlay. */
 
 import { fileURLToPath } from "node:url";
-import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ToolDefinition, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { clipboardContribution } from "./durable.ts";
 import {
 	clipboardCopy,
@@ -95,9 +95,17 @@ function notifyRestored(
 }
 
 export default function (pi: ExtensionAPI) {
+	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
+	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
+		pi.registerTool(tool);
+		const { name, renderCall, renderResult, renderShell } = tool;
+		if (renderCall || renderResult || renderShell) {
+			displayTools.push({ name, renderCall, renderResult, renderShell } as (typeof displayTools)[number]);
+		}
+	};
 	pi.events.emit("durable:contribution", clipboardContribution(fileURLToPath(import.meta.url)));
 
-	pi.registerTool<typeof CopyParams, Record<string, unknown>>({
+	registerTool<typeof CopyParams, Record<string, unknown>>({
 		name: "clipboard_copy",
 		label: "Clipboard copy",
 		description: COPY_DESCRIPTION,
@@ -111,7 +119,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof PasteParams, Record<string, unknown>>({
+	registerTool<typeof PasteParams, Record<string, unknown>>({
 		name: "clipboard_paste",
 		label: "Clipboard paste",
 		description: PASTE_DESCRIPTION,
@@ -124,7 +132,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof ListParams, Record<string, unknown>>({
+	registerTool<typeof ListParams, Record<string, unknown>>({
 		name: "clipboard_list",
 		label: "Clipboard list",
 		description: LIST_DESCRIPTION,
@@ -138,7 +146,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof GetParams, Record<string, unknown>>({
+	registerTool<typeof GetParams, Record<string, unknown>>({
 		name: "clipboard_get",
 		label: "Clipboard get",
 		description: GET_DESCRIPTION,
@@ -151,7 +159,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof RestoreParams, Record<string, unknown>>({
+	registerTool<typeof RestoreParams, Record<string, unknown>>({
 		name: "clipboard_restore",
 		label: "Clipboard restore",
 		description: RESTORE_DESCRIPTION,
@@ -195,4 +203,11 @@ export default function (pi: ExtensionAPI) {
 			notifyRestored(ctx, result);
 		},
 	});
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", { version: 1, tools: displayTools });
+	pi.events.on("harness:tool-display:request", (request) => {
+		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) {
+			publishDisplay();
+		}
+	});
+	publishDisplay();
 }

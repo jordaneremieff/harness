@@ -2,6 +2,10 @@
 
 This extension provides agent clipboard I/O and an operator-facing history browser. It intentionally targets macOS `pbcopy` and `pbpaste`.
 
+The ordinary extension publishes its registered tool renderers at factory time and
+on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
+the payload contains no execution functions.
+
 ## Surfaces
 
 | Surface | Kind | Purpose |

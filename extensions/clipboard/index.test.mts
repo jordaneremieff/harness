@@ -94,6 +94,7 @@ function registry(): {
 		registerTool: (tool: Tool) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
 		events: {
+			on: () => () => {},
 			emit: (event: string, value: EmittedContribution) => {
 				if (event === "durable:contribution") contributions.push(value);
 			},
