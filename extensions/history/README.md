@@ -4,6 +4,10 @@ In ordinary Pi sessions, `history_search` and `history_read` retrieve raw
 evidence through the current session's read-only session manager. They do not
 rebuild model context, edit entries, open session files, or search other sessions.
 
+The ordinary extension publishes its registered tool renderers at factory time and
+on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
+the payload contains no execution functions.
+
 ## Use
 
 The examples below use ordinary Pi session records. For native Pi Durable

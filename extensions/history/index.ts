@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { LIMITS, readHistory, searchHistory, toolResult } from "./core.ts";
 import { durableContribution } from "./durable.ts";
@@ -48,8 +48,16 @@ const outputBytes = Type.Optional(
 );
 
 export default function history(pi: ExtensionAPI) {
+	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
+	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
+		pi.registerTool(tool);
+		const { name, renderCall, renderResult, renderShell } = tool;
+		if (renderCall || renderResult || renderShell) {
+			displayTools.push({ name, renderCall, renderResult, renderShell } as (typeof displayTools)[number]);
+		}
+	};
 	pi.events.emit("durable:contribution", durableContribution(fileURLToPath(import.meta.url)));
-	pi.registerTool({
+	registerTool({
 		name: "history_search",
 		label: "History search",
 		promptSnippet: "Find raw evidence in a bounded ancestry of the current session",
@@ -77,7 +85,7 @@ export default function history(pi: ExtensionAPI) {
 			return toolResult(searchHistory(ctx.sessionManager, args, signal));
 		},
 	});
-	pi.registerTool({
+	registerTool({
 		name: "history_read",
 		label: "History read",
 		promptSnippet: "Read exact stored evidence by entry ID and JSON pointer",
@@ -103,4 +111,11 @@ export default function history(pi: ExtensionAPI) {
 			return toolResult(readHistory(ctx.sessionManager, args, signal));
 		},
 	});
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", { version: 1, tools: displayTools });
+	pi.events.on("harness:tool-display:request", (request) => {
+		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) {
+			publishDisplay();
+		}
+	});
+	publishDisplay();
 }
