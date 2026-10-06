@@ -549,10 +549,12 @@ reset after instance eviction, selection changes, or dashboard close/reopen.
 Ctrl+T resets every retained assistant through Pi's thinking setter; Ctrl+O
 sets every retained card and clears recorded tool choices. Reopened dashboards
 create fresh components and use the current runtime's renderer definitions.
-Codemode nested calls use published result details without normalization. Old
-args-less details use Pi's generic result fallback, including the original
-output header, rather than a nested-call list. The dashboard does not generate
-live snapshots.
+Codemode nested calls use published result details without normalization.
+Collapsed cards with old args-less details use Pi's generic result fallback,
+including the original output header, instead of the nested-call list.
+Expanded cards use Pi's native nested-call summary with names, status, and
+available durations. Missing arguments stay absent. The dashboard does not
+generate live snapshots.
 The primary's no-target `agent_status` is a compact fleet overview. Working
 and starting rows without an attention reason come first, then attention rows,
 then recent quiet rows. Independent host, recovery, or availability faults make
