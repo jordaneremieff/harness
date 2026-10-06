@@ -298,7 +298,7 @@ Steer/Follow-up disposition and pane layout survive closing and reopening in
 the same primary process. Different primary sessions have independent UI state.
 Stable pane preferences also survive Pi restarts in the agent-owned
 `agent-dashboard-layout.json` file under `PI_AGENT_DIR` or Pi's agent directory.
-Only completed resize gestures, keyboard commits, and resets write this private
+Only completed resize gestures and resets write this private
 file through an adjacent temporary file and atomic rename. A failed save keeps
 the local split and shows a restart-persistence notice. Fresh primaries load the
 last completed save; existing windows keep their own split. A successful
@@ -330,12 +330,11 @@ disappear only when the height needs that space for warnings, the editor, the
 status block, and the hint line. The useful caption and native editor remain intact. Double-click either handle to reset only that split.
 Other rules and borders remain decorative.
 
-From roster navigation, `r resize` enters keyboard resize mode. `tab` selects an
-available divider. Left/right adjust roster columns; up/down adjust draft rows.
-`0` resets the selected divider, `enter` commits, and `esc` restores the starting
-split. Message fields keep `r` literal. Escape first returns from a full console
-to the roster. Resize cancels on terminal dimensions or screen changes, hiding,
-or disposal. After a lost release, subsequent input clears the local gesture.
+Pane resizing is mouse-only in fullscreen mode. Keyboard-only and regular-mode
+use keep the default or saved split. The split is a display preference, so these
+splits serve keyboard use without a separate resize mode. Resize cancels on
+terminal dimensions or screen changes, hiding, or disposal. After a lost release,
+subsequent input clears the local gesture.
 
 The conversation header shows the selected agent's handle and name, with its
 state mark on the right. An attention reason or conversation warning appears
@@ -427,8 +426,9 @@ clicks remain available to Pi's native text selection. Handles capture only
 unmodified left-button resize gestures, without changing editor focus.
 Dashboard actions use completed unmodified single clicks. A drag does not activate a
 row, timestamp, or hint. Pi retains control of copy-on-select and links.
-Regular terminal mode leaves mouse input to the terminal. All actions retain
-a keyboard path; no mouse setting or global shortcut is added.
+Regular terminal mode leaves mouse input to the terminal. Except for pane
+resizing, every action retains a keyboard path; no mouse setting or global
+shortcut is added.
 
 The New agent field accepts a task in your own words and treats it literally,
 including text such as `--help`. Enter starts the agent

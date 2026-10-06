@@ -82,8 +82,7 @@ const HELP = [
 	"Use the wheel over a pane to scroll. Drag text to select it.",
 	"Drag the roster divider or the composer's small top-right grip to resize.",
 	"Double-click a handle to reset it. Other borders remain decorative.",
-	"r resizes from the roster: Tab chooses a divider, arrows adjust, 0 resets.",
-	"Enter keeps the split. Esc cancels. The split stays across Pi restarts.",
+	"The split stays across Pi restarts.",
 	"Published omissions have storage rows. Enter reads their full thread directory.",
 	"",
 	"Messages",
@@ -943,7 +942,6 @@ export class AgentDashboard implements Component, Focusable {
 		this.notice = undefined;
 		if (!matchesKey(data, "up") && !matchesKey(data, "down")) this.rosterOrderLocked = false;
 		const actions: Record<string, () => void> = {
-			r: () => { this.resize.startKeyboard(); },
 			n: () => this.openNew(),
 			t: () => this.openThreads(),
 			b: () => this.openEfforts(),
@@ -1199,15 +1197,11 @@ export class AgentDashboard implements Component, Focusable {
 	private resizeValue(): string {
 		return this.resize.selected === "roster" ? `roster ${this.resizeColumns.roster} · detail ${this.resizeColumns.detail}` : `draft ${this.state.layout.composerRows ?? "auto"}`;
 	}
-	private resizeHints(width: number): string {
-		return mouseHints(this.mouse, this.tui.terminal.rows - 1, ["enter keep", "tab divider", this.resize.selected === "roster" ? "←→ width" : "↑↓ height", "0 auto", this.resizeValue()], "esc cancel", width, (data) => this.handleInput(data), this.theme);
-	}
 	private rosterHints(): [string[], string] {
 		if (this.rows.length) return [
 					[
 						"↑↓ select",
 						"Enter open",
-						...(this.resize.available ? ["r resize"] : []),
 						"b efforts",
 						"Tab message",
 						"t threads",
@@ -1222,7 +1216,6 @@ export class AgentDashboard implements Component, Focusable {
 		return [["b efforts", ...(this.operations.newAgent ? ["n new"] : []), "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
 	}
 	private hintLine(width: number): string {
-		if (this.resize.keyboard) return this.resizeHints(width);
 		const screen = this.navigation.screen;
 		const hints: Partial<Record<typeof screen, [string[], string]>> = {
 			console: [["PgUp/PgDn read", "Enter send", "Tab steer/follow-up", "Ctrl+J newline"], "Esc dashboard"],

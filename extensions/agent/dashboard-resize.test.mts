@@ -52,8 +52,8 @@ it("cancel and abandoned gestures restore committed preferences without a write"
 	for (const end of ["escape", "move", "press", "key", "dimensions", "screen", "clear"]) {
 		const f = controller({ rosterRatio: 0.4, composerRows: 8 });
 		f.resize.handle(mouse("press", 64)); f.resize.handle(mouse("drag", 90)); f.paint();
-		if (end === "escape") f.resize.input("\x1b");
-		if (end === "key") f.resize.input("x");
+		if (end === "escape") assert.equal(f.resize.input("\x1b"), true);
+		if (end === "key") assert.equal(f.resize.input("x"), false);
 		if (end === "move" || end === "press") f.resize.handle(mouse(end, 90));
 		if (end === "dimensions") f.paint(120);
 		if (end === "screen") f.paint(164, 44, "console");
@@ -74,19 +74,17 @@ it("the key after a lost release starts from committed handle geometry", () => {
 	const f = controller();
 	f.resize.handle(mouse("press", 35)); f.resize.handle(mouse("drag", 52)); f.paint();
 	assert.equal(f.resize.input("r"), false);
-	f.resize.startKeyboard(); f.resize.input("\x1b[C");
+	assert.deepEqual(f.layout, {}); assert.equal(f.resize.selected, undefined);
+	f.resize.handle(mouse("press", 35)); f.resize.handle(mouse("drag", 36)); f.resize.handle(mouse("release", 36));
 	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 37);
 });
-it("double-click and keyboard reset affect only the selected divider", () => {
+it("double-click resets only the selected divider", () => {
 	const f = controller({ rosterRatio: 0.4, composerRows: 8 });
 	f.resize.handle(mouse("click", 64, 8, { clickCount: 2 }));
 	assert.deepEqual(f.layout, { composerRows: 8 });
-	f.paint(); f.resize.startKeyboard(); f.resize.input("\x1b[C"); f.paint(); f.resize.input("\t"); f.resize.input("\x1b[A");
-	assert.equal(f.layout.composerRows, 9);
-	f.resize.input("\x1b"); assert.deepEqual(f.layout, { composerRows: 8 });
-	f.paint(); f.resize.startKeyboard(); f.resize.input("\t"); f.resize.input("0"); f.resize.input("\r");
+	f.paint(); f.resize.handle(mouse("click", 161, 35, { clickCount: 2 }));
 	assert.deepEqual(f.layout, {});
-	assert.equal(f.saves.length, 2);
+	assert.deepEqual(f.saves, [{ composerRows: 8 }, {}]);
 });
 it("a clipped preference restores after stacked and narrow windows", () => {
 	const f = controller({ rosterRatio: 0.6 });
@@ -110,54 +108,6 @@ function rawDispatcher(component: Component, width: number, height: number, sele
 	if (selection) runtime.handleSelectionMouseEvent = (raw) => { selection.push(raw); };
 	return Object.assign((button: number, x: number, y: number, release = false) => runtime.handleViewportInput(`\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`), { input: (data: string) => runtime.handleViewportInput(data) });
 }
-it("raw pointer motion preserves keyboard resize and its keep click commits", async () => {
-	const saved: DashboardLayout[] = [];
-	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
-	try {
-		await turn(); f.ui.render(164); f.ui.handleInput("r"); f.ui.handleInput("\x1b[C"); f.ui.render(164);
-		const ratio = f.state.layout.rosterRatio;
-		const send = rawDispatcher(f.ui, 164, 44);
-		send(35, 5, 0); f.ui.render(164);
-		assert.equal(f.state.layout.rosterRatio, ratio);
-		send(35, 36, 8); let lines = f.ui.render(164).map(stripVTControlCharacters);
-		assert.match(lines[43] ?? "", /esc cancel/);
-		assert.equal(f.state.layout.rosterRatio, ratio);
-		const x = (lines[43] ?? "").indexOf("enter keep"); assert.ok(x >= 0);
-		send(0, x, 43); lines = f.ui.render(164).map(stripVTControlCharacters);
-		assert.match(lines[43] ?? "", /esc cancel/); assert.equal(f.state.layout.rosterRatio, ratio);
-		send(0, x, 43, true); lines = f.ui.render(164).map(stripVTControlCharacters);
-		assert.deepEqual(saved, [{ rosterRatio: ratio }]); assert.equal(f.state.layout.rosterRatio, ratio);
-		assert.match(lines[43] ?? "", /esc close/); assert.equal(f.ui.navigation.screen, "roster");
-	} finally { f.ui.dispose(); }
-});
-it("raw keyboard footer clicks select, adjust, reset and cancel without ending mode on press", async (t) => {
-	const saved: DashboardLayout[] = [];
-	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
-	try {
-		await turn(); let now = 0;
-		// Distinct single clicks are independent of Pi's double-click time window.
-		t.mock.method(Date, "now", () => { now += 1000; return now; });
-		f.ui.render(164); f.ui.handleInput("r"); f.ui.render(164);
-		const send = rawDispatcher(f.ui, 164, 44);
-		const click = (needle: string) => {
-			const footer = stripVTControlCharacters(f.ui.render(164)[43] ?? "");
-			const x = footer.indexOf(needle); assert.ok(x >= 0, footer);
-			send(35, x, 43); send(0, x, 43); f.ui.render(164); send(0, x, 43, true);
-			f.ui.render(164);
-		};
-		click("→"); assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 37);
-		click("←"); assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 36);
-		click("0 auto"); assert.equal(f.state.layout.rosterRatio, undefined);
-		click("→"); assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 37);
-		click("tab divider"); assert.match(stripVTControlCharacters(f.ui.render(164)[43] ?? ""), /↑↓ height/);
-		click("↑"); assert.equal(f.state.layout.composerRows, 6);
-		click("↓"); assert.equal(f.state.layout.composerRows, 5);
-		click("0 auto"); assert.equal(f.state.layout.composerRows, undefined);
-		click("↑"); assert.equal(f.state.layout.composerRows, 6);
-		click("esc cancel"); assert.deepEqual(f.state.layout, {}); assert.deepEqual(saved, []);
-		assert.equal(f.ui.navigation.screen, "roster"); assert.match(stripVTControlCharacters(f.ui.render(164)[43] ?? ""), /esc close/);
-	} finally { f.ui.dispose(); }
-});
 it("raw SGR drag dispatch reaches the dashboard across rerenders without changing drafts or focus", async () => {
 	const saved: DashboardLayout[] = [];
 	const f = fixture(164, 44, source([row("one"), row("two")]), { saveLayout: (value) => saved.push(value) });
@@ -167,7 +117,9 @@ it("raw SGR drag dispatch reaches the dashboard across rerenders without changin
 		const render = () => { const lines = f.ui.render(164); assert.equal(lines.length, 44); assert.ok(lines.every((line) => visibleWidth(line) === 164)); return lines.map(stripVTControlCharacters); };
 		render();
 		const send = rawDispatcher(f.ui, 164, 44);
-		send(0, 35, 8); render(); send(32, 51, 8); render(); send(0, 51, 8, true); render();
+		send(0, 35, 8); render(); send(32, 51, 8);
+		assert.match(render().at(-1) ?? "", /roster 52 · detail 111/);
+		send(0, 51, 8, true); render();
 		assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 52);
 		assert.equal(saved.length, 1);
 		assert.equal(f.state.selected, "one"); assert.equal(f.ui.navigation.screen, "roster");
@@ -193,6 +145,7 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		const send = rawDispatcher(f.ui, 164, 44);
 		send(0, 161, y); render(); send(32, 161, y - 4); const dragged = render(); send(0, 161, y - 4, true);
 		assert.equal(f.state.layout.composerRows, 9);
+		assert.match(dragged.at(-1) ?? "", /draft 9/);
 		assert.ok(dragged.some((line) => line.includes("━━━")));
 		assert.ok(dragged.some((line) => line.includes("model │")));
 		assert.ok(dragged.some((line) => line.includes("steer at next step")));
@@ -201,27 +154,46 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		assert.equal(f.state.layout.composerRows, undefined);
 	} finally { f.ui.dispose(); }
 });
-it("keyboard resizing retains lowercase hints, explicit rows and cancellation before Escape navigation", async () => {
-	const f = fixture(164, 44);
+it("r on the roster is unbound and leaves the split and hints unchanged", async () => {
+	const saved: DashboardLayout[] = [];
+	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
 	try {
-		await turn(); f.ui.render(164); f.ui.handleInput("r"); f.ui.handleInput("\x1b[C");
-		assert.ok(f.state.layout.rosterRatio);
+		await turn();
 		const footer = stripVTControlCharacters(f.ui.render(164).at(-1) ?? "");
-		assert.match(footer, /←→ width/); assert.match(footer, /esc cancel\s*$/); assert.equal(footer, footer.toLowerCase());
-		f.ui.handleInput("\t"); f.ui.handleInput("\x1b[A"); f.ui.render(164); f.ui.handleInput("\r");
-		assert.equal(f.state.layout.composerRows, 6);
-		f.ui.handleInput("r"); f.ui.handleInput("0"); f.ui.render(164); f.ui.handleInput("\x1b");
-		assert.ok(f.state.layout.rosterRatio); assert.equal(f.ui.navigation.screen, "roster");
+		assert.doesNotMatch(footer, /r resize/);
+		f.ui.handleInput("r");
+		const lines = f.ui.render(164).map(stripVTControlCharacters);
+		assert.equal(f.ui.navigation.screen, "roster");
+		assert.deepEqual(f.state.layout, {}); assert.deepEqual(saved, []);
+		assert.equal(lines.at(-1), footer);
+		assert.match(lines.join("\n"), /Tab to write to/);
+		f.ui.handleInput("\x1b[C"); f.ui.handleInput("0");
+		assert.deepEqual(f.state.layout, {});
+		f.ui.handleInput("\t"); assert.equal(f.ui.navigation.screen, "message");
+	} finally { f.ui.dispose(); }
+});
+it("short windows hide the composer grip without discarding the saved row preference", async () => {
+	const saved: DashboardLayout[] = [];
+	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
+	try {
+		await turn();
+		const y = f.ui.render(164).findIndex((line) => line.includes("┄┄┄")); assert.ok(y > 0);
+		const send = rawDispatcher(f.ui, 164, 44);
+		send(0, 161, y); send(32, 161, y - 1); f.ui.render(164); send(0, 161, y - 1, true);
+		assert.deepEqual(saved, [{ composerRows: 6 }]);
 		f.resize(80, 20); const small = f.ui.render(80);
 		assert.equal(small.length, 20); assert.ok(!small.some((line) => line.includes("┄┄┄")));
-		f.resize(164, 44); f.ui.render(164);
 		assert.equal(f.state.layout.composerRows, 6);
+		f.resize(164, 44); assert.ok(f.ui.render(164).some((line) => line.includes("┄┄┄")));
+		assert.equal(f.state.layout.composerRows, 6); assert.deepEqual(saved, [{ composerRows: 6 }]);
 	} finally { f.ui.dispose(); }
 });
 it("save failure retains the local split and gives a restart notice", async () => {
 	const f = fixture(164, 44, source(), { saveLayout() { throw new Error("rename failed"); } });
 	try {
-		await turn(); f.ui.render(164); f.ui.handleInput("r"); f.ui.handleInput("\x1b[C"); f.ui.render(164); f.ui.handleInput("\r");
+		await turn(); f.ui.render(164);
+		const send = rawDispatcher(f.ui, 164, 44);
+		send(0, 35, 8); send(32, 51, 8); f.ui.render(164); send(0, 51, 8, true);
 		assert.ok(f.state.layout.rosterRatio);
 		assert.match(f.ui.render(164).join("\n"), /restart persistence failed/);
 	} finally { f.ui.dispose(); }

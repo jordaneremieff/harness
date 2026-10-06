@@ -17,7 +17,7 @@ interface Gesture {
 	handles: ResizeHandle[];
 	start: DashboardLayout;
 	kind: Divider;
-	pointer?: number;
+	pointer: number;
 	value: number;
 }
 /** Only committed preferences survive; capture and hover belong to one rendered screen. */
@@ -31,9 +31,7 @@ export class DashboardResize {
 	private readonly layout: DashboardLayout;
 	private readonly save: () => void;
 	constructor(layout: DashboardLayout, save: () => void) { this.layout = layout; this.save = save; }
-	get keyboard(): boolean { return !!this.gesture && this.gesture.pointer === undefined; }
 	get selected(): Divider | undefined { return this.gesture?.kind; }
-	get available(): boolean { return this.handles.length > 0; }
 	active(kind: Divider): boolean { return this.selected === kind; }
 	begin(width: number, height: number, screen: string): void {
 		if (width !== this.width || height !== this.height || screen !== this.screen) this.cancel();
@@ -90,39 +88,14 @@ export class DashboardResize {
 		const handle = this.handles.find((h) => h.kind === kind);
 		if (handle) handle.value = kind === "roster" ? dashboardGeometry(this.width, this.height, 0).rosterWidth : handle.min;
 	}
-	startKeyboard(): boolean {
-		this.cancel();
-		const handle = this.handles[0];
-		if (!handle) return false;
-		this.gesture = { kind: handle.kind, start: { ...this.layout }, value: handle.value, handles: this.handles.map((item) => ({ ...item })) };
-		return true;
-	}
 	/** A key also ends a drag whose release was lost outside the terminal. */
 	input(data: string): boolean {
 		if (!this.gesture) return false;
-		if (!this.keyboard) { this.cancel(); return matchesKey(data, "escape"); }
-		if (matchesKey(data, "escape")) { this.cancel(); return true; }
-		if (matchesKey(data, "enter")) { this.commit(); return true; }
-		if (matchesKey(data, "tab")) {
-			const index = this.handles.findIndex((h) => h.kind === this.selected);
-			const handle = this.handles[(index + 1) % this.handles.length];
-			if (handle) this.gesture.kind = handle.kind;
-			return true;
-		}
-		this.adjustKeyboard(data);
-		return true;
-	}
-	private adjustKeyboard(data: string): void {
-		const handle = this.handles.find((h) => h.kind === this.selected);
-		if (!handle) return;
-		if (data === "0") this.reset(handle.kind);
-		else if (handle.kind === "roster" && (matchesKey(data, "left") || matchesKey(data, "right")))
-			this.change(handle, handle.value + (matchesKey(data, "left") ? -1 : 1));
-		else if (handle.kind === "composer" && (matchesKey(data, "up") || matchesKey(data, "down")))
-			this.change(handle, handle.value + (matchesKey(data, "up") ? 1 : -1));
+		this.cancel();
+		return matchesKey(data, "escape");
 	}
 	private captured(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (!this.gesture || this.keyboard) return;
+		if (!this.gesture) return;
 		if (event.type === "release") { this.commit(); return { handled: true, render: true }; }
 		if (event.type !== "drag") return;
 		const handle = this.handles.find((h) => h.kind === this.selected);
@@ -130,7 +103,7 @@ export class DashboardResize {
 			this.cancel(); return { handled: true, render: true };
 		}
 		const pointer = handle.kind === "roster" ? event.x : -event.y;
-		return { handled: true, render: this.change(handle, this.gesture.value + pointer - (this.gesture.pointer ?? pointer)) };
+		return { handled: true, render: this.change(handle, this.gesture.value + pointer - this.gesture.pointer) };
 	}
 	private pointer(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.shift || event.alt || event.ctrl) return;
@@ -160,7 +133,7 @@ export class DashboardResize {
 			return;
 		}
 		if (!Number.isSafeInteger(event.x) || !Number.isSafeInteger(event.y)) return;
-		if (this.gesture && !this.keyboard && (event.type === "move" || event.type === "press")) {
+		if (this.gesture && (event.type === "move" || event.type === "press")) {
 			this.cancel();
 			// A new press is evaluated only after the committed layout is rendered again.
 			return { handled: true, render: true };
