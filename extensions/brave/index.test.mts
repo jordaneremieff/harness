@@ -39,6 +39,7 @@ function registry(): ToolRegistry {
 	const host = {
 		registerTool: (registered: RegisteredTool) => tools.set(registered.name, registered),
 		events: {
+			on: () => () => {},
 			emit: (channel: string, data: unknown) => {
 				if (channel === "durable:contribution") contributions.push(data);
 			},

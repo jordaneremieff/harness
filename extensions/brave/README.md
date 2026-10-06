@@ -4,6 +4,10 @@ Search the public web with Brave Search and read public HTTP(S) pages as bounded
 static text or exact HTML source links. Search locates candidate sources; the
 reader opens them as evidence without a browser or stored credentials.
 
+The ordinary extension publishes its registered tool renderers at factory time and
+on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
+the payload contains no execution functions.
+
 ## Surface
 
 | Surface | Kind | Purpose |

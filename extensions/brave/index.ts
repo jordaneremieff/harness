@@ -1,7 +1,7 @@
 /** Stateless web search and bounded public-page reading. */
 
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
 	BRAVE_WEB_READ_DESCRIPTION,
 	BRAVE_WEB_READ_GUIDELINES,
@@ -19,8 +19,16 @@ import { readWebPage, type WebReadResult } from "./page-reader.ts";
 import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult } from "./presentation.ts";
 
 export default function registerBraveSearch(pi: ExtensionAPI) {
+	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
+	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
+		pi.registerTool(tool);
+		const { name, renderCall, renderResult, renderShell } = tool;
+		if (renderCall || renderResult || renderShell) {
+			displayTools.push({ name, renderCall, renderResult, renderShell } as (typeof displayTools)[number]);
+		}
+	};
 	pi.events.emit("durable:contribution", braveDurableContribution(fileURLToPath(import.meta.url)));
-	pi.registerTool({
+	registerTool({
 		name: "web_read",
 		label: "Read public web page",
 		description: BRAVE_WEB_READ_DESCRIPTION,
@@ -33,7 +41,7 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 			return readWebPage(params, signal);
 		},
 	});
-	pi.registerTool<typeof BRAVE_WEB_SEARCH_PARAMETERS, BraveWebSearchDetails>({
+	registerTool<typeof BRAVE_WEB_SEARCH_PARAMETERS, BraveWebSearchDetails>({
 		name: "web_search",
 		label: "Brave web search",
 		description: BRAVE_WEB_SEARCH_DESCRIPTION,
@@ -46,4 +54,11 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 			return runWebSearch(params, signal);
 		},
 	});
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", { version: 1, tools: displayTools });
+	pi.events.on("harness:tool-display:request", (request) => {
+		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) {
+			publishDisplay();
+		}
+	});
+	publishDisplay();
 }
