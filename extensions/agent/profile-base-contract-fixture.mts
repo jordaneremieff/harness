@@ -17,12 +17,12 @@ const DURABLE_VERSION: string = JSON.parse(readFileSync(require.resolve("@earend
 
 /** Fixed operation identities isolate feature additions from upstream release changes. */
 export const BASE_OPERATIONS: Readonly<Record<string, OperationContract>> = {
-	status: { request: "status/1.0.0", response: "f01e526863f86e3b9665f2ae21222b0d7af6b61085718f5a2b27ffcef3918c15", durable: DURABLE_VERSION },
+	status: { request: "status/1.0.0", response: "5df139e808900bee9bf561760b4f7da690df743f336609ec26ab0a7a11957dc1", durable: DURABLE_VERSION },
 	submit: { request: "submit/1.1.0", response: "submit/1.1.0" },
 	configure: { request: "configure/1.0.0", response: "configure/1.0.0" },
 	reset: { request: "reset/1.0.0", response: "reset/1.0.0" },
 	list: { request: "list/1.0.0", response: "76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600" },
-	dashboard: { request: "dashboard/1.0.0", response: "45e81def525244f0c696a37894dd3ab431646d0bd4d78c1ca12d2c0d9ef66a3f" },
+	dashboard: { request: "dashboard/1.0.0", response: "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241" },
 };
 const baseContract: RuntimeContract = {
 	format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: CODING_AGENT_VERSION, durable: DURABLE_VERSION },
