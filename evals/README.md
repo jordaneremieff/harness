@@ -16,28 +16,23 @@ Run all commands from the repository root. The participant
 provider, model ID, and thinking level before planning or execution.
 
 ```bash
-npm run evals -- validate prompts/wtf.eval.mts
 npm run evals -- validate prompts/tldr.eval.mts
 npm run evals -- validate prompts/seed.eval.mts
 npm run evals -- validate prompts/seed-transfer.eval.mts
 
-npm run evals -- plan prompts/wtf.eval.mts \
+npm run evals -- plan prompts/tldr.eval.mts \
   --participant anthropic/claude-model:high \
   --repetitions 1 \
   --allow-home-credentials \
   --grant-effect paid-model-inference \
-  --grant-effect credential-command-execution \
-  --grant-effect credential-refresh \
   --grant-effect read-approved-model-credentials \
   --grant-effect credential-resolution
 
-npm run evals -- run prompts/wtf.eval.mts \
+npm run evals -- run prompts/tldr.eval.mts \
   --participant anthropic/claude-model:high \
   --repetitions 1 \
   --allow-home-credentials \
   --grant-effect paid-model-inference \
-  --grant-effect credential-command-execution \
-  --grant-effect credential-refresh \
   --grant-effect read-approved-model-credentials \
   --grant-effect credential-resolution \
   --approve sha256:<exact-plan-digest>
@@ -123,13 +118,8 @@ A `tool-result` check has config `{ name: string, isError?: boolean, contentCont
 
 `prompts/drift.eval.mts` tests opening-intent reconstruction against later
 implementation, operator clarification, a changed goal, and absent opening
-context. `prompts/wtf.eval.mts` tests reply repair, including explicit selection
-of an earlier reply, administrative notices after substantive answers, short
-answers, unrelated context, later permission limits, and absent targets. It
-also contrasts explicit summaries with bare repairs and checks retention of
-explicit unchanged state, the target's language, and complete approval artifacts
-within a feasible sentence budget. Both use human-required semantic review. Their empty tool lists isolate text behavior; they do not prove that a
-model declines an available tool.
+context. It uses human-required semantic review. Its empty tool list isolates
+text behavior and does not prove that a model declines an available tool.
 
 `prompts/tldr.eval.mts` compares the maintained short-by-default summary with
 a plain `tldr <hint>` message over identical synthetic context. It covers bare

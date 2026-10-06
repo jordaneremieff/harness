@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import wtfSuite from "../prompts/wtf.eval.mts";
 import { createPlan, parseParticipant, validateSuite } from "./core.mts";
 import type { EvaluationSuite, SubjectAdapter } from "./types.mts";
 
@@ -151,48 +150,5 @@ describe("neutral suite contract", () => {
 		const cycleSuite = neutralSuite() as unknown as Record<string, unknown>;
 		(cycleSuite.subject as Record<string, unknown>).config = cyclic;
 		assert.throws(() => validateSuite(cycleSuite), /cycle/);
-	});
-});
-
-describe("maintained /wtf suite", () => {
-	it("covers reader context and target selection with an account-substituting ablation", () => {
-		assert.deepEqual(
-			wtfSuite.cases.map((value) => value.id),
-			[
-				"explicit-three-sentence-summary",
-				"bare-repair-retains-details",
-				"summary-preserves-approval-artifact",
-				"summary-keeps-unchanged-access",
-				"two-sentence-preview-approval",
-				"caught-up",
-				"return",
-				"correction",
-				"bookkeeping-after-result",
-				"bookkeeping-with-later-limit",
-				"short-genuine-answer",
-				"explicit-administrative-target",
-				"missing-referenced-answer",
-				"unrelated-prior-reply",
-				"missing-target",
-				"selected-earlier-reply",
-			],
-		);
-		const ablation = wtfSuite.subject.variants.find((value) => value.id === "neutral-ablation");
-		const config = ablation?.config as { promptTemplates?: Array<{ source?: { inline?: string } }> };
-		const baselinePrompt = config.promptTemplates?.[0];
-		assert.ok(baselinePrompt?.source);
-		assert.equal(
-			baselinePrompt.source.inline,
-			`Rewrite the most recent assistant reply so it is clear and actionable. Return only the replacement. Do not continue the underlying task. Operator account: ${"$"}{ARGUMENTS:-none}.`,
-		);
-		for (const evaluationCase of wtfSuite.cases) {
-			const input = evaluationCase.input as { fixture?: Record<string, unknown> };
-			assert.ok(input.fixture?.semanticLedger);
-			assert.ok(input.fixture?.protectedExactSpans);
-			assert.ok(input.fixture?.forbiddenCanaries);
-			assert.ok(input.fixture?.forbiddenTaskActions);
-			assert.ok(input.fixture?.actualNextStep);
-		}
-		assert.equal(wtfSuite.adjudication.policy, "human-required");
 	});
 });

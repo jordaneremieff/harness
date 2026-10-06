@@ -45,9 +45,7 @@ of the corpus.
   clipboard. The hint selects its purpose or recipient.
 - [`/tldr [hint]`](../../prompts/tldr.md) summarizes the current discussion in
   at most three plain sentences by default. The optional hint selects focus,
-  scope, or length. Use it for the short version; `/wtf` preserves detail.
-- [`/wtf [account]`](../../prompts/wtf.md) repairs a hard-to-use assistant reply
-  while preserving its meaning. The account identifies the target or fault.
+  scope, or length. A hint such as "more detail" asks for a longer version.
 
 The templates own their detailed instructions, evidence limits, and delivery
 rules. None executes the underlying work or changes persistent configuration.

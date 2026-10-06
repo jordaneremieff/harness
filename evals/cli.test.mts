@@ -90,7 +90,7 @@ function classify(errors: Array<Array<{ type: string; message: string }>>): Oper
 
 describe("CLI argument grammar", () => {
 	it("rejects retired suite and run value options", async () => {
-		const suite = await captureCli(["validate", "prompts/wtf.eval.mts", "--suite", "prompts/wtf.eval.mts"]);
+		const suite = await captureCli(["validate", "prompts/tldr.eval.mts", "--suite", "prompts/tldr.eval.mts"]);
 		assert.equal(suite.code, 1);
 		assert.equal(suite.stderr, "evals: Unknown option: --suite\n");
 		const run = await captureCli(["inspect", "missing", "--run", "missing"]);
@@ -99,7 +99,7 @@ describe("CLI argument grammar", () => {
 	});
 
 	it("keeps suite paths and run IDs positional", async () => {
-		const suite = await captureCli(["validate", "prompts/wtf.eval.mts"]);
+		const suite = await captureCli(["validate", "prompts/tldr.eval.mts"]);
 		assert.equal(suite.code, 0);
 		assert.equal(suite.stderr, "");
 		assert.equal((JSON.parse(suite.stdout) as { valid?: boolean }).valid, true);

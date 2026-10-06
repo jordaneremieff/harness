@@ -13,7 +13,7 @@ import { loadSuite } from "../evals/core.mts";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 it("maintained prompt behavior suites satisfy the evaluation and adapter contracts", async () => {
-	for (const name of ["drift", "seed", "tldr", "wtf"]) {
+	for (const name of ["drift", "seed", "tldr"]) {
 		const { suite, path } = await loadSuite(join(repositoryRoot, "prompts", `${name}.eval.mts`));
 		const adapter = getSubjectAdapter(suite.subject.adapter);
 		adapter.validate?.({
@@ -43,14 +43,13 @@ it("the package discovers only maintained prompt commands without other resource
 		await loader.reload();
 		const { prompts, diagnostics } = loader.getPrompts();
 		assert.deepEqual(diagnostics, []);
-		assert.deepEqual(prompts.map((prompt) => prompt.name).sort(), ["drift", "recap", "seed", "tldr", "wtf"]);
+		assert.deepEqual(prompts.map((prompt) => prompt.name).sort(), ["drift", "recap", "seed", "tldr"]);
 		for (const prompt of prompts) {
 			assert.equal(prompt.filePath, join(repositoryRoot, "prompts", `${prompt.name}.md`));
 			assert.ok(prompt.description.trim());
 			assert.ok(prompt.content.trim());
 			assert.ok(!prompt.content.startsWith("---"));
 		}
-		assert.equal(prompts.find((prompt) => prompt.name === "wtf")?.argumentHint, "[your account of the problem]");
 		assert.equal(prompts.find((prompt) => prompt.name === "seed")?.argumentHint, "[your hint for the brief]");
 		assert.equal(prompts.find((prompt) => prompt.name === "tldr")?.argumentHint, "[focus, scope, or length]");
 		assert.equal(
@@ -61,35 +60,6 @@ it("the package discovers only maintained prompt commands without other resource
 		assert.deepEqual(loader.getExtensions().errors, []);
 		assert.deepEqual(loader.getSkills().skills, []);
 		assert.deepEqual(loader.getAgentsFiles().agentsFiles, []);
-	} finally {
-		await rm(root, { recursive: true, force: true });
-	}
-});
-
-it("an explicit candidate prompt load does not discover global or package copies", async () => {
-	const root = await mkdtemp(join(tmpdir(), "prompt-candidate-"));
-	try {
-		const loader = new DefaultResourceLoader({
-			cwd: root,
-			agentDir: join(root, "agent"),
-			settingsManager: SettingsManager.inMemory(),
-			additionalPromptTemplatePaths: [join(repositoryRoot, "prompts", "wtf.md")],
-			noPromptTemplates: true,
-			noExtensions: true,
-			noSkills: true,
-			noThemes: true,
-			noContextFiles: true,
-		});
-		await loader.reload();
-		const { prompts, diagnostics } = loader.getPrompts();
-		assert.deepEqual(diagnostics, []);
-		assert.deepEqual(
-			prompts.map((prompt) => prompt.name),
-			["wtf"],
-		);
-		assert.equal(prompts[0]?.filePath, join(repositoryRoot, "prompts", "wtf.md"));
-		assert.ok(prompts[0]?.content.includes("## Select the target"));
-		assert.ok(prompts[0]?.content.includes("## The operator's account\n\n$ARGUMENTS"));
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
