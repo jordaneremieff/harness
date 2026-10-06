@@ -53,7 +53,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Loaded Comparison](heuristic-loaded-comparison.md) | Every comparison axis favors a preselected option → state the recommendation or find discriminating axes. |
 | [Framed Menu](heuristic-framed-menu.md) | All offered options share an unstated premise → test the premise and name the option outside it. |
 | [Phantom Stewardship](heuristic-phantom-stewardship.md) | Pre-existing dirty state in a shared mutable substrate, author unknown → verify absence, read lineage, reconcile honestly. |
-| [Redundant Corroboration](heuristic-redundant-corroboration.md) | Similar evaluators converge and count is cited as independence → treat them as samples from one posterior. |
+| [Redundant Corroboration](heuristic-redundant-corroboration.md) | Agreement is cited as independent confirmation, or a reviewer is chosen to provide it → inventory shared substrate and vary the check where needed. |
 | [Ecosystem Gravity](heuristic-ecosystem-gravity.md) | A consumer depends on a system they cannot maintain → prioritize ecosystem durability. |
 | [Corrected-Assumption Leakage](heuristic-corrected-assumption-leakage.md) | A correction is acknowledged but old assumptions persist downstream → audit the working model. |
 | [Metric Reification](heuristic-metric-reification.md) | An observational statistic is becoming a system property → expose conditions and defend interpretation. |
