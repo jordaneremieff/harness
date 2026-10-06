@@ -3,9 +3,12 @@ import { Type, type Static } from "typebox";
 import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { canonicalIdentity } from "./identity.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
-import type { ProducerAwaitFact } from "./await-facts.ts";
+import { ProducerAwaitFactSchema, type ProducerAwaitFact } from "./await-facts.ts";
 
-export const AwaitParams = Type.Object({ results: Type.Array(ResultReferenceSchema, { minItems: 1, maxItems: 16, uniqueItems: true }) }, { additionalProperties: false });
+export const AwaitParams = Type.Object({
+	results: Type.Array(ResultReferenceSchema, { minItems: 1, maxItems: 16, uniqueItems: true }),
+	releaseOnProviderRetry: Type.Optional(Type.Object({ minAttempt: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })) }, { additionalProperties: false })),
+}, { additionalProperties: false });
 export type AwaitInput = Static<typeof AwaitParams>;
 export const AwaitOutcomeSchema = Type.Object({
 	result: ResultReferenceSchema,
@@ -26,10 +29,11 @@ export const AwaitOutputSchema = Type.Object({
 	queuedInputCount: Type.Integer({ minimum: 0 }),
 	queueSnapshot: Type.Object({ source: Type.Literal("committed InboxDoc"), conversationId: Type.Integer({ minimum: 1 }), runId: Type.Integer({ minimum: 1 }) }),
 	releaseReason: Type.Optional(Type.String()),
+	producerRetries: Type.Optional(Type.Array(ProducerAwaitFactSchema, { maxItems: 16 })),
 }, { additionalProperties: false });
 export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
 export type AwaitDecision = "awaiting" | "settled" | "released" | "failed";
-export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[]; producers?: ProducerAwaitFact[] };
+export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[]; producers?: ProducerAwaitFact[]; releaseOnProviderRetry?: AwaitInput["releaseOnProviderRetry"]; producerRetries?: ProducerAwaitFact[] };
 export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number };
 export type AwaitDelivery = { requestId: string; results: ResultReference[]; complete: boolean };
 export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[] };
@@ -91,11 +95,12 @@ function decide(declaration: AwaitDeclaration): void {
 	if (declaration.outcomes.some((outcome) => outcome.status !== "done")) declaration.decision = "failed";
 	else if (declaration.results.every((reference) => declaration.outcomes.some((outcome) => matching(reference, outcome.result)))) declaration.decision = "settled";
 }
-function releaseCohort(state: AwaitState, declaration: AwaitDeclaration, reason: string): void {
+export function releaseCohort(state: AwaitState, declaration: AwaitDeclaration, reason: string, retry?: ProducerAwaitFact): void {
 	for (const peer of state.declarations) {
 		if (peer.runId !== declaration.runId || peer.conversationId !== declaration.conversationId || peer.cohort.join(",") !== declaration.cohort.join(",") || peer.decision !== "awaiting") continue;
 		peer.decision = "released";
 		peer.releaseReason = reason;
+		if (retry !== undefined) peer.producerRetries = [JSON.parse(JSON.stringify(retry)) as ProducerAwaitFact];
 	}
 }
 async function producerEdge(tx: Tx, storageId: string, reference: ResultReference): Promise<number | undefined> {
@@ -159,7 +164,7 @@ async function inboxRelease(tx: Tx, state: AwaitState, declaration: AwaitDeclara
 }
 
 /** All ownership and local dependency edges are admitted on one native transaction line. */
-export async function declareAwait(tx: Tx, storageId: string, owner: { conversationId: ConversationId; taskId: TaskId; callId: string }, results: ResultReference[]): Promise<AwaitDeclaration> {
+export async function declareAwait(tx: Tx, storageId: string, owner: { conversationId: ConversationId; taskId: TaskId; callId: string }, results: ResultReference[], releaseOnProviderRetry?: AwaitInput["releaseOnProviderRetry"]): Promise<AwaitDeclaration> {
 	const state = await tx.doc(AwaitDoc);
 	await pruneDeclarations(tx, state);
 	const prior = state.declarations.find((item) => item.taskId === owner.taskId);
@@ -169,9 +174,9 @@ export async function declareAwait(tx: Tx, storageId: string, owner: { conversat
 	if (state.declarations.length >= AWAIT_DECLARATION_LIMIT) throw new Error("The native await declaration bound is full");
 	const self = results.find((reference) => localProducer(storageId, reference) === owner.conversationId);
 	if (self !== undefined) throw new Error(`Await refuses self, current-run, and queued-self results: ${self.sessionId}, submission ${self.submissionId}${self.requestId === undefined ? "" : `, request ${self.requestId}`}`);
-	let declaration: AwaitDeclaration = { ...owner, runId: live.run.taskId, cohort: (live.tools ?? []).flatMap((slot) => slot.taskId === undefined ? [] : [slot.taskId]), inputs: [...live.run.inputs], results: results.map((reference) => ({ ...reference })), outcomes: [], decision: "awaiting" };
+	let declaration: AwaitDeclaration = { ...owner, runId: live.run.taskId, cohort: (live.tools ?? []).flatMap((slot) => slot.taskId === undefined ? [] : [slot.taskId]), inputs: [...live.run.inputs], results: results.map((reference) => ({ ...reference })), outcomes: [], decision: "awaiting", ...(releaseOnProviderRetry === undefined ? {} : { releaseOnProviderRetry: { ...releaseOnProviderRetry } }) };
 	const released = state.declarations.find((item) => item.runId === declaration.runId && item.cohort.join(",") === declaration.cohort.join(",") && item.decision !== "awaiting" && item.decision !== "settled");
-	if (released !== undefined) { declaration.decision = "released"; declaration.releaseReason = released.releaseReason ?? "parallel await returned control"; }
+	if (released !== undefined) { declaration.decision = "released"; declaration.releaseReason = released.releaseReason ?? "parallel await returned control"; if (released.producerRetries !== undefined) declaration.producerRetries = JSON.parse(JSON.stringify(released.producerRetries)) as ProducerAwaitFact[]; }
 	await rejectCycle(tx, state, storageId, declaration);
 	state.declarations.push(declaration);
 	const admitted = state.declarations.find((item) => item.taskId === owner.taskId);

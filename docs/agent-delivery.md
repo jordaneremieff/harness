@@ -277,6 +277,19 @@ is a separate outcome, not an invented remote failure. A final answer settles
 the original request once. Never answer with a waiting note and depend on a
 later manual report to complete that commitment.
 
+For retry-sensitive work, opt in with
+`agent_await({results, releaseOnProviderRetry: {minAttempt: 2}})`. An empty option
+object uses attempt 1; omission keeps the normal wait. A current retry for an
+exact awaited input releases the tool round with partial outcomes, unresolved
+references, and `producerRetries`. Release does not cancel producers or prove a
+quota wall. Inspect the facts before an authorized model substitution.
+
+Before dispatch, `agent_status({view: "fleet"})` exposes recent sampled usage
+per model/provider and lifetime caller-plus-direct-created effort cost. Its
+rolling windows are labeled partial lower bounds, not complete usage or
+remaining quota. Check publication times and omissions. Neither storage usage
+nor these effort totals is the current request's own spend.
+
 Explicit input or an awaited agent's report releases the wait with partial
 results and puts that input at the same request's post-tools boundary. Apply it
 and await unresolved references again as needed. Real abort stops the original
@@ -296,7 +309,10 @@ stays queued; already-placed inputs remain untouched. Late or placed copies can
 appear and cost an additional model turn. No recipient consumption ledger or
 exactly-once contextual-delivery guarantee applies. Original-request replay is
 not an interruption. Durable outcomes survive safe replay. Capped answers
-include exact entry continuations with native inspection offsets.
+include exact entry continuations with native inspection offsets. Normal
+delivered receipt excerpts also include a `Full answer` continuation; ordinary
+primary details retain its structured form. Follow `agent_inspect` and each
+`nextOffset` to read the complete retained answer.
 
 Await is native-only. Ordinary primaries remain responsive and refuse blocking
 wait calls. Foreign results require a normal reply route to this recipient;

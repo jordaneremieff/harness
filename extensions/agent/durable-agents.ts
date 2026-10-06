@@ -21,7 +21,7 @@
 import { realpathSync } from "node:fs";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
-import { readCreatedAgents, renderCreatedAgents } from "./agent-lineage.ts";
+import { readCreatedAgents, renderCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile } from "./profile.ts";
 import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
@@ -191,6 +191,7 @@ export interface AgentContributionOptions {
 type ChildAgentValues = {
 	readonly model: Durable.ModelRef;
 	readonly thinkingLevel: ModelThinkingLevel;
+	readonly thinking?: { requested: string; effective: string };
 };
 
 // ─── Durable documents ──────────────────────────────────────────────────────
@@ -204,6 +205,7 @@ type AgentChild = {
 	/** External identity of a child in another storage. */
 	readonly foreignSessionId?: string;
 	readonly result?: ResultReference;
+	readonly thinking?: { requested: string; effective: string };
 	/** Tool task that created the child; a rerun of that task reuses this record. */
 	readonly createdBy: Durable.TaskId;
 	/** Answer entries already reported to the owner; several messages can end in one answer. */
@@ -239,6 +241,14 @@ function resolvePlaceArea(requested: string): { kind: "ok"; area: string } | { k
 			message: `Place area is not available: ${error instanceof Error ? error.message : String(error)}`,
 		};
 	}
+}
+
+function thinkingFacts(child: Pick<AgentChild, "thinking">): Record<string, JsonValue> {
+	return child.thinking === undefined ? {} : { thinking: child.thinking };
+}
+
+function thinkingNotice(child: Pick<AgentChild, "thinking">): string {
+	return child.thinking === undefined ? "" : `\nThinking level: requested ${child.thinking.requested}; effective ${child.thinking.effective}.`;
 }
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
@@ -560,11 +570,12 @@ export function createAgentContribution(options: AgentContributionOptions): Agen
 }
 
 /** Fleet observation stays local; no host operation or remote forwarding participates. */
-async function fleetObservation(catalogRoot: string | undefined, sessionId: string | undefined) {
+async function fleetObservation(catalogRoot: string | undefined, sessionId: string | undefined, callerId: string, created?: CreatedAgents) {
+	const effort = { callerId, created: created?.agents.map((agent) => agent.identity) ?? [], omitted: created?.omitted ?? 0 };
 	try {
 		if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
 		if (!catalogRoot) throw new Error("Fleet discovery requires a configured local catalog root");
-		const value = structuredObservation(StatusToolOutputSchema, await readFleetStatus(new AgentCatalog(dirname(catalogRoot)))) as Record<string, JsonValue>;
+		const value = structuredObservation(StatusToolOutputSchema, await readFleetStatus(new AgentCatalog(dirname(catalogRoot)), { effort })) as Record<string, JsonValue>;
 		return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { structuredContent: value } };
 	} catch (error) {
 		return errorResult(`Fleet status failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -862,9 +873,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (model === undefined) return { kind: "error", message: "The owner conversation has no model configured." };
 		const requested = thinkingLevelOverride ?? parent.thinkingLevel;
 		const catalog = host.services.modelRuntime.getModel(model.provider, model.modelId);
+		if (catalog === undefined) return { kind: "error", message: `Model is not in the configured catalog: ${model.provider}/${model.modelId}` };
+		const effective = clampThinkingLevel(catalog, requested);
 		return {
 			kind: "ok",
-			values: { model, thinkingLevel: catalog === undefined ? requested : clampThinkingLevel(catalog, requested) },
+			values: { model, thinkingLevel: effective, ...(effective === requested ? {} : { thinking: { requested, effective } }) },
 		};
 	};
 
@@ -891,7 +904,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			thinkingLevel: parent.thinkingLevel,
 			...(cwd === undefined ? {} : { cwd }),
 		};
-		const child = await createChild(tx, api.conversationId, args.name ?? "agent", api.taskId, change);
+		const child = { ...await createChild(tx, api.conversationId, args.name ?? "agent", api.taskId, change), ...(parent.thinking === undefined ? {} : { thinking: parent.thinking }) };
 		const meta = await tx.doc(AgentMetaDoc, child.conversationId);
 		meta.name = args.name ?? "agent";
 		meta.owner = identity(api.conversationId);
@@ -945,6 +958,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		}
 		const sessionId = sessionIdOf(result);
 		if (sessionId === undefined) return { kind: "error", message: "Host spawn returned no sessionId." };
+		const thinking = (result as { thinking?: { requested: string; effective: string } }).thinking;
 		let reference: ResultReference | undefined;
 		try { reference = args.prompt === undefined ? undefined : admittedResult(sessionId, (result as Record<string, unknown>).result, `spawn:${host.storageId}:${api.taskId}`); }
 		catch (error) { return { kind: "error", message: String(error) }; }
@@ -953,6 +967,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const added: AgentChild = {
 				name: args.name ?? "agent",
 				foreignSessionId: sessionId,
+				...(thinking === undefined ? {} : { thinking }),
 				...(reference === undefined ? {} : { result: reference }),
 				createdBy: api.taskId,
 				reported: [],
@@ -974,8 +989,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${outcome.child.name} (${outcome.sessionId}).`
-				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (outcome.child.result === undefined ? "" : `\nResult: ${JSON.stringify(outcome.child.result)}`),
-			{ sessionId: outcome.sessionId, name: outcome.child.name, ...(outcome.child.result === undefined ? {} : { result: outcome.child.result }) },
+				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (outcome.child.result === undefined ? "" : `\nResult: ${JSON.stringify(outcome.child.result)}`) + thinkingNotice(outcome.child),
+			{ sessionId: outcome.sessionId, name: outcome.child.name, ...thinkingFacts(outcome.child), ...(outcome.child.result === undefined ? {} : { result: outcome.child.result }) },
 		);
 	};
 
@@ -985,23 +1000,32 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return reporter as Durable.TaskId;
 	};
 
+	const localSpawn = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, args: SpawnInput, cwd: string | undefined): Promise<Awaited<ReturnType<typeof spawnLocalInCommit>>> => {
+		const retained = (await api.snapshot(Children, api.conversationId, context))?.children.find((child) => child.createdBy === api.taskId);
+		if (retained !== undefined) {
+			if (retained.conversationId === undefined || retained.anchorTaskId === undefined) return { kind: "error", message: "This call already created an agent in another storage." };
+			return { kind: "local", child: { ...retained, conversationId: retained.conversationId, anchorTaskId: retained.anchorTaskId }, deduped: true };
+		}
+		const parent = await resolveChildAgent(api, context, args.model, args.thinkingLevel);
+		if (parent.kind === "error") return parent;
+		return api.commit((tx) => spawnLocalInCommit(tx, api, args, cwd, parent.values), context);
+	};
+
 	const localSpawnResult = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		context: Context,
 		args: SpawnInput,
 		cwd: string | undefined,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
-		const parent = await resolveChildAgent(api, context, args.model, args.thinkingLevel);
-		if (parent.kind === "error") return errorResult(parent.message);
-		const outcome = await api.commit((tx) => spawnLocalInCommit(tx, api, args, cwd, parent.values), context);
+		const outcome = await localSpawn(api, context, args, cwd);
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		const child = outcome.child;
 		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(args.checkInMinutes)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${child.name} (${identity(child.conversationId)}).`
-				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (admission === undefined ? "" : `\nResult: ${JSON.stringify(admission.result)}`),
-			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...(admission === undefined ? {} : { result: admission.result }) },
+				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (admission === undefined ? "" : `\nResult: ${JSON.stringify(admission.result)}`) + thinkingNotice(child),
+			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...thinkingFacts(child), ...(admission === undefined ? {} : { result: admission.result }) },
 		);
 	};
 
@@ -1464,7 +1488,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			parameters: StatusParams,
 			replay: "safe",
 			execute: async (args: StatusInput, api, context) => {
-				if (args.view === "fleet") return fleetObservation(host.catalogRoot, args.sessionId);
+				if (args.view === "fleet") {
+					const created = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
+					return fleetObservation(host.catalogRoot, args.sessionId, identity(api.conversationId), created);
+				}
 				const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusToolOutputSchema);
 				if (args.sessionId !== undefined || result.isError) return result;
 				const createdAgents = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
@@ -1637,7 +1664,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const awaitTool = durable.defineTool({
 		name: "agent_await",
-		description: "Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. Explicit input or release returns partial results and unresolved references on this same request. Abort stops the original request, not its producers.",
+		description: "Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. Opt-in releaseOnProviderRetry returns partial outcomes, unresolved references and observed retry facts for an exact producer run; minAttempt defaults to 1 only when opted in. Explicit input or release also returns control on this same request. Release does not stop producers. Abort stops the original request, not its producers.",
 		parameters: AwaitParams,
 		replay: "safe",
 		execute: async (args, api, context) => {

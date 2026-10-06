@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { AwaitDoc, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, boundedAwaitAnswer, forgetFailedAdmission, type AwaitState } from "./awaited-results.ts";
+import { Value } from "typebox/value";
+import { AwaitParams, AwaitDoc, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, boundedAwaitAnswer, forgetFailedAdmission, type AwaitState } from "./awaited-results.ts";
 import { LiveDoc, InboxDoc, type Tx, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 
 /** A serialized native transaction's read set, with controlled request placement. */
@@ -131,6 +132,21 @@ it("does not exhaust active slots across repeated aborts and failed admissions",
 		await forgetFailedAdmission(f.tx, a.conversationId, `failed-${index}`);
 	}
 	assert.equal(f.state.declarations.length, 0); assert.equal(f.state.provenance.length, 0);
+});
+
+it("admits retry release only by an explicit object with a positive attempt threshold", () => {
+	const results = [{ sessionId: "producer", submissionId: 1 }];
+	assert.equal(Value.Check(AwaitParams, { results }), true);
+	assert.equal(Value.Check(AwaitParams, { results, releaseOnProviderRetry: {} }), true);
+	assert.equal(Value.Check(AwaitParams, { results, releaseOnProviderRetry: { minAttempt: 3 } }), true);
+	for (const releaseOnProviderRetry of [true, null, { minAttempt: 0 }, { minAttempt: 1.5 }, { minAttempt: Number.MAX_SAFE_INTEGER + 1 }, { other: true }]) assert.equal(Value.Check(AwaitParams, { results, releaseOnProviderRetry }), false);
+});
+
+it("retains the original retry release policy on safe replay", async () => {
+	const f = fixture(); const owner = f.owner(1); const result = f.result(2);
+	await declareAwait(f.tx, "store", owner, [result], { minAttempt: 3 });
+	const replay = await declareAwait(f.tx, "store", owner, [result], { minAttempt: 1 });
+	assert.deepEqual(replay.releaseOnProviderRetry, { minAttempt: 3 });
 });
 
 it("provides an exact native continuation for capped and excerpt answers", () => {

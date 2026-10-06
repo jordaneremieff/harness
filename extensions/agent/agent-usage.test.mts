@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
-import { contextTokens, usageFacts, compactTokens } from "./agent-usage.ts";
+import { contextTokens, usageFacts, compactTokens, ordinaryReportedUsage } from "./agent-usage.ts";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 const usage = { input: 100, output: 20, cacheRead: 30, cacheWrite: 10, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const ordinaryEntry = (type: "usage" | "compaction" | "branch_summary", cost: number | undefined): SessionEntry => ({ type, id: "entry", parentId: null, timestamp: "2026-01-01T00:00:00Z", ...(cost === undefined ? {} : { usage: { ...usage, cost: { ...usage.cost, total: cost } } }) }) as SessionEntry;
+it("ordinary reported usage includes summary and auxiliary costs without claiming missing or omitted usage", () => {
+	assert.deepEqual(ordinaryReportedUsage([ordinaryEntry("usage", 1), ordinaryEntry("compaction", 2), ordinaryEntry("branch_summary", 3)]), { reportedCost: 6, partial: false });
+	assert.deepEqual(ordinaryReportedUsage([ordinaryEntry("compaction", undefined), ordinaryEntry("usage", Number.NaN), ordinaryEntry("usage", 1)]), { reportedCost: 1, partial: true });
+	assert.deepEqual(ordinaryReportedUsage(Array.from({ length: 4097 }, () => ordinaryEntry("usage", 1))), { reportedCost: 4096, partial: true });
+	assert.deepEqual(ordinaryReportedUsage([]), { reportedCost: 0, partial: false });
+});
 const assistant: AgentConversationEntry = { id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage }] };
 it("token counts use the same compact units as the native footer", () => {
 	for (const [tokens, expected] of [[999, "999"], [1000, "1.0k"], [9500, "9.5k"], [10000, "10k"], [163300, "163k"], [1000000, "1.0M"], [10000000, "10M"]] as const) assert.equal(compactTokens(tokens), expected);

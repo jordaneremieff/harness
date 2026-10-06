@@ -200,6 +200,7 @@ type DispatchCalls = Array<{ method: string; params: Record<string, unknown> }>;
 type DispatchHolder = {
 	harness?: Durable.Harness;
 	spawnSessionId?: string;
+	spawnThinking?: { requested: string; effective: string };
 	placeSessionId?: string;
 	inspectPages?: Array<Record<string, unknown>>;
 	configureOutcome?: "applied" | "failed";
@@ -292,7 +293,7 @@ function inspectObservation(holder: DispatchHolder): Record<string, unknown> {
 
 function dispatchedSpawn(holder: DispatchHolder, params: Readonly<Record<string, unknown>>): Record<string, unknown> {
 	const sessionId = holder.spawnSessionId ?? "other-storage:1";
-	return { sessionId, ...(params.prompt === undefined ? {} : { result: { sessionId, submissionId: 23, requestId: params.requestId } }) };
+	return { sessionId, ...(holder.spawnThinking === undefined ? {} : { thinking: holder.spawnThinking }), ...(params.prompt === undefined ? {} : { result: { sessionId, submissionId: 23, requestId: params.requestId } }) };
 }
 
 async function nativeDispatchResult(holder: DispatchHolder, params: Readonly<Record<string, unknown>>, callContext: import("@earendil-works/chord").Context): Promise<unknown> {
@@ -357,7 +358,7 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 	};
 }
 
-const testServices: AgentContributionHost["services"] = { modelRuntime: { getModel: () => undefined } };
+const testServices: AgentContributionHost["services"] = { modelRuntime: { getModel: (provider, modelId) => provider === model.provider ? fauxProvider().getModel(modelId) : undefined } };
 
 /** A test tool that shares the batch with agent_compact. */
 const siblingExtension = Durable.defineExtension({
@@ -1121,7 +1122,7 @@ it("keeps default check-ins and native scheduled delivery token-idle during the 
 	finish(fauxAssistantMessage("RESULT")); await original.wait(context); await root.waitForIdle(context);
 });
 
-it("creates a native child with max thinking through tool-call validation", async (t) => {
+it("reports the requested and effective thinking level when native creation clamps it", async (t) => {
 	const route = createRoute();
 	const { registry } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -1133,7 +1134,54 @@ it("creates a native child with max thinking through tool-call validation", asyn
 	const children = await harness.snapshot(TestChildren, root.id, context);
 	const child = children?.children.find((record) => record.name === "max-child");
 	assert.ok(child?.conversationId !== undefined, "the native child exists");
-	assert.equal((await harness.snapshot(Durable.AgentDoc, child.conversationId, context))?.thinkingLevel, "max");
+	assert.equal((await harness.snapshot(Durable.AgentDoc, child.conversationId, context))?.thinkingLevel, "off");
+	assert.match(spawn?.text ?? "", /requested max; effective off/u);
+	assert.ok(spawn);
+	assert.deepEqual((spawn.details as { structuredContent: { thinking: unknown } }).structuredContent.thinking, { requested: "max", effective: "off" });
+});
+
+it("returns retained native creation facts without revalidating a later catalog", async (t) => {
+	let available = true;
+	let catalogReads = 0;
+	const route = createRoute();
+	const registry = Durable.createRegistry();
+	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts" }).create({
+		durable: Durable, storageId, cwd: testCwd,
+		services: { modelRuntime: { getModel: (_provider, id) => { catalogReads++; return available ? fauxProvider().getModel(id) : undefined; } } },
+	});
+	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : {
+		...tool, execute: async (args, api, ctx) => {
+			const first = await tool.execute(args, api, ctx);
+			assert.equal(first.isError, undefined);
+			available = false;
+			return tool.execute(args, api, ctx);
+		},
+	}) });
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_spawn", args: { thinkingLevel: "max" } });
+	await say(root, "Create a worker");
+	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
+	assert.ok(outcome && !outcome.isError, outcome?.text);
+	assert.match(outcome.text, /Reused the agent created by this call/u);
+	assert.match(outcome.text, /requested max; effective off/u);
+	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 1);
+	assert.equal(catalogReads, 1);
+});
+
+it("refuses an absent native spawn model before child or reporter creation", async (t) => {
+	const route = createRoute();
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(async () => { await harness.close(context); });
+	route.script.push({ tool: "agent_spawn", args: { model: "faux/absent", prompt: "Do the review", checkInMinutes: 0 } });
+	await say(root, "Delegate the review.");
+	const spawn = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_spawn");
+	assert.equal(spawn?.isError, true);
+	assert.match(spawn?.text ?? "", /Model is not in the configured catalog: faux\/absent/u);
+	const children = await harness.snapshot(TestChildren, root.id, context);
+	assert.equal(children?.children.length ?? 0, 0);
+	assert.equal(Object.keys(children?.reporters ?? {}).length, 0);
 });
 
 it("spawns an anchor-owned child and reports its answer once", async (t) => {
@@ -1579,7 +1627,7 @@ it("includes the busy-run boundary in native report receipts", async (t) => {
 	assert.match(outcome.text, /reports to ordinary primaries use steer/u);
 });
 
-it("spawns a child in a new storage when the cwd differs", async (t) => {
+for (const adjusted of [false, true]) it(`spawns a child in a new storage and preserves its thinking adjustment (${adjusted})`, async (t) => {
 	const route = createRoute();
 	const holder: DispatchHolder = {};
 	const calls: DispatchCalls = [];
@@ -1587,6 +1635,7 @@ it("spawns a child in a new storage when the cwd differs", async (t) => {
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	holder.harness = harness;
 	holder.spawnSessionId = "other-storage:7";
+	if (adjusted) holder.spawnThinking = { requested: "max", effective: "off" };
 	t.after(async () => {
 		await harness.close(context);
 	});
@@ -1609,7 +1658,8 @@ it("spawns a child in a new storage when the cwd differs", async (t) => {
 	assert.ok(outcome && !outcome.isError, "the spawn result is not an error");
 	const reference = (outcome.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
 	assert.deepEqual(reference, { sessionId: "other-storage:7", submissionId: 23, requestId: spawn.params.requestId });
-	assert.equal(outcome.text, `Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}`);
+	assert.equal(outcome.text, `Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}${adjusted ? "\nThinking level: requested max; effective off." : ""}`);
+	assert.deepEqual((outcome.details as { structuredContent: { thinking?: unknown } }).structuredContent.thinking, holder.spawnThinking);
 });
 
 it("adds only the caller's retained children to storage status text and structured data", async (t) => {

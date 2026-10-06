@@ -555,6 +555,25 @@ it("validates the spawn model before writing a catalog record", async (t) => {
 	} finally { manager.close(); }
 });
 
+it("stores and reports the effective thinking level before ordinary dispatch", async (t) => {
+	const root = fixtureRoot(t);
+	const levels: string[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		validateModel: (_model, requested) => { assert.equal(requested, "max"); return "off"; },
+		acquire: async (metadata) => {
+			levels.push(metadata.thinkingLevel);
+			return fakeConnection(metadata, async () => ({}));
+		},
+	}));
+	try {
+		const caller = { id: "caller", cwd: root, model: { provider: "fixture", modelId: "plain" } };
+		const outcome = await manager.spawn({ thinkingLevel: "max" }, caller) as { sessionId: string; thinking: unknown };
+		assert.deepEqual(outcome.thinking, { requested: "max", effective: "off" });
+		assert.deepEqual(levels, ["off"]);
+		assert.equal(manager.catalog.read(outcome.sessionId).thinkingLevel, "off");
+	} finally { manager.close(); }
+});
+
 it("discards its own catalog record when the first acquire fails", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root, {

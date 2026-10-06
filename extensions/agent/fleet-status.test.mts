@@ -7,9 +7,112 @@ import { Value } from "typebox/value";
 import { AgentCatalog, type CatalogPage, type CatalogRecord } from "./catalog.ts";
 import type { CatalogView, CatalogViewRow } from "./catalog-view.ts";
 import { FleetStatusSchema, readFleetStatus, type FleetStatus } from "./fleet-status.ts";
-import type { ModelEvidence, ModelFailure, ModelWarning } from "./model-evidence.ts";
+import { USAGE_WEEK_MS, type ModelEvidence, type ModelFailure, type ModelWarning, type UsageSample } from "./model-evidence.ts";
 
 const observedAt = "2026-10-01T00:00:00.000Z";
+function sampled(samples: UsageSample[], at = observedAt): ModelEvidence {
+	return evidence({ sampling: { observedAt: at, samples, entriesVisited: samples.length, entriesOmitted: 0,
+		messagesOmitted: 0, invalidSamples: 0, omittedSamples: 0 } });
+}
+
+it("uses exact inclusive rolling cutoffs at read time, not publication time", async () => {
+	const now = Date.parse(observedAt);
+	const hour = 60 * 60 * 1000;
+	const samples = [now, now - 5 * hour, now - 5 * hour - 1, now - USAGE_WEEK_MS, now - USAGE_WEEK_MS - 1, now + 1]
+		.map((at) => ({ model: "sample/a", at, tokens: 10, reportedCost: 0.1 }));
+	const input = record("storage-a", [], sampled(samples));
+	const catalog = new FixtureCatalog([page([input, input])]);
+	const result = await readFleetStatus(catalog, { now }); check(result);
+	assert.deepEqual(result.models[0].usage, { last5h: { tokens: 20, reportedCost: 0.2, responses: 2 }, last7d: { tokens: 40, reportedCost: 0.4, responses: 4 } });
+	assert.deepEqual(result.providers[0].usage, result.models[0].usage);
+	assert.equal(result.usageCoverage.publications, 1, "duplicate storage is counted once");
+	const later = await readFleetStatus(catalog, { now: now + USAGE_WEEK_MS + 1 }); check(later);
+	assert.equal(later.models[0]?.usage?.last7d.responses ?? 0, 0, "expired and publication-future samples stay excluded");
+	assert.equal(later.usageCoverage.oldestPublicationAt, observedAt);
+	assert.equal(later.usageCoverage.status, "partial");
+});
+
+it("aggregates exact models into providers while distinguishing unknown publications", async () => {
+	const now = Date.parse(observedAt);
+	const records = [record("a", [], sampled([{ model: "sample/a", at: now, tokens: 10, reportedCost: 1 }])),
+		record("b", [], sampled([{ model: "sample/b", at: now, tokens: 20, reportedCost: 2 }])), record("unknown")];
+	const result = await readFleetStatus(new FixtureCatalog([page(records)]), { now }); check(result);
+	assert.equal(result.providers[0].usage.last7d.tokens, 30);
+	assert.equal(result.models.reduce((sum, model) => sum + (model.usage?.last7d.tokens ?? 0), 0), 30);
+	assert.equal(result.usageCoverage.unknownStorages, 1);
+	assert.equal(result.usageCoverage.publications, 2);
+	assert.match(result.notes.join(" "), /Zero samples do not prove zero usage/u);
+});
+
+it("reserves bounded output for both provider and model windows with truthful omissions", async () => {
+	const now = Date.parse(observedAt);
+	const samples = Array.from({ length: 16 }, (_, index) => ({ model: `p${index}/m`, at: now, tokens: 1, reportedCost: 1 }));
+	const result = await readFleetStatus(new FixtureCatalog([page([record("a", [], sampled(samples))])]), { now }); check(result);
+	assert.ok(result.models.length > 0);
+	assert.ok(result.providers.length > 0);
+	assert.equal(result.models.length + result.coverage.output.omittedModels, 16);
+	assert.equal(result.providers.length + result.coverage.output.omittedProviders, 16);
+	assert.equal(result.usageCoverage.sampledResponses, 16);
+	assert.equal(result.usageCoverage.oldestSampleAt, now);
+	assert.equal(result.usageCoverage.newestSampleAt, now);
+	assert.equal(result.coverage.output.byteLimitReached, true);
+});
+
+it("omits malformed model identities without inventing provider attribution", async () => {
+	const now = Date.parse(observedAt);
+	const samples = ["broken", "b", "/model", "provider/", "provider/model/variant"].map((model) => ({ model, at: now, tokens: 1, reportedCost: 1 }));
+	const result = await readFleetStatus(new FixtureCatalog([page([record("a", [], sampled(samples))])]), { now }); check(result);
+	assert.equal(result.usageCoverage.invalidSamples, 4);
+	assert.equal(result.usageCoverage.sampledResponses, 1);
+	assert.deepEqual(result.providers.map((item) => item.provider), ["provider"]);
+	assert.deepEqual(result.models.map((item) => item.model), ["provider/model/variant"]);
+});
+
+it("omits overflowing sample contributions and member costs without invalid JSON totals", async () => {
+	const now = Date.parse(observedAt);
+	const samples = ["sample/a", "sample/a", "sample/b"].map((model) => ({ model, at: now, tokens: Number.MAX_VALUE, reportedCost: Number.MAX_VALUE }));
+	const source = record("a", [row("a", { cost: Number.MAX_VALUE }), row("a:2", { cost: Number.MAX_VALUE })], sampled(samples));
+	const result = await readFleetStatus(new FixtureCatalog([page([source])]), { now, effort: { callerId: "a", created: ["a:2"] } }); check(result);
+	assert.equal(result.usageCoverage.invalidSamples, 2);
+	assert.equal(result.usageCoverage.sampledResponses, 1);
+	assert.equal(result.providers[0].usage.last5h.tokens, Number.MAX_VALUE);
+	assert.equal(result.providers[0].usage.last7d.reportedCost, Number.MAX_VALUE);
+	assert.equal(result.effort.reportedCost, Number.MAX_VALUE);
+	assert.equal(result.effort.status, "partial");
+	assert.equal(result.effort.missingMembers, 1);
+});
+
+it("normalizes publication timestamps and treats malformed publication time as unknown", async () => {
+	const now = Date.parse(observedAt);
+	const sample = { model: "sample/a", at: now, tokens: 1, reportedCost: 1 };
+	const padded = `${" ".repeat(1500)}October 1, 2026 GMT`;
+	const result = await readFleetStatus(new FixtureCatalog([page([record("a", [], sampled([sample], padded)), record("b", [], sampled([sample], "invalid"))])]), { now }); check(result);
+	assert.equal(result.usageCoverage.unknownStorages, 1);
+	assert.equal(result.usageCoverage.oldestPublicationAt, observedAt);
+	assert.equal(result.usageCoverage.newestPublicationAt, observedAt);
+	assert.equal(result.usageCoverage.sampledResponses, 1);
+});
+
+it("totals caller and explicit direct-created identities once, with missing and partial membership", async () => {
+	const records = [record("parent", [row("parent", { cost: 1 }), row("parent:2", { cost: 2 }), row("parent:3", { cost: 90 })]),
+		record("foreign", [row("foreign", { cost: 3, partial: true }), row("foreign:2", { cost: 80 })])];
+	const result = await readFleetStatus(new FixtureCatalog([page(records)]), { effort: { callerId: "parent", created: ["parent:2", "foreign", "foreign", "missing"], omitted: 2 } }); check(result);
+	assert.deepEqual(result.effort, { status: "partial", scope: "caller-and-direct-created-lifetime", membership: "creation-records",
+		members: 4, observedMembers: 3, missingMembers: 1, partialMembers: 1, omittedMembers: 2, reportedCost: 6 });
+});
+
+it("uses catalog creation owners for ordinary callers without assuming storage or cwd membership", async () => {
+	const child = { ...record("child", [row("child", { cost: 2 }), row("child:2", { cost: 50 })]), ownerId: "primary" };
+	const unrelated = { ...record("unrelated", [row("unrelated", { cost: 90 })]), ownerId: "other" };
+	const catalog = new FixtureCatalog([page([child, unrelated])]);
+	const known = await readFleetStatus(catalog, { effort: { callerId: "primary", callerUsage: { reportedCost: 3, partial: false } } }); check(known);
+	assert.deepEqual(known.effort, { status: "observed", scope: "caller-and-direct-created-lifetime", membership: "catalog-owner",
+		members: 2, observedMembers: 2, missingMembers: 0, partialMembers: 0, omittedMembers: 0, reportedCost: 5 });
+	const missing = await readFleetStatus(catalog, { effort: { callerId: "primary" } }); check(missing);
+	assert.equal(missing.effort.reportedCost, 2);
+	assert.equal(missing.effort.missingMembers, 1);
+	assert.equal(missing.effort.status, "partial");
+});
 const selected = (modelId = "selected", thinkingLevel = "high") => ({ provider: "sample", modelId, thinkingLevel });
 function row(id: string, fields: Partial<CatalogViewRow> = {}): CatalogViewRow {
 	return { id, storageId: "storage-a", cwd: "/work", modifiedAt: 1, owner: "here", state: "idle", cost: 0, partial: false, ...fields };

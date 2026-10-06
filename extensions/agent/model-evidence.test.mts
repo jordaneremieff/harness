@@ -5,14 +5,53 @@ import { Value } from "typebox/value";
 import { answerMessage } from "./durable-host-fixture.mts";
 import { boundCatalogView, CATALOG_VIEW_BUDGET_BYTES, parseCatalogView, withModelEvidence, type CatalogViewRow } from "./catalog-view.ts";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
-import { boundModelEvidence, MODEL_EVIDENCE_BUDGET_BYTES, ModelEvidenceCollector } from "./model-evidence.ts";
+import { boundModelEvidence, MODEL_EVIDENCE_BUDGET_BYTES, ModelEvidenceCollector, USAGE_ENTRY_LIMIT, USAGE_SAMPLE_LIMIT, USAGE_WEEK_MS } from "./model-evidence.ts";
 
 const observedAt = "2026-01-01T00:00:00.000Z";
 const row: CatalogViewRow = { id: "storage", storageId: "storage", cwd: "/work", owner: "here", state: "idle", modifiedAt: 1, cost: 100, partial: false, model: { provider: "fixture", modelId: "second", thinkingLevel: "high" } };
 function usage(cost: number) { return { ...answerMessage().usage, cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } }; }
 function entry(id: number, conversationId: number, model: string, timestamp: number, error?: string): EntryRecord {
-	return { id: id as EntryRecord["id"], conversationId: conversationId as EntryRecord["conversationId"], kind: "pi.assistant", model: [{ ...answerMessage(), provider: "fixture", model, timestamp, ...(error ? { stopReason: "error", errorMessage: error } : {}) }] };
+	return { id: id as EntryRecord["id"], conversationId: conversationId as EntryRecord["conversationId"], kind: "pi.assistant", model: [{ ...structuredClone(answerMessage()), provider: "fixture", model, timestamp, ...(error ? { stopReason: "error", errorMessage: error } : {}) }] };
 }
+
+it("samples owned timestamped responses, not lifetime ledgers or inherited entries", () => {
+	const now = Date.parse(observedAt);
+	const evidence = new ModelEvidenceCollector(observedAt);
+	const valid = entry(1, 1, "first", now);
+	const future = entry(2, 1, "first", now + 1);
+	const invalid = entry(3, 1, "first", now - 1);
+	if (invalid.model?.[0]?.role === "assistant") invalid.model[0].usage.totalTokens = Number.NaN;
+	evidence.observe(1, row, { models: { "fixture/first": usage(99) }, tools: {} }, [valid, future, invalid,
+		entry(4, 1, "first", now - USAGE_WEEK_MS), entry(5, 1, "first", now - USAGE_WEEK_MS - 1), entry(6, 2, "first", now)]);
+	assert.equal(evidence.value.sampling?.samples.length, 2);
+	assert.equal(evidence.value.sampling?.invalidSamples, 2);
+	assert.equal(evidence.value.sampling?.entriesVisited, 6);
+	assert.deepEqual(evidence.value.sampling?.samples.map((sample) => sample.at), [now, now - USAGE_WEEK_MS]);
+	assert.ok(evidence.value.sampling?.samples.every((sample) => sample.reportedCost === answerMessage().usage.cost.total));
+});
+
+it("bounds additional entry visits, message visits, retained samples, and publication bytes", (t) => {
+	const now = Date.parse(observedAt);
+	const evidence = new ModelEvidenceCollector(observedAt);
+	const entries = Array.from({ length: USAGE_ENTRY_LIMIT + 20 }, (_, index) => entry(index + 1, 1, "first", now - index));
+	evidence.observe(1, row, undefined, entries);
+	evidence.observe(2, { ...row, id: "storage:2" }, undefined, [entry(9000, 2, "first", now)]);
+	assert.equal(evidence.value.sampling?.entriesVisited, USAGE_ENTRY_LIMIT);
+	assert.equal(evidence.value.sampling?.entriesOmitted, 21);
+	assert.equal(evidence.value.sampling?.samples.length, USAGE_SAMPLE_LIMIT);
+	assert.equal(evidence.value.sampling?.omittedSamples, USAGE_ENTRY_LIMIT - USAGE_SAMPLE_LIMIT);
+	const bounded = boundModelEvidence(evidence.value);
+	assert.ok(bounded?.sampling);
+	assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= MODEL_EVIDENCE_BUDGET_BYTES);
+	assert.ok(bounded.sampling.samples.length > 0);
+	t.diagnostic(`Usage publication: ${bounded.sampling.entriesVisited} entry visits; ${bounded.sampling.samples.length} retained samples; ${bounded.sampling.omittedSamples} omitted samples; ${Buffer.byteLength(JSON.stringify(bounded))} bytes.`);
+	assert.equal(bounded.sampling.samples.length + bounded.sampling.omittedSamples, USAGE_ENTRY_LIMIT);
+	assert.ok(bounded.sampling.samples.every((sample, index, all) => index === 0 || sample.at <= all[index - 1].at));
+	const manyMessages = new ModelEvidenceCollector(observedAt);
+	manyMessages.observe(1, row, undefined, [{ ...entry(1, 1, "first", now), model: Array.from({ length: 70 }, () => ({ ...answerMessage(), timestamp: now })) }]);
+	assert.equal(manyMessages.value.sampling?.messagesOmitted, 6);
+	assert.equal(manyMessages.value.sampling?.samples.length, 64);
+});
 
 it("attributes cumulative usage to exact model buckets after a selection changes, with tool costs separate", () => {
 	const evidence = new ModelEvidenceCollector(observedAt);

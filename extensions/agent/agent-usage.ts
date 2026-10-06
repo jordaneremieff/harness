@@ -1,4 +1,4 @@
-import { calculateContextTokens } from "@earendil-works/pi-coding-agent";
+import { calculateContextTokens, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { UsageState } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
@@ -27,6 +27,31 @@ export function compactTokens(tokens: number): string {
 	const value = tokens / unit;
 	return `${value < 10 ? value.toFixed(1) : Math.round(value)}${million ? "M" : "k"}`;
 }
+function ordinaryEntryCost(entry: SessionEntry): number | undefined {
+	if (entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary")
+		return entry.usage?.cost?.total ?? Number.NaN;
+	if (entry.type !== "message") return undefined;
+	if (entry.message.role === "assistant") return entry.message.usage?.cost?.total ?? Number.NaN;
+	if (entry.message.role === "toolResult" && entry.message.usage !== undefined)
+		return entry.message.usage.cost?.total ?? Number.NaN;
+	return undefined;
+}
+
+/** Nominal usage from already-loaded ordinary entries, with an explicit visit bound. */
+export function ordinaryReportedUsage(entries: readonly SessionEntry[]): { reportedCost: number; partial: boolean } {
+	const limit = 4096;
+	let reportedCost = 0;
+	let partial = entries.length > limit;
+	for (let index = Math.max(0, entries.length - limit); index < entries.length; index++) {
+		const cost = ordinaryEntryCost(entries[index]);
+		if (cost === undefined) continue;
+		if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) partial = true;
+		else if (!Number.isFinite(reportedCost + cost)) partial = true;
+		else reportedCost += cost;
+	}
+	return { reportedCost, partial };
+}
+
 export interface AgentUsageFacts {
 	context?: number;
 	window?: number;

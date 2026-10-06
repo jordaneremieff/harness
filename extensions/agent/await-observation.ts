@@ -1,6 +1,6 @@
 /** Read and release only the selected native run; producer facts never recurse. */
 import { AgentDoc, InboxDoc, LiveDoc, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
-import { AwaitDoc, referenceKey, type AwaitDeclaration } from "./awaited-results.ts";
+import { AwaitDoc, referenceKey, releaseCohort, type AwaitDeclaration } from "./awaited-results.ts";
 import { canonicalIdentity } from "./identity.ts";
 import type { AwaitFact, OwnAwaitFact, ProducerAwaitFact, ProducerRetry } from "./await-facts.ts";
 import type { ResultReference } from "./result-reference.ts";
@@ -178,6 +178,7 @@ export async function recordProducerAwait(tx: Tx, taskId: TaskId, fact: Producer
 	const declaration = (await tx.doc(AwaitDoc)).declarations.find((item) => item.taskId === taskId && item.decision === "awaiting");
 	if (declaration === undefined || !declaration.results.some((result) => result.sessionId === fact.sessionId)) return;
 	const prior = declaration.producers?.find((item) => item.sessionId === fact.sessionId);
+	if (prior !== undefined && fact.observedAt < prior.observedAt) return;
 	const semantic = (item: ProducerAwaitFact) => JSON.stringify({ awaiting: item.awaiting, execution: item.execution, unavailable: item.unavailable });
 	if (prior !== undefined && semantic(prior) === semantic(fact)) {
 		// A repeated read still clears a newer conflicting observation of the same input.
@@ -187,6 +188,15 @@ export async function recordProducerAwait(tx: Tx, taskId: TaskId, fact: Producer
 	declaration.producers ??= [];
 	const index = declaration.producers.findIndex((item) => item.sessionId === fact.sessionId);
 	if (index < 0) declaration.producers.push(fact); else declaration.producers[index] = fact;
+	await releaseForProducerRetry(tx, declaration, fact);
+}
+
+async function releaseForProducerRetry(tx: Tx, declaration: AwaitDeclaration, fact: ProducerAwaitFact): Promise<void> {
+	const retry = fact.execution;
+	if (declaration.releaseOnProviderRetry === undefined || fact.unavailable !== undefined || retry === undefined || retry.attempt < (declaration.releaseOnProviderRetry.minAttempt ?? 1)) return;
+	const results = retry.results.filter((observed) => observed.sessionId === fact.sessionId && declaration.results.some((expected) => matchesReference(expected, observed) && !declaration.outcomes.some((outcome) => matchesReference(expected, outcome.result))));
+	if (results.length === 0 || !(await activeDeclarations(tx, declaration.conversationId as ConversationId)).some((item) => item.taskId === declaration.taskId)) return;
+	releaseCohort(await tx.doc(AwaitDoc), declaration, "provider retry", { sessionId: fact.sessionId, observedAt: fact.observedAt, source: fact.source, execution: { ...retry, results } });
 }
 
 export async function releaseAwait(tx: Tx, storageId: string, conversationId: ConversationId, expectedRunId: number): Promise<{ released: boolean; awaiting?: AwaitFact }> {

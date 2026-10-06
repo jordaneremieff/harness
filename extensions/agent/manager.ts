@@ -36,6 +36,7 @@ export const MANAGER_PROTOCOL = MANAGER_CONTRACT;
 export interface AgentCaller {
 	id: string;
 	cwd: string;
+	reportedUsage?: { reportedCost: number; partial: boolean };
 	name?: string;
 	observedPurpose?: PrimaryInfo["observedPurpose"];
 	model?: { provider: string; modelId: string };
@@ -65,7 +66,8 @@ export interface AgentManagerOptions {
 	/** Largest delivered-key memory; the oldest key evicts first. */
 	deliveredLimit?: number;
 	createPrimary?: typeof createPrimaryChannel;
-	validateModel?: (model: { provider: string; modelId: string }, thinkingLevel: string) => void | Promise<void>;
+	/** Validate catalog presence; return the effective thinking level when Pi clamps it. */
+	validateModel?: (model: { provider: string; modelId: string }, thinkingLevel: string) => string | void | Promise<string> | Promise<void>;
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
 }
@@ -332,7 +334,7 @@ export class AgentManager {
 		const requestId = input.requestId ?? randomUUID();
 		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
 		this.rosterChanged();
-		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
+		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, ...(created ? this.spawnThinking(input, caller, retained) : {}), ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
 	}
 
 	private async creationMetadata(input: AgentSpawnInput, caller: AgentCaller): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
@@ -344,8 +346,8 @@ export class AgentManager {
 		const thinkingLevel = input.thinkingLevel ?? caller.thinkingLevel ?? "off";
 		const validate = caller.validateModel ?? this.options.validateModel;
 		if (!validate) throw new Error("Spawn requires the caller's configured model catalog");
-		await validate(model, thinkingLevel);
-		return { cwd, model, thinkingLevel, name: input.name, trust: input.trust, ownerId: caller.id, agentDir: this.options.agentDir, packageDir: this.options.packageDir };
+		const effective = await validate(model, thinkingLevel);
+		return { cwd, model, thinkingLevel: effective ?? thinkingLevel, name: input.name, trust: input.trust, ownerId: caller.id, agentDir: this.options.agentDir, packageDir: this.options.packageDir };
 	}
 
 	/** Admit independent contributed work without adopting its link or subscribing the primary. */
@@ -375,6 +377,11 @@ export class AgentManager {
 		return this.startSpawn(record, created, row, input, caller, onCreated);
 	}
 
+	private spawnThinking(input: AgentSpawnInput, caller: AgentCaller, record: CatalogRecord): { thinking?: { requested: string; effective: string } } {
+		const requested = input.thinkingLevel ?? caller.thinkingLevel ?? "off";
+		return requested === record.thinkingLevel ? {} : { thinking: { requested, effective: record.thinkingLevel } };
+	}
+
 	private startSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		return this.performSpawn(record, created, row, input, caller, onCreated);
 	}
@@ -392,7 +399,7 @@ export class AgentManager {
 			if (versionError) throw versionError;
 			const requestId = input.requestId ?? randomUUID();
 			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
-			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, lifetime: "independent host process", ...(admission === undefined ? {} : { result: admittedResult(record.storageId, admission, requestId) }) };
+			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, ...this.spawnThinking(input, caller, record), lifetime: "independent host process", ...(admission === undefined ? {} : { result: admittedResult(record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
 			this.rosterChanged();
@@ -697,7 +704,7 @@ export class AgentManager {
 	async status(sessionId?: string, view?: "fleet", caller?: AgentCaller): Promise<unknown> {
 		if (view === "fleet") {
 			if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
-			return readFleetStatus(this.catalog);
+			return readFleetStatus(this.catalog, caller ? { effort: { callerId: caller.id, callerUsage: caller.reportedUsage } } : undefined);
 		}
 		if (sessionId) {
 			sessionId = await this.resolveTarget(sessionId);

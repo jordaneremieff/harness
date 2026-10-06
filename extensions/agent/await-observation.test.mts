@@ -19,6 +19,32 @@ function fixture() {
 }
 const conversation = 1 as ConversationId;
 
+for (const mismatch of ["session", "submission", "request", "unavailable", "settled", "terminal"] as const) it(`does not release retry for ${mismatch} evidence`, async () => {
+	const f = fixture(); const declaration = f.state.declarations[0]; const result = f.results[0];
+	declaration.releaseOnProviderRetry = {};
+	const observed = { ...result, ...(mismatch === "session" ? { sessionId: "other" } : {}), ...(mismatch === "submission" ? { submissionId: 999 } : {}), ...(mismatch === "request" ? { requestId: "other" } : {}) };
+	if (mismatch === "settled") declaration.outcomes.push({ result, status: "done" });
+	if (mismatch === "terminal") f.end();
+	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: result.sessionId, source: "producer await-state", observedAt: 1,
+		...(mismatch === "unavailable" ? { unavailable: "connection lost" } : {}),
+		execution: { state: "provider-retry", runId: 9, results: [observed], attempt: 3, nextRetryAt: 1, error: "429", errorTruncated: false } });
+	assert.equal(declaration.decision, "awaiting"); assert.equal(declaration.producerRetries, undefined);
+});
+
+it("releases parallel await tools together with an immutable exact retry snapshot", async () => {
+	const f = fixture(); const declaration = f.state.declarations[0]; const result = f.results[0];
+	declaration.releaseOnProviderRetry = {};
+	const peer = { ...declaration, taskId: 4, callId: "peer", outcomes: [], results: [f.results[1]], releaseOnProviderRetry: undefined };
+	f.state.declarations.push(peer);
+	const fact = { sessionId: result.sessionId, source: "producer await-state" as const, observedAt: 1,
+		execution: { state: "provider-retry" as const, runId: 9, results: [result], attempt: 3, nextRetryAt: 1, error: "429", errorTruncated: false } };
+	await recordProducerAwait(f.tx, 3 as TaskId, fact);
+	assert.deepEqual(f.state.declarations.map((item) => item.decision), ["released", "released"]);
+	assert.deepEqual(peer.producerRetries?.[0].execution?.results, [result]);
+	fact.execution.attempt = 99;
+	assert.equal(peer.producerRetries?.[0].execution?.attempt, 3);
+});
+
 it("correlates retries with current run inputs and clears on exit, settlement, or abort", async () => {
 	const result = { sessionId: "producer", submissionId: 10, requestId: "active" };
 	const live: { run?: { taskId: number; inputs: number[] }; generation?: { attempt: number; retry: { at: number; error: string } } } = { run: { taskId: 9, inputs: [10] }, generation: { attempt: 18, retry: { at: 1791200000000, error: `429 Weekly/Monthly Limit Exhausted\napi_key=sk-abcdefghijklmnopqrstuv\u001b[31m ${"x".repeat(2000)}` } } };

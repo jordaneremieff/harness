@@ -498,6 +498,59 @@ for (const origin of [undefined, "unknown"]) it(`holds a check-in with invalid s
 	assert.ok(errors.every((error) => /checkin:task:1.*no valid admission origin.*stays pending/u.test(error.message)));
 });
 
+for (const route of ["primary", "same-storage", "catalog"] as const) it(`delivers an exact long-answer continuation through the ${route} route`, { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const sourcePath = join(root, "source.sqlite");
+	const answer = `${"x".repeat(17000)}EXACT-END`;
+	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "source-storage", cwd: root,
+		models: await scriptedRuntime([answerMessage(answer), answerMessage("RECEIVED")]), registry: fixtureRegistry(),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	t.after(() => source.close());
+	const catalog = new AgentCatalog(root);
+	const received = eventLog<PrimaryDelivery>();
+	const nativeReceived = eventLog<RequestParams>();
+	let owner = source.storageId;
+	if (route === "primary") {
+		owner = randomUUID();
+		const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot,
+			deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+		t.after(() => channel.close());
+	} else if (route === "catalog") {
+		owner = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
+			model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off", ownerId: "requester" }).storageId;
+	}
+	const producer = await source.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	if (route === "same-storage") {
+		const request = source.request.bind(source);
+		t.mock.method(source, "request", async (method: string, params?: RequestParams, context?: import("@earendil-works/chord").Context) => {
+			if (method === "submit" && params?.sessionId === owner) nativeReceived.push(params);
+			return request(method, params, context);
+		});
+	}
+	const acquire = route === "catalog" ? async () => ({ closed: false, close: async () => {}, request: async (_method: string, params: RequestParams) => { nativeReceived.push(params); return { submissionId: 1, requestId: params.requestId, status: "queued" }; } }) as unknown as HostConnection : undefined;
+	const submitted = await source.request("submit", { sessionId: `${source.storageId}:${producer.id}`, message: "Long result", requestId: "long-result", ownerId: owner, origin: "model" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog, sessionsRoot,
+		signal: new AbortController().signal, ...(acquire === undefined ? {} : { acquire }) });
+	t.after(() => watcher.close());
+	if (route === "primary") await received.waitForCount(1); else await nativeReceived.waitForCount(1);
+	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(submitted.submissionId)]?.acknowledged === true);
+	const receipt = (await deliveryState(source))?.receipts[String(submitted.submissionId)]; assert.ok(receipt);
+	assert.equal(receipt.answer?.length, 1200);
+	const continuation = { tool: "agent_inspect", sessionId: `${source.storageId}:${producer.id}`, view: "exact", entryId: receipt.answerEntryId, offset: 0 };
+	const text = route === "primary" ? received[0].text : String(nativeReceived[0].message);
+	assert.ok(text.includes(JSON.stringify(continuation))); assert.doesNotMatch(text, /EXACT-END/u);
+	if (route === "primary") assert.deepEqual((received[0].details as { continuation: unknown }).continuation, continuation);
+	let offset = 0; let retained = ""; let done = false;
+	for (let page = 0; page < 8; page++) {
+		const exact = await source.request("inspect", { sessionId: continuation.sessionId, view: "exact", entryId: continuation.entryId, offset }, BACKGROUND_CONTEXT) as { text: string; nextOffset: number | null };
+		retained += exact.text;
+		if (exact.nextOffset === null) { done = true; break; }
+		offset = exact.nextOffset;
+	}
+	assert.equal(done, true); assert.ok(retained.includes(answer));
+});
+
 it("bounds a check-in digest while retaining the full source", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");

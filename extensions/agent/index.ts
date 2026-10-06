@@ -5,6 +5,7 @@ import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-sche
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { DispatchOutputSchema } from "./result-reference.ts";
 import { AwaitParams, AwaitOutputSchema } from "./awaited-results.ts";
+import { ordinaryReportedUsage } from "./agent-usage.ts";
 import { profileCommand } from "./profile-dialog.ts";
 import { join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +16,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, clampThinkingLevel } from "@earendil-works/pi-ai";
 import { Type, type TSchema } from "typebox";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { CollaborationParams } from "./collaboration.ts";
@@ -23,7 +24,7 @@ import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { dashboardPreferences } from "./dashboard-preferences.ts";
 import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { configurationWithApply } from "./configuration-dialog.ts";
-import { THINKING_LEVELS, parseConfigurationArguments } from "./configuration.ts";
+import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from "./configuration.ts";
 import { createAgentContribution, resolveAgentControlDispatch } from "./durable-agents.ts";
 import {
 	createResetTimerActions,
@@ -173,9 +174,11 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	name: ctx.sessionManager.getSessionName(),
 	...(ctx.model ? { model: { provider: ctx.model.provider, modelId: ctx.model.id } } : {}),
 	thinkingLevel: pi.getThinkingLevel(),
-	validateModel: (model) => {
-		if (!ctx.modelRegistry.find(model.provider, model.modelId))
-			throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
+	validateModel: (model, level) => {
+		const selected = ctx.modelRegistry.find(model.provider, model.modelId);
+		if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
+		if (!isThinkingLevel(level)) throw new Error("Unknown reasoning level");
+		return clampThinkingLevel(selected, level);
 	},
 });
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value, null, 2));
@@ -299,8 +302,9 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		(input, ctx) => {
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;
-			const selfId = !sessionId && !view ? ctx?.sessionManager?.getSessionId() : undefined;
-			return getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd } : undefined);
+			const selfId = !sessionId ? ctx?.sessionManager?.getSessionId() : undefined;
+			const reportedUsage = view === "fleet" && ctx?.sessionManager?.getEntries ? ordinaryReportedUsage(ctx.sessionManager.getEntries()) : undefined;
+			return getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined);
 		},
 	);
 	register(

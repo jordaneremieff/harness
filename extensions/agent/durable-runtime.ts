@@ -394,7 +394,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		if (typeof params.senderIdentity !== "string") throw new Error("A native spawn requires its sender identity");
 		const conversation = await host.conversation(params.senderIdentity);
 		const agent = await conversation.agent(BACKGROUND_CONTEXT);
-		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir, validateModel: (model, level) => { validateModel(services, model, level); } });
+		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir, validateModel: (model, level) => validateModel(services, model, level) });
 		try {
 			const caller = { id: params.senderIdentity, cwd: metadata.cwd, model: agent.model, thinkingLevel: agent.thinkingLevel };
 			return method === "place" ? await manager.place({ ...params, requestId }, caller) : await manager.spawn({ ...params, requestId }, caller);

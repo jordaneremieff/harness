@@ -9,7 +9,7 @@ import { safeFactText } from "./primary-observation.ts";
 import { recordProducerAwait, queuedAwaitInputCount } from "./await-observation.ts";
 import type { AgentControlDispatch } from "./durable-agents.ts";
 
-export type AwaitReply = { decision: AwaitDeclaration["decision"]; results: AwaitOutcome[]; unresolved: ResultReference[]; originalInputs: number[]; queuedInputCount: number; queueSnapshot: { source: "committed InboxDoc"; conversationId: number; runId: number }; releaseReason?: string };
+export type AwaitReply = { decision: AwaitDeclaration["decision"]; results: AwaitOutcome[]; unresolved: ResultReference[]; originalInputs: number[]; queuedInputCount: number; queueSnapshot: { source: "committed InboxDoc"; conversationId: number; runId: number }; releaseReason?: string; producerRetries?: ProducerAwaitFact[] };
 function declaration(value: { declarations: AwaitDeclaration[] } | null | undefined, taskId: TaskId): AwaitDeclaration | undefined { return value?.declarations.find((item) => item.taskId === taskId); }
 function observedReference(reference: ResultReference, row: Record<string, unknown>): ResultReference {
 	const requestId = typeof row.requestId === "string" ? row.requestId : reference.requestId;
@@ -77,7 +77,7 @@ async function withdrawCoveredDeliveries(api: ToolExecutionApi, current: AwaitDe
 }
 
 export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, context: Context, storageId: string, dispatch: AgentControlDispatch): Promise<AwaitReply> {
-	await api.commit((tx) => declareAwait(tx, storageId, { conversationId: api.conversationId, taskId: api.taskId, callId: api.callId }, args.results), context);
+	await api.commit((tx) => declareAwait(tx, storageId, { conversationId: api.conversationId, taskId: api.taskId, callId: api.callId }, args.results, args.releaseOnProviderRetry), context);
 	const owned = withCancel(context);
 	let watch: DocumentWatch<import("./awaited-results.ts").AwaitState> | undefined;
 	const jobs: Promise<void>[] = [];
@@ -119,7 +119,7 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 			return { current: JSON.parse(JSON.stringify(current)) as AwaitDeclaration, queue };
 		}, context);
 		const { current, queue } = snapshot;
-		return { decision: current.decision, results: current.outcomes.map((item) => ({ ...item })), unresolved: current.results.filter((reference) => !current.outcomes.some((outcome) => referenceKey(outcome.result) === referenceKey(reference))), originalInputs: [...current.inputs], queuedInputCount: queue, queueSnapshot: { source: "committed InboxDoc", conversationId: api.conversationId, runId: current.runId }, ...(current.releaseReason === undefined ? {} : { releaseReason: current.releaseReason }) };
+		return { decision: current.decision, results: current.outcomes.map((item) => ({ ...item })), unresolved: current.results.filter((reference) => !current.outcomes.some((outcome) => referenceKey(outcome.result) === referenceKey(reference))), originalInputs: [...current.inputs], queuedInputCount: queue, queueSnapshot: { source: "committed InboxDoc", conversationId: api.conversationId, runId: current.runId }, ...(current.releaseReason === undefined ? {} : { releaseReason: current.releaseReason }), ...(current.producerRetries === undefined ? {} : { producerRetries: current.producerRetries }) };
 	} finally {
 		owned.cancel();
 		await watch?.stop();

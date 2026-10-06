@@ -606,11 +606,34 @@ Missing evidence is unknown, not zero. Reported costs are not invoices or
 remaining allowance; past use is not preference. This view does not query
 provider health, quotas, account balances, or billing services.
 
+`models[].usage` and `providers[].usage` expose `last5h` and `last7d` sample
+sums: tokens, nominal reported cost, and response count. Each read filters
+message timestamps against its own inclusive rolling cutoffs. These are lower
+bounds from published, owned assistant responses, not complete window totals.
+Compacted or inactive history, compaction calls, tools, ordinary primary
+responses, and unpublished work are absent. `usageCoverage.status` is always
+`partial`; sample spans, publication times, and omission counts qualify the
+result. No samples does not mean no use.
+
+`effort` separately totals lifetime reported cost for the caller and its
+direct-created conversations. It includes earlier tasks and reused agents,
+not only the current assignment or recursive descendants. Native callers use
+creation records; ordinary callers use catalog owner records and bounded usage
+from already-loaded session entries. Missing, partial, and omitted members stay
+visible. The total does not include every conversation in a shared storage.
+
+Before dispatch, use this view to compare observed recent activity, then check
+publication freshness and missing members. It supplies neither remaining quota
+nor a request-owned usage ceiling.
+
 Agent model parameters carry shared selection guidance: apply current task
 directions and the operator's route, budget, and role preferences, then verify
 the exact model identity and its supported thinking level. Configured access
 does not establish operator use. The extension carries no preferred provider
-roster or model ranking.
+roster or model ranking. New agent creation refuses an exact model absent from
+the configured catalog before creating the agent. When Pi clamps a thinking
+level, the dispatch result includes `thinking: {requested, effective}`. Reusing
+a handle keeps its retained configuration; creation defaults do not retune it.
 
 History and activity mark every page and entry row with `format: "compact"`,
 including empty pages. Their schemas require this marker; raw branch and exact
@@ -808,6 +831,23 @@ Creation-only calls, reports, scheduled inputs, names, and thread posts are not
 result references. Ordinary primary sessions keep background delivery and never
 block on this tool.
 
+To regain control when an exact producer enters native provider retry, opt in:
+
+```ts
+agent_await({
+  results: [resultA, resultB],
+  releaseOnProviderRetry: { minAttempt: 2 },
+});
+```
+
+An empty `releaseOnProviderRetry` object uses attempt 1; omission disables retry
+release. A matching current retry releases parallel waits in that tool round,
+retaining partial results and unresolved references. `producerRetries` carries
+the exact references and observed retry facts. Producers continue their work.
+Inspect the facts, then use authorized abort/configure/send controls to replace
+a stalled producer, or await the unresolved references again. This is not a
+quota diagnosis and does not parse provider reset text.
+
 Explicit send or steer, direct operator input, and a report from an awaited
 agent release the wait after input admission. The input reaches the original
 post-tools boundary. Apply it and await unresolved references again on the same
@@ -830,6 +870,11 @@ covered by its returned results. It matches actual receipt and Reporter request
 IDs. Coverage includes the full receipt group, even results for other recipients.
 A grouped input that also carries other results stays queued. Original
 request replay does not release its own wait.
+
+Normal delivered receipts retain a short answer excerpt and include a
+`Full answer` exact-entry continuation. Ordinary primary delivery details also
+include the structured `continuation`. Follow it with `agent_inspect`, then use
+each returned `nextOffset` until the retained answer is complete.
 
 Normal delivery stays independent. A late or already-placed copy remains possible
 and costs an additional model turn. There is no recipient consumption ledger or
@@ -876,8 +921,8 @@ authority.
 Use existing controls to recover when authorized: inspect the provider claim,
 abort active work before configuration, configure the idle conversation, then
 send a continuation and await its new exact result. Preserve an explicit model
-requirement. The extension does not substitute a model, abort, or release a wait
-automatically.
+requirement. The extension does not substitute a model or abort automatically.
+Retry release occurs only through the explicit await option.
 
 The selected pane appends current dependency facts to its scrollable display,
 not to retained history. PgUp/PgDn reveals long dependency lists. Native frames
@@ -1546,10 +1591,14 @@ change for these observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/1.7.0` includes ordinary retained observation and proven
-first-input origin, independent command admission, exact admitted result references,
-and parked-delivery recovery behavior. `native-controls/1.3.0` adds ordinary-target
-observation to the native tools. Restart Pi windows to load the changed manager.
+clearance. `manager/1.8.0` includes caller usage for fleet observations and
+effective thinking from catalog validation, alongside ordinary retained
+observation, first-input origin, independent command admission, exact result
+references, and parked-delivery recovery. `spawn/1.1.0` and
+`resolve-agent/1.1.0` responses include thinking-adjustment evidence on new
+creation. `native-controls/1.4.0` requires that dispatch behavior. Primary
+delivery keeps its existing opaque details contract for exact continuations.
+Restart Pi windows to load the changed manager.
 Let idle Durable hosts retire, then attach to load the changed runtime routing
 and native tool bindings in a fresh host. An extension reload alone does not
 replace the running host module. Keep active work intact.
@@ -1704,8 +1753,10 @@ active entries already read for its operational row. Exact model buckets include
 reported compaction-attempt costs; tool usage remains a separate total. A
 conversation's current model never receives costs from earlier model selections.
 Inherited entries do not count as a fork's own response or failure evidence.
-Last-response times and failures come only from inspected assistant messages
-with their own model identity and timestamp. Current row errors and recovery
+Last-response times, usage samples, and failures come only from inspected
+assistant messages with their own model identity and timestamp. Usage sampling
+bounds entry visits, messages per entry, retained responses, and serialized
+bytes; it adds no transcript scan to fleet reads. Current row errors and recovery
 warnings carry observation time and current selection, not provider attribution.
 
 Evidence has its own byte bound inside the existing view budget and never

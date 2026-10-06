@@ -57,11 +57,19 @@ it("publishes real host evidence and reads fleet status locally from ordinary an
 	assert.ok(status);
 	const sessionManager = SessionManager.inMemory(f.cwd);
 	const toolContext = { cwd: f.cwd, sessionManager } satisfies Pick<ExtensionContext, "cwd" | "sessionManager">;
-	const identity = t.mock.method(sessionManager, "getSessionId", () => { throw new Error("Fleet and selected status must not read caller identity"); });
+	sessionManager.appendMessage(answerMessage("Caller evidence"));
+	const identity = t.mock.method(sessionManager, "getSessionId", () => f.ownerId);
 	const ordinary = await status.execute("fleet", { view: "fleet" }, undefined, undefined, toolContext as never);
 	const fleet = ordinary.details as FleetStatus;
 	assert.equal(fleet.view, "fleet");
 	assert.equal(fleet.models.length, 1);
+	assert.ok((fleet.models[0].usage?.last5h.responses ?? 0) > 0);
+	assert.equal(fleet.models[0].usage?.last5h.tokens, fleet.models[0].usage?.last7d.tokens);
+	assert.equal(fleet.usageCoverage.status, "partial");
+	assert.equal(fleet.effort.membership, "catalog-owner");
+	assert.equal(fleet.effort.members, 2);
+	assert.equal(fleet.effort.observedMembers, 2);
+	assert.equal(fleet.effort.reportedCost, answerMessage().usage.cost.total + (view.rows[0]?.cost ?? 0));
 	assert.ok(Buffer.byteLength(JSON.stringify(fleet)) <= 4096);
 	assert.equal(ordinary.content[0].type, "text");
 	if (ordinary.content[0].type === "text") assert.equal(ordinary.content[0].text, JSON.stringify(fleet));
@@ -93,14 +101,20 @@ it("publishes real host evidence and reads fleet status locally from ordinary an
 		assert.equal(native.isError, false, JSON.stringify(native.content));
 		const nativeFleet = (native.details as { structuredContent: FleetStatus }).structuredContent;
 		assert.deepEqual(nativeFleet.models, fleet.models);
+		assert.equal(nativeFleet.effort.membership, "creation-records");
+		assert.equal(nativeFleet.effort.members, 1);
+		assert.equal(nativeFleet.effort.missingMembers, 1);
 		assert.ok(native.content.every((part) => part.type !== "text" || Buffer.byteLength(part.text) <= 4096));
 	} finally { await observer.close(); }
+	identity.mock.restore();
 	await t.test("selected status does not read caller identity", async () => {
+		const unused = t.mock.method(sessionManager, "getSessionId", () => { throw new Error("Selected status must not read caller identity"); });
+		t.after(() => unused.mock.restore());
 		const selected = await status.execute("selected", { sessionId: metadata.storageId }, undefined, undefined, toolContext as never);
 		assert.ok(selected.details);
 		assert.match(JSON.stringify(selected.details), new RegExp(metadata.storageId));
+		unused.mock.restore();
 	});
-	identity.mock.restore();
 	await t.test("overview retains base status when optional self identity is unavailable", async () => {
 		const known = (await status.execute("known", {}, undefined, undefined, toolContext as never)).details as StatusOverview;
 		assert.equal(known.awareness?.self.id, sessionManager.getSessionId());
@@ -143,6 +157,8 @@ it("publishes own usage across real model changes without counting a fork's inhe
 	assert.equal(projection.rows[0].model?.modelId, alternate.id);
 	assert.equal(projection.rows[0].cost, 0.06);
 	assert.equal(projection.modelEvidence.toolReportedCost, 0);
+	assert.equal(projection.modelEvidence.sampling?.samples.length, 2, "the unused fork contributes no inherited usage sample");
+	assert.equal(projection.modelEvidence.sampling?.invalidSamples, 0);
 });
 
 it("keeps default manager status byte-equivalent to its established overview and selected-session path", async (t) => {
