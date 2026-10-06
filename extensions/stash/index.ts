@@ -1,5 +1,6 @@
 /** Session continuity tools plus the interactive /stash pickup workflow. */
 
+import { toolDisplayPublisher } from "./tool-display.ts";
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -494,6 +495,7 @@ async function applyBrowserAction(ctx: ExtensionContext, id: string, action: str
 }
 
 export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: string) => Promise<void> }) {
+	const { registerTool, publish } = toolDisplayPublisher(pi);
 	pi.events.emit("durable:contribution", stashDurableContribution(fileURLToPath(import.meta.url)));
 	let capacityErrorReported = false;
 	pi.on("turn_end", (event, ctx) => {
@@ -505,7 +507,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 			throw error;
 		}
 	});
-	pi.registerTool<typeof WriteParams, Record<string, unknown>>({
+	registerTool<typeof WriteParams, Record<string, unknown>>({
 		name: "stash_write",
 		label: "Stash Write",
 		description: STASH_WRITE_DESCRIPTION,
@@ -560,7 +562,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		},
 	});
 
-	pi.registerTool<typeof ListParams, Record<string, unknown>>({
+	registerTool<typeof ListParams, Record<string, unknown>>({
 		name: "stash_list",
 		label: "Stash List",
 		description: STASH_LIST_DESCRIPTION,
@@ -608,7 +610,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		},
 	});
 
-	pi.registerTool<typeof ReadParams, Record<string, unknown>>({
+	registerTool<typeof ReadParams, Record<string, unknown>>({
 		name: "stash_read",
 		label: "Stash Read",
 		description: STASH_READ_DESCRIPTION,
@@ -624,7 +626,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		},
 	});
 
-	pi.registerTool<typeof EditParams, Record<string, unknown>>({
+	registerTool<typeof EditParams, Record<string, unknown>>({
 		name: "stash_edit",
 		label: "Stash Edit",
 		description: STASH_EDIT_DESCRIPTION,
@@ -662,7 +664,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		},
 	});
 
-	pi.registerTool<typeof CompleteParams, Record<string, unknown>>({
+	registerTool<typeof CompleteParams, Record<string, unknown>>({
 		name: "stash_complete",
 		label: "Stash Complete",
 		description: STASH_COMPLETE_DESCRIPTION,
@@ -693,7 +695,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		},
 	});
 
-	pi.registerTool<typeof RotateParams, Record<string, unknown>>({
+	registerTool<typeof RotateParams, Record<string, unknown>>({
 		name: "stash_rotate",
 		label: "Stash Rotate",
 		description: STASH_ROTATE_DESCRIPTION,
@@ -743,6 +745,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 			await openBrowser(ctx);
 		},
 	});
+	publish();
 }
 
 async function handleStashCommand(

@@ -1,5 +1,9 @@
 # stash: session continuity
 
+The ordinary extension publishes its registered tool renderers at factory load and
+on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
+The payload contains only tool names and renderer fields, never execution functions.
+
 The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; `/stash new <hint>` starts independent Durable work from a captured session snapshot, without a turn or status update in the caller.
 
 ## Surfaces
