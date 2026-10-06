@@ -44,7 +44,7 @@ of the corpus.
 - [`/seed [hint]`](../../prompts/seed.md) puts a brief for another session on the
   clipboard. The hint selects its purpose or recipient.
 - [`/tldr [hint]`](../../prompts/tldr.md) summarizes the current discussion in
-  two or three plain sentences by default. The optional hint selects focus,
+  at most three plain sentences by default. The optional hint selects focus,
   scope, or length. Use it for the short version; `/wtf` preserves detail.
 - [`/wtf [account]`](../../prompts/wtf.md) repairs a hard-to-use assistant reply
   while preserving its meaning. The account identifies the target or fault.

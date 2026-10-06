@@ -14,6 +14,12 @@ const examples: Record<string, string> = {
 		"Each assigned review agent receives your correction in its own conversation before its next model turn. A current tool call finishes first. The message is queued, which does not prove the agent read or applied it.",
 	"list-changes":
 		"- Save stays visible on small screens.\n- Keyboard focus returns to the name field after an error.\n- Cancel discards unsaved edits.\n\nLocal checks passed, but these changes are not released.",
+	"shipped-with-optional-cleanup":
+		"I released the search fix that removes duplicate results. The live check passed, and search is ready to use. You still decide whether to remove the unused preview directory and close the unnecessary investigation note.",
+	"agent-work-attribution":
+		"My audit corrected the guide's false claim of unlimited exports to the actual 20 MB limit. A review agent checked the edit, and I committed it locally without publication. You decide whether to publish the corrected guide.",
+	"agent-coined-term":
+		"The catalog now asks you to start again from the first page if the list changes between page requests. This prevents mismatched pages. The change is active and passed local checks.",
 	"proposal-approval":
 		"The proposal saves search results for five minutes to speed up repeat searches, so recent edits could be missing during that time. No code changed or speed test ran. You need to decide whether that delay is acceptable for a local prototype and tests, without deployment.",
 	"focus-question":

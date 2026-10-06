@@ -135,7 +135,8 @@ model declines an available tool.
 a plain `tldr <hint>` message over identical synthetic context. It covers bare
 requests, long assessments, proposals, focus and form hints, whole-session
 scope, returning readers, receipts, delivery explanations, exact commands,
-missing context, repeated summaries, and rhetorical clutter. Character limits
+missing context, repeated summaries, optional cleanup decisions, actor
+attribution, agent-coined terms, and rhetorical clutter. Character limits
 and exact-span checks establish deterministic floors; human-required review
 decides whether the operator understands the result and its material limits.
 The empty tool lists do not establish refusal of available tools.

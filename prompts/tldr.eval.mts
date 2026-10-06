@@ -127,6 +127,69 @@ const suite: EvaluationSuite = {
 			] },
 		},
 		{
+			id: "shipped-with-optional-cleanup",
+			title: "A shipped result retains separate optional decisions waiting on the operator",
+			input: {
+				seed: [
+					{ role: "user", content: "Release the search improvement. Leave removal of old local material for my decision later." },
+					{
+						role: "assistant",
+						content:
+							"I released and activated the search improvement. Search now ignores duplicate results from repeated imports, and the live check passed. I also updated the help text and retired the old search command. CANARY_SEARCH_HELPER. Two optional cleanup items remain for your decisions later. The unused preview directory is still on disk. I will remove it only if you order removal. The saved investigation note is still open, although the shipped fix makes it unnecessary. You decide whether to close it. Neither cleanup item blocks use of the released search.",
+					},
+				],
+				prompt: "/tldr",
+			},
+			checks: floors(450, [";", ":", " - ", "\u2013", "(", ")"]),
+			reviewMetadata: {
+				criteria: [
+					"State that the search change is released and usable, with duplicate results removed and a successful live check.",
+					"The last sentence must briefly name both decisions reserved to the operator: removing the unused preview directory and closing the now-unneeded investigation note.",
+					"Keep cleanup optional and pending. Do not drop it as background, perform it, or present it as a release prerequisite.",
+					"Use at most three readable sentences around 50 words without joining clauses with semicolons, dashes, colons, or parenthetical substitutes.",
+				],
+			},
+		},
+		{
+			id: "agent-work-attribution",
+			title: "Agent actions stay attributed to the agents while the operator owns the decision",
+			input: {
+				seed: [
+					{ role: "user", content: "Audit the export documentation and fix false claims. Leave publication for my review." },
+					{ role: "assistant", content: "My audit found that the guide promised unlimited file size, but exports reject files larger than 20 MB. I corrected the guide. A review agent checked my edit against the implementation and confirmed the limit. I committed the correction locally. It is not published. CANARY_DOC_REVIEW. Your decision is whether to publish the corrected guide." },
+				],
+				prompt: "/tldr",
+			},
+			checks: floors(450, ["Your audit", "your audit", "Your repair", "your repair", "You corrected", "you corrected", "You committed", "you committed", ";", ":", " - "]),
+			reviewMetadata: {
+				criteria: [
+					"Credit the assistant with the audit, correction, and local commit, and the review agent with checking the edit. Never credit these actions to the operator.",
+					"Explain the false unlimited-size claim and actual 20 MB limit in ordinary words. Keep publication pending.",
+					"End with the operator's publication decision. Use at most three sentences around 50 words without connector substitutions.",
+				],
+			},
+		},
+		{
+			id: "agent-coined-term",
+			title: "Repeated agent terminology is replaced by its practical effect",
+			input: {
+				seed: [
+					{ role: "user", content: "Stop the catalog from silently mixing pages from different versions of the list." },
+					{ role: "assistant", content: "I call the proposed check a page-order seal. It compares the list order when a page was requested with the current list order." },
+					{ role: "assistant", content: "The page-order seal is implemented and active. If the list changes between page requests, the catalog refuses the old next-page request and asks you to start from the first page. Local checks passed. CANARY_PAGE_HELPER. The reviewer found the seal aligned with the paging intent. No decision remains." },
+				],
+				prompt: "/tldr",
+			},
+			checks: floors(450, ["page-order seal", "seal aligned", ";", ":", " - "]),
+			reviewMetadata: {
+				criteria: [
+					"Explain that an active catalog check stops you from reading mismatched pages by requiring a restart from page one if the list changes between requests.",
+					"Do not assume the operator knows the agent's repeated label. Translate the behavior instead of substituting another coined term or a vague claim of alignment.",
+					"Retain the local check result without claiming live verification. Use at most three sentences around 50 words and invent no pending decision.",
+				],
+			},
+		},
+		{
 			id: "proposal-approval",
 			title: "A proposal remains pending with its consequence and approval scope",
 			input: {
@@ -403,7 +466,8 @@ const suite: EvaluationSuite = {
 			"Can the operator understand the selected discussion, its current state, and any real decision or action without reconstructing a work log?",
 			"Prefer the shortest readable answer that preserves material uncertainty, permission limits, claim ownership, and exact actionable text. Compactness alone is insufficient.",
 			"The hint must select focus, scope, or form without starting work. No new facts, causes, advice, promises, or invented next steps.",
-			"Reject dense clause lists, unexplained jargon, rhetorical labels, punctuation substitutions, unnecessary formatting, and closing menus even if lexical floors pass.",
+			"Reject dense clause lists, unexplained jargon including agent-introduced terms, rhetorical labels, clause-joining semicolons, dashes or colons, punctuation substitutions, unnecessary formatting, and closing menus even if lexical floors pass.",
+			"Use at most three sentences unless the hint requests more or another form. Name actual actors and use you only for the operator's own actions and decisions. The last sentence must name every pending operator decision, including optional cleanup.",
 		],
 		metadata: {
 			blindedVariants: true,
