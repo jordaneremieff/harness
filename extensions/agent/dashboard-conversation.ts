@@ -42,6 +42,21 @@ function displayObject(value: object, depth: number): unknown {
 	);
 }
 
+/** Pi settles unfinished nested calls when a script ends, including timeout and abort. */
+function terminalCodemodeResult(message: ToolResultMessage): ToolResultMessage {
+	const details = message.details;
+	if (message.toolName !== "codemode" || !details || typeof details !== "object" || Array.isArray(details)) return message;
+	const calls = "calls" in details ? details.calls : undefined;
+	if (!Array.isArray(calls)) return message;
+	const settled = calls.map((call) =>
+		call && typeof call === "object" && !Array.isArray(call) && call.status === "running"
+			? { ...call, status: "cancelled" }
+			: call,
+	);
+	if (settled.every((call, index) => call === calls[index])) return message;
+	return { ...message, details: { ...details, calls: settled } };
+}
+
 export interface ConversationBlock {
 	id: string;
 	component: Component;
@@ -383,7 +398,7 @@ export class AgentConversation {
 		const signature = JSON.stringify([message, partial]);
 		if (this.resultKeys.get(tool) === signature) return;
 		tool.markExecutionStarted();
-		tool.updateResult(message, partial);
+		tool.updateResult(partial ? message : terminalCodemodeResult(message), partial);
 		this.resultKeys.set(tool, signature);
 		this.rendered.delete(tool);
 		this.heights.delete(tool);

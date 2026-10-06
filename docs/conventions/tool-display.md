@@ -107,7 +107,10 @@ A missing builtin call still uses Pi's missing-tool semantics. Published
 renderers do not replace native builtin, codemode, or agent presentation. If Pi's
 codemode factory capture is unavailable, codemode uses the standard card rather
 than a publication. Dashboard definitions remain inert at every resolution step.
-Codemode details pass through unchanged; no legacy-record normalizer exists.
+Codemode details pass through without record reconstruction. For nonpartial
+codemode results only, the dashboard applies Pi's terminal rule: existing nested
+calls with status `running` display as `cancelled`. Partial results, other fields,
+and stored details stay unchanged; no legacy-record normalizer exists.
 
 ## Verification
 

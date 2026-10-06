@@ -347,7 +347,7 @@ it("a committed result replaces its partial on the existing committed call", () 
 
 const click = (width: number, height: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
 
-it("matches a real native codemode component with current retained and partial details", () => {
+for (const partial of [false, true]) it(`matches a real native codemode component with current details: partial=${partial}`, () => {
 	const definitions: ToolDefinition[] = [];
 	const standIn = { registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] };
 	createCodemodeExtension()(standIn as ExtensionAPI);
@@ -358,7 +358,8 @@ it("matches a real native codemode component with current retained and partial d
 	assert.ok([undefined, "default", "self"].includes(definitions[0].renderShell));
 	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i}");`).join("\n") };
 	const details = { calls: Array.from({ length: 12 }, (_, i) => ({ name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", "running"][i % 4], id: `nested-${i}`, args: "a".repeat(200), error: "failure", cost: i === 0 ? 0 : 0.02, durationMs: i * 100 })), fullOutputPath: "output.txt" };
-	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const partial of [false, true]) for (const isError of [false, true]) {
+	const terminalDetails = { ...details, calls: details.calls.map((call) => ({ ...call, status: call.status === "running" ? "cancelled" : call.status })) };
+	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const isError of [false, true]) {
 		const call = assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: args }]);
 		const completed = result(partial ? "live:tool:outer" : "result", "outer", "codemode", "", isError);
 		const message = completed.model?.[0]; assert.ok(message?.role === "toolResult");
@@ -366,7 +367,7 @@ it("matches a real native codemode component with current retained and partial d
 		message.details = details;
 		const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, definitions[0], tui, "/work");
 		native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
-		native.updateResult(message, partial);
+		native.updateResult({ ...message, details: partial ? details : terminalDetails }, partial);
 		const rendered = new AgentConversation([call, completed], "/work", tui, expanded, false).render(width).lines;
 		assert.deepEqual(rendered, native.render(width));
 		const after = assistant("after", [{ type: "text", text: "Adjacent answer" }]);
@@ -646,4 +647,52 @@ it("live nested codemode details match native partial cards and retain the card 
 		assert.deepEqual(conversation.render(width).lines, native.render(width));
 		assert.match(screen(conversation, width), /final-output-sentinel/u);
 	}
+});
+
+for (const expanded of [false, true]) for (const isError of [false, true]) it(`terminal codemode settles running calls without changing stored details: expanded=${expanded}, error=${isError}`, (t) => {
+	const definitions: ToolDefinition[] = [];
+	createCodemodeExtension()({ registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] } as ExtensionAPI);
+	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
+	const args = { code: "await tools.pending({});" };
+	const call = assistant("call", [{ type: "toolCall", id: "script", name: "codemode", arguments: args }]);
+	const calls: JsonObject[] = [
+		{ id: "script/1", name: "pending", args: "{}", status: "running", durationMs: 12, error: "existing text", cost: 0.25, extra: { retained: true } },
+		{ id: "script/2", name: "done", args: "{}", status: "ok", durationMs: 3 },
+		{ id: "script/3", name: "failed", args: "{}", status: "error", error: "rejected" },
+		{ id: "script/4", name: "stopped", args: "{}", status: "cancelled" },
+	];
+	const details = { calls, fullOutputPath: "/output.txt", extra: { retained: true } };
+	const settled = { ...details, calls: [{ ...calls[0], status: "cancelled" }, ...calls.slice(1)] };
+	calls.forEach((item) => { Object.freeze(item); }); Object.freeze(calls); Object.freeze(details);
+	const entry = result("result", "script", "codemode", "Aborted");
+	const message = entry.model?.[0]; assert.ok(message?.role === "toolResult");
+	message.details = details; message.isError = isError;
+	const original = structuredClone(entry);
+	const conversation = new AgentConversation([], "/work", tui, expanded, false);
+	const native = new ToolExecutionComponent("codemode", "script", args, { showImages: false }, definitions[0], tui, "/work");
+	native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
+	conversation.update([call, { ...entry, id: "live:tool:script" }]);
+	const liveUpdate = updates.mock.calls.at(-1); assert.ok(liveUpdate);
+	assert.deepEqual(liveUpdate.arguments, [message, true]);
+	native.updateResult(message, true);
+	assert.deepEqual(conversation.render(80).lines, native.render(80));
+	assert.match(screen(conversation), /… pending/u);
+	conversation.update([call, entry]);
+	const finalUpdate = updates.mock.calls.at(-1); assert.ok(finalUpdate);
+	assert.equal(finalUpdate.this, liveUpdate.this);
+	assert.deepEqual(finalUpdate.arguments, [{ ...message, details: settled }, false]);
+	native.updateResult({ ...message, details: settled }, false);
+	assert.deepEqual(conversation.render(80).lines, native.render(80));
+	assert.match(screen(conversation), /⊘ pending/u);
+	assert.doesNotMatch(screen(conversation), /… pending/u);
+	assert.deepEqual(entry, original);
+});
+
+it("terminal results for other tools retain running status details", (t) => {
+	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
+	const entry = result("result", "custom", "custom", "Done");
+	const message = entry.model?.[0]; assert.ok(message?.role === "toolResult");
+	message.details = { calls: [{ id: "nested", name: "pending", args: "{}", status: "running" }] };
+	new AgentConversation([entry], "/work", tui, false, false);
+	assert.deepEqual(updates.mock.calls.at(-1)?.arguments, [message, false]);
 });

@@ -551,7 +551,7 @@ reset after instance eviction, selection changes, or dashboard close/reopen.
 Ctrl+T resets every retained assistant through Pi's thinking setter; Ctrl+O
 sets every retained card and clears recorded tool choices. Reopened dashboards
 create fresh components and use the current runtime's renderer definitions.
-Codemode nested calls use published result details without normalization.
+Codemode nested calls use published result details without record reconstruction.
 Collapsed cards with old args-less details use Pi's generic result fallback,
 including the original output header, instead of the nested-call list.
 Expanded cards use Pi's native nested-call summary with names, status, and
@@ -560,7 +560,11 @@ snapshots through Durable's `api.details`; live observation forwards each tool
 slot's details into its partial `ToolResultMessage`. Pi's native codemode card
 updates call status marks and suppresses partial output until the committed
 result arrives. Durable throttles these publications; the dashboard does not
-reconstruct nested-call details.
+reconstruct nested-call details. A whole-conversation abort can leave the last
+committed snapshot with `running` calls. For nonpartial codemode results, the
+dashboard applies Pi's terminal rule: existing `running` calls display as
+`cancelled`. Partial results and all other fields stay unchanged; stored
+snapshots are never mutated.
 The primary's no-target `agent_status` is a compact fleet overview. Working
 and starting rows without an attention reason come first, then attention rows,
 then recent quiet rows. Independent host, recovery, or availability faults make
