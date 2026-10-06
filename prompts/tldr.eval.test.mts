@@ -6,6 +6,8 @@ import { piSdkAdapter, runDeterministicChecks } from "../evals/subjects/pi-sdk.m
 import suite from "./tldr.eval.mts";
 
 const examples: Record<string, string> = {
+	"shipped-summary-command":
+		"You wanted a quick way to understand long discussions, and `/brief` is now available in place of `/rewrite`. Use `/brief` for the short version or add a hint such as `why did it fail` or `more detail` to choose the focus or length.",
 	"long-status":
 		"The local fix prevents duplicate invoices when an export retries. The live service remains untested, so the fix is not ready for release. The patch stays local and unpushed for your review.",
 	"multi-part-assessment":
@@ -13,31 +15,31 @@ const examples: Record<string, string> = {
 	"status-explains-delivery":
 		"Each assigned review agent receives your correction in its own conversation before its next model turn. A current tool call finishes first. The message is queued, which does not prove the agent read or applied it.",
 	"list-changes":
-		"- Save stays visible on small screens.\n- Keyboard focus returns to the name field after an error.\n- Cancel discards unsaved edits.\n\nLocal checks passed, but these changes are not released.",
+		"- Save stays visible on small screens.\n- Keyboard focus returns to the name field after an error.\n- Cancel discards unsaved edits.\n\nThese changes are not released.",
 	"shipped-with-optional-cleanup":
-		"I released the search fix that removes duplicate results. The live check passed, and search is ready to use. You still decide whether to remove the unused preview directory and close the unnecessary investigation note.",
+		"The search improvement is released, so repeated imports no longer clutter your results with duplicates.",
 	"pushed-history-decision":
-		"The report fix is released and passed its checks. The pushed commit messages still contain wrong issue numbers. You decide whether to rewrite that history despite the risk to other checkouts, with no rewrite as the default.",
+		"The report fix is released and ready to use.",
 	"agent-work-attribution":
-		"My audit corrected the guide's false claim of unlimited exports to the actual 20 MB limit. A review agent checked the edit, and I committed it locally without publication. You decide whether to publish the corrected guide.",
+		"I corrected the guide to explain that exports are limited to 20 MB. The guide is not published yet. You need to decide whether to publish the correction.",
 	"agent-coined-term":
-		"The catalog now asks you to start again from the first page if the list changes between page requests. This prevents mismatched pages. The change is active and passed local checks.",
+		"The catalog now asks you to start again from the first page if the list changes between page requests. This prevents mismatched pages.",
 	"proposal-approval":
 		"The proposal saves search results for five minutes to speed up repeat searches, so recent edits could be missing during that time. No code changed or speed test ran. You need to decide whether that delay is acceptable for a local prototype and tests, without deployment.",
 	"focus-question":
 		"The import failed because its input lacked the required account column. It stopped before saving, so no accounts changed. The input needs that column before another import.",
-	"one-line": "The fix passed local tests, but release is blocked because the live upload service remains untested.",
+	"one-line": "The upload fix is not ready for release because the live service remains untested.",
 	"whole-session":
-		"The password reset link is fixed and tested, with deployment left for later. The daily report stopped because its access token expired. You need to renew report access.",
+		"The password reset link is fixed, with deployment left for later. The daily report stopped because its access token expired. You need to renew report access.",
 	"receipt-after-answer":
 		"Your local backup completed, but there is no remote backup because remote storage is full. Cleanup needs account-owner approval because the remote account is read-only. Remote space must be freed before another copy.",
 	"returning-operator":
-		"The CSV parser now keeps quoted commas inside their fields, and local checks passed. The change is committed locally but not published. Live exports remain unchecked.",
+		"The local CSV fix keeps quoted commas inside their fields, so they no longer split exported data incorrectly. It is not published.",
 	"already-short": "A checksum is a value used to detect data changes.",
 	"action-in-hint":
-		"The link points to the current help page and passed its local check. The change is committed but not pushed, pending your review.",
+		"The local link fix points to the current help page. It is not pushed yet and needs your review before publication.",
 	"exact-command":
-		"The check failed because two entries share a name. Rename the duplicate in config/index.json, then run `npm run verify:index -- --local --limit=25` to check local entries without publishing. The live index remains unchecked.",
+		"The check failed because two entries share a name. Rename the duplicate in config/index.json, then run `npm run verify:index -- --local --limit=25` to check local entries without publishing.",
 	"nothing-to-summarize": "There is no substantive discussion to summarize.",
 	"slop-source":
 		"The client reconnects after a dropped connection in the local test. Long outages remain untested.",
@@ -112,6 +114,26 @@ it("each tldr deterministic floor rejects its own isolated violation", () => {
 			}
 		}
 	}
+});
+
+it("optional history cleanup can be omitted or qualified without failing lexical floors", () => {
+	const entry = suite.cases.find((entry) => entry.id === "pushed-history-decision");
+	assert.ok(entry);
+	for (const output of [
+		examples[entry.id],
+		"Correcting the pushed commit messages remains optional and risks disrupting other checkouts through a history rewrite. Leaving history unchanged remains the default. The report fix is released and ready to use.",
+	]) {
+		assert.ok(runDeterministicChecks(output, entry.checks).every((result) => result.passed));
+	}
+});
+
+it("a bookkeeping-only summary still needs human review when lexical floors pass", () => {
+	const entry = suite.cases.find((entry) => entry.id === "shipped-summary-command");
+	assert.ok(entry);
+	const output = "The /brief command passed its checks. The evaluation still awaits your verdict.";
+	assert.ok(runDeterministicChecks(output, entry.checks).every((result) => result.passed));
+	assert.equal(suite.adjudication.policy, "human-required");
+	assert.ok(entry.reviewMetadata.criteria.some((criterion) => criterion.includes("optional evaluation verdicts")));
 });
 
 it("a short but false answer still needs human review", () => {

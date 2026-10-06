@@ -3,7 +3,8 @@ description: Summarize the current discussion in a few plain sentences
 argument-hint: "[focus, scope, or length]"
 ---
 
-Give the operator the short version of the current discussion in chat.
+Explain what the discussion was about, what came of it, and what that means
+for the operator in practice. Write for the person who uses the result.
 Use only visible session context. Do not use tools, start work, continue the
 task, or promise action. Add no facts, causes, recommendations, or plans.
 
@@ -14,28 +15,29 @@ The hint selects focus, scope, or form, such as "why did it fail", "whole
 session", "since I left", "one line", or "more detail". Action words such as
 "then push it" select a topic, not permission to act.
 
-Without a hint, summarize the latest substantive discussion: the operator's
-request and the answer or work about it. If the latest reply is only a receipt
-or "done, see above", summarize the answer it refers to. Include later
-corrections and changed limits. Exclude unrelated earlier topics unless the
-hint selects them. If the selected context is missing, say so in one sentence
-and stop. Do not append an unrelated visible result.
+Without a hint, select the latest substantive discussion and the operator's
+purpose in it. If the latest reply is only a receipt or "done, see above",
+follow it to the answer. Use later corrections to determine the current state.
+Exclude unrelated topics unless the hint selects them. If the selected context
+is missing, say so in one sentence and stop. Do not append an unrelated result.
 
 Default to at most three plain sentences, about 50 words, unless the hint
 asks for more. Follow a requested length or form. A repeated /tldr gets a
 shorter version or follows the new hint. Never pad an already-short answer.
 
-Select before writing. Keep only what changes your reader's understanding or
-next move: the answer or result, what it means, the actual state of the work,
-and any pending decision or required action. Keep warnings, permission limits,
-and uncertainty that change that understanding. A proposal stays a proposal.
-"Not tested" stays untested, not failed or ready. Keep claims attributed when
-they are only reports. Keep exact text you must show for a decision or the
-operator must copy. Cut supporting detail before cutting a material limit.
+Select what helps the operator understand the discussion and use its result:
+what they wanted, the answer or outcome, and what they can now do or rely on.
+State the substance directly. Do not narrate what a reply said. Attribute only
+unverified claims from someone else, such as a worker or reviewer. Preserve
+the strength of the claims you include. A proposal stays a proposal.
+"Not tested" stays untested, not failed or ready. Keep a limit or risk only
+when it changes what the operator can rely on or do now. Keep exact text
+needed to use the result or make a required decision.
 
-Drop tool steps, internal work records, file names, IDs, test counts, background,
-and repetition unless needed for the selected question or action. A returning
-reader needs what changed, not a replay of everything they already knew.
+The full replies stay in the session. Leave out how the work was done or
+checked: tool steps, test runs and counts, model names, review rounds, file
+names, and IDs. Include these only when the hint asks or the result itself is
+in doubt. Omit repetition and background the reader already knows.
 
 Lead with the answer. Name who did each action. Use "you" for the operator's
 own actions and decisions, never for agent work. Use ordinary words and full,
@@ -52,10 +54,8 @@ is not a repair. Use no headings or bold labels by default. Use a simple list
 when requested or for genuinely separate items. Honor requested formatting.
 These examples are not exhaustive. Write a clear person-to-person explanation.
 Return only the summary, without a repair narrative, closing question, or menu.
-If anything waits on the operator, name it briefly in the last sentence, even
-if that drops a detail from an earlier sentence.
-Decisions labeled optional, later, or not blocking still count. Keep each
-decision's warning, hazard, irreversible step, or stated default with it.
-Combine small pending items in that sentence.
-Otherwise, end with the result. Invent no next step. If there is nothing
-substantive to summarize, say so in one sentence.
+If the operator must decide or act for the work to continue, end with that and
+the risk it carries. Do not end with optional bookkeeping, an unrecorded
+review, cleanup they can ignore, or a later optional decision. Otherwise, end
+with the result or its practical meaning. Invent no next step. If there is
+nothing substantive to summarize, say so in one sentence.

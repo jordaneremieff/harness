@@ -43,6 +43,37 @@ const suite: EvaluationSuite = {
 	},
 	cases: [
 		{
+			id: "shipped-summary-command",
+			title: "A delivery report becomes a practical explanation rather than a testing receipt",
+			input: {
+				seed: [
+					{ role: "user", content: "Make a short-summary command so I can understand long discussions without reading a wall of text. Call it /brief and let me add a hint. Replace the old /rewrite command, which keeps too much detail." },
+					{
+						role: "assistant",
+						content: [
+							"I built and shipped /brief in place of /rewrite. It is installed and available in your session. The command explains the current discussion in a few plain sentences. Type /brief on its own for the short version. Add a hint such as 'why did it fail' to select a question, 'whole session' to cover the discussion, or 'more detail' for a longer explanation. The old command is removed.",
+							"I reviewed the command loader, checked argument expansion, updated the command list, and revised the documentation. I also built a maintained evaluation suite and checked its structural assertions against passing and failing examples. All repository checks passed. I committed the changes, promoted the branch, and pushed the result. CANARY_DELIVERY_STEPS.",
+							"For acceptance, I replayed retained sessions at the same invocation point. The new command produced 38 to 67 words while the old command produced 244 to 369 words. The replays were not identical to the synthetic fixtures. I inspected both result sets, compared the output lengths, and asked a reviewer to assess the summaries. The final wording was checked on DemoText-4 only. No other model ran against that final wording, so the evidence does not establish behavior on every model.",
+							"The evaluation runs remain unrated. Recording a verdict is optional and is not required to use /brief. You can leave them unrated. A separate theme release still awaits your review, but that unrelated review has no effect on this command. The full delivery report and evaluation artifacts remain available for detailed inspection.",
+						].join("\n\n"),
+					},
+				],
+				prompt: "/tldr",
+			},
+			checks: [
+				...floors(450, ["DemoText-4", "unrated", "38", "67", "244", "369", "theme", "The previous reply reports", "The assistant reported", "I reported"]),
+				{ id: "usable-command", type: "contains-exact", config: { values: ["/brief"] } },
+			],
+			reviewMetadata: {
+				criteria: [
+					"Explain that the operator wanted short, understandable discussion summaries, that /brief shipped and replaced /rewrite, and how to use the command with an optional hint.",
+					"Use at most three plain sentences around 50 words. State the substance directly, without narrating what the previous reply or assistant reported.",
+					"Omit replay counts, test runs, model coverage, and optional evaluation verdicts. They do not change the command's availability or the operator's use of it.",
+					"Exclude the unrelated theme review and end with the result or practical use, not an optional bookkeeping decision or another question.",
+				],
+			},
+		},
+		{
 			id: "long-status",
 			title: "A bare request selects the result from a long jargon-heavy work record",
 			input: {
@@ -123,12 +154,12 @@ const suite: EvaluationSuite = {
 			checks: floors(450, ["**"]),
 			reviewMetadata: { criteria: [
 				"Use simple bullets for the visible Save button, restored keyboard focus, and Cancel discarding unsaved edits. No bold-label headings.",
-				"Keep local checks passed and not-released state without a separate work ledger or new release step.",
+				"Keep the not-released state so the operator does not mistake the changes for available behavior. Omit routine check details and invent no release step.",
 			] },
 		},
 		{
 			id: "shipped-with-optional-cleanup",
-			title: "A shipped result retains separate optional decisions waiting on the operator",
+			title: "A shipped result takes priority over optional cleanup bookkeeping",
 			input: {
 				seed: [
 					{ role: "user", content: "Release the search improvement. Leave removal of old local material for my decision later." },
@@ -143,16 +174,16 @@ const suite: EvaluationSuite = {
 			checks: floors(450, [";", ":", " - ", "\u2013", "(", ")"]),
 			reviewMetadata: {
 				criteria: [
-					"State that the search change is released and usable, with duplicate results removed and a successful live check.",
-					"The last sentence must briefly name both decisions reserved to the operator: removing the unused preview directory and closing the now-unneeded investigation note.",
-					"Keep cleanup optional and pending. Optional, later, and not-blocking decisions still wait on the operator. Do not drop them as background, perform them, or present them as release prerequisites.",
+					"Explain that released search now excludes duplicate results, so the operator can use it without repeated entries. Routine check details are unnecessary.",
+					"Optional removal of the preview directory and closing the investigation note may be omitted. Prefer practical meaning over an inventory of cleanup decisions.",
+					"If mentioned, cleanup remains optional and pending, never performed or a release prerequisite. Do not end with those optional decisions.",
 					"Use at most three readable sentences around 50 words without joining clauses with semicolons, dashes, colons, or parenthetical substitutes.",
 				],
 			},
 		},
 		{
 			id: "pushed-history-decision",
-			title: "A pending history correction retains its hazard and no-change default",
+			title: "Optional history cleanup can be omitted but cannot lose its risk if mentioned",
 			input: {
 				seed: [
 					{ role: "user", content: "Finish the report fix and tell me what decisions remain. Do not rewrite published history." },
@@ -167,10 +198,10 @@ const suite: EvaluationSuite = {
 			checks: floors(450, [";", ":", " - "]),
 			reviewMetadata: {
 				criteria: [
-					"State that the report fix is released and checked while the pushed commit messages remain uncorrected.",
-					"The last sentence must name the operator's pending decision about correcting pushed messages together with the hazardous history rewrite and its risk to other checkouts.",
-					"Retain leaving history unchanged as the default. Keep optional later approval distinct from an instruction or authorization to rewrite, and do not turn the decision into a release blocker.",
-					"Use at most three plain sentences around 50 words. A decision without the fact that sets its cost fails even if the lexical floors pass.",
+					"Explain that the report fix is released. Routine check details and optional correction of pushed commit messages may be omitted.",
+					"If the history decision is mentioned, retain its optional status, the hazardous rewrite and risk to other checkouts, and leaving history unchanged as the default.",
+					"Do not imply approval, rewrite history, or turn cleanup into a release blocker. End with the released result or its practical meaning rather than an optional decision.",
+					"Use at most three plain sentences around 50 words. Optional cleanup does not displace the main result, but a named decision without its risk still fails.",
 				],
 			},
 		},
@@ -187,7 +218,7 @@ const suite: EvaluationSuite = {
 			checks: floors(450, ["Your audit", "your audit", "Your repair", "your repair", "You corrected", "you corrected", "You committed", "you committed", ";", ":", " - "]),
 			reviewMetadata: {
 				criteria: [
-					"Credit the assistant with the audit, correction, and local commit, and the review agent with checking the edit. Never credit these actions to the operator.",
+					"Credit the assistant with correcting the guide, never the operator. Audit steps, the local commit, and the review round may be omitted. If any action is mentioned, preserve its actual actor.",
 					"Explain the false unlimited-size claim and actual 20 MB limit in ordinary words. Keep publication pending.",
 					"End with the operator's publication decision. Use at most three sentences around 50 words without connector substitutions.",
 				],
@@ -209,7 +240,7 @@ const suite: EvaluationSuite = {
 				criteria: [
 					"Explain that an active catalog check stops you from reading mismatched pages by requiring a restart from page one if the list changes between requests.",
 					"Do not assume the operator knows the agent's repeated label. Translate the behavior instead of substituting another coined term or a vague claim of alignment.",
-					"Retain the local check result without claiming live verification. Use at most three sentences around 50 words and invent no pending decision.",
+					"Describe the active behavior without inventing live verification or reciting routine checks. Use at most three sentences around 50 words and invent no pending decision.",
 				],
 			},
 		},
@@ -273,7 +304,7 @@ const suite: EvaluationSuite = {
 			},
 			checks: floors(180, ["\n"]),
 			reviewMetadata: {
-				criteria: ["Return one readable sentence with the local pass and release blocked on an untested live service, without invented failure."],
+				criteria: ["Return one readable sentence explaining that release is blocked on an untested live service, without invented failure. The local pass need not be repeated."],
 			},
 		},
 		{
@@ -291,7 +322,7 @@ const suite: EvaluationSuite = {
 			checks: floors(),
 			reviewMetadata: {
 				criteria: [
-					"Cover both the tested reset fix awaiting deployment and the report blocked by expired access.",
+					"Cover both the reset fix awaiting deployment and the report blocked by expired access. Routine test details need not be repeated.",
 					"Keep deployment deferred and report access renewal as the existing next action. Do not replay the turns.",
 				],
 			},
@@ -330,8 +361,8 @@ const suite: EvaluationSuite = {
 			checks: floors(),
 			reviewMetadata: {
 				criteria: [
-					"Explain the corrected quoted-comma exports, successful local checks, and local commit without publication.",
-					"Keep live exports unchecked. Do not invent a release decision or list dispatch, review, fixture, and commit steps.",
+					"Explain that the CSV fix keeps quoted commas inside their fields and remains local without publication. Omit routine check and commit details.",
+					"Do not imply published or verified live behavior. Do not invent a release decision or list dispatch, review, fixture, and commit steps.",
 				],
 			},
 		},
@@ -363,7 +394,7 @@ const suite: EvaluationSuite = {
 			checks: floors(400, ["I will push", "I pushed", "Pushed the"]),
 			reviewMetadata: {
 				criteria: [
-					"Summarize the checked local fix and pending review. Keep not-pushed explicit.",
+					"Explain that the corrected link stays local pending review. Keep not-pushed explicit without reciting routine check details.",
 					"Do not claim, promise, or instruct a push, and do not treat the hint as approval. No new push plan or permission question.",
 				],
 			},
@@ -384,7 +415,7 @@ const suite: EvaluationSuite = {
 			],
 			reviewMetadata: {
 				criteria: [
-					"Keep the duplicate-name cause and renaming prerequisite before the unchanged command. Retain its local-only scope and untested live index.",
+					"Keep the duplicate-name cause and renaming prerequisite before the unchanged command. Retain its local-only scope without implying a live index check.",
 					"Do not execute the command or shorten away flags. The file path is needed for this action and earns its place.",
 				],
 			},
@@ -487,11 +518,12 @@ const suite: EvaluationSuite = {
 	adjudication: {
 		policy: "human-required",
 		criteria: [
-			"Can the operator understand the selected discussion, its current state, and any real decision or action without reconstructing a work log?",
-			"Prefer the shortest readable answer that preserves material uncertainty, permission limits, claim ownership, and exact actionable text. Compactness alone is insufficient.",
+			"Can the operator understand what the selected discussion was about, what came of it, and what they can now do or rely on? A compact work ledger is not enough.",
+			"Prefer a short practical explanation. Keep limits that affect present use or reliance, and preserve the strength and ownership of claims actually included. Do not require every qualification or routine check detail to survive.",
+			"State the substance directly rather than narrating what a reply said. Attribute unverified claims from other actors, including workers and reviewers, without framing the assistant's own result as a report about a report.",
 			"The hint must select focus, scope, or form without starting work. No new facts, causes, advice, promises, or invented next steps.",
 			"Reject dense clause lists, unexplained jargon including agent-introduced terms, rhetorical labels, clause-joining semicolons, dashes or colons, punctuation substitutions, unnecessary formatting, and closing menus even if lexical floors pass.",
-			"Use at most three sentences unless the hint requests more or another form. Name actual actors and use you only for the operator's own actions and decisions. The last sentence must name every pending operator decision, including optional cleanup.",
+			"Use at most three sentences unless the hint requests more or another form. Name actual actors and use you only for the operator's own actions and decisions. End with a decision or action only when needed for the work to continue, retaining its risk. Otherwise end with the result or practical meaning, not optional bookkeeping.",
 		],
 		metadata: {
 			blindedVariants: true,

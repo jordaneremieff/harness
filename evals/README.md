@@ -125,10 +125,12 @@ text behavior and does not prove that a model declines an available tool.
 a plain `tldr <hint>` message over identical synthetic context. It covers bare
 requests, long assessments, proposals, focus and form hints, whole-session
 scope, returning readers, receipts, delivery explanations, exact commands,
-missing context, repeated summaries, optional decisions with their hazards,
-actor attribution, agent-coined terms, and rhetorical clutter. Character limits
-and exact-span checks establish deterministic floors; human-required review
-decides whether the operator understands the result and its material limits.
+missing context, repeated summaries, omission of optional bookkeeping, risks
+when decisions are mentioned, actor attribution, agent-coined terms, and
+rhetorical clutter. A shipped-command case checks practical use rather than
+a recap of tests and evaluation verdicts. Character limits and exact-span
+checks establish deterministic floors; human-required review decides whether
+the operator understands the discussion, its result, and what it means for use.
 The empty tool lists do not establish refusal of available tools.
 `prompts/tldr.eval.test.mts` checks resource resolution and passing and failing
 synthetic outputs without model inference.
