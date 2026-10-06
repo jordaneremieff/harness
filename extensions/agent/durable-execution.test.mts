@@ -10,6 +10,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
+import type { CodemodeToolDetails } from "@earendil-works/pi-coding-agent";
 import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
@@ -265,6 +266,9 @@ it("keeps a data-bearing native tool error as a codemode result", { timeout: 300
 	});
 	const result = await f.submit("read the structured error");
 	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))), failure);
+	const details = result.toolResults.at(-1)?.details as unknown as CodemodeToolDetails;
+	assert.equal(details.calls[0].status, "error");
+	assert.equal(details.calls[0].error, "target is busy");
 });
 
 it("applies an afterTool ToolTask hook to a nested codemode result", { timeout: 30000 }, async (t) => {
@@ -394,6 +398,85 @@ it("sends stored OAuth tokens to an HTTP server and reads its resources", { time
 	assert.equal(output.listed.resources[0]?.server, "remote-docs");
 	assert.equal(output.listed.resources[0]?.uri, "docs://readme");
 	assert.equal(output.read.contents[0]?.text, "hello resource");
+});
+
+it("preserves nested call IDs, compact argument previews, errors, and rounded durations", { timeout: 30000 }, async (t) => {
+	const error = "e".repeat(501);
+	const value = "v".repeat(220);
+	const f = await executionFixture(t, {
+		code: `await tools.structured({}); try { await tools.preview_error({ value: ${JSON.stringify(value)} }); } catch {} return "done";`,
+		builtinExtensions: (host) => [host.durable.defineExtension({
+			name: "fixture.preview-error",
+			tools: [host.durable.defineTool({
+				name: "preview_error", description: "Reject with controlled text.", parameters: Type.Object({ value: Type.String() }), replay: "safe",
+				execute: async () => { throw new Error(error); },
+			})],
+		})],
+	});
+	const result = await f.submit("inspect call previews");
+	const details = result.toolResults.at(-1)?.details as unknown as CodemodeToolDetails;
+	assert.deepEqual(details.calls.map((call) => call.id), ["codemode-call/1", "codemode-call/2"]);
+	assert.equal(details.calls[0].args, "{}");
+	assert.equal(details.calls[0].status, "ok");
+	assert.equal(details.calls[0].error, undefined);
+	assert.equal(details.calls[0].cost, undefined);
+	const failed = details.calls[1];
+	const json = JSON.stringify({ value });
+	assert.equal(failed.args, `${json.slice(0, 197)}...`);
+	assert.equal(failed.args.length, 200);
+	assert.equal(failed.status, "error");
+	assert.equal(failed.error?.length, 500);
+	assert.ok(failed.error?.endsWith("..."));
+	for (const call of details.calls) assert.ok(Number.isInteger(call.durationMs) && (call.durationMs ?? -1) >= 0);
+});
+
+it("records model cost including zero, failures, cancellation, and supplied JSON arguments", { timeout: 30000 }, async (t) => {
+	const model = { provider: "fixture", id: "classifier" };
+	const context = { state: { value: "x".repeat(210) }, questions: { q: { type: "bool", instructions: "Check", criteria: { true: "yes", false: "no" } } } };
+	const f = await executionFixture(t, {
+		code: `await tools.structured({}); for (let i = 0; i < 6; i++) { try { await models.classify(${JSON.stringify(model)}, ${JSON.stringify(context)}); } catch {} } return "done";`,
+	});
+	const runtime = f.services.services.modelRuntime;
+	runtime.getModelOfType = (() => model) as typeof runtime.getModelOfType;
+	let index = 0;
+	const usage = (total: number) => ({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: total, output: 0, cacheRead: 0, cacheWrite: 0, total } });
+	runtime.classify = (async () => {
+		const current = index++;
+		if (current === 2) throw new Error("rejected ".repeat(80));
+		if (current === 3) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+		return { api: "fixture-classifier", provider: model.provider, model: model.id, answers: {}, timestamp: Date.now(), stopReason: current === 4 ? "error" : current === 5 ? "aborted" : "stop", errorMessage: current === 4 ? "failed ".repeat(90) : undefined, usage: usage(current === 0 ? 0 : 0.02) };
+	}) as typeof runtime.classify;
+	const result = await f.submit("inspect model call records");
+	const details = result.toolResults.at(-1)?.details as unknown as CodemodeToolDetails;
+	assert.deepEqual(details.calls.map((call) => call.id), Array.from({ length: 7 }, (_, i) => `codemode-call/${i + 1}`));
+	const calls = details.calls.slice(1);
+	assert.deepEqual(calls.map((call) => call.status), ["ok", "ok", "error", "cancelled", "error", "cancelled"]);
+	assert.deepEqual(calls.map((call) => call.cost), [0, 0.02, undefined, undefined, 0.02, 0.02]);
+	const args = JSON.stringify([model, context]);
+	for (const call of calls) {
+		assert.equal(call.name, "models.classify");
+		assert.equal(call.args, `${args.slice(0, 197)}...`);
+		assert.ok(Number.isInteger(call.durationMs));
+	}
+	assert.equal(calls[2].error, `${"rejected ".repeat(80).slice(0, 497)}...`);
+	assert.equal(calls[3].error, "aborted");
+	assert.equal(calls[4].error, `${"failed ".repeat(90).slice(0, 497)}...`);
+	assert.equal(result.toolResults.at(-1)?.usage?.cost.total, 0.06);
+});
+
+it("records image model JSON arguments and cost without duplicating usage", { timeout: 30000 }, async (t) => {
+	const model = { provider: "fixture", id: "image" };
+	const context = { input: [{ type: "text", text: "Draw a square" }] };
+	const f = await executionFixture(t, { code: `await models.generateImages(${JSON.stringify(model)}, ${JSON.stringify(context)}); return "done";` });
+	const runtime = f.services.services.modelRuntime;
+	runtime.getModelOfType = (() => model) as typeof runtime.getModelOfType;
+	runtime.generateImages = (async () => ({ api: "fixture-image", provider: model.provider, model: model.id, timestamp: Date.now(), output: [], stopReason: "stop", usage: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 0, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.1 } } })) as typeof runtime.generateImages;
+	const result = await f.submit("inspect image call records");
+	const details = result.toolResults.at(-1)?.details as unknown as CodemodeToolDetails;
+	assert.deepEqual(details.calls.map(({ durationMs, ...call }) => {
+		assert.ok(Number.isInteger(durationMs)); return call;
+	}), [{ id: "codemode-call/1", name: "models.generateImages", args: JSON.stringify([model, context]), status: "ok", cost: 0.1 }]);
+	assert.equal(result.toolResults.at(-1)?.usage?.cost.total, 0.1);
 });
 
 it("validates model contexts against the public contract", () => {
@@ -729,7 +812,10 @@ it("does not repeat an interrupted unsafe nested call after a crash", { timeout:
 	const effectPath = join(root, "effect.txt");
 	const rerunPath = join(root, "rerun.txt");
 	const runId = "crash-unsafe-nested";
-	const child = spawn(process.execPath, [fixturePath, storagePath, runId, "do the task"], { stdio: ["ignore", "pipe", "pipe"] });
+	const child = spawn(process.execPath, [fixturePath, storagePath, runId, "do the task"], {
+		stdio: ["ignore", "pipe", "pipe"],
+		env: { ...process.env, PI_AGENT_DIR: join(root, "agent"), PI_AGENT_SESSIONS_DIR: join(root, "sessions") },
+	});
 	let services: Awaited<ReturnType<typeof createDurableServices>> | undefined;
 	let host: DurableHost | undefined;
 	try {

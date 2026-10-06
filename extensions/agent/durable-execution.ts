@@ -46,7 +46,7 @@ import type { AuthProvider, CallToolResult, ContentBlock, ListResourcesResult, R
 import { JSON_RPC_ERROR_CODES, McpClient, McpError, StdioTransport, StreamableHttpTransport, toLlmContent } from "@earendil-works/pi-mcp";
 import type { McpOAuthState, McpOAuthStateStore } from "@earendil-works/pi-mcp/oauth";
 import { adaptOAuthProvider, McpOAuthAuthorizationRequiredError, McpOAuthProvider } from "@earendil-works/pi-mcp/oauth";
-import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionServices, CodemodeToolDetails } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, Message, SystemMessage, TextContent, ToolCall, Tool as PiTool, Usage } from "@earendil-works/pi-ai";
 import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
@@ -1307,13 +1307,29 @@ function describeOutput(schema: CodemodeJsonSchema): string {
 }
 
 /** How one script treated one call, for the tool details. */
-interface ScriptCallRecord {
-	readonly name: string;
-	status: "running" | "ok" | "error" | "cancelled";
-	durationMs: number;
+type ScriptCallRecord = CodemodeToolDetails["calls"][number] & { durationMs: number };
+
+function callPreview(text: string, limit: number): string {
+	return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
+}
+
+function callArgs(args: unknown): string {
+	try { return callPreview(JSON.stringify(args) ?? "", 200); } catch { return ""; }
+}
+
+function callAborted(error: unknown, signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
+}
+
+function settledCallRecord(record: ScriptCallRecord, result: NestedCallResult | undefined, status: string, aborted: boolean): string | undefined {
+	const failure = status === "completed" ? undefined : `Tool "${record.name}" did not complete (${status})`;
+	record.status = status === "aborted" || aborted ? "cancelled" : status === "completed" && result?.isError !== true ? "ok" : "error";
+	if (record.status !== "ok") record.error = callPreview((result === undefined ? "" : diagnosticText(result)) || failure || `Tool "${record.name}" failed`, 500);
+	return failure;
 }
 
 interface ScriptRun {
+	readonly callId: string;
 	readonly calls: ScriptCallRecord[];
 	usage: Usage | undefined;
 	generatedImages: number;
@@ -1750,33 +1766,36 @@ class DurableExecutionRuntime implements DurableExecution {
 		if (entry === undefined) throw new Error(`Tool "${name}" is not available`);
 		const callId = `${sandbox.api.callId}/${sandbox.run.calls.length + 1}`;
 		const startedAt = performance.now();
-		const record: ScriptCallRecord = { name, status: "running", durationMs: 0 };
+		const record: ScriptCallRecord = { id: callId, name, args: callArgs(args), status: "running", durationMs: 0 };
 		sandbox.run.calls.push(record);
 		const controller = new AbortController();
-		const taskId = await sandbox.api.createTask(
-			this.callTask,
-			{ callId, name, arguments: args },
-			{ ownership: { kind: "task", taskId: sandbox.api.taskId } },
-			sandbox.context,
-		);
-		this.abortControllers.set(taskId, controller);
+		let taskId: Durable.TaskId<NestedCallResult> | undefined;
 		let settled: Durable.SettledTask<NestedCallResult>;
 		try {
+			taskId = await sandbox.api.createTask(
+				this.callTask,
+				{ callId, name, arguments: args },
+				{ ownership: { kind: "task", taskId: sandbox.api.taskId } },
+				sandbox.context,
+			);
+			this.abortControllers.set(taskId, controller);
 			settled = await sandbox.api.waitForTask(taskId, withAbortSignal(callSignal, sandbox.context));
-		} catch {
+		} catch (error) {
 			controller.abort(new Error(`Tool "${name}" was cancelled`));
-			record.status = "cancelled";
+			record.status = callSignal.aborted || sandbox.context.abortSignal?.aborted ? "cancelled" : "error";
 			record.durationMs = performance.now() - startedAt;
-			throw new Error(`Tool "${name}" was cancelled because the script call ended`);
+			const failure = record.status === "cancelled" ? new Error(`Tool "${name}" was cancelled because the script call ended`) : error;
+			record.error = callPreview(errorText(failure), 500);
+			throw failure;
 		} finally {
-			this.abortControllers.delete(taskId);
+			if (taskId !== undefined) this.abortControllers.delete(taskId);
 		}
 		record.durationMs = performance.now() - startedAt;
 		const outcome = settled.state.outcome;
 		const result = "result" in outcome ? outcome.result : undefined;
 		addUsage(sandbox.run, result?.usage);
-		record.status = outcome.status === "completed" ? "ok" : "error";
-		return toScriptValue(entry, result, outcome.status === "completed" ? undefined : `Tool "${name}" did not complete (${outcome.status})`);
+		const failure = settledCallRecord(record, result, outcome.status, callSignal.aborted);
+		return toScriptValue(entry, result, failure);
 	}
 
 	// ── Codemode sandbox ───────────────────────────────────────────────────
@@ -1855,19 +1874,29 @@ class DurableExecutionRuntime implements DurableExecution {
 			model: unknown,
 			context: unknown,
 			options: { signal?: AbortSignal } | undefined,
-			execute: (resolved: unknown, checked: unknown, callOptions?: { signal?: AbortSignal }) => Promise<{ stopReason?: string; usage?: Usage }>,
+			execute: (resolved: unknown, checked: unknown, callOptions?: { signal?: AbortSignal }) => Promise<{ stopReason?: string; usage?: Usage; errorMessage?: string }>,
+			args: unknown,
 		): Promise<unknown> => {
 			const resolved = resolveModelArgument(name, kind, model, models);
 			if (kind === "classifier") checkClassifierContext(context);
 			else checkImagesContext(context);
-			const record: ScriptCallRecord = { name, status: "running", durationMs: 0 };
+			const record: ScriptCallRecord = { id: `${run.callId}/${run.calls.length + 1}`, name, args: callArgs(args), status: "running", durationMs: 0 };
 			run.calls.push(record);
 			const startedAt = performance.now();
-			const result = await limit(() => execute(resolved, context, options));
-			record.durationMs = performance.now() - startedAt;
-			record.status = result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
-			addUsage(run, result.usage);
-			return result;
+			try {
+				const result = await limit(() => execute(resolved, context, options));
+				record.status = result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
+				if (record.status !== "ok") record.error = callPreview(result.errorMessage || `${name} did not complete (${result.stopReason ?? "error"})`, 500);
+				if (result.usage !== undefined) record.cost = result.usage.cost.total;
+				addUsage(run, result.usage);
+				return result;
+			} catch (error) {
+				record.status = callAborted(error, options?.signal) ? "cancelled" : "error";
+				record.error = callPreview(errorText(error), 500);
+				throw error;
+			} finally {
+				record.durationMs = performance.now() - startedAt;
+			}
 		};
 		return [
 			{
@@ -1906,6 +1935,7 @@ class DurableExecutionRuntime implements DurableExecution {
 					const [model, classifierContext, options] = args as [unknown, unknown, { signal?: AbortSignal } | undefined];
 					return await runCall("models.classify", "classifier", model, classifierContext, options, (resolved, checked, callOptions) =>
 						models.classify(resolved as Parameters<CodemodeModelRuntime["classify"]>[0], checked as never, callOptions),
+						args,
 					);
 				},
 			},
@@ -1916,6 +1946,7 @@ class DurableExecutionRuntime implements DurableExecution {
 					const [model, imagesContext, options] = args as [unknown, unknown, { signal?: AbortSignal } | undefined];
 					const result = (await runCall("models.generateImages", "image", model, imagesContext, options, (resolved, checked, callOptions) =>
 						models.generateImages(resolved as Parameters<CodemodeModelRuntime["generateImages"]>[0], checked as never, callOptions),
+						args,
 					)) as { output?: readonly { type: string }[] };
 					run.generatedImages += (result.output ?? []).filter((block) => block.type === "image").length;
 					return result;
@@ -1930,7 +1961,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		const { code, options } = parseCodemodeSource(args.code);
 		await this.waitForScriptServers(code, context);
 		const entries = await this.callableEntries(api, context);
-		const run: ScriptRun = { calls: [], usage: undefined, generatedImages: 0 };
+		const run: ScriptRun = { callId: api.callId, calls: [], usage: undefined, generatedImages: 0 };
 		const sandbox = new CodemodeSandbox({
 			tools: entries.map((entry) => ({
 				name: entry.name,
@@ -1943,7 +1974,10 @@ class DurableExecutionRuntime implements DurableExecution {
 			wasm: this.wasm,
 		});
 		const result = await this.runSandbox(sandbox, code, api, context);
-		for (const call of run.calls) if (call.status === "running") call.status = "cancelled";
+		for (const call of run.calls) if (call.status === "running") {
+			call.status = "cancelled";
+			call.error = callPreview(result.ok ? "Script call ended" : result.error.message, 500);
+		}
 		if (result.ok) await this.writeStore(api, context, result.storeWrites);
 		return await this.scriptResult(result, run, options.maxOutputTokens, startedAt);
 	}
@@ -1980,7 +2014,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	private async scriptResult(result: CodemodeResult, run: ScriptRun, maxOutputTokens: number | undefined, startedAt: number): Promise<Durable.ToolExecutionResult<JsonValue>> {
 		const items = this.scriptItems(result, run);
 		const bounded = await this.boundOutput(items, maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS);
-		const details: Record<string, JsonValue> = { calls: run.calls.map((call) => ({ name: call.name, status: call.status, durationMs: Math.round(call.durationMs) })) };
+		const details: Record<string, JsonValue> = { calls: run.calls.map((call) => ({ ...call, durationMs: Math.round(call.durationMs) })) };
 		if (bounded.fullOutputPath !== undefined) details.fullOutputPath = bounded.fullOutputPath;
 		const wallTime = ((performance.now() - startedAt) / 1000).toFixed(1);
 		return {
