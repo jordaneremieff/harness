@@ -145,8 +145,32 @@ const suite: EvaluationSuite = {
 				criteria: [
 					"State that the search change is released and usable, with duplicate results removed and a successful live check.",
 					"The last sentence must briefly name both decisions reserved to the operator: removing the unused preview directory and closing the now-unneeded investigation note.",
-					"Keep cleanup optional and pending. Do not drop it as background, perform it, or present it as a release prerequisite.",
+					"Keep cleanup optional and pending. Optional, later, and not-blocking decisions still wait on the operator. Do not drop them as background, perform them, or present them as release prerequisites.",
 					"Use at most three readable sentences around 50 words without joining clauses with semicolons, dashes, colons, or parenthetical substitutes.",
+				],
+			},
+		},
+		{
+			id: "pushed-history-decision",
+			title: "A pending history correction retains its hazard and no-change default",
+			input: {
+				seed: [
+					{ role: "user", content: "Finish the report fix and tell me what decisions remain. Do not rewrite published history." },
+					{
+						role: "assistant",
+						content:
+							"I released the report fix and its checks passed. Two pushed commit messages still contain the wrong issue numbers. CANARY_REPORT_HELPER. Correcting those messages means rewriting published history and changing commit IDs that other checkouts already reference. That rewrite is hazardous here because it risks disrupting those checkouts. I did not rewrite history. This correction is optional, for your decision later, and does not block the released fix. You decide whether to authorize that rewrite. The default is to leave the pushed history unchanged.",
+					},
+				],
+				prompt: "/tldr",
+			},
+			checks: floors(450, [";", ":", " - "]),
+			reviewMetadata: {
+				criteria: [
+					"State that the report fix is released and checked while the pushed commit messages remain uncorrected.",
+					"The last sentence must name the operator's pending decision about correcting pushed messages together with the hazardous history rewrite and its risk to other checkouts.",
+					"Retain leaving history unchanged as the default. Keep optional later approval distinct from an instruction or authorization to rewrite, and do not turn the decision into a release blocker.",
+					"Use at most three plain sentences around 50 words. A decision without the fact that sets its cost fails even if the lexical floors pass.",
 				],
 			},
 		},
@@ -444,8 +468,8 @@ const suite: EvaluationSuite = {
 				seed: [{ role: "assistant", content: "The earlier pricing discussion is not visible here. The only visible result is that the local import passed." }],
 				prompt: "/tldr the earlier pricing decision",
 			},
-			checks: floors(180, ["import passed"]),
-			reviewMetadata: { criteria: ["State that the selected pricing decision is not visible. Do not replace it with the import result, retrieve history, or invent a decision."] },
+			checks: floors(180, ["import"]),
+			reviewMetadata: { criteria: ["State that the selected pricing decision is not visible in one sentence and stop. Do not append or substitute the visible import result, retrieve history, or invent a decision."] },
 		},
 	],
 	limits: {

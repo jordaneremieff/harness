@@ -16,6 +16,8 @@ const examples: Record<string, string> = {
 		"- Save stays visible on small screens.\n- Keyboard focus returns to the name field after an error.\n- Cancel discards unsaved edits.\n\nLocal checks passed, but these changes are not released.",
 	"shipped-with-optional-cleanup":
 		"I released the search fix that removes duplicate results. The live check passed, and search is ready to use. You still decide whether to remove the unused preview directory and close the unnecessary investigation note.",
+	"pushed-history-decision":
+		"The report fix is released and passed its checks. The pushed commit messages still contain wrong issue numbers. You decide whether to rewrite that history despite the risk to other checkouts, with no rewrite as the default.",
 	"agent-work-attribution":
 		"My audit corrected the guide's false claim of unlimited exports to the actual 20 MB limit. A review agent checked the edit, and I committed it locally without publication. You decide whether to publish the corrected guide.",
 	"agent-coined-term":

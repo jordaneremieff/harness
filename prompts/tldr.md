@@ -18,7 +18,8 @@ Without a hint, summarize the latest substantive discussion: the operator's
 request and the answer or work about it. If the latest reply is only a receipt
 or "done, see above", summarize the answer it refers to. Include later
 corrections and changed limits. Exclude unrelated earlier topics unless the
-hint selects them. If the selected context is missing, say so without guessing.
+hint selects them. If the selected context is missing, say so in one sentence
+and stop. Do not append an unrelated visible result.
 
 Default to at most three plain sentences, about 50 words, unless the hint
 asks for more. Follow a requested length or form. A repeated /tldr gets a
@@ -51,7 +52,9 @@ is not a repair. Use no headings or bold labels by default. Use a simple list
 when requested or for genuinely separate items. Honor requested formatting.
 These examples are not exhaustive. Write a clear person-to-person explanation.
 Return only the summary, without a repair narrative, closing question, or menu.
-If anything waits on the operator, name it briefly in the last sentence,
-including optional decisions. Combine small pending items in that sentence.
+If anything waits on the operator, name it briefly in the last sentence.
+Decisions labeled optional, later, or not blocking still count. Keep each
+decision's warning, hazard, irreversible step, or stated default with it.
+Combine small pending items in that sentence.
 Otherwise, end with the result. Invent no next step. If there is nothing
 substantive to summarize, say so in one sentence.
