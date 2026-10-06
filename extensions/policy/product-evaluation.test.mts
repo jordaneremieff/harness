@@ -3,7 +3,7 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Compile } from "typebox/compile";
 import type { TranscriptEvent } from "vitest-evals";
 import { piSdkAdapter, runDeterministicChecks } from "../../evals/subjects/pi-sdk.mts";
@@ -77,6 +77,7 @@ function harness(mode: PolicyMode) {
 	} as unknown as ExtensionContext;
 	registerProductFixture(
 		{
+			events: createEventBus(),
 			on(name: string, handler: Handler) {
 				hooks.set(name, [...(hooks.get(name) ?? []), handler]);
 			},

@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { it } from "node:test";
 
 import type { Message } from "@earendil-works/pi-ai";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import type { TranscriptEvent } from "vitest-evals";
 
 import { normalizePiTranscript, runDeterministicChecks } from "../evals/subjects/pi-sdk.mts";
@@ -36,6 +37,7 @@ function createPolicyHarness(extensionFlags: Record<string, boolean | string> | 
 	const registeredFlags = new Set<string>();
 	const flagValues = new Map(Object.entries(extensionFlags ?? {}));
 	const pi = {
+		events: createEventBus(),
 		on(event: string, handler: Handler) {
 			handlers.set(event, handler);
 		},
