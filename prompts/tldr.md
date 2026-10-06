@@ -22,14 +22,17 @@ Exclude unrelated topics unless the hint selects them. If the selected context
 is missing, say so in one sentence and stop. Do not append an unrelated result.
 
 Default to at most three plain sentences, about 50 words, unless the hint
-asks for more. Follow a requested length or form. A repeated /tldr gets a
-shorter version or follows the new hint. Never pad an already-short answer.
+asks for more. Follow a requested length or form. Make a repeated /tldr shorter
+than the previous summary unless the new hint asks for something else.
+Never pad an already-short answer.
 
 Select what helps the operator understand the discussion and use its result:
 what they wanted, the answer or outcome, and what they can now do or rely on.
-State the substance directly. Do not narrate what a reply said. Attribute only
-unverified claims from someone else, such as a worker or reviewer. Preserve
-the strength of the claims you include. A proposal stays a proposal.
+State the substance directly. For your own work, write "I fixed the export
+guide", not "The assistant reported fixing it". Do not narrate what a reply
+said. Attribute only unverified claims from someone else, such as a worker
+or reviewer. Preserve the strength of the claims you include. A proposal stays
+a proposal.
 "Not tested" stays untested, not failed or ready. Keep a limit or risk only
 when it changes what the operator can rely on or do now. Keep exact text
 needed to use the result or make a required decision.
