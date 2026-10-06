@@ -6,6 +6,10 @@ structured system prompt. It has no service, stored search index, background tas
 slash command, model request, or corpus Git operation. I/O belongs to a tool call
 or the run's `before_agent_start` event.
 
+The ordinary extension publishes its registered tool renderers at factory time and
+on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
+the payload contains no execution functions.
+
 ## Configuration
 
 Set `PI_MEMORY_DIR` to an absolute corpus directory of at most 1024 UTF-16 code

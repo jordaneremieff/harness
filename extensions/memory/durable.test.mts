@@ -21,6 +21,7 @@ function emitContribution(): MemoryDurableContribution {
 		registerTool: () => {},
 		on: () => () => {},
 		events: {
+			on: () => () => {},
 			emit: (channel: string, data: unknown) => {
 				if (channel === "durable:contribution") contributions.push(data);
 			},
