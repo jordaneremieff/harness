@@ -1331,8 +1331,13 @@ function settledCallRecord(record: ScriptCallRecord, result: NestedCallResult | 
 interface ScriptRun {
 	readonly callId: string;
 	readonly calls: ScriptCallRecord[];
+	readonly publish: () => void;
 	usage: Usage | undefined;
 	generatedImages: number;
+}
+
+function scriptDetails(run: ScriptRun) {
+	return { calls: run.calls.map((call) => ({ ...call, durationMs: Math.round(call.durationMs) })) };
 }
 
 function combineUsage(first: Usage, second: Usage): Usage {
@@ -1768,6 +1773,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		const startedAt = performance.now();
 		const record: ScriptCallRecord = { id: callId, name, args: callArgs(args), status: "running", durationMs: 0 };
 		sandbox.run.calls.push(record);
+		sandbox.run.publish();
 		const controller = new AbortController();
 		let taskId: Durable.TaskId<NestedCallResult> | undefined;
 		let settled: Durable.SettledTask<NestedCallResult>;
@@ -1786,6 +1792,7 @@ class DurableExecutionRuntime implements DurableExecution {
 			record.durationMs = performance.now() - startedAt;
 			const failure = record.status === "cancelled" ? new Error(`Tool "${name}" was cancelled because the script call ended`) : error;
 			record.error = callPreview(errorText(failure), 500);
+			sandbox.run.publish();
 			throw failure;
 		} finally {
 			if (taskId !== undefined) this.abortControllers.delete(taskId);
@@ -1795,6 +1802,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		const result = "result" in outcome ? outcome.result : undefined;
 		addUsage(sandbox.run, result?.usage);
 		const failure = settledCallRecord(record, result, outcome.status, callSignal.aborted);
+		sandbox.run.publish();
 		return toScriptValue(entry, result, failure);
 	}
 
@@ -1882,6 +1890,7 @@ class DurableExecutionRuntime implements DurableExecution {
 			else checkImagesContext(context);
 			const record: ScriptCallRecord = { id: `${run.callId}/${run.calls.length + 1}`, name, args: callArgs(args), status: "running", durationMs: 0 };
 			run.calls.push(record);
+			run.publish();
 			const startedAt = performance.now();
 			try {
 				const result = await limit(() => execute(resolved, context, options));
@@ -1896,6 +1905,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				throw error;
 			} finally {
 				record.durationMs = performance.now() - startedAt;
+				run.publish();
 			}
 		};
 		return [
@@ -1961,7 +1971,11 @@ class DurableExecutionRuntime implements DurableExecution {
 		const { code, options } = parseCodemodeSource(args.code);
 		await this.waitForScriptServers(code, context);
 		const entries = await this.callableEntries(api, context);
-		const run: ScriptRun = { callId: api.callId, calls: [], usage: undefined, generatedImages: 0 };
+		const run: ScriptRun = {
+			callId: api.callId, calls: [], usage: undefined, generatedImages: 0,
+			// Durable owns throttling and reports commit failures; progress never delays execution.
+			publish: () => { void api.details(scriptDetails(run), context).catch(() => undefined); },
+		};
 		const sandbox = new CodemodeSandbox({
 			tools: entries.map((entry) => ({
 				name: entry.name,
@@ -1977,6 +1991,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		for (const call of run.calls) if (call.status === "running") {
 			call.status = "cancelled";
 			call.error = callPreview(result.ok ? "Script call ended" : result.error.message, 500);
+			run.publish();
 		}
 		if (result.ok) await this.writeStore(api, context, result.storeWrites);
 		return await this.scriptResult(result, run, options.maxOutputTokens, startedAt);
@@ -2014,7 +2029,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	private async scriptResult(result: CodemodeResult, run: ScriptRun, maxOutputTokens: number | undefined, startedAt: number): Promise<Durable.ToolExecutionResult<JsonValue>> {
 		const items = this.scriptItems(result, run);
 		const bounded = await this.boundOutput(items, maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS);
-		const details: Record<string, JsonValue> = { calls: run.calls.map((call) => ({ ...call, durationMs: Math.round(call.durationMs) })) };
+		const details: Record<string, JsonValue> = scriptDetails(run);
 		if (bounded.fullOutputPath !== undefined) details.fullOutputPath = bounded.fullOutputPath;
 		const wallTime = ((performance.now() - startedAt) / 1000).toFixed(1);
 		return {

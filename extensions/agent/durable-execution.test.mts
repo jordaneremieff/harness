@@ -4,12 +4,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { ToolExecutionResult } from "@earendil-works/pi-durable";
+import { LiveDoc, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-coding-agent";
 import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
@@ -17,7 +17,7 @@ import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema
 import { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } from "./primary-channel.ts";
 import { createDurableExecution, checkClassifierContext, checkImagesContext, loadMcpConfig } from "./durable-execution.ts";
 import { reconcileDeliveries } from "./durable-controls.ts";
-import { answerRuntime, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
+import { answerRuntime, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension, type ExecutionFixture } from "./durable-execution-fixture.mts";
 import { createDurableServices } from "./durable-services.ts";
 import { DurableHost } from "./durable-host.ts";
 import { createAgentContribution } from "./durable-agents.ts";
@@ -398,6 +398,166 @@ it("sends stored OAuth tokens to an HTTP server and reads its resources", { time
 	assert.equal(output.listed.resources[0]?.server, "remote-docs");
 	assert.equal(output.listed.resources[0]?.uri, "docs://readme");
 	assert.equal(output.read.contents[0]?.text, "hello resource");
+});
+
+function observeScriptApi(t: TestContext, f: ExecutionFixture, decorate: (api: ToolExecutionApi) => ToolExecutionApi): void {
+	const registered = f.services.registry.snapshot().tools().find(({ tool }) => tool.name === "codemode");
+	assert.ok(registered);
+	const execute = registered.tool.execute;
+	t.mock.method(registered.tool, "execute", (...[args, api, context]: Parameters<typeof execute>) => execute(args, decorate(api), context));
+}
+
+it("publishes immutable running and settled nested calls without waiting for details commits", { timeout: 30000 }, async (t) => {
+	const entered = deferred();
+	let nestedId: ToolExecutionApi["taskId"] | undefined;
+	const f = await executionFixture(t, {
+		code: `await tools.structured({}); try { await tools.guarded({ marker: "blocked" }); } catch {} try { await tools.abort_step({ marker: "cancel" }); } catch {} return "done";`,
+		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.abort-step", tools: [host.durable.defineTool({
+			name: "abort_step", description: "Hold a nested call until its task is aborted.", parameters: Type.Object({ marker: Type.String() }), replay: "safe",
+			execute: async (_args, api, context) => {
+				nestedId = api.taskId; entered.resolve();
+				await new Promise<void>((_resolve, reject) => {
+					const signal = context.abortSignal;
+					if (signal?.aborted) reject(signal.reason);
+					else signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+				return { content: [] };
+			},
+		})] })],
+	});
+	const commit = deferred();
+	t.after(() => commit.resolve());
+	const snapshots: CodemodeToolDetails[] = [];
+	const copies: CodemodeToolDetails[] = [];
+	const abortedContexts: boolean[] = [];
+	observeScriptApi(t, f, (api) => ({
+		...api,
+		details: (value, context) => {
+			const snapshot = value as unknown as CodemodeToolDetails;
+			snapshots.push(snapshot); copies.push(structuredClone(snapshot));
+			abortedContexts.push(context.abortSignal?.aborted === true);
+			return commit.promise;
+		},
+	}));
+	const submitted = f.submit("publish nested call transitions");
+	await entered.promise;
+	assert.ok(nestedId);
+	assert.equal(await f.harness.abortTask(nestedId, BACKGROUND_CONTEXT), "marked");
+	const result = await submitted;
+	assert.equal(toolResultBody(result.toolResults.at(-1)), "done");
+	assert.deepEqual(snapshots.map((snapshot) => snapshot.calls.at(-1)?.status), ["running", "ok", "running", "error", "running", "cancelled"]);
+	assert.deepEqual(snapshots, copies, "later settlement never mutates an earlier snapshot");
+	assert.deepEqual(snapshots.at(-1), result.toolResults.at(-1)?.details);
+	assert.deepEqual(snapshots.at(-1)?.calls.map((call) => [call.id, call.args]), [["codemode-call/1", "{}"], ["codemode-call/2", '{"marker":"blocked"}'], ["codemode-call/3", '{"marker":"cancel"}']]);
+	assert.match(snapshots[3].calls[1].error ?? "", /denied by policy/u);
+	assert.equal(snapshots[5].calls[2].error, "Tool abort_step was aborted");
+	assert.ok(abortedContexts.every((aborted) => !aborted), "nested task cancellation leaves the outer publication context live");
+	assert.ok(snapshots.every((snapshot) => snapshot.calls.every((call) => Number.isInteger(call.durationMs))));
+	commit.resolve();
+});
+
+it("publishes model starts and every result or rejection with stable IDs and costs", { timeout: 30000 }, async (t) => {
+	const model = { provider: "fixture", id: "classifier" };
+	const context = { state: {}, questions: { q: { type: "bool", instructions: "Check", criteria: { true: "yes", false: "no" } } } };
+	const f = await executionFixture(t, { code: `for (let i = 0; i < 5; i++) { try { await models.classify(${JSON.stringify(model)}, ${JSON.stringify(context)}); } catch {} } await models.generateImages(${JSON.stringify(model)}, { input: [{ type: "text", text: "square" }] }); return "done";` });
+	const runtime = f.services.services.modelRuntime;
+	runtime.getModelOfType = (() => model) as typeof runtime.getModelOfType;
+	let index = 0;
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	runtime.classify = (async () => {
+		const current = index++;
+		if (current === 3) throw new Error("model rejection");
+		if (current === 4) throw Object.assign(new Error("model cancellation"), { name: "AbortError" });
+		return { api: "fixture-classifier", provider: model.provider, model: model.id, answers: {}, timestamp: Date.now(), stopReason: ["stop", "error", "aborted"][current], errorMessage: current === 0 ? undefined : "model failure", usage };
+	}) as typeof runtime.classify;
+	runtime.generateImages = (async () => ({ api: "fixture-image", provider: model.provider, model: model.id, timestamp: Date.now(), output: [], stopReason: "stop", usage })) as typeof runtime.generateImages;
+	const commit = deferred();
+	t.after(() => commit.resolve());
+	const snapshots: CodemodeToolDetails[] = [];
+	const copies: CodemodeToolDetails[] = [];
+	observeScriptApi(t, f, (api) => ({ ...api, details: (value) => {
+		const snapshot = value as unknown as CodemodeToolDetails;
+		snapshots.push(snapshot); copies.push(structuredClone(snapshot)); return commit.promise;
+	} }));
+	const result = await f.submit("publish model call transitions");
+	assert.deepEqual(snapshots.map((snapshot) => snapshot.calls.at(-1)?.status), ["running", "ok", "running", "error", "running", "cancelled", "running", "error", "running", "cancelled", "running", "ok"]);
+	assert.deepEqual(snapshots, copies);
+	assert.deepEqual(snapshots.at(-1), result.toolResults.at(-1)?.details);
+	for (const [i, snapshot] of snapshots.entries()) {
+		assert.equal(snapshot.calls.at(-1)?.id, `codemode-call/${Math.floor(i / 2) + 1}`);
+		assert.equal(snapshot.calls.at(-1)?.args, i < 10 ? JSON.stringify([model, context]) : JSON.stringify([model, { input: [{ type: "text", text: "square" }] }]));
+	}
+	assert.deepEqual(snapshots.at(-1)?.calls.map((call) => call.cost), [0, 0, 0, undefined, undefined, 0]);
+	assert.equal(snapshots[7].calls[3].error, "model rejection");
+	assert.equal(snapshots[9].calls[4].error, "model cancellation");
+	commit.resolve();
+});
+
+it("observes rejected details promises without changing the final explicit details", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { code: `await tools.structured({}); return "done";` });
+	const contexts: Parameters<ToolExecutionApi["details"]>[1][] = [];
+	observeScriptApi(t, f, (api) => ({ ...api, details: (_value, context) => {
+		contexts.push(context); return Promise.reject(new Error("progress commit refused"));
+	} }));
+	const result = await f.submit("reject progress commits");
+	assert.equal(toolResultBody(result.toolResults.at(-1)), "done");
+	assert.equal(contexts.length, 2);
+	assert.equal(contexts[0], contexts[1], "publication retains the owned execution context");
+	const details = result.toolResults.at(-1)?.details as unknown as CodemodeToolDetails;
+	assert.equal(details.calls[0].status, "ok");
+});
+
+it("commits mixed nested-call progress to the public native live tool slot", { timeout: 30000 }, async (t) => {
+	const first = deferred(); const last = deferred(); const modelRelease = deferred();
+	const running = deferred(); const modelRunning = deferred(); const modelSettled = deferred();
+	t.after(() => { first.resolve(); last.resolve(); modelRelease.resolve(); });
+	const model = { provider: "fixture", id: "classifier" };
+	const context = { state: {}, questions: { q: { type: "bool", instructions: "Check", criteria: { true: "yes", false: "no" } } } };
+	const f = await executionFixture(t, {
+		code: `await tools.progress_step({ stage: "first" }); await models.classify(${JSON.stringify(model)}, ${JSON.stringify(context)}); await tools.progress_step({ stage: "last" }); return "done";`,
+		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.progress", tools: [host.durable.defineTool({
+			name: "progress_step", description: "Hold a nested step until released.", parameters: Type.Object({ stage: Type.String() }), replay: "safe",
+			execute: async (args) => { await (args.stage === "first" ? first.promise : last.promise); return { content: [{ type: "text" as const, text: "step done" }] }; },
+		})] })],
+	});
+	const runtime = f.services.services.modelRuntime;
+	runtime.getModelOfType = (() => model) as typeof runtime.getModelOfType;
+	runtime.classify = (async () => {
+		await modelRelease.promise;
+		return { api: "fixture-classifier", provider: model.provider, model: model.id, answers: {}, timestamp: Date.now(), stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+	}) as typeof runtime.classify;
+	const snapshots: CodemodeToolDetails[] = [];
+	const pending = new Set<Promise<void>>();
+	const readErrors: unknown[] = [];
+	const stop = f.harness.subscribeCommits(() => {
+		const read = f.harness.snapshot(LiveDoc, f.conversation.id, BACKGROUND_CONTEXT).then((live) => {
+			const slot = live?.tools?.find((tool) => tool.callId === "codemode-call" && tool.status === "running");
+			if (!slot?.details) return;
+			const details = slot.details as unknown as CodemodeToolDetails;
+			snapshots.push(details);
+			if (details.calls.length === 1 && details.calls[0].status === "running") running.resolve();
+			if (details.calls.length === 2 && details.calls[1].status === "running") modelRunning.resolve();
+			if (details.calls.length === 3 && details.calls[1].status === "ok") modelSettled.resolve();
+		});
+		pending.add(read); void read.then(() => pending.delete(read), (error) => { pending.delete(read); readErrors.push(error); });
+	});
+	t.after(stop);
+	const submitted = f.submit("observe native live progress");
+	await running.promise;
+	const original = structuredClone(snapshots.at(-1));
+	first.resolve(); await modelRunning.promise;
+	assert.equal(snapshots.at(-1)?.calls[0].status, "ok");
+	modelRelease.resolve(); await modelSettled.promise;
+	assert.equal(snapshots.at(-1)?.calls[1].cost, 0);
+	assert.equal(snapshots.at(-1)?.calls[2].status, "running");
+	assert.deepEqual(snapshots[0], original, "committed snapshots never change after subsequent updates");
+	last.resolve();
+	const result = await submitted;
+	stop(); await Promise.all(pending);
+	assert.deepEqual(readErrors, []);
+	const details = result.toolResults.at(-1)?.details as unknown as CodemodeToolDetails;
+	assert.deepEqual(details.calls.map((call) => [call.id, call.status]), [["codemode-call/1", "ok"], ["codemode-call/2", "ok"], ["codemode-call/3", "ok"]]);
+	assert.equal(toolResultBody(result.toolResults.at(-1)), "done");
 });
 
 it("preserves nested call IDs, compact argument previews, errors, and rounded durations", { timeout: 30000 }, async (t) => {
@@ -786,6 +946,12 @@ it("does not wait for an indirect server that never answers", { timeout: 30000 }
 
 it("aborts an owned nested call with the conversation and reaches idle", { timeout: 30000 }, async (t) => {	const entered = deferred();
 	const f = await executionFixture(t, { code: `try { await tools.hanging({}); return "ok"; } catch (error) { return { error: String(error.message ?? error) }; }` });
+	const publications: Array<{ status: string | undefined; aborted: boolean }> = [];
+	const rejections: unknown[] = [];
+	observeScriptApi(t, f, (api) => ({ ...api, details: (value, context) => {
+		publications.push({ status: (value as unknown as CodemodeToolDetails).calls.at(-1)?.status, aborted: context.abortSignal?.aborted === true });
+		return api.details(value, context).catch((error) => { rejections.push(error); throw error; });
+	} }));
 	(globalThis as Record<string, unknown>).__execFixture = { onEnter: () => entered.resolve(), aborted: false };
 	try {
 		const submission = await f.conversation.submit({ type: "input", content: "hang the tool" }, BACKGROUND_CONTEXT);
@@ -801,6 +967,9 @@ it("aborts an owned nested call with the conversation and reaches idle", { timeo
 		assert.equal(inspection.tasks.length, 0, "the owned nested task settled with its owner");
 		const fixtureState = (globalThis as Record<string, unknown>).__execFixture as { aborted?: boolean };
 		assert.equal(fixtureState.aborted, true, "the nested tool observed its cancellation");
+		assert.deepEqual(publications[0], { status: "running", aborted: false });
+		assert.ok(publications.some((publication) => publication.status === "cancelled" && publication.aborted), "the terminal publication uses the already-aborted outer context");
+		assert.ok(rejections.length > 0, "Durable rejects details before updating an already-aborted context");
 	} finally {
 		delete (globalThis as Record<string, unknown>).__execFixture;
 	}
