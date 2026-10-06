@@ -19,7 +19,6 @@ const DURABLE_VERSION: string = JSON.parse(readFileSync(require.resolve("@earend
 export const BASE_OPERATIONS: Readonly<Record<string, OperationContract>> = {
 	status: { request: "status/1.0.0", response: "5df139e808900bee9bf561760b4f7da690df743f336609ec26ab0a7a11957dc1", durable: DURABLE_VERSION },
 	submit: { request: "submit/1.1.0", response: "submit/1.1.0" },
-	configure: { request: "configure/1.0.0", response: "configure/1.0.0" },
 	reset: { request: "reset/1.0.0", response: "reset/1.0.0" },
 	list: { request: "list/1.0.0", response: "76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600" },
 	dashboard: { request: "dashboard/1.0.0", response: "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241" },

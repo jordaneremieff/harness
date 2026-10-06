@@ -143,7 +143,7 @@ function awaited(context: TranscriptContext, mode: string, signal?: AbortSignal)
 	if (last?.role === "toolResult" && toolName === "agent_await") return completed([{ type: "text", text: "AWAIT_FINISHED" }], "stop");
 	if (last?.role === "toolResult" && toolName === "agent_spawn") {
 		const body = typeof last.content === "string" ? last.content : last.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
-		const result = JSON.parse(body.split("\nResult: ")[1]);
+		const result = JSON.parse(body.split("\nResult: ")[1].split("\n")[0]);
 		return completed([{ type: "toolCall", id: "await-local-result", name: "agent_await", arguments: { results: [result] } }], "toolUse");
 	}
 	if (mode === "await-local") return completed([{ type: "toolCall", id: "spawn-await-source", name: "agent_spawn", arguments: { prompt: "HELD_AWAIT_SOURCE", name: "await source", checkInMinutes: 0 } }], "toolUse");

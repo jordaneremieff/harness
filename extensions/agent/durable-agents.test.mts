@@ -6,10 +6,15 @@
  * delivery, and reports do not duplicate.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { agentPreferencesPath, type ExecutionSelection } from "./agent-preferences.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { it } from "node:test";
+import { after, it } from "node:test";
+
+const preferenceOverride = process.env.PI_AGENT_PREFERENCES_FILE;
+delete process.env.PI_AGENT_PREFERENCES_FILE;
+after(() => { if (preferenceOverride !== undefined) process.env.PI_AGENT_PREFERENCES_FILE = preferenceOverride; });
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, type AssistantMessage, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -1086,7 +1091,7 @@ it("keeps default check-ins and native scheduled delivery token-idle during the 
 		callerCalls++;
 		if (last?.role === "user" && text === "START DEFAULT") return fauxAssistantMessage([fauxToolCall("agent_spawn", { prompt: "CONTRACT: reply HELD" })], { stopReason: "toolUse" });
 		if (last?.role === "toolResult" && last.toolName === "agent_spawn") {
-			const reference = JSON.parse(text.split("\nResult: ")[1]);
+			const reference = JSON.parse(text.split("\nResult: ")[1].split("\n")[0]);
 			return fauxAssistantMessage([fauxToolCall("agent_await", { results: [reference] })], { stopReason: "toolUse" });
 		}
 		return fauxAssistantMessage("FINAL");
@@ -1138,6 +1143,60 @@ it("reports the requested and effective thinking level when native creation clam
 	assert.match(spawn?.text ?? "", /requested max; effective off/u);
 	assert.ok(spawn);
 	assert.deepEqual((spawn.details as { structuredContent: { thinking: unknown } }).structuredContent.thinking, { requested: "max", effective: "off" });
+});
+
+it("retains native preset selection through replay after a machine file edit", async (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "native-preset-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	const path = agentPreferencesPath(agentDir);
+	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "faux/faux-1", thinkingLevel: "max", role: "Review", checkInMinutes: 0 } } }));
+	const registry = Durable.createRegistry(); const route = createRoute();
+	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts" }).create({ durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
+	let original: ExecutionSelection | undefined;
+	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : { ...tool, execute: async (args, api, ctx) => {
+		const first = await tool.execute(args, api, ctx);
+		original = (first.details as { structuredContent: { selection: ExecutionSelection } }).structuredContent.selection;
+		writeFileSync(path, "invalid json");
+		return tool.execute(args, api, ctx);
+	} }) });
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_spawn", args: { preset: "review" } });
+	await say(root, "Create a preset child");
+	const outcome = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_spawn");
+	assert.ok(outcome && !outcome.isError, outcome?.text);
+	const selection = (outcome.details as { structuredContent: { selection: ExecutionSelection } }).structuredContent.selection;
+	assert.deepEqual(selection, original);
+	assert.equal(selection.preset, "review");
+	assert.deepEqual(selection.unapplied, ["role", "checkInMinutes"]);
+	assert.deepEqual(selection.thinking, { requested: "max", effective: "off" });
+	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 1);
+	assert.match(getCurrentSystemPrompt(route.requests.at(-1) ?? []), /Machine preferences are unavailable/u);
+});
+
+it("forwards native preset inputs and snapshots through handle, foreign, place, and configure dispatch", async (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "native-preset-dispatch-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	writeFileSync(agentPreferencesPath(agentDir), JSON.stringify({ version: 1, presets: { review: { model: "faux/faux-1", checkInMinutes: 2 } } }));
+	const seen: Array<{ method: string; params: Readonly<Record<string, unknown>> }> = [];
+	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts", dispatch: async (method, params) => { seen.push({ method, params }); return { sessionId: "foreign-storage", selection: { marker: "retained" } }; } }).create({ durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
+	const registry = Durable.createRegistry(); registry.install(extension);
+	const route = createRoute();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push(
+		{ tool: "agent_spawn", args: { handle: "reviewer", preset: "review" } },
+		{ tool: "agent_spawn", args: { cwd: agentDir, preset: "review" } },
+		{ tool: "agent_place", args: { area: agentDir, preset: "review", model: "faux/faux-1", thinkingLevel: "high", prompt: "Task" } },
+		{ tool: "agent_configure", args: { sessionId: "foreign-storage", preset: "review", thinkingLevel: "low" } },
+	);
+	for (let index = 0; index < 4; index++) await say(root, "Use preset controls");
+	assert.deepEqual(seen.map((entry) => entry.method), ["resolve-agent", "spawn", "place", "configure"]);
+	for (const entry of seen) { assert.equal(entry.params.preset, "review"); assert.ok(entry.params.preferenceSnapshot); }
+	assert.equal(seen[2].params.checkInMinutes, undefined, "place must not override a preset with an early environment default");
+	assert.equal(seen[2].params.thinkingLevel, "high");
+	assert.equal(seen[3].params.thinkingLevel, "low");
+	assert.match((await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_place")?.text ?? "", /retained/u);
 });
 
 it("returns retained native creation facts without revalidating a later catalog", async (t) => {
@@ -1604,7 +1663,7 @@ it("spawns a native child through the existing temporary-directory alias", async
 	assert.equal(reference.sessionId, `${storageId}:${child.conversationId}`);
 	const admitted = await harness.commit((tx) => tx.submissionByRequest(child.conversationId as Durable.ConversationId, reference.requestId), context);
 	assert.equal(admitted?.id, reference.submissionId);
-	assert.equal(outcome?.text, `Spawned linked as conversation ${reference.sessionId} in your storage. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}`);
+	assert.ok(outcome.text.startsWith(`Spawned linked as conversation ${reference.sessionId} in your storage. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}\nExecution selection: `));
 });
 
 it("includes the busy-run boundary in native report receipts", async (t) => {
@@ -1773,7 +1832,8 @@ for (const minutes of [undefined, 0, 2.5]) it(`dispatches place with interval ${
 	assert.ok(place, "agent_place used the host dispatch");
 	assert.equal(place.params.area, area, "the dispatched area is resolved");
 	assert.equal(place.params.topic, "far");
-	assert.equal(place.params.checkInMinutes, minutes ?? 7);
+	assert.equal(place.params.checkInMinutes, minutes, "the manager resolves absent intervals after preset selection");
+	assert.ok(place.params.preferenceSnapshot);
 	assert.match(String(place.params.requestId), /^place:test-storage:\d+$/u);
 	assert.equal(place.params.senderIdentity, storageId);
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_place");

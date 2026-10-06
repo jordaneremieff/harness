@@ -35,6 +35,20 @@ function fixture(t: { after(fn: () => void): void }) {
 	};
 }
 
+it("keeps creation records within the host metadata envelope and 32768-byte bound", (t) => {
+	const { catalog, input } = fixture(t);
+	const records = [catalog.createTracked(input, "selected").record, catalog.createHandled(input, "reviewer", "Review").record];
+	const keys = new Set([...Object.keys(input), "storageId", "storagePath", "createdAt", "view", "threads", "recoveryDue"]);
+	for (const record of records) {
+		const bytes = readFileSync(catalog.path(record.storageId));
+		assert.ok(bytes.length <= 32768);
+		assert.ok(Object.keys(JSON.parse(bytes.toString())).every((key) => keys.has(key)));
+		assert.deepEqual(catalog.read(record.storageId), record);
+		writeFileSync(catalog.path(record.storageId), `${bytes.toString()}${" ".repeat(32769 - bytes.length)}`);
+		assert.throws(() => catalog.read(record.storageId), /bound/u);
+	}
+});
+
 it("publishes one complete handle seed without replacing creation defaults", (t) => {
 	const { catalog, input } = fixture(t);
 	const role = "😀".repeat(2000);

@@ -32,6 +32,8 @@ import { MANAGER_CONTRACT, operationContractMismatch } from "./version-contract.
 import { collaborationIdentity, collaborationStorage } from "./collaboration.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
+import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parseExecutionSelection, parsePreferenceSnapshot, executionInputDigest, type ExecutionSelection, type ExecutionFields, type PreferenceCatalog, type PreferenceSnapshot } from "./agent-preferences.ts";
+
 export const MANAGER_PROTOCOL = MANAGER_CONTRACT;
 export interface AgentCaller {
 	id: string;
@@ -42,8 +44,13 @@ export interface AgentCaller {
 	model?: { provider: string; modelId: string };
 	thinkingLevel?: string;
 	validateModel?: AgentManagerOptions["validateModel"];
+	preferenceCatalog?: PreferenceCatalog;
+	retainExecutionSelection?: (selection: ExecutionSelection) => void | Promise<void>;
 }
 interface AgentSpawnInput {
+	preset?: string;
+	selection?: ExecutionSelection;
+	preferenceSnapshot?: PreferenceSnapshot;
 	handle?: string;
 	role?: string;
 	cwd?: string;
@@ -306,10 +313,40 @@ export class AgentManager {
 		return id;
 	}
 
+	private executionInput(input: AgentSpawnInput, caller: AgentCaller, retained?: ExecutionFields): AgentSpawnInput & { selection: ExecutionSelection } {
+		if (input.selection !== undefined) {
+			const selection = parseExecutionSelection(input.selection);
+			if (selection.inputDigest !== executionInputDigest(input)) throw new Error("Request ID already belongs to different execution inputs");
+			return { ...input, ...selection.values, selection };
+		}
+		const model = retained ? retained.model : caller.model && `${caller.model.provider}/${caller.model.modelId}`;
+		const preferenceSnapshot = input.preferenceSnapshot === undefined ? readAgentPreferences(this.options.agentDir, caller.preferenceCatalog) : parsePreferenceSnapshot(input.preferenceSnapshot);
+		let selection = resolveExecutionPreset(preferenceSnapshot, input, { model, thinkingLevel: retained ? retained.thinkingLevel : caller.thinkingLevel ?? "off" }, { inherited: !retained, reused: !!retained, role: !!input.handle, checkIn: input.prompt !== undefined });
+		if (input.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, input.origin ?? "operator"); selection.origins.checkInMinutes = "default"; }
+		if (retained) selection = effectiveExecutionSelection(selection, retained.thinkingLevel);
+		const { role: _role, ...base } = input;
+		return { ...base, ...selection.values, selection, preferenceSnapshot };
+	}
+
+	private async reuseExecutionInput(input: AgentSpawnInput, caller: AgentCaller, record: CatalogRecord): Promise<AgentSpawnInput & { selection: ExecutionSelection }> {
+		if (input.selection !== undefined) return this.executionInput(input, caller);
+		let fields: ExecutionFields = {};
+		let unavailable: string | undefined;
+		try {
+			const profile = await this.observe(record, "profile-read", { sessionId: record.storageId }) as AgentProfile;
+			fields = { model: profile.model ? `${profile.model.provider}/${profile.model.modelId}` : undefined, thinkingLevel: profile.thinkingLevel ?? undefined };
+			if (fields.model === undefined || fields.thinkingLevel === undefined) unavailable = "The target profile has no complete retained model and thinking evidence.";
+		} catch (error) { unavailable = errorText(error).slice(0, 512); }
+		const selected = this.executionInput(input, caller, fields);
+		if (unavailable) selected.selection.diagnostics.push({ field: "retained", message: `Current retained execution evidence is unavailable: ${unavailable}` });
+		return selected;
+	}
+
 	private async handledRecord(input: AgentSpawnInput, caller: AgentCaller, handle: string): Promise<{ record: CatalogRecord; created: boolean }> {
 		try { return { record: this.catalog.read(handleStorageId(handle, this.catalog.root)), created: false }; }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-		return this.catalog.createHandled(await this.creationMetadata(input, caller), handle, input.role ?? "");
+		const metadata = await this.creationMetadata(input, caller);
+		return this.catalog.createHandled(metadata, handle, input.role ?? "");
 	}
 
 	private async retainedHandle(record: CatalogRecord, handle: string): Promise<unknown> {
@@ -320,21 +357,33 @@ export class AgentManager {
 		return { ...base, profile, availability: profile.live ? "live" : "retained" };
 	}
 
+	private async selectedHandle(input: AgentSpawnInput & { handle: string }, caller: AgentCaller, handle: string) {
+		let previous: CatalogRecord | undefined;
+		try { previous = this.catalog.read(handleStorageId(handle, this.catalog.root)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		let selected = { ...(previous ? await this.reuseExecutionInput(input, caller, previous) : this.executionInput(input, caller)), handle };
+		const { record: retained, created } = await this.handledRecord(selected, caller, handle);
+		if (!created && !previous) selected = { ...await this.reuseExecutionInput({ ...input, selection: undefined, preferenceSnapshot: selected.preferenceSnapshot }, caller, retained), handle };
+		if (created) selected.selection = effectiveExecutionSelection(selected.selection, retained.thinkingLevel);
+		return { selected, retained, created };
+	}
+
 	private async spawnHandled(input: AgentSpawnInput & { handle: string }, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		const handle = handleSlug(input.handle);
-		const { record: retained, created } = await this.handledRecord(input, caller, handle);
+		const { selected, retained, created } = await this.selectedHandle(input, caller, handle);
+		input = selected;
+		await caller.retainExecutionSelection?.(selected.selection);
 		const id = retained.storageId;
 		if (input.cwd !== undefined && retained.cwd !== realpathSync(resolve(caller.cwd, input.cwd))) throw new Error("The retained handle has a different cwd; creation defaults cannot change it");
 		const row: AgentConversationSummary = { id, storageId: id, cwd: retained.cwd, name: retained.name, model: { ...retained.model, thinkingLevel: retained.thinkingLevel }, modifiedAt: Date.parse(retained.createdAt), owner: "unknown", state: "starting", cost: 0, partial: false };
 		onCreated?.(row);
-		if (!created && input.prompt === undefined) return this.retainedHandle(retained, handle);
+		if (!created && input.prompt === undefined) return { ...await this.retainedHandle(retained, handle) as object, selection: input.selection };
 		const client = await this.connection(retained);
 		const profile = await client.request("profile-read", { sessionId: id }) as AgentProfile;
 		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
 		const requestId = input.requestId ?? randomUUID();
 		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
 		this.rosterChanged();
-		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, ...(created ? this.spawnThinking(input, caller, retained) : {}), ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
+		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, caller, retained) : {}), ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
 	}
 
 	private async creationMetadata(input: AgentSpawnInput, caller: AgentCaller): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
@@ -365,9 +414,16 @@ export class AgentManager {
 	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
 		if (input.role !== undefined) throw new Error("A creation role requires a handle; use agent_profile to configure another agent");
-		const metadata = await this.creationMetadata(input, caller);
+		const previous = input.requestId === undefined ? undefined : this.catalog.readRequest(caller.id, input.requestId);
+		if (previous && ((input.cwd !== undefined && realpathSync(resolve(caller.cwd, input.cwd)) !== previous.cwd) || input.name !== previous.name)) throw new Error("Spawn request ID already belongs to different agent configuration");
+		const selected = this.executionInput(input, caller);
+		input = selected;
+		const metadata = previous ?? await this.creationMetadata(input, caller);
 		const { cwd, model, thinkingLevel } = metadata;
-		const { record, created } = this.catalog.createTracked(metadata, input.requestId);
+		const selection = input.selection?.thinking ? selected.selection : effectiveExecutionSelection(selected.selection, thinkingLevel);
+		input = { ...selected, selection };
+		await caller.retainExecutionSelection?.(selection);
+		const { record, created } = previous ? { record: previous, created: false } : this.catalog.createTracked(metadata, input.requestId);
 		const row: AgentConversationSummary = {
 			id: record.storageId, storageId: record.storageId, cwd, name: input.name,
 			firstMessage: input.prompt, model: { ...model, thinkingLevel },
@@ -399,7 +455,7 @@ export class AgentManager {
 			if (versionError) throw versionError;
 			const requestId = input.requestId ?? randomUUID();
 			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
-			const outcome = { sessionId: record.storageId, cwd: record.cwd, admission, ...this.spawnThinking(input, caller, record), lifetime: "independent host process", ...(admission === undefined ? {} : { result: admittedResult(record.storageId, admission, requestId) }) };
+			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, caller, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: admittedResult(record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
 			this.rosterChanged();
@@ -506,14 +562,17 @@ export class AgentManager {
 		catch (error) { return { ...values, snapshotError: errorText(error) }; }
 	}
 
-	async place(input: { area?: string; topic?: string; prompt?: string; trust?: boolean; requestId?: string; origin?: DeliveryOrigin; checkInMinutes?: number }, caller: AgentCaller): Promise<unknown> {
+	async place(input: AgentSpawnInput & { area?: string; topic?: string }, caller: AgentCaller): Promise<unknown> {
 		const area = realpathSync(resolve(caller.cwd, input.area ?? "."));
 		const result = await this.places.withArea(area, async (existing) => {
 			if (existing) {
+				const selected = await this.reuseExecutionInput(input, caller, this.catalog.read(existing.sessionId));
+				input = { ...input, ...selected };
+				await caller.retainExecutionSelection?.(selected.selection);
 				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator"), ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
-				return { value: { ...response as object, sessionId: existing.sessionId }, sessionId: existing.sessionId, topic: existing.topic };
+				return { value: { ...response as object, sessionId: existing.sessionId, selection: input.selection }, sessionId: existing.sessionId, topic: existing.topic };
 			}
-			const created = await this.spawn({ cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, checkInMinutes: input.checkInMinutes, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) as { sessionId: string };
+			const created = await this.spawn({ preset: input.preset, selection: input.selection, preferenceSnapshot: input.preferenceSnapshot, model: input.model, thinkingLevel: input.thinkingLevel, cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, checkInMinutes: input.checkInMinutes, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) as { sessionId: string };
 			return { value: created, sessionId: created.sessionId, topic: input.topic };
 		});
 		return result.value;

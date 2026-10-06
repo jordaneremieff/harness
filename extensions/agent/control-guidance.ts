@@ -39,6 +39,7 @@ export interface AgentToolGuidance {
 }
 
 /** Selection is a current task decision, not a fixed provider roster. */
+const EXECUTION_PRESET_GUIDANCE = "Select a named execution preset with preset or supply explicit fields. Explicit model/thinking/check-in fields win over a preset. Creation otherwise inherits the parent; configure retains the target's own defaults. Machine preferences inform choices, never admission gates. Preset role applies only to handle creation.";
 export const MODEL_SELECTION_GUIDANCE = "Use an exact provider/model identity. Apply current task directions and the operator's route, budget, and role preferences before selection. Verify the exact model and its supported thinking level. Configured access is not operator use; past use is not preference.";
 
 /** Admission is not model consumption; reports keep the follow-up delivery mode. */
@@ -51,6 +52,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		snippet: "Spawn a background full agent session",
 		guidelines: [
 			MODEL_SELECTION_GUIDANCE,
+			EXECUTION_PRESET_GUIDANCE,
 			"Before creating an agent for a recurring concern, look for an existing @handle whose role covers it. Reuse it with a short task; use a fresh agent for unrelated or independent work. Spawn with handle resolves or creates one independent root and never reapplies creation defaults on reuse. Display names may repeat; targets accept @handle or canonical identity, not bare names.",
 			"Inside a Durable agent, spawning without a handle in the same cwd creates a conversation in your storage; a different cwd creates a storage with its own host. The receipt states placement. Created conversations inherit your stored configuration, with explicit model and thinking overrides; their selected controls permit further delegation. Created agents remain addressable to the operator and eligible for the bounded /agent roster.",
 			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. Apply the universal AGENTS.md "Intent authority" section to assignments, corrections, and relayed decisions; preserve operator restrictions and distinguish them from agent choices.',
@@ -86,7 +88,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			"History, identity, files, settings, and scheduled inputs stay; the reset places at the next native boundary while the agent is busy and starts no model turn.",
 		],
 	},
-	agent_configure: { snippet: "Configure an idle session without starting work", guidelines: [MODEL_SELECTION_GUIDANCE] },
+	agent_configure: { snippet: "Configure an idle session without starting work", guidelines: [MODEL_SELECTION_GUIDANCE, EXECUTION_PRESET_GUIDANCE] },
 	agent_profile: { snippet: "Read or update a durable agent profile", guidelines: ["Read saved expertise after context loss and before relying on past findings. Update role or a bounded sourced synthesis with expectedRevision from a current read. Profile edits work at a busy tool boundary; model/name changes remain agent_configure. Current evidence and task restrictions outrank stale expertise."] },
 	agent_compact: { snippet: "Compact an agent while preserving its continuity" },
 	agent_command: { snippet: "Run a command through an agent's owner" },
@@ -103,7 +105,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	agent_list: { snippet: "Find retained agent sessions" },
 	agent_inspect: { snippet: "Read an agent's retained entries, activity, or results" },
 	agent_attach: { snippet: "Attach to a stored agent session" },
-	agent_place: { snippet: "Work in the session bound to an area" },
+	agent_place: { snippet: "Work in the session bound to an area", guidelines: [MODEL_SELECTION_GUIDANCE, EXECUTION_PRESET_GUIDANCE, "A preset supplies creation defaults, not changes to a reused place owner. Configure an idle owner explicitly to change its model."] },
 	agent_collaborate: { snippet: "Find peers and exchange work in a shared purpose thread", guidelines: ["List threads before asking the primary to relay identities. Read the governing frame, join relevant work, and develop or challenge peer contributions. Choose and revise arrangements together; no fixed roles or agreement vote is required.", "Use the shared frame for governing purpose and each member's contribution for its current hold, release or continuing condition. Rejoin to replace your contribution and cite the source exchange. Contributions are declarations, not consensus or permission.", "A thread preserves purpose, carried authority and source, restrictions, acceptance, and integrator. Agent labels do not prove operator authority. Keep the original decision and its scope distinct from interpretations and proposals.", "Joining opts into bounded passive notices for new thread events at existing conversation boundaries. These notices start no model turn. Posts retain shared evidence without waking a model. Name notify recipients only when their attention matters. Notices do not request automatic replies or check-ins. Inspect the thread or peer evidence rather than poll while useful work continues."] },
 };
 

@@ -13,9 +13,11 @@ that extension's README. A variable this harness reads is harness
 configuration, whatever external service it authenticates to; provider naming
 conventions from outside this repository do not apply.
 
-Configuration references for extensions that read environment variables:
+Configuration references for extensions that read environment variables, plus
+the agent extension's optional machine document:
 
-- [Agent](../../extensions/agent/README.md#configuration-and-storage)
+- [Agent environment variables](../../extensions/agent/README.md#configuration-and-storage)
+  and [execution presets and delegation preferences](../../extensions/agent/README.md#execution-presets-and-delegation-preferences)
 - [Brave](../../extensions/brave/README.md)
 - [Clipboard](../../extensions/clipboard/README.md)
 - [Memory](../../extensions/memory/README.md)
@@ -34,6 +36,14 @@ Configuration references for extensions that read environment variables:
   this convention first. Public Pi settings, provider configuration, project
   trust, and MCP configuration remain host-owned surfaces; consuming them does
   not create a harness configuration format.
+- The agent extension owns one optional strict JSON machine configuration
+  document for named execution presets and delegation preferences. Its default
+  path derives from the effective Pi agent directory with a documented
+  `PI_AGENT_*` override, `PI_AGENT_PREFERENCES_FILE`. The agent README defines its schema,
+  precedence, refresh, and error behavior. The repository carries the mechanism
+  and portable examples, never a machine roster. This mechanism has no
+  project-file discovery or include chain and does not replace host-owned Pi
+  settings, provider configuration, credentials, or trust.
 
 ## Operator-controlled application state
 

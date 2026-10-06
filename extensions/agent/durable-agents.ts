@@ -19,6 +19,7 @@
  */
 
 import { realpathSync } from "node:fs";
+import { PresetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
 import { readCreatedAgents, renderCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
@@ -161,10 +162,12 @@ export interface AgentContributionHost {
 	readonly catalogRoot?: string;
 	/** Working directory this storage serves. One storage serves one cwd. */
 	readonly cwd: string;
+	readonly agentDir?: string;
 	/** Pi's model runtime, read-only; used to clamp a requested thinking level. */
 	readonly services: {
 		readonly modelRuntime: {
 			getModel(provider: string, modelId: string): Model<Api> | undefined;
+			getModels?(): readonly Model<Api>[];
 		};
 	};
 }
@@ -189,6 +192,7 @@ export interface AgentContributionOptions {
 
 /** Effective model and thinking level a new child conversation must store explicitly. */
 type ChildAgentValues = {
+	readonly selection?: ExecutionSelection;
 	readonly model: Durable.ModelRef;
 	readonly thinkingLevel: ModelThinkingLevel;
 	readonly thinking?: { requested: string; effective: string };
@@ -198,6 +202,7 @@ type ChildAgentValues = {
 
 /** One child agent conversation, created by one tool task of the owner conversation. */
 type AgentChild = {
+	readonly selection?: ExecutionSelection;
 	readonly name: string;
 	/** Local child conversation when the child lives in this storage. */
 	readonly conversationId?: Durable.ConversationId;
@@ -247,8 +252,12 @@ function thinkingFacts(child: Pick<AgentChild, "thinking">): Record<string, Json
 	return child.thinking === undefined ? {} : { thinking: child.thinking };
 }
 
-function thinkingNotice(child: Pick<AgentChild, "thinking">): string {
-	return child.thinking === undefined ? "" : `\nThinking level: requested ${child.thinking.requested}; effective ${child.thinking.effective}.`;
+function selectionSnapshot(child: Pick<AgentChild, "selection">): { selection?: ExecutionSelection } {
+	return child.selection === undefined ? {} : { selection: JSON.parse(JSON.stringify(child.selection)) as ExecutionSelection };
+}
+
+function thinkingNotice(child: Pick<AgentChild, "thinking" | "selection">): string {
+	return (child.thinking === undefined ? "" : `\nThinking level: requested ${child.thinking.requested}; effective ${child.thinking.effective}.`) + (child.selection === undefined ? "" : `\nExecution selection: ${JSON.stringify(child.selection)}`);
 }
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
@@ -319,6 +328,7 @@ const CheckInParams = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, de
 const SpawnParams = Type.Object(
 	{
 		handle: Type.Optional(HandleSchema),
+		preset: PresetParameter,
 		role: Type.Optional(Type.String({ maxLength: 2000 })),
 		prompt: Type.Optional(
 			Type.String({ description: "Initial assignment for the agent. Without one the agent stays idle." }),
@@ -418,6 +428,7 @@ const RewindParams = Type.Object(
 
 const ConfigureParams = Type.Object(
 	{
+		preset: PresetParameter,
 		sessionId: Type.String({ minLength: 1 }),
 		name: Type.Optional(Type.String({ description: "Owner-visible name; stored by the session host." })),
 		model: Type.Optional(
@@ -508,6 +519,9 @@ const AttachParams = Type.Object(
 
 const PlaceParams = Type.Object(
 	{
+		preset: PresetParameter,
+		model: Type.Optional(Type.String({ minLength: 3, description: MODEL_SELECTION_GUIDANCE })),
+		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
 		area: Type.Optional(
 			Type.String({ description: "Directory the owner covers. Default: the calling conversation's cwd." }),
 		),
@@ -585,6 +599,11 @@ async function fleetObservation(catalogRoot: string | undefined, sessionId: stri
 function buildExtension(host: AgentContributionHost, options: AgentContributionOptions): Durable.Extension {
 	const durable = host.durable;
 	const dispatch = options.dispatch;
+	const preferenceSnapshot = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context): Promise<PreferenceSnapshot> => {
+		const retained = await api.memo("agent-preferences", context);
+		if (retained !== undefined) return retained as unknown as PreferenceSnapshot;
+		return await api.memo("agent-preferences", JSON.parse(JSON.stringify(readAgentPreferences(host.agentDir, host.services.modelRuntime))), context) as unknown as PreferenceSnapshot;
+	};
 
 	/** Resolve an external identity against this storage. */
 	const target = (
@@ -867,6 +886,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		context: Context,
 		modelOverride?: string,
 		thinkingLevelOverride?: ModelThinkingLevel,
+		selection?: ExecutionSelection,
 	): Promise<{ kind: "ok"; values: ChildAgentValues } | { kind: "error"; message: string }> => {
 		const parent = await api.agent(context);
 		const model = modelOverride === undefined ? parent.model : modelOf(modelOverride);
@@ -877,7 +897,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const effective = clampThinkingLevel(catalog, requested);
 		return {
 			kind: "ok",
-			values: { model, thinkingLevel: effective, ...(effective === requested ? {} : { thinking: { requested, effective } }) },
+			values: { model, thinkingLevel: effective, ...(selection === undefined ? {} : { selection: effectiveExecutionSelection(selection, effective) }), ...(effective === requested ? {} : { thinking: { requested, effective } }) },
 		};
 	};
 
@@ -904,7 +924,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			thinkingLevel: parent.thinkingLevel,
 			...(cwd === undefined ? {} : { cwd }),
 		};
-		const child = { ...await createChild(tx, api.conversationId, args.name ?? "agent", api.taskId, change), ...(parent.thinking === undefined ? {} : { thinking: parent.thinking }) };
+		const child = { ...await createChild(tx, api.conversationId, args.name ?? "agent", api.taskId, change), ...selectionSnapshot(parent), ...(parent.thinking === undefined ? {} : { thinking: parent.thinking }) };
 		const meta = await tx.doc(AgentMetaDoc, child.conversationId);
 		meta.name = args.name ?? "agent";
 		meta.owner = identity(api.conversationId);
@@ -913,7 +933,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (args.prompt !== undefined) {
 			const reporter = await tx.createTask(
 				Reporter,
-				reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(args.checkInMinutes)),
+				reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes)),
 				{ ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true },
 			);
 			registry.reporters[String(api.taskId)] = reporter;
@@ -945,6 +965,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		try {
 			result = await dispatch("spawn", {
 				...args,
+				preferenceSnapshot: await preferenceSnapshot(api, context),
 				cwd,
 				origin: "model",
 				senderIdentity: identity(api.conversationId),
@@ -967,6 +988,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const added: AgentChild = {
 				name: args.name ?? "agent",
 				foreignSessionId: sessionId,
+				...((result as { selection?: ExecutionSelection }).selection === undefined ? {} : { selection: (result as { selection: ExecutionSelection }).selection }),
 				...(thinking === undefined ? {} : { thinking }),
 				...(reference === undefined ? {} : { result: reference }),
 				createdBy: api.taskId,
@@ -990,7 +1012,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			(outcome.deduped
 				? `Reused the agent created by this call: ${outcome.child.name} (${outcome.sessionId}).`
 				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (outcome.child.result === undefined ? "" : `\nResult: ${JSON.stringify(outcome.child.result)}`) + thinkingNotice(outcome.child),
-			{ sessionId: outcome.sessionId, name: outcome.child.name, ...thinkingFacts(outcome.child), ...(outcome.child.result === undefined ? {} : { result: outcome.child.result }) },
+			{ sessionId: outcome.sessionId, name: outcome.child.name, ...(outcome.child.selection === undefined ? {} : { selection: JSON.parse(JSON.stringify(outcome.child.selection)) }), ...thinkingFacts(outcome.child), ...(outcome.child.result === undefined ? {} : { result: outcome.child.result }) },
 		);
 	};
 
@@ -1006,7 +1028,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			if (retained.conversationId === undefined || retained.anchorTaskId === undefined) return { kind: "error", message: "This call already created an agent in another storage." };
 			return { kind: "local", child: { ...retained, conversationId: retained.conversationId, anchorTaskId: retained.anchorTaskId }, deduped: true };
 		}
-		const parent = await resolveChildAgent(api, context, args.model, args.thinkingLevel);
+		const current = await api.agent(context);
+		const selection = resolveExecutionPreset(await preferenceSnapshot(api, context), args, { model: current.model ? `${current.model.provider}/${current.model.modelId}` : undefined, thinkingLevel: current.thinkingLevel }, { inherited: true, checkIn: args.prompt !== undefined });
+		if (args.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined); selection.origins.checkInMinutes = "default"; }
+		const parent = await resolveChildAgent(api, context, selection.values.model, selection.values.thinkingLevel as ModelThinkingLevel | undefined, selection);
 		if (parent.kind === "error") return parent;
 		return api.commit((tx) => spawnLocalInCommit(tx, api, args, cwd, parent.values), context);
 	};
@@ -1020,12 +1045,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const outcome = await localSpawn(api, context, args, cwd);
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		const child = outcome.child;
-		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(args.checkInMinutes)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
+		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${child.name} (${identity(child.conversationId)}).`
 				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (admission === undefined ? "" : `\nResult: ${JSON.stringify(admission.result)}`) + thinkingNotice(child),
-			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...thinkingFacts(child), ...(admission === undefined ? {} : { result: admission.result }) },
+			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...selectionSnapshot(child), ...thinkingFacts(child), ...(admission === undefined ? {} : { result: admission.result }) },
 		);
 	};
 
@@ -1036,7 +1061,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: SpawnParams,
 		replay: "safe",
 		execute: async (args: SpawnInput, api, context) => {
-			if (args.handle !== undefined) return dispatchControl("resolve-agent", { ...args, origin: "model", senderIdentity: identity(api.conversationId), requestId: `resolve:${host.storageId}:${api.taskId}` }, "Handle resolution failed");
+			if (args.handle !== undefined) return dispatchControl("resolve-agent", { ...args, preferenceSnapshot: await preferenceSnapshot(api, context), origin: "model", senderIdentity: identity(api.conversationId), requestId: `resolve:${host.storageId}:${api.taskId}` }, "Handle resolution failed");
 			if (args.role !== undefined) return errorResult("A creation role requires a handle; use agent_profile for another agent");
 			const hostCwd = resolve(host.cwd);
 			const requestedCwd = args.cwd === undefined ? undefined : resolve(host.cwd, args.cwd);
@@ -1389,6 +1414,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const dispatchConfigure = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		args: ConfigureInput,
+		context: Context,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		if (resolvesToSelf(args.sessionId, api.conversationId))
 			return errorResult("Cannot configure the calling conversation.");
@@ -1399,7 +1425,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		try {
 			const result = await dispatch("configure", {
 				sessionId: args.sessionId,
-				...defined(args, ["name", "model", "thinkingLevel"]),
+				...defined(args, ["name", "model", "thinkingLevel", "preset"]),
+				preferenceSnapshot: await preferenceSnapshot(api, context),
 				senderIdentity: identity(api.conversationId),
 				requestId: `configure:${host.storageId}:${api.taskId}`,
 			});
@@ -1426,7 +1453,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			"Change a conversation's model, thinking level, or owner-visible name through the session host's outcome contract.",
 		parameters: ConfigureParams,
 		replay: "unsafe",
-		execute: async (args: ConfigureInput, api) => dispatchConfigure(api, args),
+		execute: async (args: ConfigureInput, api, context) => dispatchConfigure(api, args, context),
 	});
 
 	const compactTool = {
@@ -1581,14 +1608,17 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		area: string,
 		args: PlaceInput,
-	): Promise<{ kind: "ok"; sessionId: string } | { kind: "error"; message: string }> => {
+		context: Context,
+	): Promise<{ kind: "ok"; sessionId: string; result: Record<string, JsonValue> } | { kind: "error"; message: string }> => {
 		if (dispatch === undefined) return { kind: "error", message: "agent_place needs the host dispatch callback." };
 		let result: unknown;
 		try {
 			result = await dispatch("place", {
 				area,
+				...defined(args, ["model", "thinkingLevel", "preset"]),
+				preferenceSnapshot: await preferenceSnapshot(api, context),
 				...(args.topic === undefined ? {} : { topic: args.topic }),
-				...(args.prompt === undefined ? {} : { prompt: args.prompt, checkInMinutes: checkInMinutes(args.checkInMinutes) }),
+				...(args.prompt === undefined ? {} : defined(args, ["prompt", "checkInMinutes"])),
 				origin: "model",
 				senderIdentity: identity(api.conversationId),
 				requestId: `place:${host.storageId}:${api.taskId}`,
@@ -1602,7 +1632,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const sessionId = sessionIdOf(result);
 		return sessionId === undefined
 			? { kind: "error", message: "Host place returned no sessionId." }
-			: { kind: "ok", sessionId };
+			: { kind: "ok", sessionId, result: JSON.parse(JSON.stringify(result)) as Record<string, JsonValue> };
 	};
 
 	const placeTool = durable.defineTool({
@@ -1615,9 +1645,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const agent = await api.agent(context);
 			const resolved = resolvePlaceArea(args.area ?? agent.cwd ?? host.cwd);
 			if (resolved.kind === "error") return errorResult(resolved.message);
-			const outcome = await dispatchPlace(api, resolved.area, args);
+			const outcome = await dispatchPlace(api, resolved.area, args, context);
 			if (outcome.kind === "error") return errorResult(outcome.message);
-			return textResult(`The owner of ${resolved.area} is ${outcome.sessionId}.`, {
+			return textResult(`The owner of ${resolved.area} is ${outcome.sessionId}.\n${JSON.stringify(outcome.result)}`, {
+				...outcome.result,
 				sessionId: outcome.sessionId,
 				area: resolved.area,
 			});
@@ -1681,6 +1712,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return [...SECTION_PREAMBLE, ...agentControlGuidanceLines(selected)].join("\n");
 	});
 
+	const preferences = durable.section("agent-preferences", () => renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)));
+
 	const efforts = durable.section("agent-efforts", async (input) => {
 		if (host.catalogRoot === undefined) return undefined;
 		try {
@@ -1713,6 +1746,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			resetTool,
 			collaborateTool,
 		],
-		sections: [guidance, efforts],
+		sections: [guidance, efforts, preferences],
 	});
 }

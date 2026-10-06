@@ -695,13 +695,13 @@ supply hashes; operations carrying opaque native data also bind to the exact
 experimental Durable release. Both sides refuse incompatible operations before
 dispatch. Other operations continue. Retained manager, native contribution, and
 primary notice interfaces have independent identities. This permits concurrent
-current processes, not backward readers or predecessor migrations. Source-checked
-2026-10-05 on Pi Durable 1.0.3, `extensions/agent/version-contract.ts` declares
-`manager/1.6.0`, `recovery-state/1.1.0` for the response, and
-`native-controls/1.2.0` bound to the loaded Durable release. Submit and receipts
-requests and responses use 1.1.0; the task-submit response uses 1.1.0; command
-requests use 1.1.0 and responses use 1.0.0; await-state and await-release requests
-and responses use 1.0.0. Primary delivery remains `primary-delivery/1.0.0`.
+current processes, not backward readers or predecessor migrations.
+`extensions/agent/version-contract.ts` defines the current manager and native
+control identities; the native control identity also binds the loaded Durable
+release. The recovery-state response uses `recovery-state/1.1.0`. Submit and
+receipts requests and responses use 1.1.0; the task-submit response uses 1.1.0; command
+requests use 1.1.0 and responses use 1.0.0; await-state requests and responses
+use 1.1.0; await-release requests and responses use 1.0.0. Primary delivery remains `primary-delivery/1.0.0`.
 These independent identities do not follow source-release ordering. The
 [agent README](../extensions/agent/README.md#current-process-contracts) defines
 maintenance and restart behavior.

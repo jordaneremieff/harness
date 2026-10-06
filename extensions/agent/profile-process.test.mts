@@ -251,12 +251,16 @@ it("keeps base operations usable across a feature-capability process boundary", 
 	const metadata = await a.call<HostMetadata>("metadata", { sessionId: expert.sessionId });
 	const paths = hostPaths(metadata);
 	const observation = await a.raw<{ token: string }>(expert.sessionId, "observe-open", { scope: "conversation", token: randomUUID() });
+	assert.deepEqual(Object.keys(BASE_OPERATIONS), ["status", "submit", "reset", "list", "dashboard"]);
 	for (const [method, contract] of Object.entries(BASE_OPERATIONS)) assert.deepEqual(HOST_CONTRACT.operations[method], contract, `${method} keeps its declared base contract`);
 	const oldClient = await Client.connect({ serverId: paths.serverId, transportFactory: createUnixTransportFactory({ path: paths.socket }) });
 	t.after(() => oldClient.dispose());
-	const base = async (member: string, params: Record<string, unknown> = {}) => oldClient.request({ serverId: paths.serverId }, {
-		serviceId: HOST_SERVICE_ID, member, args: [{ sessionId: expert.sessionId, ...params } as JsonValue, randomUUID(), BASE_OPERATIONS[member] as unknown as JsonValue],
+	const base = async (member: string, params: Record<string, unknown> = {}, contract = BASE_OPERATIONS[member]) => oldClient.request({ serverId: paths.serverId }, {
+		serviceId: HOST_SERVICE_ID, member, args: [{ sessionId: expert.sessionId, ...params } as JsonValue, randomUUID(), contract as unknown as JsonValue],
 	});
+	await assert.rejects(base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }), /configure request contract configure\/1\.0\.0 differs from configure\/1\.1\.0.*no operation was admitted/u);
+	const unchanged = await a.control<AgentProfile>("profile-read", { sessionId: expert.sessionId });
+	assert.equal(unchanged.name, "Contract expert", "the refused base configure never changes native storage");
 	const status = await base("status") as { conversation: { identity: string } };
 	assert.equal(status.conversation.identity, expert.sessionId);
 	await base("submit", { message: "Base task", requestId: "base-admission", ownerId: a.identity, origin: "operator" });
@@ -269,7 +273,7 @@ it("keeps base operations usable across a feature-capability process boundary", 
 	assert.equal(lastTool(request, "agent_send").isError, false);
 	request.answer("BASE_RESULT");
 	await Promise.all([notice(a, "BASE_RESULT"), notice(a, "BASE_PROGRESS")]);
-	await base("configure", { name: "Renamed contract expert" });
+	await a.control("configure", { sessionId: expert.sessionId, name: "Renamed contract expert" });
 	await base("reset", { requestId: "base-reset" });
 	await base("list");
 	await base("dashboard");
@@ -294,14 +298,16 @@ it("keeps base operations usable across a feature-capability process boundary", 
 	t.after(() => newClient.close());
 	await newClient.request("status", { sessionId: expert.sessionId });
 	for (const method of ["profile-read", "profile-update", "task-submit"]) await assert.rejects(newClient.request(method, { sessionId: expert.sessionId }), new RegExp(`does not advertise ${method}`, "u"));
-	assert.deepEqual(forwarded, ["status"], "unavailable feature requests never dispatch to storage");
+	await assert.rejects(newClient.request("configure", { sessionId: expert.sessionId, name: "Rejected proxy rename" }), /does not advertise configure/u);
+	assert.deepEqual(forwarded, ["status"], "unavailable feature requests, including configure, never dispatch to storage");
 	await newClient.request("submit", { sessionId: expert.sessionId, message: "Unchanged client task", requestId: "base-only-admission", ownerId: a.identity, origin: "operator" });
 	request = await f.next();
-	assert.ok(instructions(request).includes("Renamed contract expert"), "base configure refreshes the next native self instructions");
+	assert.ok(instructions(request).includes("Renamed contract expert"), "current configure refreshes the next native self instructions across the base submit path");
 	request.answer("BASE_ONLY_RESULT");
 	await notice(a, "BASE_ONLY_RESULT");
-	await newClient.request("configure", { sessionId: expert.sessionId, name: "Base remains usable" });
 	await newClient.request("reset", { sessionId: expert.sessionId, requestId: "base-only-reset" });
+	await newClient.request("list");
+	await newClient.request("dashboard");
 	await newClient.request("status", { sessionId: expert.sessionId });
 	await newClient.close();
 	proxy.disconnect();

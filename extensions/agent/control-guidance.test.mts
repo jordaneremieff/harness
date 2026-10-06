@@ -29,6 +29,18 @@ const CURRENT_TOOLS = [
 	"agent_steer",
 ];
 
+it("limits preset advice to supported controls and distinguishes target retention from inheritance", () => {
+	for (const name of ["agent_spawn", "agent_place", "agent_configure"] as const) {
+		const text = AGENT_CONTROL_GUIDANCE[name].guidelines?.join("\n") ?? "";
+		assert.ok(text.includes("Explicit model/thinking/check-in fields win over a preset"));
+		assert.match(text, /configure retains the target's own defaults/u);
+		assert.match(text, /never admission gates/u);
+		assert.match(text, /role applies only to handle creation/u);
+	}
+	assert.doesNotMatch((AGENT_CONTROL_GUIDANCE.agent_send.guidelines ?? []).join("\n"), /preset/u);
+	assert.doesNotMatch((AGENT_CONTROL_GUIDANCE.agent_attach.guidelines ?? []).join("\n"), /preset/u);
+});
+
 it("covers every current control and no removed surface", () => {
 	assert.deepEqual([...AGENT_CONTROL_TOOL_NAMES].sort(), CURRENT_TOOLS);
 	for (const name of AGENT_CONTROL_TOOL_NAMES) {

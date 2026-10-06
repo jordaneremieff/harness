@@ -1,5 +1,7 @@
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { mkdirSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { PresetParameter, readAgentPreferences, renderAgentPreferences, parsePreferenceSnapshot, parseExecutionSelection } from "./agent-preferences.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
@@ -103,6 +105,7 @@ const send = Type.Object(
 const spawn = Type.Object(
 	{
 		handle: Type.Optional(HandleSchema),
+		preset: PresetParameter,
 		role: Type.Optional(Type.String({ maxLength: 2000 })),
 		cwd: Type.Optional(Type.String()),
 		name: Type.Optional(Type.String({ maxLength: 256 })),
@@ -146,6 +149,7 @@ const compact = Type.Object(
 const configure = Type.Object(
 	{
 		sessionId: id,
+		preset: PresetParameter,
 		name: Type.Optional(Type.String({ maxLength: 256 })),
 		model: Type.Optional(Type.String({ maxLength: 512, description: MODEL_SELECTION_GUIDANCE })),
 		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
@@ -174,6 +178,7 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	name: ctx.sessionManager.getSessionName(),
 	...(ctx.model ? { model: { provider: ctx.model.provider, modelId: ctx.model.id } } : {}),
 	thinkingLevel: pi.getThinkingLevel(),
+	preferenceCatalog: { getModel: (provider, modelId) => ctx.modelRegistry.find(provider, modelId), getModels: () => ctx.modelRegistry.getAll() },
 	validateModel: (model, level) => {
 		const selected = ctx.modelRegistry.find(model.provider, model.modelId);
 		if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
@@ -182,6 +187,23 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	},
 });
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value, null, 2));
+
+function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: string, callId: string, input: Record<string, unknown>): { admitted: Record<string, unknown>; admissionCaller: AgentCaller } {
+	const admissionCaller = caller(ctx, pi);
+	const key = `${name}:${callId}`;
+	const digest = createHash("sha256").update(JSON.stringify(Object.entries(input).sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
+	const entries = ctx.sessionManager.getBranch();
+	const retained = (kind: string) => entries.findLast((entry) => entry.type === "custom" && entry.customType === kind && (entry.data as { key?: unknown } | undefined)?.key === key);
+	const entry = retained("agent.preference-admission");
+	const data = entry?.type === "custom" ? entry.data as { digest: string; snapshot: unknown } : undefined;
+	if (data && data.digest !== digest) throw new Error("Agent control call ID belongs to different inputs");
+	const snapshot = data ? parsePreferenceSnapshot(data.snapshot) : readAgentPreferences(undefined, admissionCaller.preferenceCatalog);
+	if (!data) pi.appendEntry("agent.preference-admission", { key, digest, snapshot });
+	const selected = retained("agent.execution-selection");
+	const admitted = { ...input, preferenceSnapshot: snapshot, ...(selected?.type === "custom" ? { selection: parseExecutionSelection((selected.data as { selection: unknown }).selection) } : {}) };
+	admissionCaller.retainExecutionSelection = (selection) => { pi.appendEntry("agent.execution-selection", { key, selection: parseExecutionSelection(selection) }); };
+	return { admitted, admissionCaller };
+}
 
 export default function registerAgentExtension(pi: ExtensionAPI): void {
 	const toolDisplay = collectToolDisplay(pi.events);
@@ -225,7 +247,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		name: AgentControlToolName,
 		description: string,
 		parameters: TSchema,
-		execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string) => Promise<unknown>,
+		execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string, admissionCaller?: AgentCaller) => Promise<unknown>,
 		modelOnly = false,
 	): void => {
 		const guidance = AGENT_CONTROL_GUIDANCE[name];
@@ -240,7 +262,12 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			outputSchema: schema ?? Type.Unknown(),
 			...(modelOnly ? { exposure: "model-only" as const } : {}),
 			async execute(callId, input, _signal, _update, ctx) {
-				const value = await execute(input as Record<string, unknown>, ctx, callId);
+				let admitted = input as Record<string, unknown>;
+				let admissionCaller: AgentCaller | undefined;
+				if (["agent_spawn", "agent_place", "agent_configure"].includes(name)) {
+					({ admitted, admissionCaller } = admitExecutionInput(pi, ctx, name, callId, admitted));
+				}
+				const value = await execute(admitted, ctx, callId, admissionCaller);
 				const output = result(value, schema);
 				if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
 					return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
@@ -279,7 +306,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		"agent_spawn",
 		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Unanswered tasks send automatic owner check-ins, separate from voluntary reports. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		spawn,
-		(input, ctx, callId) => getManager().spawn({ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi)),
+		(input, ctx, callId, admissionCaller) => getManager().spawn({ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` }, admissionCaller ?? caller(ctx, pi)),
 	);
 	register(
 		"agent_list",
@@ -384,7 +411,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		"agent_configure",
 		"Change an idle Durable agent's name, exact model, or reasoning level. No task starts. Active work refuses configuration.",
 		configure,
-		(input, ctx) => control("configure", input, ctx),
+		(input, ctx, callId) => control("configure", { ...input, requestId: `configure:${ctx.sessionManager.getSessionId()}:${callId}` }, ctx),
 	);
 	register(
 		"agent_command",
@@ -401,6 +428,9 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		Type.Object(
 			{
 				area: Type.Optional(Type.String()),
+				preset: PresetParameter,
+				model: Type.Optional(Type.String({ description: MODEL_SELECTION_GUIDANCE })),
+				thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
 				topic: Type.Optional(Type.String()),
 				prompt: Type.Optional(Type.String()),
 				checkInMinutes: checkIn,
@@ -408,7 +438,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			},
 			{ additionalProperties: false },
 		),
-		(input, ctx) => getManager().place({ ...input, origin: "model" }, caller(ctx, pi)),
+		(input, ctx, callId, admissionCaller) => getManager().place({ ...input, origin: "model", requestId: `place:${ctx.sessionManager.getSessionId()}:${callId}` }, admissionCaller ?? caller(ctx, pi)),
 	);
 	register(
 		"agent_compact",
@@ -820,6 +850,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		getManager().updatePrimary(ctx.sessionManager.getSessionId(), { name: event.name });
 	});
 	pi.on("before_agent_start", async (event, ctx) => {
+		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(readAgentPreferences(process.env.PI_AGENT_DIR ?? getAgentDir(), caller(ctx, pi).preferenceCatalog));
 		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd));
 	});
 	pi.on("input", (event, ctx) => {

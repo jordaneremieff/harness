@@ -1,4 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parsePreferenceSnapshot, type ExecutionSelection, type ExecutionFields } from "./agent-preferences.ts";
+import { defineDocFamily } from "@earendil-works/pi-durable";
+
+const ExecutionSelectionDoc = defineDocFamily<{ input?: string; selection?: ExecutionSelection }, null>({ kind: "agent.execution-selection", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({}) });
 import { launchIndependentCommand } from "./independent-launch.ts";
 
 function controlRequestId(params: Readonly<Record<string, unknown>>): string { return typeof params.requestId === "string" ? params.requestId : randomUUID(); }
@@ -349,8 +353,24 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	const delivery = () => startDurableDelivery({ host, metadata, catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), signal: controller.signal, onIdle: notifyActivity, onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); } });
 	let deliveries = delivery();
 
-	function configure(params: Record<string, unknown>): void {
+	async function configure(params: Record<string, unknown>, requestId: string): Promise<ExecutionSelection> {
+		const conversation = await host.conversation(typeof params.sessionId === "string" ? params.sessionId : undefined);
+		const agent = await conversation.agent(BACKGROUND_CONTEXT);
+		const input = { ...(params as ExecutionFields & { preset?: string }), ...(typeof params.model === "object" && params.model !== null ? { model: `${(params.model as { provider: string }).provider}/${(params.model as { modelId: string }).modelId}` } : {}) };
+		const inputKey = createHash("sha256").update(JSON.stringify([input.preset, input.model, input.thinkingLevel, params.name])).digest("hex");
+		const selection = await host.harness.commit(async (tx) => {
+			const state = await tx.doc(ExecutionSelectionDoc, conversation.id, createHash("sha256").update(requestId).digest("hex"), null);
+			if (state.selection) { if (state.input !== inputKey) throw new Error("Configuration request ID belongs to different inputs"); return JSON.parse(JSON.stringify(state.selection)) as ExecutionSelection; }
+			const snapshot = params.preferenceSnapshot === undefined ? readAgentPreferences(metadata.agentDir, services.services.modelRuntime) : parsePreferenceSnapshot(params.preferenceSnapshot);
+			const selected = resolveExecutionPreset(snapshot, input, { model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : undefined, thinkingLevel: agent.thinkingLevel });
+			state.input = inputKey; state.selection = selected;
+			return selected;
+		}, BACKGROUND_CONTEXT);
+		for (const field of ["model", "thinkingLevel"] as const) {
+			if (selection.origins[field] === "explicit" || selection.origins[field] === "preset") params[field] = selection.values[field];
+		}
 		params.model = configuredModel(params.model);
+		return selection;
 	}
 	async function runCommand(params: Record<string, unknown>): Promise<unknown> {
 		if (params.name === "tree") {
@@ -394,10 +414,25 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		if (typeof params.senderIdentity !== "string") throw new Error("A native spawn requires its sender identity");
 		const conversation = await host.conversation(params.senderIdentity);
 		const agent = await conversation.agent(BACKGROUND_CONTEXT);
+		const key = createHash("sha256").update(JSON.stringify([method, requestId])).digest("hex");
+		const inputKey = createHash("sha256").update(JSON.stringify([params.handle, params.area, params.cwd, params.name, params.topic, params.prompt, params.preset, params.model, params.thinkingLevel, params.role, params.checkInMinutes])).digest("hex");
+		const retained = await host.harness.snapshot(ExecutionSelectionDoc, conversation.id, key, BACKGROUND_CONTEXT);
+		if (retained?.input !== undefined && retained.input !== inputKey) throw new Error("Creation request ID belongs to different inputs");
+		const selection = retained?.selection;
+		const retainExecutionSelection = async (selected: ExecutionSelection): Promise<void> => {
+			await host.harness.commit(async (tx) => {
+				const state = await tx.doc(ExecutionSelectionDoc, conversation.id, key, null);
+				if (state.selection !== undefined) {
+					if (state.input !== inputKey || JSON.stringify(state.selection) !== JSON.stringify(selected)) throw new Error("Creation request already retains a different execution selection");
+					return;
+				}
+				state.input = inputKey; state.selection = selected;
+			}, BACKGROUND_CONTEXT);
+		};
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir, validateModel: (model, level) => validateModel(services, model, level) });
 		try {
-			const caller = { id: params.senderIdentity, cwd: metadata.cwd, model: agent.model, thinkingLevel: agent.thinkingLevel };
-			return method === "place" ? await manager.place({ ...params, requestId }, caller) : await manager.spawn({ ...params, requestId }, caller);
+			const caller = { id: params.senderIdentity, cwd: metadata.cwd, model: agent.model, thinkingLevel: agent.thinkingLevel, preferenceCatalog: services.services.modelRuntime, retainExecutionSelection };
+			return method === "place" ? await manager.place({ ...params, requestId, selection }, caller) : await manager.spawn({ ...params, requestId, selection }, caller);
 		}
 		finally { await manager.close(); }
 	}
@@ -413,11 +448,16 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	}
 	async function attach(params: Record<string, unknown>): Promise<unknown> {
 		if (params.model !== undefined) {
-			configure(params);
+			params.model = configuredModel(params.model);
 			const outcome = await host.request("configure", params);
 			if ((outcome as { outcome?: string })?.outcome === "failed") return outcome;
 		}
 		return host.request("status", { sessionId: params.sessionId });
+	}
+	async function configureRequest(params: Record<string, unknown>, requestId: string): Promise<unknown> {
+		const selection = await configure(params, typeof params.requestId === "string" ? params.requestId : requestId);
+		const outcome = await host.request("configure", params) as { after?: { thinkingLevel?: string }; [key: string]: unknown };
+		return { ...outcome, selection: effectiveExecutionSelection(selection, outcome.after?.thinkingLevel) };
 	}
 	async function executeRequest(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
 		const params = controlParams(input);
@@ -433,7 +473,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			case "list": return params.global === true ? discover(params) : host.request(method, params);
 			case "profile-list": return discover(params, true);
 			case "attach": return attach(params);
-			case "configure": await configure(params); return host.request(method, params);
+			case "configure": return configureRequest(params, requestId);
 			case "command": params.invocationId ??= requestId; return runCommand(params);
 			case "status": return { ...await host.request(method, params) as Record<string, unknown>, inventory: services.inventory, pid: process.pid, storageId: metadata.storageId };
 			case "receipts": return host.request(method, params, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);

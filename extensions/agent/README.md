@@ -137,7 +137,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/1.7.0`; a reload over an older retained manager
+The manager contract is `manager/1.9.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -629,11 +629,20 @@ nor a request-owned usage ceiling.
 Agent model parameters carry shared selection guidance: apply current task
 directions and the operator's route, budget, and role preferences, then verify
 the exact model identity and its supported thinking level. Configured access
-does not establish operator use. The extension carries no preferred provider
-roster or model ranking. New agent creation refuses an exact model absent from
-the configured catalog before creating the agent. When Pi clamps a thinking
-level, the dispatch result includes `thinking: {requested, effective}`. Reusing
-a handle keeps its retained configuration; creation defaults do not retune it.
+does not establish operator use. The extension carries no bundled provider
+roster or model ranking; optional machine preferences supply local guidance.
+`agent_spawn`, `agent_place`, and `agent_configure` accept a named `preset`.
+Each field uses an explicit argument before its preset value, then its existing
+default. Spawn presets override parent model and thinking inheritance.
+Configure uses the target's retained values, never the caller's model.
+`agent_send` selects no model. See [execution presets and delegation preferences](#execution-presets-and-delegation-preferences)
+for the machine document and receipt fields.
+
+New agent creation refuses an exact model absent from the configured catalog
+before creating the agent. When Pi clamps a thinking level, the dispatch result
+includes `thinking: {requested, effective}`. Reusing a handle keeps its retained
+configuration; supplied model, thinking, and role fields, including preset
+values, are reported as unapplied rather than retuning it.
 
 History and activity mark every page and entry row with `format: "compact"`,
 including empty pages. Their schemas require this marker; raw branch and exact
@@ -776,8 +785,9 @@ decided at spawn time and stated in the result. An omitted cwd selects the
 caller's cwd. The same canonical directory (compared by real path, with a
 lexical fallback if realpath resolution fails) creates a conversation in the
 caller's storage. A different cwd creates a new storage with its own host.
-A new conversation inherits its creator's stored agent configuration and a
-fresh profile; there is no generation-depth gate in the creation paths.
+A new conversation inherits its creator's stored agent configuration, with
+explicit or preset model and thinking overrides, and a fresh profile. There is
+no generation-depth gate in the creation paths.
 
 A no-target `agent_status` inside an agent appends a bounded newest-first
 `Created agents` section and structured `createdAgents.agents` read from the caller's retained
@@ -936,15 +946,17 @@ rows expose `forkSource`; exact upstream records retain their native fields.
 
 ## Standing agents and expertise
 
-`agent_spawn({handle, name, role, model?, thinkingLevel?, prompt?})` resolves or
+`agent_spawn({handle, name, role, model?, thinkingLevel?, preset?, prompt?})` resolves or
 creates one independent root in the selected store. Supply the lowercase slug
 without `@` when creating it; subsequent controls use `@slug`. The storage address
 includes the canonical catalog directory and handle. Separate stores with the
 same handle, cwd, and agent directory therefore select separate hosts. Exclusive
 atomic catalog publication prevents concurrent creators in one store from
 claiming different agents. The result states `created`. Reuse
-never applies creation defaults to name, role, model, or reasoning. An explicit
-conflicting cwd refuses instead of changing the retained directory.
+never applies creation defaults to name, role, model, or reasoning. Supplied
+model, thinking, and role fields, including preset values, are reported as
+unapplied. A supplied name is ignored on reuse without an unapplied-name receipt.
+An explicit conflicting cwd refuses instead of changing the retained directory.
 
 Resolve without a prompt to inspect the agent before assigning work. Reuse reads
 its retained profile without starting a host. During another caller's initial
@@ -1591,13 +1603,16 @@ change for these observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/1.8.0` includes caller usage for fleet observations and
-effective thinking from catalog validation, alongside ordinary retained
-observation, first-input origin, independent command admission, exact result
-references, and parked-delivery recovery. `spawn/1.1.0` and
-`resolve-agent/1.1.0` responses include thinking-adjustment evidence on new
-creation. `native-controls/1.4.0` requires that dispatch behavior. Primary
-delivery keeps its existing opaque details contract for exact continuations.
+clearance. `manager/1.9.0` includes execution-preset resolution and machine
+preference snapshots, alongside caller usage for fleet observations, effective
+thinking from catalog validation, ordinary retained observation, first-input
+origin, independent command admission, exact result references, and
+parked-delivery recovery. Spawn and resolve-agent requests use 1.1.0; their
+responses use 1.2.0 and include preset receipts and thinking-adjustment evidence
+on new creation. Place and configure requests and responses use 1.1.0.
+`native-controls/1.5.0` binds the preset-aware dispatch behavior to the loaded
+Durable release. Primary delivery keeps its existing opaque details contract
+for exact continuations.
 Restart Pi windows to load the changed manager.
 Let idle Durable hosts retire, then attach to load the changed runtime routing
 and native tool bindings in a fresh host. An extension reload alone does not
@@ -1730,6 +1745,155 @@ seconds. Further losses stop automatic recovery and put a host error in the
 dashboard roster. Inspect the error, then use `agent_attach` to clear the
 stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 
+## Execution presets and delegation preferences
+
+The agent extension reads one optional machine document,
+`<effectiveAgentDir>/agent-preferences.json`. The effective Pi agent directory
+comes from `PI_AGENT_DIR` or public `getAgentDir()`; a usual default is
+`~/.pi/agent`. `PI_AGENT_PREFERENCES_FILE` overrides the document path.
+The repository supplies the mechanism and portable examples, not a machine
+roster. The reader does not discover project files or follow include chains.
+Pi settings, provider configuration, credentials, and trust remain host-owned.
+
+An execution preset is a named bundle of creation or configuration values.
+It is separate from an agent's durable role and sourced expertise, which remain
+on `agent_profile` and the native `agent.profile` document.
+
+### Machine document schema
+
+The file is strict JSON with this closed top-level shape:
+`{ "version": 1, "presets": { "name": { "model": "provider/model" } }, "preferences": {} }`.
+`version` and `presets` are required; `preferences` is optional. The document
+is at most 65536 UTF-8 bytes and contains at most 64 presets. Preset names have
+1 through 64 characters and match `[a-z][a-z0-9]*(-[a-z0-9]+)*`. Each preference
+array or map contains at most 64 entries. The reader rejects unknown keys, wrong
+types, unsupported versions, and invalid numbers. Presets have no include,
+inheritance, credentials, cwd, tools, or trust fields.
+
+| Preset field | Meaning |
+|---|---|
+| `model` | Required exact `provider/model` identity. |
+| `thinkingLevel` | Optional Pi level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `role` | Optional role text, at most 2,000 Unicode characters; applies only during handle creation. |
+| `checkInMinutes` | Optional finite interval from 0 through 35791 minutes; 0 disables automatic check-ins. |
+| `notes` | Optional explanatory text, at most 2,000 characters. |
+
+Every field in `preferences` is optional:
+
+| Preference field | Meaning |
+|---|---|
+| `excludedModels` | Array of exact model identities that the operator prefers not to select. |
+| `excludedProviders` | Array of provider identities that the operator prefers not to select. |
+| `contextBudgetTokens` | Map from exact model identities to positive integer planning budgets. These are preferences, not enforced context caps. |
+| `quotaSubstitutionOrder` | Ordered array of preset names for a model to consult after quota trouble. It causes no automatic substitution. |
+| `reportingNotes` | Text for delegation and reporting guidance, at most 4,000 characters. |
+
+Portable example; replace the illustrative identities with models in the
+configured catalog:
+
+```json
+{
+  "version": 1,
+  "presets": {
+    "review": {
+      "model": "acme/model-x",
+      "thinkingLevel": "high",
+      "role": "Review current source and report cited findings.",
+      "checkInMinutes": 20,
+      "notes": "Use for source review."
+    },
+    "economy": {
+      "model": "acme/model-y",
+      "thinkingLevel": "low"
+    }
+  },
+  "preferences": {
+    "excludedModels": [],
+    "excludedProviders": [],
+    "contextBudgetTokens": { "acme/model-x": 16000 },
+    "quotaSubstitutionOrder": ["review", "economy"],
+    "reportingNotes": "Report catalog diagnostics and unapplied fields."
+  }
+}
+```
+
+### Selection and unapplied fields
+
+`agent_spawn`, `agent_place`, and `agent_configure` accept `preset` by name.
+Precedence applies separately to each field:
+**explicit argument > preset value > existing default**.
+
+- Spawn uses preset model and thinking values before parent inheritance.
+  Without explicit or preset values, the existing parent defaults remain.
+  Its check-in interval uses explicit `checkInMinutes`, then the preset,
+  then the existing admission default.
+- Place accepts `model` and `thinkingLevel` for creation alongside `preset`.
+  A reused place owner keeps its retained configuration; supplied model,
+  thinking, and role fields are reported as unapplied.
+- Handle reuse also preserves retained configuration and reports supplied
+  model, thinking, and role fields as unapplied. A supplied name is ignored on
+  reuse without an unapplied-name receipt. Preset selection is not a live link
+  to an agent.
+- A spawn preset's role applies only when creating a handle. Without a handle,
+  the preset role is reported as unapplied.
+- Configure uses explicit values, then preset values, then the target's
+  retained values. It never inherits the caller's model. Name remains explicit.
+  Role remains on the revision-checked `agent_profile` path; a preset role is
+  reported as unapplied. Configure starts no task and remains idle-only.
+- `agent_send` accepts no preset and selects no model.
+
+### Refresh, errors, and catalog facts
+
+Each new spawn, place, or configure admission reads one file snapshot and
+retains the resolved values and source digest for replay. Ordinary callers use
+custom session entries. Native host-dispatched creation requests use caller-conversation
+documents keyed by request identity; local children retain selections in native
+child-creation state. Configure uses target-conversation documents. The manager
+awaits selection retention before host dispatch or task admission. A retry reuses
+that selection even after file edits or target configuration changes. A fresh
+handle or place reuse reports current target evidence without retuning it.
+Catalog records retain only host metadata and their existing bounded projections,
+with a 32768-byte envelope; execution selections do not belong in that envelope.
+No compatibility reader or migration interprets catalog selection fields.
+A later call sees later file edits without a host restart. No file watcher or
+file-read cache outlives the call. File edits never retune existing agents or
+change busy work.
+
+Without a preset selector, a missing file supplies no machine settings; a
+malformed or unreadable file supplies diagnostics and selection proceeds without
+machine settings. With an explicit preset selector, an unavailable preset or a
+malformed or unreadable file is a resolution error naming the preset and file
+problem. An unknown preset name in a valid document also produces a resolution
+error. No explicit preset request silently falls back to inherited defaults.
+
+At read time, the extension checks preset and preference entries against the
+current local catalog. Diagnostics report unknown models or providers,
+unsupported thinking levels, exclusion matches, unknown preset names in the
+substitution order, and context budgets above catalog capacity. Valid entries
+remain usable. At dispatch time, the effective choice receives the existing
+catalog check; an unknown selected model fails before creation.
+
+These facts do not create selection gates. The extension never intersects
+choices with `enabledModels`, refuses a choice because of an exclusion, or
+silently substitutes another model. `contextBudgetTokens` does not impose an
+execution limit. `quotaSubstitutionOrder` is guidance for model judgment.
+
+### Model guidance and receipts
+
+Stable control guidance describes the selector and precedence. Fresh, bounded
+prompt sections supply exclusion facts, context budgets, substitution order,
+reporting notes, and diagnostics. Equal document and diagnostic facts render
+identical text; observation times remain in receipts, not prompt sections.
+Ordinary callers receive them through `before_agent_start`; native Durable callers receive them through
+`durable.section`. Read errors render explicit unavailable/error text instead
+of throwing and leaving previous preferences apparently current.
+
+Spawn, place, and configure receipts expose the selected preset when used,
+the source digest, requested/effective thinking, unapplied fields, and
+diagnostics. Per-field origins distinguish `explicit`, `preset`, `inherited`,
+`retained`, and `default` values. An unapplied field is not a successful change
+to the target's configuration.
+
 ## Configuration and storage
 
 | Variable | Meaning |
@@ -1737,6 +1901,7 @@ stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 | `PI_AGENT_DIR` | Pi configuration directory, otherwise public `getAgentDir()`. |
 | `PI_MANAGED_INSTALL_ROOT` | Standalone terminal managed-install directory. Otherwise locate the managed `pi` launcher on `PATH`; read its install directory's `current-version` afresh. |
 | `PI_AGENT_SESSIONS_DIR` | Agent store root, otherwise `<agentDir>/agent-sessions`. |
+| `PI_AGENT_PREFERENCES_FILE` | Optional execution-preset and delegation-preference document path, otherwise `<effectiveAgentDir>/agent-preferences.json`. See [execution presets and delegation preferences](#execution-presets-and-delegation-preferences) for schema, precedence, refresh, and errors. |
 | `PI_AGENT_IDLE_MINUTES` | Idle host retirement interval. Default 5; zero disables; finite range 0 through 35791 minutes, including fractions. Passive clients do not extend the interval. |
 | `PI_AGENT_CHECK_IN_MINUTES` | Default automatic owner check-in interval for model `agent_spawn` and `agent_place` prompts and `agent_send` tasks. Default 30; zero disables; finite range 0 through 35791 minutes, including fractions. Blank and invalid values are rejected with the variable name and range. Per-call `checkInMinutes` overrides it. Operator admissions have no default. |
 

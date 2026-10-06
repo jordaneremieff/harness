@@ -4,7 +4,11 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { it } from "node:test";
+import { after, it } from "node:test";
+
+const preferenceOverride = process.env.PI_AGENT_PREFERENCES_FILE;
+delete process.env.PI_AGENT_PREFERENCES_FILE;
+after(() => { if (preferenceOverride !== undefined) process.env.PI_AGENT_PREFERENCES_FILE = preferenceOverride; });
 import { hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { dashboardText } from "./dashboard-roster.ts";
 import { connectHost, type HostConnection } from "./host-client.ts";
@@ -13,6 +17,7 @@ import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
+import { agentPreferencesPath, type ExecutionSelection } from "./agent-preferences.ts";
 import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
 import type { createPrimaryChannel } from "./primary-channel.ts";
 
@@ -172,7 +177,7 @@ it("retains exact prompted handle references across creation and reuse", async (
 	const root = fixtureRoot(t);
 	const seen: Record<string, unknown>[] = [];
 	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		if (method === "profile-read") return { handle: "@reviewer", live: true };
+		if (method === "profile-read") return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
 		assert.equal(method, "task-submit");
 		seen.push(params as Record<string, unknown>);
 		return nativeAdmission(params, seen.length);
@@ -539,6 +544,164 @@ it("refreshes the durable footer from published views at startup and after a hos
 		await primary.statuses.waitFor((items) => items.includes("agents: 0/1 active"));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
 	} finally { manager.close(); }
+});
+
+it("resolves ordinary presets once for creation and preserves replay after file edits", async (t) => {
+	const root = fixtureRoot(t); const options = managerOptions(root);
+	mkdirSync(options.agentDir, { recursive: true });
+	const path = agentPreferencesPath(options.agentDir);
+	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } }));
+	const admitted: Record<string, unknown>[] = [];
+	const manager = new AgentManager({ ...options, validateModel: () => "off", acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+		if (method === "task-submit") { admitted.push(params as Record<string, unknown>); return nativeAdmission(params); }
+		return {};
+	}) });
+	t.after(() => manager.close());
+	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" }, thinkingLevel: "low" };
+	const args = { preset: "review", requestId: "preset-create", prompt: "Review", origin: "model" as const };
+	const first = await manager.spawn(args, caller) as { sessionId: string; selection: ExecutionSelection };
+	assert.equal(manager.catalog.read(first.sessionId).model.modelId, "model-x");
+	assert.equal(first.selection.origins.model, "preset");
+	assert.deepEqual(first.selection.unapplied, ["role"]);
+	assert.deepEqual(first.selection.thinking, { requested: "high", effective: "off" });
+	assert.equal(admitted[0].checkInMinutes, 2);
+	writeFileSync(path, "malformed");
+	const replay = await manager.spawn({ ...args, selection: first.selection }, caller) as typeof first;
+	assert.deepEqual(replay.selection, first.selection);
+	assert.equal(replay.sessionId, first.sessionId);
+	assert.equal(admitted[1].checkInMinutes, 2);
+	await assert.rejects(manager.spawn({ preset: "review" }, caller), /review.*agent-preferences.json/u);
+	await assert.rejects(manager.spawn({ ...args, thinkingLevel: "off", selection: first.selection }, caller), /different execution inputs/u);
+});
+
+for (const kind of ["handle", "place"] as const) it(`awaits ${kind} selection retention before downstream admission`, async (t) => {
+	const root = fixtureRoot(t); const options = managerOptions(root);
+	let admissions = 0;
+	const manager = new AgentManager({ ...options, validateModel: () => "off", acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+		if (method === "task-submit" || method === "submit") { admissions++; return nativeAdmission(params); }
+		return method === "profile-read" ? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel } : {};
+	}) });
+	t.after(() => manager.close());
+	const entered = deferred(); const release = deferred();
+	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "model-x" }, retainExecutionSelection: async () => { entered.resolve(); await release.promise; } };
+	const run = () => kind === "handle" ? manager.spawn({ handle: "reviewer", prompt: "Work" }, caller) : manager.place({ area: root, prompt: "Work" }, caller);
+	const pending = run();
+	await entered.promise;
+	assert.equal(admissions, 0);
+	release.resolve(); await pending;
+	assert.equal(admissions, 1);
+	caller.retainExecutionSelection = async () => { throw new Error("Selection commit failed"); };
+	await assert.rejects(run(), /Selection commit failed/u);
+	assert.equal(admissions, 1, "a failed selection commit cannot admit another task");
+});
+
+it("reports preset creation fields as unapplied for reused handles and places", async (t) => {
+	const root = fixtureRoot(t); const options = managerOptions(root);
+	mkdirSync(options.agentDir, { recursive: true });
+	writeFileSync(agentPreferencesPath(options.agentDir), JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } }));
+	const manager = new AgentManager({ ...options, validateModel: () => "off", acquire: async (metadata) => fakeConnection(metadata, async (method, params) => method === "profile-read" ? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel } : method === "task-submit" ? nativeAdmission(params) : {}) });
+	t.after(() => manager.close());
+	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" } };
+	const first = await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Work" }, caller) as { sessionId: string; selection: ExecutionSelection };
+	assert.equal(manager.catalog.read(first.sessionId).view?.profileSeed?.role, "Review");
+	const reused = await manager.spawn({ handle: "reviewer", preset: "review", model: "acme/override", prompt: "More" }, caller) as typeof first;
+	assert.deepEqual(reused.selection.unapplied, ["model", "thinkingLevel", "role"]);
+	assert.equal(reused.selection.values.model, "acme/model-x");
+	const placed = await manager.place({ area: root, preset: "review", model: "acme/explicit", prompt: "Work" }, caller) as typeof first;
+	assert.equal(manager.catalog.read(placed.sessionId).model.modelId, "explicit");
+	const again = await manager.place({ area: root, preset: "review", prompt: "More" }, caller) as typeof first;
+	assert.deepEqual(again.selection.unapplied, ["model", "thinkingLevel", "role"]);
+	assert.equal(again.selection.values.model, "acme/explicit");
+});
+
+it("retains ordinary reuse selections before dispatch and reports a raced handle as reused", async (t) => {
+	const root = fixtureRoot(t); const options = managerOptions(root);
+	mkdirSync(options.agentDir, { recursive: true });
+	const path = agentPreferencesPath(options.agentDir);
+	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", role: "Review", checkInMinutes: 2 } } }));
+	const entered = deferred(); const release = deferred(); let validation = 0;
+	const selections: ExecutionSelection[] = [];
+	const manager = new AgentManager({ ...options, validateModel: async () => { if (++validation === 1) { entered.resolve(); await release.promise; } return "off"; }, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => method === "profile-read" ? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel } : method === "task-submit" ? nativeAdmission(params) : {}) });
+	t.after(() => manager.close());
+	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" }, retainExecutionSelection: async (selection: ExecutionSelection) => { selections.push(structuredClone(selection)); } };
+	const losing = manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task" }, caller) as Promise<{ selection: ExecutionSelection; created: boolean }>;
+	await entered.promise;
+	await manager.spawn({ handle: "reviewer", model: "acme/winner", prompt: "Winner" }, caller);
+	writeFileSync(path, "malformed"); release.resolve();
+	const raced = await losing;
+	assert.equal(raced.created, false);
+	assert.equal(raced.selection.values.model, "acme/winner");
+	assert.equal(raced.selection.values.checkInMinutes, 2);
+	assert.deepEqual(raced.selection.unapplied, ["model", "role"]);
+	const replay = await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task", selection: selections.at(-1) }, caller) as typeof raced;
+	assert.deepEqual(replay.selection, raced.selection);
+	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", checkInMinutes: 3 } } }));
+	await manager.place({ area: root }, caller);
+	const placed = await manager.place({ area: root, preset: "review", prompt: "Work" }, caller) as typeof raced;
+	writeFileSync(path, "malformed");
+	const placedReplay = await manager.place({ area: root, preset: "review", prompt: "Work", selection: selections.at(-1) }, caller) as typeof raced;
+	assert.deepEqual(placedReplay.selection, placed.selection);
+	assert.equal(placedReplay.selection.values.checkInMinutes, 3);
+});
+
+it("a fresh admission selects a replacement provider after a valid preset edit without retuning earlier agents", async (t) => {
+	const root = fixtureRoot(t); const options = managerOptions(root); mkdirSync(options.agentDir, { recursive: true });
+	const path = agentPreferencesPath(options.agentDir);
+	const writePreset = (model: string) => writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model }, alternate: { model: "other/model-y" } }, preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"] } }));
+	const validated: string[] = [];
+	const manager = new AgentManager({ ...options, validateModel: (model) => { validated.push(`${model.provider}/${model.modelId}`); return "off"; }, acquire: async (metadata) => fakeConnection(metadata, async () => ({})) });
+	t.after(() => manager.close());
+	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" } };
+	writePreset("acme/model-x");
+	const first = await manager.spawn({ preset: "review", requestId: "first" }, caller) as { sessionId: string; selection: ExecutionSelection };
+	assert.equal(first.selection.values.model, "acme/model-x", "exclusion and substitution guidance do not replace the selected provider");
+	writePreset("other/model-y");
+	const second = await manager.spawn({ preset: "review", requestId: "second" }, caller) as typeof first;
+	assert.equal(second.selection.values.model, "other/model-y");
+	assert.notEqual(first.selection.source.digest, second.selection.source.digest);
+	assert.notEqual(first.sessionId, second.sessionId);
+	assert.deepEqual(manager.catalog.read(first.sessionId).model, { provider: "acme", modelId: "model-x" });
+	assert.deepEqual(manager.catalog.read(second.sessionId).model, { provider: "other", modelId: "model-y" });
+	const replay = await manager.spawn({ preset: "review", requestId: "first", selection: first.selection }, caller) as typeof first;
+	assert.deepEqual(replay.selection, first.selection);
+	assert.deepEqual(validated, ["acme/model-x", "other/model-y"]);
+});
+
+it("handle and place reuse report current configured evidence rather than immutable creation metadata", async (t) => {
+	const root = fixtureRoot(t); const options = managerOptions(root); mkdirSync(options.agentDir, { recursive: true });
+	writeFileSync(agentPreferencesPath(options.agentDir), JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", thinkingLevel: "high" } } }));
+	const current = new Map<string, { model: { provider: string; modelId: string }; thinkingLevel: string }>();
+	let evidenceUnavailable = false;
+	const manager = new AgentManager({ ...options, validateModel: (_model, level) => level, acquire: async (metadata) => {
+		const state = { model: metadata.model, thinkingLevel: metadata.thinkingLevel }; current.set(metadata.storageId, state);
+		return fakeConnection(metadata, async (method, params) => {
+			if (method === "configure") { state.model = { provider: "other", modelId: "model-y" }; state.thinkingLevel = "low"; return { outcome: "applied" }; }
+			if (method === "profile-read") { if (evidenceUnavailable) throw new Error("profile unavailable"); return { handle: "@reviewer", live: true, ...state }; }
+			if (method === "task-submit") return nativeAdmission(params);
+			return {};
+		});
+	} });
+	t.after(() => manager.close());
+	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" } };
+	const handle = await manager.spawn({ handle: "reviewer", preset: "review" }, caller) as { sessionId: string };
+	const place = await manager.place({ area: root, preset: "review" }, caller) as typeof handle;
+	for (const target of [handle, place]) {
+		await manager.control("configure", { sessionId: target.sessionId, model: "other/model-y", thinkingLevel: "low" }, caller);
+		assert.deepEqual(manager.catalog.read(target.sessionId).model, { provider: "acme", modelId: "model-x" });
+	}
+	const reusedHandle = await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task" }, caller) as { selection: ExecutionSelection };
+	const reusedPlace = await manager.place({ area: root, preset: "review" }, caller) as typeof reusedHandle;
+	for (const { selection } of [reusedHandle, reusedPlace]) {
+		assert.equal(selection.values.model, "other/model-y"); assert.equal(selection.values.thinkingLevel, "low");
+		assert.deepEqual(selection.thinking, { requested: "low", effective: "low" });
+		assert.equal(selection.origins.model, "retained"); assert.equal(selection.origins.thinkingLevel, "retained");
+		assert.deepEqual(selection.unapplied, ["model", "thinkingLevel"]);
+	}
+	for (const state of current.values()) assert.deepEqual(state, { model: { provider: "other", modelId: "model-y" }, thinkingLevel: "low" });
+	evidenceUnavailable = true;
+	const unavailable = await manager.place({ area: root, preset: "review" }, caller) as typeof reusedHandle;
+	assert.equal(unavailable.selection.values.model, undefined); assert.equal(unavailable.selection.values.thinkingLevel, undefined);
+	assert.ok(unavailable.selection.diagnostics.some((fact) => fact.field === "retained" && /unavailable/u.test(fact.message)));
 });
 
 it("validates the spawn model before writing a catalog record", async (t) => {
@@ -1086,7 +1249,7 @@ it("returns a compact status snapshot from a mutation instead of the full status
 		assert.equal(serialized.includes("firstMessage"), false, "the prompt excerpt does not repeat in the spawn result");
 		assert.equal(serialized.includes("lastText"), false, "live assistant text stays out of the spawn result");
 		assert.equal(serialized.includes("submissions"), false, "the submission inventory stays out of the spawn result");
-		assert.ok(serialized.length < 1024, `compact spawn result stays small (was ${serialized.length} characters)`);
+		assert.ok(JSON.stringify(outcome.status).length < 1024, "the compact status stays bounded independently of execution selection evidence");
 	} finally { manager.close(); }
 });
 
