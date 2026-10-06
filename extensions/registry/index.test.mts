@@ -26,7 +26,7 @@ function fixture() {
 	let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
 	const pi = {
 		on: (event: string, handler: (event: Record<string, unknown>) => Promise<void>) => { handlers.set(event, handler); },
-		events: { emit: (channel: string, data: unknown) => { emissions.push({ channel, data }); } },
+		events: { emit: (channel: string, data: unknown) => { emissions.push({ channel, data }); }, on: () => () => {} },
 		registerTool: (value: NonNullable<typeof tool>) => { registeredNames.push(value.name); tool = value; },
 		getAllTools: () => ["one", "two"].map((name) => ({ name, sourceInfo })),
 		getActiveTools: () => ["one"],
@@ -40,7 +40,7 @@ function fixture() {
 
 describe("Pi adapter", () => {
 	it("emits one durable contribution for the entrypoint path", () => {
-		const { emissions } = fixture();
+		const emissions = fixture().emissions.filter((emission) => emission.channel === "durable:contribution");
 		assert.equal(emissions.length, 1);
 		assert.equal(emissions[0].channel, "durable:contribution");
 		const contribution = emissions[0].data as { name?: string; source?: string; create?: unknown };

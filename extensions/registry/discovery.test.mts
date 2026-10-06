@@ -179,7 +179,7 @@ describe("model discovery", () => {
 	});
 	it("uses the model context through the registered tool, including cursor-only continuation", async () => {
 		let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
-		registerRegistry({ on: () => {}, events: { emit: () => {} }, registerTool: (value: typeof tool) => { tool = value; },
+		registerRegistry({ on: () => {}, events: { emit: () => {}, on: () => () => {} }, registerTool: (value: typeof tool) => { tool = value; },
 			getAllTools: () => [], getCommands: () => [], getActiveTools: () => [] } as unknown as ExtensionAPI);
 		assert.ok(tool);
 		const { ctx } = context();

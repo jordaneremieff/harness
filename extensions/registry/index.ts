@@ -8,6 +8,7 @@
  * already points at.
  */
 
+import { toolDisplayPublisher } from "./tool-display.ts";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
@@ -115,6 +116,7 @@ function sessionFacts(ctx: ExtensionContext) {
 }
 
 export default function registerRegistry(pi: ExtensionAPI) {
+	const { registerTool, publish } = toolDisplayPublisher(pi);
 	// The host, when one is listening, installs the native Durable form. In an
 	// ordinary session nothing subscribes and the emission has no effect.
 	pi.events.emit("durable:contribution", createRegistryDurableContribution(fileURLToPath(import.meta.url)));
@@ -143,7 +145,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 		sessionAbort.abort();
 	});
 
-	pi.registerTool<typeof RegistryParams, Record<string, unknown>>({
+	registerTool<typeof RegistryParams, Record<string, unknown>>({
 		name: "registry",
 		label: "Registry",
 		description: REGISTRY_DESCRIPTION,
@@ -182,4 +184,5 @@ export default function registerRegistry(pi: ExtensionAPI) {
 			return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent };
 		},
 	});
+	publish();
 }

@@ -33,7 +33,7 @@ function registryTool(): ToolDefinition<typeof RegistryParams, Record<string, un
 	let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
 	const pi = {
 		on: () => {},
-		events: { emit: () => {} },
+		events: { emit: () => {}, on: () => () => {} },
 		registerTool: (value: NonNullable<typeof tool>) => {
 			tool = value;
 		},

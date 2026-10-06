@@ -1,5 +1,9 @@
 # registry: bounded session resource lookup
 
+The ordinary extension publishes its registered tool renderers at factory load and
+on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
+The payload contains only tool names and renderer fields, never execution functions.
+
 This extension exposes Pi's current registration records through a read-only
 lookup. It does not create a second registry, filesystem index, or persistent
 store.
