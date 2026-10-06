@@ -1212,6 +1212,14 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   the retained record when its other configuration fields match. A live host from
   another installation remains attachable under its advertised operation contracts;
   attachment does not restart it.
+- The host process binds the extension's imports of the repository's peer
+  packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`,
+  `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, and `typebox`, with their
+  subpaths) to that caller installation before it loads any host module. A host
+  therefore runs the same Pi packages as its caller, and the checkout's own
+  `node_modules` does not need to contain them. Installed dependencies such as
+  Pi Durable keep their ordinary resolution. A host whose installation cannot
+  supply a peer package exits before it takes the writer claim.
 - Each storage has one writer claim. The process takes it before it opens
   SQLite or resumes the Durable scheduler. A live or unverified claim refuses
   a second writer. A dead local owner permits a replacement.
@@ -1265,7 +1273,8 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   client. Application or protocol errors from a live writer do not authorize a
   replacement process.
 
-`durable-runner.ts` starts the process, `durable-runtime.ts` assembles its
+`durable-runner.ts` starts the process, `installation-binding.ts` binds its Pi
+package imports, `durable-runtime.ts` assembles its
 capabilities, and `durable-host.ts` uses public Durable operations. Pi Durable
 owns generation, task checkpoints, submissions, replay decisions, native
 entries, documents, compaction, and outcomes. The extension owns process
