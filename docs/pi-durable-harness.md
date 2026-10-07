@@ -1213,9 +1213,11 @@ tests were not repeated for this source comparison.
 The agent host's `pi.host` built-in supplies the check-in definition independently
 of configured native agent tools. It arms unanswered-task check-ins in the
 delivery-intent commit; local native Reporter admissions arm through a retained
-checkpoint only when the host registry supplies that task. Public
-`Conversation.submit()` owns a separate commit, so the deadline task reacquires
-its submission by the same request ID rather than create a raw submission.
+checkpoint only when the host registry supplies that task. Both paths skip
+check-in creation when the owner resolves to the working conversation, regardless
+of admission origin or a positive interval. Public `Conversation.submit()` owns
+a separate commit, so the deadline task reacquires its submission by the same
+request ID rather than create a raw submission.
 `TaskRuntime` exposes an invocation-bound conversation handle but no submission
 lookup; the reacquired submission supplies `wait(context)`. Each deadline races
 that wait, releases both waiters, and writes its report with the next checkpoint

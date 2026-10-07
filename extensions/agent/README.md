@@ -1531,10 +1531,12 @@ existing form.
 Automatic owner check-ins do not depend on voluntary worker reports. Model
 `agent_spawn` and `agent_place` prompts and `agent_send` tasks use `PI_AGENT_CHECK_IN_MINUTES`
 (default 30); per-call `checkInMinutes` overrides it, including 0 to disable.
-Operator admissions get no default. Native foreign admissions and local
-Reporter admissions use the same interval and delivery contract. Scheduled
-sends retain the selected interval before their deadline and start check-ins
-when the input is admitted. Delivered reports, results, and check-ins never
+Operator admissions get no default. An admission creates no check-in when its
+owner resolves to the conversation that runs the work, even with a positive
+explicit interval. This applies to both origins and alternate root identity
+spellings. Native foreign admissions and local Reporter admissions use the same
+interval and delivery contract. Scheduled sends retain the selected interval
+before their deadline and start eligible check-ins when the input is admitted. Delivered reports, results, and check-ins never
 arm another default check-in.
 
 The host's `pi.host` built-in registers the check-in task independently of the

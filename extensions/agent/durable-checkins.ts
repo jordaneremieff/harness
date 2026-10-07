@@ -4,6 +4,7 @@ import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type Usage
 import { AgentDeliveryDoc, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
 import { producerRetryFact, readAwaitFact } from "./await-observation.ts";
 import { awaitFactLines, retryFactLines } from "./await-facts.ts";
+import { resolveSessionConversationId } from "./durable-observation.ts";
 
 export const CHECK_IN_MAX_MINUTES = 35791;
 /** Only model tool admissions apply the environment default. */
@@ -154,9 +155,16 @@ function fallbackMarker(accepted: boolean): { fallbackBroadcast?: boolean } {
 	return accepted ? { fallbackBroadcast: true } : {};
 }
 
+/** Resolve the owner against the producer's storage, including alternate root spellings. */
+function ownerIsProducer(input: Omit<CheckInInput, "intervalMs">): boolean {
+	const storageId = input.senderIdentity.split(":")[0];
+	try { return resolveSessionConversationId(storageId, input.ownerId, undefined) === input.conversationId; }
+	catch { return false; }
+}
+
 /** Create with the admission intent or local reporter, never with output deliveries. */
 export async function createCheckIn(tx: Tx, input: Omit<CheckInInput, "intervalMs">, minutes: number): Promise<void> {
 	checkInMinutes(minutes, input.origin);
-	if (minutes === 0) return;
+	if (minutes === 0 || ownerIsProducer(input)) return;
 	await tx.createTask(CheckInTask, { ...input, intervalMs: Math.max(1, Math.round(minutes * 60000)) }, { ownership: { kind: "conversation" }, conversationId: input.conversationId as ConversationId, background: true });
 }

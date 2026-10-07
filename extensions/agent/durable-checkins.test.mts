@@ -51,6 +51,27 @@ it("creates a host-owned check-in without a native agent contribution, and ends 
 	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length ?? 0, 0);
 });
 
+for (const origin of ["operator", "model"] as const) for (const spelling of ["root", "root-alias", "sibling"] as const) {
+	it(`skips ${origin} check-ins owned by the working conversation through ${spelling}`, { timeout: 10000 }, async (t) => {
+		const f = await scheduleFixture(t, { agentExtension: false, deferAnswers: true });
+		t.after(() => f.releaseAnswer());
+		const sibling = await f.host.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: testModel.provider, modelId: testModel.id } } }, BACKGROUND_CONTEXT);
+		const identity = spelling === "sibling" ? f.host.identity(sibling.id) : f.storageId;
+		const ownerId = spelling === "root-alias" ? `${f.storageId}:1` : identity;
+		await f.host.request("submit", { sessionId: identity, message: "self task", requestId: "self", ownerId, origin, checkInMinutes: 30 });
+		const state = await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+		assert.equal(state?.intents.find((intent) => intent.requestId === "self")?.ownerId, ownerId, "self ownership still retains a delivery intent");
+		assert.equal((await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.some((task) => task.record.kind === "agent.check-in"), false);
+		const otherOwner = spelling === "sibling" ? f.storageId : f.host.identity(sibling.id);
+		await f.host.request("submit", { sessionId: identity, message: "other task", requestId: "other", ownerId: otherOwner, origin, checkInMinutes: 30, whenBusy: "followUp" });
+		const tasks = (await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.filter((task) => task.record.kind === "agent.check-in");
+		assert.equal(tasks.length, 1);
+		const checkIn = tasks[0];
+		assert.ok(checkIn);
+		assert.equal((checkIn.record.input as { requestId: string }).requestId, "other");
+	});
+}
+
 it("zero and admissions without a tool interval create no check-in task", { timeout: 60000 }, async (t) => {
 	const f = await scheduleFixture(t, { agentExtension: true, deferFirstAnswer: true });
 	t.after(() => f.releaseAnswer());
