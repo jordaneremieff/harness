@@ -131,18 +131,22 @@ test("first observation publishes immediately and retries keep their immutable d
 });
 
 test("concurrent flushes coalesce and shutdown attempts the pending tail once", async () => {
+	const now = Date.parse(`${day}T00:00:00Z`);
 	let release!: () => void;
 	const barrier = new Promise<void>((resolve) => {
 		release = resolve;
 	});
 	const batches: Batch[] = [];
-	const collector = new Collector({
-		async commit(batch) {
-			batches.push(structuredClone(batch));
-			if (batches.length === 1) await barrier;
-			return "committed";
+	const collector = new Collector(
+		{
+			async commit(batch) {
+				batches.push(structuredClone(batch));
+				if (batches.length === 1) await barrier;
+				return "committed";
+			},
 		},
-	});
+		{ now: () => now },
+	);
 	collector.admit(row());
 	const first = collector.observed();
 	collector.admit(row("principle-other"));
@@ -158,13 +162,17 @@ test("concurrent flushes coalesce and shutdown attempts the pending tail once", 
 });
 
 test("pending pressure folds identities and receipt refusal does not invent exact losses", async () => {
+	const now = Date.parse(`${day}T00:00:00Z`);
 	const batches: Batch[] = [];
-	const collector = new Collector({
-		async commit(batch) {
-			batches.push(structuredClone(batch));
-			return "receipt_quota";
+	const collector = new Collector(
+		{
+			async commit(batch) {
+				batches.push(structuredClone(batch));
+				return "receipt_quota";
+			},
 		},
-	});
+		{ now: () => now },
+	);
 	for (let i = 0; i < 2050; i++) collector.admit(row(`entry-${i}`));
 	await collector.shutdown();
 	assert.equal(batches.length, 1);
