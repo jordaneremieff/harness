@@ -10,7 +10,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { agentPreferencesPath, type ExecutionSelection } from "./agent-preferences.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, it } from "node:test";
+import { after, beforeEach, it } from "node:test";
 
 const preferenceOverride = process.env.PI_AGENT_PREFERENCES_FILE;
 delete process.env.PI_AGENT_PREFERENCES_FILE;
@@ -52,6 +52,7 @@ const model = { provider: "faux", modelId: "faux-1" } as const;
 const testCwdAlias = mkdtempSync(join(tmpdir(), "durable-agents-cwd-"));
 const testCwd = realpathSync(testCwdAlias);
 const testAgentDir = mkdtempSync(join(tmpdir(), "durable-agents-config-"));
+beforeEach(() => writeFileSync(agentPreferencesPath(testAgentDir), JSON.stringify({ version: 1, presets: { standard: { model: `${model.provider}/${model.modelId}` } }, preferences: { defaultPreset: "standard" } })));
 process.on("exit", () => {
 	rmSync(testCwd, { recursive: true, force: true });
 	rmSync(testAgentDir, { recursive: true, force: true });
@@ -1226,7 +1227,9 @@ it("uses isolated preferences despite an ambient agent directory", async (t) => 
 	assert.ok(outcome && !outcome.isError, outcome?.text);
 	assert.doesNotMatch(getCurrentSystemPrompt(route.requests.at(-1) ?? []), /AMBIENT-PREFERENCES-MARKER/u);
 	const selection = (outcome.details as { structuredContent: { selection: ExecutionSelection } }).structuredContent.selection;
-	assert.equal(selection.source.status, "missing");
+	assert.equal(selection.source.status, "loaded");
+	assert.equal(selection.origins.model, "defaultPreset");
+	assert.equal(selection.source.path, agentPreferencesPath(testAgentDir));
 });
 
 it("returns retained native creation facts without revalidating a later catalog", async (t) => {
@@ -1243,7 +1246,10 @@ it("returns retained native creation facts without revalidating a later catalog"
 			const first = await tool.execute(args, api, ctx);
 			assert.equal(first.isError, undefined);
 			available = false;
-			return tool.execute(args, api, ctx);
+			const beforeReplay = catalogReads;
+			const replay = await tool.execute(args, api, ctx);
+			assert.equal(catalogReads, beforeReplay, "replay does not revalidate the retained selection");
+			return replay;
 		},
 	}) });
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -1255,7 +1261,7 @@ it("returns retained native creation facts without revalidating a later catalog"
 	assert.match(outcome.text, /Reused the agent created by this call/u);
 	assert.match(outcome.text, /requested max; effective off/u);
 	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 1);
-	assert.equal(catalogReads, 1);
+	assert.ok(catalogReads > 0);
 });
 
 it("refuses an absent native spawn model before child or reporter creation", async (t) => {

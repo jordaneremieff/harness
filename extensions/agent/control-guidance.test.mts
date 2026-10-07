@@ -32,9 +32,17 @@ const CURRENT_TOOLS = [
 it("limits preset advice to supported controls and distinguishes target retention from inheritance", () => {
 	for (const name of ["agent_spawn", "agent_place", "agent_configure"] as const) {
 		const text = AGENT_CONTROL_GUIDANCE[name].guidelines?.join("\n") ?? "";
-		assert.ok(text.includes("Explicit model/thinking/check-in fields win over a preset"));
-		assert.match(text, /configure retains the target's own defaults/u);
-		assert.match(text, /never admission gates/u);
+		assert.match(text, /Delegate with preset/u);
+		assert.match(text, /For an explicit model override, use an exact provider\/model identity/u);
+		assert.match(text, /resolver owns preset and default identity selection/u);
+		assert.match(text, /route, budget, and role preferences before choosing the override/u);
+		assert.doesNotMatch(text, /^Use an exact/u);
+		assert.match(text, /Omit model and preset.*defaultPreset/u);
+		assert.match(text, /Explicit fields win over preset fields/u);
+		assert.match(text, /Configure retains the target's own values/u);
+		assert.match(text, /never inherits parent execution settings/u);
+		assert.match(text, /receipts record explicit overrides/u);
+		assert.match(text, /advisory unless the operator sets enforceRoster true/u);
 		assert.match(text, /role applies only to handle creation/u);
 	}
 	assert.doesNotMatch((AGENT_CONTROL_GUIDANCE.agent_send.guidelines ?? []).join("\n"), /preset/u);

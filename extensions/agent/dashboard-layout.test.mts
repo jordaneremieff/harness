@@ -87,6 +87,8 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const mode of 
 			const lines = f.ui.render(width);
 			const plain = lines.map(stripVTControlCharacters);
 			assert.equal(lines.length, height, `${width}x${height} ${mode}`);
+			if (mode === "find" && height === 20 && notice) assert.doesNotMatch(plain.join("\n"), /Preferences:/u);
+			else if (mode !== "console") assert.match(plain.join("\n"), /Preferences: absent/u);
 			assert.ok(plain.every((line) => visibleWidth(line) === width));
 			assert.match(plain.join("\n"), /quota limit/);
 			assert.match(plain.join("\n"), /Conversation unavailable; stored messages shown/);

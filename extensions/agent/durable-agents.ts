@@ -19,7 +19,7 @@
  */
 
 import { realpathSync } from "node:fs";
-import { PresetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
+import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
 import { readCreatedAgents, renderCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
@@ -599,6 +599,8 @@ async function fleetObservation(catalogRoot: string | undefined, sessionId: stri
 function buildExtension(host: AgentContributionHost, options: AgentContributionOptions): Durable.Extension {
 	const durable = host.durable;
 	const dispatch = options.dispatch;
+	const registrationPreferences = readAgentPreferences(host.agentDir, host.services.modelRuntime);
+	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({ ...params, properties: { ...params.properties, preset: presetParameter(registrationPreferences) } });
 	const preferenceSnapshot = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context): Promise<PreferenceSnapshot> => {
 		const retained = await api.memo("agent-preferences", context);
 		if (retained !== undefined) return retained as unknown as PreferenceSnapshot;
@@ -1028,10 +1030,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			if (retained.conversationId === undefined || retained.anchorTaskId === undefined) return { kind: "error", message: "This call already created an agent in another storage." };
 			return { kind: "local", child: { ...retained, conversationId: retained.conversationId, anchorTaskId: retained.anchorTaskId }, deduped: true };
 		}
-		const current = await api.agent(context);
-		const selection = resolveExecutionPreset(await preferenceSnapshot(api, context), args, { model: current.model ? `${current.model.provider}/${current.model.modelId}` : undefined, thinkingLevel: current.thinkingLevel }, { inherited: true, checkIn: args.prompt !== undefined });
+		const selection = resolveExecutionPreset(await preferenceSnapshot(api, context), args, {}, { creation: true, checkIn: args.prompt !== undefined });
 		if (args.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined); selection.origins.checkInMinutes = "default"; }
-		const parent = await resolveChildAgent(api, context, selection.values.model, selection.values.thinkingLevel as ModelThinkingLevel | undefined, selection);
+		if (selection.values.model === undefined || selection.values.thinkingLevel === undefined) throw new Error("Creation has no resolved model or thinking level");
+		const parent = await resolveChildAgent(api, context, selection.values.model, selection.values.thinkingLevel as ModelThinkingLevel, selection);
 		if (parent.kind === "error") return parent;
 		return api.commit((tx) => spawnLocalInCommit(tx, api, args, cwd, parent.values), context);
 	};
@@ -1058,7 +1060,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		name: "agent_spawn",
 		description:
 			"Create an agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts an agent in a new storage. Answers report back to you. Unanswered tasks also send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. Names may repeat.",
-		parameters: SpawnParams,
+		parameters: presetParams(SpawnParams),
 		replay: "safe",
 		execute: async (args: SpawnInput, api, context) => {
 			if (args.handle !== undefined) return dispatchControl("resolve-agent", { ...args, preferenceSnapshot: await preferenceSnapshot(api, context), origin: "model", senderIdentity: identity(api.conversationId), requestId: `resolve:${host.storageId}:${api.taskId}` }, "Handle resolution failed");
@@ -1451,7 +1453,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		name: "agent_configure",
 		description:
 			"Change a conversation's model, thinking level, or owner-visible name through the session host's outcome contract.",
-		parameters: ConfigureParams,
+		parameters: presetParams(ConfigureParams),
 		replay: "unsafe",
 		execute: async (args: ConfigureInput, api, context) => dispatchConfigure(api, args, context),
 	});
@@ -1639,7 +1641,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		name: "agent_place",
 		description:
 			"Resolve the durable owner of a directory through the session host's shared place registry. Create it on first use; reuse it when its retained context and ownership serve the task. A prompt starts work with automatic owner check-ins. checkInMinutes sets the interval; 0 disables.",
-		parameters: PlaceParams,
+		parameters: presetParams(PlaceParams),
 		replay: "safe",
 		execute: async (args: PlaceInput, api, context) => {
 			const agent = await api.agent(context);

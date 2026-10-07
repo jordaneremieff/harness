@@ -319,9 +319,8 @@ export class AgentManager {
 			if (selection.inputDigest !== executionInputDigest(input)) throw new Error("Request ID already belongs to different execution inputs");
 			return { ...input, ...selection.values, selection };
 		}
-		const model = retained ? retained.model : caller.model && `${caller.model.provider}/${caller.model.modelId}`;
 		const preferenceSnapshot = input.preferenceSnapshot === undefined ? readAgentPreferences(this.options.agentDir, caller.preferenceCatalog) : parsePreferenceSnapshot(input.preferenceSnapshot);
-		let selection = resolveExecutionPreset(preferenceSnapshot, input, { model, thinkingLevel: retained ? retained.thinkingLevel : caller.thinkingLevel ?? "off" }, { inherited: !retained, reused: !!retained, role: !!input.handle, checkIn: input.prompt !== undefined });
+		let selection = resolveExecutionPreset(preferenceSnapshot, input, retained ?? {}, { creation: !retained, reused: !!retained, role: !!input.handle, checkIn: input.prompt !== undefined });
 		if (input.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, input.origin ?? "operator"); selection.origins.checkInMinutes = "default"; }
 		if (retained) selection = effectiveExecutionSelection(selection, retained.thinkingLevel);
 		const { role: _role, ...base } = input;
@@ -383,16 +382,16 @@ export class AgentManager {
 		const requestId = input.requestId ?? randomUUID();
 		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
 		this.rosterChanged();
-		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, caller, retained) : {}), ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
+		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
 	}
 
 	private async creationMetadata(input: AgentSpawnInput, caller: AgentCaller): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
 		const cwd = realpathSync(resolve(caller.cwd, input.cwd ?? "."));
 		if (!statSync(cwd).isDirectory()) throw new Error("Agent cwd must be a directory");
 		const separator = input.model?.indexOf("/") ?? -1;
-		const model = input.model === undefined ? caller.model : separator > 0 ? { provider: input.model.slice(0, separator), modelId: input.model.slice(separator + 1) } : undefined;
-		if (!model?.modelId) throw new Error("An exact provider/model is required when the caller has no selected model");
-		const thinkingLevel = input.thinkingLevel ?? caller.thinkingLevel ?? "off";
+		const model = input.model !== undefined && separator > 0 ? { provider: input.model.slice(0, separator), modelId: input.model.slice(separator + 1) } : undefined;
+		if (!model?.modelId) throw new Error("Creation requires a resolved exact provider/model");
+		const thinkingLevel = input.thinkingLevel ?? "off";
 		const validate = caller.validateModel ?? this.options.validateModel;
 		if (!validate) throw new Error("Spawn requires the caller's configured model catalog");
 		const effective = await validate(model, thinkingLevel);
@@ -433,8 +432,8 @@ export class AgentManager {
 		return this.startSpawn(record, created, row, input, caller, onCreated);
 	}
 
-	private spawnThinking(input: AgentSpawnInput, caller: AgentCaller, record: CatalogRecord): { thinking?: { requested: string; effective: string } } {
-		const requested = input.thinkingLevel ?? caller.thinkingLevel ?? "off";
+	private spawnThinking(input: AgentSpawnInput, record: CatalogRecord): { thinking?: { requested: string; effective: string } } {
+		const requested = input.thinkingLevel ?? "off";
 		return requested === record.thinkingLevel ? {} : { thinking: { requested, effective: record.thinkingLevel } };
 	}
 
@@ -455,7 +454,7 @@ export class AgentManager {
 			if (versionError) throw versionError;
 			const requestId = input.requestId ?? randomUUID();
 			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
-			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, caller, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: admittedResult(record.storageId, admission, requestId) }) };
+			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: admittedResult(record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
 			this.rosterChanged();

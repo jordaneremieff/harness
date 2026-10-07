@@ -9,7 +9,10 @@ import { THINKING_LEVELS, configurationModel } from "./configuration.ts";
 
 export const PREFERENCES_MAX_BYTES = 65536;
 const name = Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" });
-export const PresetParameter = Type.Optional({ ...name, description: "Named execution preset from the machine's agent-preferences.json. Explicit fields win; preferences inform selection without admission gates." });
+export function presetParameter(snapshot: PreferenceSnapshot) {
+	return Type.Optional({ ...name, description: `Delegate with a named execution preset. Omit model and preset for the machine default on creation. Explicit fields override the preset. ${presetInventory(snapshot)}` });
+}
+export const PresetParameter = Type.Optional({ ...name, description: "Delegate with a named execution preset. Omit model and preset for the machine default on creation; explicit fields override the preset." });
 const model = Type.String({ minLength: 3, maxLength: 512, pattern: "^[^/\\s]+/[^\\s]+$" });
 const provider = Type.String({ minLength: 1, maxLength: 256, pattern: "^[^/\\s]+$" });
 const thinking = Type.Union(THINKING_LEVELS.map((level) => Type.Literal(level)));
@@ -21,6 +24,8 @@ const presetSchema = Type.Object({
 	notes: Type.Optional(Type.String({ maxLength: 2000 })),
 }, { additionalProperties: false });
 const preferenceSchema = Type.Object({
+	defaultPreset: Type.Optional(name),
+	enforceRoster: Type.Optional(Type.Boolean()),
 	excludedModels: Type.Optional(Type.Array(model, { maxItems: 64, uniqueItems: true })),
 	excludedProviders: Type.Optional(Type.Array(provider, { maxItems: 64, uniqueItems: true })),
 	contextBudgetTokens: Type.Optional(Type.Record(model, Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }), { maxProperties: 64, additionalProperties: false })),
@@ -41,11 +46,12 @@ export type PreferenceDiagnostic = { field: string; message: string };
 export type PreferenceSource = { path: string; digest: string | null; observedAt: string; status: "loaded" | "missing" | "unavailable" };
 export type PreferenceSnapshot = { source: PreferenceSource; document?: AgentPreferences; diagnostics: PreferenceDiagnostic[] };
 export type ExecutionFields = { model?: string; thinkingLevel?: string; role?: string; checkInMinutes?: number };
-export type ExecutionOrigin = "explicit" | "preset" | "inherited" | "retained" | "default";
+export type ExecutionOrigin = "explicit" | "preset" | "defaultPreset" | "retained" | "default";
 export type ExecutionSelection = {
 	inputDigest: string;
 	source: PreferenceSource;
 	preset?: string;
+	presetNames: string[];
 	values: ExecutionFields;
 	origins: Partial<Record<keyof ExecutionFields, ExecutionOrigin>>;
 	unapplied: string[];
@@ -57,8 +63,9 @@ const selectionSchema = Type.Object({
 	inputDigest: Type.String({ pattern: "^[a-f0-9]{64}$" }),
 	source: Type.Object({ path: Type.String({ maxLength: 4096 }), digest: Type.Union([Type.String({ pattern: "^[a-f0-9]{64}$" }), Type.Null()]), observedAt: Type.String({ maxLength: 64 }), status: Type.Union([Type.Literal("loaded"), Type.Literal("missing"), Type.Literal("unavailable")]) }, { additionalProperties: false }),
 	preset: Type.Optional(name),
+	presetNames: Type.Array(name, { maxItems: 64, uniqueItems: true }),
 	values: Type.Object({ model: Type.Optional(model), thinkingLevel: Type.Optional(thinking), role: Type.Optional(Type.String({ maxLength: 2000 })), checkInMinutes: Type.Optional(Type.Number({ minimum: 0, maximum: 35791 })) }, { additionalProperties: false }),
-	origins: Type.Object(Object.fromEntries(["model", "thinkingLevel", "role", "checkInMinutes"].map((field) => [field, Type.Optional(Type.Union([Type.Literal("explicit"), Type.Literal("preset"), Type.Literal("inherited"), Type.Literal("retained"), Type.Literal("default")]))])), { additionalProperties: false }),
+	origins: Type.Object(Object.fromEntries(["model", "thinkingLevel", "role", "checkInMinutes"].map((field) => [field, Type.Optional(Type.Union([Type.Literal("explicit"), Type.Literal("preset"), Type.Literal("defaultPreset"), Type.Literal("retained"), Type.Literal("default")]))])), { additionalProperties: false }),
 	unapplied: Type.Array(Type.String({ maxLength: 32 }), { maxItems: 4 }),
 	diagnostics: Type.Array(Type.Object({ field: Type.String({ maxLength: 600 }), message: Type.String({ maxLength: 1200 }) }, { additionalProperties: false }), { maxItems: 512 }),
 	thinking: Type.Optional(Type.Object({ requested: Type.String({ maxLength: 16 }), effective: Type.String({ maxLength: 16 }) }, { additionalProperties: false })),
@@ -120,7 +127,7 @@ function catalogDiagnostics(document: AgentPreferences, catalog: PreferenceCatal
 			const found = lookup(preset.model, `${field}.model`);
 			if (found && preset.thinkingLevel !== undefined && !getSupportedThinkingLevels(found).includes(preset.thinkingLevel)) facts.push({ field: `${field}.thinkingLevel`, message: `Unsupported thinking level ${preset.thinkingLevel} for ${preset.model}` });
 			const providerId = configurationModel(preset.model).provider;
-			if (preferences?.excludedModels?.includes(preset.model) || preferences?.excludedProviders?.includes(providerId)) facts.push({ field, message: `Preset model matches an operator exclusion preference: ${preset.model}; this is not an admission gate.` });
+			if (preferences?.excludedModels?.includes(preset.model) || preferences?.excludedProviders?.includes(providerId)) facts.push({ field, message: `Preset model matches an operator exclusion preference: ${preset.model}; ${preferences?.enforceRoster ? "creation enforcement rejects it" : "this is advisory, not an admission gate"}.` });
 		}
 	};
 	const checkExclusions = () => {
@@ -188,14 +195,22 @@ export function executionInputDigest(input: ExecutionFields & { preset?: string 
 	return createHash("sha256").update(JSON.stringify([input.preset, input.model, input.thinkingLevel, input.role, input.checkInMinutes])).digest("hex");
 }
 
-type ResolutionOptions = { inherited?: boolean; role?: boolean; checkIn?: boolean; reused?: boolean };
+type ResolutionOptions = { creation?: boolean; role?: boolean; checkIn?: boolean; reused?: boolean };
+
+export function presetNames(snapshot: PreferenceSnapshot): string[] {
+	return Object.keys(snapshot.document?.presets ?? {}).sort();
+}
+
+export function presetInventory(snapshot: PreferenceSnapshot): string {
+	return `Presets: ${JSON.stringify(presetNames(snapshot))}; digest ${snapshot.source.digest ?? "none"}; file ${JSON.stringify(snapshot.source.path)} (${snapshot.source.status}).`;
+}
 type ExecutionPreset = Static<typeof presetSchema>;
 
 function selectedPreset(snapshot: PreferenceSnapshot, selector: string | undefined): ExecutionPreset | undefined {
 	if (selector === undefined) return undefined;
-	if (!Value.Check(name, selector)) throw new Error(`Invalid preset selector ${JSON.stringify(selector)} in ${snapshot.source.path}`);
+	if (!Value.Check(name, selector)) throw new Error(`Invalid preset selector ${JSON.stringify(selector)}. ${presetInventory(snapshot)}`);
 	const preset = snapshot.document && Object.hasOwn(snapshot.document.presets, selector) ? snapshot.document.presets[selector] : undefined;
-	if (!preset) throw new Error(`Cannot resolve preset ${JSON.stringify(selector)} in ${snapshot.source.path}: ${snapshot.diagnostics.find((fact) => fact.field === "file")?.message ?? (snapshot.source.status === "missing" ? "file is missing" : "preset is absent")}`);
+	if (!preset) throw new Error(`Cannot resolve preset ${JSON.stringify(selector)} in ${snapshot.source.path}: ${snapshot.diagnostics.find((fact) => fact.field === "file")?.message ?? (snapshot.source.status === "missing" ? "file is missing" : "preset is absent")}. ${presetInventory(snapshot)}`);
 	return preset;
 }
 
@@ -210,7 +225,7 @@ function fieldOrigin(field: keyof ExecutionFields, input: ExecutionFields, prese
 	if (input[field] !== undefined) return "explicit";
 	if (preset?.[field] !== undefined) return "preset";
 	if (field === "checkInMinutes") return "default";
-	return options.inherited ? "inherited" : "retained";
+	return options.creation && !options.reused ? "default" : "retained";
 }
 
 function resolveField(result: ExecutionSelection, field: keyof ExecutionFields, input: ExecutionFields, preset: ExecutionPreset | undefined, defaults: ExecutionFields, options: ResolutionOptions): void {
@@ -218,23 +233,53 @@ function resolveField(result: ExecutionSelection, field: keyof ExecutionFields, 
 	const supported = supportsField(field, options);
 	if (!supported && proposed !== undefined) { result.unapplied.push(field); result.origins[field] = input[field] !== undefined ? "explicit" : "preset"; }
 	const retained: ExecutionFields = { model: defaults.model, thinkingLevel: defaults.thinkingLevel };
-	const value = supported ? proposed ?? defaults[field] : retained[field];
+	const fallback = options.creation && !options.reused ? (field === "thinkingLevel" ? "off" : undefined) : defaults[field];
+	const value = supported ? proposed ?? fallback : retained[field];
 	if (value === undefined) return;
 	Object.assign(result.values, { [field]: value });
 	result.origins[field] = fieldOrigin(field, input, preset, options);
 }
 
+function creationSelection(options: ResolutionOptions): boolean {
+	return !!options.creation && !options.reused;
+}
+
+function presetSelector(snapshot: PreferenceSnapshot, input: ExecutionFields & { preset?: string }, options: ResolutionOptions): { selector?: string; useDefault: boolean } {
+	const useDefault = creationSelection(options) && input.model === undefined && input.preset === undefined;
+	const selector = input.preset ?? (useDefault ? snapshot.document?.preferences?.defaultPreset : undefined);
+	if (useDefault && selector === undefined) throw new Error(`Creation requires model, preset, or preferences.defaultPreset in ${snapshot.source.path}. ${presetInventory(snapshot)} ${snapshot.diagnostics.find((fact) => fact.field === "file")?.message ?? "No defaultPreset is configured."}`);
+	return { selector, useDefault };
+}
+
+function enforceCreationRoster(snapshot: PreferenceSnapshot, input: ExecutionFields, identity: string, outside: boolean, excluded: boolean, options: ResolutionOptions): void {
+	if (!creationSelection(options) || !snapshot.document?.preferences?.enforceRoster) return;
+	if (excluded || (input.model !== undefined && outside)) throw new Error(`Creation refused by preferences.enforceRoster: ${identity} ${excluded ? "matches an operator exclusion" : "matches no preset"}. ${presetInventory(snapshot)}`);
+}
+
+function modelSelectionDiagnostics(snapshot: PreferenceSnapshot, input: ExecutionFields, result: ExecutionSelection, options: ResolutionOptions): PreferenceDiagnostic[] {
+	const identity = result.values.model;
+	if (identity === undefined) return [];
+	const preferences = snapshot.document?.preferences;
+	const providerId = configurationModel(identity).provider;
+	const excluded = !!(preferences?.excludedModels?.includes(identity) || preferences?.excludedProviders?.includes(providerId));
+	const outside = !Object.values(snapshot.document?.presets ?? {}).some((entry) => entry.model === identity);
+	enforceCreationRoster(snapshot, input, identity, outside, excluded, options);
+	const facts: PreferenceDiagnostic[] = [];
+	if (!options.reused && input.model !== undefined) facts.push({ field: "selection.model", message: `Explicit model override: ${input.model}; ${outside ? "matches no preset" : "matches a preset model"}.` });
+	if (excluded) facts.push({ field: "selection.model", message: `Selected model matches an operator exclusion preference: ${identity}; advisory only.` });
+	return facts;
+}
+
 /** Resolve only supported fields. Retained state is a default, never caller inheritance. */
 export function resolveExecutionPreset(snapshot: PreferenceSnapshot, input: ExecutionFields & { preset?: string }, defaults: ExecutionFields, options: ResolutionOptions = {}): ExecutionSelection {
-	const preset = selectedPreset(snapshot, input.preset);
-	const result: ExecutionSelection = { inputDigest: executionInputDigest(input), source: { ...snapshot.source }, ...(input.preset === undefined ? {} : { preset: input.preset }), values: {}, origins: {}, unapplied: [], diagnostics: snapshot.diagnostics.map((fact) => ({ ...fact })) };
-	for (const field of ["model", "thinkingLevel", "role", "checkInMinutes"] as const) resolveField(result, field, input, preset, defaults, options);
-	if (result.values.model) {
-		const excluded = snapshot.document?.preferences;
-		const providerId = configurationModel(result.values.model).provider;
-		if (excluded?.excludedModels?.includes(result.values.model) || excluded?.excludedProviders?.includes(providerId)) result.diagnostics.push({ field: "selection.model", message: `Selected model matches an operator exclusion preference: ${result.values.model}; selection remains explicit.` });
+	const { selector, useDefault } = presetSelector(snapshot, input, options);
+	const preset = selectedPreset(snapshot, selector);
+	const result: ExecutionSelection = { inputDigest: executionInputDigest(input), source: { ...snapshot.source }, ...(selector === undefined ? {} : { preset: selector }), presetNames: presetNames(snapshot), values: {}, origins: {}, unapplied: [], diagnostics: [] };
+	for (const field of ["model", "thinkingLevel", "role", "checkInMinutes"] as const) {
+		resolveField(result, field, input, preset, defaults, options);
+		if (useDefault && result.origins[field] === "preset") result.origins[field] = "defaultPreset";
 	}
-	result.diagnostics = boundedDiagnostics(result.diagnostics);
+	result.diagnostics = boundedDiagnostics([...modelSelectionDiagnostics(snapshot, input, result, options), ...snapshot.diagnostics.map((fact) => ({ ...fact }))]);
 	return result;
 }
 
@@ -243,10 +288,23 @@ export function effectiveExecutionSelection(selection: ExecutionSelection, effec
 	return { ...selection, ...(selection.values.thinkingLevel === undefined || effective === undefined ? {} : { thinking: { requested: selection.values.thinkingLevel, effective } }) };
 }
 
+/** Operator view omits planning prose but preserves every preset name and model. */
+export function renderPreferenceStatus(snapshot: PreferenceSnapshot): string[] {
+	return [
+		`Preferences: ${snapshot.source.status === "missing" ? "absent" : snapshot.source.status}; default preset: ${snapshot.document?.preferences?.defaultPreset ?? "none"}`,
+		`File: ${snapshot.source.path}`,
+		`Digest: ${snapshot.source.digest ?? "none"}`,
+		...snapshot.diagnostics.filter((fact) => fact.field === "file").map((fact) => `Error: ${fact.message}`),
+		`Roster enforcement: ${snapshot.document?.preferences?.enforceRoster ?? false}`,
+		...presetNames(snapshot).map((key) => `Preset ${key}: ${snapshot.document?.presets[key].model}`),
+		...(presetNames(snapshot).length ? [] : ["Presets: none"]),
+	];
+}
+
 /** Compact current facts, with explicit omitted coverage rather than silent clipping. */
 export function renderAgentPreferences(snapshot: PreferenceSnapshot): string {
-	if (snapshot.source.status === "missing") return `No machine preferences file is present at ${JSON.stringify(snapshot.source.path)}. Ordinary defaults apply.`;
-	const lines = ["Machine delegation preferences (local catalog evidence).", `Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`];
+	if (snapshot.source.status === "missing") return `No machine preferences file is present at ${JSON.stringify(snapshot.source.path)}. Creation requires an explicit model or a configured preset/defaultPreset. ${presetInventory(snapshot)}`;
+	const lines = ["Operator machine configuration for agent delegation. Catalog check results are local evidence.", `Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`];
 	if (snapshot.source.status === "unavailable") lines.push("Machine preferences are unavailable. Previous preference text is not current. Explicit preset selection fails until the file is repaired.");
 	else lines.push(...preferenceLines(snapshot.document));
 	for (const fact of snapshot.diagnostics) lines.push(`Diagnostic ${JSON.stringify(fact.field)}: ${JSON.stringify(fact.message)}`);
@@ -254,8 +312,9 @@ export function renderAgentPreferences(snapshot: PreferenceSnapshot): string {
 }
 
 function preferenceLines(document: AgentPreferences | undefined): string[] {
-	const lines = ["Explicit fields override execution presets; presets override creation inheritance. Exclusions and budgets inform choices, not admission. Context budgets are planning preferences, not enforced capacity. Quota substitution requires a deliberate choice, never automatic fallback."];
+	const lines = ["Delegate with preset; omit model and preset to use preferences.defaultPreset on creation. Name model only when a direction or task requires an override; receipts record it. Explicit fields override preset fields. Creation never inherits parent execution settings. Configure retains target values. Exclusions are advisory unless preferences.enforceRoster is true for creation. Context budgets are planning preferences, not enforced capacity. Quota substitution requires a deliberate choice, never automatic fallback."];
 	const preferences = document?.preferences;
+	lines.push(`Default preset: ${preferences?.defaultPreset ?? "none"}; enforceRoster: ${preferences?.enforceRoster ?? false}.`);
 	for (const value of preferences?.excludedModels ?? []) lines.push(`Excluded model preference: ${JSON.stringify(value)}`);
 	for (const value of preferences?.excludedProviders ?? []) lines.push(`Excluded provider preference: ${JSON.stringify(value)}`);
 	for (const [key, value] of Object.entries(preferences?.contextBudgetTokens ?? {})) lines.push(`Planning context budget: ${JSON.stringify(key)} ${value} tokens`);

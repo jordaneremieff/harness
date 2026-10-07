@@ -1,3 +1,7 @@
+import { before, after } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { initTheme, type KeybindingsManager as AppKeys, type Theme } from "@earendil-works/pi-coding-agent";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TUI } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentConversationPage } from "./dashboard-types.ts";
@@ -5,6 +9,17 @@ import type { AgentObservationSource } from "./agent-observation.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
 import { createDashboardState, type DashboardState } from "./dashboard-state.ts";
+const previousPreferences = process.env.PI_AGENT_PREFERENCES_FILE;
+let preferencesRoot: string | undefined;
+before(() => {
+	preferencesRoot = mkdtempSync(join(tmpdir(), "dashboard-preferences-"));
+	process.env.PI_AGENT_PREFERENCES_FILE = join(preferencesRoot, "absent.json");
+});
+after(() => {
+	if (previousPreferences === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE;
+	else process.env.PI_AGENT_PREFERENCES_FILE = previousPreferences;
+	if (preferencesRoot) rmSync(preferencesRoot, { recursive: true, force: true });
+});
 initTheme("dark");
 export const keys = new KeybindingsManager(TUI_KEYBINDINGS) as AppKeys;
 setKeybindings(keys);

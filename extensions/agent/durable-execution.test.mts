@@ -112,8 +112,8 @@ it("hands a structured result to the script through details.structuredContent", 
 
 it("returns admitted spawn and send references as native codemode objects", { timeout: 30000 }, async (t) => {
 	const f = await executionFixture(t, {
-		code: `const created = await tools.agent_spawn({ name: "idle-agent" });
-			const spawned = await tools.agent_spawn({ name: "working-agent", prompt: "Reply with a result" });
+		code: `const created = await tools.agent_spawn({ name: "idle-agent", model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)} });
+			const spawned = await tools.agent_spawn({ name: "working-agent", model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)}, prompt: "Reply with a result" });
 			const sent = await tools.agent_send({ sessionId: created.sessionId, message: "Reply with another result" });
 			return { created, spawned, sent };`,
 		builtinExtensions: (host) => [createAgentContribution({ source: fileURLToPath(new URL("./index.ts", import.meta.url)) }).create(host)],
@@ -140,7 +140,7 @@ it("preserves native lineage and effort awareness together through codemode", { 
 	const hostStatus = { conversations: [], live: false, storageId: "fixture-execution" };
 	const f = await executionFixture(t, {
 		code: `const before = await tools.agent_status({});
-			for (let i = 0; i < 21; i++) await tools.agent_spawn({ name: ${JSON.stringify(label)} + i });
+			for (let i = 0; i < 21; i++) await tools.agent_spawn({ name: ${JSON.stringify(label)} + i, model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)} });
 			return { before, combined: await tools.agent_status({}),
 				selected: await tools.agent_status({ sessionId: ${JSON.stringify(peer)} }),
 				fleet: await tools.agent_status({ view: "fleet" }) };`,

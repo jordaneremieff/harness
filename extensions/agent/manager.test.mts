@@ -24,6 +24,8 @@ import type { createPrimaryChannel } from "./primary-channel.ts";
 function fixtureRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "agent-manager-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
+	mkdirSync(join(root, "agent"));
+	writeFileSync(join(root, "agent", "agent-preferences.json"), JSON.stringify({ version: 1, presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard" } }));
 	return root;
 }
 
@@ -36,7 +38,7 @@ function createRecord(manager: AgentManager, root: string, ownerId = "owner-1") 
 		cwd: root,
 		agentDir: join(root, "agent"),
 		packageDir: join(root, "package"),
-		model: { provider: "fixture", modelId: "model-1" },
+		model: { provider: "acme", modelId: "model-x" },
 		thinkingLevel: "off",
 		ownerId,
 	});
@@ -156,7 +158,7 @@ for (const operation of ["submit", "task-submit"] as const) for (const minutes o
 	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
 	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
 	t.after(() => { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; });
-	const caller = { id: "owner-1", cwd: root, model: { provider: "fixture", modelId: "model-1" }, thinkingLevel: "off" };
+	const caller = { id: "owner-1", cwd: root, model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "off" };
 	const input = { area: root, prompt: "Task", origin: "model" as const, checkInMinutes: minutes };
 	if (operation === "submit") {
 		await assert.rejects(manager.place(input, caller), /does not advertise task-submit/u);
@@ -183,7 +185,7 @@ it("retains exact prompted handle references across creation and reuse", async (
 		return nativeAdmission(params, seen.length);
 	}) }));
 	t.after(() => manager.close());
-	const caller = { id: "owner", cwd: root, model: { provider: "fixture", modelId: "model-1" } };
+	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "model-x" } };
 	for (const [index, requestId] of ["handle:first", "handle:next"].entries()) {
 		const outcome = await manager.spawn({ handle: "reviewer", role: "Review work", prompt: "Task", requestId }, caller) as { sessionId: string; created: boolean; result: unknown };
 		assert.equal(outcome.created, index === 0);
@@ -254,7 +256,7 @@ it("preserves a successful spawn admission when its status snapshot fails", asyn
 		}),
 	}));
 	try {
-		const outcome = await manager.spawn({ prompt: "work" }, { id: "owner", cwd: root, model: { provider: "fixture", modelId: "model-1" } }) as { sessionId: string; admission: { submissionId: number }; snapshotError: string };
+		const outcome = await manager.spawn({ prompt: "work" }, { id: "owner", cwd: root, model: { provider: "acme", modelId: "model-x" } }) as { sessionId: string; admission: { submissionId: number }; snapshotError: string };
 		assert.equal(outcome.admission.submissionId, 9);
 		assert.equal(outcome.snapshotError, "snapshot unavailable");
 		assert.equal(manager.catalog.read(outcome.sessionId).storageId, outcome.sessionId);
@@ -614,6 +616,43 @@ it("reports preset creation fields as unapplied for reused handles and places", 
 	assert.equal(again.selection.values.model, "acme/explicit");
 });
 
+it("ordinary spawn and place creation share defaults, errors, override receipts, and opt-in enforcement", async (t) => {
+	const root = fixtureRoot(t);
+	const options = managerOptions(root);
+	const path = agentPreferencesPath(options.agentDir);
+	const validated: Array<{ model: string; level: string }> = [];
+	const manager = new AgentManager({ ...options, validateModel: (model, level) => { validated.push({ model: `${model.provider}/${model.modelId}`, level }); return level; }, acquire: async (metadata) => fakeConnection(metadata, async (method) => method === "profile-read" ? { model: metadata.model, thinkingLevel: metadata.thinkingLevel } : {}) });
+	t.after(() => manager.close());
+	const caller = { id: "owner", cwd: root, model: { provider: "parent", modelId: "model-z" }, thinkingLevel: "max" };
+	const document = (enforceRoster = false) => ({ version: 1, presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard", enforceRoster } });
+	writeFileSync(path, JSON.stringify(document()));
+	for (const method of ["spawn", "place"] as const) {
+		const first = await manager[method]({}, caller) as { sessionId: string; selection: ExecutionSelection };
+		assert.equal(first.selection.origins.model, "defaultPreset");
+		assert.deepEqual(first.selection.values, { model: "acme/model-x", thinkingLevel: "off" });
+		assert.deepEqual(first.selection.presetNames, ["standard"]);
+		assert.match(first.selection.source.digest ?? "", /^[a-f0-9]{64}$/u);
+	}
+	assert.deepEqual(validated, [{ model: "acme/model-x", level: "off" }, { model: "acme/model-x", level: "off" }]);
+	const override = await manager.spawn({ model: "other/model-y" }, caller) as { selection: ExecutionSelection };
+	assert.equal(override.selection.origins.model, "explicit");
+	assert.match(override.selection.diagnostics[0].message, /Explicit model override.*matches no preset/u);
+	writeFileSync(path, JSON.stringify(document(true)));
+	await assert.rejects(manager.spawn({ model: "other/model-y" }, caller), /enforceRoster.*Presets: \["standard"\].*digest/u);
+	const reused = await manager.place({ model: "other/model-y" }, caller) as { selection: ExecutionSelection };
+	assert.equal(reused.selection.origins.model, "retained");
+	assert.ok(reused.selection.unapplied.includes("model"));
+	for (const content of [JSON.stringify({ version: 1, presets: {} }), "malformed"]) {
+		writeFileSync(path, content);
+		await assert.rejects(manager.spawn({}, caller), /defaultPreset.*agent-preferences.json/u);
+	}
+	rmSync(path);
+	await assert.rejects(manager.spawn({}, caller), /defaultPreset.*agent-preferences.json/u);
+	const explicit = await manager.spawn({ model: "acme/model-x" }, caller) as { selection: ExecutionSelection };
+	assert.equal(explicit.selection.source.status, "missing");
+	assert.deepEqual(explicit.selection.presetNames, []);
+});
+
 it("retains ordinary reuse selections before dispatch and reports a raced handle as reused", async (t) => {
 	const root = fixtureRoot(t); const options = managerOptions(root);
 	mkdirSync(options.agentDir, { recursive: true });
@@ -636,7 +675,7 @@ it("retains ordinary reuse selections before dispatch and reports a raced handle
 	const replay = await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task", selection: selections.at(-1) }, caller) as typeof raced;
 	assert.deepEqual(replay.selection, raced.selection);
 	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", checkInMinutes: 3 } } }));
-	await manager.place({ area: root }, caller);
+	await manager.place({ area: root, preset: "review" }, caller);
 	const placed = await manager.place({ area: root, preset: "review", prompt: "Work" }, caller) as typeof raced;
 	writeFileSync(path, "malformed");
 	const placedReplay = await manager.place({ area: root, preset: "review", prompt: "Work", selection: selections.at(-1) }, caller) as typeof raced;
@@ -712,7 +751,7 @@ it("validates the spawn model before writing a catalog record", async (t) => {
 		},
 	}));
 	try {
-		await assert.rejects(manager.spawn({ model: "fixture/missing" }, { id: "caller", cwd: root }), /configured catalog/u);
+		await assert.rejects(manager.spawn({ model: "acme/missing" }, { id: "caller", cwd: root }), /configured catalog/u);
 		const page = await manager.catalog.page({});
 		assert.equal(page.records.length, 0, "no catalog record is written before validation");
 	} finally { manager.close(); }
@@ -729,7 +768,7 @@ it("stores and reports the effective thinking level before ordinary dispatch", a
 		},
 	}));
 	try {
-		const caller = { id: "caller", cwd: root, model: { provider: "fixture", modelId: "plain" } };
+		const caller = { id: "caller", cwd: root, model: { provider: "acme", modelId: "plain" } };
 		const outcome = await manager.spawn({ thinkingLevel: "max" }, caller) as { sessionId: string; thinking: unknown };
 		assert.deepEqual(outcome.thinking, { requested: "max", effective: "off" });
 		assert.deepEqual(levels, ["off"]);
@@ -746,7 +785,7 @@ it("discards its own catalog record when the first acquire fails", async (t) => 
 		},
 	}));
 	try {
-		await assert.rejects(manager.spawn({ model: "fixture/model-1", prompt: "start" }, { id: "caller", cwd: root }), /host process failed to start/u);
+		await assert.rejects(manager.spawn({ model: "acme/model-x", prompt: "start" }, { id: "caller", cwd: root }), /host process failed to start/u);
 		const page = await manager.catalog.page({});
 		assert.equal(page.records.length, 0, "the unopened record is discarded");
 	} finally { manager.close(); }
@@ -764,7 +803,7 @@ it("returns a failed attach configuration instead of a recovery status", async (
 	}));
 	const record = createRecord(manager, root);
 	try {
-		const outcome = await manager.control("attach", { sessionId: record.storageId, model: { provider: "fixture", modelId: "missing" } }, { id: "caller", cwd: root }) as { outcome?: string; recovery?: string };
+		const outcome = await manager.control("attach", { sessionId: record.storageId, model: { provider: "acme", modelId: "missing" } }, { id: "caller", cwd: root }) as { outcome?: string; recovery?: string };
 		assert.equal(outcome.outcome, "failed");
 		assert.equal(outcome.recovery, undefined);
 	} finally { manager.close(); }
@@ -1172,7 +1211,7 @@ for (const operation of ["submit", "task-submit"] as const) it(`preserves explic
 		}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT),
 	}));
 	const record = createRecord(manager, root);
-	const caller = { id: "caller", cwd: root, model: { provider: "fixture", modelId: "model-1" } };
+	const caller = { id: "caller", cwd: root, model: { provider: "acme", modelId: "model-x" } };
 	const previous = process.env.PI_AGENT_CHECK_IN_MINUTES;
 	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
 	try {
@@ -1220,7 +1259,7 @@ it("returns a compact status snapshot from a mutation instead of the full status
 			cwd: root,
 			busy: false,
 			lastText: "working on it",
-			agent: { model: { provider: "fixture", modelId: "model-1" }, thinkingLevel: "high", tools: ["bash", "write"], extensions: ["agent", "other"] },
+			agent: { model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "high", tools: ["bash", "write"], extensions: ["agent", "other"] },
 			live: { run: { taskId: 4 }, tools: [{ name: "bash", status: "running" }] },
 			submissions: [{ id: 1, type: "input", status: "done" }],
 		},
@@ -1233,7 +1272,7 @@ it("returns a compact status snapshot from a mutation instead of the full status
 		acquire: async (metadata) => fakeConnection(metadata, async (method) => (method === "status" ? fullStatus : { submissionId: 5 })),
 	}));
 	try {
-		const outcome = await manager.spawn({ prompt: "review the parser", origin: "operator" }, { id: "caller", cwd: root, model: { provider: "fixture", modelId: "model-1" } }) as {
+		const outcome = await manager.spawn({ prompt: "review the parser", origin: "operator" }, { id: "caller", cwd: root, model: { provider: "acme", modelId: "model-x" } }) as {
 			status: { identity: string; conversationId: number; name?: string; cwd?: string; busy: boolean; state: string; agent: { model?: { provider: string; modelId: string }; thinkingLevel: string }; limits?: { ordinaryOnly: string[] } };
 		};
 		assert.equal(outcome.status.identity, "storage-a");
@@ -1242,7 +1281,7 @@ it("returns a compact status snapshot from a mutation instead of the full status
 		assert.equal(outcome.status.cwd, root);
 		assert.equal(outcome.status.busy, false);
 		assert.equal(outcome.status.state, "idle");
-		assert.deepEqual(outcome.status.agent.model, { provider: "fixture", modelId: "model-1" });
+		assert.deepEqual(outcome.status.agent.model, { provider: "acme", modelId: "model-x" });
 		assert.equal(outcome.status.agent.thinkingLevel, "high");
 		assert.deepEqual(outcome.status.limits?.ordinaryOnly, ["/home/example/extensions/legacy.ts"]);
 		const serialized = JSON.stringify(outcome);

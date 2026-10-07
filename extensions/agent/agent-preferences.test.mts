@@ -66,7 +66,7 @@ it("reads fresh snapshots, preserves digests and resolution, and treats exclusio
 	assert.ok(snapshot.diagnostics.some((fact) => /capacity/u.test(fact.message)));
 	assert.ok(snapshot.diagnostics.some((fact) => /Unknown preset/u.test(fact.message)));
 	assert.ok(snapshot.diagnostics.some((fact) => /Unknown provider/u.test(fact.message)));
-	const selection = resolveExecutionPreset(snapshot, { preset: "review", thinkingLevel: "low", checkInMinutes: 0 }, { model: "other/model-y", thinkingLevel: "off" }, { inherited: true, role: true, checkIn: true });
+	const selection = resolveExecutionPreset(snapshot, { preset: "review", thinkingLevel: "low", checkInMinutes: 0 }, { model: "other/model-y", thinkingLevel: "off" }, { creation: true, role: true, checkIn: true });
 	assert.deepEqual(selection.values, { model: "acme/model-x", thinkingLevel: "low", role: "Review sources", checkInMinutes: 0 });
 	assert.deepEqual(selection.origins, { model: "preset", thinkingLevel: "explicit", role: "preset", checkInMinutes: "explicit" });
 	assert.deepEqual(parseExecutionSelection(selection), selection);
@@ -100,8 +100,7 @@ it("preserves retained targets and reports unsupported preset fields", (t) => {
 	assert.equal(reused.values.model, "acme/retained");
 	assert.equal(reused.values.checkInMinutes, 2);
 	assert.deepEqual(reused.unapplied, ["model", "thinkingLevel", "role"]);
-	const inherited = resolveExecutionPreset(snapshot, {}, { model: "acme/retained", thinkingLevel: "off" }, { inherited: true });
-	assert.equal(inherited.origins.model, "inherited");
+	assert.throws(() => resolveExecutionPreset(snapshot, {}, { model: "acme/retained", thinkingLevel: "high" }, { creation: true }), /defaultPreset.*agent-preferences.json/u);
 });
 
 it("missing and malformed files never replace explicit selections with inheritance", (t) => {
@@ -109,12 +108,14 @@ it("missing and malformed files never replace explicit selections with inheritan
 	const path = agentPreferencesPath(root);
 	const absent = readAgentPreferences(root, catalog);
 	assert.equal(absent.source.status, "missing");
-	assert.equal(resolveExecutionPreset(absent, {}, { model: "acme/model-x" }).values.model, "acme/model-x");
+	assert.throws(() => resolveExecutionPreset(absent, {}, { model: "acme/model-x" }, { creation: true }), /defaultPreset.*agent-preferences.json/u);
+	assert.equal(resolveExecutionPreset(absent, { model: "acme/model-x" }, {}, { creation: true }).values.model, "acme/model-x");
 	assert.throws(() => resolveExecutionPreset(absent, { preset: "review" }, {}), /review.*file is missing/u);
 	writeFileSync(path, "not json");
 	const malformed = readAgentPreferences(root, catalog);
 	assert.equal(malformed.source.status, "unavailable");
-	assert.equal(resolveExecutionPreset(malformed, {}, { model: "acme/model-x" }).values.model, "acme/model-x");
+	assert.throws(() => resolveExecutionPreset(malformed, {}, { model: "acme/model-x" }, { creation: true }), /defaultPreset.*agent-preferences.json/u);
+	assert.equal(resolveExecutionPreset(malformed, { model: "acme/model-x" }, {}, { creation: true }).values.model, "acme/model-x");
 	assert.throws(() => resolveExecutionPreset(malformed, { preset: "review" }, {}), /review.*agent-preferences.json/u);
 	assert.match(renderAgentPreferences(malformed), /preferences are unavailable/u);
 	assert.match(renderAgentPreferences(malformed), /Previous preference text is not current/u);
@@ -166,4 +167,80 @@ it("guidance includes current preferences and bounded omitted coverage", (t) => 
 	writeFileSync(agentPreferencesPath(root), JSON.stringify(large));
 	const bounded = renderAgentPreferences(readAgentPreferences(root, catalog));
 	assert.ok(bounded.length < 12500); assert.match(bounded, /Omitted \d+ lines/u);
+});
+
+it("creation resolves the machine default only without a model or preset and never imports parent fields", (t) => {
+	const root = fixture(t);
+	writeFileSync(agentPreferencesPath(root), JSON.stringify({ version: 1, presets: { standard: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 }, spare: { model: "other/model-y" } }, preferences: { defaultPreset: "standard" } }));
+	const snapshot = readAgentPreferences(root, catalog);
+	const parent = { model: "parent/model-z", thinkingLevel: "max", role: "Parent role", checkInMinutes: 9 };
+	const options = { creation: true, role: true, checkIn: true };
+	const selection = resolveExecutionPreset(snapshot, {}, parent, options);
+	assert.deepEqual(selection.values, snapshot.document?.presets.standard);
+	assert.deepEqual(selection.origins, { model: "defaultPreset", thinkingLevel: "defaultPreset", role: "defaultPreset", checkInMinutes: "defaultPreset" });
+	assert.deepEqual(selection.presetNames, ["spare", "standard"]);
+	assert.equal(selection.source.digest, snapshot.source.digest);
+	assert.deepEqual(parseExecutionSelection(selection), selection);
+	assert.equal(resolveExecutionPreset(snapshot, { thinkingLevel: "low", checkInMinutes: 0, role: "Explicit" }, parent, options).values.model, "acme/model-x");
+	const explicit = resolveExecutionPreset(snapshot, { model: "other/model-y" }, parent, options);
+	assert.equal(explicit.preset, undefined);
+	assert.deepEqual(explicit.values, { model: "other/model-y", thinkingLevel: "off" });
+	assert.equal(explicit.origins.model, "explicit");
+	const spare = resolveExecutionPreset(snapshot, { preset: "spare" }, parent, options);
+	assert.deepEqual(spare.values, { model: "other/model-y", thinkingLevel: "off" });
+	assert.equal(spare.origins.thinkingLevel, "default");
+	const mixed = resolveExecutionPreset(snapshot, { preset: "standard", model: "other/model-y" }, parent, options);
+	assert.equal(mixed.values.thinkingLevel, "high");
+	assert.equal(mixed.origins.model, "explicit");
+	assert.equal(mixed.origins.thinkingLevel, "preset");
+	assert.deepEqual(resolveExecutionPreset(snapshot, {}, parent).values, { model: parent.model, thinkingLevel: parent.thinkingLevel });
+	assert.equal(resolveExecutionPreset(snapshot, {}, parent).preset, undefined);
+	assert.equal(resolveExecutionPreset(snapshot, {}, parent, { reused: true }).preset, undefined);
+});
+
+it("explicit model overrides remain observable and only opted-in creation enforces the roster", (t) => {
+	const root = fixture(t);
+	const write = (enforceRoster: boolean) => writeFileSync(agentPreferencesPath(root), JSON.stringify({ version: 1, presets: { standard: { model: "acme/model-x" }, excluded: { model: "other/model-y" } }, preferences: { defaultPreset: "standard", enforceRoster, excludedModels: ["other/model-y"], excludedProviders: ["blocked"] } }));
+	write(false);
+	const advisory = readAgentPreferences(root, catalog);
+	for (const model of ["outside/model-z", "other/model-y", "blocked/model-x", "acme/model-x"]) {
+		const selection = resolveExecutionPreset(advisory, { model }, {}, { creation: true });
+		assert.equal(selection.origins.model, "explicit");
+		assert.match(selection.diagnostics[0].message, /Explicit model override/u);
+		if (model === "outside/model-z") assert.match(selection.diagnostics[0].message, /matches no preset/u);
+		if (model === "other/model-y" || model === "blocked/model-x") assert.ok(selection.diagnostics.some((fact) => /advisory only/u.test(fact.message)));
+	}
+	write(true);
+	const enforced = readAgentPreferences(root, catalog);
+	for (const input of [{ model: "outside/model-z" }, { model: "other/model-y" }, { model: "blocked/model-x" }, { preset: "excluded" }]) {
+		assert.throws(() => resolveExecutionPreset(enforced, input, {}, { creation: true }), (error: unknown) => {
+			assert.match(String(error), /enforceRoster/u);
+			assert.match(String(error), /Presets: \["excluded","standard"\]/u);
+			assert.ok(String(error).includes(enforced.source.digest ?? "missing digest"));
+			return true;
+		});
+	}
+	assert.equal(resolveExecutionPreset(enforced, {}, {}, { creation: true }).values.model, "acme/model-x");
+	assert.equal(resolveExecutionPreset(enforced, { model: "outside/model-z" }, {}).values.model, "outside/model-z", "configure remains a target override, not a creation gate");
+	const retained = resolveExecutionPreset(enforced, { model: "outside/model-z", preset: "excluded" }, { model: "outside/retained", thinkingLevel: "low" }, { reused: true });
+	assert.equal(retained.values.model, "outside/retained");
+	assert.ok(retained.unapplied.includes("model"));
+});
+
+it("preset errors always list the file, all names, and the current digest", (t) => {
+	const root = fixture(t);
+	for (const content of [undefined, "malformed", JSON.stringify({ version: 1, presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "absent" } })]) {
+		if (content !== undefined) writeFileSync(agentPreferencesPath(root), content);
+		const snapshot = readAgentPreferences(root, catalog);
+		for (const input of [{ preset: "absent" }, { preset: "INVALID" }, {}]) {
+			assert.throws(() => resolveExecutionPreset(snapshot, input, {}, { creation: true }), (error: unknown) => {
+				const message = String(error);
+				assert.ok(message.includes(snapshot.source.path));
+				assert.ok(message.includes(`digest ${snapshot.source.digest ?? "none"}`));
+				assert.ok(message.includes(snapshot.source.status === "loaded" ? '["standard"]' : '[]'));
+				return true;
+			});
+		}
+	}
+	for (const preferences of [{ defaultPreset: "INVALID" }, { enforceRoster: "true" }, { defaultPreset: 1 }]) assert.throws(() => parseAgentPreferences(JSON.stringify({ version: 1, presets: {}, preferences })), /Invalid/u);
 });

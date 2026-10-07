@@ -127,6 +127,62 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	assert.doesNotMatch(next.systemPromptOptions.sections["agent-preferences"], /Current note/u);
 });
 
+it("native local creation uses the common default, override, and refusal precedence without caller inheritance", async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "native-default-presets-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const path = agentPreferencesPath(directory);
+	const models = createModels();
+	const parent = fauxProvider({ provider: "acme", models: [{ id: "model-x" }] });
+	const worker = fauxProvider({ provider: "other", models: [{ id: "model-y" }] });
+	models.setProvider(parent.provider); models.setProvider(worker.provider);
+	const write = (enforceRoster = false) => writeFileSync(path, JSON.stringify({ version: 1, presets: { standard: { model: "other/model-y", thinkingLevel: "low", role: "Review", checkInMinutes: 2 } }, preferences: { defaultPreset: "standard", enforceRoster, ...(enforceRoster ? { excludedProviders: ["other"] } : {}) } }));
+	write();
+	const registry = Durable.createRegistry();
+	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts" }).create({ durable: Durable, storageId: "native-default", cwd: directory, agentDir: directory, services: { modelRuntime: models } });
+	registry.install(extension);
+	for (const name of ["agent_spawn", "agent_place", "agent_configure"]) assert.match(JSON.stringify(extension.tools?.find((tool) => tool.name === name)?.parameters), /standard/u);
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	t.after(() => harness.close(BACKGROUND_CONTEXT)); harness.resume();
+	const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "high" } });
+	const run = async (input: Durable.JsonObject): Promise<Message> => {
+		let observed: Message[] = [];
+		parent.setResponses([() => fauxAssistantMessage([fauxToolCall("agent_spawn", input)], { stopReason: "toolUse" }), (request) => { observed = [...request.messages]; return fauxAssistantMessage("Done"); }]);
+		await (await root.submit({ type: "input", content: "Create an idle child" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const result = observed.findLast((message) => message.role === "toolResult" && message.toolName === "agent_spawn");
+		assert.ok(result); return result;
+	};
+	const selectionOf = (result: Message) => {
+		assert.ok(result.role === "toolResult" && !result.isError, JSON.stringify(result));
+		return (result.details as { structuredContent: { selection: ExecutionSelection; conversationId: Durable.ConversationId } }).structuredContent;
+	};
+	const first = selectionOf(await run({}));
+	assert.equal(first.selection.values.model, "other/model-y");
+	assert.equal(first.selection.origins.model, "defaultPreset");
+	assert.equal(first.selection.origins.thinkingLevel, "defaultPreset");
+	assert.deepEqual(first.selection.presetNames, ["standard"]);
+	assert.deepEqual((await harness.snapshot(Durable.AgentDoc, first.conversationId, BACKGROUND_CONTEXT))?.model, { provider: "other", modelId: "model-y" });
+	const explicit = selectionOf(await run({ model: "acme/model-x" }));
+	assert.equal(explicit.selection.origins.model, "explicit");
+	assert.equal(explicit.selection.values.thinkingLevel, "off");
+	assert.match(explicit.selection.diagnostics[0].message, /Explicit model override.*matches no preset/u);
+	assert.equal(explicit.selection.preset, undefined);
+	const mixed = selectionOf(await run({ preset: "standard", model: "acme/model-x", thinkingLevel: "high" }));
+	assert.equal(mixed.selection.origins.thinkingLevel, "explicit");
+	assert.equal(mixed.selection.values.thinkingLevel, "high");
+	write(true);
+	for (const input of [{}, { model: "acme/model-x" }] as Durable.JsonObject[]) {
+		const refused = await run(input);
+		assert.ok(refused.role === "toolResult" && refused.isError);
+		assert.match(JSON.stringify(refused), /enforceRoster.*standard.*digest/u);
+	}
+	writeFileSync(path, JSON.stringify({ version: 1, presets: {} }));
+	const absentDefault = await run({});
+	assert.ok(absentDefault.role === "toolResult" && absentDefault.isError);
+	assert.match(JSON.stringify(absentDefault), /defaultPreset.*agent-preferences.json/u);
+	assert.deepEqual((await root.agent(BACKGROUND_CONTEXT)).model, { provider: "acme", modelId: "model-x" });
+	assert.equal(worker.state.callCount, 0, "idle children start no model work");
+});
+
 it("configure resolves a preset against its target and retains the snapshot across retries", { timeout: 30000 }, async (t) => {
 	const fixture = runtimeFixture(t);
 	const path = agentPreferencesPath(fixture.agentDir);
@@ -199,7 +255,7 @@ it("native place creation without a prompt returns a JSON-safe selection receipt
 	const caller = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, caller.pid);
 	t.after(() => caller.close());
 	const outcome = await caller.request("place", { area: f.childCwd, senderIdentity: f.metadata.storageId }, { requestId: "idle-place" }) as { sessionId: string; selection: ExecutionSelection };
-	assert.equal(outcome.selection.origins.model, "inherited");
+	assert.equal(outcome.selection.origins.model, "defaultPreset");
 	assert.equal("admission" in outcome, false);
 	const target = await acquireHost(hostMetadata(new AgentCatalog(f.root).read(outcome.sessionId)), { env: f.env("answer") }); trackHost(t, target.pid);
 	t.after(() => target.close());
@@ -252,9 +308,9 @@ for (const operation of ["creation", "configure"] as const) it(`native ${operati
 });
 
 it("advertises preset-aware process interfaces without changing message admission", () => {
-	assert.equal(MANAGER_CONTRACT, "manager/1.9.0");
-	assert.match(CONTROL_BINDING_CONTRACT, /^native-controls\/1\.5\.0;durable=/u);
-	for (const method of ["spawn", "resolve-agent"]) assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/1.1.0`, response: `${method}/1.2.0` });
-	for (const method of ["place", "configure"]) assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/1.1.0`, response: `${method}/1.1.0` });
+	assert.equal(MANAGER_CONTRACT, "manager/2.0.0");
+	assert.match(CONTROL_BINDING_CONTRACT, /^native-controls\/2\.0\.0;durable=/u);
+	for (const method of ["spawn", "resolve-agent", "place"]) assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/2.0.0`, response: `${method}/2.0.0` });
+	assert.deepEqual(HOST_CONTRACT.operations.configure, { request: "configure/1.2.0", response: "configure/1.2.0" });
 	assert.equal(HOST_CONTRACT.operations["task-submit"].request, "task-submit/1.0.0");
 });

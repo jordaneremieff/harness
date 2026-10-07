@@ -1,7 +1,7 @@
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { mkdirSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { PresetParameter, readAgentPreferences, renderAgentPreferences, parsePreferenceSnapshot, parseExecutionSelection } from "./agent-preferences.ts";
+import { PresetParameter, presetParameter, presetInventory, readAgentPreferences, renderAgentPreferences, parsePreferenceSnapshot, parseExecutionSelection, type PreferenceSnapshot } from "./agent-preferences.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
@@ -19,7 +19,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum, clampThinkingLevel } from "@earendil-works/pi-ai";
-import { Type, type TSchema } from "typebox";
+import { Type, type TSchema, type TObject } from "typebox";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
@@ -241,6 +241,16 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		if (query === null || typeof query !== "object" || typeof (query as { provide?: unknown }).provide !== "function") throw new Error("Independent launch discovery requires provide()");
 		(query as { provide: (launch: IndependentCommandLaunch) => void }).provide((input) => getManager().launchIndependent(input));
 	});
+	let registrationPreferences = readAgentPreferences();
+	const refreshRegistrations = new Map<string, (snapshot: PreferenceSnapshot) => void>();
+	const refreshPreferences = (ctx?: ExtensionContext): PreferenceSnapshot => {
+		const snapshot = readAgentPreferences(undefined, ctx ? caller(ctx, pi).preferenceCatalog : undefined);
+		if (presetInventory(snapshot) !== presetInventory(registrationPreferences)) {
+			registrationPreferences = snapshot;
+			for (const refresh of refreshRegistrations.values()) refresh(snapshot);
+		}
+		return snapshot;
+	};
 	const control = (method: string, input: Record<string, unknown>, ctx: ExtensionContext) =>
 		getManager().control(method, input, caller(ctx, pi));
 	const register = (
@@ -252,19 +262,21 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	): void => {
 		const guidance = AGENT_CONTROL_GUIDANCE[name];
 		const schema = name === "agent_await" ? AwaitOutputSchema : observationSchemas[name];
-		pi.registerTool({
+		const presetAware = ["agent_spawn", "agent_place", "agent_configure"].includes(name);
+		const registerDefinition = (snapshot: PreferenceSnapshot): void => pi.registerTool({
 			name,
 			label: name.replace("agent_", "Agent "),
 			description,
 			promptSnippet: guidance.snippet,
 			promptGuidelines: [...(guidance.guidelines ?? [])],
-			parameters,
+			parameters: presetAware ? { ...parameters, properties: { ...(parameters as TObject).properties, preset: presetParameter(snapshot) } } : parameters,
 			outputSchema: schema ?? Type.Unknown(),
 			...(modelOnly ? { exposure: "model-only" as const } : {}),
 			async execute(callId, input, _signal, _update, ctx) {
 				let admitted = input as Record<string, unknown>;
 				let admissionCaller: AgentCaller | undefined;
-				if (["agent_spawn", "agent_place", "agent_configure"].includes(name)) {
+				if (presetAware) {
+					refreshPreferences(ctx);
 					({ admitted, admissionCaller } = admitExecutionInput(pi, ctx, name, callId, admitted));
 				}
 				const value = await execute(admitted, ctx, callId, admissionCaller);
@@ -276,6 +288,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			renderCall: cards[name].renderCall,
 			renderResult: cards[name].renderResult,
 		});
+		if (presetAware) refreshRegistrations.set(name, registerDefinition);
+		registerDefinition(registrationPreferences);
 	};
 	pi.registerTool({
 		name: "agent_intent",
@@ -501,7 +515,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			name: "new",
 			description: "Start a new Durable agent",
 			args: [{ name: "task", rest: true, optional: true }],
-			help: "Describe the task in your own words. The agent uses your current directory and model. Its host survives this primary process; advanced overrides use agent_spawn.",
+			help: "Describe the task in your own words. The agent uses your current directory and machine default preset. Its host survives this primary process; advanced overrides use agent_spawn.",
 			run: async (args, ctx, onCreated) => {
 				const prompt = args.join(" ") || undefined;
 				const created = (await getManager().spawn({ prompt, origin: "operator" }, caller(ctx, pi), onCreated)) as {
@@ -805,6 +819,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer("agent.peer", renderAgentPeerMessage);
 	pi.on("session_start", async (_event, ctx) => {
 		selfCompaction.clear();
+		refreshPreferences(ctx);
 		const sessionId = ctx.sessionManager.getSessionId();
 		primaries.get(sessionId)?.abort();
 		const abort = new AbortController();
@@ -821,6 +836,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
 			send: (text, details) => {
+				refreshPreferences(ctx);
 				const wake = !(
 					details !== null &&
 					typeof details === "object" &&
@@ -850,7 +866,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		getManager().updatePrimary(ctx.sessionManager.getSessionId(), { name: event.name });
 	});
 	pi.on("before_agent_start", async (event, ctx) => {
-		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(readAgentPreferences(process.env.PI_AGENT_DIR ?? getAgentDir(), caller(ctx, pi).preferenceCatalog));
+		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
 		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd));
 	});
 	pi.on("input", (event, ctx) => {

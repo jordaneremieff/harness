@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { markerFixture } from "./durable-runtime-fixture.mts";
+import { fixtureProvider, fixtureModelId } from "./durable-host-fixture.mts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,7 +43,7 @@ it("selects a manager spawn before storage exists and attaches to its real host"
 		const id = connection?.storageId;
 		if (id && JSON.stringify(source.frame(id)?.entries ?? []).includes("startup task")) taskFrame.resolve();
 	});
-	const spawning = manager.spawn({ prompt: "startup task", origin: "operator" }, { id: "owner", cwd: root, model: { provider: "fixture", modelId: "model-1" } });
+	const spawning = manager.spawn({ model: `${fixtureProvider}/${fixtureModelId}`, prompt: "startup task", origin: "operator" }, { id: "owner", cwd: root, model: { provider: "fixture", modelId: "model-1" } });
 	cleanup = async () => {
 		releaseStart();
 		off();

@@ -30,7 +30,7 @@ await manager.registerPrimary(id, {
 
 interface Command { id: number; method: string; params: Record<string, unknown> }
 async function dispatch({ method, params }: Command): Promise<unknown> {
-	if (method === "spawn") return manager.spawn(params, caller);
+	if (method === "spawn") return manager.spawn({ ...params, model: params.model === undefined ? `${caller.model.provider}/${caller.model.modelId}` : String(params.model) }, caller);
 	if (method === "control") return manager.control(String(params.method), params.input as Record<string, unknown>, caller);
 	if (method === "metadata") return hostMetadata(manager.catalog.read(String(params.sessionId)));
 	if (method === "release") {

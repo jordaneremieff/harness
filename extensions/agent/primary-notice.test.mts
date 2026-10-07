@@ -10,13 +10,13 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { createAssistantMessageEventStream, getCurrentSystemPrompt, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentSystemMessage, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { CustomMessageComponent, DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, initTheme, type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { eventLog, type EventLog } from "./host-fixture.mts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
@@ -93,6 +93,7 @@ interface NoticeFixture {
 	readonly sessionManager: SessionManager;
 	readonly sessionsRoot: string;
 	readonly requests: EventLog<TranscriptContext>;
+	promptStarts(): number;
 	/** Hold the provider before its request event. */
 	holdRequest(): { held: Promise<void>; release(): void };
 	/** Hold the next provider response open so the session stays streaming. */
@@ -193,6 +194,10 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, additionalExtensionPaths: [join(root, "notice.ts")] });
 	await loader.reload();
+	let promptStarts = 0;
+	const promptHandlers = loader.getExtensions().extensions[0]?.handlers.get("before_agent_start");
+	assert.ok(promptHandlers);
+	promptHandlers.push(async () => { promptStarts++; });
 	session = (await createAgentSession({ cwd, agentDir, modelRuntime: runtime, settingsManager, sessionManager, model: testModel, resourceLoader: loader })).session;
 	await session.bindExtensions({});
 	const id = sessionManager.getSessionId();
@@ -211,6 +216,7 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 		sessionManager,
 		sessionsRoot,
 		requests,
+		promptStarts: () => promptStarts,
 		holdRequest: () => {
 			const held = eventLog<void>();
 			requestGate = new Promise<void>((resolve) => { releaseRequest = resolve; });
@@ -279,6 +285,60 @@ it("keeps a provider request consumer pending until the provider leaves its gate
 	await fixture.session.waitForIdle();
 	assert.equal(requested, true);
 	assert.equal(fixture.requests.length, 1);
+});
+
+it("refreshes preset descriptions and base guidance before peer-message turns without the prompt-start hook", { timeout: 30000 }, async (t) => {
+	const f = await noticeFixture(t);
+	const dependency = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.resolve("@earendil-works/pi-coding-agent"))), "utf8")) as { version: string };
+	t.diagnostic(`Coding-agent runtime dependency: ${dependency.version}`);
+	const path = join(f.sessionsRoot, "..", "agent", "agent-preferences.json");
+	const write = (key: string, model: string) => writeFileSync(path, JSON.stringify({ version: 1, presets: { [key]: { model } }, preferences: { defaultPreset: key } }));
+	for (const [index, key, model] of [[1, "standard", "acme/model-x"], [2, "economy", "other/model-y"]] as const) {
+		write(key, model);
+		const starts = f.promptStarts();
+		await f.deliver(`model:preset:${index}`, "Review the result", true);
+		await f.requests.waitForCount(index === 1 ? 1 : index + 1, MESSAGE_LIMIT_MS);
+		await f.session.waitForIdle();
+		const request = f.requests.at(-1);
+		assert.ok(request);
+		assert.equal(f.promptStarts(), starts, "peer turns skip before_agent_start");
+		if (index > 1) {
+			const prompt = getCurrentSystemPrompt(request.messages);
+			assert.match(prompt, /Delegate with preset/u);
+			assert.match(prompt, /machine defaultPreset/u);
+		}
+		for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
+			const declaration = f.session.getAllTools().find((tool) => tool.name === name);
+			assert.ok(declaration);
+			const description = String((declaration.parameters as { properties: { preset: { description: string } } }).properties.preset.description);
+			assert.ok(description.includes(`["${key}"]`), description);
+			assert.match(description, /digest [a-f0-9]{64}/u);
+			const actual = getCurrentSystemMessage(request.messages)?.toolsAdded?.find((tool) => tool.name === name);
+			const parameters = JSON.stringify(actual?.parameters);
+			assert.ok(parameters?.includes(key), "the refreshed schema reaches the actual provider request");
+			assert.match(parameters, /Delegate with a named execution preset/u);
+			assert.match(parameters, /Omit model and preset for the machine default/u);
+		}
+		if (index === 1) {
+			await f.session.prompt("Prepare the ordinary base prompt");
+			assert.equal(f.promptStarts(), starts + 1, "an ordinary prompt invokes before_agent_start");
+			const normal = f.requests.at(-1);
+			assert.ok(normal);
+			assert.match(getCurrentSystemPrompt(normal.messages), /Delegate with preset/u);
+			assert.match(getCurrentSystemPrompt(normal.messages), /machine defaultPreset/u);
+		}
+	}
+	writeFileSync(path, "malformed");
+	await f.deliver("model:preset:error", "Review another result", true);
+	await f.requests.waitForCount(4, MESSAGE_LIMIT_MS);
+	await f.session.waitForIdle();
+	const declarations = f.session.getAllTools().filter((tool) => ["agent_spawn", "agent_place", "agent_configure"].includes(tool.name));
+	for (const declaration of declarations) {
+		const text = JSON.stringify(declaration.parameters);
+		assert.match(text, /Presets: \[\]/u);
+		assert.match(text, /unavailable/u);
+		assert.doesNotMatch(text, /economy/u);
+	}
 });
 
 it("starts exactly one primary model turn for a wake-true notice when idle", { timeout: 30000 }, async (t) => {

@@ -1,3 +1,4 @@
+import { readAgentPreferences, renderPreferenceStatus } from "./agent-preferences.ts";
 import type { ExtensionContext, Theme, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import {
 	Input,
@@ -113,6 +114,7 @@ function rosterMark(row: AgentConversationSummary): string {
 /** The root owns source handles and async generations. Rendering performs no source reads. */
 export class AgentDashboard implements Component, Focusable {
 	readonly navigation: DashboardNavigation;
+	private machinePreferences = renderPreferenceStatus(readAgentPreferences()).map(cleanDashboardText);
 	private page?: AgentConversationPage;
 	private rows: AgentConversationSummary[] = [];
 	private console?: AgentConsole;
@@ -239,6 +241,7 @@ export class AgentDashboard implements Component, Focusable {
 		}, 250);
 	}
 	private async refreshRoster(cursor?: string): Promise<void> {
+		this.machinePreferences = renderPreferenceStatus(readAgentPreferences()).map(cleanDashboardText);
 		if (this.closed) return;
 		if (this.rosterPending) {
 			this.rosterAgain = true;
@@ -1126,7 +1129,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	private readerLines(width: number): string[] {
 		const help = this.operations.newAgent ? HELP : HELP.map((line) => line === "n starts a new agent." ? "New agent is unavailable. Enter an existing conversation." : line);
-		const source = this.navigation.screen === "help" ? help : this.result.split("\n");
+		const source = this.navigation.screen === "help" ? ["Machine execution preferences", ...this.machinePreferences, "", ...help] : this.result.split("\n");
 		const content = source.flatMap((line) =>
 			wrapTextWithAnsi(
 				this.navigation.screen === "help" && ["Dashboard", "Messages", "Read", "Return"].includes(line)
@@ -1314,7 +1317,7 @@ export class AgentDashboard implements Component, Focusable {
 		return this.theme.fg("muted", fitLine(visibleWidth(text) <= width ? text : parts.join("  "), width));
 	}
 	private selectedHeader(width: number): string[] {
-		if (this.navigation.screen === "new") return [this.theme.bold("New agent"), this.theme.fg("muted", "Primary model and directory")];
+		if (this.navigation.screen === "new") return [this.theme.bold("New agent"), this.theme.fg("muted", "Machine default preset and primary directory"), this.theme.fg("muted", fitLine(this.machinePreferences[0], width))];
 		const console = this.console;
 		if (!console) return [this.statusText(), this.notice].filter((line): line is string => Boolean(line)).map((line) => this.theme.fg("muted", line));
 		const row = console.row;
@@ -1371,6 +1374,9 @@ export class AgentDashboard implements Component, Focusable {
 		const value = requested === undefined ? Math.max(MIN_COMPOSER_ROWS, editorRows - 2 - composer.autocompleteRows) : clamp(requested, MIN_COMPOSER_ROWS, maxRows);
 		this.resize.add({ kind: "composer", x: paneX + geometry.conversationWidth - 4, y: paneY + headerRows + geometry.bodyHeight, width: 3, height: 1, value, min: MIN_COMPOSER_ROWS, max: maxRows });
 	}
+	private preferenceHeader(screen: string, width: number, remainingRows: number): string[] {
+		return screen === "console" || screen === "new" || remainingRows < MIN_COMPOSER_ROWS + 3 ? [] : [this.theme.fg("muted", fitLine(`${this.machinePreferences[0]} · ? file and presets`, width))];
+	}
 	private renderDashboard(width: number, height: number): string[] {
 		const screen = this.navigation.screen;
 		const composer = screen === "new" ? this.newComposer : this.console?.composer;
@@ -1379,9 +1385,10 @@ export class AgentDashboard implements Component, Focusable {
 		const paneWidth = shape.conversationWidth;
 		const model = screen === "new" ? undefined : this.console?.row.model;
 		const info = model ? this.operations.modelInfo?.(model.provider, model.modelId) : undefined;
-		const header = this.selectedHeader(paneWidth - 2).map((line) => ` ${line} `);
 		const status = screen === "new" ? [] : this.console?.statusLines(paneWidth, info, this.branches.get(this.console.row.cwd), this.delegatedFigures()) ?? [];
 		const available = shape.paneHeight - status.length;
+		const selected = this.selectedHeader(paneWidth - 2);
+		const header = [...selected, ...this.preferenceHeader(screen, paneWidth - 2, available - selected.length)].map((line) => ` ${line} `);
 		const budget = dashboardPaneGeometry(available, header.length + 2, 0);
 		const editorLimit = Math.max(MIN_COMPOSER_ROWS + 2, available - header.length - 2);
 		const { editor, maxRows } = this.renderComposer(composer, paneWidth, budget.composerMaxRows, editorLimit);

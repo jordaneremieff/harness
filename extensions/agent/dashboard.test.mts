@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { it } from "node:test";
 import { fixture, source, row, page, turn, deferred, conversationFrame } from "./dashboard-test-fixture.mts";
 import { agentState } from "./dashboard-state.ts";
@@ -9,6 +13,33 @@ import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { sessionFigures } from "./footer.ts";
 import type { AwaitFact } from "./await-facts.ts";
+
+it("dashboard shows current machine file state, digest, default, names and models without a new command", async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "dashboard-machine-preferences-"));
+	const path = join(directory, "preferences.json");
+	const previous = process.env.PI_AGENT_PREFERENCES_FILE;
+	process.env.PI_AGENT_PREFERENCES_FILE = path;
+	t.after(() => { if (previous === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE; else process.env.PI_AGENT_PREFERENCES_FILE = previous; rmSync(directory, { recursive: true, force: true }); });
+	for (const content of [undefined, JSON.stringify({ version: 1, presets: { standard: { model: "acme/model-x\u001b[2J" }, economy: { model: "other/model-y" } }, preferences: { defaultPreset: "standard" } }), "malformed"]) {
+		if (content !== undefined) writeFileSync(path, content);
+		const f = fixture(120, 60, source([row("one")]));
+		try {
+			await turn();
+			assert.match(stripVTControlCharacters(f.ui.render(120).join("\n")), /Preferences:.*default preset:/u);
+			f.ui.handleInput("?");
+			const raw = f.ui.render(120).join("\n");
+			assert.ok(!raw.includes("\u001b[2J"), "machine text never supplies terminal controls");
+			const screen = stripVTControlCharacters(raw);
+			assert.ok(screen.includes(path));
+			if (content === undefined) { assert.match(screen, /Preferences: absent/u); assert.match(screen, /Digest: none/u); assert.match(screen, /Presets: none/u); }
+			else {
+				assert.ok(screen.includes(createHash("sha256").update(content).digest("hex")));
+				if (content === "malformed") { assert.match(screen, /Preferences: unavailable/u); assert.match(screen, /Error:/u); assert.doesNotMatch(screen, /acme\/model-x/u); }
+				else { assert.match(screen, /Preferences: loaded; default preset: standard/u); assert.match(screen, /Preset standard: acme\/model-x/u); assert.match(screen, /Preset economy: other\/model-y/u); }
+			}
+		} finally { f.ui.dispose(); }
+	}
+});
 
 for (const [width, height] of [[120, 36], [60, 24]]) {
 	it(`selected dependency facts update and retire through native frames at ${width}`, async () => {
@@ -833,8 +864,9 @@ for (const width of [80, 164]) {
 			const paneX = width >= 100 ? dashboardGeometry(width, 30, 3).rosterWidth + 1 : 0;
 			const titleY = width >= 100 ? 1 : 5;
 			assert.match(lines[titleY], /one.*Idle/);
-			assert.match(lines[titleY + 1].slice(paneX), /^─+$/);
-			assert.doesNotMatch(lines.slice(titleY, titleY + 2).map((line) => line.slice(paneX)).join("\n"), /Model|Tokens|Context|Cost|\?/);
+			assert.match(lines[titleY + 1].slice(paneX), /Preferences:.*default preset:/);
+			assert.match(lines[titleY + 2].slice(paneX), /^─+$/);
+			assert.doesNotMatch(lines.slice(titleY, titleY + 2).map((line) => line.slice(paneX)).join("\n"), /Model|Tokens|Context|Cost/);
 		} finally { f.ui.dispose(); }
 	});
 }

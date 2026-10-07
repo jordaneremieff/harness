@@ -52,7 +52,8 @@ for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 1
 			const headerY = wide ? 1 : 5;
 			const header = lines.slice(headerY, headerY + 4).map((line) => line.slice(paneX));
 			assert.doesNotMatch(header.join("\n"), /Coverage|unreadable|omitted|Incomplete/);
-			assert.match(header[1], /^─+$/);
+			assert.match(header[1], /Preferences: absent; default preset: none/u);
+			assert.match(header[2], /^─+$/);
 			const roster = wide ? lines.slice(1, -1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 5);
 			assert.match(roster.join("\n"), skipped ? /18 unreadable/ : /Incomplete/);
 			assert.match(lines[0], /1\/31\+ ╮$/);

@@ -40,7 +40,7 @@ it("serves only roster facts already observed by a footer refresh without lookup
 	assert.equal(manager.observedToolCardRows(), rows);
 });
 
-for (const retained of ["manager/1.3.0", "manager/2.0.0"]) it(`refuses a retained manager with a different interface (${retained}) before any control executes`, async (t) => {
+for (const retained of ["manager/0.0.0", "manager/999.0.0"]) it(`refuses a retained manager with a different interface (${retained}) before any control executes`, async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-card-reload-")));
 	const previousRoot = process.env.PI_AGENT_SESSIONS_DIR;
 	process.env.PI_AGENT_SESSIONS_DIR = root;

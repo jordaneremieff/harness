@@ -258,7 +258,7 @@ it("keeps base operations usable across a feature-capability process boundary", 
 	const base = async (member: string, params: Record<string, unknown> = {}, contract = BASE_OPERATIONS[member]) => oldClient.request({ serverId: paths.serverId }, {
 		serviceId: HOST_SERVICE_ID, member, args: [{ sessionId: expert.sessionId, ...params } as JsonValue, randomUUID(), contract as unknown as JsonValue],
 	});
-	await assert.rejects(base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }), /configure request contract configure\/1\.0\.0 differs from configure\/1\.1\.0.*no operation was admitted/u);
+	await assert.rejects(base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }), /configure request contract configure\/1\.0\.0 differs from configure\/1\.2\.0.*no operation was admitted/u);
 	const unchanged = await a.control<AgentProfile>("profile-read", { sessionId: expert.sessionId });
 	assert.equal(unchanged.name, "Contract expert", "the refused base configure never changes native storage");
 	const status = await base("status") as { conversation: { identity: string } };
