@@ -53,7 +53,6 @@ import {
 
 const DEFAULT_RETRY_DELAY_MS = 500;
 const MAX_RETRY_DELAY_MS = 30_000;
-const MAX_RETRY_SHIFT = 5;
 const REPORT_KEY_CHARS = 32;
 /** Registered primary ids are canonical lowercase UUIDs of any version. */
 const PRIMARY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -397,7 +396,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let closed = false;
 	let running = false;
 	let dirty = false;
-	let attempts = 0;
+	let nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let inFlight: Promise<void> | undefined;
 	let closePromise: Promise<void> | undefined;
@@ -883,31 +882,35 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const run = async (): Promise<void> => {
 		if (closed || signal.aborted) return;
 		running = true;
+		let retry: number | undefined;
 		try {
 			await scan();
 			if (corruptRows.size === 0 && !routingFailed) host.reportDeliveryError(undefined);
-			attempts = 0;
+			nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
 		} catch (error) {
 			fail(error);
-			attempts += 1;
-			schedule(Math.min(retryDelayMs * 2 ** Math.min(attempts - 1, MAX_RETRY_SHIFT), MAX_RETRY_DELAY_MS));
+			retry = nextRetryDelayMs;
+			nextRetryDelayMs = Math.min(nextRetryDelayMs * 2, MAX_RETRY_DELAY_MS);
 		} finally {
 			running = false;
 			if (dirty) {
 				dirty = false;
 				schedule(0);
-			}
+			} else if (retry !== undefined) schedule(retry);
 		}
 	};
 
-	/** Coalesced schedule: a commit during a pass marks one follow-up pass. */
+	/** New activity preempts backoff; commits during a pass coalesce into one follow-up. */
 	function schedule(delayMs: number): void {
 		if (closed || signal.aborted) return;
 		if (running) {
 			dirty = true;
 			return;
 		}
-		if (timer) return;
+		if (timer) {
+			if (delayMs !== 0) return;
+			clearTimeout(timer);
+		}
 		timer = setTimeout(
 			() => {
 				timer = undefined;

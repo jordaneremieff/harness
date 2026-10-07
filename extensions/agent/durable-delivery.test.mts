@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
@@ -1568,50 +1568,90 @@ it("acknowledges a primary-channel row only after the channel accepts it", { tim
 	await watcher.close();
 });
 
-it("backs off on failure and close cancels the retry", { timeout: 30000 }, async (t) => {
+async function retryFixture(t: TestContext, gate?: Promise<void>) {
 	const root = fixtureRoot(t);
 	const catalog = new AgentCatalog(root);
-	const record = catalog.create({
-		cwd: root,
-		agentDir: join(root, "agent"),
-		packageDir: join(root, "package"),
-		model: { provider: fixtureProvider, modelId: fixtureModelId },
-		thinkingLevel: "off",
-		ownerId: "owner-1",
-	});
-	const owner = `${record.storageId}:1`;
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	await addReceipt(source, owner);
+	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
+		model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
+	const path = join(root, "source.sqlite");
+	const source = await openHost(path, "source-storage", root);
+	t.after(() => source.close());
+	const id = await addReceipt(source, record.storageId);
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
 	t.mock.timers.enable({ apis: ["setTimeout"] });
-	let acquires = 0;
+	const commits = t.mock.method(source.harness, "commit");
+	const entered = eventLog<void>();
+	const idle = eventLog<void>();
 	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog,
-		signal: new AbortController().signal,
-		retryDelayMs: 5,
-		acquire: async () => {
-			acquires += 1;
-			throw new Error("transient");
-		},
-		onError: (error) => errors.push(error),
-	});
-	const firstFailure = errors.waitForCount(1);
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog,
+		signal: new AbortController().signal, retryDelayMs: 500,
+		acquire: async () => { entered.push(undefined); if (gate) await gate; throw new Error("transient"); },
+		onError: (error) => errors.push(error), onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	const publish = () => source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const receipt = state.receipts[String(id)];
+		assert.ok(receipt);
+		state.receipts[String(id)] = { ...receipt, operationId: randomUUID() };
+	}, BACKGROUND_CONTEXT);
+	return { source, commits, entered, idle, errors, watcher, publish };
+}
+
+it("waits for each doubled delivery retry delay through the cap and cancels on close", { timeout: 10000 }, async (t) => {
+	const f = await retryFixture(t);
 	t.mock.timers.tick(0);
-	await firstFailure;
-	const secondFailure = errors.waitForCount(2);
-	t.mock.timers.tick(5);
-	await secondFailure;
-	await watcher.close();
-	const settled = acquires;
+	await f.idle.waitForCount(1);
+	assert.equal(f.watcher.busy, false, "a retry timer alone is not an in-flight effect");
+	for (const delay of [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+		const attempts = f.errors.length;
+		const commits = f.commits.mock.callCount();
+		t.mock.timers.tick(delay - 1);
+		assert.equal(f.commits.mock.callCount(), commits, `no delivery pass before ${delay} ms`);
+		t.mock.timers.tick(1);
+		await f.idle.waitForCount(attempts + 1);
+		assert.equal(f.errors.length, attempts + 1, "one retry at the deadline");
+	}
+	await f.watcher.close();
+	const commits = f.commits.mock.callCount();
 	t.mock.timers.tick(30000);
-	assert.equal(acquires, settled, "close cancels retries across the modeled retry horizon");
-	assert.ok(settled >= 2 && settled < 30, `bounded attempts, received ${settled}`);
+	assert.equal(f.commits.mock.callCount(), commits, "close cancels the pending retry");
+});
+
+for (const trigger of ["commit", "refresh"] as const) it(`starts a delivery pass immediately after ${trigger} during backoff`, { timeout: 10000 }, async (t) => {
+	const f = await retryFixture(t);
+	t.mock.timers.tick(0);
+	await f.idle.waitForCount(1);
+	const commits = f.commits.mock.callCount();
+	t.mock.timers.tick(100);
+	assert.equal(f.commits.mock.callCount(), commits, "the watcher is still in backoff");
+	if (trigger === "commit") await f.publish();
+	else f.watcher.refresh();
+	t.mock.timers.tick(0);
+	await f.idle.waitForCount(2);
+	assert.equal(f.errors.length, 2, "new activity does not wait for the retry deadline");
+	const after = f.commits.mock.callCount();
+	t.mock.timers.tick(400);
+	assert.equal(f.commits.mock.callCount(), after, "the replaced deadline does not start another pass");
+});
+
+it("coalesces commits during a failed delivery pass into one immediate follow-up", { timeout: 10000 }, async (t) => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	t.after(release);
+	const f = await retryFixture(t, gate);
+	t.mock.timers.tick(0);
+	await f.entered.waitForCount(1);
+	assert.equal(f.watcher.busy, true);
+	await f.publish();
+	await f.publish();
+	release();
+	await f.idle.waitForCount(1);
+	t.mock.timers.tick(0);
+	await f.idle.waitForCount(2);
+	assert.equal(f.errors.length, 2);
+	const commits = f.commits.mock.callCount();
+	t.mock.timers.tick(0);
+	assert.equal(f.commits.mock.callCount(), commits, "the coalesced follow-up resumes normal backoff");
 });
 
 it("preserves the live owner's wake when an absent owner shares its answer", { timeout: 15000 }, async (t) => {

@@ -1459,7 +1459,14 @@ Each accepted fallback recipient is recorded in the retained row, so subsequent
 passes and host reopens do not repeat that copy. Other owners of the same answer
 receive their normal delivery rather than a fallback substitute. A partial or
 unavailable scan leaves the row pending and reports that coverage explicitly.
-A live or unknown owner endpoint refuses fallback and retries. An owner endpoint carries the primary channel contract version. A host
+A live or unknown owner endpoint refuses fallback and retries. Failed passes wait
+for the configured retry delay, which doubles after each failure up to 30 seconds
+and resets after a successful pass. A native commit or explicit refresh starts a
+pass immediately, even during that wait. Commits during an active pass coalesce
+into one immediate follow-up pass. Closing the watcher cancels its retry timer.
+The timer alone is not an in-flight delivery effect; pending active-owner rows
+still prevent host retirement and retain recovery state.
+An owner endpoint carries the primary channel contract version. A host
 that meets a live owner with another version holds that delivery pending and
 reports the endpoint version and the restart that clears it; it never treats the
 owner as dead and never falls back for it. Endpoint identity and local process

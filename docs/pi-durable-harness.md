@@ -642,7 +642,10 @@ interval with no native work, active delivery row or in-flight delivery effect,
 request, local control, or open conversation/task observation. Pending and active
 delivery are separate facts: unsettled intents remain active, but rows for
 proven-dead ordinary recipients retain the recovery marker without alone
-preventing retirement or requiring a recovery monitor.
+preventing retirement or requiring a recovery monitor. Failed delivery passes use
+a capped exponential retry delay. Native commits and explicit refreshes preempt
+that wait. A pending retry timer is not an in-flight effect; active-owner rows
+still block retirement, while all pending rows retain the recovery marker.
 Observation tokens cover the open-to-subscribe
 gap and release on close, abort, setup failure, and disconnect. Token operations
 serialize native watch ownership, and failed setup releases only its own reference.
