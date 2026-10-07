@@ -677,6 +677,9 @@ export class DurableHost {
 		const conversation = await this.target(params, context);
 		const entryId = requestPositiveId(params?.entryId, "entryId");
 		if (entryId === undefined) throw new TypeError("entryId is required");
+		const ownerId = requestBoolean(params, "selfOwned") === true
+			? (conversationId: ConversationId) => this.identity(conversationId)
+			: requestString(params, "ownerId");
 		const result = await rewindConversation(
 			this.harness,
 			conversation,
@@ -686,7 +689,7 @@ export class DurableHost {
 				...optionalParam("requestId", requestString(params, "requestId")),
 				...optionalParam("name", requestString(params, "name")),
 				owner: requestString(params, "ownerId") ?? this.identity(conversation.id),
-				...optionalParam("ownerId", requestString(params, "ownerId")),
+				...optionalParam("ownerId", ownerId),
 				...optionalParam("whenBusy", this.busyMode(params)),
 				...optionalParam("operationId", requestString(params, "operationId")),
 				...optionalParam("origin", this.originParam(params)),
@@ -793,12 +796,13 @@ export class DurableHost {
 		const deadline = parseDeliverAt(params?.deliverAt);
 		const mode = this.timerMode(params);
 		const origin = this.originParam(params) ?? "model";
-		const ownerId = requestRequiredString(params, "ownerId");
+		const requester = requestRequiredString(params, "ownerId");
+		const ownerId = requestBoolean(params, "selfOwned") === true ? this.identity(conversation.id) : requester;
 		const scheduleId = requestString(params, "scheduleId") ?? `timer:${randomUUID()}`;
 		const requestId = requestString(params, "requestId") ?? `timer-delivery:${randomUUID()}`;
 		return await scheduleTimer(
 			this.harness,
-			{ scheduleId, deadline, conversationId: conversation.id, identity: this.identity(conversation.id), message, mode, origin, ownerId, requestId, requestContext: { requestId, requester: ownerId, replyTo: ownerId, origin }, createdAt: Date.now(), ...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }) },
+			{ scheduleId, deadline, conversationId: conversation.id, identity: this.identity(conversation.id), message, mode, origin, ownerId, requestId, requestContext: { requestId, requester, replyTo: ownerId, origin }, createdAt: Date.now(), ...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }) },
 			context,
 		);
 	}

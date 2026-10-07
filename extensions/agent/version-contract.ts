@@ -40,6 +40,7 @@ for (const method of ["spawn", "resolve-agent"]) operations[method] = { request:
 for (const method of ["place", "configure"]) operations[method] = { request: `${method}/1.1.0`, response: `${method}/1.1.0` };
 operations.submit = { request: "submit/1.1.0", response: "submit/1.1.0" };
 operations.command = { request: "command/1.1.0", response: "command/1.0.0" };
+for (const method of ["rewind", "timer-schedule"]) operations[method] = { ...operations[method], request: `${method}/1.1.0` };
 operations.receipts = { request: "receipts/1.1.0", response: "receipts/1.1.0" };
 for (const method of ["await-state", "await-release"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations["await-state"] = { request: "await-state/1.1.0", response: "await-state/1.1.0" };

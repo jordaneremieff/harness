@@ -68,7 +68,7 @@ export async function terminalAction(controller: TerminalController, ask: Termin
 			if (!message?.trim()) return undefined;
 			const deliverAt = await ask("Deadline", ["Use an ISO 8601 time with an offset. The host must run at the deadline."], "Time: ");
 			if (!deliverAt) return undefined;
-			return scheduleAgentInput({ control, label: async () => target.name ?? target.id }, { sessionId: target.id, message, deliverAt });
+			return scheduleAgentInput({ control, label: async () => target.name ?? target.id }, { sessionId: target.id, message, deliverAt, selfOwned: true });
 		},
 		timers: async () => {
 			const timers = await control("timer-list");
@@ -87,7 +87,7 @@ export async function terminalAction(controller: TerminalController, ask: Termin
 		if (rewind && !correction?.trim()) return undefined;
 		const params: Record<string, unknown> = {};
 		if (entryId) params.entryId = entryId;
-		if (correction) { params.correction = correction; params.origin = "operator"; }
+		if (correction) { params.correction = correction; params.origin = "operator"; params.selfOwned = true; }
 		const forked = await control(name, params) as { identity?: string };
 		return result(forked, forked.identity);
 	}

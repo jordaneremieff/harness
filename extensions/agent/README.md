@@ -275,6 +275,11 @@ Configuration accepts JSON with `name`, `thinkingLevel`, and/or
 `model: {"provider":"...","modelId":"..."}`, not a provider/model string.
 Actions keep their captured target if the main selection changes. New Agent is
 visibly unavailable here; create an agent through the agent tools, then enter it.
+Rewind corrections and scheduled inputs own their results in the conversation
+that runs the work. The watcher acknowledges those results in place without a
+follow-up input. The terminal remains the rewind fork's creating owner and the
+scheduled input's requester. Ordinary primary and dashboard actions retain their
+caller-owned reply routes.
 
 The standalone attachment supports explicit shipped `dark` and `light` themes.
 It resolves public Pi packages from the managed install selected by
@@ -1604,6 +1609,16 @@ name when the ordinary session changes them, so `agent_status` and endpoint
 discovery report the identity the operator runs.
 
 ### Current process contracts
+
+The `rewind/1.1.0` and `timer-schedule/1.1.0` request contracts accept optional
+`selfOwned: true`. A rewind correction then uses the new fork as its delivery
+owner without changing the fork's creating owner. A scheduled input uses its
+target conversation as owner and reply recipient while retaining the caller as
+requester. Without the option, both operations retain caller-owned results.
+Their response identities remain at 1.0.0. Only these operations refuse requests
+between processes with different request contracts; restart the caller and host
+to use them together. The manager passes the option through its existing control
+interface, so its retained identity does not change.
 
 `await-state/1.1.0` accepts exact producer result references and returns optional
 retry execution facts beside the producer's own wait. Status and dashboard

@@ -16,6 +16,7 @@ import type { ConversationStatus, RequestParams } from "./durable-observation.ts
 import { eventLog } from "./host-fixture.mts";
 import { runHost, type HostProcess } from "./host-process.ts";
 import { AgentManager } from "./manager.ts";
+import { TimerTask } from "./durable-timers.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
 function deferred<T>() {
@@ -89,7 +90,7 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 			managers.push(manager);
 			return manager;
 		},
-		async host(name: string): Promise<ControlledTerminalHost> {
+		async host(name: string, options: { timers?: boolean } = {}): Promise<ControlledTerminalHost> {
 			const cwd = join(root, name);
 			mkdirSync(cwd);
 			const record = catalog.create({ cwd, agentDir, packageDir, model: { provider: testModel.provider, modelId: testModel.id }, thinkingLevel: "off", name });
@@ -136,9 +137,11 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 				commandCalls.push(call);
 				return `command:${call.conversation.id}:${call.args}`;
 			} }];
+			const registry = fixtureRegistry([tool]);
+			if (options.timers) registry.install(Durable.defineExtension({ name: "terminal-timers", tasks: [TimerTask] }));
 			const ready = deferred<void>();
 			const processHost: HostProcess = await runHost(async () => {
-				durable = await DurableHost.open({ storageId: record.storageId, storagePath: record.storagePath, cwd, models: runtime, registry: fixtureRegistry([tool]), agent: { model: record.model }, meta: { name }, commands, contributionHost, settings: { compaction: { enabled: false }, retry: { enabled: false } } });
+				durable = await DurableHost.open({ storageId: record.storageId, storagePath: record.storagePath, cwd, models: runtime, registry, agent: { model: record.model }, meta: { name }, commands, contributionHost, settings: { compaction: { enabled: false }, retry: { enabled: false } } });
 				return {
 					async request(method, raw, _requestId, signal) {
 						const params = raw as RequestParams | undefined;

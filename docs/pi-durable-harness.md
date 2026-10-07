@@ -704,7 +704,10 @@ control identities; the native control identity also binds the loaded Durable
 release. The recovery-state response uses `recovery-state/1.1.0`. Submit and
 receipts requests and responses use 1.1.0; the task-submit response uses 1.1.0; command
 requests use 1.1.0 and responses use 1.0.0; await-state requests and responses
-use 1.1.0; await-release requests and responses use 1.0.0. Primary delivery remains `primary-delivery/1.0.0`.
+use 1.1.0; await-release requests and responses use 1.0.0. Rewind and timer-schedule
+requests use 1.1.0 for optional self-owned result delivery; their responses remain
+at 1.0.0. The manager retains its existing identity because its control interface
+passes that option through unchanged. Primary delivery remains `primary-delivery/1.0.0`.
 These independent identities do not follow source-release ordering. The
 [agent README](../extensions/agent/README.md#current-process-contracts) defines
 maintenance and restart behavior.

@@ -3,13 +3,109 @@ import { it } from "node:test";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
-import { AgentDeliveryDoc, type AgentDeliveryState } from "./durable-controls.ts";
+import { AgentDeliveryDoc, settleDeliveries, type AgentDeliveryState } from "./durable-controls.ts";
+import { committedChoices } from "./action-dialogs.ts";
+import { RequestContextDoc } from "./request-context.ts";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import { startDurableDelivery } from "./durable-delivery.ts";
 import { eventLog } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { TerminalController } from "./terminal-client.ts";
 import { terminalAction } from "./terminal-actions.ts";
 import { controlledGate, createSibling, terminalHostFixture, type ControlledTerminalHost } from "./terminal-host-fixture.mts";
+
+async function rewindEntry(host: ControlledTerminalHost, manager: TerminalController["manager"]): Promise<string> {
+	const gate = controlledGate();
+	host.gates.set("seed", gate);
+	const input = await host.durable.request("submit", { message: "gate:seed", requestId: "seed" }) as { submissionId: number };
+	await gate.started;
+	gate.release();
+	await host.settled(input.submissionId);
+	const snapshot = await manager.snapshot(host.record.storageId);
+	const entryId = committedChoices(snapshot.entries).find((entry) => entry.label.startsWith("Agent:"))?.id;
+	assert.ok(entryId);
+	return entryId;
+}
+
+for (const action of ["rewind", "schedule"] as const) it(`terminal ${action} owns its result in the executing conversation without another input`, { timeout: 20000 }, async (t) => {
+	const fixture = terminalHostFixture(t);
+	const host = await fixture.host(action, { timers: action === "schedule" });
+	const manager = fixture.manager();
+	const caller = { id: `terminal:${randomUUID()}`, cwd: fixture.root };
+	const controller = new TerminalController({ manager, caller });
+	t.after(() => controller.close());
+	await controller.attach(host.record.storageId);
+	const row = controller.row;
+	assert.ok(row);
+	const entryId = action === "rewind" ? await rewindEntry(host, manager) : undefined;
+	const gate = controlledGate();
+	host.gates.set(action, gate);
+	const answers = action === "rewind" ? [entryId, `gate:${action}`] : [`gate:${action}`, new Date(Date.now() - 1).toISOString()];
+	const returned = await terminalAction(controller, async () => answers.shift(), action, row);
+	assert.ok(returned?.sessionId);
+	const started = await gate.started;
+	const status = await host.status(returned.sessionId);
+	const submissionId = status.submissions.find((input) => input.type === "input")?.id;
+	assert.ok(submissionId);
+	const request = host.calls.find((call) => call.method === (action === "rewind" ? "rewind" : "timer-schedule"));
+	assert.equal(request?.params?.selfOwned, true);
+	assert.equal(request?.params?.ownerId, caller.id, "the manager preserves the caller before host ownership resolution");
+	if (action === "rewind") assert.equal(status.owner, caller.id, "fork provenance stays with the caller");
+	else {
+		const context = await host.durable.harness.snapshot(RequestContextDoc, started.conversationId as ConversationId, BACKGROUND_CONTEXT);
+		assert.equal(context?.requests[0]?.requester, caller.id);
+		assert.equal(context?.requests[0]?.replyTo, returned.sessionId);
+	}
+	gate.release();
+	assert.equal((await host.settled(submissionId) as { status: string }).status, "done");
+	await settleDeliveries(host.durable.harness, BACKGROUND_CONTEXT);
+	const state = await host.durable.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	assert.equal(state?.receipts[String(submissionId)]?.ownerId, returned.sessionId);
+	assert.equal(state?.receipts[String(submissionId)]?.conversationId, started.conversationId);
+	const errors = eventLog<Error>();
+	const passes = eventLog<void>();
+	const watcher = startDurableDelivery({ host: host.durable, metadata: hostMetadata(host.record), catalog: new AgentCatalog(fixture.agentDir), signal: new AbortController().signal, onError: (error) => errors.push(error), onIdle: () => passes.push(undefined) });
+	try {
+		await passes.waitForCount(2);
+	} finally { await watcher.close(); }
+	const delivered = await host.durable.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	assert.equal(delivered?.receipts[String(submissionId)]?.acknowledged, true);
+	assert.deepEqual(errors, []);
+	assert.equal((await host.durable.request("status", { sessionId: returned.sessionId }) as { deliveryError?: string }).deliveryError, undefined);
+	assert.equal(host.requests.length, action === "rewind" ? 4 : 2, "only the seed and requested work use provider turns");
+});
+
+for (const action of ["rewind", "timer-schedule"] as const) for (const selfOwned of [undefined, false, true]) it(`host ${action} preserves caller provenance with selfOwned ${selfOwned}`, { timeout: 20000 }, async (t) => {
+	const fixture = terminalHostFixture(t);
+	const host = await fixture.host("host-options", { timers: action === "timer-schedule" });
+	const caller = `terminal:${randomUUID()}`;
+	const manager = fixture.manager();
+	const entryId = action === "rewind" ? await rewindEntry(host, manager) : undefined;
+	const gate = controlledGate();
+	host.gates.set("options", gate);
+	const sibling = action === "timer-schedule" ? await createSibling(host) : host.record.storageId;
+	const target = action === "timer-schedule" ? `${host.record.storageId}:${sibling.split(":")[1]?.padStart(3, "0")}` : sibling;
+	const result = await host.durable.request(action, { sessionId: target, message: "gate:options", correction: "gate:options", entryId, ownerId: caller, requestId: "host-options", scheduleId: "host-options", deliverAt: Date.now() - 1, origin: "operator", ...(selfOwned === undefined ? {} : { selfOwned }) }) as { submissionId?: number; identity: string };
+	const started = await gate.started;
+	const identity = host.durable.identity(started.conversationId as ConversationId);
+	const status = await host.status(identity);
+	const submissionId = status.submissions.find((input) => input.type === "input")?.id;
+	assert.ok(submissionId);
+	if (action === "rewind") assert.equal(status.owner, caller);
+	else {
+		const context = await host.durable.harness.snapshot(RequestContextDoc, started.conversationId as ConversationId, BACKGROUND_CONTEXT);
+		assert.equal(context?.requests[0]?.requester, caller);
+		assert.equal(context?.requests[0]?.replyTo, selfOwned ? identity : caller);
+		assert.notEqual(target, identity, "the host resolves the padded selector to its canonical target identity");
+	}
+	gate.release();
+	await host.settled(submissionId);
+	await settleDeliveries(host.durable.harness, BACKGROUND_CONTEXT);
+	const state = await host.durable.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	assert.equal(state?.receipts[String(submissionId)]?.ownerId, selfOwned ? identity : caller);
+	assert.equal(state?.receipts[String(submissionId)]?.origin, "operator");
+	if (action === "rewind") assert.equal(result.identity, identity);
+});
 
 function frameWhen(controller: TerminalController, accept: (frame: ConversationFrame) => boolean): Promise<ConversationFrame> {
 	return new Promise((resolve) => {

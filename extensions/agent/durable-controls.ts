@@ -591,7 +591,8 @@ export interface DurableRewindParams {
 	readonly requestId?: string;
 	readonly name?: string;
 	readonly owner?: string;
-	readonly ownerId?: string;
+	/** Resolve result ownership after the fork exists, independently of fork provenance. */
+	readonly ownerId?: string | ((conversationId: ConversationId) => string);
 	readonly whenBusy?: "steer" | "followUp" | "reject";
 	readonly operationId?: string;
 	readonly origin?: DeliveryOrigin;
@@ -638,12 +639,13 @@ export async function rewindConversation(
 		},
 		context,
 	);
+	const ownerId = typeof params.ownerId === "function" ? params.ownerId(forked.conversation.id) : params.ownerId;
 	const submitted = await submitConversation(
 		forked.conversation,
 		{
 			message: params.correction,
 			requestId: submissionRequestId,
-			...(params.ownerId === undefined ? {} : { ownerId: params.ownerId }),
+			...(ownerId === undefined ? {} : { ownerId }),
 			...(params.whenBusy === undefined ? {} : { whenBusy: params.whenBusy }),
 			...(params.operationId === undefined ? {} : { operationId: params.operationId }),
 			...(params.origin === undefined ? {} : { origin: params.origin }),

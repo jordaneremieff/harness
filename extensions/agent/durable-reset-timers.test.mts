@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createResetTimerActions, registerResetTimerTools } from "./durable-reset-timers.ts";
+import { createResetTimerActions, registerResetTimerTools, scheduleAgentInput } from "./durable-reset-timers.ts";
 
 interface ControlCall {
 	readonly method: string;
@@ -34,6 +34,15 @@ function stubControl(calls: ControlCall[]): (method: string, input: Record<strin
 function surface(calls: ControlCall[]) {
 	return { control: stubControl(calls), label: async () => "alpha" };
 }
+
+it("passes the optional self-owned schedule flag only when the caller supplies it", async () => {
+	const calls: ControlCall[] = [];
+	for (const selfOwned of [undefined, false, true]) {
+		await scheduleAgentInput(surface(calls), { sessionId: "storage-a", message: "later", deliverAt: Date.now(), ...(selfOwned === undefined ? {} : { selfOwned }) });
+		assert.equal(calls.at(-1)?.input.selfOwned, selfOwned);
+		assert.equal(Object.hasOwn(calls.at(-1)?.input ?? {}, "selfOwned"), selfOwned !== undefined);
+	}
+});
 
 it("registers the separate reset tool and leaves timers to agent_status and agent_abort", async () => {
 	const calls: ControlCall[] = [];
@@ -69,6 +78,7 @@ it("runs the operator reset, schedule, list, and cancel actions with operator or
 	assert.equal(scheduled?.input.message, "check back");
 	assert.equal(scheduled?.input.mode, "followUp");
 	assert.equal(scheduled?.input.origin, "operator");
+	assert.equal(Object.hasOwn(scheduled?.input ?? {}, "selfOwned"), false, "primary and dashboard operator actions do not opt in");
 	assert.equal(scheduled?.input.deliverAt, Date.parse("2026-10-03T09:00:00+10:00"));
 	assert.equal(typeof scheduled?.input.scheduleId, "string");
 	assert.equal(typeof scheduled?.input.requestId, "string");

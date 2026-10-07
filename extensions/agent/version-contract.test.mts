@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { HOST_CONTRACT, contractRefusal, operationContractMismatch, parseOperationContract, parseRuntimeContract, type RuntimeContract } from "./version-contract.ts";
 
+it("refuses self-owned rewind and timer requests in both contract directions without changing responses", () => {
+	for (const method of ["rewind", "timer-schedule"]) {
+		const current = HOST_CONTRACT.operations[method];
+		assert.equal(current.request, `${method}/1.1.0`);
+		assert.equal(current.response, `${method}/1.0.0`);
+		const old = { ...current, request: `${method}/1.0.0` };
+		const oldRuntime = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, [method]: old } };
+		assert.match(contractRefusal(method, oldRuntime)?.message ?? "", /request contract/u);
+		assert.match(operationContractMismatch(method, current, oldRuntime) ?? "", /request contract/u);
+		for (const [name, operation] of Object.entries(HOST_CONTRACT.operations)) {
+			if (name !== method) assert.equal(operationContractMismatch(name, oldRuntime.operations[name]), undefined);
+			assert.equal(oldRuntime.operations[name].response, operation.response);
+		}
+	}
+});
+
 it("advertises actual upstream releases separately from current operation contracts", () => {
 	const parsed = parseRuntimeContract(JSON.parse(JSON.stringify(HOST_CONTRACT)));
 	assert.deepEqual(parsed, HOST_CONTRACT);

@@ -65,7 +65,7 @@ export async function resetAgentContext(deps: ResetTimerDeps, input: { readonly 
 	return { text: `Reset did not place for “${label}”: ${result.reason ?? "unknown reason"}.`, sessionId };
 }
 
-export async function scheduleAgentInput(deps: ResetTimerDeps, input: { readonly sessionId: string; readonly deliverAt: string | number; readonly message: string; readonly mode?: TimerMode }): Promise<ResetTimerOutcome> {
+export async function scheduleAgentInput(deps: ResetTimerDeps, input: { readonly sessionId: string; readonly deliverAt: string | number; readonly message: string; readonly mode?: TimerMode; readonly selfOwned?: boolean }): Promise<ResetTimerOutcome> {
 	const sessionId = requireSession(input.sessionId);
 	const message = input.message.trim();
 	if (message === "") throw new Error("A scheduled input requires a message");
@@ -77,6 +77,7 @@ export async function scheduleAgentInput(deps: ResetTimerDeps, input: { readonly
 		deliverAt: deadline,
 		mode,
 		origin: "operator",
+		...(input.selfOwned === undefined ? {} : { selfOwned: input.selfOwned }),
 		scheduleId: `timer:${randomUUID()}`,
 		requestId: `timer-delivery:${randomUUID()}`,
 	})) as ScheduleTimerResult;
