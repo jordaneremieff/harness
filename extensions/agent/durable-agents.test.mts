@@ -51,8 +51,10 @@ const storageId = "test-storage";
 const model = { provider: "faux", modelId: "faux-1" } as const;
 const testCwdAlias = mkdtempSync(join(tmpdir(), "durable-agents-cwd-"));
 const testCwd = realpathSync(testCwdAlias);
+const testAgentDir = mkdtempSync(join(tmpdir(), "durable-agents-config-"));
 process.on("exit", () => {
 	rmSync(testCwd, { recursive: true, force: true });
+	rmSync(testAgentDir, { recursive: true, force: true });
 });
 
 type ChildRecord = {
@@ -391,6 +393,7 @@ function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true, sourceS
 		storageId: sourceStorageId,
 		catalogRoot,
 		cwd: testCwd,
+		agentDir: testAgentDir,
 		services: testServices,
 	});
 	registry.install(extension);
@@ -552,7 +555,7 @@ it("forwards native await cancellation through the registered entrypoint contrib
 	});
 	t.after(restore);
 	const registry = Durable.createRegistry();
-	registry.install(contribution.create({ durable: Durable, storageId, cwd: testCwd, services: testServices }));
+	registry.install(contribution.create({ durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir, services: testServices }));
 	const route = createRoute();
 	route.script.push({ tool: "agent_await", args: { results: [{ sessionId: "remote-storage", submissionId: 77 }] } });
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -1199,13 +1202,40 @@ it("forwards native preset inputs and snapshots through handle, foreign, place, 
 	assert.match((await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_place")?.text ?? "", /retained/u);
 });
 
+it("uses isolated preferences despite an ambient agent directory", async (t) => {
+	const ambientDir = mkdtempSync(join(tmpdir(), "native-ambient-preferences-"));
+	const previous = process.env.PI_AGENT_DIR;
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous;
+		rmSync(ambientDir, { recursive: true, force: true });
+	});
+	writeFileSync(join(ambientDir, "agent-preferences.json"), JSON.stringify({
+		version: 1,
+		presets: { ambient: { model: "faux/faux-1" } },
+		preferences: { reportingNotes: "AMBIENT-PREFERENCES-MARKER" },
+	}));
+	process.env.PI_AGENT_DIR = ambientDir;
+	const route = createRoute();
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_spawn", args: {} });
+	await say(root, "Create an isolated child");
+	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
+	assert.ok(outcome && !outcome.isError, outcome?.text);
+	assert.doesNotMatch(getCurrentSystemPrompt(route.requests.at(-1) ?? []), /AMBIENT-PREFERENCES-MARKER/u);
+	const selection = (outcome.details as { structuredContent: { selection: ExecutionSelection } }).structuredContent.selection;
+	assert.equal(selection.source.status, "missing");
+});
+
 it("returns retained native creation facts without revalidating a later catalog", async (t) => {
 	let available = true;
 	let catalogReads = 0;
 	const route = createRoute();
 	const registry = Durable.createRegistry();
 	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts" }).create({
-		durable: Durable, storageId, cwd: testCwd,
+		durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir,
 		services: { modelRuntime: { getModel: (_provider, id) => { catalogReads++; return available ? fauxProvider().getModel(id) : undefined; } } },
 	});
 	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : {

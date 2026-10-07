@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall, type ToolResultMessage, type TranscriptContext } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, type AssistantMessage, type ToolCall, type ToolResultMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import * as Durable from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
@@ -20,6 +20,22 @@ import type { AgentConversationSummary } from "./dashboard-types.ts";
 
 it("observes a provider's live tool call through native status, frames, and compact views without parsing buffers", { timeout: 10000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "live-tool-call-"));
+	const ambientDir = mkdtempSync(join(tmpdir(), "live-ambient-preferences-"));
+	const previous = { directory: process.env.PI_AGENT_DIR, file: process.env.PI_AGENT_PREFERENCES_FILE };
+	const ambientMarker = "AMBIENT-LIVE-PREFERENCES-MARKER";
+	t.after(() => {
+		if (previous.directory === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous.directory;
+		if (previous.file === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE;
+		else process.env.PI_AGENT_PREFERENCES_FILE = previous.file;
+		rmSync(ambientDir, { recursive: true, force: true });
+	});
+	writeFileSync(join(ambientDir, "agent-preferences.json"), JSON.stringify({
+		version: 1, presets: {}, preferences: { reportingNotes: ambientMarker },
+	}));
+	process.env.PI_AGENT_DIR = ambientDir;
+	delete process.env.PI_AGENT_PREFERENCES_FILE;
+	const prompts: string[] = [];
 	const release = deferred();
 	const published = deferred();
 	let host: DurableHost | undefined;
@@ -34,6 +50,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 	let executions = 0;
 	const models = await createTestRuntime();
 	const streamSimple = (_model: unknown, input: TranscriptContext) => {
+		prompts.push(getCurrentSystemPrompt(input.messages));
 		const last = input.messages.at(-1);
 		if (last?.role === "toolResult") {
 			if (last.toolName === "agent_status") observed = last;
@@ -61,7 +78,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 		const value = await host.request(method, params, context);
 		return method === "status" ? { ...value as Record<string, unknown>, inventory: { contributions: [], ordinaryOnly: [] }, pid: process.pid, storageId: fixtureStorageId } : value;
 	};
-	registry.install(createAgentContribution({ source: fileURLToPath(new URL("./index.ts", import.meta.url)), dispatch }).create({ durable: Durable, storageId: fixtureStorageId, cwd: root, services: { modelRuntime: models } }));
+	registry.install(createAgentContribution({ source: fileURLToPath(new URL("./index.ts", import.meta.url)), dispatch }).create({ durable: Durable, storageId: fixtureStorageId, cwd: root, agentDir: root, services: { modelRuntime: models } }));
 	host = await DurableHost.open(hostOptions(join(root, "agent.sqlite"), models, registry, root), context);
 	const worker = host.root();
 	watch = await worker.watch(context);
@@ -112,4 +129,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 	release.resolve();
 	assert.equal((await host.wait(submission.submissionId, context)).status, "done");
 	assert.equal(executions, 1);
+	assert.ok(prompts.length > 0);
+	assert.equal(prompts.some((prompt) => prompt.includes(ambientMarker)), false,
+		"native live-tool fixtures must not read ambient machine preferences");
 });

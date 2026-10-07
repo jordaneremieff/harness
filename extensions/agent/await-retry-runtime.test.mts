@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { it, type TestContext } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, type AssistantMessage, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
@@ -15,6 +18,10 @@ import type { ProducerAwaitFact } from "./await-facts.ts";
 import type { AwaitReply } from "./await-execution.ts";
 import type { ResultReference } from "./result-reference.ts";
 
+const preferenceOverride = process.env.PI_AGENT_PREFERENCES_FILE;
+delete process.env.PI_AGENT_PREFERENCES_FILE;
+after(() => { if (preferenceOverride !== undefined) process.env.PI_AGENT_PREFERENCES_FILE = preferenceOverride; });
+
 const context = BACKGROUND_CONTEXT;
 const storageId = "retry-test";
 const model = { provider: "faux", modelId: "faux-1" };
@@ -25,11 +32,15 @@ function messageText(message: Message | undefined): string {
 function retryError(): AssistantMessage { return fauxAssistantMessage("", { stopReason: "error", errorMessage: "429 rate limit; provider claims reset tomorrow" }); }
 
 async function setup(t: TestContext, producerAnswer: (text: string) => AssistantMessage | Promise<AssistantMessage>, baseDelayMs = 60000) {
+	const agentDir = mkdtempSync(join(tmpdir(), "retry-agent-config-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	let args: AwaitInput = { results: [{ sessionId: "unused", submissionId: 1 }] };
 	let harness!: Durable.Harness;
 	let callerCalls = 0;
+	const prompts: string[] = [];
 	const faux = fauxProvider(); const models = createModels(); models.setProvider(faux.provider);
 	faux.setResponses(Array.from({ length: 100 }, () => async (request) => {
+		prompts.push(getCurrentSystemPrompt(request.messages));
 		const last = request.messages.findLast((message) => message.role !== "system");
 		const text = messageText(last);
 		if (last?.role === "user" && text.startsWith("PRODUCER")) return producerAnswer(text);
@@ -48,7 +59,7 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 		}, ctx), async (changed) => harness.subscribeCommits(changed), params.publish as (fact: ProducerAwaitFact) => Promise<void>, ctx);
 	};
 	const registry = Durable.createRegistry();
-	registry.install(createAgentContribution({ source: "extensions/agent/index.ts", dispatch }).create({ durable: Durable, storageId, cwd: process.cwd(), services: { modelRuntime: { getModel: () => undefined } } }));
+	registry.install(createAgentContribution({ source: "extensions/agent/index.ts", dispatch }).create({ durable: Durable, storageId, cwd: process.cwd(), agentDir, services: { modelRuntime: { getModel: () => undefined } } }));
 	harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry, settings: { retry: { enabled: true, maxRetries: 4, baseDelayMs } } }, context);
 	harness.resume();
 	t.after(() => harness.close(context));
@@ -68,7 +79,7 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 		assert.equal(Value.Check(AwaitOutputSchema, result), true);
 		return result;
 	};
-	return { harness, root, submitProducer, start, output, calls: () => callerCalls };
+	return { harness, root, submitProducer, start, output, prompts, calls: () => callerCalls };
 }
 
 async function waitForState(harness: Durable.Harness, predicate: (state: AwaitState) => boolean): Promise<void> {
@@ -81,6 +92,34 @@ async function waitForState(harness: Durable.Harness, predicate: (state: AwaitSt
 		});
 	} finally { await watch.stop(); }
 }
+
+it("uses isolated retry preferences despite an ambient agent directory", async (t) => {
+	const ambientDir = mkdtempSync(join(tmpdir(), "retry-ambient-preferences-"));
+	const previous = { agentDir: process.env.PI_AGENT_DIR, preferences: process.env.PI_AGENT_PREFERENCES_FILE };
+	t.after(() => {
+		if (previous.agentDir === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous.agentDir;
+		if (previous.preferences === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE;
+		else process.env.PI_AGENT_PREFERENCES_FILE = previous.preferences;
+		rmSync(ambientDir, { recursive: true, force: true });
+	});
+	writeFileSync(join(ambientDir, "agent-preferences.json"), JSON.stringify({
+		version: 1,
+		presets: { ambient: { model: "faux/faux-1" } },
+		preferences: { reportingNotes: "AMBIENT-RETRY-PREFERENCES-MARKER" },
+	}));
+	process.env.PI_AGENT_DIR = ambientDir;
+	delete process.env.PI_AGENT_PREFERENCES_FILE;
+	const f = await setup(t, () => fauxAssistantMessage("FINISHED"));
+	const producer = await f.submitProducer("PRODUCER ISOLATED");
+	await producer.input.wait(context);
+	const original = await f.start({ results: [producer.result] });
+	await original.wait(context);
+	assert.equal((await f.output()).decision, "settled");
+	assert.ok(f.prompts.length > 0);
+	assert.equal(f.prompts.some((prompt) => prompt.includes("AMBIENT-RETRY-PREFERENCES-MARKER")), false,
+		"retry fixtures must not include ambient machine preferences in model requests");
+});
 
 it("releases an exact retry with partial long-answer continuation and leaves the producer placed", { timeout: 10000 }, async (t) => {
 	let finish!: (value: AssistantMessage) => void;

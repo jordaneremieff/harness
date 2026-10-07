@@ -23,6 +23,25 @@ function fixture(t: { after(fn: () => void): void }) {
 	mkdirSync(join(root, ".primaries"));
 	return { root, catalog: new AgentCatalog(root), self: { id: randomUUID(), cwd: root } };
 }
+function ambientPreferences(t: { after(fn: () => void): void }): string {
+	const directory = mkdtempSync(join(tmpdir(), "effort-ambient-preferences-"));
+	const previous = { directory: process.env.PI_AGENT_DIR, file: process.env.PI_AGENT_PREFERENCES_FILE };
+	const marker = "AMBIENT-EFFORT-PREFERENCES-MARKER";
+	t.after(() => {
+		if (previous.directory === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous.directory;
+		if (previous.file === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE;
+		else process.env.PI_AGENT_PREFERENCES_FILE = previous.file;
+		rmSync(directory, { recursive: true, force: true });
+	});
+	writeFileSync(join(directory, "agent-preferences.json"), JSON.stringify({
+		version: 1, presets: {}, preferences: { reportingNotes: marker },
+	}));
+	process.env.PI_AGENT_DIR = directory;
+	delete process.env.PI_AGENT_PREFERENCES_FILE;
+	return marker;
+}
+
 function claim(purpose = "Own published purpose"): PrimaryIntentClaim {
 	return { purpose, integration: "Run focused checks before integration", authority: "Operator: edit only the agent slice", scope: { paths: ["extensions/agent"], branches: ["topic"] }, updatedAt: "2026-10-04T10:00:00.000Z" };
 }
@@ -192,6 +211,7 @@ it("keeps zero-live-effort context to one line without losing unknown coverage",
 });
 
 it("refreshes native root and child sections at model requests while stable state emits no new section patch", async (t) => {
+	const ambientMarker = ambientPreferences(t);
 	const { root: sessionsRoot, catalog } = fixture(t);
 	const peer = randomUUID();
 	publish(sessionsRoot, peer, claim("BEFORE-PURPOSE"));
@@ -205,7 +225,7 @@ it("refreshes native root and child sections at model requests while stable stat
 		return fauxAssistantMessage("DONE");
 	}));
 	const registry = Durable.createRegistry();
-	const extension = createAgentContribution({ source: "/extensions/agent/index.ts" }).create({ durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } });
+	const extension = createAgentContribution({ source: "/extensions/agent/index.ts" }).create({ durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } });
 	registry.install(extension);
 	const context = BACKGROUND_CONTEXT;
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
@@ -215,6 +235,8 @@ it("refreshes native root and child sections at model requests while stable stat
 	const root = await harness.root(context, { agent: { model } });
 	const say = async (conversation: Durable.Conversation) => { const submission = await conversation.submit({ type: "input", content: "Read current view" }, context); await submission.wait(context); };
 	await say(root);
+	assert.equal(getCurrentSystemPrompt(requests.at(-1) ?? []).includes(ambientMarker), false,
+		"native effort fixtures must not read ambient machine preferences");
 	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("BEFORE-PURPOSE"), getCurrentSystemPrompt(requests.at(-1) ?? []));
 	await say(root);
 	const sectionEntries = requests.at(-1)?.filter((message) => message.role === "system" && message.sections?.["agent-efforts"] !== undefined);
@@ -244,6 +266,7 @@ it("refreshes native root and child sections at model requests while stable stat
 });
 
 it("adds awareness only to native untargeted status and preserves host fields and selected status", async (t) => {
+	const ambientMarker = ambientPreferences(t);
 	const { root: sessionsRoot } = fixture(t);
 	const peer = randomUUID();
 	publish(sessionsRoot, peer);
@@ -261,7 +284,7 @@ it("adds awareness only to native untargeted status and preserves host fields an
 		return fauxAssistantMessage([fauxToolCall("agent_status", args)], { stopReason: "toolUse" });
 	}));
 	const registry = Durable.createRegistry();
-	registry.install(createAgentContribution({ source: "/extensions/agent/index.ts", dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return hostStatus; } }).create({ durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } }));
+	registry.install(createAgentContribution({ source: "/extensions/agent/index.ts", dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return hostStatus; } }).create({ durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } }));
 	const context = BACKGROUND_CONTEXT;
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	t.after(async () => { await harness.close(context); });
@@ -269,6 +292,8 @@ it("adds awareness only to native untargeted status and preserves host fields an
 	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 	const say = async (content: string) => { const submission = await root.submit({ type: "input", content }, context); await submission.wait(context); };
 	await say("overview");
+	assert.equal(getCurrentSystemPrompt(requests.at(-1) ?? []).includes(ambientMarker), false,
+		"native status fixtures must not read ambient machine preferences");
 	const overview = requests.at(-1)?.findLast((message) => message.role === "toolResult");
 	assert.equal(overview?.role, "toolResult");
 	const text = overview?.role === "toolResult" ? overview.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";

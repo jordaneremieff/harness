@@ -2017,9 +2017,10 @@ repository gates are `npm run lint`, `npm run typecheck`, `npm run check`, and
 `npm test`. `node scripts/extension-load-check.mts extensions/agent/index.ts`
 checks extension loading in a fresh process.
 
-Native tests exercise real Harness instances and faux providers. Process tests
-use SIGKILL during a model request and after an unsafe effect through the
-production runner, then reopen and inspect retained admission and results.
+Native tests exercise real Harness instances and faux providers. Creation,
+retry, awareness, and live-tool fixtures use explicit temporary agent directories
+and isolate ambient preference-file overrides. Process tests use SIGKILL during
+a model request and after an unsafe effect through the production runner, then reopen and inspect retained admission and results.
 Those tests cover their checkpoints, not arbitrary power failure or all models.
 
 The standing-profile process tests use independent requester processes and the
