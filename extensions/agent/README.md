@@ -1435,14 +1435,21 @@ native commit it settles intents atomically and groups receipts by native answer
 entry. A result notice lists every submission that shares that answer. Primary
 notice details retain each submission's request, operation, input entry, owner,
 and admission origin.
-Each recipient receives one notice for that answer,
-including when owner routes overlap. Distinct answers and unanswered submissions
-stay separate. The watcher acknowledges the receipts for accepted owner routes
+Each recipient outside the producing conversation receives one notice for that
+answer, including when owner routes overlap. Distinct answers and unanswered
+submissions stay separate. The watcher acknowledges the receipts for accepted owner routes
 in one commit. An offline owner stays pending while live owners receive their
-normal notice and wake intent. Reports remain separate. A catalog owner receives an untrusted
-follow-up in its own host. A conversation in the same storage as the source
-receives the answer as an in-storage follow-up, never through a primary route. A
-noncatalog owner is an ordinary primary reached
+normal notice and wake intent. Reports remain separate. An owner in another
+catalog storage receives an untrusted follow-up in its own host. Another
+conversation in the same storage as the source
+receives the answer as an in-storage follow-up, never through a primary route.
+When the owner resolves to the producing conversation, the watcher acknowledges
+that owner's receipts without a follow-up or a model turn. This applies to
+operator and model admissions, including unanswered outcomes after abort or
+failure. The conversation already retains its outcome. Other owners still
+receive the complete answer group, including its self-owned submissions. Missing
+or malformed admission origins remain pending and reported, even for a self owner.
+A noncatalog owner is an ordinary primary reached
 through its registered primary channel. Only an absent or proven-dead owner
 endpoint permits fallback: the watcher broadcasts to every live primary within
 one bounded discovery of registered endpoints, and each delivery is labeled

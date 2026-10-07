@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
+import { randomUUID } from "node:crypto";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { AgentCatalog, hostMetadata } from "./catalog.ts";
+import { AgentDeliveryDoc, type AgentDeliveryState } from "./durable-controls.ts";
+import { startDurableDelivery } from "./durable-delivery.ts";
+import { eventLog } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { TerminalController } from "./terminal-client.ts";
 import { terminalAction } from "./terminal-actions.ts";
@@ -31,6 +37,43 @@ function assertNoAbort(host: ControlledTerminalHost) {
 	assert.equal(host.calls.some((call) => ["abort", "configure", "compact", "reset", "rewind"].includes(call.method)), false);
 	for (const gate of host.gates.values()) assert.equal(gate.aborts, 0);
 }
+
+it("acknowledges terminal input without submitting its answer back to the target", { timeout: 20000 }, async (t) => {
+	const fixture = terminalHostFixture(t);
+	const host = await fixture.host("self-owned");
+	const gate = controlledGate();
+	host.gates.set("answer", gate);
+	const controller = new TerminalController({ manager: fixture.manager(), caller: { id: `terminal:${randomUUID()}`, cwd: fixture.root } });
+	const revisions = eventLog<AgentDeliveryState>();
+	const off = host.durable.harness.subscribeCommits((publication) => {
+		for (const change of publication.changes) {
+			if (change.type === "document" && change.record.kind === "agent.delivery" && change.value !== null)
+				revisions.push(change.value as unknown as AgentDeliveryState);
+		}
+	});
+	const errors = eventLog<Error>();
+	const watcher = startDurableDelivery({ host: host.durable, metadata: hostMetadata(host.record), catalog: new AgentCatalog(fixture.agentDir), signal: new AbortController().signal, onError: (error) => errors.push(error) });
+	try {
+		const admitted = await controller.admit(host.record.storageId, "gate:answer", "steer");
+		const id = (admitted.raw as { submissionId: number }).submissionId;
+		await gate.started;
+		assert.equal(host.requests.length, 1);
+		gate.release();
+		assert.equal((await host.settled(id) as { status: string }).status, "done");
+		await revisions.waitFor((states) => states.some((state) => state.receipts[String(id)]?.acknowledged === true));
+		await watcher.close();
+		const state = await host.durable.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+		assert.equal(state?.receipts[String(id)]?.origin, "operator");
+		assert.equal(state?.receipts[String(id)]?.ownerId, host.record.storageId);
+		assert.equal(state?.receipts[String(id)]?.acknowledged, true);
+		const status = await host.status();
+		for (const input of status.submissions) if (input.type === "input") await host.settled(input.id);
+		const entries = await host.durable.root().entries({}, 50, undefined, BACKGROUND_CONTEXT);
+		assert.deepEqual({ modelRequests: host.requests.length, resultInputs: entries.items.filter((entry) => entry.kind === "pi.user" && JSON.stringify(entry).includes("Agent result from")).length },
+			{ modelRequests: 2, resultInputs: 0 }, "only the tool call and its answer request the model; no answer is fed back as input");
+		assert.deepEqual(errors, []);
+	} finally { gate.release(); off(); await watcher.close(); await controller.close(); }
+});
 
 it("switches A-B-A observations without replay, identity changes, or a model turn while both native tools block", { timeout: 20000 }, async (t) => {
 	const fixture = terminalHostFixture(t);

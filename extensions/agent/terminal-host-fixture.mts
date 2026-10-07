@@ -44,7 +44,7 @@ export interface ControlledTerminalHost {
 	readonly record: CatalogRecord;
 	readonly durable: DurableHost;
 	readonly gates: Map<string, ReturnType<typeof controlledGate>>;
-	readonly requests: Array<{ marker: string; sessionId: string | undefined }>;
+	readonly requests: Array<{ marker?: string; sessionId: string | undefined }>;
 	readonly calls: Array<{ method: string; params: RequestParams | undefined }>;
 	readonly observations: Set<string>;
 	readonly commandCalls: DurableCommandCall[];
@@ -100,8 +100,10 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 			const observationEvents = eventLog<number>();
 			const runtime = await createTestRuntime();
 			const stream = (_model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
+				const request: ControlledTerminalHost["requests"][number] = { sessionId: options?.sessionId };
+				requests.push(request);
 				const { marker, answered } = lastUser(context);
-				requests.push({ marker, sessionId: options?.sessionId });
+				request.marker = marker;
 				return completed(answered ? answerMessage(`answer:${marker}`) : toolCallMessage("terminal-gate", { marker }));
 			};
 			runtime.registerNativeProvider({ id: testModel.provider, name: "Terminal host test provider", getModels: () => [testModel, { ...testModel, id: "alternate", name: "Alternate test model" }], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });

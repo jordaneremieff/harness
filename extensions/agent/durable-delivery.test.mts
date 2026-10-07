@@ -982,6 +982,120 @@ it("keeps a stored admission origin across a host reopen before delivery", { tim
 	assert.deepEqual(errors, []);
 });
 
+for (const origin of ["operator", "model"] as const) for (const target of ["root", "root-alias", "sibling"] as const) {
+	it(`acknowledges ${origin} self-owned answered receipts in ${target} without follow-up input`, { timeout: 10000 }, async (t) => {
+		const root = fixtureRoot(t);
+		const path = join(root, "source.sqlite");
+		const source = await openHost(path, "source-storage", root);
+		t.after(() => source.close());
+		const sibling = target === "sibling" ? await source.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT) : undefined;
+		const identity = sibling ? source.identity(sibling.id) : source.storageId;
+		const ownerId = target === "root-alias" ? `${source.storageId}:1` : identity;
+		const admitted = await source.request("submit", { sessionId: identity, message: "task", requestId: "self-owned", ownerId, origin }) as { submissionId: SubmissionId };
+		await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+		const calls = t.mock.method(source, "request");
+		const errors = eventLog<Error>();
+		const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), signal: new AbortController().signal, onError: (error) => errors.push(error) });
+		try {
+			await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
+			assert.equal(calls.mock.calls.filter((call) => call.arguments[0] === "submit").length, 0);
+			assert.deepEqual(errors, []);
+		} finally { await watcher.close(); }
+	});
+}
+
+it("acknowledges an aborted self-owned receipt without follow-up input", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const path = join(root, "source.sqlite");
+	const started = eventLog<void>();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const source = await DurableHost.open({ storagePath: path, storageId: "source-storage", cwd: root,
+		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage()]), registry: fixtureRegistry([gateTool(gate, () => started.push(undefined))]),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	t.after(() => source.close());
+	t.after(release);
+	const admitted = await source.request("submit", { message: "task", requestId: "stopped", ownerId: source.storageId, origin: "operator" }) as { submissionId: SubmissionId };
+	await started.waitForCount(1);
+	const aborting = source.request("abort", {});
+	release();
+	await aborting;
+	const settled = await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+	assert.equal(settled.status, "unanswered");
+	const calls = t.mock.method(source, "request");
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), signal: new AbortController().signal });
+	try {
+		await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
+		assert.equal(calls.mock.calls.filter((call) => call.arguments[0] === "submit").length, 0);
+	} finally { await watcher.close(); }
+});
+
+it("delivers every submission in an answer group to another owner without self follow-up", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const path = join(root, "source.sqlite");
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const started = eventLog<void>();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const source = await DurableHost.open({ storagePath: path, storageId: "source-storage", cwd: root,
+		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage(), answerMessage()]), registry: fixtureRegistry([gateTool(gate, () => started.push(undefined))]),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	t.after(() => source.close());
+	t.after(release);
+	const original = await source.request("submit", { message: "task", requestId: "self", ownerId: source.storageId, origin: "operator" }) as { submissionId: SubmissionId };
+	await started.waitForCount(1);
+	const steer = await source.request("submit", { message: "correction", requestId: "other", ownerId: owner, origin: "model", whenBusy: "steer" }) as { submissionId: SubmissionId };
+	release();
+	await source.wait(original.submissionId, BACKGROUND_CONTEXT);
+	await source.wait(steer.submissionId, BACKGROUND_CONTEXT);
+	const calls = t.mock.method(source, "request");
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
+	try {
+		const ids = [original.submissionId, steer.submissionId];
+		await waitForDelivery(source, async () => {
+			const state = await deliveryState(source);
+			return ids.every((id) => state?.receipts[String(id)]?.acknowledged === true);
+		});
+		const state = await deliveryState(source);
+		assert.equal(state?.receipts[String(original.submissionId)]?.answerEntryId, state?.receipts[String(steer.submissionId)]?.answerEntryId);
+		assert.equal(received.length, 1);
+		const details = received[0]?.details as { submissions: Array<{ submissionId: number }>; wake: boolean };
+		assert.deepEqual(details.submissions.map((member) => member.submissionId), ids);
+		assert.equal(details.wake, true);
+		assert.equal(calls.mock.calls.filter((call) => call.arguments[0] === "submit").length, 0);
+	} finally { await watcher.close(); }
+});
+
+for (const origin of [undefined, "invalid"] as const) it(`keeps a self-owned receipt with ${origin} origin pending and reported`, { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const path = join(root, "source.sqlite");
+	const source = await openHost(path, "source-storage", root);
+	t.after(() => source.close());
+	const id = await addReceipt(source, source.storageId);
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	await source.harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		const receipt = state.receipts[String(id)];
+		assert.ok(receipt);
+		const { origin: _removed, ...rest } = receipt;
+		state.receipts[String(id)] = { ...rest, ...(origin === undefined ? {} : { origin }) } as typeof receipt;
+	}, BACKGROUND_CONTEXT);
+	const errors = eventLog<Error>();
+	const calls = t.mock.method(source, "request");
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), signal: new AbortController().signal, onError: (error) => errors.push(error) });
+	try {
+		await errors.waitForCount(1);
+		assert.equal((await deliveryState(source))?.receipts[String(id)]?.acknowledged, false);
+		assert.equal(calls.mock.calls.filter((call) => call.arguments[0] === "submit").length, 0);
+		assert.match(errors[0]?.message ?? "", /no valid admission origin/u);
+		assert.match(((await source.request("status", {})) as { deliveryError?: string }).deliveryError ?? "", /no valid admission origin/u);
+	} finally { await watcher.close(); }
+});
+
 it("reports a same-storage owner inside its storage instead of falling back", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");
@@ -1004,9 +1118,11 @@ it("reports a same-storage owner inside its storage instead of falling back", { 
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
+	const sibling = await source.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	const owner = source.identity(sibling.id);
 	const admitted = (await source.request(
 		"submit",
-		{ sessionId: source.storageId, message: "scheduled task", requestId: "same-storage-owner", ownerId: source.storageId, origin: "model" },
+		{ sessionId: source.storageId, message: "scheduled task", requestId: "same-storage-owner", ownerId: owner, origin: "model" },
 		BACKGROUND_CONTEXT,
 	)) as { submissionId: SubmissionId };
 	await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
@@ -1022,6 +1138,11 @@ it("reports a same-storage owner inside its storage instead of falling back", { 
 	t.after(() => watcher.close());
 	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
 	assert.equal(received.length, 0, "a same-storage owner never routes through a primary");
+	const entries = await sibling.entries({}, 20, undefined, BACKGROUND_CONTEXT);
+	assert.equal(entries.items.filter((entry) => entry.kind === "pi.user").length, 1);
+	assert.match(JSON.stringify(entries.items), /Agent result from/u);
+	const sourceEntries = await source.root().entries({}, 20, undefined, BACKGROUND_CONTEXT);
+	assert.doesNotMatch(JSON.stringify(sourceEntries.items), /Agent result from/u);
 	assert.deepEqual(errors, []);
 });
 

@@ -1171,9 +1171,11 @@ The ordinary primary's reload ends only its client callbacks. Durable storage
 hosts remain independent processes. The next primary startup reconnects and
 registers its primary channel, receives retained reports and outcomes through
 host durable-delivery, and relaunches dead hosts with unfinished work. The host
-routes catalog owners as untrusted follow-ups; a noncatalog owner is reached
-through its registered primary channel. Only an absent or proven-dead ordinary
-owner endpoint permits a labeled informational fallback to every live registered
+acknowledges receipts owned by their producing conversation without a follow-up,
+for both operator and model admissions. Other catalog owners receive untrusted
+follow-ups; a noncatalog owner is reached through its registered primary channel.
+Only an absent or proven-dead ordinary owner endpoint permits a labeled
+informational fallback to every live registered
 primary within one bounded discovery. Unknown or incompatible endpoints refuse
 fallback, and incomplete discovery refuses before dispatch. Copies preserve the
 original owner identity and retain each accepted recipient independently; they
@@ -1370,7 +1372,7 @@ scheduler or transcript. The ordinary SDK remains the primary terminal host.
 | Process ownership | Agent host writer claim before storage open; same-user Unix control socket over the public `pi-server`/`pi-client` transport (private 0700 directory, owner-only 0600 socket, exact `serverId` handshake) and automatic dead-owner recovery |
 | Nested tools | Native call tasks, selected ToolTask hook chain, argument validation, committed intent, replay policy, and structured results |
 | Observation | Public native entries, documents, submissions, and task views; bounded catalog projections with explicit coverage. [Agent controls](../extensions/agent/README.md#controls) distinguish status summaries, fleet model evidence, and discovery; cold inspection uses a bounded SQLite snapshot without resume |
-| Owner delivery | Host durable-delivery owns retained intents, receipts, reports, and automatic unanswered-task check-ins; catalog follow-up or registered primary channel; labeled informational broadcast only for an absent or proven-dead ordinary owner, with complete discovery and accepted deliveries; copies never acknowledge the original owner, and accepted normal routes acknowledge independently; direct thread notices remain pending without broadcast; no exactly-once cross-host promise |
+| Owner delivery | Host durable-delivery owns retained intents, receipts, reports, and automatic unanswered-task check-ins; self-owned receipts acknowledged without input, other owners reached by catalog follow-up or registered primary channel; labeled informational broadcast only for an absent or proven-dead ordinary owner, with complete discovery and accepted deliveries; copies never acknowledge the original owner, and accepted normal routes acknowledge independently; direct thread notices remain pending without broadcast; no exactly-once cross-host promise |
 | UI | Dashboard over an untouched native primary; roster and selected live conversation, full-window agent console, contextual actions, and explicit coverage. Host-owned Durable view and task-graph watches supply live frames. An embeddable InteractiveMode view and the experimental coding-agent client remain unpublished |
 | Handover and doctrine | Native transport and retention carry content; its meaning and authority remain application concerns |
 

@@ -39,6 +39,7 @@ import {
 	settleDeliveries,
 } from "./durable-controls.ts";
 import type { DurableHost } from "./durable-host.ts";
+import { resolveSessionConversationId } from "./durable-observation.ts";
 import { acquireHost, type HostConnection } from "./host-client.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import {
@@ -809,6 +810,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const routeOwner = async (row: DeliveryRow, owner: string): Promise<boolean> => {
 		if (!await checkInCurrent(row)) return false;
 		if (ownerStorageId(owner) === metadata.storageId) {
+			// The producing conversation already retains its outcome; another input would restart it.
+			if (row.kind === "receipt" && resolveSessionConversationId(metadata.storageId, owner, undefined) === row.receipt.conversationId) return true;
 			await deliverSameStorage(row, owner);
 			return true;
 		}
