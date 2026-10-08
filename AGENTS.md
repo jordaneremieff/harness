@@ -8,11 +8,11 @@
 - Requirements are written neutrally from current public Pi documentation and
   shipped examples, plus observed operator needs.
 - No company doctrine, service names, internal hosts, model rosters, credentials,
-  or operator-local absolute paths. Machine configuration uses the package-level
-  `settings/index.ts` contract, one `<agentDir>/harness.json` document, and
-  per-field `PI_*` overrides. Each configuration consumer owns a passive declaration and its
-  generated README table. See `docs/conventions/extension-config.md` for the
-  contract and adoption checks.
+  or operator-local absolute paths. Per-extension configuration uses one section
+  of the machine document `<agentDir>/harness.json` and per-field `PI_*`
+  environment overrides, each documented in its extension README. Each extension
+  reads its own section with its own code. See
+  `docs/conventions/extension-config.md`.
 - Report to the operator only in adapted ASD-STE100 Simplified Technical English (STE).
   Apply STE to every operator-facing chat message: status updates, summaries, error
   reports, findings, questions, and recommendations. The register governs chat
@@ -106,11 +106,8 @@
   event analysis must remain generic — do not recognize one sibling extension's
   private vocabulary. Do not create a shared abstraction solely to remove small
   duplication. Colocated `*.test.mts` tests, its own README, no operator-local
-  paths or credentials in committed content. The documented package-level
-  configuration escape is only `settings/index.ts`; no settings internals or
-  sibling declarations are shared. `scripts/check-slices.mts` checks literal
-  import specifiers, settings declaration/read/table consistency, and sibling
-  paths. Review still
+  paths or credentials in committed content. `scripts/check-slices.mts` checks
+  literal import specifiers for slice escapes and sibling paths. Review still
   enforces semantic isolation, including sibling-specific vocabulary, shared
   mutable state, and undocumented private protocols.
 - One-pass standard: complete each task fully in the current pass. Deferral,
