@@ -7,17 +7,31 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createEventBus, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import {
-	checkSettingsReadme,
-	collectSettings,
 	readSettings,
 	SETTINGS_PUBLISH,
 	SETTINGS_REQUEST,
-	settingsReadme,
-} from "../../settings/index.ts";
+	type SettingsPublication,
+} from "./settings.ts";
 import { resolveApiKey, searchBraveWeb } from "./client.ts";
 import type { DurableContribution, DurableContributionHost } from "./durable.ts";
 import registerBraveSearch from "./index.ts";
 import { settings } from "./settings.ts";
+
+function observeSettings(bus: ReturnType<typeof createEventBus>) {
+	let publications: SettingsPublication[] = [];
+	const dispose = bus.on("harness:settings:publish", (value) => {
+		const publication = value as SettingsPublication;
+		assert.equal(publication.slice, "brave");
+		assert.equal(Object.hasOwn(publication, "values"), false);
+		publications = [publication];
+	});
+	const refresh = () => {
+		publications = [];
+		bus.emit("harness:settings:request", { version: 1 });
+	};
+	refresh();
+	return { snapshots: () => publications, refresh, dispose };
+}
 
 function fixture(t: TestContext) {
 	const agentDir = mkdtempSync(join(tmpdir(), "brave-settings-"));
@@ -49,7 +63,7 @@ describe("Brave settings", () => {
 	it("rejects document credentials and exposes only unset state with a diagnostic", async (t) => {
 		const f = fixture(t);
 		f.write({ version: 1, brave: { apiKey: "synthetic-file-token" } });
-		const snapshot = readSettings(settings, { agentDir: f.agentDir, env: {} });
+		const snapshot = readSettings({ agentDir: f.agentDir, env: {} });
 		assert.equal(snapshot.values.apiKey, undefined);
 		assert.deepEqual(
 			snapshot.records.map(({ origin, status, secretState }) => ({ origin, status, secretState })),
@@ -67,7 +81,7 @@ describe("Brave settings", () => {
 		const f = fixture(t);
 		f.write({ version: 1, brave: { apiKey: "synthetic-file-token" } });
 		const env = { PI_BRAVE_API_KEY: " synthetic-env-token " };
-		const snapshot = readSettings(settings, { agentDir: f.agentDir, env });
+		const snapshot = readSettings({ agentDir: f.agentDir, env });
 		assert.equal(snapshot.values.apiKey, env.PI_BRAVE_API_KEY);
 		assert.equal(snapshot.records[0].origin, "env");
 		assert.equal(snapshot.records[0].secretState, "set");
@@ -96,7 +110,7 @@ describe("Brave settings", () => {
 		f.write({ version: 1, brave: { apiKey: "synthetic-file-token" } });
 		for (const apiKey of ["", "   ", "synthetic-env-token\n", "x".repeat(4097)]) {
 			const env = { PI_BRAVE_API_KEY: apiKey };
-			const snapshot = readSettings(settings, { agentDir: f.agentDir, env });
+			const snapshot = readSettings({ agentDir: f.agentDir, env });
 			assert.equal(snapshot.values.apiKey, undefined);
 			assert.equal(snapshot.records[0].secretState, "unset");
 			assert.equal(snapshot.records[0].origin, "default");
@@ -106,14 +120,27 @@ describe("Brave settings", () => {
 		}
 	});
 
-	it("keeps the generated configuration table passive and secret-free", () => {
+	it("marks blank and whitespace environment tokens invalid without document input", (t) => {
+		const f = fixture(t);
+		for (const apiKey of ["", "   ", "\u00a0"]) {
+			const snapshot = readSettings({ agentDir: f.agentDir, env: { PI_BRAVE_API_KEY: apiKey } });
+			assert.equal(snapshot.values.apiKey, undefined);
+			assert.equal(snapshot.records[0].status, "invalid");
+			assert.equal(snapshot.records[0].origin, "default");
+			assert.equal(snapshot.records[0].secretState, "unset");
+			assert.deepEqual(snapshot.diagnostics.map(({ field, source, code }) => ({ field, source, code })), [
+				{ field: "brave.apiKey", source: "env", code: "invalid" },
+			]);
+		}
+	});
+
+	it("documents an environment-only key without a secret value or default", () => {
 		const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8");
-		assert.equal(checkSettingsReadme(settings, readme), true);
-		const table = settingsReadme(settings);
+		const table = readme.slice(readme.indexOf("<!-- harness:settings:start -->"), readme.indexOf("<!-- harness:settings:end -->"));
 		assert.match(table, /PI_BRAVE_API_KEY/);
 		assert.match(table, /env-only/);
 		assertSecretFree(table);
-		assert.equal(Object.hasOwn(settings.fields.apiKey.options, "default"), false);
+		assert.equal(Object.hasOwn(settings.fields.apiKey, "default"), false);
 	});
 
 	it("publishes fresh redacted ordinary snapshots in both load orders and cleans up on shutdown", (t) => {
@@ -124,7 +151,7 @@ describe("Brave settings", () => {
 			const bus = createEventBus();
 			let publisher: ReturnType<typeof ordinary> | undefined;
 			if (publisherFirst) publisher = ordinary(bus);
-			const collector = collectSettings(bus);
+			const collector = observeSettings(bus);
 			if (!publisherFirst) publisher = ordinary(bus);
 			const [snapshot] = collector.snapshots();
 			assert.equal(snapshot.source.path, join(f.agentDir, "harness.json"));
@@ -153,7 +180,7 @@ describe("Brave settings", () => {
 		nativeDir.write({ version: 1, brave: { apiKey: "synthetic-file-token-native" } });
 		t.mock.property(process, "env", { PI_CODING_AGENT_DIR: ordinaryDir.agentDir });
 		const bus = createEventBus();
-		const collector = collectSettings(bus);
+		const collector = observeSettings(bus);
 		const publications: unknown[] = [];
 		bus.on(SETTINGS_PUBLISH, (data) => publications.push(data));
 		const publisher = ordinary(bus);

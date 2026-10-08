@@ -1,7 +1,6 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { type Environment, readSettings } from "../../settings/index.ts";
+import { type Environment, readSettings } from "./settings.ts";
 import { diagnosticNetworkCode, responseDiagnostic } from "./diagnostics.ts";
-import { settings } from "./settings.ts";
 
 export const BRAVE_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
@@ -82,7 +81,7 @@ export async function resolveApiKey(options: BraveClientOptions = {}, signal?: A
 	const explicit = cleanKey(options.apiKey);
 	if (explicit) return explicit;
 
-	const snapshot = readSettings(settings, { agentDir: options.agentDir ?? getAgentDir(), env: options.env });
+	const snapshot = readSettings({ agentDir: options.agentDir ?? getAgentDir(), env: options.env });
 	const configured = cleanKey(snapshot.values.apiKey);
 	if (configured) return configured;
 

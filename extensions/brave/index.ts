@@ -2,7 +2,7 @@
 
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, getAgentDir, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { publishSettings } from "../../settings/index.ts";
+import { publishSettings } from "./settings.ts";
 import {
 	BRAVE_WEB_READ_DESCRIPTION,
 	BRAVE_WEB_READ_GUIDELINES,
@@ -18,11 +18,10 @@ import {
 import { braveDurableContribution } from "./durable.ts";
 import { readWebPage, type WebReadResult } from "./page-reader.ts";
 import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult } from "./presentation.ts";
-import { settings } from "./settings.ts";
 
 export default function registerBraveSearch(pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
-	const disposeSettings = publishSettings(pi.events, settings, { agentDir });
+	const disposeSettings = publishSettings(pi.events, { agentDir });
 	pi.on("session_shutdown", disposeSettings);
 	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {

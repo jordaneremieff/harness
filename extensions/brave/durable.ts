@@ -9,7 +9,7 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { publishSettings, type SettingsBus } from "../../settings/index.ts";
+import { publishSettings, type SettingsBus } from "./settings.ts";
 import {
 	BRAVE_WEB_READ_DESCRIPTION,
 	BRAVE_WEB_READ_GUIDELINES,
@@ -22,7 +22,6 @@ import {
 	runWebSearch,
 } from "./capability.ts";
 import { readWebPage } from "./page-reader.ts";
-import { settings } from "./settings.ts";
 
 /** Everything the host installs, complete before the first `create()` call. */
 export interface DurableInventory {
@@ -100,7 +99,7 @@ export function braveDurableContribution(
 		source,
 		create(host) {
 			disposeFactorySettings();
-			const disposeSettings = publishSettings(bus, settings, { agentDir: host.agentDir });
+			const disposeSettings = publishSettings(bus, { agentDir: host.agentDir });
 			host.onClose(disposeSettings);
 			const { defineExtension, defineTool, section } = host.durable;
 			return defineExtension({

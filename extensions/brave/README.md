@@ -21,7 +21,7 @@ continuation, [Source links](#source-links) for link discovery, and
 
 ## Configuration
 
-The [settings contract](../../settings/README.md) reads the optional machine
+The [settings contract](../../docs/conventions/extension-config.md) reads the optional machine
 document `<agentDir>/harness.json` and the process environment. The
 `web_search` subscription token is environment-only: a document `brave.apiKey`
 entry is rejected with a diagnostic, even when an environment token is set.
@@ -34,7 +34,7 @@ Public settings records show only set/unset, never credential bytes.
 <!-- harness:settings:end -->
 
 The token must be nonblank, contain no control or format characters, and fit the
-shared string length limit. The client trims accepted tokens before use. Invalid
+contract string length limit. The client trims accepted tokens before use. Invalid
 environment input leaves the token unset; it never falls back to a document key.
 An explicit key passed to the client options takes precedence for tests and
 programmatic callers. A caller can also supply its agent directory and environment
