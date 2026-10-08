@@ -419,7 +419,7 @@ linkable private metadata, not anonymity. It contains no prompts, result text,
 raw paths, call/session identifiers, PID, exact event timestamps, or returned
 mismatched-body hashes. Public evidence and exports exclude receipt identities.
 
-The passive [`settings.ts`](settings.ts) declaration uses the package-level
+The [`settings.ts`](settings.ts) declaration and local reader/publisher use the package-level
 [settings contract](../../docs/conventions/extension-config.md). Per-field precedence is environment,
 `pillars` in `<agentDir>/harness.json`, then default. The host supplies the agent
 directory; the corpus default remains package-relative.

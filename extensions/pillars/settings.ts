@@ -82,7 +82,7 @@ type Field = {
 	absolute?: boolean;
 };
 
-export function settingsPath({ agentDir, env = process.env }: ReadOptions): string {
+function settingsPath({ agentDir, env = process.env }: ReadOptions): string {
 	if (!isAbsolute(agentDir) || !textValid(agentDir) || agentDir.length > 4096)
 		throw new Error("agentDir must be an absolute directory path");
 	const override = env.PI_HARNESS_FILE;

@@ -13,6 +13,10 @@ import { corpusRoot, loadCatalog } from "./catalog.ts";
 import pillarsExtension from "./index.ts";
 import { defaultCorpusRoot, settings, publishSettings } from "./settings.ts";
 
+test("configuration path resolution remains internal", async () => {
+	assert.equal("settingsPath" in (await import("./settings.ts")), false);
+});
+
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
 	const root = await mkdtemp(join(process.cwd(), ".pillars-settings-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
