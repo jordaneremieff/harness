@@ -1,4 +1,7 @@
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { type Environment, readSettings } from "../../settings/index.ts";
 import { diagnosticNetworkCode, responseDiagnostic } from "./diagnostics.ts";
+import { settings } from "./settings.ts";
 
 export const BRAVE_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
@@ -50,9 +53,10 @@ export type FetchLike = (
 	init: { headers: Record<string, string>; redirect: "error"; signal: AbortSignal },
 ) => Promise<FetchResponse>;
 
-interface BraveClientOptions {
+export interface BraveClientOptions {
 	apiKey?: string;
-	env?: Record<string, string | undefined>;
+	agentDir?: string;
+	env?: Environment;
 	fetch?: FetchLike;
 	timeoutMs?: number;
 }
@@ -78,8 +82,9 @@ export async function resolveApiKey(options: BraveClientOptions = {}, signal?: A
 	const explicit = cleanKey(options.apiKey);
 	if (explicit) return explicit;
 
-	const fromEnvironment = cleanKey((options.env ?? process.env).PI_BRAVE_API_KEY);
-	if (fromEnvironment) return fromEnvironment;
+	const snapshot = readSettings(settings, { agentDir: options.agentDir ?? getAgentDir(), env: options.env });
+	const configured = cleanKey(snapshot.values.apiKey);
+	if (configured) return configured;
 
 	throw new Error("Brave Search is not configured. Set PI_BRAVE_API_KEY.");
 }

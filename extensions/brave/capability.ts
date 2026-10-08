@@ -2,7 +2,7 @@
 
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { searchBraveWeb, type BraveWebSearchRequest } from "./client.ts";
+import { type BraveClientOptions, searchBraveWeb, type BraveWebSearchRequest } from "./client.ts";
 import { formatSearchResults } from "./format.ts";
 import { PAGE_LINK_LIMITS } from "./page-links.ts";
 
@@ -171,8 +171,9 @@ export interface BraveWebSearchExecution {
 export async function runWebSearch(
 	params: BraveWebSearchRequest,
 	signal?: AbortSignal,
+	options: BraveClientOptions = {},
 ): Promise<BraveWebSearchExecution> {
-	const response = await searchBraveWeb(params, signal);
+	const response = await searchBraveWeb(params, signal, options);
 	const formatted = formatSearchResults(response, params);
 	const count = params.count ?? 10;
 	const offset = params.offset ?? 0;

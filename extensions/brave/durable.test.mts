@@ -4,13 +4,17 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { Agent } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Duplex } from "node:stream";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models, ToolResultMessage } from "@earendil-works/pi-ai";
+import { createEventBus, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
@@ -18,12 +22,16 @@ import { braveDurableContribution, type DurableContributionHost } from "./durabl
 
 const source = fileURLToPath(new URL("./index.ts", import.meta.url));
 
-const originalKey = process.env.PI_BRAVE_API_KEY;
 const originalFetch = globalThis.fetch;
 
+beforeEach((t) => {
+	assert.ok("mock" in t && "after" in t);
+	const agentDir = mkdtempSync(join(tmpdir(), "brave-durable-"));
+	t.mock.property(process, "env", { PI_CODING_AGENT_DIR: agentDir });
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+});
+
 afterEach(() => {
-	if (originalKey === undefined) delete process.env.PI_BRAVE_API_KEY;
-	else process.env.PI_BRAVE_API_KEY = originalKey;
 	globalThis.fetch = originalFetch;
 });
 
@@ -53,14 +61,15 @@ function responseSocket(body: string): Duplex {
  * tools read no cwd-bound Pi services, so `services` stays empty.
  */
 async function nativeExtension(): Promise<Durable.Extension> {
-	const contribution = braveDurableContribution(source);
+	const contribution = braveDurableContribution(source, createEventBus(), () => {});
 	const host: DurableContributionHost = {
 		durable: Durable,
 		services: {} as DurableContributionHost["services"],
 		cwd: process.cwd(),
-		agentDir: process.cwd(),
+		agentDir: getAgentDir(),
 		storageId: "brave-durable-test",
 		signal: new AbortController().signal,
+		onClose: () => {},
 		inventory: { contributions: [{ name: "brave", source, commands: [] }], ordinaryOnly: [] },
 	};
 	return await contribution.create(host);
@@ -142,9 +151,7 @@ describe("brave durable contribution", () => {
 				JSON.stringify({
 					query: { original: "durable evidence" },
 					web: {
-						results: [
-							{ title: "Durable evidence", url: "https://example.com/evidence", description: "A source" },
-						],
+						results: [{ title: "Durable evidence", url: "https://example.com/evidence", description: "A source" }],
 					},
 				}),
 				{ status: 200, headers: { "content-type": "application/json" } },
@@ -158,9 +165,9 @@ describe("brave durable contribution", () => {
 			fauxAssistantMessage("Done."),
 		]);
 
-		const settled = await (
-			await root.submit({ type: "input", content: "research" }, BACKGROUND_CONTEXT)
-		).wait(BACKGROUND_CONTEXT);
+		const settled = await (await root.submit({ type: "input", content: "research" }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
 		assert.equal(settled.status, "done");
 		assert.equal(fetches, 1);
 
@@ -197,7 +204,12 @@ describe("brave durable contribution", () => {
 			connections += 1;
 			if (connections === 1) {
 				reached.resolve();
-				return new Duplex({ read() {}, write(_chunk, _encoding, callback) { callback(); } });
+				return new Duplex({
+					read() {},
+					write(_chunk, _encoding, callback) {
+						callback();
+					},
+				});
 			}
 			return responseSocket("Replayed page evidence.\n");
 		});
@@ -212,7 +224,9 @@ describe("brave durable contribution", () => {
 		await opened.harness.close(BACKGROUND_CONTEXT);
 
 		opened = await openRoot(models, registry, storage);
-		const settled = await (await opened.harness.submission(submission.id, BACKGROUND_CONTEXT))?.wait(BACKGROUND_CONTEXT);
+		const settled = await (await opened.harness.submission(submission.id, BACKGROUND_CONTEXT))?.wait(
+			BACKGROUND_CONTEXT,
+		);
 		assert.equal(settled?.status, "done");
 		assert.equal(connections, 2, "the safe tool fetched again after recovery");
 		const [read] = await toolResults(opened.root);
@@ -250,7 +264,9 @@ describe("brave durable contribution", () => {
 		await opened.harness.close(BACKGROUND_CONTEXT);
 
 		opened = await openRoot(models, registry, storage);
-		const settled = await (await opened.harness.submission(submission.id, BACKGROUND_CONTEXT))?.wait(BACKGROUND_CONTEXT);
+		const settled = await (await opened.harness.submission(submission.id, BACKGROUND_CONTEXT))?.wait(
+			BACKGROUND_CONTEXT,
+		);
 		assert.equal(settled?.status, "done");
 		assert.equal(fetches, 1, "the interrupted unsafe search did not run again");
 		const [search] = await toolResults(opened.root);

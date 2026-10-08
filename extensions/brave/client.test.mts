@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, describe, it } from "node:test";
 import { BRAVE_WEB_SEARCH_URL, type FetchLike, resolveApiKey, searchBraveWeb } from "./client.ts";
 
 const success = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
@@ -19,6 +22,13 @@ function settleWithin<T>(promise: Promise<T>, timeoutMs = 1_000): Promise<T> {
 		);
 	});
 }
+
+beforeEach((t) => {
+	assert.ok("mock" in t && "after" in t);
+	const agentDir = mkdtempSync(join(tmpdir(), "brave-client-"));
+	t.mock.property(process, "env", { PI_CODING_AGENT_DIR: agentDir });
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+});
 
 describe("Brave Search configuration", () => {
 	it("prefers an explicit key and otherwise reads PI_BRAVE_API_KEY", async () => {

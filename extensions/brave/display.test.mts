@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerBraveSearch from "./index.ts";
@@ -62,7 +65,10 @@ function assertPublication(publication: Publication, registered: Map<string, Too
 	}
 }
 
-test("publishes registered renderers at factory time and for current display requests", () => {
+test("publishes registered renderers at factory time and for current display requests", (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "brave-display-"));
+	t.mock.property(process, "env", { PI_CODING_AGENT_DIR: agentDir });
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const bus = new EventEmitter();
 	const publications: Publication[] = [];
 	bus.on("harness:tool-display:publish", (publication: Publication) => {

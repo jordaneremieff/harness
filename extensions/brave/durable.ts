@@ -9,6 +9,7 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
+import { publishSettings, type SettingsBus } from "../../settings/index.ts";
 import {
 	BRAVE_WEB_READ_DESCRIPTION,
 	BRAVE_WEB_READ_GUIDELINES,
@@ -21,6 +22,7 @@ import {
 	runWebSearch,
 } from "./capability.ts";
 import { readWebPage } from "./page-reader.ts";
+import { settings } from "./settings.ts";
 
 /** Everything the host installs, complete before the first `create()` call. */
 export interface DurableInventory {
@@ -44,6 +46,8 @@ export interface DurableContributionHost {
 	readonly storageId: string;
 	/** Aborted when the host shuts down. */
 	readonly signal: AbortSignal;
+	/** Register cleanup at host shutdown. */
+	onClose(dispose: () => void | Promise<void>): void;
 	readonly inventory: DurableInventory;
 }
 
@@ -58,7 +62,8 @@ export interface DurableContribution {
 
 /** Strict JSON for durable tool results; absent optional values are dropped rather than stored as undefined. */
 function jsonDetails(value: unknown): JsonValue {
-	if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+	if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+		return value;
 	if (Array.isArray(value)) return value.map((item) => jsonDetails(item));
 	if (typeof value === "object") {
 		const result: { [key: string]: JsonValue } = {};
@@ -85,11 +90,18 @@ function guidanceSection(): string {
  * The brave contribution. `create()` reads no ordinary session API and keeps
  * no durable conversation state; both tools perform stateless public reads.
  */
-export function braveDurableContribution(source: string): DurableContribution {
+export function braveDurableContribution(
+	source: string,
+	bus: SettingsBus,
+	disposeFactorySettings: () => void,
+): DurableContribution {
 	return {
 		name: "brave",
 		source,
 		create(host) {
+			disposeFactorySettings();
+			const disposeSettings = publishSettings(bus, settings, { agentDir: host.agentDir });
+			host.onClose(disposeSettings);
 			const { defineExtension, defineTool, section } = host.durable;
 			return defineExtension({
 				name: "brave",
@@ -112,7 +124,7 @@ export function braveDurableContribution(source: string): DurableContribution {
 						// A rerun would repeat a billed Brave query; an interrupted search receives an interrupted result.
 						replay: "unsafe",
 						execute: async (args, _api, context: Context) => {
-							const result = await runWebSearch(args, context.abortSignal);
+							const result = await runWebSearch(args, context.abortSignal, { agentDir: host.agentDir });
 							return { content: result.content, details: jsonDetails(result.details) };
 						},
 					}),

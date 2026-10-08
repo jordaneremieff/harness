@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { Resolver } from "node:dns/promises";
+import { mkdtempSync, rmSync } from "node:fs";
 import { Agent } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Duplex } from "node:stream";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type JsonObject, type Tool, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -37,6 +40,7 @@ function registry(): ToolRegistry {
 	const tools = new Map<string, RegisteredTool>();
 	const contributions: unknown[] = [];
 	const host = {
+		on: () => () => {},
 		registerTool: (registered: RegisteredTool) => tools.set(registered.name, registered),
 		events: {
 			on: () => () => {},
@@ -75,12 +79,16 @@ async function assertNormalizedFindExecution(reader: RegisteredTool, url: string
 	}
 }
 
-const originalKey = process.env.PI_BRAVE_API_KEY;
 const originalFetch = globalThis.fetch;
 
+beforeEach((t) => {
+	assert.ok("mock" in t && "after" in t);
+	const agentDir = mkdtempSync(join(tmpdir(), "brave-entrypoint-"));
+	t.mock.property(process, "env", { PI_CODING_AGENT_DIR: agentDir });
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+});
+
 afterEach(() => {
-	if (originalKey === undefined) delete process.env.PI_BRAVE_API_KEY;
-	else process.env.PI_BRAVE_API_KEY = originalKey;
 	globalThis.fetch = originalFetch;
 });
 

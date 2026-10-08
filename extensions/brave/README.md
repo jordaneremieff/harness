@@ -21,11 +21,30 @@ continuation, [Source links](#source-links) for link discovery, and
 
 ## Configuration
 
-The `web_search` subscription token comes from `PI_BRAVE_API_KEY` in the Pi
-process environment. The extension reads no configuration file; the token never
-sits inside the repository tree. An explicit key passed to the client options
-overrides the variable for tests and programmatic callers. `web_read` requires
-no key or configuration; it fetches only public pages with no credential.
+The [settings contract](../../settings/README.md) reads the optional machine
+document `<agentDir>/harness.json` and the process environment. The
+`web_search` subscription token is environment-only: a document `brave.apiKey`
+entry is rejected with a diagnostic, even when an environment token is set.
+Public settings records show only set/unset, never credential bytes.
+
+<!-- harness:settings:start -->
+| Key | Environment | Type | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| apiKey | `PI_BRAVE_API_KEY` | string | env-only | none | Subscription token for Brave web search. Public-page reads require no token. |
+<!-- harness:settings:end -->
+
+The token must be nonblank, contain no control or format characters, and fit the
+shared string length limit. The client trims accepted tokens before use. Invalid
+environment input leaves the token unset; it never falls back to a document key.
+An explicit key passed to the client options takes precedence for tests and
+programmatic callers. A caller can also supply its agent directory and environment
+map. `web_read` requires no key; it fetches only public pages with no credential.
+
+The ordinary factory publishes a redacted settings snapshot immediately and on
+settings requests. Native host setup replaces that publisher on the same public
+bus with one bound to the host agent directory. Shutdown releases the subscription.
+Each settings request reads current configuration; the snapshot describes
+configured values, not proof that an existing runtime applied them.
 
 ## Use
 
@@ -356,7 +375,8 @@ installation.
 
 `extensions/brave/durable.ts` builds the native extension from the shared
 `capability.ts` surface: parameter schemas, descriptions, model guidance, and
-the `web_search` execution. It adds no documents, hooks, tasks, or commands,
+the `web_search` execution. Search resolves settings with the native host agent
+directory. It adds no Durable documents, hooks, tasks, or commands,
 and `create()` uses no ordinary session API. The native form registers
 `web_read`, then `web_search`, and one prompt section, `web-guidance`, carrying
 in one section the same guidance text as the ordinary prompt snippet and
@@ -419,7 +439,10 @@ npm test
 node scripts/extension-load-check.mts extensions/brave/index.ts
 ```
 
-The focused tests cover configuration precedence and failures, request
+The focused tests cover environment-only credentials, rejected document keys,
+explicit client precedence, missing/invalid credentials, fresh redacted settings
+publications, ordinary/native directory binding and cleanup, the generated
+configuration table, request
 construction, response normalization, HTTP error guidance, reflected-credential
 non-disclosure, credential-bearing URL omission, fragmented UTF-8, exact response
 bounds, cancellation, timeout cleanup, control-character handling,

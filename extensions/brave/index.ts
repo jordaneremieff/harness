@@ -1,7 +1,8 @@
 /** Stateless web search and bounded public-page reading. */
 
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, getAgentDir, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { publishSettings } from "../../settings/index.ts";
 import {
 	BRAVE_WEB_READ_DESCRIPTION,
 	BRAVE_WEB_READ_GUIDELINES,
@@ -17,8 +18,12 @@ import {
 import { braveDurableContribution } from "./durable.ts";
 import { readWebPage, type WebReadResult } from "./page-reader.ts";
 import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult } from "./presentation.ts";
+import { settings } from "./settings.ts";
 
 export default function registerBraveSearch(pi: ExtensionAPI) {
+	const agentDir = getAgentDir();
+	const disposeSettings = publishSettings(pi.events, settings, { agentDir });
+	pi.on("session_shutdown", disposeSettings);
 	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
 		pi.registerTool(tool);
@@ -27,7 +32,10 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 			displayTools.push({ name, renderCall, renderResult, renderShell } as (typeof displayTools)[number]);
 		}
 	};
-	pi.events.emit("durable:contribution", braveDurableContribution(fileURLToPath(import.meta.url)));
+	pi.events.emit(
+		"durable:contribution",
+		braveDurableContribution(fileURLToPath(import.meta.url), pi.events, disposeSettings),
+	);
 	registerTool({
 		name: "web_read",
 		label: "Read public web page",
@@ -51,7 +59,7 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 		renderCall: (args, theme, context) => renderSearchCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderSearchResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal) {
-			return runWebSearch(params, signal);
+			return runWebSearch(params, signal, { agentDir });
 		},
 	});
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", { version: 1, tools: displayTools });
