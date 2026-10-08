@@ -2,9 +2,8 @@
 
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ToolDefinition, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { publishSettings } from "../../settings/index.ts";
+import { publishSettings } from "./settings.ts";
 import { clipboardContribution } from "./durable.ts";
-import { settings } from "./settings.ts";
 import {
 	clipboardCopy,
 	clipboardGet,
@@ -97,7 +96,7 @@ function notifyRestored(
 }
 
 export default function (pi: ExtensionAPI) {
-	const stopSettings = publishSettings(pi.events, settings, { agentDir: getAgentDir() });
+	const stopSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
 	pi.on("session_shutdown", () => stopSettings());
 	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {

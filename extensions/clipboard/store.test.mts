@@ -54,7 +54,7 @@ describe("localDate", () => {
 });
 
 describe("resolveClipboardDir", () => {
-	it("uses the shared reader with the supplied agent directory", () => {
+	it("uses the local reader with the supplied agent directory", () => {
 		assert.equal(resolveClipboardDir({ PI_CLIPBOARD_DIR: "/x" }, dir), "/x");
 		assert.equal(resolveClipboardDir({}, dir), join(dir, "clipboard"));
 		assert.equal(resolveClipboardDir({ PI_CLIPBOARD_DIR: "archive" }, dir), join(dir, "archive"));

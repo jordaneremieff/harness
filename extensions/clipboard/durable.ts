@@ -17,8 +17,7 @@
  */
 
 import type * as Durable from "@earendil-works/pi-durable";
-import { publishSettings, type SettingsBus } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { publishSettings, type SettingsBus } from "./settings.ts";
 import {
 	clipboardCopy,
 	clipboardGet,
@@ -67,7 +66,7 @@ export function clipboardContribution(
 		source,
 		create(host) {
 			stopFactoryPublisher();
-			host.onClose(publishSettings(bus, settings, { agentDir: host.agentDir }));
+			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
 			const durable = host.durable;
 			const storeDir = () => resolveClipboardDir(process.env, host.agentDir);
 			return durable.defineExtension({

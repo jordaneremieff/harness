@@ -4,8 +4,7 @@ import { randomUUID } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
 import { chmod, type FileHandle, lstat, mkdir, open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { type Environment, readSettings } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { type Environment, readSettings } from "./settings.ts";
 
 export interface ClipboardEntry {
 	/** Stable archive identifier. */
@@ -83,7 +82,7 @@ export function localDate(date: Date): string {
 }
 
 export function resolveClipboardDir(env: Environment, agentDir: string): string {
-	return readSettings(settings, { agentDir, env }).values.dir;
+	return readSettings({ agentDir, env }).values.dir;
 }
 
 function hasCode(error: unknown, code: string): boolean {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
-import { checkSettingsReadme, readSettings, type SettingsPublication } from "../../settings/index.ts";
+import { readSettings, type SettingsPublication } from "./settings.ts";
 import type { DurableContribution } from "./durable.ts";
 import registerClipboard from "./index.ts";
 import { settings } from "./settings.ts";
@@ -15,17 +15,17 @@ import { appendEntry, makeEntry, resolveClipboardDir } from "./store.ts";
 test("clipboard directory selects environment, document, or the host default", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "clipboard-settings-test-"));
 	try {
-		assert.equal(readSettings(settings, { agentDir, env: {} }).values.dir, join(agentDir, "clipboard"));
+		assert.equal(readSettings({ agentDir, env: {} }).values.dir, join(agentDir, "clipboard"));
 		await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, clipboard: { dir: "file-archive" } }));
-		const file = readSettings(settings, { agentDir, env: {} });
+		const file = readSettings({ agentDir, env: {} });
 		assert.equal(file.values.dir, join(agentDir, "file-archive"));
 		assert.equal(file.records[0].origin, "file");
 		assert.equal(resolveClipboardDir({}, agentDir), file.values.dir);
-		const env = readSettings(settings, { agentDir, env: { PI_CLIPBOARD_DIR: "env-archive" } });
+		const env = readSettings({ agentDir, env: { PI_CLIPBOARD_DIR: "env-archive" } });
 		assert.equal(env.values.dir, join(agentDir, "env-archive"));
 		assert.equal(env.records[0].origin, "env");
 		for (const value of ["", "bad\u0000path", "bad\npath", "\ud800", "x".repeat(4097)]) {
-			const invalid = readSettings(settings, { agentDir, env: { PI_CLIPBOARD_DIR: value } });
+			const invalid = readSettings({ agentDir, env: { PI_CLIPBOARD_DIR: value } });
 			assert.equal(invalid.values.dir, join(agentDir, "clipboard"));
 			assert.equal(invalid.records[0].origin, "default");
 			assert.equal(invalid.records[0].status, "invalid");
@@ -36,12 +36,12 @@ test("clipboard directory selects environment, document, or the host default", a
 		}
 		for (const value of [null, false, 7, [], {}, "", "bad\npath"]) {
 			await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, clipboard: { dir: value } }));
-			const invalid = readSettings(settings, { agentDir, env: {} });
+			const invalid = readSettings({ agentDir, env: {} });
 			assert.equal(invalid.values.dir, join(agentDir, "clipboard"));
 			assert.equal(invalid.records[0].status, "invalid");
 			assert.equal(invalid.diagnostics[0].source, "file");
 		}
-		assert.equal(checkSettingsReadme(settings, await readFile(new URL("./README.md", import.meta.url), "utf8")), true);
+		assert.ok((await readFile(new URL("./README.md", import.meta.url), "utf8")).includes(settings.fields.dir.env));
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 	}

@@ -59,7 +59,7 @@ operation; the native entrypoint uses its explicit host directory, while the
 ordinary entrypoint uses Pi's `getAgentDir()`.
 
 The ordinary factory publishes settings at setup and on versioned requests through
-the [settings contract](../../settings/README.md#publication-and-collection).
+the [settings contract](../../docs/conventions/extension-config.md#inspection-events).
 Each publication is a fresh configured snapshot, not proof that an existing runtime
 applied it. The ordinary publisher unsubscribes at session shutdown. A native host
 replaces that publisher on the same factory event bus, binds it to `host.agentDir`,
@@ -286,8 +286,8 @@ hidden content, carries none.
 - `index.ts`: the ordinary tool registrations, the Durable contribution emission, and the `/clipboard` host.
 - `operations.ts`: the shared parameter schemas, tool text, usage guidance, and tool operations.
 - `durable.ts`: the native Pi Durable contribution.
-- `settings.ts`: passive archive directory declaration.
-- `store.ts`: shared settings read, private append-only archive, and stable-id resolution.
+- `settings.ts`: passive archive directory declaration and local reader/publisher.
+- `store.ts`: local settings read, private append-only archive, and stable-id resolution.
 - `search.ts`: bounded literal discovery, candidate validation, and stateless continuation.
 - `pb.ts`: no-shell `pbcopy` and `pbpaste` wrappers.
 - `panel.ts`: browser state and rendering.
