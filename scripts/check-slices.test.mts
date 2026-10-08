@@ -9,9 +9,6 @@ import { fileURLToPath } from "node:url";
 const sourceScript = join(dirname(fileURLToPath(import.meta.url)), "check-slices.mts");
 function installGate(scripts: string): void {
 	copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
-	const settings = join(dirname(scripts), "settings");
-	mkdirSync(settings, { recursive: true });
-	copyFileSync(join(dirname(sourceScript), "../settings/index.ts"), join(settings, "index.ts"));
 }
 
 test("ignores a tracked document deleted from the working tree", () => {
@@ -27,8 +24,8 @@ test("ignores a tracked document deleted from the working tree", () => {
 		writeFileSync(join(extension, "index.test.mts"), "// fixture\n");
 		const removed = join(extension, "DESIGN.md");
 		writeFileSync(removed, "# Retired design\n");
-		execFileSync("git", ["init", "-q"], { cwd: root });
-		execFileSync("git", ["add", "."], { cwd: root });
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "init", "-q"], { cwd: root });
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "add", "."], { cwd: root });
 		rmSync(removed);
 
 		const result = spawnSync(process.execPath, [join(scripts, "check-slices.mts")], { cwd: root, encoding: "utf8" });
@@ -56,8 +53,8 @@ test("flags dot-prefixed relative specifiers that escape the slice", () => {
 			join(root, "extensions", "a", "index.ts"),
 			'import { helper } from "./../b/index.ts";\nexport default function () {}\n',
 		);
-		execFileSync("git", ["init", "-q"], { cwd: root });
-		execFileSync("git", ["add", "."], { cwd: root });
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "init", "-q"], { cwd: root });
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "add", "."], { cwd: root });
 
 		const result = spawnSync(process.execPath, [join(scripts, "check-slices.mts")], { cwd: root, encoding: "utf8" });
 		assert.equal(result.status, 1, result.stderr);
@@ -82,7 +79,7 @@ test("permits only the documented evaluation consumers and producer paths", () =
 		writeFileSync(join(slice, "index.test.mts"), "// fixture\n");
 		writeFileSync(join(root, "evals", "vitest-evals.mts"), "export {};\n");
 		writeFileSync(join(root, "evals", "subjects", "pi-sdk.mts"), "export {};\n");
-		execFileSync("git", ["init", "-q"], { cwd: root });
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "init", "-q"], { cwd: root });
 		const cases = [
 			["suite.eval.mts", "../../evals/vitest-evals.mts", true],
 			["suite.test.mts", "../../evals/subjects/pi-sdk.mts", true],
@@ -121,8 +118,8 @@ function testGlobFixtureRoot(globs: string[]): string {
 		join(root, "package.json"),
 		`${JSON.stringify({ name: "fixture", type: "module", scripts: { test: `node --test ${globs.map((g) => `"${g}"`).join(" ")}` } }, null, 2)}\n`,
 	);
-	execFileSync("git", ["init", "-q"], { cwd: root });
-	execFileSync("git", ["add", "."], { cwd: root });
+	execFileSync("git", ["-c", "core.hooksPath=/dev/null", "init", "-q"], { cwd: root });
+	execFileSync("git", ["-c", "core.hooksPath=/dev/null", "add", "."], { cwd: root });
 	return root;
 }
 
@@ -157,8 +154,15 @@ test("accepts tracked test files once a glob covers them", () => {
 	}
 });
 
-import { auditPillars, auditSettings, environmentReads } from "./check-slices.mts";
-import { defineSettings, settingsReadme, stringSetting } from "../settings/index.ts";
+import {
+	auditPillars,
+	auditSettings,
+	checkSettingsReadme,
+	type Declaration,
+	environmentReads,
+	settingsReadme,
+	validateSettingsDeclaration,
+} from "./check-slices.mts";
 
 function pillarFixtureRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "check-slices-pillars-"));
@@ -431,13 +435,13 @@ test("reordering README rows is not a violation", () => {
 	}
 });
 
-test("only the settings public entrypoint is a permitted package escape", () => {
+test("settings imports have no package escape", () => {
 	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
 	try {
 		const runtime = join(root, "extensions/example/runtime.ts");
 		for (const [specifier, allowed] of [
-			["../../settings/index.ts", true],
-			["./../../settings/index.ts", true],
+			["../../settings/index.ts", false],
+			["./../../settings/index.ts", false],
 			["../../settings/private.ts", false],
 			["../../settings/index.test.mts", false],
 			["../../scripts/check-slices.mts", false],
@@ -463,7 +467,7 @@ test("configuration access detection covers direct and injected lexical spelling
 		env.PI_EXAMPLE_THREE;
 		env['PI_EXAMPLE_FOUR'];
 		(options.env ?? process.env).PI_EXAMPLE_FIVE;
-		process.env.PI_AGENT_DIR; env.PI_AGENT_SESSIONS_DIR;
+		process.env.PI_AGENT_DIR; env.PI_AGENT_SESSIONS_DIR; env.PI_HARNESS_FILE;
 		env.PI_MANAGED_INSTALL_ROOT; env.PI_SESSION_ID;
 		process.env.PI_EXAMPLE_TEST_ROOT;
 	`),
@@ -476,20 +480,26 @@ function declarationFixture() {
 	const directory = join(root, "extensions/example");
 	const runtime = join(directory, "index.ts");
 	const declarationPath = join(directory, "settings.ts");
-	const declaration = defineSettings("example", { name: stringSetting({ description: "Name.", default: "safe" }) });
+	const declaration: Declaration = {
+		slice: "example",
+		fields: { name: { type: "string", env: "PI_EXAMPLE_NAME", description: "Name.", default: "safe" } },
+	};
 	writeFileSync(
 		declarationPath,
-		'import { defineSettings, stringSetting } from "../../settings/index.ts";\nexport const settings = defineSettings("example", { name: stringSetting({ description: "Name.", default: "safe" }) });\n',
+		`export const settings = ${JSON.stringify(declaration)};
+export function readSettings() { return process.env.PI_EXAMPLE_NAME; }
+export function publishSettings() { return () => {}; }
+`,
 	);
 	writeFileSync(
 		runtime,
-		'import { readSettings } from "../../settings/index.ts"; import { settings } from "./settings.ts"; export default function () { return readSettings(settings, { agentDir: "/fixture/agent", env: {} }); }\n',
+		'import { readSettings } from "./settings.ts"; export default function () { return readSettings({ agentDir: "/fixture/agent", env: {} }); }\n',
 	);
 	writeFileSync(join(directory, "README.md"), settingsReadme(declaration));
 	return { root, directory, runtime, declarationPath };
 }
 
-test("declared slices require an exact README table and a shared reader", async () => {
+test("declared slices permit local function bodies and require an exact README table", async () => {
 	const f = declarationFixture();
 	try {
 		assert.deepEqual(await auditSettings(f.root, [f.runtime, f.declarationPath]), []);
@@ -497,18 +507,17 @@ test("declared slices require an exact README table and a shared reader", async 
 		writeFileSync(f.runtime, "export default function () {}\n");
 		const failures = await auditSettings(f.root, [f.runtime, f.declarationPath]);
 		assert.ok(failures.some((failure) => failure.includes("configuration table differs")));
-		assert.ok(failures.some((failure) => failure.includes("lack a readSettings consumer")));
 	} finally {
 		rmSync(f.root, { recursive: true, force: true });
 	}
 });
 
-test("a declaration does not authorize raw environment reads or undocumented extra settings", async () => {
+test("declared lexical environment reads pass and undeclared reads fail", async () => {
 	const f = declarationFixture();
 	try {
-		writeFileSync(f.runtime, `${readFileSync(f.runtime, "utf8")}\nconst raw = env["PI_EXAMPLE_NAME"];\n`);
+		writeFileSync(f.runtime, `${readFileSync(f.runtime, "utf8")}\nconst raw = env["PI_EXAMPLE_EXTRA"];\n`);
 		const failures = await auditSettings(f.root, [f.runtime, f.declarationPath]);
-		assert.ok(failures.some((failure) => failure.includes("direct PI_EXAMPLE_NAME read bypasses readSettings")));
+		assert.ok(failures.some((failure) => failure.includes("PI_EXAMPLE_EXTRA is not declared by settings.ts")));
 	} finally {
 		rmSync(f.root, { recursive: true, force: true });
 	}
@@ -558,7 +567,7 @@ test("malformed named declaration exports fail the configuration gate", async ()
 		writeFileSync(f.declarationPath, "export const other = {};\n");
 		assert.ok(
 			(await auditSettings(f.root, [f.runtime, f.declarationPath])).some((failure) =>
-				failure.includes("cannot load passive named settings declaration"),
+				failure.includes("cannot load valid plain settings declaration and local functions"),
 			),
 		);
 	} finally {
@@ -566,13 +575,15 @@ test("malformed named declaration exports fail the configuration gate", async ()
 	}
 });
 
-test("active declaration modules fail before the checker imports an entrypoint", async () => {
+test("settings modules cannot import extension entrypoints", async () => {
 	const f = declarationFixture();
 	try {
 		writeFileSync(f.runtime, 'throw new Error("entrypoint executed");\n');
 		writeFileSync(f.declarationPath, 'import "./index.ts"; export const settings = {};\n');
 		const failures = await auditSettings(f.root, [f.runtime, f.declarationPath]);
-		assert.ok(failures.some((failure) => failure.includes("cannot load passive named settings declaration")));
+		assert.ok(
+			failures.some((failure) => failure.includes("cannot load valid plain settings declaration and local functions")),
+		);
 	} finally {
 		rmSync(f.root, { recursive: true, force: true });
 	}
@@ -594,7 +605,7 @@ test("configuration-free and context-only slices need no empty declaration", asy
 	}
 });
 
-test("a shared reader requires an owning declaration without raw environment reads", async () => {
+test("a local reader requires an owning declaration without raw environment reads", async () => {
 	const f = declarationFixture();
 	try {
 		rmSync(f.declarationPath);
@@ -633,5 +644,136 @@ test("CLI rejects missing declarations while importing helpers does not audit or
 		assert.equal(imported.stderr, "");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+function plainDeclaration(field: Record<string, unknown> = {}): unknown {
+	return {
+		slice: "example",
+		fields: {
+			checkInMinutes: {
+				type: "integer",
+				env: "PI_EXAMPLE_CHECK_IN_MINUTES",
+				description: "Interval.",
+				default: 5,
+				...field,
+			},
+		},
+	};
+}
+
+test("plain declarations require explicit canonical environment names and valid metadata", () => {
+	assert.doesNotThrow(() => validateSettingsDeclaration(plainDeclaration(), "example"));
+	for (const field of [
+		{ env: undefined },
+		{ env: "PI_OTHER_CHECK_IN_MINUTES" },
+		{ env: "PI_EXAMPLE_CHECKIN_MINUTES" },
+		{ env: "example" },
+		{ type: "unknown" },
+		{ description: "" },
+		{ description: "bad\u0000" },
+		{ min: Infinity },
+		{ min: 10, max: 2 },
+		{ minLength: 1 },
+		{ type: "string", minLength: -1 },
+		{ type: "string", minLength: 3, maxLength: 1 },
+		{ type: "enum" },
+		{ type: "enum", choices: [] },
+		{ type: "enum", choices: ["x", "x"] },
+		{ type: "enum", choices: [1] },
+		{ choices: ["x"] },
+		{ absolute: true },
+		{ secret: "true" },
+		{ secret: true },
+		{ type: "string", secret: true },
+		{ defaultText: "derived" },
+		{ options: {} },
+		{ accept: () => true },
+		{ default: () => 1 },
+	])
+		assert.throws(() => validateSettingsDeclaration(plainDeclaration(field), "example"), JSON.stringify(field));
+	for (const value of [
+		null,
+		[],
+		{ slice: "wrong", fields: {} },
+		{ slice: "example", fields: [] },
+		{ slice: "example", fields: { BadKey: {} } },
+		{ slice: "example", fields: Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`key${index}`, {}])) },
+	])
+		assert.throws(() => validateSettingsDeclaration(value, "example"));
+});
+
+test("declarations reject executable, cyclic, and nonplain data without invoking accessors", () => {
+	let invoked = false;
+	const getter = {
+		get fields() {
+			invoked = true;
+			return {};
+		},
+		slice: "example",
+	};
+	assert.throws(() => validateSettingsDeclaration(getter, "example"));
+	assert.equal(invoked, false);
+	const cycle: Record<string, unknown> = {};
+	cycle.self = cycle;
+	for (const value of [cycle, new Date(), { [Symbol("key")]: 1 }, { slice: "example", fields: new Map() }])
+		assert.throws(() => validateSettingsDeclaration(value, "example"));
+});
+
+test("README projection preserves literal rows, escaping, defaults, and constraint order", () => {
+	const declaration: Declaration = {
+		slice: "example",
+		fields: {
+			dir: {
+				type: "path",
+				env: "PI_EXAMPLE_DIR",
+				description: "A | B <C>.",
+				defaultText: "<agentDir>/data",
+				minLength: 1,
+				maxLength: 64,
+				absolute: true,
+			},
+			mode: { type: "enum", env: "PI_EXAMPLE_MODE", description: "Mode.", choices: ["a", "b"], default: "a" },
+			secret: { type: "string", env: "PI_EXAMPLE_SECRET", description: "Secret.", secret: true },
+			optional: { type: "number", env: "PI_EXAMPLE_OPTIONAL", description: "Optional.", min: 0, max: 2 },
+		},
+	};
+	const table = [
+		"<!-- harness:settings:start -->",
+		"| Key | Environment | Type | Default | Constraints | Description |",
+		"|---|---|---|---|---|---|",
+		"| dir | `PI_EXAMPLE_DIR` | path | &lt;agentDir&gt;/data | minLength 1; maxLength 64; absolute input | A \\| B &lt;C&gt;. |",
+		'| mode | `PI_EXAMPLE_MODE` | enum | "a" | a, b | Mode. |',
+		"| secret | `PI_EXAMPLE_SECRET` | string | env-only | none | Secret. |",
+		"| optional | `PI_EXAMPLE_OPTIONAL` | number | unset | min 0; max 2 | Optional. |",
+		"<!-- harness:settings:end -->",
+	].join("\n");
+	assert.equal(settingsReadme(declaration), table);
+	assert.equal(checkSettingsReadme(declaration, `# Example\n\n${table}\nFooter`), true);
+	for (const invalid of [
+		table + table,
+		table.replace("Optional.", "Changed."),
+		table.replace("start", "missing"),
+		table.replace("end", "missing"),
+	])
+		assert.equal(checkSettingsReadme(declaration, invalid), false);
+});
+
+test("settings modules must export their local reader and publisher", async () => {
+	for (const missing of ["readSettings", "publishSettings"]) {
+		const f = declarationFixture();
+		try {
+			writeFileSync(
+				f.declarationPath,
+				readFileSync(f.declarationPath, "utf8").replace(`export function ${missing}`, `function ${missing}`),
+			);
+			assert.ok(
+				(await auditSettings(f.root, [f.runtime, f.declarationPath])).some((failure) =>
+					failure.includes("local functions"),
+				),
+			);
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
 	}
 });

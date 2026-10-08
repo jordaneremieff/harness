@@ -6,7 +6,7 @@
 //      index.ts with a default-export factory, README.md, and at least one
 //      colocated *.test.mts;
 //   2. no extension imports a sibling or escapes its slice except through the
-//      documented settings entrypoint or evaluation interfaces in suites/tests;
+//      documented package-level evaluation interfaces in colocated suites/tests;
 //   3. no hardcoded counts of tests, tools, or files in tracked docs
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation");
 //   4. pillar corpus contract: strict frontmatter on every entry, README as
@@ -26,7 +26,6 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkSettingsReadme, type Declaration } from "../settings/index.ts";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const extensionsRoot = join(root, "extensions");
@@ -95,8 +94,7 @@ for (const file of sourceFiles) {
 			dirname(file) === sliceDir &&
 			((file.endsWith(".eval.mts") && target === join(root, "evals", "vitest-evals.mts")) ||
 				(file.endsWith(".test.mts") && target === join(root, "evals", "subjects", "pi-sdk.mts")));
-		const settingsContract = target === join(root, "settings", "index.ts");
-		if (isRelative && normalized.startsWith("..") && !evaluationContract && !settingsContract) {
+		if (isRelative && normalized.startsWith("..") && !evaluationContract) {
 			fail(`${rel}: import "${specifier}" escapes the extension slice`);
 		} else if (specifier.startsWith("/")) {
 			fail(`${rel}: absolute import "${specifier}"`);
@@ -121,7 +119,13 @@ function configurationSource(repositoryRoot: string, file: string): boolean {
 		!/(?:^|\/)[^/]*-fixture\.(ts|mts)$/.test(path)
 	);
 }
-const contextVariables = new Set(["PI_AGENT_DIR", "PI_AGENT_SESSIONS_DIR", "PI_MANAGED_INSTALL_ROOT", "PI_SESSION_ID"]);
+const contextVariables = new Set([
+	"PI_AGENT_DIR",
+	"PI_AGENT_SESSIONS_DIR",
+	"PI_MANAGED_INSTALL_ROOT",
+	"PI_SESSION_ID",
+	"PI_HARNESS_FILE",
+]);
 const configurationVariable = (name: string) => !contextVariables.has(name) && !/^PI_.*_TEST_/.test(name);
 // Lexical detection covers direct and injected env access, not arbitrary aliases.
 export function environmentReads(source: string): string[] {
@@ -129,16 +133,187 @@ export function environmentReads(source: string): string[] {
 	return [...new Set([...source.matchAll(pattern)].map((match) => match[1] ?? match[2]).filter(configurationVariable))];
 }
 
-function hasSettingsReader(repositoryRoot: string, runtime: string[]): boolean {
-	return runtime.some((file) => {
-		const source = readFileSync(file, "utf8");
-		return (
-			/\breadSettings\s*\(/.test(source) &&
-			[...source.matchAll(specifierPattern)].some(
-				(match) => resolve(dirname(file), match[1]) === join(repositoryRoot, "settings", "index.ts"),
-			)
-		);
+export type Field = {
+	type: "string" | "path" | "integer" | "number" | "boolean" | "enum" | "json";
+	env: string;
+	description: string;
+	default?: unknown;
+	defaultText?: string;
+	secret?: boolean;
+	absolute?: boolean;
+	min?: number;
+	max?: number;
+	minLength?: number;
+	maxLength?: number;
+	choices?: readonly string[];
+};
+export type Declaration = { slice: string; fields: Record<string, Field> };
+const fieldKeys = new Set([
+	"type",
+	"env",
+	"description",
+	"default",
+	"defaultText",
+	"secret",
+	"absolute",
+	"min",
+	"max",
+	"minLength",
+	"maxLength",
+	"choices",
+]);
+const settingTypes = new Set(["string", "path", "integer", "number", "boolean", "enum", "json"]);
+const validText = (value: unknown, max: number): value is string =>
+	typeof value === "string" && value.length > 0 && value.length <= max && !/[\p{Cc}\p{Cf}\ud800-\udfff]/u.test(value);
+const plainObject = (value: unknown): value is Record<string, unknown> =>
+	value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype;
+
+function assertPlainData(value: unknown, seen = new Set<object>(), depth = 0): void {
+	if (depth > 32) throw new Error("Declaration is too deep");
+	if (value === null || typeof value === "string" || typeof value === "boolean") return;
+	if (typeof value === "number" && Number.isFinite(value)) return;
+	if ((!plainObject(value) && !Array.isArray(value)) || seen.has(value))
+		throw new Error("Declaration must be plain data");
+	seen.add(value);
+	for (const key of Reflect.ownKeys(value)) {
+		if (typeof key !== "string") throw new Error("Declaration contains a symbol");
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor || !("value" in descriptor)) throw new Error("Declaration contains an accessor");
+		assertPlainData(descriptor.value, seen, depth + 1);
+	}
+	seen.delete(value);
+}
+
+function validateFieldBounds(field: Field): void {
+	const numeric = field.type === "integer" || field.type === "number";
+	for (const key of ["min", "max"] as const) {
+		const bound = field[key];
+		if (bound !== undefined && (!numeric || !Number.isFinite(bound))) throw new Error("Invalid numeric bound");
+	}
+	validateTextBounds(field);
+	if ((field.min ?? -Infinity) > (field.max ?? Infinity)) throw new Error("Inverted bounds");
+}
+function validateTextBounds(field: Field): void {
+	const text = field.type === "string" || field.type === "path";
+	for (const key of ["minLength", "maxLength"] as const) {
+		const bound = field[key];
+		if (bound !== undefined && (!text || !Number.isSafeInteger(bound) || bound < 0))
+			throw new Error("Invalid text bound");
+	}
+	if ((field.minLength ?? 0) > (field.maxLength ?? Infinity)) throw new Error("Inverted bounds");
+}
+function validateFieldOptions(field: Field): void {
+	if (Object.hasOwn(field, "default") && Object.hasOwn(field, "defaultText")) throw new Error("Conflicting defaults");
+	if (field.defaultText !== undefined && !validText(field.defaultText, 2048)) throw new Error("Invalid default text");
+	for (const key of ["secret", "absolute"] as const)
+		if (field[key] !== undefined && typeof field[key] !== "boolean") throw new Error("Invalid field flag");
+	if (
+		field.secret &&
+		(field.type !== "string" || Object.hasOwn(field, "default") || Object.hasOwn(field, "defaultText"))
+	)
+		throw new Error("Secrets are strings without defaults");
+	if (field.absolute !== undefined && field.type !== "path") throw new Error("Absolute applies to paths");
+}
+function validateField(field: Field): void {
+	if (
+		!plainObject(field) ||
+		Object.keys(field).some((key) => !fieldKeys.has(key)) ||
+		!settingTypes.has(field.type) ||
+		!validText(field.description, 2048)
+	)
+		throw new Error("Invalid field declaration");
+	validateFieldBounds(field);
+	validateFieldOptions(field);
+	if (field.type === "enum") {
+		if (
+			!Array.isArray(field.choices) ||
+			!field.choices.length ||
+			field.choices.some((choice) => !validText(choice, 4096)) ||
+			new Set(field.choices).size !== field.choices.length
+		)
+			throw new Error("Invalid enum choices");
+	} else if (field.choices !== undefined) throw new Error("Choices apply to enums");
+}
+
+function snakeName(value: string): string {
+	return value
+		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+		.replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+		.toUpperCase();
+}
+
+export function validateSettingsDeclaration(value: unknown, slice: string): asserts value is Declaration {
+	assertPlainData(value);
+	if (
+		!plainObject(value) ||
+		Object.keys(value).some((key) => key !== "slice" && key !== "fields") ||
+		value.slice !== slice ||
+		!/^[a-z][a-zA-Z0-9]{0,63}$/.test(slice) ||
+		slice === "version" ||
+		!plainObject(value.fields)
+	)
+		throw new Error("Declaration export mismatch");
+	if (Object.keys(value.fields).length > 128) throw new Error("Too many fields");
+	const names = new Set<string>();
+	for (const [key, candidate] of Object.entries(value.fields)) {
+		if (!/^[a-z][a-zA-Z0-9]{0,63}$/.test(key)) throw new Error("Invalid field key");
+		const field = candidate as Field;
+		validateField(field);
+		if (
+			typeof field.env !== "string" ||
+			!/^PI_[A-Z][A-Z0-9_]*$/.test(field.env) ||
+			field.env.length > 128 ||
+			names.has(field.env) ||
+			field.env !== `PI_${snakeName(slice)}_${snakeName(key)}`
+		)
+			throw new Error("Invalid or duplicate explicit environment name");
+		names.add(field.env);
+	}
+}
+
+const README_START = "<!-- harness:settings:start -->";
+const README_END = "<!-- harness:settings:end -->";
+function tableCell(value: string): string {
+	return value
+		.replace(/\|/g, "\\|")
+		.replace(/[\r\n]/g, " ")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+export function settingsReadme(declaration: Declaration): string {
+	const rows = Object.entries(declaration.fields).map(([key, field]) => {
+		const fallback = field.secret
+			? "env-only"
+			: (field.defaultText ?? (Object.hasOwn(field, "default") ? JSON.stringify(field.default) : "unset"));
+		const constraints = (["min", "max", "minLength", "maxLength"] as const)
+			.filter((name) => field[name] !== undefined)
+			.map((name) => `${name} ${field[name]}`);
+		if (field.absolute) constraints.push("absolute input");
+		if (field.choices) constraints.push(field.choices.join(", "));
+		return `| ${[key, `\`${field.env}\``, field.type, tableCell(fallback), tableCell(constraints.join("; ") || "none"), tableCell(field.description)].join(" | ")} |`;
 	});
+	return [
+		README_START,
+		"| Key | Environment | Type | Default | Constraints | Description |",
+		"|---|---|---|---|---|---|",
+		...rows,
+		README_END,
+	].join("\n");
+}
+export function checkSettingsReadme(declaration: Declaration, readme: string): boolean {
+	const start = readme.indexOf(README_START);
+	const end = readme.indexOf(README_END, start);
+	return (
+		start >= 0 &&
+		end >= start &&
+		readme.indexOf(README_START, start + README_START.length) < 0 &&
+		readme.indexOf(README_END, end + README_END.length) < 0 &&
+		readme.slice(start, end + README_END.length) === settingsReadme(declaration)
+	);
+}
+
+function hasSettingsReader(runtime: string[]): boolean {
+	return runtime.some((file) => /\breadSettings\s*\(/.test(readFileSync(file, "utf8")));
 }
 async function loadSettingsDeclaration(
 	repositoryRoot: string,
@@ -150,17 +325,13 @@ async function loadSettingsDeclaration(
 		const target = resolve(dirname(declarationPath), match[1]);
 		return target.startsWith(`${join(repositoryRoot, "extensions")}/`) && target.endsWith("/index.ts");
 	});
-	if (
-		importsEntrypoint ||
-		/\b(?:readSettings|publishSettings|registerTool|registerCommand)\s*\(/.test(source) ||
-		environmentReads(source).length
-	)
-		throw new Error("Active declaration module");
+	if (importsEntrypoint) throw new Error("Settings module imports an entrypoint");
+	// Module import-time passivity is enforced by source review.
 	const module = await import(pathToFileURL(declarationPath).href);
-	const declaration: Declaration = module.settings;
-	if (!declaration || declaration.slice !== slice || !declaration.fields)
-		throw new Error("Declaration export mismatch");
-	return declaration;
+	validateSettingsDeclaration(module.settings, slice);
+	if (typeof module.readSettings !== "function" || typeof module.publishSettings !== "function")
+		throw new Error("Missing local settings functions");
+	return module.settings;
 }
 
 export async function auditSettings(repositoryRoot: string, files: string[]): Promise<string[]> {
@@ -183,7 +354,7 @@ export async function auditSettings(repositoryRoot: string, files: string[]): Pr
 					({ file, name }) => `${relative(repositoryRoot, file)}: ${name} requires an owning settings.ts declaration`,
 				),
 			);
-			if (!reads.length && hasSettingsReader(repositoryRoot, runtime))
+			if (!reads.length && hasSettingsReader(runtime))
 				violations.push(`extensions/${slice}: readSettings consumer requires an owning settings.ts declaration`);
 			continue;
 		}
@@ -196,14 +367,14 @@ export async function auditSettings(repositoryRoot: string, files: string[]): Pr
 					`extensions/${slice}/README.md: configuration table differs from settings.ts; use settingsReadme(settings)`,
 				);
 			violations.push(
-				...reads.map(
-					({ file, name }) => `${relative(repositoryRoot, file)}: direct ${name} read bypasses readSettings`,
-				),
+				...reads
+					.filter(({ name }) => !Object.values(declaration.fields).some((field) => field.env === name))
+					.map(({ file, name }) => `${relative(repositoryRoot, file)}: ${name} is not declared by settings.ts`),
 			);
-			if (!hasSettingsReader(repositoryRoot, runtime))
-				violations.push(`extensions/${slice}: declared settings lack a readSettings consumer`);
 		} catch {
-			violations.push(`extensions/${slice}/settings.ts: cannot load passive named settings declaration`);
+			violations.push(
+				`extensions/${slice}/settings.ts: cannot load valid plain settings declaration and local functions`,
+			);
 		}
 	}
 	return violations;
