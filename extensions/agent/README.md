@@ -1612,6 +1612,13 @@ discovery report the identity the operator runs.
 
 ### Current process contracts
 
+The host socket protocol that separate processes consume (service name, request
+envelope, operation identities, discovery publications, request-key rules, and
+the fail-closed consumer rule) is documented at package level in
+[`docs/agent-host-contract.md`](../../docs/agent-host-contract.md). That document
+describes current behavior; this extension may change the protocol, and consumers
+refuse operations whose identities they do not recognize.
+
 The `rewind/1.1.0` and `timer-schedule/1.1.0` request contracts accept optional
 `selfOwned: true`. A rewind correction then uses the new fork as its delivery
 owner without changing the fork's creating owner. A scheduled input uses its
