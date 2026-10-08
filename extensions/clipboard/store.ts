@@ -3,8 +3,9 @@
 import { randomUUID } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
 import { chmod, type FileHandle, lstat, mkdir, open, readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { type Environment, readSettings } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 
 export interface ClipboardEntry {
 	/** Stable archive identifier. */
@@ -81,9 +82,8 @@ export function localDate(date: Date): string {
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-export function resolveClipboardDir(env: NodeJS.ProcessEnv = process.env, agentDir?: string): string {
-	if (env.PI_CLIPBOARD_DIR) return env.PI_CLIPBOARD_DIR;
-	return join(agentDir ?? join(homedir(), ".pi", "agent"), "clipboard");
+export function resolveClipboardDir(env: Environment, agentDir: string): string {
+	return readSettings(settings, { agentDir, env }).values.dir;
 }
 
 function hasCode(error: unknown, code: string): boolean {

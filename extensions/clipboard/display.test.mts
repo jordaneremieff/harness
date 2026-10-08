@@ -1,8 +1,24 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { test } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerClipboard from "./index.ts";
+
+let fixture: string;
+let previousHarnessFile: string | undefined;
+before(async () => {
+	fixture = await mkdtemp(join(tmpdir(), "clipboard-display-test-"));
+	previousHarnessFile = process.env.PI_HARNESS_FILE;
+	process.env.PI_HARNESS_FILE = join(fixture, "harness.json");
+});
+after(async () => {
+	if (previousHarnessFile === undefined) delete process.env.PI_HARNESS_FILE;
+	else process.env.PI_HARNESS_FILE = previousHarnessFile;
+	await rm(fixture, { recursive: true, force: true });
+});
 
 type Display = Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">;
 interface Publication {

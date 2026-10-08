@@ -42,10 +42,32 @@ access the clipboard.
 
 ## Configuration
 
-`PI_CLIPBOARD_DIR` selects the archive directory. Otherwise, the extension uses
-`<agentDir>/clipboard`. See the [configuration convention](../../docs/conventions/extension-config.md)
-for environment setup, [Storage](#storage) for file handling, and
-[Retention and deletion](#retention-and-deletion) for removal limits.
+The `clipboard` section of `<agentDir>/harness.json` selects the archive directory.
+A present environment override takes precedence over the document field, then the
+default. An invalid selected path uses the default and produces a diagnostic;
+it does not fall back to an underlying document value.
+
+<!-- harness:settings:start -->
+| Key | Environment | Type | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| dir | `PI_CLIPBOARD_DIR` | path | &lt;agentDir&gt;/clipboard | none | Private clipboard archive directory. |
+<!-- harness:settings:end -->
+
+Relative paths resolve against the host's agent directory. Paths do not expand
+`~` or environment variables. Both entrypoints read settings for each archive
+operation; the native entrypoint uses its explicit host directory, while the
+ordinary entrypoint uses Pi's `getAgentDir()`.
+
+The ordinary factory publishes settings at setup and on versioned requests through
+the [settings contract](../../settings/README.md#publication-and-collection).
+Each publication is a fresh configured snapshot, not proof that an existing runtime
+applied it. The ordinary publisher unsubscribes at session shutdown. A native host
+replaces that publisher on the same factory event bus, binds it to `host.agentDir`,
+and disposes it through `host.onClose`. Only one publisher remains active.
+
+See the [configuration convention](../../docs/conventions/extension-config.md),
+[Storage](#storage) for file handling, and [Retention and deletion](#retention-and-deletion)
+for removal limits.
 
 ## Find text from a remembered phrase
 
@@ -184,7 +206,8 @@ unbounded id set or persistent index. Search is separate from browser filtering 
 
 ## Storage
 
-History is one append-only JSONL file per local calendar day at `<agentDir>/clipboard/YYYY-MM-DD.jsonl`. `PI_CLIPBOARD_DIR` overrides the location.
+History is one append-only JSONL file per local calendar day in the configured
+archive directory, default `<agentDir>/clipboard/YYYY-MM-DD.jsonl`.
 
 - Each entry requires a valid stored id. Records without one are skipped, never assigned a synthetic identity. For duplicate ids, only the newest record is visible.
 - Directory and file modes are re-enforced as `0700` and `0600` on use.
@@ -263,7 +286,8 @@ hidden content, carries none.
 - `index.ts`: the ordinary tool registrations, the Durable contribution emission, and the `/clipboard` host.
 - `operations.ts`: the shared parameter schemas, tool text, usage guidance, and tool operations.
 - `durable.ts`: the native Pi Durable contribution.
-- `store.ts`: private append-only archive and stable-id resolution.
+- `settings.ts`: passive archive directory declaration.
+- `store.ts`: shared settings read, private append-only archive, and stable-id resolution.
 - `search.ts`: bounded literal discovery, candidate validation, and stateless continuation.
 - `pb.ts`: no-shell `pbcopy` and `pbpaste` wrappers.
 - `panel.ts`: browser state and rendering.

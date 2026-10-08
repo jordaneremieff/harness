@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -33,6 +34,7 @@ test("serves every clipboard tool to a Durable model and classifies replay", { t
 	const previous = {
 		path: process.env.PATH,
 		archiveDir: process.env.PI_CLIPBOARD_DIR,
+		harnessFile: process.env.PI_HARNESS_FILE,
 		destination: process.env.CLIPBOARD_TEST_DESTINATION,
 	};
 	try {
@@ -49,15 +51,17 @@ test("serves every clipboard tool to a Durable model and classifies replay", { t
 		await Promise.all([chmod(join(bin, "pbcopy"), 0o700), chmod(join(bin, "pbpaste"), 0o700)]);
 		process.env.PATH = `${bin}:${previous.path ?? ""}`;
 		delete process.env.PI_CLIPBOARD_DIR;
+		process.env.PI_HARNESS_FILE = join(agentDir, "harness.json");
 		process.env.CLIPBOARD_TEST_DESTINATION = clipboardFile;
 		await writeFile(clipboardFile, "initial clipboard");
 		await appendEntry(archive, makeEntry("seeded body", "seed", new Date("2026-02-03T04:05:06Z"), "seeded-entry"));
 
 		const source = fileURLToPath(new URL("./index.ts", import.meta.url));
-		const contribution = clipboardContribution(source);
+		const contribution = clipboardContribution(source, createEventBus(), () => {});
 		assert.equal(contribution.source, source, "the contribution names its emitting entrypoint");
 
-		const host: DurableContributionHost = { durable: Durable, agentDir };
+		const disposers: (() => void | Promise<void>)[] = [];
+		const host: DurableContributionHost = { durable: Durable, agentDir, onClose: (dispose) => disposers.push(dispose) };
 		const extension = await contribution.create(host);
 		const replay = new Map((extension.tools ?? []).map((tool) => [tool.name, tool.replay]));
 		assert.deepEqual(Object.fromEntries(replay), {
@@ -143,12 +147,15 @@ test("serves every clipboard tool to a Durable model and classifies replay", { t
 			);
 		} finally {
 			await harness.close(BACKGROUND_CONTEXT);
+			for (const dispose of disposers) await dispose();
 		}
 	} finally {
 		if (previous.path === undefined) delete process.env.PATH;
 		else process.env.PATH = previous.path;
 		if (previous.archiveDir === undefined) delete process.env.PI_CLIPBOARD_DIR;
 		else process.env.PI_CLIPBOARD_DIR = previous.archiveDir;
+		if (previous.harnessFile === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = previous.harnessFile;
 		if (previous.destination === undefined) delete process.env.CLIPBOARD_TEST_DESTINATION;
 		else process.env.CLIPBOARD_TEST_DESTINATION = previous.destination;
 		await rm(root, { recursive: true, force: true });

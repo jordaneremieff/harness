@@ -2,7 +2,9 @@
 
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ToolDefinition, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { publishSettings } from "../../settings/index.ts";
 import { clipboardContribution } from "./durable.ts";
+import { settings } from "./settings.ts";
 import {
 	clipboardCopy,
 	clipboardGet,
@@ -95,6 +97,8 @@ function notifyRestored(
 }
 
 export default function (pi: ExtensionAPI) {
+	const stopSettings = publishSettings(pi.events, settings, { agentDir: getAgentDir() });
+	pi.on("session_shutdown", () => stopSettings());
 	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
 		pi.registerTool(tool);
@@ -103,7 +107,7 @@ export default function (pi: ExtensionAPI) {
 			displayTools.push({ name, renderCall, renderResult, renderShell } as (typeof displayTools)[number]);
 		}
 	};
-	pi.events.emit("durable:contribution", clipboardContribution(fileURLToPath(import.meta.url)));
+	pi.events.emit("durable:contribution", clipboardContribution(fileURLToPath(import.meta.url), pi.events, stopSettings));
 
 	registerTool<typeof CopyParams, Record<string, unknown>>({
 		name: "clipboard_copy",

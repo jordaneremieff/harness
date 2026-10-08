@@ -54,9 +54,10 @@ describe("localDate", () => {
 });
 
 describe("resolveClipboardDir", () => {
-	it("prefers PI_CLIPBOARD_DIR, then agentDir", () => {
-		assert.equal(resolveClipboardDir({ PI_CLIPBOARD_DIR: "/x" } as NodeJS.ProcessEnv, "/agent"), "/x");
-		assert.equal(resolveClipboardDir({} as NodeJS.ProcessEnv, "/agent"), "/agent/clipboard");
+	it("uses the shared reader with the supplied agent directory", () => {
+		assert.equal(resolveClipboardDir({ PI_CLIPBOARD_DIR: "/x" }, dir), "/x");
+		assert.equal(resolveClipboardDir({}, dir), join(dir, "clipboard"));
+		assert.equal(resolveClipboardDir({ PI_CLIPBOARD_DIR: "archive" }, dir), join(dir, "archive"));
 	});
 });
 

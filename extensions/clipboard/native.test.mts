@@ -31,6 +31,8 @@ test("native clipboard_list discovery flows through get and restore without the 
 	const previous = {
 		path: process.env.PATH,
 		archive: process.env.PI_CLIPBOARD_DIR,
+		agentDir: process.env.PI_CODING_AGENT_DIR,
+		harnessFile: process.env.PI_HARNESS_FILE,
 		clipboard: process.env.CLIPBOARD_TEST_DESTINATION,
 	};
 	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -54,7 +56,10 @@ test("native clipboard_list discovery flows through get and restore without the 
 		await writeFile(join(bin, "pbpaste"), `#!${process.execPath}\nprocess.exit(99);\n`);
 		await Promise.all([chmod(join(bin, "pbcopy"), 0o700), chmod(join(bin, "pbpaste"), 0o700)]);
 		process.env.PATH = bin;
-		process.env.PI_CLIPBOARD_DIR = archive;
+		delete process.env.PI_CLIPBOARD_DIR;
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.PI_HARNESS_FILE = join(agentDir, "harness.json");
+		await writeFile(process.env.PI_HARNESS_FILE, JSON.stringify({ version: 1, clipboard: { dir: archive } }));
 		process.env.CLIPBOARD_TEST_DESTINATION = clipboard;
 		const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 		const runtime = await ModelRuntime.create({
@@ -209,6 +214,10 @@ test("native clipboard_list discovery flows through get and restore without the 
 		else process.env.PATH = previous.path;
 		if (previous.archive === undefined) delete process.env.PI_CLIPBOARD_DIR;
 		else process.env.PI_CLIPBOARD_DIR = previous.archive;
+		if (previous.agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous.agentDir;
+		if (previous.harnessFile === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = previous.harnessFile;
 		if (previous.clipboard === undefined) delete process.env.CLIPBOARD_TEST_DESTINATION;
 		else process.env.CLIPBOARD_TEST_DESTINATION = previous.clipboard;
 		await rm(root, { recursive: true, force: true });

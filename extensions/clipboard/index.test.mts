@@ -93,6 +93,7 @@ function registry(): {
 	const pi = {
 		registerTool: (tool: Tool) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
+		on: () => {},
 		events: {
 			on: () => () => {},
 			emit: (event: string, value: EmittedContribution) => {
@@ -120,6 +121,7 @@ let oldPath: string;
 let oldArchive: string | undefined;
 let oldClipboardFile: string | undefined;
 let oldFail: string | undefined;
+let oldHarnessFile: string | undefined;
 
 before(async () => {
 	root = await mkdtemp(join(tmpdir(), "clipboard-index-test-"));
@@ -136,6 +138,8 @@ before(async () => {
 	await writeFile(pbpaste, '#!/bin/sh\ncat "$FAKE_CLIPBOARD_FILE" 2>/dev/null || true\n');
 	await chmod(pbcopy, 0o755);
 	await chmod(pbpaste, 0o755);
+	oldHarnessFile = process.env.PI_HARNESS_FILE;
+	process.env.PI_HARNESS_FILE = join(root, "harness.json");
 	oldPath = process.env.PATH ?? "";
 	oldArchive = process.env.PI_CLIPBOARD_DIR;
 	oldClipboardFile = process.env.FAKE_CLIPBOARD_FILE;
@@ -147,6 +151,8 @@ before(async () => {
 });
 
 after(async () => {
+	if (oldHarnessFile === undefined) delete process.env.PI_HARNESS_FILE;
+	else process.env.PI_HARNESS_FILE = oldHarnessFile;
 	process.env.PATH = oldPath;
 	if (oldArchive === undefined) delete process.env.PI_CLIPBOARD_DIR;
 	else process.env.PI_CLIPBOARD_DIR = oldArchive;

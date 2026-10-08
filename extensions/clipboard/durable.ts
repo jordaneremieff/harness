@@ -17,6 +17,8 @@
  */
 
 import type * as Durable from "@earendil-works/pi-durable";
+import { publishSettings, type SettingsBus } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import {
 	clipboardCopy,
 	clipboardGet,
@@ -51,14 +53,21 @@ export interface DurableContributionHost {
 	/** The host's pi-durable module. Take every pi-durable runtime value from it. */
 	readonly durable: typeof Durable;
 	readonly agentDir: string;
+	onClose(dispose: () => void | Promise<void>): void;
 }
 
 /** The ordinary entrypoint this contribution speaks for, as its factory resolves it. */
-export function clipboardContribution(source: string): DurableContribution {
+export function clipboardContribution(
+	source: string,
+	bus: SettingsBus,
+	stopFactoryPublisher: () => void,
+): DurableContribution {
 	return {
 		name: "clipboard",
 		source,
 		create(host) {
+			stopFactoryPublisher();
+			host.onClose(publishSettings(bus, settings, { agentDir: host.agentDir }));
 			const durable = host.durable;
 			const storeDir = () => resolveClipboardDir(process.env, host.agentDir);
 			return durable.defineExtension({
