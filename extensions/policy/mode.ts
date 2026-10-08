@@ -8,7 +8,7 @@
  * modes are exclusive so a recorded effect belongs to one mechanism.
  *
  * An unrecognized session flag is a configuration error. Machine settings
- * use the shared reader's safe default and rejected-source diagnostics.
+ * use the local reader's safe default and rejected-source diagnostics.
  */
 
 export type PolicyMode = "observe" | "notice" | "annotate" | "enforce";

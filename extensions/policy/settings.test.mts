@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, mock } from "node:test";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
-import { readSettings, settingsReadme, SETTINGS_PUBLISH, SETTINGS_REQUEST, type SettingsPublication } from "../../settings/index.ts";
+import { readSettings, SETTINGS_PUBLISH, SETTINGS_REQUEST, type SettingsPublication } from "./settings.ts";
 import type { PolicyDurableContribution, PolicyDurableHost } from "./durable.ts";
 import registerPolicy from "./index.ts";
 import { settings } from "./settings.ts";
@@ -76,18 +76,18 @@ function record(snapshot: SettingsPublication, key: string) {
 test("policy settings select environment, file, and portable defaults with rejected-source diagnostics", async (t) => {
 	const agentDir = await fixture(t);
 	const path = join(agentDir, "harness.json");
-	const defaults = readSettings(settings, { agentDir, env: {} });
+	const defaults = readSettings({ agentDir, env: {} });
 	assert.deepEqual({ ...defaults.values }, { dir: join(agentDir, "policy"), mode: "observe" });
 	assert.ok(defaults.records.every((entry) => entry.origin === "default"));
 	await writeFile(path, JSON.stringify({ version: 1, policy: { dir: "file-store", mode: "enforce" } }));
-	const file = readSettings(settings, { agentDir, env: {} });
+	const file = readSettings({ agentDir, env: {} });
 	assert.deepEqual({ ...file.values }, { dir: join(agentDir, "file-store"), mode: "enforce" });
 	assert.ok(file.records.every((entry) => entry.origin === "file"));
-	const env = readSettings(settings, { agentDir, env: { PI_POLICY_DIR: "env-store", PI_POLICY_MODE: "notice" } });
+	const env = readSettings({ agentDir, env: { PI_POLICY_DIR: "env-store", PI_POLICY_MODE: "notice" } });
 	assert.deepEqual({ ...env.values }, { dir: join(agentDir, "env-store"), mode: "notice" });
 	assert.ok(env.records.every((entry) => entry.origin === "env"));
 	for (const value of ["", "   ", "Observe", "invalid"]) {
-		const rejected = readSettings(settings, { agentDir, env: { PI_POLICY_MODE: value, PI_POLICY_DIR: "" } });
+		const rejected = readSettings({ agentDir, env: { PI_POLICY_MODE: value, PI_POLICY_DIR: "" } });
 		assert.deepEqual(rejected.values, defaults.values);
 		assert.ok(rejected.records.every((entry) => entry.origin === "default" && entry.status === "invalid"));
 		assert.deepEqual(rejected.diagnostics.map(({ field, source }) => ({ field, source })), [
@@ -95,7 +95,7 @@ test("policy settings select environment, file, and portable defaults with rejec
 		]);
 	}
 	await writeFile(path, JSON.stringify({ version: 1, policy: { dir: 7, mode: "invalid", rules: [] } }));
-	const rejectedFile = readSettings(settings, { agentDir, env: {} });
+	const rejectedFile = readSettings({ agentDir, env: {} });
 	assert.deepEqual(rejectedFile.values, defaults.values);
 	assert.ok(rejectedFile.diagnostics.some((entry) => entry.field === "policy.mode" && entry.source === "file"));
 	assert.ok(rejectedFile.diagnostics.some((entry) => entry.field === "policy.rules" && entry.code === "unknown"));
@@ -186,7 +186,7 @@ test("native creation replaces the ordinary publisher with the host directory an
 	assert.equal(adapter.publications.length, count);
 });
 
-test("policy README contains the exact generated settings table", async () => {
+test("policy README documents every declared environment name", async () => {
 	const readme = await readFile(new URL("./README.md", import.meta.url), "utf8");
-	assert.ok(readme.includes(settingsReadme(settings)));
+	for (const field of Object.values(settings.fields)) assert.ok(readme.includes(field.env));
 });

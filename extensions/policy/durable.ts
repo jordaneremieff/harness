@@ -65,8 +65,7 @@ import {
 	type RuleSnapshot,
 } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
-import { readSettings } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { readSettings } from "./settings.ts";
 import { readRecentActivity, terminalSafe } from "./panel.ts";
 import {
 	type EvaluationContext,
@@ -273,12 +272,12 @@ const toolScope = (scope: RuleMatchContext, model: Durable.Agent["model"]): Poli
 /**
  * Build the native extension for one host. Runtime values come from
  * `host.durable`; the package is imported for types only. The policy store
- * directory and mode use the shared settings reader with the host's agent
+ * directory and mode use the local settings reader with the host's agent
  * directory. Ordinary session flags do not apply.
  */
 export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.Extension {
 	const { defineDoc, defineExtension, defineTool, hook, section, GenerationTask, ToolTask } = host.durable;
-	const configured = readSettings(settings, { agentDir: host.agentDir });
+	const configured = readSettings({ agentDir: host.agentDir });
 	const dir = configured.values.dir;
 	for (const diagnostic of configured.diagnostics) {
 		console.warn(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`);

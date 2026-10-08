@@ -58,7 +58,7 @@ See [model guidance](#model-guidance) for delivery and recovery boundaries.
 
 ## Configuration and validation
 
-Machine configuration uses the [shared settings contract](../../settings/README.md)
+Machine configuration uses the [settings contract](../../docs/conventions/extension-config.md)
 and one optional `<agentDir>/harness.json` document. Relative directory values
 resolve against the agent directory, not the working directory. Invalid directory
 input uses `<agentDir>/policy` and retains its rejected-source diagnostic.

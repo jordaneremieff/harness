@@ -1,7 +1,6 @@
 /** Policy registration and operator controls over the shared event interpreter. */
 import { fileURLToPath } from "node:url";
-import { publishSettings, readSettings } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { publishSettings, readSettings } from "./settings.ts";
 import { toolDisplayPublisher } from "./tool-display.ts";
 import {
 	type ExtensionAPI,
@@ -799,18 +798,18 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	const { registerTool, publish } = toolDisplayPublisher(pi);
 	const eventBus = pi.events;
 	const agentDir = getAgentDir();
-	const configured = readSettings(settings, { agentDir });
+	const configured = readSettings({ agentDir });
 	for (const diagnostic of configured.diagnostics) {
 		console.warn(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`);
 	}
-	const disposeSettings = publishSettings(eventBus, settings, { agentDir });
+	const disposeSettings = publishSettings(eventBus, { agentDir });
 	pi.on("session_shutdown", disposeSettings);
 	eventBus.emit("durable:contribution", {
 		name: "policy",
 		source: fileURLToPath(import.meta.url),
 		create: (host) => {
 			disposeSettings();
-			const disposeNativeSettings = publishSettings(eventBus, settings, { agentDir: host.agentDir });
+			const disposeNativeSettings = publishSettings(eventBus, { agentDir: host.agentDir });
 			host.onClose(disposeNativeSettings);
 			return createPolicyDurableExtension(host);
 		},
