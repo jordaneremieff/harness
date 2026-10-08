@@ -47,8 +47,6 @@ export async function evaluationSource(): Promise<{ digest: string; paths: strin
 export default async function evaluationExtension(pi: ExtensionAPI): Promise<void> {
 	pi.registerFlag(flag, { description: "Approved Pillars evaluation source digest", type: "string" });
 	const source = await evaluationSource();
-	const keys = ["PI_PILLARS_CORPUS", "PI_PILLARS_COLLECT", "PI_PILLARS_DIR"] as const;
-	const previous = keys.map((key) => [key, process.env[key]] as const);
 	const directory = await mkdtemp(join(tmpdir(), "pillars-evaluation-"));
 	let closed = false;
 	let settled: (() => void) | undefined;
@@ -56,15 +54,8 @@ export default async function evaluationExtension(pi: ExtensionAPI): Promise<voi
 		if (closed) return;
 		closed = true;
 		settled?.();
-		for (const [key, value] of previous) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
 		await rm(directory, { recursive: true, force: true });
 	}
-	process.env.PI_PILLARS_CORPUS = defaultCorpusRoot();
-	process.env.PI_PILLARS_COLLECT = "0";
-	process.env.PI_PILLARS_DIR = directory;
 	try {
 		pi.on("agent_settled", () => {
 			settled?.();
@@ -92,6 +83,13 @@ export default async function evaluationExtension(pi: ExtensionAPI): Promise<voi
 						}
 					},
 				});
+			},
+		}, {
+			agentDir: directory,
+			env: {
+				PI_PILLARS_CORPUS: defaultCorpusRoot(),
+				PI_PILLARS_COLLECT: "0",
+				PI_PILLARS_DIR: directory,
 			},
 		});
 		pi.on("tool_call", (event) => {

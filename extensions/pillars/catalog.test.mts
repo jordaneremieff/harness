@@ -52,11 +52,8 @@ test("corpus root defaults to the package sibling and honors PI_PILLARS_CORPUS",
 		const restoreOverride = withCorpus(override);
 		assert.equal(corpusRoot(), override);
 		restoreOverride();
-		const restorePadded = withCorpus(`  ${override}  `);
-		assert.equal(corpusRoot(), override, "surrounding whitespace never reaches the filesystem");
-		restorePadded();
 		const restoreRelative = withCorpus("pillars");
-		assert.throws(() => corpusRoot(), /source_unavailable/, "a relative override never resolves against the session directory");
+		assert.equal(corpusRoot(), defaultCorpusRoot(), "a rejected relative override uses the package default");
 		restoreRelative();
 		assert.equal(corpusRoot(), defaultCorpusRoot());
 	} finally {

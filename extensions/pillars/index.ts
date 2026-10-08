@@ -1,6 +1,8 @@
 import { toolDisplayPublisher } from "./tool-display.ts";
 import { writeSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
+import { publishSettings, readSettings, type ReadOptions } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
@@ -25,13 +27,15 @@ import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.t
 import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
 
-export default function pillarsExtension(pi: ExtensionAPI): void {
+export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions = { agentDir: getAgentDir() }): void {
 	const { registerTool, publish } = toolDisplayPublisher(pi);
-	pi.events.emit("durable:contribution", pillarsDurableContribution(fileURLToPath(import.meta.url)));
 	let catalog: Catalog | undefined;
 	let collector: Collector | undefined;
-	let enabled = process.env.PI_PILLARS_COLLECT !== "0";
-	const store = new PillarsStore(process.env.PI_PILLARS_DIR ?? join(getAgentDir(), "pillars"));
+	const snapshot = readSettings(settings, options);
+	let enabled = snapshot.values.collect && snapshot.records.find((record) => record.key === "collect")?.status !== "invalid";
+	const store = new PillarsStore(snapshot.values.dir);
+	const stopSettings = publishSettings(pi.events, settings, options);
+	pi.events.emit("durable:contribution", pillarsDurableContribution(fileURLToPath(import.meta.url), { bus: pi.events, stopFactory: stopSettings }));
 	const reader = createReader((signal) => store.capture(utcDay(), signal), { enabled: () => enabled });
 	const dedup = new Deduplicator();
 	const delivered = new Map<string, DeliveryExtent>();
@@ -42,17 +46,17 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 	}
 	async function discover(signal?: AbortSignal): Promise<void> {
 		try {
-			catalog = await loadCatalog(signal);
+			catalog = await loadCatalog(signal, options);
 		} catch {
 			catalog = undefined;
 		}
 	}
 	pi.on("session_start", async (event, ctx) => {
-		enabled = process.env.PI_PILLARS_COLLECT !== "0";
-		if (process.env.PI_PILLARS_COLLECT !== undefined && !["0", "1"].includes(process.env.PI_PILLARS_COLLECT)) {
-			enabled = false;
-			diagnostic(ctx, "PI_PILLARS_COLLECT requires 0 or 1. The collector is disabled.");
-		}
+		const current = readSettings(settings, options);
+		const invalidCollect = current.records.find((record) => record.key === "collect")?.status === "invalid";
+		enabled = current.values.collect && !invalidCollect;
+		for (const issue of current.diagnostics) diagnostic(ctx, `${issue.field}: ${issue.message}`);
+		if (invalidCollect) diagnostic(ctx, "pillars.collect requires a boolean (environment: 0, 1, false, or true). The collector is disabled.");
 		collector = new Collector(store, { diagnostic: (text) => diagnostic(ctx, text) });
 		dedup.newTurn();
 		sourceWarned = false;
@@ -71,6 +75,7 @@ export default function pillarsExtension(pi: ExtensionAPI): void {
 		if (enabled) await collector?.flush(false, ctx.signal);
 	});
 	pi.on("session_shutdown", async () => {
+		stopSettings();
 		if (enabled) await collector?.shutdown();
 		reader.clear();
 		delivered.clear();

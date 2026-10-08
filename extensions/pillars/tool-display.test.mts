@@ -38,7 +38,7 @@ it("publishes only its registered display fields at load and on current requests
 		getFlag() {},
 	} as unknown as ExtensionAPI;
 	register(pi);
-	assert.deepEqual(order, ["harness:tool-display:request", "harness:tool-display:publish"]);
+	assert.deepEqual(order.filter((channel) => channel.startsWith("harness:tool-display:")), ["harness:tool-display:request", "harness:tool-display:publish"]);
 	assert.equal(publications.length, 1);
 	const verify = (publication: Publication) => {
 		assert.deepEqual(Object.keys(publication).sort(), ["tools", "version"]);

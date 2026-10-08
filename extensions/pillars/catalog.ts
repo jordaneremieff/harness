@@ -1,8 +1,11 @@
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, dirname, resolve } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { readSettings, type ReadOptions } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
+export { defaultCorpusRoot } from "./settings.ts";
 
 export const BODY_BYTES = 1024 * 1024;
 export const CATALOG_TARGETS = 128;
@@ -42,17 +45,8 @@ export function decodeBody(body: Buffer): string {
 	return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
 }
 
-/** The corpus ships beside the extension in one package, at ../../pillars from this module. */
-export function defaultCorpusRoot(): string {
-	return resolve(dirname(fileURLToPath(import.meta.url)), "../../pillars");
-}
-
-/** PI_PILLARS_CORPUS overrides the package-relative corpus root with an absolute path. */
-export function corpusRoot(): string {
-	const override = process.env.PI_PILLARS_CORPUS?.trim();
-	if (override === undefined || override === "") return defaultCorpusRoot();
-	if (!isAbsolute(override)) throw new Error("source_unavailable");
-	return override;
+export function corpusRoot(options: ReadOptions = { agentDir: getAgentDir() }): string {
+	return readSettings(settings, options).values.corpus;
 }
 
 const ENTRY_TARGET = /^(?:principle|pattern|heuristic)-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
@@ -85,8 +79,8 @@ async function registerEntry(
 	resources.push({ resourceClass: "entry", resourceId: id, path });
 }
 
-export async function loadCatalog(signal?: AbortSignal): Promise<Catalog> {
-	const root = await realpath(corpusRoot());
+export async function loadCatalog(signal?: AbortSignal, options?: ReadOptions): Promise<Catalog> {
+	const root = await realpath(corpusRoot(options));
 	const inventoryPath = await realpath(resolve(root, "README.md"));
 	const governancePath = await realpath(resolve(root, "GOVERNANCE.md"));
 	const inventory = await readBody(inventoryPath, signal);

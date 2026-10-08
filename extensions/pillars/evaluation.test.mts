@@ -164,7 +164,7 @@ test("source approval covers the command implementation and live doctrine", asyn
 	assert.equal(process.env.PI_PILLARS_COLLECT, before);
 });
 
-test("an adapter failure before shutdown ownership restores the environment and removes its store", async () => {
+test("an adapter failure preserves the environment and removes its isolated store", async () => {
 	const keys = ["PI_PILLARS_CORPUS", "PI_PILLARS_COLLECT", "PI_PILLARS_DIR"] as const;
 	const previous = keys.map((key) => [key, process.env[key]] as const);
 	const shutdown: Array<() => Promise<void>> = [];
@@ -176,7 +176,15 @@ test("an adapter failure before shutdown ownership restores the environment and 
 	try {
 		await assert.rejects(
 			evaluationExtension({
-				events: { emit() {}, on: () => () => {} },
+				events: {
+					emit(channel, data) {
+						if (channel === "harness:settings:publish") {
+							const snapshot = data as { records: Array<{ key: string; value?: string }> };
+							store = snapshot.records.find((record) => record.key === "dir")?.value;
+						}
+					},
+					on: () => () => {},
+				},
 				registerFlag() {},
 				getFlag: () => "0".repeat(64),
 				registerTool() {},
@@ -189,7 +197,6 @@ test("an adapter failure before shutdown ownership restores the environment and 
 							shutdown.push(handler as unknown as () => Promise<void>);
 							return () => {};
 						}
-						store = process.env.PI_PILLARS_DIR;
 						throw new Error("shutdown registration refused");
 					}
 					return () => {};
@@ -213,6 +220,12 @@ test("the evaluation wrapper awaits real command output and confines filesystem 
 	const previous = keys.map((key) => [key, process.env[key]] as const);
 	let runtime: InstanceType<typeof sdk.AgentSessionRuntime> | undefined;
 	let store: string | undefined;
+	const eventBus = sdk.createEventBus();
+	const unsubscribe = eventBus.on("harness:settings:publish", (data) => {
+		const snapshot = data as { records: Array<{ key: string; value?: string | boolean }> };
+		store = snapshot.records.find((record) => record.key === "dir")?.value as string;
+		assert.equal(snapshot.records.find((record) => record.key === "collect")?.value, false);
+	});
 	try {
 		const faux = ai.fauxProvider({
 			provider: "pillars-evaluation-test",
@@ -236,6 +249,7 @@ test("the evaluation wrapper awaits real command output and confines filesystem 
 					extensionFlagValues: new Map(Object.entries(config.extensionFlags)),
 					settingsManager: sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
 					resourceLoaderOptions: {
+						eventBus,
 						noExtensions: true,
 						noSkills: true,
 						noPromptTemplates: true,
@@ -261,8 +275,7 @@ test("the evaluation wrapper awaits real command output and confines filesystem 
 		);
 		const errors: string[] = [];
 		await runtime.session.bindExtensions({ mode: "rpc", onError: (error) => errors.push(error.error) });
-		assert.equal(process.env.PI_PILLARS_COLLECT, "0");
-		store = process.env.PI_PILLARS_DIR;
+		for (const [key, value] of previous) assert.equal(process.env[key], value);
 		assert.ok(store);
 		for (const action of ["check", "derive", "review"]) {
 			faux.setResponses([
@@ -314,6 +327,7 @@ test("the evaluation wrapper awaits real command output and confines filesystem 
 		try {
 			await runtime?.dispose();
 		} finally {
+			unsubscribe();
 			await rm(root, { recursive: true, force: true });
 		}
 	}

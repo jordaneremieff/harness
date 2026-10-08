@@ -75,8 +75,8 @@ test("the actual Pi CLI prints the Pillars inventory without a provider request"
 		});
 		assert.equal(invalid.status, 0);
 		assert.match(invalid.stdout, /# Synthetic lifecycle inventory/);
-		assert.match(invalid.stderr, /PI_PILLARS_COLLECT requires 0 or 1/);
-		assert.doesNotMatch(invalid.stdout, /PI_PILLARS_COLLECT requires/);
+		assert.match(invalid.stderr, /pillars\.collect requires a boolean/);
+		assert.doesNotMatch(invalid.stdout, /pillars\.collect requires/);
 	} finally { await rm(f.root, { recursive: true, force: true }); }
 });
 

@@ -207,8 +207,8 @@ compliance verdict computed by the extension.
 The extension and the corpus ship together in one package. At session start the
 extension resolves the corpus root as the sibling `../../pillars` directory
 relative to its own module location. `PI_PILLARS_CORPUS` overrides that root
-with an absolute path; a relative value fails closed rather than resolving
-against the session directory. The extension does not guess a corpus directory,
+with an absolute path. A rejected relative override returns the package default
+and a settings diagnostic; it never resolves against the session directory. The extension does not guess a corpus directory,
 depend on the registry extension, or scan session history. It loads the bounded
 inventory and canonical targets, with no full-corpus body cache.
 
@@ -419,12 +419,39 @@ linkable private metadata, not anonymity. It contains no prompts, result text,
 raw paths, call/session identifiers, PID, exact event timestamps, or returned
 mismatched-body hashes. Public evidence and exports exclude receipt identities.
 
-| Variable | Meaning |
-| --- | --- |
-| `PI_PILLARS_DIR` | Absolute aggregate directory; default `<agentDir>/pillars`. |
-| `PI_PILLARS_CORPUS` | Absolute corpus root override; unset resolves the sibling `../../pillars` package directory. |
-| `PI_PILLARS_COLLECT` | `1` or unset enables collection; `0` disables collection but preserves source access and retained-data readback. Other values disable collection with a local diagnostic. |
-| `PI_PILLARS_TEST_HOST_ROOT` | Test-only coding-agent package root for the SDK integration regression; unset uses checkout dependencies. |
+The passive [`settings.ts`](settings.ts) declaration uses the package-level
+[settings contract](../../settings/README.md). Per-field precedence is environment,
+`pillars` in `<agentDir>/harness.json`, then default. The host supplies the agent
+directory; the corpus default remains package-relative.
+
+<!-- harness:settings:start -->
+| Key | Environment | Type | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| dir | `PI_PILLARS_DIR` | path | &lt;agentDir&gt;/pillars | absolute input | Private aggregate directory. |
+| corpus | `PI_PILLARS_CORPUS` | path | Package sibling ../../pillars | absolute input | Corpus root with inventory and governance sources. |
+| collect | `PI_PILLARS_COLLECT` | boolean | true | none | Collect source access evidence. |
+<!-- harness:settings:end -->
+
+Document collection values are booleans. Environment collection values accept
+`0`, `1`, `false`, and `true`. Invalid selected input returns the declared safe
+default with a rejected-source diagnostic. For an invalid collection field,
+the runtime additionally disables collection with a local diagnostic, even
+though its configured default is `true`. Disabled collection preserves corpus
+access and retained-data readback. Invalid directory or corpus inputs use their
+safe defaults. An unavailable valid corpus path still makes source access
+unavailable.
+
+The ordinary factory publishes fresh settings snapshots and removes its
+subscription on shutdown. Native creation replaces that publisher on the same
+host resource-loader bus with a publisher bound to the host's agent directory;
+host close removes it. Registry inspection requests fresh configured values,
+not proof that existing collectors or stores applied them. Store paths bind at
+factory/native creation; ordinary session start reads collection configuration
+again, and ordinary catalog discovery reads corpus configuration again. Native
+creation binds collection and corpus configuration for that host.
+
+`PI_PILLARS_TEST_HOST_ROOT` is a test-only coding-agent package root for SDK
+integration regressions; unset uses checkout dependencies.
 
 ## Behavioral evaluations
 
@@ -483,8 +510,9 @@ filesystem during a run; individual source results retain their body digests. Th
 request messages from its normalized transcript; the command input and pinned
 source define that scaffold, not an assistant-text check.
 
-Collection is disabled, its directory is isolated, and fixture shutdown restores
-the prior environment and removes that directory. The model has `pillars` for
+Collection is disabled through an injected settings environment and an isolated
+agent directory. The wrapper leaves the process environment unchanged, ignores
+ambient machine settings, and removes that directory on fixture shutdown. The model has `pillars` for
 source access plus `edit` and `write` to expose attempted mutation. A hook blocks
 all calls except `pillars`; attempted edits still fail the suite's checks.
 This controlled tool set is not full-session parity. The suite does not compare

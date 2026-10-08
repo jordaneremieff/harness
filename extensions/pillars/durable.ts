@@ -10,7 +10,8 @@
  * registration makes the host await the final flush. The contribution also
  * supplies the `pillars` command for the judgment actions.
  */
-import { join } from "node:path";
+import { publishSettings, readSettings, type SettingsBus } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
@@ -119,26 +120,33 @@ const pillarsCommand: DurableCommand = {
  * entrypoint that emits it; the agent session host matches it to Pi's loaded
  * extension paths.
  */
-export function pillarsDurableContribution(source: string): DurableContribution {
+export function pillarsDurableContribution(
+	source: string,
+	publisher: { bus: SettingsBus; stopFactory: () => void },
+): DurableContribution {
 	return {
 		name: "pillars",
 		source,
 		commands: [pillarsCommand],
 		async create(host) {
 			const { GenerationTask, ToolTask, defineExtension, defineTool, hook, section } = host.durable;
-			const store = new PillarsStore(process.env.PI_PILLARS_DIR ?? join(host.agentDir, "pillars"));
-			let enabled = process.env.PI_PILLARS_COLLECT !== "0";
-			if (process.env.PI_PILLARS_COLLECT !== undefined && !["0", "1"].includes(process.env.PI_PILLARS_COLLECT)) {
-				enabled = false;
-				process.stderr.write("PI_PILLARS_COLLECT requires 0 or 1. The collector is disabled.\n");
-			}
+			publisher.stopFactory();
+			const stopSettings = publishSettings(publisher.bus, settings, { agentDir: host.agentDir });
+			host.onClose(stopSettings);
+			const snapshot = readSettings(settings, { agentDir: host.agentDir });
+			const store = new PillarsStore(snapshot.values.dir);
+			const invalidCollect = snapshot.records.find((record) => record.key === "collect")?.status === "invalid";
+			const enabled = snapshot.values.collect && !invalidCollect;
+			for (const issue of snapshot.diagnostics) process.stderr.write(`${issue.field}: ${issue.message}\n`);
+			if (invalidCollect)
+				process.stderr.write("pillars.collect requires a boolean (environment: 0, 1, false, or true). The collector is disabled.\n");
 			const collector = enabled
 				? new Collector(store, { diagnostic: (message) => process.stderr.write(`${message}\n`) })
 				: undefined;
 			const reader = createReader((signal) => store.capture(utcDay(), signal), { enabled: () => enabled });
 			let catalog: Catalog | undefined;
 			try {
-				catalog = await loadCatalog(host.signal);
+				catalog = await loadCatalog(host.signal, { agentDir: host.agentDir });
 			} catch {
 				catalog = undefined;
 			}
@@ -150,6 +158,7 @@ export function pillarsDurableContribution(source: string): DurableContribution 
 			function release(): Promise<void> {
 				if (releaseWork !== undefined) return releaseWork;
 				closing = true;
+				stopSettings();
 				reader.clear();
 				releaseWork = collector?.shutdown() ?? Promise.resolve();
 				return releaseWork;

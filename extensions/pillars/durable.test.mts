@@ -11,7 +11,9 @@ import * as Durable from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { VERSION } from "@earendil-works/pi-coding-agent";
+import { createEventBus, VERSION } from "@earendil-works/pi-coding-agent";
+import { collectSettings, publishSettings } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import { utcDay } from "./collector.ts";
 import { type DurableContributionHost, pillarsDurableContribution } from "./durable.ts";
 import { PillarsStore } from "./store.ts";
@@ -89,7 +91,7 @@ function testHost(durable: typeof Durable, fixture: Fixture, harness: Durable.Ha
 /** Open the host's Harness first, then install the contribution, matching the host bootstrap. */
 async function openContribution(
 	fixture: Fixture,
-	options: { readonly storage?: Durable.Storage; readonly extra?: readonly Durable.Extension[] } = {},
+	options: { readonly storage?: Durable.Storage; readonly extra?: readonly Durable.Extension[]; readonly publisher?: Parameters<typeof pillarsDurableContribution>[1] } = {},
 ) {
 	const faux = fauxProvider();
 	const models = createModels();
@@ -109,8 +111,16 @@ async function openContribution(
 	);
 	const controller = new AbortController();
 	const { host, closeAll } = testHost(Durable, fixture, harness, controller.signal);
-	const contribution = pillarsDurableContribution(ENTRY_SOURCE);
+	const bus = createEventBus();
+	const publisher = options.publisher ?? {
+		bus,
+		stopFactory: publishSettings(bus, settings, { agentDir: host.agentDir }),
+	};
+	const contribution = pillarsDurableContribution(ENTRY_SOURCE, publisher);
 	const extension = await contribution.create(host);
+	const publications = collectSettings(publisher.bus);
+	try { assert.equal(publications.snapshots().length, 1); }
+	finally { publications.dispose(); }
 	registry.install(extension);
 	const root = await harness.root(BACKGROUND_CONTEXT, {
 		agent: { model: { provider: faux.provider.id, modelId: "faux-1" } },
@@ -178,6 +188,52 @@ function sumCounter(
 ): number {
 	return cells.reduce((total, cell) => total + cell.counters[counter], 0);
 }
+
+test("native settings replace the factory snapshot with the host agent directory", async (t) => {
+	const fixture = await makeFixture(t);
+	const keys = ["PI_PILLARS_CORPUS", "PI_PILLARS_DIR", "PI_PILLARS_COLLECT", "PI_HARNESS_FILE"] as const;
+	const previous = keys.map((key) => [key, process.env[key]] as const);
+	for (const key of keys) delete process.env[key];
+	t.after(() => { for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+	const nativeDir = join(fixture.root, "agent");
+	const factoryDir = join(fixture.root, "factory-agent");
+	await mkdir(nativeDir);
+	await mkdir(factoryDir);
+	await writeFile(join(factoryDir, "harness.json"), JSON.stringify({ version: 1, pillars: { corpus: join(fixture.root, "absent"), collect: true } }));
+	await writeFile(join(nativeDir, "harness.json"), JSON.stringify({ version: 1, pillars: { corpus: fixture.corpus, collect: false } }));
+	const bus = createEventBus();
+	const collected = collectSettings(bus);
+	const stopFactory = publishSettings(bus, settings, { agentDir: factoryDir, env: {} });
+	assert.equal(collected.snapshots()[0].source.path, join(factoryDir, "harness.json"));
+	const opened = await openContribution(fixture, { publisher: { bus, stopFactory } });
+	try {
+		collected.refresh();
+		const snapshots = collected.snapshots();
+		assert.equal(snapshots.length, 1);
+		assert.equal(snapshots[0].source.path, join(nativeDir, "harness.json"));
+		assert.equal(snapshots[0].records.find((record) => record.key === "dir")?.value, join(nativeDir, "pillars"));
+		assert.equal(snapshots[0].records.find((record) => record.key === "corpus")?.value, fixture.corpus);
+		opened.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("pillars", { resource: "principle-one" }), fauxToolCall("pillars_usage", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Consulted."),
+		]);
+		const result = await (await opened.root.submit({ type: "input", content: "Consult." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(result.status, "done");
+		const results = toolResults((await opened.root.context(BACKGROUND_CONTEXT)).messages);
+		assert.ok(results.some((message) => detailsSchema(message) === "pillars-source"));
+		const usage = results.find((message) => detailsSchema(message) === "pillars-usage-response");
+		assert.ok(usage);
+		assert.equal(JSON.parse(textOf(usage)).enabled, false);
+		await opened.closeAll();
+		collected.refresh();
+		assert.deepEqual(collected.snapshots(), []);
+	} finally {
+		opened.controller.abort();
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		stopFactory();
+		collected.dispose();
+	}
+});
 
 test("a model-issued call reaches each tool and both declare safe replay", async (t) => {
 	const fixture = await makeFixture(t);
