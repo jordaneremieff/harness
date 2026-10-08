@@ -715,7 +715,7 @@ test("collector coverage contains only accepted identities and bounded failure c
 		assert.deepEqual(collector.coverage(), { status: "available", slices: [], malformed: 0, omitted: 0 });
 		bus.emit(SETTINGS_PUBLISH, { message: "rejected-input-marker", value: "fake-sensitive-bytes" });
 		for (let i = 0; i < SETTINGS_MAX_SLICES + 1; i++) {
-			const declaration = defineSettings("slice" + i, {
+			const declaration = defineSettings(`slice${i}`, {
 				name: stringSetting({ description: "Name.", default: "safe" }),
 			});
 			bus.emit(SETTINGS_PUBLISH, settingsPublication(readSettings(declaration, f)));
@@ -724,7 +724,7 @@ test("collector coverage contains only accepted identities and bounded failure c
 		assert.equal(coverage.malformed, 1);
 		assert.equal(coverage.omitted, 1);
 		assert.equal(coverage.slices.length, SETTINGS_MAX_SLICES);
-		assert.ok(!coverage.slices.includes("slice" + SETTINGS_MAX_SLICES));
+		assert.ok(!coverage.slices.includes(`slice${SETTINGS_MAX_SLICES}`));
 		assert.doesNotMatch(JSON.stringify(coverage), /rejected-input-marker|fake-sensitive-bytes/);
 		coverage.slices.length = 0;
 		assert.equal(collector.coverage().slices.length, SETTINGS_MAX_SLICES);
@@ -770,14 +770,14 @@ test("bounded reader and owning relation diagnostics survive publication togethe
 	try {
 		const fields = Object.fromEntries(
 			Array.from({ length: SETTINGS_MAX_FIELDS }, (_, i) => [
-				"field" + i,
+				`field${i}`,
 				integerSetting({ description: "Value.", default: 1 }),
 			]),
 		);
 		const declaration = defineSettings("example", fields);
 		f.write({
 			version: 1,
-			example: Object.fromEntries(Array.from({ length: SETTINGS_MAX_FIELDS * 3 }, (_, i) => ["unknown" + i, true])),
+			example: Object.fromEntries(Array.from({ length: SETTINGS_MAX_FIELDS * 3 }, (_, i) => [`unknown${i}`, true])),
 		});
 		const bus = fakeBus();
 		const collector = collectSettings(bus);

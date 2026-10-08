@@ -23,20 +23,24 @@
 // Exit status: 0 when all rules hold, 1 listing every violation otherwise.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkSettingsReadme, type Declaration } from "../settings/index.ts";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const extensionsRoot = join(root, "extensions");
+const main =
+	process.argv[1] !== undefined &&
+	existsSync(process.argv[1]) &&
+	realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 
 const failures: string[] = [];
 const fail = (message: string) => failures.push(message);
 
 // --- rule 1: extension anatomy -----------------------------------------
 
-for (const entry of readdirSync(extensionsRoot, { withFileTypes: true })) {
+for (const entry of main ? readdirSync(extensionsRoot, { withFileTypes: true }) : []) {
 	if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
 	const slice = join(extensionsRoot, entry.name);
 	const label = `extensions/${entry.name}`;
@@ -70,7 +74,7 @@ const walk = (dir: string) => {
 		else if (entry.isFile() && /\.(ts|mts)$/.test(entry.name)) sourceFiles.push(path);
 	}
 };
-if (existsSync(extensionsRoot)) walk(extensionsRoot);
+if (main && existsSync(extensionsRoot)) walk(extensionsRoot);
 
 const specifierPattern = /(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']/g;
 
@@ -173,17 +177,18 @@ export async function auditSettings(repositoryRoot: string, files: string[]): Pr
 			environmentReads(readFileSync(file, "utf8")).map((name) => ({ file, name })),
 		);
 		const declarationPath = join(directory, "settings.ts");
-		const readmePath = join(directory, "README.md");
-		const readme = existsSync(readmePath) ? readFileSync(readmePath, "utf8") : "";
 		if (!existsSync(declarationPath)) {
-			// Undeclared consumers still require owning README documentation.
 			violations.push(
-				...reads
-					.filter(({ name }) => !readme.includes(`\`${name}\``))
-					.map(({ file, name }) => `${relative(repositoryRoot, file)}: ${name} is missing from the owning README`),
+				...reads.map(
+					({ file, name }) => `${relative(repositoryRoot, file)}: ${name} requires an owning settings.ts declaration`,
+				),
 			);
+			if (!reads.length && hasSettingsReader(repositoryRoot, runtime))
+				violations.push(`extensions/${slice}: readSettings consumer requires an owning settings.ts declaration`);
 			continue;
 		}
+		const readmePath = join(directory, "README.md");
+		const readme = existsSync(readmePath) ? readFileSync(readmePath, "utf8") : "";
 		try {
 			const declaration = await loadSettingsDeclaration(repositoryRoot, declarationPath, slice);
 			if (!checkSettingsReadme(declaration, readme))
@@ -203,14 +208,16 @@ export async function auditSettings(repositoryRoot: string, files: string[]): Pr
 	}
 	return violations;
 }
-for (const violation of await auditSettings(root, sourceFiles)) fail(violation);
+if (main) for (const violation of await auditSettings(root, sourceFiles)) fail(violation);
 
 // --- rule 3: no hardcoded counts in tracked docs -----------------------
 
-const tracked = execFileSync("git", ["ls-files"], {
-	cwd: root,
-	encoding: "utf8",
-});
+const tracked = main
+	? execFileSync("git", ["ls-files"], {
+			cwd: root,
+			encoding: "utf8",
+		})
+	: "";
 const countPattern = /\b\d+\s+(test|tests|tool|tools|file|files)\b/g;
 for (const doc of tracked.split("\n")) {
 	if (!doc.endsWith(".md")) continue;
@@ -495,7 +502,7 @@ const globToRegExp = (glob: string): RegExp =>
 	new RegExp(`^${glob.replace(/[.*+?^${}()|[\]\\]/g, (ch) => (ch === "*" ? "[^/]*" : `\\${ch}`))}$`);
 
 const packageJsonPath = join(root, "package.json");
-if (existsSync(packageJsonPath)) {
+if (main && existsSync(packageJsonPath)) {
 	let testScript: string | undefined;
 	try {
 		const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
@@ -516,18 +523,20 @@ if (existsSync(packageJsonPath)) {
 	}
 }
 
-const pillarAudit = auditPillars(root);
-if (pillarAudit.readmeProjection) {
-	console.log(
-		`check-slices: paste-ready replacement for pillars/README.md\n--- BEGIN pillars/README.md inventory ---\n${pillarAudit.readmeProjection}\n--- END pillars/README.md inventory ---`,
-	);
-	fail("pillars/README.md: rows diverge from entry frontmatter; apply the replacement printed above");
-}
-for (const violation of pillarAudit.violations) fail(violation);
+if (main) {
+	const pillarAudit = auditPillars(root);
+	if (pillarAudit.readmeProjection) {
+		console.log(
+			`check-slices: paste-ready replacement for pillars/README.md\n--- BEGIN pillars/README.md inventory ---\n${pillarAudit.readmeProjection}\n--- END pillars/README.md inventory ---`,
+		);
+		fail("pillars/README.md: rows diverge from entry frontmatter; apply the replacement printed above");
+	}
+	for (const violation of pillarAudit.violations) fail(violation);
 
-if (failures.length > 0) {
-	console.error(`check-slices: ${failures.length} violation(s)`);
-	for (const failure of failures) console.error(`  - ${failure}`);
-	process.exit(1);
+	if (failures.length > 0) {
+		console.error(`check-slices: ${failures.length} violation(s)`);
+		for (const failure of failures) console.error(`  - ${failure}`);
+		process.exit(1);
+	}
+	console.log("check-slices: ok — extension anatomy, slice isolation, settings declarations, doc counts, test globs");
 }
-console.log("check-slices: ok — extension anatomy, slice isolation, doc counts, test globs");

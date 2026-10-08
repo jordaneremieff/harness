@@ -33,9 +33,10 @@ paths in committed examples or declarations.
   typed values. Ordinary and Durable entrypoints use the same declaration.
 - Generate README configuration tables with `settingsReadme(settings)` between
   the checked markers. `npm run check` compares the projection, requires a shared
-  reader, and rejects raw configuration reads for slices with declarations.
-- Undeclared consumers retain owning README environment-name checks. This is not
-  a claim that every consumer uses the settings contract.
+  reader, and rejects raw configuration reads. Every configuration consumer must
+  declare settings and match its generated table; README-only environment-name
+  documentation does not satisfy the gate. Extensions without configuration
+  reads need no empty declaration.
 - Extension-owned pure validators define structured settings such as execution
   presets. Shared settings code must not import extension types or lifecycle
   state. Runtime semantic checks such as model catalog validation remain owned

@@ -182,15 +182,17 @@ metadata, not machine-derived values.
 
 `npm run check` mechanically discovers passive `settings.ts` declarations,
 compares their README projections, requires a `readSettings` consumer, and rejects
-direct configuration environment reads in declared slices. Its lexical check
+direct configuration environment reads. Every configuration consumer requires an
+owning passive `settings.ts` declaration and its exact generated README table.
+Extensions without configuration reads need no empty declaration. Its lexical check
 covers `process.env.PI_*`, injected `env.PI_*`, literal bracket access, and ordinary
 parenthesized environment selection. It does not claim AST alias/dataflow analysis.
 Context variables `PI_AGENT_DIR`, `PI_AGENT_SESSIONS_DIR`,
 `PI_MANAGED_INSTALL_ROOT`, `PI_SESSION_ID`, and `PI_*_TEST_*` are excluded.
 Tests, evaluation suites, explicit `fixtures/` or `test-fixtures/` directories,
 and `*-fixture.ts`/`*-fixture.mts` support modules are excluded from configuration
-read checks, not from slice isolation. Undeclared consumers currently retain
-owning README environment-name checks; declaration adoption is not complete.
+read checks, not from slice isolation. A missing declaration fails the gate even
+when the owning README names every environment input.
 
 See [extension configuration](../docs/conventions/extension-config.md) for the
 configuration ownership boundary and [tool display](../docs/conventions/tool-display.md)

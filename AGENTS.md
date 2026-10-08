@@ -10,7 +10,7 @@
 - No company doctrine, service names, internal hosts, model rosters, credentials,
   or operator-local absolute paths. Machine configuration uses the package-level
   `settings/index.ts` contract, one `<agentDir>/harness.json` document, and
-  per-field `PI_*` overrides. Each extension owns a passive declaration and its
+  per-field `PI_*` overrides. Each configuration consumer owns a passive declaration and its
   generated README table. See `docs/conventions/extension-config.md` for the
   contract and adoption checks.
 - Report to the operator only in adapted ASD-STE100 Simplified Technical English (STE).

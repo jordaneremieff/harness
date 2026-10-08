@@ -514,14 +514,16 @@ test("a declaration does not authorize raw environment reads or undocumented ext
 	}
 });
 
-test("undeclared slices retain owning README documentation checks", async () => {
+test("runtime configuration requires a declaration even with owning README documentation", async () => {
 	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
 	try {
 		const runtime = join(root, "extensions/example/runtime.ts");
 		writeFileSync(runtime, "const value = env.PI_EXAMPLE_NAME;\n");
 		assert.equal((await auditSettings(root, [runtime])).length, 1);
 		writeFileSync(join(root, "extensions/example/README.md"), "# Example\n\nUse `PI_EXAMPLE_NAME`.\n");
-		assert.deepEqual(await auditSettings(root, [runtime]), []);
+		const failures = await auditSettings(root, [runtime]);
+		assert.equal(failures.length, 1);
+		assert.match(failures[0], /PI_EXAMPLE_NAME requires an owning settings.ts declaration/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -573,5 +575,63 @@ test("active declaration modules fail before the checker imports an entrypoint",
 		assert.ok(failures.some((failure) => failure.includes("cannot load passive named settings declaration")));
 	} finally {
 		rmSync(f.root, { recursive: true, force: true });
+	}
+});
+
+test("configuration-free and context-only slices need no empty declaration", async () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		const runtime = join(root, "extensions/example/runtime.ts");
+		for (const source of [
+			"export const ready = true;",
+			"const context = [env.PI_AGENT_DIR, process.env.PI_SESSION_ID, env.PI_EXAMPLE_TEST_ROOT];",
+		]) {
+			writeFileSync(runtime, source);
+			assert.deepEqual(await auditSettings(root, [runtime]), []);
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a shared reader requires an owning declaration without raw environment reads", async () => {
+	const f = declarationFixture();
+	try {
+		rmSync(f.declarationPath);
+		assert.match(
+			(await auditSettings(f.root, [f.runtime]))[0],
+			/readSettings consumer requires an owning settings.ts declaration/,
+		);
+	} finally {
+		rmSync(f.root, { recursive: true, force: true });
+	}
+});
+
+test("CLI rejects missing declarations while importing helpers does not audit or exit", () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		writeFileSync(
+			join(root, "extensions/example/index.ts"),
+			"export default function () { return env.PI_EXAMPLE_NAME; }",
+		);
+		writeFileSync(join(root, "extensions/example/README.md"), "Use PI_EXAMPLE_NAME.");
+		const gate = join(root, "scripts/check-slices.mts");
+		const cli = spawnSync(process.execPath, [gate], { cwd: root, encoding: "utf8" });
+		assert.equal(cli.status, 1, cli.stderr);
+		assert.match(cli.stderr, /requires an owning settings.ts declaration/);
+		const imported = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`const helpers = await import(${JSON.stringify(gate)}); console.log(typeof helpers.auditSettings);`,
+			],
+			{ cwd: root, encoding: "utf8" },
+		);
+		assert.equal(imported.status, 0, imported.stderr);
+		assert.equal(imported.stdout, "function\n");
+		assert.equal(imported.stderr, "");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
 	}
 });
