@@ -8,14 +8,21 @@
  * and agent commands over that store.
  */
 import { mkdir, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AssistantMessage, Message, Models, Static } from "@earendil-works/pi-ai";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { CAPACITY_NOTICE_HEADER, capacityConfig, capacityDirectiveLines } from "./capacity.ts";
+import { publishSettings, readSettings, type SettingsBus } from "../../settings/index.ts";
+import { settings, type StashSettings } from "./settings.ts";
+import {
+	CAPACITY_NOTICE_HEADER,
+	capacityConfig,
+	capacityDirectiveLines,
+	invalidCapacityFields,
+} from "./capacity.ts";
 import {
 	buildDistillPrompt,
 	DISTILL_SYSTEM_PROMPT,
@@ -141,10 +148,8 @@ async function withStashTarget<T>(
 	});
 }
 
-async function checkpointDirectory(cwd: string, handovers: string): Promise<string> {
-	const override = process.env.PI_STASH_CHECKPOINT_DIR?.trim();
-	const directory = override ? resolve(cwd, override) : join(handovers, "checkpoints");
-	if (directory === handovers) throw new Error("The checkpoint directory must differ from PI_STASH_DIR.");
+async function checkpointDirectory(directory: string, handovers: string): Promise<string> {
+	if (directory === handovers) throw new Error("The checkpoint directory must differ from stash.dir.");
 	await mkdir(directory, { recursive: true, mode: 0o700 });
 	const checkpointPath = await realpath(directory);
 	let handoverPath: string | undefined;
@@ -153,7 +158,7 @@ async function checkpointDirectory(cwd: string, handovers: string): Promise<stri
 	} catch (error) {
 		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
 	}
-	if (checkpointPath === handoverPath) throw new Error("The checkpoint directory must differ from PI_STASH_DIR.");
+	if (checkpointPath === handoverPath) throw new Error("The checkpoint directory must differ from stash.dir.");
 	return directory;
 }
 
@@ -598,7 +603,7 @@ async function capacityCommand(
 	}
 	let config: ReturnType<typeof capacityConfig>;
 	try {
-		config = capacityConfig(process.env);
+		config = capacityConfig(readSettings(settings, { agentDir: host.agentDir }).values);
 	} catch (error) {
 		throw new Error(error instanceof Error ? error.message : String(error));
 	}
@@ -625,7 +630,7 @@ async function capacityCommand(
 	return [
 		`Stash capacity: ${config.enabled ? "enabled" : "disabled"}.`,
 		`Thresholds: checkpoint ${config.checkpointPercent}%; continuity decision ${config.decisionPercent}%.`,
-		config.enabled ? `${capacityObservation(estimate)}` : "Observation is disabled by PI_STASH_CAPACITY=0.",
+		config.enabled ? `${capacityObservation(estimate)}` : "Capacity observation is disabled by stash.capacity.",
 		`Episode ${episode} notices in the active context: checkpoint ${latches.checkpoint}; decision ${latches.decision}.`,
 		`Estimated text intake: ${formatCount(estimate.intakeTokens)} tokens; configured budget: ${config.intakeTokenBudget ?? "none"}.`,
 		"Requests do not prove a checkpoint was saved. /stash capacity reset explicitly starts a new episode.",
@@ -680,11 +685,24 @@ function listErrorResult(error: unknown, signal: AbortSignal | undefined) {
 }
 
 /** Build the contribution the ordinary factory emits. */
-export function stashDurableContribution(source: string): StashDurableContribution {
+export function stashDurableContribution(
+	source: string,
+	bus: SettingsBus,
+	disposeFactorySettings: () => void,
+): StashDurableContribution {
 	return {
 		name: "stash",
 		source,
-		create: createStashDurableExtension,
+		create(host) {
+			disposeFactorySettings();
+			const publicationOptions = {
+				agentDir: host.agentDir,
+				validate: (snapshot: { values: StashSettings }) => invalidCapacityFields(snapshot.values),
+			};
+			const dispose = publishSettings(bus, settings, publicationOptions);
+			host.onClose(dispose);
+			return createStashDurableExtension(host);
+		},
 		commands: [
 			{
 				name: "stash",
@@ -737,7 +755,12 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 			const sessionId = String(api.conversationId);
 			const intent = await api.memo("stash.write", { createdAtMs: Date.now() }, context);
 			try {
-				const destination = params.checkpoint ? await checkpointDirectory(cwd, storeDir) : storeDir;
+				const destination = params.checkpoint
+					? await checkpointDirectory(
+							readSettings(settings, { agentDir: host.agentDir }).values.checkpointDir,
+							storeDir,
+						)
+					: storeDir;
 				const { record, path, redactions } = await writeReplayableStash(
 					destination,
 					{ ...params, project: cwd, branch, sessionId },
@@ -1058,7 +1081,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		hooks: [
 			host.durable.hook(host.durable.GenerationTask, {
 				beforeRequest: async (request, api, context) => {
-					const config = capacityConfig(process.env);
+					const config = capacityConfig(readSettings(settings, { agentDir: host.agentDir }).values);
 					if (!config.enabled) return undefined;
 					const conversation = String(api.conversationId);
 					const doc = await api.snapshot(capacityDoc, api.conversationId, context);

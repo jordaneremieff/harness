@@ -157,6 +157,7 @@ const theme: PanelTheme = {
 let dir: string;
 let oldStore: string | undefined;
 let oldCheckpoint: string | undefined;
+const contextEnv = ["PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
 
 before(async () => {
 	dir = await mkdtemp(join(tmpdir(), "stash-index-test-"));
@@ -164,11 +165,17 @@ before(async () => {
 	oldCheckpoint = process.env.PI_STASH_CHECKPOINT_DIR;
 	delete process.env.PI_STASH_CHECKPOINT_DIR;
 	process.env.PI_STASH_DIR = dir;
+	process.env.PI_CODING_AGENT_DIR = dir;
+	process.env.PI_HARNESS_FILE = join(dir, "harness.json");
 	await writeStash(dir, { title: "Large", summary: "x".repeat(70 * 1024) }, new Date("2026-07-24T10:00:00Z"));
 	await writeStash(dir, { title: "Pickup target", summary: "UNIQUE_PICKUP_BODY" }, new Date("2027-07-24T10:00:00Z"));
 });
 
 after(async () => {
+	for (const [key, value] of contextEnv) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
 	if (oldStore === undefined) delete process.env.PI_STASH_DIR;
 	else process.env.PI_STASH_DIR = oldStore;
 	if (oldCheckpoint === undefined) delete process.env.PI_STASH_CHECKPOINT_DIR;
@@ -1244,7 +1251,7 @@ describe("stash creation", () => {
 		assert.equal(launches[0].creatorId, originalSession);
 	});
 
-	it("admits work silently in every mode without caller selection or cancellation hooks", async () => {
+	it("admits work silently in every mode without caller selection or cancellation", async () => {
 		for (const mode of ["tui", "rpc", "print", "json"] as const) {
 			const { commands, launches, events, sent } = registry();
 			const unexpected = () => {
@@ -1261,7 +1268,8 @@ describe("stash creation", () => {
 			});
 			await commands.get("stash").handler("new isolated effort", ctx);
 			assert.equal(launches.length, 1);
-			assert.equal(events.has("session_shutdown"), false);
+			assert.equal(events.has("session_shutdown"), true);
+			await events.get("session_shutdown")({}, ctx);
 			assert.deepEqual(sent, []);
 			assert.deepEqual(Object.keys(launches[0]).sort(), ["command", "creatorId", "cwd", "invocationId", "name"]);
 			assert.equal(launches[0].command.name, "stash");

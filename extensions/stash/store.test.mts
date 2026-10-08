@@ -27,8 +27,8 @@ describe("resolveStoreDir", () => {
 	it("anchors at the provided agentDir", () => {
 		assert.equal(resolveStoreDir({} as NodeJS.ProcessEnv, "/agent"), "/agent/stash");
 	});
-	it("falls back to ~/.pi/agent without an agentDir", () => {
-		assert.match(resolveStoreDir({} as NodeJS.ProcessEnv), /\/\.pi\/agent\/stash$/);
+	it("resolves relative overrides against the host agentDir", () => {
+		assert.equal(resolveStoreDir({ PI_STASH_DIR: "relative" }, "/agent"), "/agent/relative");
 	});
 });
 

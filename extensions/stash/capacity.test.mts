@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, it } from "node:test";
+import { readSettings, type Environment } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import {
 	SessionManager,
 	type BoundaryResult,
@@ -11,7 +16,7 @@ import {
 import {
 	CAPACITY_REQUEST,
 	CAPACITY_STATE,
-	capacityConfig,
+	capacityConfig as capacityFromValues,
 	capacityReset,
 	capacityStatus,
 	capacityTurnEnd,
@@ -19,6 +24,11 @@ import {
 } from "./capacity.ts";
 import { transcriptEntries } from "./test-fixtures.mts";
 
+const agentDir = mkdtempSync(join(tmpdir(), "stash-capacity-settings-"));
+after(() => rmSync(agentDir, { recursive: true, force: true }));
+function capacityConfig(env: Environment) {
+	return capacityFromValues(readSettings(settings, { agentDir, env }).values);
+}
 const defaults = capacityConfig({});
 
 function fixture() {
@@ -118,17 +128,16 @@ describe("capacity configuration", () => {
 		);
 		assert.equal(capacityConfig({ PI_STASH_CAPACITY: "0", PI_STASH_CHECKPOINT_PERCENT: "bad" }).enabled, false);
 	});
-	it("rejects malformed, reversed, nonfinite, and out-of-range configuration", () => {
+	it("uses safe defaults for invalid scalar input and rejects reversed effective thresholds", () => {
+		assert.equal(capacityConfig({ PI_STASH_CAPACITY: "true" }).enabled, true);
 		for (const env of [
-			{ PI_STASH_CAPACITY: "true" },
 			{ PI_STASH_CHECKPOINT_PERCENT: "NaN" },
 			{ PI_STASH_CHECKPOINT_PERCENT: "0" },
-			{ PI_STASH_CHECKPOINT_PERCENT: "90" },
 			{ PI_STASH_DECISION_PERCENT: "101" },
 			{ PI_STASH_INTAKE_TOKEN_BUDGET: "1.5" },
 			{ PI_STASH_INTAKE_TOKEN_BUDGET: "Infinity" },
-		])
-			assert.throws(() => capacityConfig(env));
+		]) assert.deepEqual(capacityConfig(env), defaults);
+		assert.throws(() => capacityConfig({ PI_STASH_CHECKPOINT_PERCENT: "90" }), /stash.checkpointPercent.*stash.decisionPercent/);
 	});
 });
 

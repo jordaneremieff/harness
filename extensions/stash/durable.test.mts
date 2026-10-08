@@ -3,14 +3,14 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AssistantMessage, getCurrentSystemPrompt, getCurrentTools, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -21,6 +21,12 @@ import { mergeRedactionReports, redactSecretsWithReport } from "./redact.ts";
 import { listStashes, readStash, writeStash } from "./store.ts";
 
 const context = BACKGROUND_CONTEXT;
+const oldHarnessFile = process.env.PI_HARNESS_FILE;
+before(() => { delete process.env.PI_HARNESS_FILE; });
+after(() => {
+	if (oldHarnessFile === undefined) delete process.env.PI_HARNESS_FILE;
+	else process.env.PI_HARNESS_FILE = oldHarnessFile;
+});
 
 interface TestHarness {
 	readonly launches: IndependentCommandInput[];
@@ -68,7 +74,7 @@ async function startHarness(
 		onClose: () => {},
 		inventory: { contributions: [], ordinaryOnly: [] },
 	};
-	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)));
+	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {});
 	const extension = contribution.create(host);
 	const registry = createRegistry();
 	registry.install(extension);
@@ -975,7 +981,7 @@ async function recover(
 		inventory: { contributions: [], ordinaryOnly: [] },
 	};
 	const registry = createRegistry();
-	registry.install(stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url))).create(host));
+	registry.install(stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {}).create(host));
 	faux.setResponses([fauxAssistantMessage(answer)]);
 	const harness = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry }, context);
 	harness.resume();

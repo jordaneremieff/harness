@@ -3,7 +3,7 @@
 import { toolDisplayPublisher } from "./tool-display.ts";
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	type AgentToolResult,
@@ -14,7 +14,16 @@ import {
 	getAgentDir,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { CAPACITY_STATE, capacityConfig, capacityReset, capacityStatus, capacityTurnEnd } from "./capacity.ts";
+import { publishSettings, readSettings } from "../../settings/index.ts";
+import { settings, type StashSettings } from "./settings.ts";
+import {
+	CAPACITY_STATE,
+	capacityConfig,
+	capacityReset,
+	capacityStatus,
+	capacityTurnEnd,
+	invalidCapacityFields,
+} from "./capacity.ts";
 import { prepareDistillSource } from "./distill.ts";
 import { stashDurableContribution } from "./durable.ts";
 import { resumeCommand, stateLabel } from "./format.ts";
@@ -83,11 +92,9 @@ type StashExtensionApi = Pick<
 
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
 
-async function checkpointDirectory(cwd: string): Promise<string> {
-	const handovers = resolve(storeDir());
-	const override = process.env.PI_STASH_CHECKPOINT_DIR?.trim();
-	const directory = override ? resolve(cwd, override) : join(handovers, "checkpoints");
-	if (directory === handovers) throw new Error("The checkpoint directory must differ from PI_STASH_DIR.");
+async function checkpointDirectory(): Promise<string> {
+	const { dir: handovers, checkpointDir: directory } = readSettings(settings, { agentDir: getAgentDir() }).values;
+	if (directory === handovers) throw new Error("The checkpoint directory must differ from stash.dir.");
 	await mkdir(directory, { recursive: true, mode: 0o700 });
 	const checkpointPath = await realpath(directory);
 	let handoverPath: string | undefined;
@@ -96,7 +103,7 @@ async function checkpointDirectory(cwd: string): Promise<string> {
 	} catch (error) {
 		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
 	}
-	if (checkpointPath === handoverPath) throw new Error("The checkpoint directory must differ from PI_STASH_DIR.");
+	if (checkpointPath === handoverPath) throw new Error("The checkpoint directory must differ from stash.dir.");
 	return directory;
 }
 const safe = (value: string) => sanitizeTerminalText(value).text;
@@ -496,11 +503,20 @@ async function applyBrowserAction(ctx: ExtensionContext, id: string, action: str
 
 export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: string) => Promise<void> }) {
 	const { registerTool, publish } = toolDisplayPublisher(pi);
-	pi.events.emit("durable:contribution", stashDurableContribution(fileURLToPath(import.meta.url)));
+	const publicationOptions = {
+		agentDir: getAgentDir(),
+		validate: (snapshot: { values: StashSettings }) => invalidCapacityFields(snapshot.values),
+	};
+	const disposeSettings = publishSettings(pi.events, settings, publicationOptions);
+	pi.on("session_shutdown", disposeSettings);
+	pi.events.emit(
+		"durable:contribution",
+		stashDurableContribution(fileURLToPath(import.meta.url), pi.events, disposeSettings),
+	);
 	let capacityErrorReported = false;
 	pi.on("turn_end", (event, ctx) => {
 		try {
-			return capacityTurnEnd(event, ctx, capacityConfig(process.env));
+			return capacityTurnEnd(event, ctx, capacityConfig(readSettings(settings, { agentDir: getAgentDir() }).values));
 		} catch (error) {
 			if (capacityErrorReported) return;
 			capacityErrorReported = true;
@@ -525,7 +541,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 				// The same deterministic redaction applies to model-supplied stash_write
 				// params: an artifact is durable, so no credential-shaped value may be
 				// published on the model's discretion on any write path.
-				const destination = params.checkpoint ? await checkpointDirectory(ctx.cwd) : storeDir();
+				const destination = params.checkpoint ? await checkpointDirectory() : storeDir();
 				if (signal?.aborted) throw new Error("stash_write cancelled");
 				const { record, path, redactions } = await writeStash(destination, {
 					...params,
@@ -808,7 +824,7 @@ function capacityCommand(
 	}
 	let message: string;
 	try {
-		const config = capacityConfig(process.env);
+		const config = capacityConfig(readSettings(settings, { agentDir: getAgentDir() }).values);
 		if (parts[1] === "reset") pi.appendEntry(CAPACITY_STATE, capacityReset(ctx));
 		message = capacityStatus(ctx, config);
 	} catch (error) {

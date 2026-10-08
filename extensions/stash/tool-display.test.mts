@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { it } from "node:test";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
@@ -6,7 +9,18 @@ import register from "./index.ts";
 type Display = Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">;
 type Publication = { version: 1; tools: Display[] };
 
-it("publishes only its registered display fields at load and on current requests", () => {
+it("publishes only its registered display fields at load and on current requests", (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "stash-display-settings-"));
+	const saved = ["PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	process.env.PI_HARNESS_FILE = join(agentDir, "harness.json");
+	t.after(() => {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		rmSync(agentDir, { recursive: true, force: true });
+	});
 	const registered = new Map<string, ToolDefinition>();
 	const listeners = new Map<string, (data: unknown) => void>();
 	const publications: Publication[] = [];
@@ -15,7 +29,7 @@ it("publishes only its registered display fields at load and on current requests
 	const pi = {
 		events: {
 			on(channel: string, handler: (data: unknown) => void) {
-				order.push(channel);
+				if (channel === "harness:tool-display:request") order.push(channel);
 				listeners.set(channel, handler);
 				const unsubscribe = () => { listeners.delete(channel); };
 				cleanups.push(unsubscribe);

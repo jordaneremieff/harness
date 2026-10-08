@@ -28,6 +28,15 @@ const config = { enabled: true, checkpointPercent: 60, decisionPercent: 70 };
 async function runtime(t: TestContext, options: { stash?: boolean; abortAtBoundary?: boolean } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "stash-capacity-runtime-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
+	const savedContext = ["PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	process.env.PI_HARNESS_FILE = join(root, "agent", "harness.json");
+	t.after(() => {
+		for (const [key, value] of savedContext) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	});
 	const faux = fauxProvider({
 		provider: "capacity-fixture",
 		models: [{ id: "fixture", contextWindow: 10_000, maxTokens: 512 }],

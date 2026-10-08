@@ -6,12 +6,12 @@
  */
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, defineExtension, Harness, hook, ToolTask } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -41,6 +41,7 @@ async function main(): Promise<number> {
 	const [storagePath, mode, storeDir, workdir, artifactId, prompt, requestId] = process.argv.slice(2);
 	if (!storagePath || !mode || !storeDir || !workdir || !prompt || !requestId) return 2;
 	process.env.PI_STASH_DIR = storeDir;
+	process.env.PI_HARNESS_FILE = join(workdir, "harness.json");
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -58,7 +59,7 @@ async function main(): Promise<number> {
 		inventory: { contributions: [], ordinaryOnly: [] },
 	};
 	const registry = createRegistry();
-	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)));
+	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {});
 	registry.install(contribution.create(host));
 	registry.install(blockingHook(mode === "write" ? "stash_write" : "stash_complete"));
 	faux.setResponses([

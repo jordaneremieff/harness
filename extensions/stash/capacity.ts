@@ -7,6 +7,8 @@ import type {
 	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 
+import type { StashSettings } from "./settings.ts";
+
 export const CAPACITY_STATE = "stash-capacity-state";
 export const CAPACITY_REQUEST = "stash-capacity-request";
 const MAX_ANCESTORS = 4096;
@@ -31,28 +33,20 @@ export interface CapacityState {
 
 type CapacityContext = Pick<ExtensionContext, "sessionManager" | "getContextUsage" | "signal">;
 
-function configuredNumber(env: NodeJS.ProcessEnv, key: string): number | undefined {
-	const raw = env[key]?.trim();
-	if (!raw) return;
-	const value = Number(raw);
-	if (!Number.isFinite(value) || value <= 0) throw new Error(`${key} must be a positive number.`);
-	return value;
+export function invalidCapacityFields(values: StashSettings): (keyof StashSettings & string)[] {
+	return values.capacity && values.checkpointPercent >= values.decisionPercent
+		? ["checkpointPercent", "decisionPercent"]
+		: [];
 }
 
-export function capacityConfig(env: NodeJS.ProcessEnv): CapacityConfig {
-	const enabled = env.PI_STASH_CAPACITY?.trim() || "1";
-	if (enabled !== "0" && enabled !== "1") throw new Error("PI_STASH_CAPACITY must be 0 or 1.");
-	if (enabled === "0") return { enabled: false, checkpointPercent: 85, decisionPercent: 90 };
-	const checkpointPercent = configuredNumber(env, "PI_STASH_CHECKPOINT_PERCENT") ?? 85;
-	const decisionPercent = configuredNumber(env, "PI_STASH_DECISION_PERCENT") ?? 90;
-	if (checkpointPercent >= decisionPercent || decisionPercent > 100) {
-		throw new Error("Stash capacity thresholds must satisfy 0 < checkpoint < decision <= 100.");
+export function capacityConfig(values: StashSettings): CapacityConfig {
+	const { capacity: enabled, checkpointPercent, decisionPercent, intakeTokenBudget } = values;
+	if (invalidCapacityFields(values).length) {
+		throw new Error(
+			"Stash settings stash.checkpointPercent must be below stash.decisionPercent. Capacity observation is unavailable until the thresholds are corrected.",
+		);
 	}
-	const intakeTokenBudget = configuredNumber(env, "PI_STASH_INTAKE_TOKEN_BUDGET");
-	if (intakeTokenBudget !== undefined && !Number.isSafeInteger(intakeTokenBudget)) {
-		throw new Error("PI_STASH_INTAKE_TOKEN_BUDGET must be a positive safe integer.");
-	}
-	return { enabled: true, checkpointPercent, decisionPercent, intakeTokenBudget };
+	return { enabled, checkpointPercent, decisionPercent, intakeTokenBudget };
 }
 
 function freshState(sessionId: string): CapacityState {

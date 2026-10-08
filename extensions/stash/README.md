@@ -53,9 +53,10 @@ commands provide the non-browser path.
 ## Configuration
 
 See [Storage](#storage) for `PI_STASH_DIR` and the default artifact location,
-[Capacity configuration](#capacity-configuration) for checkpoint directories and
+[Machine settings](#machine-settings) for checkpoint directories and
 pressure thresholds, and [Distillation model and thinking](#distillation-model-and-thinking)
-for model selection. Each table owns its defaults and refusal rules. The
+for model selection. The declaration owns defaults; each section describes its
+domain constraints. The
 [configuration convention](../../docs/conventions/extension-config.md) owns
 environment setup.
 
@@ -407,19 +408,41 @@ or a safe remaining budget. Without an explicit intake budget, unknown usage
 produces no automatic request; governing manual checkpoint instructions still
 apply.
 
-### Capacity configuration
+### Machine settings
 
-Environment variables are read when the hook or command runs. Defaults are
-portable; choose local thresholds and a checkpoint directory through the
-[extension configuration convention](../../docs/conventions/extension-config.md).
+The passive `settings.ts` declaration uses the
+[settings contract](../../settings/README.md): environment input, then the
+`stash` section in `<agentDir>/harness.json`, then the declared default.
+Invalid selected scalar input uses its safe default and reports the rejected
+source. It never falls through to a file value beneath an invalid override.
+Environment booleans accept `0`, `1`, `false`, and `true`; file values use JSON
+booleans. Hooks and commands read fresh capacity values. The native host captures
+its handover directory at creation; ordinary operations read the directory when
+invoked. A fresh registry request publishes current configured values, not proof
+that an existing runtime applied them.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `PI_STASH_CAPACITY` | `1` | `0` disables observation and requests; only `0` and `1` are accepted. |
-| `PI_STASH_CHECKPOINT_PERCENT` | `85` | Positive checkpoint threshold, strictly below the decision threshold. |
-| `PI_STASH_DECISION_PERCENT` | `90` | Continuity-decision threshold, at most `100`. |
-| `PI_STASH_INTAKE_TOKEN_BUDGET` | Unset | Positive safe integer for the unknown-usage text-intake trigger. |
-| `PI_STASH_CHECKPOINT_DIR` | `<stashDir>/checkpoints` | Working-checkpoint directory. Relative overrides resolve against the invoking session's cwd. |
+<!-- harness:settings:start -->
+| Key | Environment | Type | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| dir | `PI_STASH_DIR` | path | &lt;agentDir&gt;/stash | none | Handover store directory. |
+| capacity | `PI_STASH_CAPACITY` | boolean | true | none | Enable capacity observation and requests. |
+| checkpointPercent | `PI_STASH_CHECKPOINT_PERCENT` | number | 85 | max 100 | Positive checkpoint threshold, strictly below the decision threshold. |
+| decisionPercent | `PI_STASH_DECISION_PERCENT` | number | 90 | max 100 | Positive continuity-decision threshold, at most 100. |
+| intakeTokenBudget | `PI_STASH_INTAKE_TOKEN_BUDGET` | integer | unset | min 1 | Positive token budget for the unknown-usage text-intake trigger. |
+| checkpointDir | `PI_STASH_CHECKPOINT_DIR` | path | &lt;dir&gt;/checkpoints | none | Working-checkpoint directory, separate from the handover store. |
+<!-- harness:settings:end -->
+
+Both thresholds must be positive. When capacity is enabled, the effective
+checkpoint threshold must be strictly below the decision threshold. A reversed
+or equal pair stops capacity observation with a domain error and marks both
+published fields invalid. Stash does not silently adjust either scalar value.
+Other tools remain available. Disabling capacity skips this relation check.
+
+All relative paths resolve against the host's agent directory, not the invoking
+session's cwd. The checkpoint default derives from the effective handover
+directory. Neither paths nor the machine document expand `~` or environment
+variables. The settings document does not contain artifacts, capacity episodes,
+distillation jobs, or provider/model selection.
 
 A working checkpoint uses the same bounded Markdown format, redaction, private
 permissions, and no-clobber publication as a handover. It lives in a separate
@@ -608,8 +631,10 @@ request text (UTF-16 characters / 4) is the estimate and the notice says so.
 Neither form is a safe remaining budget. When the context window is unknown,
 the optional `PI_STASH_INTAKE_TOKEN_BUDGET` trigger applies instead; without a
 budget, unknown use produces no automatic request. Thresholds, the budget, and
-`PI_STASH_CAPACITY` are read from the same environment variables as the
-ordinary hook.
+capacity enablement use the same settings declaration as the ordinary hook,
+with the native host's agent directory. Native creation replaces the factory's
+settings publisher on the captured service-load event bus and releases it through
+`host.onClose`; only one publisher remains active for the slice.
 
 ### Command and distillation
 
@@ -662,7 +687,11 @@ Durable differences from the ordinary entrypoint:
 
 ## Storage
 
-Artifacts live at `<agentDir>/stash/`, normally `~/.pi/agent/stash/`. `PI_STASH_DIR` overrides the location for tests and isolated deployments. `PI_SESSION_ID` is read as a fallback when the session manager supplies no session id.
+Artifacts live at the effective `stash.dir`, default `<agentDir>/stash/`. Set
+`dir` in the machine document or use `PI_STASH_DIR` to override it. Relative
+values resolve against the host's agent directory. `PI_SESSION_ID` is host
+context, not a machine setting; it supplies a fallback when the session manager
+has no session id.
 
 Flat files keep handovers independent of session lifetimes and project checkouts,
 with plain-text content available for direct inspection.
