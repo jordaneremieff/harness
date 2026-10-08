@@ -39,9 +39,19 @@ mechanism without amending this document first.
 
 Each setting has a lower-camelCase key, a `PI_*` environment name, a type, a
 description, and an optional default. The environment name is
-`PI_<SLICE>_<KEY>` in upper snake case unless the slice declares an existing
-name explicitly. Types are `string`, `path`, `integer`, `number`, `boolean`,
-`enum`, and `json`.
+`PI_<SLICE>_<KEY>` in upper snake case, with each camelCase boundary written
+as an underscore (for example `checkInMinutes` in slice `agent` is
+`PI_AGENT_CHECK_IN_MINUTES`). Types are `string`, `path`, `integer`, `number`,
+`boolean`, `enum`, and `json`.
+
+A default is static or derived. A static default is the declaration's
+`default` value. A slice computes a derived default from the agent directory,
+a location relative to the slice's own files, or the effective values of the
+slice's own nonsecret settings after their selection; for example, a
+checkpoint directory follows an overridden store directory. `defaultText`
+documents a derived default. A dependency cycle, a failed derivation, or a
+default that fails the field's own validation is a declaration defect: the
+read throws an error that names the field and carries no validator text.
 
 Each field selects **present environment value > document field > default**.
 Presence includes an empty string. Selected input that fails validation returns
@@ -54,6 +64,10 @@ and produces an `invalid` diagnostic that names the rejected source.
   numbers are finite; declared `min` and `max` are inclusive.
 - `json` environment values contain one JSON value; the owning slice's pure
   validator decides structure for both sources.
+- A slice may add semantic checks to any field beyond its declared bounds, for
+  example a nonblank token or a strictly positive number. A value that fails
+  such a check is invalid input under the rule above: safe default, status
+  `invalid`, and an `invalid` diagnostic that names the rejected source.
 - Text rejects control and format characters and unpaired surrogates, with a
   default maximum length of 4096. Paths and secrets require at least one
   character. A relative path resolves against the agent directory; an
@@ -165,12 +179,13 @@ export function readSettings(options: { agentDir: string; env?: Readonly<Record<
 export function publishSettings(bus: SettingsBus, options: { agentDir: string; env?: Readonly<Record<string, string | undefined>> }): () => void;
 ```
 
-Field entries carry `type`, `env` (always explicit), `description`, and
-optionally `default` (a static JSON value the reader uses), `defaultText`
-(README text for a default the slice derives at run time), `secret`,
-`absolute`, `min`, `max`, `minLength`, `maxLength`, and `choices`. A field has
-at most one of `default` and `defaultText`. New environment names follow
-`PI_<SLICE>_<KEY>` in upper snake case. Without injected `env`, a read uses the
+Field entries carry `type`, `env` (always explicit and equal to the
+`PI_<SLICE>_<KEY>` name above), `description`, and optionally `default` (a
+static JSON value the reader uses), `defaultText` (README text for a default
+the slice derives at run time), `secret`, `absolute`, `min`, `max`,
+`minLength`, `maxLength`, and `choices`. A field has at most one of `default`
+and `defaultText`. Semantic checks and derivations live in the slice's reader
+code, not in the plain declaration. Without injected `env`, a read uses the
 current `process.env`. A slice publishes its own cross-field checks inside its
 `publishSettings`; the function takes no validation callback.
 
@@ -193,9 +208,12 @@ applied a value. It carries no execution capability, secret value, or local
 at most 128 records and 385 diagnostics and serializes to at most 262144
 bytes.
 
-The registry consumer creates a fresh collection per query: it subscribes to
-`harness:settings:publish`, then emits a request. It validates each envelope and
-record defensively, ignores malformed publications and counts them, rejects any
+The registry consumer keeps one collection per registry runtime: it
+subscribes to `harness:settings:publish` before it emits its first request,
+clears its previous publications and emits a new request for each query, and
+unsubscribes when its runtime ends (`session_shutdown` or host close). The bus
+delivers synchronously, so the query reads the responses that the request
+produced. It validates each envelope and record defensively, ignores malformed publications and counts them, rejects any
 secret record that carries a value, applies the publication bounds above and
 keeps at most 64 slices (counting further new slices as omitted), copies only
 the fields above, and replaces each slice's previous publication. Coverage is
@@ -225,16 +243,22 @@ Do not hand-edit the rows.
   It imports each `settings.ts` and validates the `settings` export: slice name
   equal to the directory, valid keys, types, bounds, and choices, explicit and
   unique `PI_*` names, at most one of `default` and `defaultText`, and secrets
-  as strings without defaults. It does not reject reader or publisher bodies in
-  the module. Context inputs `PI_AGENT_DIR`, `PI_AGENT_SESSIONS_DIR`,
+  as strings without defaults, and each `env` equal to its `PI_<SLICE>_<KEY>`
+  name. It does not reject reader or publisher bodies in the module. It imports
+  each module, so it cannot prove that an import performs no work; review
+  enforces that rule. Context inputs `PI_AGENT_DIR`, `PI_AGENT_SESSIONS_DIR`,
   `PI_MANAGED_INSTALL_ROOT`, `PI_SESSION_ID`, `PI_HARNESS_FILE`, and
   `PI_*_TEST_*` are not settings.
-- A repository conformance test runs every declaring slice's `readSettings` and
-  `publishSettings` against the cases of this contract: defaults, document
-  values, environment precedence, invalid input, unknown keys, secrets,
-  malformed and missing documents, and the publication handshake.
-- Slice-local tests cover slice-specific semantics, such as session flags,
-  cross-field checks, and structured validators. No slice test imports another
+- `scripts/settings-contract.test.mts`, part of `npm test`, discovers every
+  `extensions/*/settings.ts` and runs its `readSettings` and `publishSettings`
+  against the cases of this contract with temporary agent directories and a
+  fake synchronous bus: defaults, document values, environment precedence,
+  invalid input, unknown keys, secrets, malformed and missing documents, a
+  section that is not an object, relative and absolute `PI_HARNESS_FILE`, and
+  the publication handshake including unsubscribe.
+- Slice-local tests cover slice-specific semantics: session flags, semantic
+  checks, derived defaults with an overridden dependency, cross-field
+  publication checks, and structured validators. No slice test imports another
   slice or asserts its private behavior.
 
 ## Operator-controlled application state
