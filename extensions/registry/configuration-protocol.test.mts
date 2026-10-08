@@ -20,6 +20,35 @@ test("publication parsing copies only protocol fields and sanitizes diagnostic m
 	assert.deepEqual(parsed.records[0].value, { nested: [1, true, null] });
 });
 
+test("publication parsing retains records and diagnostics beside a safely truncated Unicode key", () => {
+	const input = publication();
+	const key = `${"x".repeat(63)}😀`;
+	const prefix = `${input.slice}.`;
+	const field = prefix + "x".repeat(63);
+	input.diagnostics = [
+		fact,
+		{ field, source: "file", code: "unknown", message: "Unknown setting in this section." },
+		{ field: "example.count", source: "env", code: "invalid", message: "Selected input is invalid; the safe default is in effect." },
+	];
+	const parsed = parseSettingsPublication(input);
+	assert.ok(parsed);
+	assert.deepEqual(parsed.records, input.records);
+	assert.deepEqual(parsed.diagnostics, [
+		{ ...fact, message: "Configuration document is invalid or unavailable." },
+		...input.diagnostics.slice(1),
+	]);
+	assert.equal(parsed.diagnostics[1].field.slice(prefix.length).length, 63);
+	assert.doesNotMatch(parsed.diagnostics[1].field, /[\ud800-\udfff]/u);
+	input.diagnostics[1].field = prefix + key.slice(0, 64);
+	assert.equal(parseSettingsPublication(input), undefined);
+	input.diagnostics[1].field = `${prefix}${"x".repeat(62)}😀`;
+	const completePair = parseSettingsPublication(input);
+	assert.ok(completePair);
+	assert.deepEqual(completePair.records, parsed.records);
+	assert.deepEqual(completePair.diagnostics.filter((issue) => issue.code !== "unknown"), parsed.diagnostics.filter((issue) => issue.code !== "unknown"));
+	assert.equal(completePair.diagnostics[1].field, input.diagnostics[1].field);
+});
+
 test("publication parsing rejects malformed envelopes, records, sources and diagnostics", () => {
 	const changes: ((input: SettingsPublication) => void)[] = [
 		(input) => { Object.assign(input, { version: 2 }); },
