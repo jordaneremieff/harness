@@ -21,8 +21,9 @@ continuation, [Source links](#source-links) for link discovery, and
 
 ## Configuration
 
-The [settings contract](../../docs/conventions/extension-config.md) reads the optional machine
-document `<agentDir>/harness.json` and the process environment. The
+The [settings contract](../../docs/conventions/extension-config.md) defines precedence and
+validation. This extension's `settings.ts` reads the optional machine document
+`<agentDir>/harness.json` and the process environment. The
 `web_search` subscription token is environment-only: a document `brave.apiKey`
 entry is rejected with a diagnostic, even when an environment token is set.
 Public settings records show only set/unset, never credential bytes.
