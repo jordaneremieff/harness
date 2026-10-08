@@ -1,24 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 import { Check } from "typebox/value";
 import { createEventBus, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { defineSettings, integerSetting, publishSettings, readSettings, settingsPublication, stringSetting, SETTINGS_PUBLISH } from "../../settings/index.ts";
+import { SETTINGS_PUBLISH } from "./configuration-protocol.ts";
+import { fakePublisher, publication } from "./configuration-fixtures.mts";
 import { settingsReader, type SettingsSnapshot } from "./configuration.ts";
 import { lookup } from "./lookup.ts";
 import { parseQuery } from "./query.ts";
 import { RegistryOutputSchema } from "./output.ts";
 import registerRegistry from "./index.ts";
 
-const declaration = defineSettings("example", {
-	count: integerSetting({ default: 2, min: 1, description: "A bounded count." }),
-	token: stringSetting({ secret: true, description: "An environment-only secret." }),
-});
-function snapshot(agentDir: string, env: Record<string, string | undefined> = {}, declared = declaration): SettingsSnapshot {
-	return { publications: [settingsPublication(readSettings(declared, { agentDir, env }))], available: true,
-		collection: { status: "available", slices: [declared.slice], malformed: 0, omitted: 0 } };
+function snapshot(): SettingsSnapshot {
+	return { publications: [publication()], available: true,
+		collection: { status: "available", slices: ["example"], malformed: 0, omitted: 0 } };
 }
 const hostSnapshot = { tools: [], activeTools: [], commands: [], observation: null,
 	availability: { tools: false, activeTools: false, commands: false }, at: 1 };
@@ -31,14 +25,19 @@ function verify(result: Awaited<ReturnType<typeof lookup>>) {
 }
 
 test("setting queries inspect fresh public snapshots, origins and diagnostics without secret bytes", async () => {
-	const agentDir = await mkdtemp(join(tmpdir(), "registry-settings-"));
 	const bus = createEventBus();
-	const env = { PI_EXAMPLE_COUNT: "7", PI_EXAMPLE_TOKEN: "private-fixture-value" };
-	const dispose = publishSettings(bus, declaration, { agentDir, env });
+	const current = publication();
+	current.records[0] = { ...current.records[0], value: 7, origin: "env" };
+	current.records[1] = { ...current.records[1], secretState: "set", status: "valid", origin: "env" };
+	current.source.status = "loaded";
+	current.diagnostics = [
+		{ field: "example.token", source: "file", code: "secret", message: "Secret settings are environment-only; document input was rejected." },
+		{ field: "example.unknown", source: "file", code: "unknown", message: "Unknown setting in this section." },
+	];
+	const dispose = fakePublisher(bus, () => current);
 	const reader = settingsReader(bus);
 	try {
-		await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, example: { count: 5, token: "rejected-private-value", unknown: true } }));
-		const inspect = (params: Record<string, unknown>) => lookup({ params, snapshot: hostSnapshot, settings: snapshot(agentDir, env), session: {}, epoch: "fixture" });
+		const inspect = (params: Record<string, unknown>) => lookup({ params, snapshot: hostSnapshot, settings: reader.read(), session: {}, epoch: "fixture" });
 		const first = await inspect({ kind: "setting", limit: 1 });
 		const rows = verify(first);
 		assert.equal(first.outcome, "ok");
@@ -52,28 +51,31 @@ test("setting queries inspect fresh public snapshots, origins and diagnostics wi
 		assert.equal(continuation.outcome, "ok", "observation time does not invalidate cursors");
 		assert.equal(verify(continuation)[0].secretState, "set");
 		assert.equal(Object.hasOwn(verify(continuation)[0], "value"), false);
-		assert.doesNotMatch(JSON.stringify([first, continuation]), /private-fixture-value|rejected-private-value/);
 		const originalCursor = first.details.cursor;
-		env.PI_EXAMPLE_TOKEN = "another-private-value";
-		await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, example: { count: 5, token: "different-rejected-secret", unknown: true } }));
-		assert.equal((await inspect({ cursor: originalCursor })).outcome, "ok", "secret bytes and document digest do not enter fingerprints");
-		env.PI_EXAMPLE_COUNT = "invalid";
+		current.source.observedAt = "2026-01-02T00:00:00.000Z";
+		current.source.digest = "a".repeat(64);
+		assert.equal((await inspect({ cursor: originalCursor })).outcome, "ok", "observation time and document digest do not enter fingerprints");
+		current.records[0] = { ...current.records[0], value: 2, status: "invalid", origin: "default" };
+		current.diagnostics.push({ field: "example.count", source: "env", code: "invalid", message: "Selected input is invalid; the safe default is in effect." });
 		const rejected = await inspect({ name: "example.count", kind: "setting" });
 		assert.equal(verify(rejected)[0].status, "invalid");
 		assert.equal(verify(rejected)[0].value, 2);
 		assert.equal((verify(rejected)[0].diagnostics as unknown[]).length, 1);
 		assert.equal((await inspect({ cursor: originalCursor })).outcome, "stale_cursor");
-		delete (env as { PI_EXAMPLE_COUNT?: string }).PI_EXAMPLE_COUNT;
+		current.records[0] = { ...current.records[0], value: 5, status: "valid", origin: "file" };
+		current.diagnostics.pop();
 		const file = await inspect({ kind: "setting", search: "bounded" });
 		assert.equal(verify(file)[0].origin, "file");
 		assert.equal(verify(file)[0].value, 5);
 		assert.equal(verify(await inspect({ kind: "setting", name: "example", match: "substring" })).length, 2);
-		await writeFile(join(agentDir, "harness.json"), "{");
+		current.source.status = "invalid";
+		current.records[0] = { ...current.records[0], value: 2, origin: "default" };
+		current.diagnostics = [{ field: "document", source: "file", code: "document", message: "Configuration document is invalid or unavailable." }];
 		const malformed = await inspect({ kind: "setting" });
 		assert.match(malformed.text, /example.document: file document/);
 		assert.equal(verify(malformed)[0].origin, "default");
 		assert.equal((await inspect({ kind: "setting", name: "absent" })).outcome, "missing");
-	} finally { reader.dispose(); dispose(); bus.clear(); await rm(agentDir, { recursive: true, force: true }); }
+	} finally { reader.dispose(); dispose(); bus.clear(); }
 });
 
 test("setting source absence and collection failure have explicit coverage", async () => {
@@ -97,24 +99,21 @@ test("setting source absence and collection failure have explicit coverage", asy
 
 test("setting output bounds drop whole rows or report a blocked page", async () => {
 	const bus = createEventBus();
-	const agentDir = await mkdtemp(join(tmpdir(), "registry-settings-bounds-"));
-	const huge = defineSettings("example", { value: stringSetting({ default: "x".repeat(20000), maxLength: 24000, description: "Large value." }) });
-	const dispose = publishSettings(bus, huge, { agentDir, env: {} });
+	const huge = publication();
+	huge.records = [{ ...huge.records[0], name: "example.value", key: "value", type: "string", env: "PI_EXAMPLE_VALUE", value: "x".repeat(20000) }];
+	const dispose = fakePublisher(bus, () => huge);
 	const reader = settingsReader(bus);
 	try {
-		const result = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot, settings: {
-			publications: [settingsPublication(readSettings(huge, { agentDir, env: {} }))], available: true,
-			collection: { status: "available", slices: [huge.slice], malformed: 0, omitted: 0 },
-		}, session: {}, epoch: "fixture" });
+		const result = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot, settings: reader.read(), session: {}, epoch: "fixture" });
 		verify(result);
 		assert.equal(result.details.pageBlocked, true);
 		assert.equal(result.details.returnedRecords, 0);
 		assert.equal(result.details.cursor, undefined);
-	} finally { reader.dispose(); dispose(); bus.clear(); await rm(agentDir, { recursive: true, force: true }); }
+	} finally { reader.dispose(); dispose(); bus.clear(); }
 });
 
 test("partial publication coverage prevents absence and invalidates cursors without rejected bytes", async () => {
-	const configured = snapshot("/fixtures", { PI_EXAMPLE_COUNT: "3" });
+	const configured = snapshot();
 	const run = (params: Record<string, unknown>, settings = configured) => lookup({ params, snapshot: hostSnapshot, settings, session: {}, epoch: "fixture" });
 	const first = await run({ kind: "setting", limit: 1 });
 	assert.equal(typeof first.details.cursor, "string");
@@ -127,10 +126,12 @@ test("partial publication coverage prevents absence and invalidates cursors with
 	assert.equal((await run({ cursor: first.details.cursor }, partial)).outcome, "stale_cursor");
 });
 
-test("shared collector rejects secret-bearing malformed publications with sanitized coverage", () => {
+test("local collector rejects secret-bearing malformed publications with sanitized coverage", () => {
 	const bus = createEventBus();
 	bus.on("harness:settings:request", () => {
-		bus.emit(SETTINGS_PUBLISH, { version: 1, slice: "example", records: [{ secret: true, value: "private-rejected-value" }] });
+		const malformed = publication();
+		malformed.records[1].value = "private-rejected-value";
+		bus.emit(SETTINGS_PUBLISH, malformed);
 	});
 	const reader = settingsReader(bus);
 	try {
@@ -142,7 +143,7 @@ test("shared collector rejects secret-bearing malformed publications with saniti
 });
 
 test("setting pages preserve owning relation diagnostics without altering scalar values", async () => {
-	const configured = snapshot("/fixtures");
+	const configured = snapshot();
 	configured.publications[0].records[0].status = "invalid";
 	configured.publications[0].diagnostics = JSON.parse('[{"field":"example.count","source":"default","code":"relation","message":"Configured settings violate an owning constraint."}]');
 	const result = await lookup({ params: { kind: "setting", name: "example.count" }, snapshot: hostSnapshot, settings: configured, session: {}, epoch: "fixture" });
@@ -153,7 +154,7 @@ test("setting pages preserve owning relation diagnostics without altering scalar
 });
 
 test("setting metadata keeps Unicode line separators off terminal rows", async () => {
-	const configured = snapshot("/fixtures");
+	const configured = snapshot();
 	configured.publications[0].records[0].description = "first\u2028second\u2029third";
 	configured.publications[0].source.path = "/fixtures/first\u2028second.json";
 	const result = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot, settings: configured, session: {}, epoch: "fixture" });
@@ -169,15 +170,23 @@ test("setting selectors reject content scans and tool/model-only parameters", ()
 });
 
 test("ordinary registry refreshes the public bus only for valid live setting queries and releases its collector", async () => {
-	const agentDir = await mkdtemp(join(tmpdir(), "registry-ordinary-settings-"));
+	const agentDir = "/fixtures";
 	const bus = createEventBus();
 	let requests = 0;
 	bus.on("harness:settings:request", () => { requests++; });
-	const env = { PI_EXAMPLE_COUNT: "9" };
-	const dispose = publishSettings(bus, declaration, { agentDir, env });
+	const current = publication();
+	current.records[0] = { ...current.records[0], value: 9, origin: "env" };
+	const dispose = fakePublisher(bus, () => current);
+	let subscriptions = 0;
+	let releases = 0;
+	const observedBus = { ...bus, on(channel: string, handler: (data: unknown) => void) {
+		const unsubscribe = bus.on(channel, handler);
+		if (channel === SETTINGS_PUBLISH) subscriptions++;
+		return () => { if (channel === SETTINGS_PUBLISH) releases++; unsubscribe(); };
+	} };
 	const handlers = new Map<string, () => Promise<void>>();
 	let tool: ToolDefinition | undefined;
-	registerRegistry({ events: bus, on: (event: string, callback: () => Promise<void>) => handlers.set(event, callback),
+	registerRegistry({ events: observedBus, on: (event: string, callback: () => Promise<void>) => handlers.set(event, callback),
 		registerTool: (value: ToolDefinition) => { tool = value; }, getAllTools: () => [], getActiveTools: () => [], getCommands: () => [],
 	} as unknown as ExtensionAPI);
 	assert.ok(tool);
@@ -186,16 +195,22 @@ test("ordinary registry refreshes the public bus only for valid live setting que
 		const result = await tool.execute("settings", { kind: "setting", name: "example.count" }, undefined, undefined, context);
 		assert.equal((result.details as { records: { value: number }[] }).records[0].value, 9);
 		assert.equal(requests, 1);
-		env.PI_EXAMPLE_COUNT = "10";
+		current.records[0].value = 10;
 		const refreshed = await tool.execute("settings", { kind: "setting" }, undefined, undefined, context);
 		assert.equal((refreshed.details as { records: { value: number }[] }).records[0].value, 10);
 		await tool.execute("cancel", { kind: "setting" }, AbortSignal.abort(), undefined, context);
 		await tool.execute("invalid", { kind: "setting", contains: "value" }, undefined, undefined, context);
 		assert.equal(requests, 2);
+		assert.equal(subscriptions, 1);
+		assert.equal(releases, 0);
 		await handlers.get("session_shutdown")?.();
+		assert.equal(releases, 1);
 		bus.emit(SETTINGS_PUBLISH, { private: "ignored" });
 		const stopped = await tool.execute("stopped", { kind: "setting" }, undefined, undefined, context);
 		assert.equal((stopped.details as { outcome: string }).outcome, "cancelled");
 		assert.equal(requests, 2);
-	} finally { dispose(); bus.clear(); await rm(agentDir, { recursive: true, force: true }); }
+		assert.equal(subscriptions, 1);
+		await handlers.get("session_shutdown")?.();
+		assert.equal(releases, 1);
+	} finally { dispose(); bus.clear(); }
 });

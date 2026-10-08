@@ -23,7 +23,7 @@ import {
 } from "./durable.ts";
 import { RegistryOutputSchema } from "./output.ts";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
-import { defineSettings, integerSetting, publishSettings } from "../../settings/index.ts";
+import { fakePublisher, publication } from "./configuration-fixtures.mts";
 const settingsBus = createEventBus();
 
 const ROOT = await mkdtemp(join(tmpdir(), "registry-durable-"));
@@ -572,14 +572,22 @@ test("native setting queries use the captured host bus and release collection on
 	const { faux, models, services } = fixture();
 	const bus = createEventBus();
 	const directory = await mkdtemp(join(tmpdir(), "registry-native-settings-"));
-	const declaration = defineSettings("example", { count: integerSetting({ default: 2, description: "A fixture count." }) });
-	const dispose = publishSettings(bus, declaration, { agentDir: directory, env: {} });
-	await writeFile(join(directory, "harness.json"), JSON.stringify({ version: 1, example: { count: 8 } }));
+	const current = publication();
+	current.source = { ...current.source, path: join(directory, "harness.json"), status: "loaded" };
+	current.records = [{ ...current.records[0], value: 8, origin: "file" }];
+	const dispose = fakePublisher(bus, () => current);
 	const close: (() => void | Promise<void>)[] = [];
 	let requests = 0;
 	bus.on("harness:settings:request", () => { requests++; });
+	let subscriptions = 0;
+	let releases = 0;
+	const observedBus = { ...bus, on(channel: string, handler: (data: unknown) => void) {
+		const unsubscribe = bus.on(channel, handler);
+		if (channel === "harness:settings:publish") subscriptions++;
+		return () => { if (channel === "harness:settings:publish") releases++; unsubscribe(); };
+	} };
 	const nativeHost = { ...host(services), agentDir: directory, onClose: (callback: () => void | Promise<void>) => { close.push(callback); } };
-	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, bus).create(nativeHost);
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, observedBus).create(nativeHost);
 	const { harness, root } = await open(models, extension);
 	try {
 		faux.setResponses([fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "setting" })], { stopReason: "toolUse" }), fauxAssistantMessage("Inspected.")]);
@@ -593,12 +601,24 @@ test("native setting queries use the captured host bus and release collection on
 		assert.equal(records[0].origin, "file");
 		assert.equal(records[0].documentPath, join(directory, "harness.json"));
 		assert.equal(requests, 1);
+		assert.equal(subscriptions, 1);
+		assert.equal(releases, 0);
+		faux.setResponses([fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "refresh" })], { stopReason: "toolUse" }), fauxAssistantMessage("Refreshed.")]);
+		current.records[0].value = 9;
+		await (await root.submit({ type: "input", content: "Inspect configuration again." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const refreshed = await root.context(BACKGROUND_CONTEXT);
+		assert.equal(recordsOf(toolResult(refreshed.messages, "refresh"))[0].value, 9);
+		assert.equal(requests, 2);
+		assert.equal(subscriptions, 1);
 		assert.deepEqual(objectOf(objectOf(settings.details).structuredContent).records, records);
 		assert.match(textOf(settings), /not proof a running runtime applied/);
 		assert.equal(close.length, 1);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 		for (const callback of close) await callback();
+		assert.equal(releases, 1);
+		for (const callback of close) await callback();
+		assert.equal(releases, 1);
 		dispose(); bus.clear(); await rm(directory, { recursive: true, force: true });
 	}
 });

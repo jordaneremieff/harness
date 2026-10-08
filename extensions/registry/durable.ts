@@ -13,7 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { SettingsBus } from "../../settings/index.ts";
+import type { SettingsBus } from "./configuration-protocol.ts";
 import { settingQuery, settingsReader } from "./configuration.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Usage } from "@earendil-works/pi-ai";

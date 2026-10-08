@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { collectSettings, type SettingsBus, type SettingsPublication } from "../../settings/index.ts";
+import { collectSettings, type SettingsBus, type SettingsPublication } from "./configuration-protocol.ts";
 import { boundResult, escapeJsonControls, isoTime, oneLine, queryLine, type Outcome } from "./format.ts";
 import { decodeCursor, encodeCursor, hasAnySelector, paginate, parseQuery, type Query, type RawParams } from "./query.ts";
 

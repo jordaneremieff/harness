@@ -61,7 +61,7 @@ Examples:
 ## Harness settings
 
 `kind: "setting"` requests fresh configuration snapshots through the public
-[settings contract](../../settings/README.md). Each declared row has the name
+[settings contract](../../docs/conventions/extension-config.md). Each declared row has the name
 `<slice>.<key>`, type, effective value, origin (`env`, `file`, or `default`),
 validity, description, environment variable, document path, source status, and
 field diagnostics. Secrets show `set` or `unset`, never their bytes. Invalid
