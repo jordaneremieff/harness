@@ -3,8 +3,7 @@ import { open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { readSettings, type ReadOptions } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { readSettings, type ReadOptions } from "./settings.ts";
 export { defaultCorpusRoot } from "./settings.ts";
 
 export const BODY_BYTES = 1024 * 1024;
@@ -46,7 +45,7 @@ export function decodeBody(body: Buffer): string {
 }
 
 export function corpusRoot(options: ReadOptions = { agentDir: getAgentDir() }): string {
-	return readSettings(settings, options).values.corpus;
+	return readSettings(options).values.corpus;
 }
 
 const ENTRY_TARGET = /^(?:principle|pattern|heuristic)-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;

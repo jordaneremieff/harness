@@ -1,8 +1,7 @@
 import { toolDisplayPublisher } from "./tool-display.ts";
 import { writeSync } from "node:fs";
 import { resolve } from "node:path";
-import { publishSettings, readSettings, type ReadOptions } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { publishSettings, readSettings, type ReadOptions } from "./settings.ts";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
@@ -31,10 +30,10 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	const { registerTool, publish } = toolDisplayPublisher(pi);
 	let catalog: Catalog | undefined;
 	let collector: Collector | undefined;
-	const snapshot = readSettings(settings, options);
+	const snapshot = readSettings(options);
 	let enabled = snapshot.values.collect && snapshot.records.find((record) => record.key === "collect")?.status !== "invalid";
 	const store = new PillarsStore(snapshot.values.dir);
-	const stopSettings = publishSettings(pi.events, settings, options);
+	const stopSettings = publishSettings(pi.events, options);
 	pi.events.emit("durable:contribution", pillarsDurableContribution(fileURLToPath(import.meta.url), { bus: pi.events, stopFactory: stopSettings }));
 	const reader = createReader((signal) => store.capture(utcDay(), signal), { enabled: () => enabled });
 	const dedup = new Deduplicator();
@@ -52,7 +51,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		}
 	}
 	pi.on("session_start", async (event, ctx) => {
-		const current = readSettings(settings, options);
+		const current = readSettings(options);
 		const invalidCollect = current.records.find((record) => record.key === "collect")?.status === "invalid";
 		enabled = current.values.collect && !invalidCollect;
 		for (const issue of current.diagnostics) diagnostic(ctx, `${issue.field}: ${issue.message}`);

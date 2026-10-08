@@ -10,8 +10,7 @@
  * registration makes the host await the final flush. The contribution also
  * supplies the `pillars` command for the judgment actions.
  */
-import { publishSettings, readSettings, type SettingsBus } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
@@ -131,9 +130,9 @@ export function pillarsDurableContribution(
 		async create(host) {
 			const { GenerationTask, ToolTask, defineExtension, defineTool, hook, section } = host.durable;
 			publisher.stopFactory();
-			const stopSettings = publishSettings(publisher.bus, settings, { agentDir: host.agentDir });
+			const stopSettings = publishSettings(publisher.bus, { agentDir: host.agentDir });
 			host.onClose(stopSettings);
-			const snapshot = readSettings(settings, { agentDir: host.agentDir });
+			const snapshot = readSettings({ agentDir: host.agentDir });
 			const store = new PillarsStore(snapshot.values.dir);
 			const invalidCollect = snapshot.records.find((record) => record.key === "collect")?.status === "invalid";
 			const enabled = snapshot.values.collect && !invalidCollect;
