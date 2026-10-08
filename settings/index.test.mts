@@ -637,3 +637,159 @@ test("structured defaults do not collide with derivation metadata", () => {
 		f.dispose();
 	}
 });
+
+test("owning publication relation checks preserve values, origins, and fresh reads", () => {
+	const f = fixture();
+	try {
+		const declaration = defineSettings("example", {
+			lower: integerSetting({ description: "Lower threshold.", default: 2 }),
+			upper: integerSetting({ description: "Upper threshold.", default: 8 }),
+		});
+		f.write({ version: 1, example: { lower: 9, upper: 4 } });
+		const bus = fakeBus();
+		const collector = collectSettings(bus);
+		const release = publishSettings(bus, declaration, {
+			...f,
+			validate: (snapshot) => {
+				const invalid = snapshot.values.lower >= snapshot.values.upper;
+				// @ts-expect-error typed effective values are readonly; the copy also isolates illicit mutations
+				snapshot.values.lower = 100;
+				return invalid ? ["lower", "upper"] : [];
+			},
+		});
+		const snapshot = collector.snapshots()[0];
+		assert.deepEqual(
+			snapshot.records.map(({ value, origin, status }) => ({ value, origin, status })),
+			[
+				{ value: 9, origin: "file", status: "invalid" },
+				{ value: 4, origin: "file", status: "invalid" },
+			],
+		);
+		assert.deepEqual(
+			snapshot.diagnostics.map(({ code, field, source }) => ({ code, field, source })),
+			[
+				{ code: "relation", field: "example.lower", source: "file" },
+				{ code: "relation", field: "example.upper", source: "file" },
+			],
+		);
+		assert.deepEqual(parseSettingsPublication(snapshot), snapshot);
+		assert.equal(readSettings(declaration, f).records[0].status, "valid");
+		f.write({ version: 1, example: { lower: 1, upper: 4 } });
+		collector.refresh();
+		assert.equal(collector.snapshots()[0].records[0].status, "valid");
+		assert.equal(collector.snapshots()[0].records[0].value, 1);
+		assert.deepEqual(collector.snapshots()[0].diagnostics, []);
+		release();
+		collector.dispose();
+	} finally {
+		f.dispose();
+	}
+});
+
+test("publication relation checks reject undeclared keys and clean initial subscriptions", () => {
+	const f = fixture();
+	try {
+		const bus = fakeBus();
+		for (const validate of [() => ["notDeclared"], () => undefined, () => null]) {
+			assert.throws(
+				() =>
+					publishSettings(bus, example, {
+						...f,
+						// @ts-expect-error relation diagnostics require an array of declared keys
+						validate,
+					}),
+				/declared field keys/,
+			);
+		}
+		assert.equal(bus.emitter.listenerCount(SETTINGS_REQUEST), 0);
+	} finally {
+		f.dispose();
+	}
+});
+
+test("collector coverage contains only accepted identities and bounded failure counts", () => {
+	const f = fixture();
+	try {
+		const bus = fakeBus();
+		const collector = collectSettings(bus);
+		assert.deepEqual(collector.coverage(), { status: "available", slices: [], malformed: 0, omitted: 0 });
+		bus.emit(SETTINGS_PUBLISH, { message: "rejected-input-marker", value: "fake-sensitive-bytes" });
+		for (let i = 0; i < SETTINGS_MAX_SLICES + 1; i++) {
+			const declaration = defineSettings("slice" + i, {
+				name: stringSetting({ description: "Name.", default: "safe" }),
+			});
+			bus.emit(SETTINGS_PUBLISH, settingsPublication(readSettings(declaration, f)));
+		}
+		const coverage = collector.coverage();
+		assert.equal(coverage.malformed, 1);
+		assert.equal(coverage.omitted, 1);
+		assert.equal(coverage.slices.length, SETTINGS_MAX_SLICES);
+		assert.ok(!coverage.slices.includes("slice" + SETTINGS_MAX_SLICES));
+		assert.doesNotMatch(JSON.stringify(coverage), /rejected-input-marker|fake-sensitive-bytes/);
+		coverage.slices.length = 0;
+		assert.equal(collector.coverage().slices.length, SETTINGS_MAX_SLICES);
+		const replacement = settingsPublication(
+			readSettings(defineSettings("slice0", { name: stringSetting({ description: "Name.", default: "new" }) }), f),
+		);
+		bus.emit(SETTINGS_PUBLISH, replacement);
+		assert.equal(collector.snapshots().find((item) => item.slice === "slice0")?.records[0].value, "new");
+		assert.equal(collector.coverage().omitted, 1);
+		collector.refresh();
+		assert.deepEqual(collector.coverage(), { status: "available", slices: [], malformed: 0, omitted: 0 });
+		collector.dispose();
+		bus.emit(SETTINGS_PUBLISH, {});
+		collector.refresh();
+		assert.deepEqual(collector.coverage(), { status: "disposed", slices: [], malformed: 0, omitted: 0 });
+	} finally {
+		f.dispose();
+	}
+});
+
+test("collector reports unavailable emission separately from an empty response and recovers", () => {
+	const bus = fakeBus();
+	let unavailable = false;
+	const collector = collectSettings({
+		...bus,
+		emit: (channel, data) => {
+			if (unavailable) throw new Error("untrusted-error-marker");
+			bus.emit(channel, data);
+		},
+	});
+	unavailable = true;
+	assert.throws(() => collector.refresh(), /untrusted-error-marker/);
+	assert.deepEqual(collector.coverage(), { status: "unavailable", slices: [], malformed: 0, omitted: 0 });
+	assert.doesNotMatch(JSON.stringify(collector.coverage()), /untrusted-error-marker/);
+	unavailable = false;
+	collector.refresh();
+	assert.equal(collector.coverage().status, "available");
+	collector.dispose();
+});
+
+test("bounded reader and owning relation diagnostics survive publication together", () => {
+	const f = fixture();
+	try {
+		const fields = Object.fromEntries(
+			Array.from({ length: SETTINGS_MAX_FIELDS }, (_, i) => [
+				"field" + i,
+				integerSetting({ description: "Value.", default: 1 }),
+			]),
+		);
+		const declaration = defineSettings("example", fields);
+		f.write({
+			version: 1,
+			example: Object.fromEntries(Array.from({ length: SETTINGS_MAX_FIELDS * 3 }, (_, i) => ["unknown" + i, true])),
+		});
+		const bus = fakeBus();
+		const collector = collectSettings(bus);
+		const release = publishSettings(bus, declaration, { ...f, validate: () => Object.keys(fields) });
+		const publication = collector.snapshots()[0];
+		assert.ok(publication);
+		assert.equal(publication.diagnostics.length, SETTINGS_MAX_FIELDS * 3 + 1);
+		assert.equal(publication.diagnostics.filter(({ code }) => code === "relation").length, SETTINGS_MAX_FIELDS);
+		assert.ok(publication.records.every(({ status, value }) => status === "invalid" && value === 1));
+		release();
+		collector.dispose();
+	} finally {
+		f.dispose();
+	}
+});

@@ -192,7 +192,7 @@ export function defineSettings<const F extends Record<string, AnySetting>>(slice
 export type Diagnostic = {
 	field: string;
 	source: Origin;
-	code: "document" | "unknown" | "secret" | "invalid" | "coverage";
+	code: "document" | "unknown" | "secret" | "invalid" | "coverage" | "relation";
 	message: string;
 };
 export type Source = {
@@ -222,6 +222,9 @@ export type SettingsPublication = {
 };
 export type Snapshot<F extends Record<string, AnySetting>> = SettingsPublication & { values: SettingsValues<F> };
 export type ReadOptions = { agentDir: string; env?: Environment };
+export type PublishOptions<F extends Record<string, AnySetting>> = ReadOptions & {
+	validate?: (snapshot: Readonly<Snapshot<F>>) => readonly (keyof F & string)[];
+};
 
 export function settingsPath({ agentDir, env = process.env }: ReadOptions): string {
 	if (!isAbsolute(agentDir) || !textValid(agentDir) || agentDir.length > 4096)
@@ -240,6 +243,7 @@ function diagnostic(field: string, source: Origin, code: Diagnostic["code"]): Di
 		secret: "Secret settings are environment-only; document input was rejected.",
 		invalid: "Selected input is invalid; the safe default is in effect.",
 		coverage: "Additional diagnostics were omitted at the diagnostic limit.",
+		relation: "Effective settings violate an owning cross-field constraint; values are unchanged.",
 	};
 	return { field, source, code, message: messages[code] };
 }
@@ -523,9 +527,25 @@ function request(value: unknown): boolean {
 export function publishSettings<F extends Record<string, AnySetting>>(
 	bus: SettingsBus,
 	declaration: Declaration<F>,
-	options: ReadOptions,
+	options: PublishOptions<F>,
 ): () => void {
-	const publish = () => bus.emit(SETTINGS_PUBLISH, settingsPublication(readSettings(declaration, options)));
+	const publish = () => {
+		const snapshot = readSettings(declaration, options);
+		const fields = options.validate ? options.validate(structuredClone(snapshot)) : [];
+		if (
+			!Array.isArray(fields) ||
+			fields.length > snapshot.records.length ||
+			fields.some((key) => typeof key !== "string" || !Object.hasOwn(declaration.fields, key))
+		)
+			throw new Error("Publication validation must return declared field keys");
+		for (const key of new Set(fields)) {
+			const record = snapshot.records.find((item) => item.key === key);
+			if (!record) throw new Error("Publication validation field is unavailable");
+			record.status = "invalid";
+			snapshot.diagnostics.push(diagnostic(record.name, record.origin, "relation"));
+		}
+		bus.emit(SETTINGS_PUBLISH, settingsPublication(snapshot));
+	};
 	const unsubscribe = bus.on(SETTINGS_REQUEST, (value) => {
 		if (request(value)) publish();
 	});
@@ -624,7 +644,7 @@ function publicationDiagnostic(input: unknown): Diagnostic {
 		!object(input) ||
 		!boundedText(input.field, 256) ||
 		!oneOf(input.source, ["env", "file", "default"]) ||
-		!oneOf(input.code, ["document", "unknown", "secret", "invalid", "coverage"])
+		!oneOf(input.code, ["document", "unknown", "secret", "invalid", "coverage", "relation"])
 	)
 		throw new Error("Invalid diagnostic");
 	// Messages come from this contract, not from untrusted exception text.
@@ -634,7 +654,7 @@ export function parseSettingsPublication(input: unknown): SettingsPublication | 
 	try {
 		if (!object(input) || input.version !== 1 || !identifier(input.slice)) return;
 		if (!Array.isArray(input.records) || !Array.isArray(input.diagnostics)) return;
-		if (input.records.length > SETTINGS_MAX_FIELDS || input.diagnostics.length > SETTINGS_MAX_FIELDS * 2 + 1) return;
+		if (input.records.length > SETTINGS_MAX_FIELDS || input.diagnostics.length > SETTINGS_MAX_FIELDS * 3 + 1) return;
 		const source = publicationSource(input.source);
 		const slice = input.slice;
 		const records = input.records.map((record) => publicationRecord(record, slice));
@@ -646,23 +666,48 @@ export function parseSettingsPublication(input: unknown): SettingsPublication | 
 	}
 }
 
+export type SettingsCoverage = {
+	status: "available" | "unavailable" | "disposed";
+	slices: string[];
+	malformed: number;
+	omitted: number;
+};
 export function collectSettings(bus: SettingsBus): {
 	snapshots: () => SettingsPublication[];
+	coverage: () => SettingsCoverage;
 	refresh: () => void;
 	dispose: () => void;
 } {
 	const publications = new Map<string, SettingsPublication>();
 	let disposed = false;
+	let status: SettingsCoverage["status"] = "available";
+	let malformed = 0;
+	let omitted = 0;
 	const unsubscribe = bus.on(SETTINGS_PUBLISH, (input) => {
 		if (disposed) return;
 		const publication = parseSettingsPublication(input);
-		if (!publication || (!publications.has(publication.slice) && publications.size >= SETTINGS_MAX_SLICES)) return;
+		if (!publication) {
+			malformed = Math.min(Number.MAX_SAFE_INTEGER, malformed + 1);
+			return;
+		}
+		if (!publications.has(publication.slice) && publications.size >= SETTINGS_MAX_SLICES) {
+			omitted = Math.min(Number.MAX_SAFE_INTEGER, omitted + 1);
+			return;
+		}
 		publications.set(publication.slice, publication);
 	});
 	const refresh = () => {
 		if (!disposed) {
 			publications.clear();
-			bus.emit(SETTINGS_REQUEST, { version: 1 });
+			malformed = 0;
+			omitted = 0;
+			status = "available";
+			try {
+				bus.emit(SETTINGS_REQUEST, { version: 1 });
+			} catch (error) {
+				status = "unavailable";
+				throw error;
+			}
 		}
 	};
 	try {
@@ -673,10 +718,12 @@ export function collectSettings(bus: SettingsBus): {
 	}
 	return {
 		snapshots: () => structuredClone([...publications.values()].sort((a, b) => a.slice.localeCompare(b.slice))),
+		coverage: () => ({ status, slices: [...publications.keys()].sort(), malformed, omitted }),
 		refresh,
 		dispose: () => {
 			if (!disposed) {
 				disposed = true;
+				status = "disposed";
 				unsubscribe();
 				publications.clear();
 			}

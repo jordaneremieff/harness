@@ -128,6 +128,14 @@ The structural `SettingsBus` matches public `pi.events` without importing Pi.
 `publishSettings(bus, settings, options)` subscribes before its initial publication
 and returns an unsubscribe function. Call that cleanup when the owner ends.
 
+`PublishOptions<F>` adds an optional pure `validate(snapshot)` callback to the
+reader options. It returns an array of affected declared field keys for owning
+cross-field constraints. The callback receives a copy of the typed snapshot on
+each publication. Shared code preserves values and origins, marks those records
+`invalid`, and adds fixed `relation` diagnostics. It accepts no custom messages or
+replacement values. Owning runtime validation still decides admission and throws
+its domain error where appropriate.
+
 - `harness:settings:publish`: `SettingsPublication`, version 1, with slice,
   source, redacted records, and all bounded diagnostics.
 - `harness:settings:request`: `{ version: 1 }`.
@@ -142,6 +150,14 @@ orders work without a timer. It returns `snapshots()` for copied checked
 publications, `refresh()` to clear stale collection and request new snapshots, and
 idempotent `dispose()` to unsubscribe and clear retained data. A fresh collector
 or refresh reports only responding publishers, not an inventory of absent ones.
+`coverage()` returns `status`, accepted `slices`, `malformed` publication count,
+and `omitted` publication count. Counters reset on refresh and saturate at the
+safe integer limit. `available` means request emission succeeded, not that every
+expected publisher responded. `unavailable` means emission threw; refresh still
+throws to its caller. `disposed` means the collector ended. Coverage contains no
+rejected bytes, untrusted sender messages, or inferred absent-slice inventory.
+Over-limit new slices count as omitted; existing accepted slices still update.
+
 Latest valid publication replaces a slice snapshot. A slice has one publisher;
 duplicate owners violate the contract. Reload recreates owners and repeats the
 handshake. No removed publisher is retained after refresh.
