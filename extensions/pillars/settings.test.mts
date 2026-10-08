@@ -192,3 +192,40 @@ test("publisher ignores unsupported requests and omits local values", async (t) 
 	assert.equal(publications.length, 2);
 	off();
 });
+
+test("unknown diagnostic fields stay bounded and preserve Unicode and publication data", async (t) => {
+	const { agentDir } = await fixture(t);
+	const section = { collect: "invalid" };
+	await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, pillars: section }));
+	const baseline = readSettings({ agentDir, env: {} });
+	const prefix = "pillars.";
+	const cases = [
+		[`${"x".repeat(63)}😀`, `${prefix}${"x".repeat(63)}`],
+		[`${"x".repeat(62)}😀`, `${prefix}${"x".repeat(62)}😀`],
+		["x".repeat(64), `${prefix}${"x".repeat(64)}`],
+		[`${"x".repeat(64)}\ud800`, `${prefix}<invalid-key>`],
+		["bad\u0000key", `${prefix}<invalid-key>`],
+	] as const;
+	for (const [key, expected] of cases) {
+		await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, pillars: { ...section, [key]: true } }));
+		const events = testBus();
+		const publications: SettingsPublication[] = [];
+		const off = events.on("harness:settings:publish", (value) => publications.push(value as SettingsPublication));
+		const stop = publishSettings(events, { agentDir, env: {} });
+		try {
+			assert.equal(publications.length, 1);
+			const publication = publications[0];
+			assert.deepEqual(publication.records, baseline.records);
+			assert.deepEqual(publication.diagnostics.filter((issue) => issue.code !== "unknown"), baseline.diagnostics);
+			const unknown = publication.diagnostics.filter((issue) => issue.code === "unknown");
+			assert.equal(unknown.length, 1);
+			assert.equal(unknown[0].field, expected);
+			assert.ok(unknown[0].field.slice(prefix.length).length <= 64);
+			assert.doesNotMatch(unknown[0].field, /[\p{Cc}\p{Cf}\ud800-\udfff]/u);
+			assert.equal(unknown[0].source, "file");
+		} finally {
+			stop();
+			off();
+		}
+	}
+});

@@ -92,6 +92,11 @@ function settingsPath({ agentDir, env = process.env }: ReadOptions): string {
 	if (path.length > 4096) throw new Error("Configuration path exceeds length limit");
 	return path;
 }
+function unknownKey(key: string): string {
+	if (!textValid(key)) return "<invalid-key>";
+	const unit = key.charCodeAt(63);
+	return key.slice(0, unit >= 0xd800 && unit <= 0xdbff ? 63 : 64);
+}
 function diagnostic(field: string, source: Origin, code: Diagnostic["code"]): Diagnostic {
 	const messages = {
 		document: "Configuration document is invalid or unavailable.",
@@ -199,7 +204,7 @@ function ownSection(document: Record<string, unknown> | undefined, diagnostics: 
 		if (!Object.hasOwn(settings.fields, key))
 			addDiagnostic(
 				diagnostics,
-				diagnostic(`${settings.slice}.${textValid(key) ? key.slice(0, 64) : "<invalid-key>"}`, "file", "unknown"),
+				diagnostic(`${settings.slice}.${unknownKey(key)}`, "file", "unknown"),
 			);
 	}
 	return value;
