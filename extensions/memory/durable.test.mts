@@ -1,3 +1,4 @@
+import { isolateMachineSettings } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -14,6 +15,8 @@ import type { AgentSessionServices, ExtensionAPI } from "@earendil-works/pi-codi
 import type { MemoryDurableContribution, MemoryDurableContributionHost } from "./durable.ts";
 import memory from "./index.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
+
+isolateMachineSettings();
 
 function emitContribution(): MemoryDurableContribution {
 	const contributions: unknown[] = [];
@@ -122,7 +125,9 @@ async function toolResults(conversation: Durable.Conversation) {
 	return results;
 }
 
-test("the ordinary factory emits one memory contribution with native contracts", async () => {
+test("the ordinary factory emits one memory contribution with native contracts", async (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "memory-native-settings-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const contribution = emitContribution();
 	assert.equal(contribution.name, "memory");
 	assert.equal(contribution.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
@@ -134,7 +139,7 @@ test("the ordinary factory emits one memory contribution with native contracts",
 		BACKGROUND_CONTEXT,
 	);
 	try {
-		const extension = await contribution.create(hostFor(contribution, process.cwd(), harness));
+		const extension = await contribution.create(hostFor(contribution, agentDir, harness));
 		assert.deepEqual(
 			extension.sections?.map((section) => section.key),
 			["memory", "memory_index"],
@@ -259,7 +264,15 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 		const results = await toolResults(conversation);
 		assert.deepEqual(
 			results.map((result) => result.name),
-			["memory_search", "memory_read", "memory_history", "memory_write", "memory_edit", "memory_review", "memory_retire"],
+			[
+				"memory_search",
+				"memory_read",
+				"memory_history",
+				"memory_write",
+				"memory_edit",
+				"memory_review",
+				"memory_retire",
+			],
 		);
 		for (const result of results) {
 			assert.equal(result.message.isError, false);

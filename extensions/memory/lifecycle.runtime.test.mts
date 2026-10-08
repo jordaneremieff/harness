@@ -1,3 +1,4 @@
+import { isolateMachineSettings } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +24,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { memorySearchOutputSchema } from "./search-output.ts";
+
+isolateMachineSettings();
 
 function text(result: ToolResultMessage): string {
 	return result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");

@@ -1,8 +1,15 @@
 import type { JsonObject } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, type ToolDefinition, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	getAgentDir,
+	type ToolDefinition,
+	withFileMutationQueue,
+} from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { publishSettings, readSettings } from "../../settings/index.ts";
 import { createMemoryContribution } from "./durable.ts";
+import { settings } from "./settings.ts";
 import { renderCall, renderResult } from "./presentation.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
@@ -23,6 +30,9 @@ import {
 } from "./tool-contract.ts";
 
 export default function memory(pi: ExtensionAPI): void {
+	const configuredDir = () => readSettings(settings, { agentDir: getAgentDir() }).values.dir;
+	const disposeSettings = publishSettings(pi.events, settings, { agentDir: getAgentDir() });
+	pi.on("session_shutdown", disposeSettings);
 	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
 		pi.registerTool(tool);
@@ -31,10 +41,13 @@ export default function memory(pi: ExtensionAPI): void {
 			displayTools.push({ name, renderCall, renderResult, renderShell } as (typeof displayTools)[number]);
 		}
 	};
-	pi.events.emit("durable:contribution", createMemoryContribution(fileURLToPath(import.meta.url)));
+	pi.events.emit(
+		"durable:contribution",
+		createMemoryContribution(fileURLToPath(import.meta.url), pi.events, disposeSettings),
+	);
 	pi.on("before_agent_start", async (event, ctx) => {
 		delete event.systemPromptOptions.sections.memory_index;
-		const section = await memoryIndex(process.env.PI_MEMORY_DIR, ctx.signal);
+		const section = await memoryIndex(configuredDir(), ctx.signal);
 		if (section !== undefined) event.systemPromptOptions.sections.memory_index = section;
 	});
 	registerTool({
@@ -45,7 +58,7 @@ export default function memory(pi: ExtensionAPI): void {
 		parameters: memorySearchParameters,
 		outputSchema: memorySearchOutputSchema,
 		async execute(_id, args, signal) {
-			const details = await searchMemory(memoryRoot(), args, signal);
+			const details = await searchMemory(memoryRoot(configuredDir()), args, signal);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],
 				details,
@@ -61,7 +74,7 @@ export default function memory(pi: ExtensionAPI): void {
 		description: MEMORY_TOOL_DESCRIPTIONS.read,
 		parameters: memoryReadParameters,
 		async execute(_id, args, signal) {
-			const details = await readMemory(memoryRoot(), args, signal);
+			const details = await readMemory(memoryRoot(configuredDir()), args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
 		renderCall: (args, theme, context) => renderCall("memory_read", args, theme, context),
@@ -73,7 +86,7 @@ export default function memory(pi: ExtensionAPI): void {
 		description: MEMORY_TOOL_DESCRIPTIONS.history,
 		parameters: memoryHistoryParameters,
 		async execute(_id, args, signal) {
-			const details = await historyMemory(memoryRoot(), args, signal);
+			const details = await historyMemory(memoryRoot(configuredDir()), args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
 		renderCall: (args, theme, context) => renderCall("memory_history", args, theme, context),
@@ -86,7 +99,7 @@ export default function memory(pi: ExtensionAPI): void {
 		promptGuidelines: [...MEMORY_WRITE_GUIDELINES],
 		parameters: memoryWriteParameters,
 		async execute(_id, args, signal) {
-			const root = memoryRoot();
+			const root = memoryRoot(configuredDir());
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				writeMemory(root, args, signal),
 			);
@@ -101,7 +114,7 @@ export default function memory(pi: ExtensionAPI): void {
 		description: MEMORY_TOOL_DESCRIPTIONS.edit,
 		parameters: memoryEditParameters,
 		async execute(_id, args, signal) {
-			const root = memoryRoot();
+			const root = memoryRoot(configuredDir());
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				editMemory(root, args, signal),
 			);
@@ -117,7 +130,7 @@ export default function memory(pi: ExtensionAPI): void {
 		promptGuidelines: [...MEMORY_REVIEW_GUIDELINES],
 		parameters: memoryReviewParameters,
 		async execute(_id, args, signal) {
-			const root = memoryRoot();
+			const root = memoryRoot(configuredDir());
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				reviewMemory(root, args, signal),
 			);
@@ -132,7 +145,7 @@ export default function memory(pi: ExtensionAPI): void {
 		description: MEMORY_TOOL_DESCRIPTIONS.retire,
 		parameters: memoryRetireParameters,
 		async execute(_id, args, signal) {
-			const root = memoryRoot();
+			const root = memoryRoot(configuredDir());
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				retireMemory(root, args, signal),
 			);

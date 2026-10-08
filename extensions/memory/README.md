@@ -3,8 +3,9 @@
 Registered tools retrieve and curate durable operator knowledge in plain Markdown.
 Before each agent run, the extension adds a bounded pointer-only memory index to the
 structured system prompt. It has no service, stored search index, background task,
-slash command, model request, or corpus Git operation. I/O belongs to a tool call
-or the run's `before_agent_start` event.
+slash command, model request, or corpus Git operation. Corpus I/O belongs to a
+tool call or the run's `before_agent_start` event. Configuration snapshots also
+read the machine document at factory setup and on settings requests.
 
 The ordinary extension publishes its registered tool renderers at factory time and
 on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
@@ -12,11 +13,30 @@ the payload contains no execution functions.
 
 ## Configuration
 
-Set `PI_MEMORY_DIR` to an absolute corpus directory of at most 1024 UTF-16 code
-units. Unset, empty, relative, over-limit, or Unicode control/format-character
-values return `Memory unavailable: set PI_MEMORY_DIR to an absolute corpus path`.
-There is no inferred default. The variable is read on each invocation.
+Set `memory.dir` in `<agentDir>/harness.json` or set `PI_MEMORY_DIR`. Present
+environment input overrides the document field. There is no inferred corpus
+directory. Each tool invocation and prompt-index refresh reads current settings.
+Ordinary Pi uses its public agent directory; Durable uses the host-supplied directory.
 See [extension configuration](../../docs/conventions/extension-config.md).
+
+<!-- harness:settings:start -->
+| Key | Environment | Type | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| dir | `PI_MEMORY_DIR` | path | unset | maxLength 1024; absolute input | Absolute directory of the external Markdown memory corpus. |
+<!-- harness:settings:end -->
+
+The path accepts at most 1024 UTF-16 code units and rejects empty, relative,
+control/format-character, and unpaired-surrogate input. Invalid selected input
+leaves the corpus unavailable, even when a valid file value exists beneath an
+invalid environment override. The settings snapshot names the rejected source;
+tools report `Memory unavailable: configure memory.dir or PI_MEMORY_DIR with an absolute corpus path`.
+An unavailable corpus omits the prompt index without blocking the agent run.
+
+The factory publishes redacted configured snapshots through the
+[settings contract](../../settings/README.md). Native setup replaces the ordinary
+publisher on the same service-load bus using the host directory. Shutdown
+removes the subscription. A fresh settings request observes current input; it
+does not prove that an earlier tool call used those values.
 
 Activation, search, history listing, and reads never initialize storage or capture revisions. The first valid write creates a missing
 root and a minimal `README.md` contract. An existing contract remains unchanged.
@@ -519,7 +539,7 @@ installation. The corpus and its revision history stay external; no note content
 enters a Durable document.
 
 The contribution offers the same tools as the ordinary form, with the same
-names, parameter schemas, descriptions, and execution against `PI_MEMORY_DIR`.
+names, parameter schemas, descriptions, and execution against the configured corpus.
 `memory_search`, `memory_read`, and `memory_history` are replay-safe: a rerun
 after process loss rescans current sources and repeats no external effect.
 `memory_write`, `memory_edit`, `memory_review`, and `memory_retire` are unsafe:

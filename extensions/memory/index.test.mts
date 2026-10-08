@@ -1,3 +1,4 @@
+import { isolateMachineSettings } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +9,8 @@ import { type JsonObject, type Tool, validateToolArguments } from "@earendil-wor
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import memory from "./index.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
+
+isolateMachineSettings();
 
 interface Registered {
 	name: string;

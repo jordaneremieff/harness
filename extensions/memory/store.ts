@@ -111,9 +111,9 @@ export class MemoryWriteError extends Error {
 	}
 }
 
-export function memoryRoot(value = process.env.PI_MEMORY_DIR): string {
+export function memoryRoot(value: string | undefined): string {
 	if (!value || !isAbsolute(value) || value.length > 1024 || /[\p{Cc}\p{Cf}]/u.test(value)) {
-		throw new Error("Memory unavailable: set PI_MEMORY_DIR to an absolute corpus path");
+		throw new Error("Memory unavailable: configure memory.dir or PI_MEMORY_DIR with an absolute corpus path");
 	}
 	return value;
 }

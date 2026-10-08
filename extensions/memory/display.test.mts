@@ -1,8 +1,11 @@
+import { isolateMachineSettings } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import memory from "./index.ts";
+
+isolateMachineSettings();
 
 type Display = Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">;
 interface Publication {

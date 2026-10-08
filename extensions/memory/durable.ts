@@ -2,6 +2,8 @@ import { join } from "node:path";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { publishSettings, readSettings, type SettingsBus } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
 import { editMemory, memoryRoot, retireMemory, reviewMemory, type WriteReceipt, writeMemory } from "./store.ts";
@@ -23,7 +25,7 @@ import {
  *
  * The corpus and its revision history stay external, as in the ordinary form.
  * Nothing is copied into Durable documents. Every tool keeps the ordinary
- * name, parameter schema, details, and execution against `PI_MEMORY_DIR`; the
+ * name, parameter schema, details, and execution against the configured corpus; the
  * ordinary same-process mutation queue serializes corpus writes.
  *
  * Replay classes are explicit per tool. Reads rescan current sources and
@@ -69,12 +71,19 @@ function memoryGuidance(): string {
 	return MEMORY_GUIDELINES.map((line) => `- ${line}`).join("\n");
 }
 
-export function createMemoryContribution(source: string): MemoryDurableContribution {
+export function createMemoryContribution(
+	source: string,
+	bus: SettingsBus,
+	disposeOrdinarySettings: () => void,
+): MemoryDurableContribution {
 	return {
 		name: "memory",
 		source,
 		create(host) {
+			disposeOrdinarySettings();
+			host.onClose(publishSettings(bus, settings, { agentDir: host.agentDir }));
 			const { defineExtension, defineTool, section } = host.durable;
+			const configuredDir = () => readSettings(settings, { agentDir: host.agentDir }).values.dir;
 			// The ordinary memory_search returns the page as both details and structuredContent.
 			const searchResult = (details: Record<string, unknown>) => {
 				const structured = details as Durable.JsonObject;
@@ -101,7 +110,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 					parameters: memorySearchParameters,
 					replay: "safe",
 					execute: async (args, _api, context) => {
-						const details = await searchMemory(memoryRoot(), args, context.abortSignal);
+						const details = await searchMemory(memoryRoot(configuredDir()), args, context.abortSignal);
 						return searchResult(details);
 					},
 				}),
@@ -115,9 +124,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 					// The index text depends only on corpus content. A stable corpus
 					// renders identical bytes, so the section adds no prompt delta and
 					// provider caches stay warm; a changed corpus reaches the next request.
-					section("memory_index", (_input, context) =>
-						memoryIndex(process.env.PI_MEMORY_DIR, context.abortSignal),
-					),
+					section("memory_index", (_input, context) => memoryIndex(configuredDir(), context.abortSignal)),
 				],
 				tools: [
 					searchTool,
@@ -127,7 +134,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 						parameters: memoryReadParameters,
 						replay: "safe",
 						execute: async (args, _api, context) => {
-							const details = await readMemory(memoryRoot(), args, context.abortSignal);
+							const details = await readMemory(memoryRoot(configuredDir()), args, context.abortSignal);
 							return plainResult(details);
 						},
 					}),
@@ -137,7 +144,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 						parameters: memoryHistoryParameters,
 						replay: "safe",
 						execute: async (args, _api, context) => {
-							const details = await historyMemory(memoryRoot(), args, context.abortSignal);
+							const details = await historyMemory(memoryRoot(configuredDir()), args, context.abortSignal);
 							return plainResult(details);
 						},
 					}),
@@ -147,7 +154,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 						parameters: memoryWriteParameters,
 						replay: "unsafe",
 						execute: async (args, _api, context) => {
-							const root = memoryRoot();
+							const root = memoryRoot(configuredDir());
 							const details = await onCorpusLock(root, () => writeMemory(root, args, context.abortSignal));
 							return mutationResult(root, details);
 						},
@@ -158,7 +165,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 						parameters: memoryEditParameters,
 						replay: "unsafe",
 						execute: async (args, _api, context) => {
-							const root = memoryRoot();
+							const root = memoryRoot(configuredDir());
 							const details = await onCorpusLock(root, () => editMemory(root, args, context.abortSignal));
 							return mutationResult(root, details);
 						},
@@ -169,7 +176,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 						parameters: memoryReviewParameters,
 						replay: "unsafe",
 						execute: async (args, _api, context) => {
-							const root = memoryRoot();
+							const root = memoryRoot(configuredDir());
 							const details = await onCorpusLock(root, () => reviewMemory(root, args, context.abortSignal));
 							return mutationResult(root, details);
 						},
@@ -180,7 +187,7 @@ export function createMemoryContribution(source: string): MemoryDurableContribut
 						parameters: memoryRetireParameters,
 						replay: "unsafe",
 						execute: async (args, _api, context) => {
-							const root = memoryRoot();
+							const root = memoryRoot(configuredDir());
 							const details = await onCorpusLock(root, () => retireMemory(root, args, context.abortSignal));
 							return mutationResult(root, details);
 						},

@@ -1,3 +1,4 @@
+import { isolateMachineSettings } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,8 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+
+isolateMachineSettings();
 
 function compactNotes(corpus: string, count: number, source: (title: string) => string): void {
 	for (let i = 0; i < count; i++)
