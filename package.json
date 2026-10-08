@@ -12,11 +12,14 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\"",
+    "test": "node --test --experimental-test-coverage --test-coverage-lines=60 --test-coverage-functions=60 --test-coverage-branches=50 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"ui/*/*.test.mts\"",
     "evals": "node evals/cli.mts",
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format --error-on-warnings .",
-    "typecheck": "tsc -p .",
+    "typecheck": "tsc -p . && tsc -p ui/tsconfig.json && tsc -p ui/web/tsconfig.json --noEmit",
+    "ui:build": "tsc -p ui/web/tsconfig.json",
+    "ui:typecheck": "tsc -p ui/tsconfig.json && tsc -p ui/web/tsconfig.json --noEmit",
+    "ui:start": "node ui/server/main.mts",
     "check": "node scripts/check-slices.mts",
     "worktrees": "node scripts/worktrees.mts",
     "worktrees:sync": "node scripts/worktrees.mts sync",

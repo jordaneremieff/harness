@@ -34,7 +34,10 @@
 			"scripts/**/*.mts",
 			"settings/**/*.ts",
 			"settings/**/*.mts",
-			"skills/**/*.mts"
+			"skills/**/*.mts",
+			"ui/**/*.ts",
+			"ui/**/*.mts",
+			"!ui/dist"
 		]
 	},
 	"formatter": {

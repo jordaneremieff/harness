@@ -1,0 +1,5 @@
+{
+  "compilerOptions": {"module":"nodenext","moduleResolution":"nodenext","target":"es2023","lib":["es2023"],"allowImportingTsExtensions":true,"noEmit":true,"strict":true,"erasableSyntaxOnly":true,"skipLibCheck":true,"types":["node"]},
+  "include":["server/**/*.mts","rpc/**/*.mts","agents/**/*.mts","shared/**/*.ts"],
+  "exclude":["dist","web","acceptance","node_modules"]
+}

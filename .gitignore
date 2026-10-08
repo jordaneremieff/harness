@@ -1,5 +1,6 @@
 # Dependencies and local installs
 node_modules
+ui/dist/
 
 # Local pi session state
 .pi/
