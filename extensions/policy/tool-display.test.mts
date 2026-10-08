@@ -15,7 +15,7 @@ it("publishes only its registered display fields at load and on current requests
 	const pi = {
 		events: {
 			on(channel: string, handler: (data: unknown) => void) {
-				order.push(channel);
+				if (channel.startsWith("harness:tool-display:")) order.push(channel);
 				listeners.set(channel, handler);
 				const unsubscribe = () => { listeners.delete(channel); };
 				cleanups.push(unsubscribe);

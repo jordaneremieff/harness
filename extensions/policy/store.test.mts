@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { PolicyRecord } from "./record.ts";
-import { appendRecord, localDate, MAX_QUEUED_RECORDS, PolicyWriter, resolvePolicyDir } from "./store.ts";
+import { appendRecord, localDate, MAX_QUEUED_RECORDS, PolicyWriter } from "./store.ts";
 
 const record = (at: string): PolicyRecord => ({
 	session: "s1",
@@ -26,20 +26,6 @@ const record = (at: string): PolicyRecord => ({
 	tokens: null,
 	classes: ["routing.cat-read"],
 	captured: "cat a",
-});
-
-describe("resolvePolicyDir", () => {
-	it("prefers the documented override", () => {
-		assert.equal(resolvePolicyDir({ PI_POLICY_DIR: "/custom/policy" } as NodeJS.ProcessEnv), "/custom/policy");
-	});
-
-	it("resolves a relative override", () => {
-		assert.equal(resolvePolicyDir({ PI_POLICY_DIR: "records" } as NodeJS.ProcessEnv), resolve("records"));
-	});
-
-	it("defaults under the agent directory", () => {
-		assert.equal(resolvePolicyDir({} as NodeJS.ProcessEnv, "/agent"), join("/agent", "policy"));
-	});
 });
 
 describe("localDate", () => {

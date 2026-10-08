@@ -7,15 +7,13 @@
  * blocks the flagged call with a reason that names the preferred form. The
  * modes are exclusive so a recorded effect belongs to one mechanism.
  *
- * An unrecognized value is a configuration error, not a reason to guess. The
- * caller reports it once and stops recording for the session.
+ * An unrecognized session flag is a configuration error. Machine settings
+ * use the shared reader's safe default and rejected-source diagnostics.
  */
 
 export type PolicyMode = "observe" | "notice" | "annotate" | "enforce";
 
 export const POLICY_MODES: readonly PolicyMode[] = ["observe", "notice", "annotate", "enforce"];
-
-const DEFAULT_MODE: PolicyMode = "observe";
 
 function isPolicyMode(value: string): value is PolicyMode {
 	return (POLICY_MODES as readonly string[]).includes(value);
@@ -28,11 +26,4 @@ export function resolvePolicyModeValue(value: string, source: string): PolicyMod
 		throw new Error(`${source} must be one of ${POLICY_MODES.join(", ")}; received "${raw}"`);
 	}
 	return raw;
-}
-
-/** Mode from `PI_POLICY_MODE`; `observe` when the variable is unset or empty. */
-export function resolvePolicyMode(env: NodeJS.ProcessEnv = process.env): PolicyMode {
-	const raw = env.PI_POLICY_MODE?.trim();
-	if (raw === undefined || raw === "") return DEFAULT_MODE;
-	return resolvePolicyModeValue(raw, "PI_POLICY_MODE");
 }

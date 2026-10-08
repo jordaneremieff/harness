@@ -2,18 +2,11 @@
 
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { PolicyRecord } from "./record.ts";
 
 const MAX_RECORD_BYTES = 256 * 1024;
 export const MAX_QUEUED_RECORDS = 512;
-
-/** Store directory: `PI_POLICY_DIR`, else `<agentDir>/policy`. */
-export function resolvePolicyDir(env: NodeJS.ProcessEnv = process.env, agentDir?: string): string {
-	if (env.PI_POLICY_DIR) return resolve(env.PI_POLICY_DIR);
-	return join(agentDir ?? join(homedir(), ".pi", "agent"), "policy");
-}
 
 const pad = (value: number) => String(value).padStart(2, "0");
 

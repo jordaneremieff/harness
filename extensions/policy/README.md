@@ -35,11 +35,13 @@ ordinary control surface.
 
 ## Modes and guidance
 
-In ordinary Pi sessions, `--policy-mode` overrides `PI_POLICY_MODE`. Durable
-hosts select the mode from `PI_POLICY_MODE` only; the ordinary flag does not
-apply. Values are `observe`, `notice`, `annotate`, and `enforce`. When no ordinary
-flag applies, unset or blank environment configuration defaults to `observe`;
-invalid configuration is reported rather than silently guessed.
+In ordinary Pi sessions, `--policy-mode` overrides the configured machine mode.
+Durable hosts read that machine mode with their host-supplied agent directory;
+the ordinary flag does not apply. Values are `observe`, `notice`, `annotate`,
+and `enforce`. Machine selection uses environment input, then `policy.mode` in
+`harness.json`, then `observe`. Invalid selected machine input, including blank
+input, uses `observe` with a rejected-source diagnostic. An invalid ordinary
+flag remains a session configuration error and stops recording for that session.
 
 | Mode | Applied behavior |
 | --- | --- |
@@ -56,12 +58,35 @@ See [model guidance](#model-guidance) for delivery and recovery boundaries.
 
 ## Configuration and validation
 
-| Setting | Purpose |
-| --- | --- |
-| `PI_POLICY_DIR` | Private rule/data/telemetry directory; default `<agentDir>/policy` |
-| `--policy-mode` | Ordinary-session mode only; overrides `PI_POLICY_MODE` |
-| `PI_POLICY_MODE` | Durable mode source and ordinary-session fallback; `observe` by default, or `notice`, `annotate`, `enforce` |
-| `PI_POLICY_TEST_PI_ROOT` | Test-only explicit Pi package root for `pi-hooks.test.mts`, `nested-guidance.test.mts`, `proposal-schema.test.mts`, and the package schema test in `scripts/extension-load-check.test.mts`; runtime does not read it |
+Machine configuration uses the [shared settings contract](../../settings/README.md)
+and one optional `<agentDir>/harness.json` document. Relative directory values
+resolve against the agent directory, not the working directory. Invalid directory
+input uses `<agentDir>/policy` and retains its rejected-source diagnostic.
+
+<!-- harness:settings:start -->
+| Key | Environment | Type | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| dir | `PI_POLICY_DIR` | path | &lt;agentDir&gt;/policy | none | Private directory for rules, approved data, and telemetry. |
+| mode | `PI_POLICY_MODE` | enum | "observe" | observe, notice, annotate, enforce | Configured machine mode; an ordinary --policy-mode flag overrides it for that session. |
+<!-- harness:settings:end -->
+
+`--policy-mode` is an ordinary per-invocation/session override, not a document
+setting. `/policy mode` identifies the applied flag, environment, file, or default
+source. Registry settings snapshots describe fresh configured machine values,
+not proof that an existing runtime applied them. Native creation replaces the
+factory publisher with one bound to the host agent directory. Ordinary session
+shutdown removes only the factory publisher. Host shutdown removes its native
+publisher. A new runtime reads new configuration; publication requests do not
+change an existing runtime.
+
+Rule definitions, proposals, approvals, approved data, and telemetry remain
+application state in the private policy directory. `harness.json` neither stores
+nor approves that state.
+
+`PI_POLICY_TEST_PI_ROOT` is a test-only explicit Pi package root for
+`pi-hooks.test.mts`, `nested-guidance.test.mts`, `proposal-schema.test.mts`, and
+the package schema test in `scripts/extension-load-check.test.mts`. Runtime does
+not read it.
 
 See [validation](#validation) for focused checks and their evidence limits.
 

@@ -8,7 +8,7 @@
  * hook mapping for deny, guide, and observation decisions.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -169,6 +169,7 @@ interface Fixture {
 }
 
 interface FixtureOptions {
+	configuration?: { dir: string; mode: string };
 	mode?: string;
 	extension?: DurableModule.Extension;
 	block?: { name: string; started: () => void };
@@ -176,10 +177,16 @@ interface FixtureOptions {
 
 async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 	const directory = await mkdtemp(join(tmpdir(), "policy-durable-"));
-	const storeDir = join(directory, "policy");
+	const storeDir = join(directory, options.configuration?.dir ?? "policy");
+	if (options.configuration) {
+		await writeFile(join(directory, "harness.json"), JSON.stringify({ version: 1, policy: options.configuration }));
+	}
 	const priorDir = process.env.PI_POLICY_DIR;
 	const priorMode = process.env.PI_POLICY_MODE;
-	process.env.PI_POLICY_DIR = storeDir;
+	const priorHarnessFile = process.env.PI_HARNESS_FILE;
+	process.env.PI_HARNESS_FILE = join(directory, "harness.json");
+	if (options.configuration) delete process.env.PI_POLICY_DIR;
+	else process.env.PI_POLICY_DIR = storeDir;
 	if (options.mode === undefined) delete process.env.PI_POLICY_MODE;
 	else process.env.PI_POLICY_MODE = options.mode;
 	try {
@@ -225,6 +232,8 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 				else process.env.PI_POLICY_DIR = priorDir;
 				if (priorMode === undefined) delete process.env.PI_POLICY_MODE;
 				else process.env.PI_POLICY_MODE = priorMode;
+				if (priorHarnessFile === undefined) delete process.env.PI_HARNESS_FILE;
+				else process.env.PI_HARNESS_FILE = priorHarnessFile;
 			},
 		};
 	} catch (error) {
@@ -269,6 +278,22 @@ const proposeArgs = {
 	note: "A durable test rule.",
 	match: { command: "echo" },
 };
+
+test("native tools use host-relative document settings and environment precedence", async () => {
+	for (const override of [undefined, "notice", "invalid-mode"]) {
+		const fixture = await openFixture({ configuration: { dir: "configured-store", mode: "enforce" }, mode: override });
+		try {
+			await submit(fixture, [
+				fauxAssistantMessage(fauxToolCall("policy_control", { operation: "mode" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("inspected"),
+			], "inspect mode");
+			const results = await toolResults(fixture.root, "policy_control");
+			assert.equal(structuredOf(results.at(-1))?.mode, override === undefined ? "enforce" : override === "notice" ? "notice" : "observe");
+			assert.equal((await fixture.policy.snapshot()).health.status, "ok");
+			await assert.rejects(readFile(join(fixture.directory, "policy", "rules.jsonl")), /ENOENT/);
+		} finally { await fixture.close(); }
+	}
+});
 
 test("every policy tool answers a model-issued call", async () => {
 	const fixture = await openFixture();

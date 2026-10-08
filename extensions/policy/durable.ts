@@ -64,7 +64,9 @@ import {
 	RuleRegistry,
 	type RuleSnapshot,
 } from "./local-rules.ts";
-import { type PolicyMode, resolvePolicyModeValue } from "./mode.ts";
+import type { PolicyMode } from "./mode.ts";
+import { readSettings } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import { readRecentActivity, terminalSafe } from "./panel.ts";
 import {
 	type EvaluationContext,
@@ -107,7 +109,7 @@ import {
 } from "./rule.ts";
 import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin, type StateView } from "./state.ts";
-import { appendRecord, resolvePolicyDir } from "./store.ts";
+import { appendRecord } from "./store.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
 	approvalReadback,
@@ -271,12 +273,16 @@ const toolScope = (scope: RuleMatchContext, model: Durable.Agent["model"]): Poli
 /**
  * Build the native extension for one host. Runtime values come from
  * `host.durable`; the package is imported for types only. The policy store
- * directory resolves from `PI_POLICY_DIR` or the host's agent directory, the
- * same resolution a primary session uses.
+ * directory and mode use the shared settings reader with the host's agent
+ * directory. Ordinary session flags do not apply.
  */
 export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.Extension {
 	const { defineDoc, defineExtension, defineTool, hook, section, GenerationTask, ToolTask } = host.durable;
-	const dir = resolvePolicyDir(process.env, host.agentDir);
+	const configured = readSettings(settings, { agentDir: host.agentDir });
+	const dir = configured.values.dir;
+	for (const diagnostic of configured.diagnostics) {
+		console.warn(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`);
+	}
 	const registry = new RuleRegistry(dir, {
 		onNotice(message) {
 			try {
@@ -286,7 +292,6 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 			}
 		},
 	});
-	const resolved = resolveDurableMode();
 	const StateDoc = defineDoc<PolicyStateValue>({
 		kind: "policy.state",
 		version: 1,
@@ -301,8 +306,7 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 		harness: host.harness,
 		storageId: host.storageId,
 		cwd: host.cwd,
-		mode: resolved.mode,
-		modeValid: resolved.valid,
+		mode: configured.values.mode,
 		stateDoc: StateDoc,
 	});
 
@@ -393,25 +397,6 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 			}),
 		],
 	});
-}
-
-function failureText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function resolveDurableMode(): { mode: PolicyMode; valid: boolean } {
-	const raw = process.env.PI_POLICY_MODE?.trim();
-	if (raw === undefined || raw === "") return { mode: "observe", valid: true };
-	try {
-		return { mode: resolvePolicyModeValue(raw, "PI_POLICY_MODE"), valid: true };
-	} catch (error) {
-		try {
-			console.warn(terminalSafe(`[policy] Invalid mode configuration: ${failureText(error)}`));
-		} catch {
-			/* Reporting has no policy authority. */
-		}
-		return { mode: "observe", valid: false };
-	}
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -524,7 +509,6 @@ interface DurablePolicyRuntimeOptions {
 	storageId: string;
 	cwd: string;
 	mode: PolicyMode;
-	modeValid: boolean;
 	stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
 }
 
@@ -535,7 +519,6 @@ class DurablePolicyRuntime {
 	private readonly storageId: string;
 	private readonly cwd: string;
 	private readonly mode: PolicyMode;
-	private readonly modeValid: boolean;
 	private readonly stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
 	private stateTail: Promise<unknown> = Promise.resolve();
 	private telemetryFailure?: string;
@@ -547,12 +530,11 @@ class DurablePolicyRuntime {
 		this.storageId = options.storageId;
 		this.cwd = options.cwd;
 		this.mode = options.mode;
-		this.modeValid = options.modeValid;
 		this.stateDoc = options.stateDoc;
 	}
 
-	getMode(): PolicyMode | "unavailable" {
-		return this.modeValid ? this.mode : "unavailable";
+	getMode(): PolicyMode {
+		return this.mode;
 	}
 
 	private async snapshot(): Promise<RuleSnapshot> {
@@ -1248,7 +1230,6 @@ class DurablePolicyRuntime {
 		api: Durable.HookApi,
 		context: Context,
 	): Promise<{ block?: string; arguments?: Durable.JsonObject } | undefined> {
-		if (!this.modeValid) return undefined;
 		const now = Date.now();
 		const surface = this.hookSurface(api);
 		const { snapshot, agent, scope, rules, installed } = await this.activeRules(surface, context);
@@ -1326,7 +1307,6 @@ class DurablePolicyRuntime {
 		api: Durable.HookApi,
 		context: Context,
 	): Promise<Durable.ToolExecutionResult | undefined> {
-		if (!this.modeValid) return undefined;
 		const now = Date.now();
 		const surface = this.hookSurface(api);
 		const memo = await api.memo<PolicyCallMemo>("policy.call", context);
@@ -1386,7 +1366,6 @@ class DurablePolicyRuntime {
 		api: Durable.HookApi,
 		context: Context,
 	): Promise<{ messages: readonly Message[] } | undefined> {
-		if (!this.modeValid) return undefined;
 		const now = Date.now();
 		const surface = this.hookSurface(api);
 		const taskId = String(api.taskId);
@@ -1816,7 +1795,7 @@ class DurablePolicyRuntime {
 				phases: ["input", "result", "completion", "context"],
 				actions: ["deny", "rename-key", "substitute", "assert-error", "guide", "observe"],
 				mode: this.getMode(),
-				effectiveMode: this.modeValid ? this.effectiveMode(snapshot) : "unavailable",
+				effectiveMode: this.effectiveMode(snapshot),
 				schemas: {
 					available: installed.length <= MAX_CATALOG_TOOLS,
 					tools: [...new Set(installed)].sort().map((name) => ({

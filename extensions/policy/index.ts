@@ -1,5 +1,7 @@
 /** Policy registration and operator controls over the shared event interpreter. */
 import { fileURLToPath } from "node:url";
+import { publishSettings, readSettings } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import { toolDisplayPublisher } from "./tool-display.ts";
 import {
 	type ExtensionAPI,
@@ -18,7 +20,7 @@ import {
 	targetIdentity,
 	type RuleSnapshot,
 } from "./local-rules.ts";
-import { POLICY_MODES, type PolicyMode, resolvePolicyMode, resolvePolicyModeValue } from "./mode.ts";
+import { POLICY_MODES, type PolicyMode, resolvePolicyModeValue } from "./mode.ts";
 import {
 	capText,
 	formatPolicyList,
@@ -32,7 +34,6 @@ import {
 } from "./panel.ts";
 import { effectiveState, permitsEffectChoice, type RuleRecord } from "./rule.ts";
 import { PolicyRuntime } from "./runtime.ts";
-import { resolvePolicyDir } from "./store.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
 	formatCatalog,
@@ -796,18 +797,29 @@ async function policyEffectVerb(
 
 export default function registerPolicy(pi: ExtensionAPI): void {
 	const { registerTool, publish } = toolDisplayPublisher(pi);
-	// The contribution channel exists on the current Pi host; a host without it simply has no Durable form.
-	const eventBus = (pi as Partial<ExtensionAPI>).events;
-	eventBus?.emit("durable:contribution", {
+	const eventBus = pi.events;
+	const agentDir = getAgentDir();
+	const configured = readSettings(settings, { agentDir });
+	for (const diagnostic of configured.diagnostics) {
+		console.warn(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`);
+	}
+	const disposeSettings = publishSettings(eventBus, settings, { agentDir });
+	pi.on("session_shutdown", disposeSettings);
+	eventBus.emit("durable:contribution", {
 		name: "policy",
 		source: fileURLToPath(import.meta.url),
-		create: createPolicyDurableExtension,
+		create: (host) => {
+			disposeSettings();
+			const disposeNativeSettings = publishSettings(eventBus, settings, { agentDir: host.agentDir });
+			host.onClose(disposeNativeSettings);
+			return createPolicyDurableExtension(host);
+		},
 	} satisfies PolicyDurableContribution);
 	pi.registerFlag(POLICY_MODE_FLAG, {
 		type: "string",
-		description: `Policy mode (${POLICY_MODES.join(", ")}); overrides PI_POLICY_MODE`,
+		description: `Policy mode (${POLICY_MODES.join(", ")}); overrides configured machine mode`,
 	});
-	const dir = resolvePolicyDir(process.env, getAgentDir());
+	const dir = configured.values.dir;
 	let noticeContext: ExtensionContext | undefined;
 	const registry = new RuleRegistry(dir, {
 		onNotice(message) {
@@ -829,10 +841,14 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		runtime?.sync(snapshot);
 		return snapshot;
 	};
-	let mode: PolicyMode = "observe";
+	let mode: PolicyMode = configured.values.mode;
 	let resolved = false;
 	let valid = true;
-	let modeSource = "PI_POLICY_MODE is unset; observe is the default";
+	const modeRecord = configured.records.find((record) => record.key === "mode");
+	if (!modeRecord) throw new Error("Policy mode declaration is missing");
+	let modeSource = modeRecord.origin === "env" ? modeRecord.env
+		: modeRecord.origin === "file" ? `${configured.source.path}: policy.mode` : "default";
+	if (modeRecord.status === "invalid") modeSource += "; invalid configured input, safe default";
 	const ensureMode = (): boolean => {
 		if (resolved) return valid;
 		resolved = true;
@@ -841,9 +857,6 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 			if (typeof flag === "string") {
 				mode = resolvePolicyModeValue(flag, `--${POLICY_MODE_FLAG}`);
 				modeSource = `--${POLICY_MODE_FLAG}`;
-			} else {
-				mode = resolvePolicyMode();
-				if (process.env.PI_POLICY_MODE?.trim()) modeSource = "PI_POLICY_MODE";
 			}
 		} catch (error) {
 			valid = false;
