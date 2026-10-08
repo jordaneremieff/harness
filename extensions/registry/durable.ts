@@ -13,6 +13,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { SettingsBus } from "../../settings/index.ts";
+import { settingQuery, settingsReader } from "./configuration.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Usage } from "@earendil-works/pi-ai";
 import { calculateContextTokens, type SourceInfo } from "@earendil-works/pi-coding-agent";
@@ -85,6 +87,7 @@ export interface RegistryDurableHost {
 	readonly storageId: string;
 	readonly signal: AbortSignal;
 	readonly inventory: RegistryDurableInventory;
+	onClose(dispose: () => void | Promise<void>): void;
 }
 
 export interface RegistryDurableContribution {
@@ -439,13 +442,15 @@ async function resolveCall(
 	return { snapshot: readDurableSnapshot(host, api.registry, agent, at), agent };
 }
 
-export function createRegistryDurableContribution(source: string): RegistryDurableContribution {
+export function createRegistryDurableContribution(source: string, bus: SettingsBus): RegistryDurableContribution {
 	return {
 		name: "registry",
 		source,
 		create(host) {
 			const durable = host.durable;
 			const hostEpoch = randomUUID();
+			const configuredSettings = settingsReader(bus);
+			host.onClose(() => configuredSettings.dispose());
 			const tool = durable.defineTool({
 				name: "registry",
 				description: REGISTRY_DESCRIPTION,
@@ -463,6 +468,7 @@ export function createRegistryDurableContribution(source: string): RegistryDurab
 					const result = await lookup({
 						params,
 						snapshot,
+						...(settingQuery(params) && !signal.aborted ? { settings: configuredSettings.read() } : {}),
 						session: {
 							cwd: host.cwd,
 							storageId: host.storageId,

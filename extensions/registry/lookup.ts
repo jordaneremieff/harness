@@ -8,6 +8,7 @@
  */
 
 import { discoveryPage } from "./discovery.ts";
+import { settingsPage, type SettingsSnapshot } from "./configuration.ts";
 import type { ModelSnapshot } from "./models.ts";
 import {
 	type Assembled,
@@ -65,6 +66,7 @@ export interface LookupRequest {
 	params: RawParams;
 	snapshot: HostSnapshot;
 	models?: ModelSnapshot;
+	settings?: SettingsSnapshot;
 	readContext?: () => ContextSnapshot;
 	session: SessionFacts;
 	epoch: string;
@@ -429,6 +431,10 @@ function resolveCursor(request: LookupRequest, params: RawParams, fingerprint: s
 	}
 	const state: CursorState = decodeCursor(params.cursor);
 	if (state.epoch !== request.epoch) return staleCursor(request, "the session changed since the cursor was issued");
+	if (state.query.kind === "setting") {
+		return settingsPage({ query: state.query, snapshot: request.settings, epoch: request.epoch,
+			at: request.snapshot.at, offset: state.offset, expectedFingerprint: state.fingerprint });
+	}
 	if (state.query.kind === "model" || state.query.kind === "context_file") {
 		return discoveryPage({
 			query: state.query,
@@ -459,7 +465,7 @@ function listingResult(
 	const header = baseHeader(outcome, snapshot.at, [
 		`query: ${queryLine(query)}`,
 		request.durable?.recordSourceLine ?? "source: Pi registration records (getAllTools, getActiveTools, getCommands)",
-		"Domain: tools/commands/skills/prompts. Use kind model or context_file for other sources.",
+		"Domain: tools/commands/skills/prompts. Use kind model, context_file, or setting for other sources.",
 		...(fullRecordQuery(query) ? [] : [RESOURCE_LIST_HINT]),
 		query.search === undefined
 			? ""
@@ -532,6 +538,9 @@ async function runLookup(request: LookupRequest): Promise<LookupResult> {
 	if (isLookupResult(resolved)) return resolved;
 	const { query, offset, expectedStamp } = resolved;
 
+	if (query.kind === "setting") {
+		return settingsPage({ query, snapshot: request.settings, epoch: request.epoch, at: snapshot.at, offset });
+	}
 	if (query.kind === "model" || query.kind === "context_file") {
 		return discoveryPage({
 			query,

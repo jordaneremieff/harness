@@ -1,14 +1,15 @@
 /**
- * registry: one read-only lookup over the session's own Pi-owned resource records.
+ * registry: one read-only lookup over session resources and configured harness settings.
  *
  * The extension registers `registry` and a bounded observer over the
  * system-prompt inputs Pi passes to before_agent_start. It builds no second
  * registry and no filesystem index: every record is a projection of a Pi
  * registration entry, and the only file it can open is one a resolved record
- * already points at.
+ * already points at. Settings arrive through the public package publication contract.
  */
 
 import { toolDisplayPublisher } from "./tool-display.ts";
+import { settingQuery, settingsReader } from "./configuration.ts";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
@@ -119,8 +120,9 @@ export default function registerRegistry(pi: ExtensionAPI) {
 	const { registerTool, publish } = toolDisplayPublisher(pi);
 	// The host, when one is listening, installs the native Durable form. In an
 	// ordinary session nothing subscribes and the emission has no effect.
-	pi.events.emit("durable:contribution", createRegistryDurableContribution(fileURLToPath(import.meta.url)));
+	pi.events.emit("durable:contribution", createRegistryDurableContribution(fileURLToPath(import.meta.url), pi.events));
 	const observations = new ObservationStore();
+	const configuredSettings = settingsReader(pi.events);
 	// The epoch separates one session's cursors from the next. A cursor issued
 	// before a session boundary can never resume against the new session.
 	let epoch = randomUUID();
@@ -143,6 +145,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		reset();
 		sessionAbort.abort();
+		configuredSettings.dispose();
 	});
 
 	registerTool<typeof RegistryParams, Record<string, unknown>>({
@@ -174,6 +177,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 			}
 			const result = await lookup({
 				...(modelQuery ? { models: readModels(ctx, at) } : {}),
+				...(settingQuery(params) ? { settings: configuredSettings.read() } : {}),
 				params: params as RawParams,
 				snapshot,
 				session: sessionFacts(ctx),

@@ -50,9 +50,24 @@ const model = Type.Object({
 }, closed);
 const contextFile = Type.Object({ kind: Type.Literal("context_file"), name: text, path: text,
 	evidence: Type.Literal("observation"), at: Type.Number() }, closed);
+const settingDiagnostic = Type.Object({ field: text, source: StringEnum(["env", "file", "default"]),
+	code: StringEnum(["document", "unknown", "secret", "invalid", "coverage", "relation"]), message: text }, closed);
+const setting = Type.Object({ kind: Type.Literal("setting"), name: text, key: text, slice: text,
+	type: StringEnum(["string", "path", "integer", "number", "boolean", "enum", "json"]),
+	description: text, env: text, secret: Type.Boolean(), origin: StringEnum(["env", "file", "default"]),
+	status: StringEnum(["valid", "unset", "invalid"]), value: Type.Optional(Type.Unknown()),
+	secretState: Type.Optional(StringEnum(["set", "unset"])), documentPath: text,
+	documentStatus: StringEnum(["loaded", "missing", "invalid", "unavailable"]), observedAt: text,
+	diagnostics: Type.Array(settingDiagnostic) }, closed);
+const settingsCoverage = Type.Object({ available: Type.Boolean(), respondingSlices: strings,
+	installedCoverage: Type.Literal("unknown"), collection: Type.Object({
+		status: StringEnum(["available", "unavailable", "disposed"]), slices: strings, malformed: count, omitted: count,
+	}, closed), publications: Type.Array(Type.Object({ slice: text,
+		documentPath: text, documentStatus: StringEnum(["loaded", "missing", "invalid", "unavailable"]),
+		observedAt: text, diagnostics: Type.Array(settingDiagnostic) }, closed)) }, closed);
 const match = Type.Object({ line: Type.Integer({ minimum: 1 }), text }, closed);
 const query = Type.Object({ match: StringEnum(["exact", "substring"]), limit: Type.Integer({ minimum: 1, maximum: 100 }),
-	name: Type.Optional(text), kind: Type.Optional(StringEnum(["tool", "command", "skill", "prompt", "model", "context_file"])),
+	name: Type.Optional(text), kind: Type.Optional(StringEnum(["tool", "command", "skill", "prompt", "model", "context_file", "setting"])),
 	search: Type.Optional(text), detail: Type.Optional(Type.Boolean()), provider: Type.Optional(text),
 	available: Type.Optional(Type.Boolean()), health: Type.Optional(Type.Boolean()), contains: Type.Optional(text) }, closed);
 const availability = Type.Object({ tools: Type.Boolean(), activeTools: Type.Boolean(), commands: Type.Boolean(),
@@ -69,7 +84,7 @@ const health = Type.Object({ evidence: Type.Literal("local_catalog_review"), cat
 /** The same bounded data powers native scripts and the terminal card. Missing fields remain unknown. */
 export const RegistryOutputSchema = Type.Object({
 	outcome: StringEnum(["ok", "host_summary", "missing", "ambiguous", "unavailable", "partial", "cancelled", "stale_cursor", "io_error", "invalid_arguments"]),
-	records: Type.Array(Type.Union([resource, model, contextFile, match]), { maxItems: 100 }),
+	records: Type.Array(Type.Union([resource, model, contextFile, setting, match]), { maxItems: 100 }),
 	resultBounded: Type.Boolean(), omittedRecordBlocks: count, returnedRecords: count,
 	cursor: Type.Optional(Type.String({ maxLength: 16384 })), pageBlocked: Type.Optional(Type.Boolean()), omittedDetails: Type.Optional(Type.Boolean()),
 	query: Type.Optional(query), total: Type.Optional(count), offset: Type.Optional(count), candidates: Type.Optional(count),
@@ -81,7 +96,7 @@ export const RegistryOutputSchema = Type.Object({
 	catalogBoundary: Type.Optional(text),
 	catalogAvailable: Type.Optional(Type.Boolean()), availableSnapshot: Type.Optional(Type.Boolean()),
 	catalogError: Type.Optional(nullableBoolean), scopeConfigured: Type.Optional(nullableBoolean), health: Type.Optional(health),
-	settingsScope: Type.Optional(settingsScope),
+	settingsScope: Type.Optional(settingsScope), settingsCoverage: Type.Optional(settingsCoverage),
 	scanned: Type.Optional(Type.Boolean()), cancelled: Type.Optional(Type.Boolean()), staleCursor: Type.Optional(Type.Boolean()),
 	reason: Type.Optional(text), message: Type.Optional(text), ioError: Type.Optional(text),
 	resolved: Type.Optional(Type.Object({ kind: StringEnum(["tool", "command", "skill", "prompt"]), name: text, sourceInfo }, closed)),

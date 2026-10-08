@@ -172,6 +172,7 @@ const OUTCOME_COLOR: Record<string, OutcomeColor> = {
 
 function outcomeWord(details: Record<string, unknown>): string {
 	const outcome = typeof details.outcome === "string" ? details.outcome : "unknown";
+	if (outcome === "partial" && details.settingsCoverage !== undefined) return "partial configuration";
 	return OUTCOME_WORD[outcome] ?? outcome;
 }
 
@@ -279,8 +280,9 @@ function listingSummary(details: Record<string, unknown>): Summary {
 	const tally = singleRecordFacts(records) || kindTally(records);
 	return {
 		line: `${outcomeWord(details)} · ${shown} shown of ${total}${chatOnly ? " · chat models only" : ""}`,
-		second: joined([tally, chatOnly && total === 0 ? "Classifier/image discovery: codemode models.*" : "", boundsOf(details), continuationOf(details)]),
-		hint: total > 0 || chatOnly,
+		second: joined([tally, chatOnly && total === 0 ? "Classifier/image discovery: codemode models.*" : "",
+			details.settingsCoverage !== undefined ? "configured snapshot · responding publishers only" : "", boundsOf(details), continuationOf(details)]),
+		hint: total > 0 || chatOnly || details.settingsCoverage !== undefined,
 	};
 }
 

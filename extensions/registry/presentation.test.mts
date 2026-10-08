@@ -279,6 +279,14 @@ describe("registry card safety", () => {
 		assert.doesNotMatch(screen(renderRegistryResult(result, { expanded: true, isPartial: false }, theme, { isError: false })), /[\x1b\u009b\u202e]/u);
 		assert.doesNotMatch(screen(renderRegistryCall({ name: hostile, kind: hostile }, theme, { expanded: true, argsComplete: true })), /[\x1b\u009b\u202e]/u);
 	});
+	it("labels configured snapshots and partial settings coverage on collapsed cards", () => {
+		const result = resultOf("Configuration snapshot.", { outcome: "partial", total: 1, returnedRecords: 1,
+			records: [{ kind: "setting", name: "example.count" }], settingsCoverage: { respondingSlices: ["example"] } });
+		const text = screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(text, /partial configuration/);
+		assert.match(text, /configured snapshot/);
+		assert.match(text, /responding publishers only/);
+	});
 	it("tolerates null and undefined arguments", () => {
 		assert.doesNotThrow(() => renderRegistryCall(null, theme, { expanded: false, argsComplete: false }));
 		assert.doesNotThrow(() => renderRegistryCall(undefined, theme, { expanded: false, argsComplete: false }));

@@ -307,7 +307,7 @@ describe("metadata and tool detail", () => {
 		assert.match(result.text, /shadow same-name prompts/);
 		const missing = await run({ name: "model" });
 		assert.match(missing.text, /Built-in interactive commands/);
-		assert.match(missing.text, /Use kind model or context_file/);
+		assert.match(missing.text, /Use kind model, context_file, or setting/);
 	});
 });
 

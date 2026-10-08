@@ -22,6 +22,9 @@ import {
 	type RegistryDurableServices,
 } from "./durable.ts";
 import { RegistryOutputSchema } from "./output.ts";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { defineSettings, integerSetting, publishSettings } from "../../settings/index.ts";
+const settingsBus = createEventBus();
 
 const ROOT = await mkdtemp(join(tmpdir(), "registry-durable-"));
 after(async () => {
@@ -138,6 +141,7 @@ function host(services: RegistryDurableServices, signal: AbortSignal = new Abort
 		cwd: CWD,
 		agentDir: AGENT_DIR,
 		storageId: "registry-durable-test",
+		onClose: () => {},
 		signal,
 		inventory: {
 			contributions: [
@@ -197,7 +201,7 @@ type Fixture = ReturnType<typeof fixture>;
 
 test("durable registry answers model-issued queries from native Durable facts", async () => {
 	const { faux, models, services } = fixture();
-	const contribution = createRegistryDurableContribution(REGISTRY_SOURCE);
+	const contribution = createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus);
 	const extension = await contribution.create(host(services));
 	assert.equal(extension.name, "registry");
 	assert.equal(extension.tools?.length, 1);
@@ -362,7 +366,7 @@ test("Durable model pages carry present, absent, and unreadable settings evidenc
 		const scopeFile = join(agentDir, "settings.json");
 		if (state !== "absent") await writeFile(scopeFile, state === "available" ? JSON.stringify({ enabledModels: patterns }) : "private-invalid-settings");
 		const nativeHost = { ...host(services), cwd, agentDir };
-		const extension = await createRegistryDurableContribution(REGISTRY_SOURCE).create(nativeHost);
+		const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(nativeHost);
 		const { harness, root } = await open(models, extension);
 		try {
 			faux.setResponses([
@@ -397,7 +401,7 @@ test("an aborted host signal cancels the query without probing host facts", asyn
 		settingsManager: { isProjectTrusted: () => true } };
 	const aborted = new AbortController();
 	aborted.abort();
-	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE).create(host(services, aborted.signal));
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services, aborted.signal));
 	const { harness, root } = await open(models, extension);
 	try {
 		faux.setResponses([
@@ -417,7 +421,7 @@ test("an aborted host signal cancels the query without probing host facts", asyn
 
 test("reports the Durable agent identity for the root and a non-root conversation", async () => {
 	const { faux, models, services } = fixture();
-	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE).create(host(services));
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
 	const { harness, root } = await open(models, extension);
 	try {
 		const other = await harness.createConversation(
@@ -562,4 +566,39 @@ test("the Durable context estimate reads committed usage and honors context boun
 	);
 	assert.equal(windowless.state, "unavailable");
 	assert.equal(windowless.contextWindow, null);
+});
+
+test("native setting queries use the captured host bus and release collection on host close", async () => {
+	const { faux, models, services } = fixture();
+	const bus = createEventBus();
+	const directory = await mkdtemp(join(tmpdir(), "registry-native-settings-"));
+	const declaration = defineSettings("example", { count: integerSetting({ default: 2, description: "A fixture count." }) });
+	const dispose = publishSettings(bus, declaration, { agentDir: directory, env: {} });
+	await writeFile(join(directory, "harness.json"), JSON.stringify({ version: 1, example: { count: 8 } }));
+	const close: (() => void | Promise<void>)[] = [];
+	let requests = 0;
+	bus.on("harness:settings:request", () => { requests++; });
+	const nativeHost = { ...host(services), agentDir: directory, onClose: (callback: () => void | Promise<void>) => { close.push(callback); } };
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, bus).create(nativeHost);
+	const { harness, root } = await open(models, extension);
+	try {
+		faux.setResponses([fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "setting" })], { stopReason: "toolUse" }), fauxAssistantMessage("Inspected.")]);
+		const result = await (await root.submit({ type: "input", content: "Inspect configuration." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(result.status, "done");
+		const { messages } = await root.context(BACKGROUND_CONTEXT);
+		const settings = toolResult(messages, "setting");
+		const records = recordsOf(settings);
+		assert.equal(records[0].kind, "setting");
+		assert.equal(records[0].value, 8);
+		assert.equal(records[0].origin, "file");
+		assert.equal(records[0].documentPath, join(directory, "harness.json"));
+		assert.equal(requests, 1);
+		assert.deepEqual(objectOf(objectOf(settings.details).structuredContent).records, records);
+		assert.match(textOf(settings), /not proof a running runtime applied/);
+		assert.equal(close.length, 1);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+		for (const callback of close) await callback();
+		dispose(); bus.clear(); await rm(directory, { recursive: true, force: true });
+	}
 });

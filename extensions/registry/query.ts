@@ -21,7 +21,7 @@ export const LIMIT_DEFAULT = 20;
 export const CURSOR_MAX_BYTES = 16 * 1024;
 
 export type MatchMode = "exact" | "substring";
-export const QUERY_KINDS = [...RESOURCE_KINDS, "model", "context_file"] as const;
+export const QUERY_KINDS = [...RESOURCE_KINDS, "model", "context_file", "setting"] as const;
 export type QueryKind = (typeof QUERY_KINDS)[number];
 
 export interface Query {
@@ -136,7 +136,7 @@ function assertSelectorShape(params: RawParams): void {
 	if ((params.provider !== undefined || params.available !== undefined || params.health !== undefined) && params.kind !== "model") {
 		throw new QueryError("invalid_arguments", "provider, available, and health require kind model");
 	}
-	if (params.contains !== undefined && (params.kind === "model" || params.kind === "context_file")) {
+	if (params.contains !== undefined && (params.kind === "model" || params.kind === "context_file" || params.kind === "setting")) {
 		throw new QueryError("invalid_arguments", "contains accepts only file-backed skills or prompts");
 	}
 }

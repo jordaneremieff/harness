@@ -11,7 +11,7 @@ store.
 ## Surface
 
 The read-only `registry` tool discovers resources, chat model capabilities, tool
-parameters, and observed context paths with explicit evidence boundaries.
+parameters, observed context paths, and harness settings with explicit evidence boundaries.
 
 The main description covers ordinary Pi sessions. See [Durable agents](#durable-agents)
 for the native contribution to hosts with persistent conversations, including
@@ -31,8 +31,8 @@ embedding's configured agent directory.
 |---|---|
 | `name` | Optional text, 1–256 characters. Name comparisons are case-sensitive. Skills also match `skill:<name>`; ordinary sessions additionally match `/skill:<name>`. |
 | `match` | `exact` or `substring`; default `exact`. |
-| `kind` | Optional `tool`, `command`, `skill`, `prompt`, `model`, or `context_file`. `model` covers chat models only, not classifier or image models. Without it, name/search queries cover only tools and slash-command resources. |
-| `search` | Optional text, 1–256 characters. Models require every whitespace-delimited token as a case-insensitive literal substring somewhere in the canonical name or display name, in any order; whitespace-only model queries match nothing. Other resources retain one case-insensitive literal substring within names, descriptions, or registered tool usage guidelines; context files use path. Search does not scan resource contents and uses no index or semantic ranking. |
+| `kind` | Optional `tool`, `command`, `skill`, `prompt`, `model`, `context_file`, or `setting`. `model` covers chat models only, not classifier or image models. Without it, name/search queries cover only tools and slash-command resources. |
+| `search` | Optional text, 1–256 characters. Models require every whitespace-delimited token as a case-insensitive literal substring somewhere in the canonical name or display name, in any order; whitespace-only model queries match nothing. Other resources retain one case-insensitive literal substring within names, descriptions, or registered tool usage guidelines; context files use path. Settings match names, descriptions, and environment variable names. Search does not scan resource contents and uses no index or semantic ranking. |
 | `detail` | Optional boolean. Requires `kind: "tool"` and an exact name, without `search` or `contains`. `true` returns that tool's complete parameters and prompt guidelines as bounded data. Lists omit them. |
 | `provider` | Optional exact provider ID, 1–256 characters. Requires `kind: "model"`. |
 | `available` | Optional boolean filter on the cached availability snapshot. Requires `kind: "model"`. |
@@ -51,10 +51,41 @@ Examples:
 {"kind":"model","name":"example-provider/example-model"}
 {"kind":"model","health":true}
 {"kind":"context_file","limit":10}
+{"kind":"setting"}
+{"kind":"setting","name":"example.count"}
 {"name":"example","kind":"skill","contains":"instruction"}
 {"kind":"prompt","limit":10}
 {"cursor":"<cursor from the preceding result>"}
 ```
+
+## Harness settings
+
+`kind: "setting"` requests fresh configuration snapshots through the public
+[settings contract](../../settings/README.md). Each declared row has the name
+`<slice>.<key>`, type, effective value, origin (`env`, `file`, or `default`),
+validity, description, environment variable, document path, source status, and
+field diagnostics. Secrets show `set` or `unset`, never their bytes. Invalid
+selected inputs retain the safe default and a rejected-source diagnostic.
+
+`settingsCoverage` names only responding loaded publishers. It preserves each
+publication's document and unknown-key diagnostics, including diagnostics with
+no declared row. The view does not enumerate all installed or inactive
+extensions. Nonresponding publishers remain unknown; an empty response does
+not establish that no settings exist. Collection failure is unavailable, and
+malformed or omitted publications make coverage partial. Configuration
+snapshots do not prove an already-running runtime applied file edits.
+
+Name, substring, metadata search, and continuation work for settings. Tool
+detail, model filters, and file content queries do not apply. Fingerprints
+include safe values, origins, validity, diagnostics, and collection coverage,
+but exclude observation timestamps, secret bytes, and raw document digests.
+The existing full-result bounds apply to rows and coverage. An oversized
+coverage object produces an explicit blocked page rather than an absence.
+
+The ordinary tool collects on its public session bus. The native Durable
+contribution captures the public bus from the factory loaded by its host
+resource loader. It collects on that same bus, refreshes on inspection, and
+releases its subscription through the public host close callback.
 
 ## Terminal cards
 
