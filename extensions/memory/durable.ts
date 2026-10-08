@@ -2,8 +2,7 @@ import { join } from "node:path";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { publishSettings, readSettings, type SettingsBus } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
 import { editMemory, memoryRoot, retireMemory, reviewMemory, type WriteReceipt, writeMemory } from "./store.ts";
@@ -81,9 +80,9 @@ export function createMemoryContribution(
 		source,
 		create(host) {
 			disposeOrdinarySettings();
-			host.onClose(publishSettings(bus, settings, { agentDir: host.agentDir }));
+			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
 			const { defineExtension, defineTool, section } = host.durable;
-			const configuredDir = () => readSettings(settings, { agentDir: host.agentDir }).values.dir;
+			const configuredDir = () => readSettings({ agentDir: host.agentDir }).values.dir;
 			// The ordinary memory_search returns the page as both details and structuredContent.
 			const searchResult = (details: Record<string, unknown>) => {
 				const structured = details as Durable.JsonObject;

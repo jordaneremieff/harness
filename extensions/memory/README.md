@@ -33,7 +33,7 @@ tools report `Memory unavailable: configure memory.dir or PI_MEMORY_DIR with an 
 An unavailable corpus omits the prompt index without blocking the agent run.
 
 The factory publishes redacted configured snapshots through the
-[settings contract](../../settings/README.md). Native setup replaces the ordinary
+[settings contract](../../docs/conventions/extension-config.md). Native setup replaces the ordinary
 publisher on the same service-load bus using the host directory. Shutdown
 removes the subscription. A fresh settings request observes current input; it
 does not prove that an earlier tool call used those values.

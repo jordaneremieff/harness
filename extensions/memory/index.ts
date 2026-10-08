@@ -7,9 +7,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { publishSettings, readSettings } from "../../settings/index.ts";
+import { publishSettings, readSettings } from "./settings.ts";
 import { createMemoryContribution } from "./durable.ts";
-import { settings } from "./settings.ts";
 import { renderCall, renderResult } from "./presentation.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
@@ -30,8 +29,8 @@ import {
 } from "./tool-contract.ts";
 
 export default function memory(pi: ExtensionAPI): void {
-	const configuredDir = () => readSettings(settings, { agentDir: getAgentDir() }).values.dir;
-	const disposeSettings = publishSettings(pi.events, settings, { agentDir: getAgentDir() });
+	const configuredDir = () => readSettings({ agentDir: getAgentDir() }).values.dir;
+	const disposeSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
 	pi.on("session_shutdown", disposeSettings);
 	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {

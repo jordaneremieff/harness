@@ -5,10 +5,25 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createEventBus, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
-import { collectSettings, readSettings, SETTINGS_PUBLISH, type SettingsPublication } from "../../settings/index.ts";
+import { readSettings, SETTINGS_PUBLISH, type SettingsPublication } from "./settings.ts";
 import type { MemoryDurableContribution, MemoryDurableContributionHost } from "./durable.ts";
 import memory from "./index.ts";
-import { settings } from "./settings.ts";
+
+function observeSettings(bus: ReturnType<typeof createEventBus>) {
+	let publications: SettingsPublication[] = [];
+	const dispose = bus.on("harness:settings:publish", (value) => {
+		const publication = value as SettingsPublication;
+		assert.equal(publication.slice, "memory");
+		assert.equal(Object.hasOwn(publication, "values"), false);
+		publications = [publication];
+	});
+	const refresh = () => {
+		publications = [];
+		bus.emit("harness:settings:request", { version: 1 });
+	};
+	refresh();
+	return { snapshots: () => publications, refresh, dispose };
+}
 
 function fixture(t: { after(fn: () => void): void }) {
 	const root = mkdtempSync(join(tmpdir(), "memory-settings-"));
@@ -70,14 +85,14 @@ test("dir selects file or environment and rejects invalid selected input without
 	const { root, agentDir } = fixture(t);
 	const fromFile = join(root, "file");
 	document(agentDir, fromFile);
-	const file = readSettings(settings, { agentDir, env: {} });
+	const file = readSettings({ agentDir, env: {} });
 	assert.equal(file.values.dir, fromFile);
 	assert.equal(file.records[0].origin, "file");
-	const override = readSettings(settings, { agentDir, env: { PI_MEMORY_DIR: join(root, "env") } });
+	const override = readSettings({ agentDir, env: { PI_MEMORY_DIR: join(root, "env") } });
 	assert.equal(override.records[0].origin, "env");
 	assert.equal(override.values.dir, join(root, "env"));
 	for (const value of ["", "relative", "/bad\nroot", "/bad\u200broot", "/bad\ud800root", `/${"a".repeat(1024)}`]) {
-		const result = readSettings(settings, { agentDir, env: { PI_MEMORY_DIR: value } });
+		const result = readSettings({ agentDir, env: { PI_MEMORY_DIR: value } });
 		assert.equal(result.values.dir, undefined);
 		assert.equal(result.records[0].status, "invalid");
 		assert.equal(result.records[0].origin, "default");
@@ -88,12 +103,12 @@ test("dir selects file or environment and rejects invalid selected input without
 	}
 	for (const value of [null, 17, "", "relative"]) {
 		document(agentDir, value);
-		const result = readSettings(settings, { agentDir, env: {} });
+		const result = readSettings({ agentDir, env: {} });
 		assert.equal(result.values.dir, undefined);
 		assert.equal(result.records[0].status, "invalid");
 	}
 	rmSync(join(agentDir, "harness.json"));
-	const missing = readSettings(settings, { agentDir, env: {} });
+	const missing = readSettings({ agentDir, env: {} });
 	assert.equal(missing.values.dir, undefined);
 	assert.equal(missing.records[0].status, "unset");
 	assert.deepEqual(readdirSync(agentDir), []);
@@ -106,7 +121,7 @@ test("ordinary tools and prompt read the current file on each invocation and pub
 	const second = corpus(root, "second");
 	document(agentDir, first);
 	const owner = ordinary();
-	const collector = collectSettings(owner.bus);
+	const collector = observeSettings(owner.bus);
 	t.after(() => collector.dispose());
 	assert.equal(collector.snapshots()[0].records[0].value, first);
 	const reader = owner.tools.get("memory_read") as ToolDefinition;
@@ -143,7 +158,7 @@ test("native tools use their host directory rather than the ordinary agent direc
 	const nativeCorpus = corpus(root, "native");
 	document(nativeAgentDir, nativeCorpus);
 	const owner = ordinary();
-	const collector = collectSettings(owner.bus);
+	const collector = observeSettings(owner.bus);
 	t.after(() => collector.dispose());
 	assert.equal(collector.snapshots()[0].source.path, join(agentDir, "harness.json"));
 	const publications: SettingsPublication[] = [];
