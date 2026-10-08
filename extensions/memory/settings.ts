@@ -58,6 +58,10 @@ export type Snapshot = SettingsPublication & { values: Values };
 function textValid(value: unknown): value is string {
 	return typeof value === "string" && !/[\p{Cc}\p{Cf}\ud800-\udfff]/u.test(value);
 }
+function unknownField(key: string): string {
+	const suffix = textValid(key) ? key.slice(0, 64) : "<invalid-key>";
+	return `${settings.slice}.${/[\ud800-\udbff]$/.test(suffix) ? suffix.slice(0, -1) : suffix}`;
+}
 function object(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -153,7 +157,7 @@ function readSection(options: ReadOptions) {
 	};
 	for (const key of Object.keys(section)) {
 		if (!Object.hasOwn(settings.fields, key))
-			add(diagnostic(`${settings.slice}.${textValid(key) ? key.slice(0, 64) : "<invalid-key>"}`, "file", "unknown"));
+			add(diagnostic(unknownField(key), "file", "unknown"));
 	}
 	return { source, section, diagnostics, add };
 }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createEventBus, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
-import { readSettings, SETTINGS_PUBLISH, type SettingsPublication } from "./settings.ts";
+import { publishSettings, readSettings, SETTINGS_PUBLISH, type SettingsPublication } from "./settings.ts";
 import type { MemoryDurableContribution, MemoryDurableContributionHost } from "./durable.ts";
 import memory from "./index.ts";
 
@@ -207,4 +207,49 @@ test("native tools use their host directory rather than the ordinary agent direc
 	for (const dispose of closers) await dispose();
 	collector.refresh();
 	assert.deepEqual(collector.snapshots(), []);
+});
+
+test("unknown diagnostics bound their key text and retain publication records", (t) => {
+	const { agentDir } = fixture(t);
+	const prefix = "memory.";
+	const keys = [
+		`${"a".repeat(63)}😀`,
+		"a".repeat(80),
+		`${"a".repeat(62)}😀`,
+		"😀".repeat(40),
+		`${"a".repeat(100)}\ud800`,
+		"bad\nkey",
+	];
+	const options = { agentDir, env: {} };
+	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({ version: 1, memory: { dir: 7 } }));
+	const baseline = readSettings(options);
+	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({
+		version: 1,
+		memory: { dir: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
+	}));
+	const snapshot = readSettings(options);
+	assert.deepEqual(snapshot.records, baseline.records);
+	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code !== "unknown"), baseline.diagnostics);
+	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field), [
+		`${prefix}otherUnknown`,
+		`${prefix}${"a".repeat(63)}`,
+		`${prefix}${"a".repeat(64)}`,
+		`${prefix}${"a".repeat(62)}😀`,
+		`${prefix}${"😀".repeat(32)}`,
+		`${prefix}<invalid-key>`,
+		`${prefix}<invalid-key>`,
+	]);
+	for (const item of snapshot.diagnostics) {
+		assert.ok(item.field.startsWith(prefix));
+		assert.ok(item.field.slice(prefix.length).length <= 64);
+		assert.doesNotMatch(item.field, /[\p{Cc}\p{Cf}\ud800-\udfff]/u);
+	}
+	const bus = createEventBus();
+	const publications: SettingsPublication[] = [];
+	t.after(bus.on(SETTINGS_PUBLISH, (value) => publications.push(value as SettingsPublication)));
+	t.after(publishSettings(bus, options));
+	assert.equal(publications.length, 1);
+	assert.deepEqual(publications[0].records, snapshot.records);
+	assert.deepEqual(publications[0].diagnostics, snapshot.diagnostics);
+	assert.equal(Object.hasOwn(publications[0], "values"), false);
 });
