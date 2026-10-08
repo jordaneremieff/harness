@@ -54,6 +54,7 @@ export class EventProjection {
   messages: MessageView[] = [];
   coverage: DisplayCoverage = { complete: true, truncated: false, omitted: 0 };
   activityRevision = 0;
+  manualCompactionEndRevision?: number;
   silent = false;
   private ids = new Map<string, string>();
   private active?: string;
@@ -70,6 +71,7 @@ export class EventProjection {
   emit<N extends EventName>(name: N, data: EventData[N]): void { if (!this.silent) this.publish(name, this.target, data); }
   state(): void { this.changed(); this.emit('primary.state', structuredClone(this.view)); }
   reset(): void {
+    this.manualCompactionEndRevision = undefined;
     this.entries = []; this.messages = []; this.ids.clear(); this.counts.clear(); this.active = undefined; this.activeSignature = undefined; this.bytes = 0;
     this.sizes.clear(); this.toolArgs.clear(); this.coverage = { complete: true, truncated: false, omitted: 0 };
   }
@@ -148,7 +150,9 @@ export class EventProjection {
       case 'entry_appended': this.entry(event); return;
       case 'session_info_changed': this.view.sessionName = event.name === undefined ? undefined : safeText(text(event.name)); this.state(); return;
       case 'thinking_level_changed': this.view.thinkingLevel = text(event.level); this.state(); return;
-      case 'compaction_start': case 'compaction_end': case 'auto_retry_start': case 'auto_retry_end':
+      case 'compaction_end':
+        this.recovery(event); if (event.reason === 'manual') this.manualCompactionEndRevision = this.activityRevision; return;
+      case 'compaction_start': case 'auto_retry_start': case 'auto_retry_end':
       case 'summarization_retry_scheduled': case 'summarization_retry_attempt_start': case 'summarization_retry_finished': this.recovery(event); return;
       case 'extension_error': this.emit('notice', { level: this.view.lifecycle === 'starting' ? 'warning' : 'error', message: safeText(text(event.error)), code: 'extension_error' }); return;
       default: this.emit('notice', { level: 'warning', message: 'Unsupported RPC event.', code: 'unsupported_event' });
@@ -173,6 +177,7 @@ export class EventProjection {
   }
   private tool(event: RpcRecord): void {
         const phase = event.type === 'tool_execution_start' ? 'start' : event.type === 'tool_execution_update' ? 'update' : 'end';
+        if (phase !== 'end') this.activity('running'); else this.activityRevision++;
         const result = event.result ?? event.partialResult;
         if (result !== undefined) {
           const message = projectMessage({ role: 'toolResult', toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError, ...object(result) }, `tool:${text(event.toolCallId)}`, phase === 'end' ? 'final' : 'partial');
@@ -196,10 +201,11 @@ export class EventProjection {
         const kind = event.type.startsWith('compaction') ? 'compaction' : event.type.startsWith('auto_retry') ? 'retry' : 'summarizationRetry';
         const phase = recoveryPhase(event.type);
         if (phase !== 'end') this.activity(kind === 'retry' ? 'retrying' : 'compacting');
+        else this.activityRevision++;
         this.emit('primary.recovery', { kind, phase, ...(typeof event.attempt === 'number' ? { attempt: event.attempt } : {}),
           ...(typeof event.maxAttempts === 'number' ? { maxAttempts: event.maxAttempts } : {}),
           ...(typeof event.delayMs === 'number' ? { delayMs: event.delayMs } : {}),
-          ...(typeof (event.errorMessage ?? event.finalError) === 'string' ? { error: safeText(String(event.errorMessage ?? event.finalError)) } : {}),
+          ...(typeof (event.errorMessage ?? event.finalError) === 'string' ? { error: safeText(String(event.errorMessage ?? event.finalError), 512) } : {}),
           ...(typeof event.success === 'boolean' ? { success: event.success } : {}) }); return;
   }
   private activity(activity: PrimaryView['activity']): void { this.activityRevision++; this.view.activity = activity; this.state(); }

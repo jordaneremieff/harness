@@ -6,6 +6,7 @@ import { LIMITS, ROUTES } from '../shared/api.ts';
 import { Auth, securityHeaders } from './auth.mts';
 import { ApiError, errorView } from './errors.mts';
 import type { Journal } from './journal.mts';
+import { SessionStore, validateSessionProject } from './sessions.mts';
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; session: string};
@@ -28,7 +29,7 @@ export async function assetMap(root = fileURLToPath(new URL('../', import.meta.u
 }
 function matchRoute(method: string, parts: string[]) {
   let pathKnown = false;
-  for (const route of ROUTES) {
+  for (const route of [...ROUTES, 'GET /api/sessions', 'GET /api/projects']) {
     const [verb, path] = route.split(' '); const expected = path?.split('/').filter(Boolean) ?? [];
     if (expected.length !== parts.length || !expected.every((part, index) => part.startsWith(':') || part === parts[index])) continue;
     pathKnown = true; if (method === verb) return;
@@ -83,8 +84,9 @@ export class LocalHttp {
   private buckets = new Map<string, {tokens: number; at: number}>();
   readonly backend: HttpBackend;
   private assets: Map<string, Asset>;
-  constructor(backend: HttpBackend, assets: Map<string, Asset>) {
-    this.backend = backend; this.assets = assets;
+  private sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'>;
+  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore()) {
+    this.backend = backend; this.assets = assets; this.sessions = sessions;
     this.server = createServer((request, response) => { void this.handle(request, response); });
     this.server.requestTimeout = 30_000;
     this.server.headersTimeout = 10_000;
@@ -135,9 +137,23 @@ export class LocalHttp {
     const session = this.auth.session(request);
     if (url.pathname === '/api/auth/logout') return this.logout(session, response);
     if (url.pathname === '/api/events') return this.events(request, response, url, session);
+    if (await this.savedMetadata(url, response)) return;
+    await this.validateResume(method, url, body);
     const header = operationKey(request);
     const data = await this.backend.dispatch({method, parts, url, body, session, operationId: header, workspace: url.searchParams.get('workspace') ?? undefined});
     respond(response, data, method === 'POST' && url.pathname === '/api/primaries' ? 202 : 200);
+  }
+  private async savedMetadata(url: URL, response: ServerResponse): Promise<boolean> {
+    if (url.pathname === '/api/projects') { respond(response, await this.sessions.projects(url.searchParams.get('cursor'))); return true; }
+    if (url.pathname === '/api/sessions') {
+      const project = url.searchParams.get('project') ?? ''; const titles = url.searchParams.get('titles');
+      respond(response, titles ? await this.sessions.titles(project, titles) : await this.sessions.sessions(project, url.searchParams.get('cursor'))); return true;
+    }
+    return false;
+  }
+  private async validateResume(method: string, url: URL, body: Record<string, unknown>) {
+    if (method !== 'POST' || url.pathname !== '/api/primaries') return;
+    if (typeof body.sessionFile === 'string' && typeof body.cwd === 'string') await validateSessionProject(body.cwd, body.sessionFile);
   }
   private launch(body: Record<string, unknown>, response: ServerResponse) {
     if (typeof body.capability !== 'string' || body.capability.length > 256 || Object.keys(body).length !== 1) throw new ApiError('invalid_request', 'The launch request is invalid.');

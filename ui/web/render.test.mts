@@ -3,6 +3,8 @@ import test from 'node:test';
 import { Transcript, structured } from './render.ts';
 import { Roster } from './roster.ts';
 import { markdownDom } from './safe-markdown.ts';
+import { outputPages } from './transcript-output.ts';
+import type { OutputPage } from '../shared/api.ts';
 
 type Handler = (event: Record<string, unknown>) => void;
 class FakeNode {
@@ -13,6 +15,7 @@ class FakeNode {
   style: Record<string, string> = {};
   attributes: Record<string, string> = {};
   className = '';
+  classList = {add: (name: string) => { this.className = [...new Set([...this.className.split(' ').filter(Boolean), name])].join(' '); }};
   hidden = false;
   value = '';
   tabIndex = 0;
@@ -96,6 +99,7 @@ const ids = new Map<string, FakeNode>();
 const fakeDocument = {
   activeElement: null as FakeNode | null,
   createElement: (tag: string) => new FakeNode(tag),
+  createElementNS: (_namespace: string, tag: string) => new FakeNode(tag),
   createDocumentFragment: () => new FakeNode('#fragment'),
   createTextNode: (value: string) => { const node = new FakeNode('#text'); node.textContent = value; return node; },
   getElementById: (id: string) => ids.get(id),
@@ -289,8 +293,64 @@ test('loaded expansion applies to virtual unmounted cards and configure restores
   view.configure(undefined, {revision: 0, anchorId: 'e100', offsetPx: 17, followTail: false}); view.set(entries); flush();
   const container = node('agent-transcript'); const target = container.children.find(child => child.dataset.entryId === 'e100'); assert.ok(target);
   assert.equal(container.scrollTop, target.offsetTop + 17);
-  view.expandLoaded(true, true); flush(); assert.equal(container.querySelectorAll('.tool-card').length, 170);
+  view.expandLoaded(true, true); flush(); assert.ok(container.querySelectorAll('.tool-card').length < 15);
+  const preferences = view as unknown as {expanded: Set<string>}; assert.equal(preferences.expanded.size, 170);
   assert.equal(container.querySelectorAll('.tool-card').every(card => card.open), true);
+});
+function richEntries(count: number) {
+  return Array.from({length: count}, (_, index) => ({id: `e${index}`, kind: 'message', messages: [{...message(`m${index}`, ''), parts: [
+    {type: 'text' as const, text: `Body ${index}`}, {type: 'thinking' as const, text: `Thought ${index}`},
+    {type: 'toolCall' as const, callId: `c${index}`, name: 'custom', arguments: {value: {index}, truncated: false}},
+  ]}]}));
+}
+test('both batch controls keep full scrollback bounded and restore saved intent after eviction', () => {
+  setup(); let saved: string[] = []; let showThinking = false;
+  const view = new Transcript('primary', {reading: () => {}, presentation: (expanded, thinking) => { saved = expanded; showThinking = thinking; }});
+  const entries = richEntries(240); view.configure(undefined, {revision: 0, anchorId: 'e0', offsetPx: 0, followTail: false}); view.set(entries); flush();
+  const container = node('primary-transcript'); const firstCard = container.querySelector('.tool-card'); const firstThought = container.querySelector('.thinking');
+  const retained = view as unknown as {cache: Map<string, unknown>; tools: Map<string, unknown>};
+  const assertBounded = () => {
+    const mounted = container.children.filter(child => child.dataset.entryId).length;
+    assert.ok(mounted < 15); assert.ok(retained.cache.size <= mounted + 32); assert.ok(retained.tools.size <= retained.cache.size);
+  };
+  view.expandLoaded(true, true); flush(); assertBounded();
+  assert.equal(saved.length, 240); assert.equal(container.querySelectorAll('.tool-card').every(card => card.open), true);
+  view.expandLoaded(false, true); flush(); assertBounded(); assert.equal(saved.length, 480); assert.equal(showThinking, true);
+  const scroll = (index: number) => {
+    container.scrollTop = index * 140; container.dispatch('scroll'); flush(); assertBounded();
+    assert.equal(container.querySelectorAll('.tool-card').every(card => card.open), true);
+    assert.equal(container.querySelectorAll('.thinking').every(thought => thought.open), true);
+    const row = container.children.find(child => child.dataset.entryId === `e${index}`); assert.ok(row);
+    assert.match(row.textContent, new RegExp(`Body ${index}`)); assert.match(row.textContent, new RegExp(`Thought ${index}`));
+  };
+  for (let index = 0; index < 240; index += 5) scroll(index);
+  assert.equal(retained.cache.has('e0'), false);
+  for (let index = 235; index >= 0; index -= 5) scroll(index);
+  assert.notEqual(container.querySelector('.tool-card'), firstCard); assert.notEqual(container.querySelector('.thinking'), firstThought);
+  view.reset(); view.configure({revision: 0, expanded: saved, showThinking}); view.set(entries); flush(); assertBounded();
+  assert.equal(container.querySelectorAll('.tool-card').every(card => card.open), true);
+  assert.equal(container.querySelectorAll('.thinking').every(thought => thought.open), true);
+});
+test('batch controls preserve distant focus selection and deliberate inspection while other rows evict', () => {
+  setup(); const view = transcript(); const entries = richEntries(240);
+  view.configure(undefined, {revision: 0, anchorId: 'e100', offsetPx: 17, followTail: false}); view.set(entries); flush();
+  const container = node('primary-transcript');
+  const row = (id: string) => { const found = container.children.find(child => child.dataset.entryId === id); assert.ok(found); return found; };
+  const focused = row('e99').querySelector('.tool-copy'); const selected = row('e101').querySelector('p'); assert.ok(focused); assert.ok(selected); focused.focus();
+  selection = {isCollapsed: false, anchorNode: selected, focusNode: selected};
+  view.expandLoaded(true, true); view.expandLoaded(false, true); flush();
+  const card = row('e102').querySelector('.tool-card'); assert.ok(card); card.dispatch('toggle');
+  const inspection = card.querySelectorAll('details').find(node => node.firstChild?.textContent === 'Arguments'); assert.ok(inspection);
+  inspection.open = true; inspection.dispatch('toggle'); const inspectedText = inspection.querySelector('pre')?.textContent;
+  for (const index of [0, 50, 150, 200, 0]) {
+    container.scrollTop = index * 140; container.dispatch('scroll'); flush();
+    assert.equal(focused.isConnected, true); assert.equal(fakeDocument.activeElement, focused); assert.equal(selected.isConnected, true);
+    assert.equal(selection.anchorNode, selected); assert.equal(selection.focusNode, selected);
+    assert.equal(inspection.isConnected, true); assert.equal(inspection.open, true); assert.equal(inspection.querySelector('pre')?.textContent, inspectedText);
+    assert.ok(container.children.filter(child => child.dataset.entryId).length < 20);
+  }
+  const retained = view as unknown as {cache: Map<string, unknown>}; assert.equal(retained.cache.has('e100'), false);
+  const mounted = container.children.filter(child => child.dataset.entryId).length; assert.ok(retained.cache.size <= mounted + 32);
 });
 test('Markdown creates inert HTML text, safe links, code, lists and aligned semantic tables', () => {
   setup(); const fragment = markdownDom('<script>alert(1)</script>\n\n[bad](javascript:alert(1)) [good](https://example.test) ![image](https://example.test/a)\n\n3. item\n\n```ts\n<script>\n```\n\n| A | B |\n| :--- | ---: |\n| a | b |');
@@ -300,6 +360,155 @@ test('Markdown creates inert HTML text, safe links, code, lists and aligned sema
   assert.equal(fragment.querySelectorAll('th')[1]?.style.textAlign, 'right'); assert.equal(fragment.querySelector('code')?.dataset.language, 'ts');
 });
 
+test('short retained pages mount a bounded window and scroll jumps reach uncached rows', () => {
+  setup(); const view = transcript(); const entries = Array.from({length: 50}, (_, index) => entry(`e${index}`));
+  const container = node('primary-transcript'); let scrollTop = 0;
+  Object.defineProperty(container, 'scrollTop', {get: () => scrollTop, set: value => { scrollTop = Math.max(0, Math.min(value, Math.max(0, container.scrollHeight - container.clientHeight))); }});
+  view.set(entries); flush();
+  assert.ok(container.children.filter(child => child.dataset.entryId).length < 15);
+  assert.equal(container.children.some(child => child.dataset.entryId === 'e49'), true);
+  container.scrollTop = 0; container.dispatch('scroll'); flush();
+  assert.equal(container.scrollTop, 0); assert.equal(container.children.some(child => child.dataset.entryId === 'e0'), true);
+});
+test('offscreen entry and tool DOM is bounded while measured heights survive eviction', () => {
+  setup(); const view = transcript();
+  const entries = Array.from({length: 300}, (_, index) => ({id: `e${index}`, kind: 'message', messages: [{...message(`m${index}`, ''), parts: [{type: 'toolCall' as const, callId: `c${index}`, name: 'read', arguments: {value: {}, truncated: false}}]}]}));
+  view.set(entries); flush(); const container = node('primary-transcript');
+  const retained = view as unknown as {cache: Map<string, unknown>; tools: Map<string, unknown>; heights: Map<string, number>};
+  for (let index = 0; index < 300; index += 10) {
+    container.scrollTop = index * 140; container.dispatch('scroll'); flush();
+    const mounted = container.children.filter(child => child.dataset.entryId).length;
+    assert.ok(retained.cache.size <= mounted + 32); assert.ok(retained.tools.size <= retained.cache.size);
+  }
+  assert.equal(retained.heights.get('e0'), 140); assert.equal(retained.cache.has('e0'), false);
+  container.scrollTop = 0; container.dispatch('scroll'); flush();
+  assert.equal(container.children.some(child => child.dataset.entryId === 'e0'), true);
+});
+test('huge final text has a bounded Markdown preview and deliberate retained text disclosure', () => {
+  setup(); const view = transcript(); const text = 'plain retained '.repeat(5000);
+  view.set([entry('huge', text)]); flush(); const container = node('primary-transcript');
+  assert.ok(container.textContent.length < 8500);
+  const disclosure = container.querySelector('details'); assert.ok(disclosure);
+  assert.equal(disclosure.querySelector('pre'), null); disclosure.open = true; disclosure.dispatch('toggle');
+  assert.ok((disclosure.querySelector('pre')?.textContent.length ?? 0) <= 66000);
+});
+test('output pages use exact locators, replace bounded text, and expose request errors', async () => {
+  setup(); const offsets: number[] = []; let failure = true;
+  const pages = outputPages({entryId: 'result-entry', part: 4, offset: 8192}, async more => {
+    assert.equal(more.entryId, 'result-entry'); assert.equal(more.part, 4); offsets.push(more.offset);
+    if (failure) { failure = false; throw new Error('source unavailable'); }
+    return {entryId: more.entryId, part: more.part, text: `page ${more.offset}`, nextOffset: more.offset === 8192 ? 16384 : null, totalBytes: 16400};
+  }, () => true, () => {});
+  const content = pages as unknown as FakeNode; node('primary-transcript').append(content);
+  const next = content.querySelectorAll('button').find(item => item.textContent === 'Load more output'); assert.ok(next);
+  next.dispatch('click'); await Promise.resolve(); await Promise.resolve(); assert.match(content.textContent, /source unavailable/);
+  next.dispatch('click'); await Promise.resolve(); await Promise.resolve(); assert.equal(content.querySelector('.output-page')?.textContent, 'page 8192');
+  next.dispatch('click'); await Promise.resolve(); await Promise.resolve(); assert.equal(content.querySelector('.output-page')?.textContent, 'page 16384');
+  assert.deepEqual(offsets, [8192, 8192, 16384]); assert.doesNotMatch(content.querySelector('.output-page')?.textContent ?? '', /page 8192/);
+  const previous = content.querySelectorAll('button').find(item => item.textContent === 'Previous output'); previous?.dispatch('click');
+  await Promise.resolve(); await Promise.resolve(); assert.equal(content.querySelector('.output-page')?.textContent, 'page 8192');
+});
+test('tool result paging uses the result source and reset discards a late page', async () => {
+  setup(); let resolve: (page: OutputPage) => void = () => {}; const requests: unknown[] = [];
+  const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, output: more => { requests.push(more); return new Promise(done => { resolve = done; }); }});
+  view.set([{id: 'call-owner', kind: 'message', messages: [{...message('call-message', ''), parts: [{type: 'toolCall', callId: 'x', name: 'read', arguments: {value: {}, truncated: false}}]}]},
+    {id: 'result-source', kind: 'message', messages: [{...message('result-message', ''), parts: [{type: 'toolResult', callId: 'x', name: 'read', parts: [{type: 'text', text: 'initial', more: {entryId: 'result-source', part: 3, offset: 8192}}], isError: false}]}]}]); flush();
+  const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
+  const next = card.querySelectorAll('button').find(item => item.textContent === 'Load more output'); assert.ok(next); next.dispatch('click');
+  assert.deepEqual(requests, [{entryId: 'result-source', part: 3, offset: 8192}]);
+  view.reset(); view.set([entry('replacement')]); flush();
+  resolve({entryId: 'result-source', part: 3, text: 'late page', nextOffset: null, totalBytes: 8201}); await Promise.resolve(); await Promise.resolve();
+  assert.doesNotMatch(node('primary-transcript').textContent, /late page/); assert.doesNotMatch(card.textContent, /late page/);
+});
+test('presentation helpers suppress empty messages and keep coverage omissions visible', () => {
+  setup(); const view = transcript();
+  const empty = {...message('empty', ''), role: 'system', parts: []};
+  const omitted = {...empty, id: 'omitted', coverage: {complete: false, truncated: true, omitted: 1}};
+  view.set([{id: 'empty', kind: 'message', messages: [empty]}, {id: 'omitted', kind: 'message', messages: [omitted]},
+    {id: 'custom', kind: 'custom', head: 'Exact custom label', data: {value: {fact: 'retained'}, truncated: false}}]); flush();
+  const container = node('primary-transcript');
+  assert.equal(container.children.some(child => child.dataset.entryId === 'empty'), false);
+  assert.equal(container.querySelectorAll('.message-header').length, 1);
+  assert.match(container.textContent, /Message content is not fully displayed/);
+  assert.match(container.textContent, /Exact custom label/);
+});
+test('bounded coverage reasons preserve continuation text and stable message parts', () => {
+  setup(); const view = transcript();
+  const part = {type: 'text' as const, text: 'Protected preview', more: {entryId: 'saved', part: 0, offset: 8192}};
+  const saved = {...message('saved-message', ''), parts: [part], coverage: {...coverage, complete: false, truncated: true, reason: 'Additional output is available on request.'}};
+  const retained = {id: 'saved', kind: 'message', messages: [saved]};
+  view.set([retained]); flush(); const container = node('primary-transcript');
+  const paragraph = container.querySelector('p'); const continuation = container.querySelector('.output-pages'); assert.ok(paragraph); assert.ok(continuation);
+  assert.match(container.textContent, /Additional output is available on request\./);
+  assert.doesNotMatch(container.textContent, /omitted by host/);
+  view.set([{...retained, messages: [{...saved, coverage: {...saved.coverage, reason: 'More protected text is available.'}}]}]); flush();
+  assert.equal(container.querySelector('p'), paragraph); assert.equal(container.querySelector('.output-pages'), continuation);
+  assert.match(container.textContent, /More protected text is available\./);
+  assert.equal(continuation.querySelectorAll('button').some(button => button.textContent === 'Load more output'), true);
+});
+test('coverage reasons use bounded inert text and remove terminal control instructions', () => {
+  setup(); const view = transcript();
+  const reason = `\x1b[31m<script>alert(1)</script>\x1b[0m\x00\x1b]0;hidden title\x07${'x'.repeat(5000)}`;
+  const withReason = (id: string, reason: string) => ({id, kind: 'message', messages: [{...message(id, ''), parts: [], coverage: {...coverage, complete: false, reason}}]});
+  view.set([withReason('malicious', reason), withReason('lines', 'one\ntwo\nthree\nfour\nfive\nsix\nseven')]); flush();
+  const container = node('primary-transcript'); const labels = container.querySelectorAll('.message-body').map(body => body.querySelector('p')?.textContent ?? '');
+  assert.equal(labels[0]?.length, 4096); assert.ok(labels[0]?.startsWith('<script>alert(1)</script>'));
+  assert.doesNotMatch(labels[0] ?? '', /[\x00-\x1f\x7f-\x9f]|hidden title/);
+  assert.equal(container.querySelector('script'), null); assert.equal(labels[1], 'one\ntwo\nthree\nfour\nfive\nsix');
+});
+test('missing and empty sanitized coverage reasons use a neutral fallback', () => {
+  setup(); const view = transcript();
+  const reasons = [undefined, '', ' \n\t ', '\x1b[31m\x1b[0m\x00'];
+  view.set(reasons.map((reason, index) => ({id: `empty-${index}`, kind: 'message', messages: [{...message(`m-${index}`, ''), parts: [], coverage: {...coverage, omitted: 1, reason}}]}))); flush();
+  const labels = node('primary-transcript').querySelectorAll('.message-body').map(body => body.querySelector('p')?.textContent);
+  assert.deepEqual(labels, reasons.map(() => 'Message content is not fully displayed.'));
+  assert.doesNotMatch(node('primary-transcript').textContent, /host/);
+});
+test('expanded edit and write cards show supplied text without replacing generic output', () => {
+  setup(); const view = transcript();
+  const tool = (id: string, name: string, value: Record<string, unknown>) => ({id, kind: 'message', messages: [{...message(id, ''), parts: [
+    {type: 'toolCall' as const, callId: id, name, arguments: {value, truncated: false}},
+    {type: 'toolResult' as const, callId: id, name, parts: [{type: 'text' as const, text: 'result text'}], isError: false},
+  ]}]});
+  view.set([tool('edit', 'edit', {oldText: 'old supplied', newText: 'new supplied'}), tool('write', 'write', {content: 'written supplied'})]); flush();
+  const cards = node('primary-transcript').querySelectorAll('.tool-card');
+  for (const card of cards) { card.open = true; card.dispatch('toggle'); } flush();
+  assert.match(cards[0]?.querySelector('.tool-content')?.textContent ?? '', /- old supplied.*\+ new supplied/s);
+  assert.match(cards[1]?.querySelector('.tool-content')?.textContent ?? '', /Written content.*written supplied/s);
+  for (const card of cards) assert.equal(card.querySelector('.tool-output-text')?.textContent, 'result text');
+});
+test('tool result refresh preserves open supplied-content inspections', () => {
+  setup(); const view = transcript(); const supplied = 'supplied text '.repeat(1200);
+  const tool = (id: string, value: Record<string, unknown>) => ({id, kind: 'message', messages: [{...message(id, ''), parts: [
+    {type: 'toolCall' as const, callId: id, name: id, arguments: {value, truncated: false}},
+    {type: 'toolResult' as const, callId: id, name: id, parts: [{type: 'text' as const, text: 'initial result'}], isError: false},
+  ]}]});
+  const entries = [tool('edit', {oldText: supplied, newText: supplied}), tool('write', {content: supplied})];
+  view.set(entries); flush(); const cards = node('primary-transcript').querySelectorAll('.tool-card');
+  const inspections: FakeNode[] = [];
+  for (const card of cards) {
+    card.open = true; card.dispatch('toggle');
+    const disclosure = card.querySelector('.tool-content')?.querySelector('details'); assert.ok(disclosure);
+    disclosure.open = true; disclosure.dispatch('toggle'); inspections.push(disclosure);
+    assert.equal(disclosure.querySelector('pre')?.textContent, supplied);
+  }
+  const parts = [{type: 'text' as const, text: 'updated raw result'}];
+  view.set(entries, new Map(['edit', 'write'].map(id => [id, {callId: id, name: id, phase: 'end' as const, parts}]))); flush();
+  for (const disclosure of inspections) { assert.equal(disclosure.isConnected, true); assert.equal(disclosure.querySelector('pre')?.textContent, supplied); }
+  for (const card of cards) assert.equal(card.querySelector('.tool-output-text')?.textContent, 'updated raw result');
+});
+test('write completion keeps open retained content and updates its reported label', () => {
+  setup(); const view = transcript(); const content = 'retained '.repeat(2000);
+  const entries = [{id: 'write', kind: 'message', messages: [{...message('write', ''), parts: [{type: 'toolCall' as const, callId: 'write', name: 'write', arguments: {value: {content}, truncated: false}}]}]}];
+  view.set(entries); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  card.open = true; card.dispatch('toggle'); flush();
+  const region = card.querySelector('.tool-content'); const disclosure = region?.querySelector('details'); assert.ok(disclosure);
+  disclosure.open = true; disclosure.dispatch('toggle'); disclosure.focus();
+  view.set(entries, new Map([['write', {callId: 'write', name: 'write', phase: 'end', parts: [{type: 'text', text: 'complete'}]}]])); flush();
+  assert.equal(card.querySelector('.tool-content'), region); assert.equal(disclosure.open, true);
+  assert.equal(disclosure.isConnected, true); assert.equal(fakeDocument.activeElement, disclosure);
+  assert.equal(disclosure.querySelector('pre')?.textContent, content); assert.match(region?.textContent ?? '', /Written content/);
+});
 test('known session changes use quiet system notes with retained data under disclosure', () => {
   setup(); const view = transcript();
   view.set([{id: 'model', kind: 'model_change', data: {value: {provider: 'fixture', modelId: 'test'}, truncated: false}}, {id: 'thinking', kind: 'thinking_level_change', data: {value: {thinkingLevel: 'high'}, truncated: false}}, {id: 'unknown', kind: 'future_change', data: {value: {fact: 'known'}, truncated: false}}]); flush();

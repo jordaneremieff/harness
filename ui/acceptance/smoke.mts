@@ -24,6 +24,21 @@ export function options(args: string[]): Options {
     session: values.session, prompt: values.prompt, dialogPrompt: values["dialog-prompt"] };
 }
 
+const usage = `Usage: node ui/acceptance/smoke.mts --url <launch URL> --out <capture directory>
+
+  --help                  Print this help without browser startup.
+  --url <launch URL>      HTTP on 127.0.0.1 with an explicit port.
+  --out <directory>       Write screenshots and report.json here.
+  --fake                  Enable deterministic fixture checks only.
+  --cwd <project>         Open a disposable fixture project; requires --fake.
+  --session <saved path>  Resume a saved fixture session instead of a new one.
+                          Use with --fake --cwd and no other Pi writer.
+  --prompt <text>         Fixture trigger; default: acceptance smoke no-dialog.
+  --dialog-prompt <text>  Optional fixture dialog trigger.
+
+The default run submits no model prompts. Fixture mode checks the selected provider.
+`;
+
 class Unavailable extends Error {}
 type Check = { name: string; status: "passed" | "failed" | "unavailable"; scope: "browser" | "fixture" | "real"; detail?: string };
 type Report = { browser: unknown; viewport: { width: number; height: number }; mode: string;
@@ -31,16 +46,20 @@ type Report = { browser: unknown; viewport: { width: number; height: number }; m
 const editor = "#primary-editor";
 const literal = (value: unknown): string => JSON.stringify(value);
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
-async function click(page: Page, selector: string): Promise<void> {
+type PickerPage = Pick<Page, "evaluate" | "waitFor">;
+async function click(page: PickerPage, selector: string): Promise<void> {
   await page.evaluate(`(()=>{const node=document.querySelector(${literal(selector)});if(!node||node.disabled||node.hidden)throw new Error('Control unavailable: '+${literal(selector)});node.click();})()`);
 }
-async function button(page: Page, text: string): Promise<void> {
+async function button(page: PickerPage, text: string): Promise<void> {
   await page.evaluate(`(()=>{const node=Array.from(document.querySelectorAll('button')).find(n=>n.textContent.trim()===${literal(text)}&&!n.closest('[hidden]'));if(!node)throw new Error('Button unavailable: '+${literal(text)});node.click();})()`);
 }
-async function text(page: Page, selector: string, value: string): Promise<void> {
+async function text(page: PickerPage, selector: string, value: string): Promise<void> {
   await page.evaluate(`(()=>{const node=document.querySelector(${literal(selector)});if(!node)throw new Error('Editor unavailable');node.focus();node.value=${literal(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);
 }
-async function snapshot(page: Page): Promise<Bootstrap> {
+async function field(page: PickerPage, label: string, value: string): Promise<void> {
+  await page.evaluate(`(()=>{const caption=Array.from(document.querySelectorAll('#modal[open] label')).find(n=>n.textContent===${literal(label)});const node=caption&&document.getElementById(caption.htmlFor);if(!node)throw new Error('Field unavailable: '+${literal(label)});node.focus();node.value=${literal(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+}
+async function snapshot(page: PickerPage): Promise<Bootstrap> {
   return page.evaluate(`(async()=>{const workspace=new URL(location.href).searchParams.get('workspace');const response=await fetch('/api/bootstrap'+(workspace?'?workspace='+encodeURIComponent(workspace):''));const result=await response.json();if(!result.ok)throw new Error(result.error.message);return result.data;})()`);
 }
 async function waitRoster(page: Page): Promise<void> {
@@ -106,14 +125,19 @@ async function prompt(page: Page, value: string): Promise<void> {
 }
 
 type RunCheck = (name: string, action: () => Promise<void>, scope?: Check["scope"]) => Promise<void>;
-async function openProject(page: Page, config: Options, check: RunCheck): Promise<void> {
+export async function openProject(page: PickerPage, config: Options, check: RunCheck): Promise<void> {
   if (!config.fake || !config.cwd) return;
   await check("7.1 explicit disposable project/session open", async () => {
     await click(page, "#project-button");
-    await page.waitFor(`document.querySelector('#modal[open] input')`);
-    await text(page, "#modal input", config.cwd ?? "");
+    await page.waitFor(`document.querySelector('#modal[open] #picker-project')`);
+    await text(page, "#picker-project", config.cwd ?? "");
+    await button(page, "Continue");
+    await page.waitFor(`document.querySelector('#modal[open] #picker-search')`);
     if (config.session) {
-      await text(page, "#modal input:nth-of-type(2)", config.session);
+      await button(page, "Open saved session path…");
+      await page.waitFor(`document.querySelector('#modal[open] #picker-session-path')`);
+      await field(page, "Project directory", config.cwd ?? "");
+      await field(page, "Saved session path", config.session);
       await button(page, "Resume saved session");
       await button(page, "No other writer · Resume");
     } else await button(page, "Start new session");
@@ -337,11 +361,15 @@ export async function runSmoke(config: Options): Promise<Report> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try {
-    const report = await runSmoke(options(process.argv.slice(2)));
-    const counts = { passed: 0, failed: 0, unavailable: 0 };
-    for (const check of report.checks) counts[check.status]++;
-    console.log(JSON.stringify({ ...counts, screenshots: report.screenshots, boundaries: report.boundaries }, null, 2));
-    if (counts.failed) process.exitCode = 1;
-  } catch (error) { console.error(errorMessage(error)); process.exitCode = 1; }
+  const args = process.argv.slice(2);
+  if (args.includes("--help")) console.log(usage);
+  else {
+    try {
+      const report = await runSmoke(options(args));
+      const counts = { passed: 0, failed: 0, unavailable: 0 };
+      for (const check of report.checks) counts[check.status]++;
+      console.log(JSON.stringify({ ...counts, screenshots: report.screenshots, boundaries: report.boundaries }, null, 2));
+      if (counts.failed) process.exitCode = 1;
+    } catch (error) { console.error(errorMessage(error)); process.exitCode = 1; }
+  }
 }

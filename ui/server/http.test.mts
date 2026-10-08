@@ -159,7 +159,7 @@ test('logout closes SSE and releases observations without stopping a busy primar
 });
 
 test('saved-session open and resume require manual writer release; stale epochs never dispatch', {timeout: 15000}, async context => {
-  const app = await fixture(context); await app.login(); const saved = join(app.cwd, 'saved.jsonl'); await writeFile(saved, '{"type":"session","id":"fixture"}\n');
+  const app = await fixture(context); await app.login(); const saved = join(app.cwd, 'saved.jsonl'); await writeFile(saved, `${JSON.stringify({type:'session',version:3,id:'fixture',timestamp:new Date(0).toISOString(),cwd:app.cwd})}\n`);
   const id = await app.reserve('primary.open'); const missing = await app.call('/api/primaries', 'POST', {cwd: app.cwd, sessionFile: saved}, {'Idempotency-Key': id});
   assert.equal(missing.status, 400); assert.equal(app.registry.sessions.size, 0);
   const boot = data<Bootstrap>(await app.call('/api/bootstrap')); const events = await stream(context, app, boot);

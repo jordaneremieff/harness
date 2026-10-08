@@ -1,11 +1,14 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, DraftView, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
 import { Actions } from './actions.ts';
+import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
 import { Composer } from './composer.ts';
 import { announce, byId, button, copy, details, element, empty, rawText, setText } from './dom.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
+import { installIcons } from './icons.ts';
 import { Transcript } from './render.ts';
+import { historyBecameReady } from './transcript-history.ts';
 import { Roster } from './roster.ts';
 import { Recovery, exactInput } from './recovery.ts';
 import { agentBlocks, conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
@@ -21,6 +24,7 @@ import { newerOperation, mergeOperationMap } from './operation-state.ts';
 import { ApiError, authenticate, connect, errorMessage, operation, request } from './transport.ts';
 import type { ReceivedEvent } from './transport.ts';
 
+installIcons();
 let state = createState();
 let snapshot: Bootstrap | Snapshot | undefined;
 let source: EventSource | undefined;
@@ -40,9 +44,17 @@ const modal = new Modal();
 const preferences = new PreferenceQueue();
 const primaryComposer: Composer = new Composer('primary', {submitted: showOperation, unknownCommand: (text, literal): boolean => actions.unknown(text, literal), recover: recover});
 const agentComposer = new Composer('agent', {submitted: showOperation, unknownCommand: () => false, recover: recover});
-const primaryTranscript = new Transcript('primary', {presentation: (expanded, showThinking) => { void savePresentation(primaryComposer, expanded, showThinking); }, reading: reading => { void saveReading(primaryComposer, reading); }, fork: (message, entry) => actions.fork(entry, rawText(message.parts))});
+const primaryTranscript = new Transcript('primary', {presentation: (expanded, showThinking) => { void savePresentation(primaryComposer, expanded, showThinking); }, reading: reading => { void saveReading(primaryComposer, reading); }, fork: (message, entry) => actions.fork(entry, rawText(message.parts)), output: loadPrimaryOutput});
+async function loadPrimaryOutput(more: import('../shared/api.ts').OutputContinuation): Promise<import('../shared/api.ts').OutputPage> {
+  const captured = primary(); if (!captured) throw new Error('Primary history is unavailable.');
+  const page = await request<import('../shared/api.ts').OutputPage>(`/api/primaries/${encodeURIComponent(captured.key)}/history/output?epoch=${captured.epoch}&entry=${encodeURIComponent(more.entryId)}&part=${more.part}&offset=${more.offset}`, 'GET', undefined, undefined, historyAbort.signal);
+  if (primary()?.key !== captured.key || primary()?.epoch !== captured.epoch) throw new Error('The primary conversation changed.');
+  return page;
+}
 const agentTranscript = new Transcript('agent', {presentation: (expanded, showThinking) => { void savePresentation(agentComposer, expanded, showThinking); }, reading: reading => { void saveReading(agentComposer, reading); }});
 const actions: Actions = new Actions({snapshot: currentSnapshot, primary, composer: primaryComposer, modal, selection, reload, result: showOperation, rosterRefresh: refreshRoster, find: query => primaryTranscript.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : []});
+const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload});
+actions.projectPicker = () => picker.open();
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showAgentError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
@@ -121,6 +133,10 @@ function receive(event: ReceivedEvent): void {
   if (event.name === 'ready') { connected = true; byId('connection').hidden = true; renderPrimary(); renderAgent(); return; }
   if (old === state) return;
   applyEvent(event);
+  if (event.name === 'primary.state') {
+    const current = event.envelope.data as PrimaryView; const previous = old.primaries.get(current.key);
+    if (historyBecameReady(previous, current, state.workspace?.primaryKey)) { historyAbort.abort(); historyAbort = new AbortController(); void loadPrimaryHistory(); }
+  }
 }
 function applyEvent(event: ReceivedEvent): void {
   const name = event.name;
@@ -166,9 +182,9 @@ function renderAll(): void {
 }
 function renderPrimary(): void {
   const item = primary(); const target = primaryTarget(); const saved = targetState(target);
+  actions.warm();
   if (saved?.targetKey !== primaryTargetKey) {
     primaryTargetKey = saved?.targetKey ?? ''; primaryCursor = null; primaryTranscript.reset(); primaryTranscript.configure(saved?.presentation, saved?.reading);
-    actions.warm();
   }
   primaryComposer.attach(state.workspace?.id ?? '', saved); primaryComposer.receipts(state.operations.values());
   byId('primary-composer').hidden = !saved; byId('primary-status').hidden = !item;
@@ -263,7 +279,7 @@ async function loadPrimaryHistory(cursor?: string): Promise<void> {
   const captured = targetIdentity(target); const controller = historyAbort;
   try {
     const page = await request<HistoryPage>(`/api/primaries/${encodeURIComponent(item.key)}/history?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, 'GET', undefined, undefined, controller.signal);
-    if (captured !== (primaryTarget() ? targetIdentity(primaryTarget() as Target) : '')) return;
+    if (controller.signal.aborted || captured !== (primaryTarget() ? targetIdentity(primaryTarget() as Target) : '')) return;
     state = mergePrimaryPage(state, target, page.items); primaryCursor = page.nextCursor; byId('primary-earlier').hidden = !primaryCursor; renderPrimaryTranscript();
     primaryTranscript.restore(targetState(target)?.reading);
   } catch (error) { if (!controller.signal.aborted) showError(error); }

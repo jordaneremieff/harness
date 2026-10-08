@@ -56,11 +56,12 @@ test('exit rejects dispatched input as uncertain and never replays', async () =>
   const rejected = assert.rejects(input, { uncertain: true }); await child.command('prompt'); child.exit(); await rejected;
   await assert.rejects(client.request('prompt'), { code: 'not_ready' }); assert.equal(child.writes.length, 1); await client.close();
 });
-test('stderr is bounded and controls escaped; upstream rejection never echoes input', async () => {
+test('stderr is bounded and controls escaped; upstream refusal retains its public message', async () => {
   const { client, child } = create(); child.stderr.write('a'.repeat(70 * 1024)); child.stderr.write('\x00\x1b[31mred\x1b[0m');
   assert.ok(Buffer.byteLength(client.stderrTail) < 66 * 1024); assert.ok(client.stderrTail.endsWith('\\u0000red'));
-  const request = client.request('prompt'); const command = await child.command('prompt'); child.reject(command);
-  await assert.rejects(request, (error: unknown) => error instanceof Error && error.message === 'Pi rejected the RPC command.'); await client.close();
+  const request = client.request('compact'); const command = await child.command('compact');
+  child.event({ type: 'response', id: command.id, command: command.type, success: false, error: 'Nothing to compact (session too small)' });
+  await assert.rejects(request, { code: 'rpc_rejected', message: 'Nothing to compact (session too small)' }); await client.close();
 });
 test('large retained snapshot decodes in order through the worker and omits signatures', async () => {
   const { client, child, events } = create();

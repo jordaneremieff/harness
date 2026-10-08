@@ -1,8 +1,48 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
+import type { ProjectedSnapshot } from '../rpc/events.mts';
+import type { OutputPage } from '../shared/api.ts';
 import { LIMITS } from '../shared/api.ts';
 import type { DisplayCoverage, EntryView, HistoryPage, Target } from '../shared/api.ts';
 import { projectEntry } from './projection.mts';
 import { StateError, validateTarget } from './state.mts';
+
+type HistoryPending = {resolve: (value: unknown) => void; reject: (error: StateError) => void};
+/** Only bounded projected pages cross from the saved-file worker onto the HTTP loop. */
+export class FileHistory {
+  private worker = new Worker(new URL('./history-worker.mts', import.meta.url));
+  private pending = new Map<number, HistoryPending>();
+  private nextId = 0;
+  private stopped = false;
+  private closing?: Promise<number>;
+  constructor() {
+    this.worker.on('message', (result: {id: number; value?: unknown; error?: {code: string; message: string}}) => {
+      const request = this.pending.get(result.id); if (!request) return;
+      this.pending.delete(result.id);
+      if (result.error) request.reject(new StateError(result.error.code, result.error.message, result.error.code === 'invalid_request' ? 400 : 409));
+      else request.resolve(result.value);
+    });
+    this.worker.on('error', () => this.fail()); this.worker.on('exit', () => this.fail());
+  }
+  private fail(): void {
+    this.stopped = true;
+    for (const request of this.pending.values()) request.reject(new StateError('history_limit', 'Saved history worker is unavailable.', 409));
+    this.pending.clear();
+  }
+  private query<T>(path: string, action: string, fields: object = {}): Promise<T> {
+    if (this.stopped) return Promise.reject(new StateError('history_limit', 'Saved history worker is closed.', 409));
+    if (this.pending.size >= 32) return Promise.reject(new StateError('capacity', 'Too many saved history requests.', 429));
+    const id = ++this.nextId;
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, {resolve: value => resolve(value as T), reject});
+      this.worker.postMessage({id, path, action, ...fields});
+    });
+  }
+  index(path: string): Promise<{lastId: string | null; partial: boolean}> { return this.query(path, 'index'); }
+  page(path: string, leaf: string | null, before?: string): Promise<ProjectedSnapshot> { return this.query(path, 'page', {leaf, before}); }
+  output(path: string, leaf: string | null, entryId: string, part: number, offset: number): Promise<OutputPage> { return this.query(path, 'output', {leaf, entryId, part, offset}); }
+  async close(): Promise<void> { this.fail(); this.closing ??= this.worker.terminate(); await this.closing; }
+}
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new StateError('history_limit', 'History anchor left its cache', 409);

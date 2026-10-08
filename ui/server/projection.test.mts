@@ -60,6 +60,29 @@ test('entry projections retain known IDs and bounded custom values without priva
   assert.equal(projectMessage(malformed, 'known-message').coverage.truncated, true);
 });
 
+test('public custom types become entry headings without private data interpretation', () => {
+  for (const type of ['custom', 'custom_message']) {
+    const entry = projectEntry({id: 'custom-id', type, customType: '<public-type>', content: 'shown', display: true, data: {customType: 'not-the-heading'}});
+    assert.equal(entry.head, '<public-type>'); assert.equal(projectEntry(entry).head, '<public-type>');
+  }
+  const unfamiliar = projectEntry({id: 'unknown', type: 'unfamiliar', customType: 'not-public-custom', data: {text: 'data'}});
+  assert.equal(unfamiliar.head, undefined);
+  assert.equal(projectEntry({type: 'custom', data: {customType: 'nested-only'}}).head, undefined);
+});
+test('hidden public custom messages never expose content or details across projection paths', () => {
+  const raw = {role: 'custom', customType: 'public-type', display: false, content: 'hidden policy text', details: {snapshot: 'hidden detail'}};
+  const message = projectMessage(raw, 'hidden'); assert.deepEqual(message.parts, []); assert.equal(message.coverage.complete, true);
+  assert.deepEqual(projectMessage(message, 'hidden').parts, []);
+  const entry = projectEntry({id: 'hidden-entry', type: 'custom_message', ...raw});
+  assert.equal(entry.head, 'public-type'); assert.equal(entry.data, undefined); assert.deepEqual(entry.messages?.[0]?.parts, []);
+  const envelope = projectEntry({id: 'message-entry', type: 'message', message: raw});
+  const frame = projectFrame({entries: [entry, envelope], live: [{type: 'message', message: raw}], coverage: {complete: true}});
+  assert.doesNotMatch(JSON.stringify([message, entry, projectEntry(entry), envelope, frame]), /hidden policy text|hidden detail|snapshot/);
+  assert.equal(projectMessage({...raw, display: true}, 'shown').parts[0]?.type, 'text');
+  assert.equal(projectMessage({...raw, role: 'assistant'}, 'other-role').parts[0]?.type, 'text');
+  assert.equal(projectMessage({...raw, errorMessage: 'reported failure'}, 'error').error, 'reported failure');
+});
+
 test('native frames whitelist status, bound oversized entries, and retain partial output separately', () => {
   const frame = projectFrame({revision: 12, observedAt: 'now', entries: Array.from({length: 1000}, (_, index) => ({id: String(index), kind: 'custom', data: {text: 'x'.repeat(20_000)}})),
     live: [{id: 'live:1', kind: 'model', model: [{role: 'assistant', content: 'stream text'}]}], nextBefore: 2,

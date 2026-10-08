@@ -33,6 +33,9 @@ test('a refused control retains its typed outcome and raises its actual error', 
 class FakeNode extends EventTarget {
   children: FakeNode[] = []; textContent = ''; className = ''; type = '';
   append(...nodes: FakeNode[]): void {this.children.push(...nodes);}
+  replaceChildren(...nodes: FakeNode[]): void {this.children = nodes;}
+  querySelector(): null {return null;}
+  focus(): void {}
 }
 test('journal and HTTP copies of one handoff completion open its result once', () => {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -45,6 +48,48 @@ test('journal and HTTP copies of one handoff completion open its result once', (
     actions.handoffResult({...result, state: 'uncertain'}); assert.equal(opened, 0);
     actions.handoffResult(result); actions.handoffResult({...result}); assert.equal(opened, 1);
     assert.equal(body.children[0]?.textContent, 'pi --session fixture-session.jsonl');
+  } finally {if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');}
+});
+
+test('resource cache skips startup and warms once on the ready transition without page reload', async () => {
+  let selected: PrimaryView = {...primary, lifecycle: 'starting'}; let calls = 0;
+  const commands = [{name: 'fixture', description: 'public command', source: 'extension'}];
+  globalThis.fetch = async () => {calls++; return Response.json({ok: true, data: {items: commands, nextCursor: null, revision: '2'}});};
+  const actions = new Actions(context({primary: () => selected}));
+  actions.warm(); assert.deepEqual((await actions.load('commands')).items, []); assert.equal(calls, 0);
+  selected = {...primary}; actions.warm();
+  assert.deepEqual((await actions.load('commands')).items, commands); assert.equal(calls, 1);
+  actions.warm(); await actions.load('commands'); assert.equal(calls, 1);
+  assert.equal(actions.unknown('/fixture argument', () => {}), false);
+  selected = {...primary, lifecycle: 'switching'}; actions.warm();
+  selected = {...primary}; actions.warm(); await actions.load('commands'); assert.equal(calls, 2);
+});
+
+test('late resources from a previous lifecycle never replace current commands', async () => {
+  let selected = {...primary}; let calls = 0;
+  let resolveOld: (value: Response) => void = () => {};
+  globalThis.fetch = async () => {
+    calls++; if (calls === 1) return new Promise<Response>(resolve => {resolveOld = resolve;});
+    return Response.json({ok: true, data: {items: [{name: 'current', description: '', source: 'extension'}], nextCursor: null, revision: '2'}});
+  };
+  const actions = new Actions(context({primary: () => selected})); const old = actions.load('commands');
+  selected = {...primary, lifecycle: 'switching'}; actions.warm(); selected = {...primary}; actions.warm(); await actions.load('commands');
+  resolveOld(Response.json({ok: true, data: {items: [], nextCursor: null, revision: '1'}})); await old;
+  assert.equal(actions.unknown('/current argument', () => {}), false); await actions.load('commands'); assert.equal(calls, 2);
+  selected = {...primary, epoch: 2}; await actions.load('commands'); assert.equal(calls, 3);
+});
+
+test('an open Commands palette repaints when startup resources become ready', async () => {
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: () => new FakeNode()}});
+  try {
+    let selected = {...primary, lifecycle: 'starting' as PrimaryView['lifecycle']}; const body = new FakeNode();
+    const modal = {body, token: 1, open() {return body;}, owns(token: number) {return token === 1;}} as unknown as ActionContext['modal'];
+    globalThis.fetch = async () => Response.json({ok: true, data: {items: [{name: 'fixture', description: 'public', source: 'extension'}], nextCursor: null, revision: '2'}});
+    const actions = new Actions(context({primary: () => selected, modal})); actions.warm(); actions.palette(); await actions.load('commands');
+    const list = body.children[2]; assert.ok(list); assert.equal(list.children.some(node => node.textContent === '/fixture'), false);
+    selected = {...primary}; actions.warm(); await actions.load('commands');
+    assert.equal(list.children.some(node => node.textContent === '/fixture'), true);
   } finally {if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');}
 });
 

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { Worker } from 'node:worker_threads';
+import { safeText } from '../server/projection.mts';
 
 export type RpcRecord = Record<string, unknown> & { type: string };
 export type SpawnChild = (executable: string, args: string[], options: { cwd: string; stdio: ['pipe', 'pipe', 'pipe']; shell: false }) => ChildProcessWithoutNullStreams;
@@ -16,7 +17,7 @@ export interface RpcClientOptions {
   onExit?: (error?: RpcError) => void;
   onProtocolError?: (error: RpcError) => void;
 }
-interface Pending { beforeEntryId?: string; type: string; resolve: (data: unknown) => void; reject: (error: RpcError) => void; dispatched: boolean; at: number }
+interface Pending { beforeEntryId?: string; since?: string; type: string; resolve: (data: unknown) => void; reject: (error: RpcError) => void; dispatched: boolean; at: number }
 
 export function displayText(text: string): string {
   return text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
@@ -84,7 +85,7 @@ export class RpcClient {
     if (!this.synchronized && !type.startsWith('get_') && type !== 'abort' && type !== 'abort_retry' && type !== 'clear_queue')
       return Promise.reject(new RpcError('protocol_error', 'RPC synchronization requires an explicit refresh.'));
     const id = `rpc-${++this.counter}`;
-    const result = new Promise<unknown>((resolve, reject) => this.pending.set(id, { type, resolve, reject, dispatched: false, at: 0, beforeEntryId }));
+    const result = new Promise<unknown>((resolve, reject) => this.pending.set(id, { type, resolve, reject, dispatched: false, at: 0, beforeEntryId, since: typeof fields.since === 'string' ? fields.since : undefined }));
     void this.write({ ...fields, type, id }, (bytes) => {
       const pending = this.pending.get(id);
       if (!pending) throw new RpcError('not_ready', 'RPC command no longer pending.');
@@ -188,7 +189,7 @@ export class RpcClient {
       const cleanup = () => { worker.off('message', message); worker.off('error', fail); worker.off('exit', fail); };
       const fail = () => { cleanup(); reject(new RpcError('protocol_error', 'RPC decoder failed.')); };
       const message = (result: { record?: unknown; error?: boolean }) => { cleanup(); if (result.error) reject(new RpcError('protocol_error', 'RPC decode failed.')); else resolve(result.record); };
-      worker.once('message', message); worker.once('error', fail); worker.once('exit', fail); worker.postMessage({ bytes, windows: [...this.pending].filter(([, p]) => p.beforeEntryId !== undefined).map(([id, p]) => [id, p.beforeEntryId]) });
+      worker.once('message', message); worker.once('error', fail); worker.once('exit', fail); worker.postMessage({ bytes, windows: [...this.pending].filter(([, p]) => p.beforeEntryId !== undefined).map(([id, p]) => [id, p.beforeEntryId]), incremental: [...this.pending].filter(([, p]) => p.since !== undefined).map(([id]) => id) });
     });
   }
   private record(value: unknown): void {
@@ -209,7 +210,7 @@ export class RpcClient {
     this.options.measure?.('rpc.ack', event.id as string, performance.now());
     if (event.localHistoryFailure === true) pending.reject(new RpcError('history_limit', 'History anchor or source is unavailable.'));
     else if (event.success) pending.resolve(event.data);
-    else pending.reject(new RpcError('rpc_rejected', 'Pi rejected the RPC command.')); 
+    else pending.reject(new RpcError('rpc_rejected', safeText(event.error, 512) || 'Pi rejected the RPC command.'));
   }
   private protocolError(message: string): void {
     if (this.ended) return;

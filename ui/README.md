@@ -8,7 +8,7 @@ A local browser interface for ordinary Pi conversations and retained Durable age
 npm run ui
 ```
 
-This builds the browser modules, starts the backend for the current directory, and opens the launch URL in the default browser. Pass flags after `--`, for example `npm run ui -- --cwd <project-directory>`. Without `--open`, start the backend alone with `npm run ui:build` and `npm run ui:start -- --cwd <project-directory>`, then open the printed launch URL yourself. Press Ctrl-C to stop; stopping closes browser links and the owned primary process, not Durable agent work. The shell removes its launch fragment and exchanges it for an HttpOnly cookie. Opening a project or saved session is an explicit action; backend startup and tab refresh never create a primary or send model input.
+This builds the browser modules, starts the backend for the current directory, and opens the launch URL in the default browser. Pass flags after `--`, for example `npm run ui -- --cwd <project-directory>`. Without `--open`, start the backend alone with `npm run ui:build` and `npm run ui:start -- --cwd <project-directory>`, then open the printed launch URL yourself. Press Ctrl-C to stop; stopping closes browser links and the owned primary process, not Durable agent work. The shell removes its launch fragment and exchanges it for an HttpOnly cookie. Opening a project or saved session is an explicit action; backend startup and tab refresh never create a primary or send model input. The first screen lists recent projects from Pi’s saved-session directories. Choose a project and press **Continue** to browse saved sessions, or use **Open saved session path…** for an exact JSONL path.
 
 Flags:
 
@@ -26,7 +26,7 @@ The backend uses native Node TypeScript stripping; runtime files contain only er
 
 ## Ownership and terminal return
 
-Each explicitly opened ordinary primary has a backend key and conversation epoch. Refresh and tab close preserve its process. Drafts and actions capture the exact key/epoch or Durable identity; a session replacement rejects old-epoch actions. A primary's accepted input is not proof of a completed model answer. The actual settled event determines idle state.
+Each explicitly opened ordinary primary has a backend key and conversation epoch. Refresh and tab close preserve its process. Drafts and actions capture the exact key/epoch or Durable identity; a session replacement rejects old-epoch actions. A primary's accepted input is not proof of a completed model answer. Execution becomes idle on `agent_settled`. Completed manual compaction uses an authoritative state refresh guarded by the conversation epoch, lifecycle, and activity revision; newer activity takes precedence.
 
 Use **Continue in terminal** to release an ordinary primary:
 
@@ -70,7 +70,7 @@ Operation reservations precede effects. A repeated issued key with the same body
 
 Unconfirmed copies preserve exact text and target. Display lists use bounded previews; the exact-copy route supports deliberate Copy and Restore. Restore changes only that target's draft. Discard deletes only the local copy and does not cancel work or prove non-admission. Older-epoch targets remain discoverable through the backend target index.
 
-The SSE journal is memory-only. Each backend run has a new boot ID; ordered replay or snapshot resync reconciles browser state. Transcript projections are bounded memory windows, not another permanent session archive. Large ordinary RPC records decode and project off the HTTP event loop. Older pages outside the window use an explicit branch-aware full-source request and bounded projection; unavailable or oversized sources return a visible history-limit error.
+The SSE journal is memory-only. Each backend run has a new boot ID; ordered replay or snapshot resync reconciles browser state. Transcript projections are bounded memory windows, not another permanent session archive. Large ordinary RPC records decode and project off the HTTP event loop. Saved history uses a worker-owned byte-offset index; `get_entries {since: lastIndexedEntryId}` supplies the authoritative active leaf without repeatedly transferring the full branch. Earlier pages read and project bounded records from that branch. Output controls load one bounded protected-text page at a time, with Previous, Next, and Start over controls rather than accumulating the full output in the DOM. The browser hydrates history when the selected primary becomes ready and cancels stale startup requests. Unavailable sources, invalid anchors, and exceeded source limits return visible errors.
 
 ## Durable agents
 
@@ -91,6 +91,7 @@ Phone networking, pairing, remote devices, multiplayer, a browser terminal, a fi
 ```sh
 node --test "ui/server/*.test.mts" "ui/rpc/*.test.mts"
 node --test "ui/agents/*.test.mts"
+node --test "ui/web/*.test.mts"
 npm run ui:typecheck
 npm run ui:build
 npm run lint
@@ -111,13 +112,29 @@ The optional backend measurement callback records monotonic input receipt, persi
 
 `node --test ui/agents/native-performance.test.mts` reports decoder, projection, and backend-loop measurements. A fixture run on Apple M4, 16 GiB memory, Darwin 25.2.0 arm64, and Node 25.2.1 measured a 15,728,946-byte snapshot and 1,045,132-byte live frames. Production worker facade timer gaps had median/max of 1.447/2.098 ms for the snapshot and 2.274/4.305 ms for live replacements. Main-loop display projection had snapshot median/max of 0.129/0.181 ms and worst live-frame time of 0.467 ms. These backend-only fixture results meet the 50 ms loop-stall bound under those conditions; they are not browser paint or real-model measurements. The command reports sample coverage and failures; raw benchmark outputs do not belong in the repository.
 
+For large saved-session resume and scroll measurements:
+
+```sh
+node ui/acceptance/large-session.mts --out <measurement-directory>
+node ui/acceptance/large-session.mts --session <saved-session-file> --out <measurement-directory>
+node --test ui/server/history-worker.test.mts ui/server/history-output.test.mts ui/rpc/suffix.test.mts ui/web/transcript-history.test.mts ui/acceptance/large-session.test.mts
+```
+
+The first command generates a synthetic 25 MiB session at runtime. The second reads a real source file and resumes only a copy under a disposable project and private Pi agent/state directories. Neither command sends a prompt or writes to the original saved-session store. The browser follows the explicit writer-release confirmation. Reports include source hashes, Resume-to-paint and composer times, clock-calibrated RPC-state-to-paint bounds, backend RSS and event-loop delay, each Earlier page latency, scroll frame intervals, and output-page/anchor checks. The driver stops its backend, Pi child, and browser. Raw reports and generated session files remain outside the repository.
+
+Saved-history tests cover current version 3 SessionHeader, Entry Base tree links, SessionMessageEntry text, incomplete trailing records, append/rewrite invalidation, active-leaf changes, a generated large source, protected UTF-8 output offsets, and HTTP authentication/epoch bounds. A large `get_entries {since}` suffix supplies an authoritative leaf but never claims complete branch coverage. File and record limits return visible errors rather than silently skipping entries.
+
 Deterministic tests do not establish Safari/Brave live acceptance or real long-session latency. Browser screenshots, real extension dialogs, peer delivery, sole outgoing writer release, and measured warm paint budgets require the actual desktop acceptance path.
 
 ## Browser interface
 
-The browser uses native DOM components and browser ES modules emitted by TypeScript. Source imports use explicit `.ts` extensions; `rewriteRelativeImportExtensions` produces browser `.js` paths and lets Node tests load source directly. The first project picker combines project directory and exact saved-session path in one form. Start new session and manually confirmed Resume are explicit actions; already open backend primaries appear separately.
+The browser uses native DOM components and browser ES modules emitted by TypeScript. Source imports use explicit `.ts` extensions; `rewriteRelativeImportExtensions` produces browser `.js` paths and lets Node tests load source directly. The project picker lists recent projects and then saved sessions newest first, with title, session ID, size, and relative time. Click a time to show its absolute value. Titles use the latest name entry available in bounded file reads, otherwise the first user-message excerpt, otherwise an explicit unavailable-title label. Search filters only loaded sessions; coverage reports the loaded count and **More saved sessions** requests the next page. Arrow keys move between rows, Enter selects, and Escape closes. Cached lists render immediately on return; freshness is visible and refresh is explicit. **Open saved session path…** retains the exact-path fallback. Start new session and manually confirmed Resume are explicit actions; already open backend primaries appear separately.
 
-Browser UI state stays on the backend. Each editor keeps a transient local copy until a saved revision acknowledgment; transcript renders never replace editor nodes. Primary and agent transcripts use stable entry/message/tool-call keys, animation-frame batches, measured-height virtualization, and entry anchors. Tool and custom data use safe text/DOM operations, without extension renderer imports or remote image loads. Appearance changes browser CSS only. Relative timestamps change on data arrival, view re-entry, or click, never an interval. Dark control borders use `#7c7c90` for contrast on raised controls.
+Authenticated `GET /api/sessions?project=<absolute-directory>&cursor=<cursor>` and `GET /api/projects?cursor=<cursor>` return bounded metadata pages with observation time and omitted counts. Session discovery uses asynchronous bounded batches and mtime/size cache invalidation, not whole-session parsing. Header reads use at most the first 64 KiB. Rows appear before deeper title work. For the loaded page, title scans read 64 KiB chunks up to 2 MiB per file, bound each retained JSONL line to 256 KiB, skip oversized/non-user records, and stop at the first user message. Excerpts retain the first 200 characters. A bounded 64 KiB tail supplies the latest accessible name entry. A single `GET /api/sessions?project=<directory>&titles=<titleCursor>` completion request fills pending titles without polling, reordering rows, or rescanning unrelated projects. Titles cache by file path, size, and mtime. A title outside these bounds remains explicitly unavailable. Browsing and local search never spawn Pi or a Durable host.
+
+Browser UI state stays on the backend. Each editor keeps a transient local copy until a saved revision acknowledgment; transcript renders never replace editor nodes. Primary and agent transcripts use stable entry/message/tool-call keys, animation-frame batches, measured-height virtualization, and entry anchors. Tool and custom data use safe text/DOM operations, without extension renderer imports or remote image loads. Appearance changes browser CSS only. Relative timestamps change on data arrival, view re-entry, or click, never an interval. The graphite dark and neutral light themes share a spacing rhythm, inline SVG controls, and a single composer surface. `node --test ui/web/contrast.test.mts` checks the modeled token pairs against WCAG AA text thresholds and control/focus contrast thresholds in both themes; these checks do not certify whole-page accessibility.
+
+Expanded edit cards show the retained supplied old/new text pairs, not an inferred file diff. Write cards show supplied content with bounded lazy inspection. Empty transcript messages have no header unless errors or omissions exist. Public `customType` values supply custom-entry headings; custom messages with `display:false` do not expose their text. Command resources warm once per ready primary lifecycle, not from empty startup responses.
 
 Performance measures use `ui:editor-echo`, `ui:cached-target-switch`, `ui:control-roundtrip`, `ui:reducer`, `ui:stream-receive-to-paint`, and `ui:agent-observation-startup`. Browser spans are not synchronized server clocks. `node ui/acceptance/smoke.mts --help` describes the deterministic Brave path and its real-session boundaries.
 

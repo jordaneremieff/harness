@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { captureAnchor, followsTail, layoutItems, measureItems, restoreAnchor, visibleWindow } from './virtual.ts';
+import { captureAnchor, followsTail, layoutItems, measureItems, restoreAnchor, visibleWindow, updateHeights } from './virtual.ts';
 
 test('variable measured heights stay keyed through reorder', () => {
   const heights = new Map([['a', 30], ['b', 100]]);
@@ -39,6 +39,16 @@ test('unmeasured windows use overscan and reject stale measurements', () => {
   const layout = layoutItems(['a', 'b', 'c', 'd'], new Map(), 100);
   assert.deepEqual(visibleWindow(layout, 150, 100, {overscanPx: 50}).items.map(item => item.id), ['b', 'c']);
   assert.deepEqual([...measureItems(new Map([['gone', 20], ['a', 30]]), new Map([['a', 80], ['b', -1]]), ['a', 'b'])], [['a', 80]]);
+});
+test('height deltas reuse keyed layout objects and update only the affected suffix', () => {
+  const layout = layoutItems(['a', 'b', 'c'], new Map(), 100);
+  const first = layout.items[0]; const last = layout.items[2];
+  updateHeights(layout, new Map([['c', 150], ['missing', 90]]));
+  assert.equal(layout.items[0], first); assert.equal(layout.items[2], last);
+  assert.equal(layout.totalHeight, 350); assert.equal(last?.top, 200);
+  updateHeights(layout, new Map([['a', 20], ['b', Number.NaN]]));
+  assert.deepEqual(layout.items.map(item => [item.top, item.bottom]), [[0, 20], [20, 120], [120, 270]]);
+  assert.equal(restoreAnchor(layout, {id: 'c', offsetPx: 10}, 0), 130);
 });
 test('tail follow respects explicit scroll and selection', () => {
   assert.equal(followsTail(852, 100, 1000), true);

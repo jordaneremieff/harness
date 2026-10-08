@@ -2,6 +2,8 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { CommandView, DialogResponse, HandoffRequest, HandoffView, ModelChoice, PrimaryControl, PrimaryView, SessionAction } from '../shared/api.ts';
 import { safeText } from '../server/projection.mts';
+import { FileHistory } from '../server/history.mts';
+import { StateError } from '../server/state.mts';
 import { RpcClient, RpcError, type RpcRecord, type SpawnChild } from './client.mts';
 import { Dialogs } from './dialogs.mts';
 import { SessionStats } from './stats.mts';
@@ -23,6 +25,8 @@ export class PrimarySession {
   resourcesRevision = 0;
   recoveredQueue = { steering: [] as string[], followUp: [] as string[] };
   private projection: EventProjection;
+  private fileHistory?: FileHistory;
+  private fileClosing?: Promise<void>;
   private dialogs: Dialogs;
   private stats: SessionStats;
   private startupTimer?: NodeJS.Timeout;
@@ -94,24 +98,31 @@ export class PrimarySession {
     this.timerAt = performance.now();
     this.startupTimer = setTimeout(() => this.rejectStartup?.(new RpcError('host_unavailable', 'Primary startup deadline expired.')), Math.max(0, this.remaining));
   }
-  async refreshState(): Promise<void> {
-    const revision = this.projection.activityRevision; const epoch = this.view.epoch;
+  async refreshState(manualCompaction = false): Promise<void> {
+    const revision = this.projection.activityRevision; const epoch = this.view.epoch; const lifecycle = this.view.lifecycle;
+    const manualActivity = this.view.activity === 'compacting' && lifecycle === 'ready' && this.projection.manualCompactionEndRevision === revision;
     const state = object(await this.client.request('get_state')); this.epoch(epoch);
+    if (this.view.lifecycle !== lifecycle) throw new RpcError('not_ready', 'Primary lifecycle changed during state refresh.');
     if (typeof state.isStreaming !== 'boolean' || typeof state.isCompacting !== 'boolean') throw new RpcError('protocol_error', 'Invalid primary state activity.');
     this.view.sessionId = identifier(state.sessionId);
     this.view.sessionFile = state.sessionFile === undefined ? undefined : text(state.sessionFile);
     this.view.sessionName = state.sessionName === undefined ? undefined : safeText(text(state.sessionName), 1024);
     this.view.model = state.model === undefined ? undefined : model(state.model);
     this.view.thinkingLevel = state.thinkingLevel === undefined ? undefined : identifier(state.thinkingLevel);
-    if (revision === this.projection.activityRevision) this.view.activity = state.isCompacting ? 'compacting' : state.isStreaming ? 'running' : 'idle';
+    if (revision === this.projection.activityRevision && (!manualCompaction || manualActivity)) this.refreshedActivity(state, manualCompaction);
     this.projection.state();
+  }
+  private refreshedActivity(state: Record<string, unknown>, manualCompaction: boolean): void {
+    this.view.activity = state.isCompacting ? 'compacting' : state.isStreaming ? 'running' : 'idle';
+    if (manualCompaction && this.view.activity === 'idle') { for (const waiter of this.settled) waiter.resolve(); this.settled.clear(); }
   }
   async resynchronize(): Promise<void> {
     if (this.refreshing) throw new RpcError('not_ready', 'History refresh already in progress.');
     const epoch = this.view.epoch;
     this.refreshing = true; this.buffer = []; this.bufferBytes = 0;
     try {
-      const entries = await this.client.request('get_entries'); this.epoch(epoch);
+      const source = await this.savedSource();
+      const entries = source ? await source.history.page(source.path, source.leaf) : await this.client.request('get_entries'); this.epoch(epoch);
       this.projection.snapshot(entries);
       const buffer = this.buffer; this.buffer = []; this.refreshing = false;
       this.projection.silent = true;
@@ -129,7 +140,8 @@ export class PrimarySession {
     if (typeof beforeEntryId !== 'string' || !beforeEntryId || beforeEntryId.length > 256) throw new RpcError('invalid_request', 'Invalid history anchor.');
     const epoch = this.view.epoch;
     try {
-      const data = object(await this.client.request('get_entries', {}, beforeEntryId));
+      const source = await this.savedSource();
+      const data = source ? await source.history.page(source.path, source.leaf, beforeEntryId) : object(await this.client.request('get_entries', {}, beforeEntryId));
       this.epoch(epoch);
       const temporary = new EventProjection(this.view, () => {}, () => {}); temporary.snapshot(data);
       return { entries: temporary.entries, coverage: temporary.coverage };
@@ -137,6 +149,28 @@ export class PrimarySession {
       if (error instanceof RpcError && ['protocol_error', 'history_limit'].includes(error.code)) throw new RpcError('history_limit', 'History source or active-branch anchor is unavailable.');
       throw error;
     }
+  }
+  private async savedSource(): Promise<{history: FileHistory; path: string; leaf: string | null} | undefined> {
+    const path = this.view.sessionFile; const epoch = this.view.epoch;
+    if (!path) return undefined;
+    if (!isAbsolute(path)) throw new RpcError('history_limit', 'The RPC saved history path is invalid.');
+    try { if (!(await stat(path)).isFile()) throw new RpcError('history_limit', 'The saved history source is not a file.'); }
+    catch (error) { if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return undefined; throw error; }
+    if (this.closing || this.client.exited) throw new RpcError('not_ready', 'Primary is closed.');
+    this.epoch(epoch);
+    this.fileHistory ??= new FileHistory(); const history = this.fileHistory;
+    const index = await history.index(path); this.epoch(epoch);
+    const state = object(await this.client.request('get_entries', index.lastId ? {since: index.lastId} : {})); this.epoch(epoch);
+    if (!(state.leafId === null || typeof state.leafId === 'string')) throw new RpcError('protocol_error', 'Invalid RPC history leaf.');
+    if (this.view.sessionFile !== path) throw new RpcError('stale_epoch', 'The saved history source changed.');
+    return {history, path, leaf: state.leafId as string | null};
+  }
+  async historyOutput(entryId: string, part: number, offset: number) {
+    if (this.view.lifecycle !== 'ready') throw new RpcError('not_ready', 'Primary history is unavailable.');
+    if (typeof entryId !== 'string' || !entryId || entryId.length > 256 || !Number.isSafeInteger(part) || part < 0 || part >= 100 || !Number.isSafeInteger(offset) || offset < 0) throw new RpcError('invalid_request', 'Invalid output request.');
+    const epoch = this.view.epoch; const source = await this.savedSource();
+    if (!source) throw new RpcError('history_limit', 'This output has no saved source yet.');
+    const page = await source.history.output(source.path, source.leaf, entryId, part, offset); this.epoch(epoch); return page;
   }
   async input(message: string, mode: 'prompt' | 'steer' | 'followUp', literal = false): Promise<unknown> {
     this.admit();
@@ -183,15 +217,25 @@ export class PrimarySession {
       default: throw new RpcError('unsupported', 'Unsupported primary control.');
     }
     if (Object.keys(body).some((k) => !['epoch', 'action', ...Object.keys(fields)].includes(k))) throw new RpcError('invalid_request', 'Invalid primary control fields.');
-    const result = await this.client.request(type, fields); this.epoch(body.epoch);
+    const result = await this.controlRequest(type, fields, body.epoch); this.epoch(body.epoch);
     if (body.action === 'model') {
       this.stats.clear(); this.view.model = model(result);
       const levels = await this.client.request('get_available_thinking_levels'); this.epoch(body.epoch);
       this.setThinking(levels); this.resourcesRevision++;
     }
-    if (body.action !== 'export' && body.action !== 'stats') await this.refreshState();
+    if (body.action !== 'export' && body.action !== 'stats') await this.refreshState(body.action === 'compact');
     if (body.action === 'model') this.stats.refresh();
     return result;
+  }
+  private async controlRequest(type: string, fields: Record<string, unknown>, epoch: number): Promise<unknown> {
+    try { return await this.client.request(type, fields); }
+    catch (error) {
+      if (type === 'compact' && error instanceof RpcError && error.code === 'rpc_rejected' && this.view.epoch === epoch && this.view.lifecycle === 'ready') {
+        try { await this.refreshState(true); }
+        catch (refreshError) { if (this.view.epoch === epoch && this.view.lifecycle === 'ready') this.fail(this.error(refreshError)); }
+      }
+      throw error;
+    }
   }
   private setThinking(value: unknown): void {
     const levels = object(value).levels;
@@ -242,7 +286,10 @@ export class PrimarySession {
     if (this.view.activity === 'idle') return Promise.resolve();
     return new Promise((resolve, reject) => this.settled.add({ resolve, reject }));
   }
-  close(): Promise<void> { this.closing ??= this.closeOnce(); return this.closing; }
+  close(): Promise<void> {
+    this.closing ??= this.closeOnce().finally(async () => { this.fileClosing ??= this.fileHistory?.close(); await this.fileClosing; });
+    return this.closing;
+  }
   private async closeOnce(): Promise<void> {
     this.frozen = true; this.rejectStartup?.(new RpcError('not_ready', 'Primary is closed.'));
     this.view.capabilities.input = false; this.view.capabilities.control = false; this.view.capabilities.handoff = false;
@@ -269,6 +316,7 @@ export class PrimarySession {
     } catch (error) { this.fail(this.error(error)); }
   }
   private exited(error?: RpcError): void {
+    this.fileClosing ??= this.fileHistory?.close();
     this.view.lifecycle = error ? 'failed' : 'stopped'; this.view.activity = 'unknown';
     this.view.capabilities.input = false; this.view.capabilities.control = false; this.view.capabilities.handoff = false;
     this.dialogs.expireAll('process-exit');
@@ -293,5 +341,9 @@ export class PrimarySession {
     if (!(await stat(canonical)).isFile()) throw new RpcError('invalid_request', 'Saved session path must name a file.');
     return canonical;
   }
-  private error(error: unknown): RpcError { return error instanceof RpcError ? error : new RpcError('host_unavailable', 'Primary operation failed.'); }
+  private error(error: unknown): RpcError {
+    if (error instanceof RpcError) return error;
+    if (error instanceof StateError) return new RpcError(error.code, safeText(error.message, 512));
+    return new RpcError('host_unavailable', 'Primary operation failed.');
+  }
 }

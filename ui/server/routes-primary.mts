@@ -65,7 +65,15 @@ function read(registry: Registry,key: string,parts: string[],url: URL) {
   if(!view) throw new ApiError('invalid_request','The primary does not exist.',404);
   if(parts.length === 3) return structuredClone(view);
   const session = registry.primary(key);
-  if(parts[3] === 'history') return readHistory(session,url);
+  if(parts[3] === 'history') {
+    if(parts.length === 4) return readHistory(session,url);
+    if(parts.length !== 5 || parts[4] !== 'output') throw new ApiError('invalid_request','The history read route does not exist.',404);
+    if ([...url.searchParams.keys()].some(name => !['epoch','entry','part','offset','workspace'].includes(name))) throw new ApiError('invalid_request','The output request fields are invalid.');
+    const integer = (name: string) => { const value = url.searchParams.get(name); if (value === null || !/^\d+$/.test(value)) throw new ApiError('invalid_request',`The ${name} is invalid.`); return v.integer(Number(value),name); };
+    registry.primary(key,integer('epoch'),true);
+    const part = integer('part'); if (part >= 100) throw new ApiError('invalid_request','The output part is invalid.');
+    return session.historyOutput(v.string(url.searchParams.get('entry'),'entry'),part,integer('offset'));
+  }
   if(parts[3] === 'diagnostics') return {stderr:projectJson(session.stderrTail),error:session.view.lastError};
   if(parts[3] !== 'resources') throw new ApiError('invalid_request','The primary read route does not exist.',404);
   return readResources(session,key,parts,url);

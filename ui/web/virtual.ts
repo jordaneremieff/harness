@@ -20,6 +20,21 @@ export function layoutItems(ids: readonly string[], heights: ReadonlyMap<string,
   }
   return { items, byId, totalHeight: top };
 }
+/** Recompute only the suffix affected by measured height changes. */
+export function updateHeights(layout: VirtualLayout, measurements: ReadonlyMap<string, number>): void {
+  let first = layout.items.length;
+  for (const [id, height] of measurements) {
+    const item = layout.byId.get(id);
+    if (item && Number.isFinite(height) && height > 0 && height !== item.height) { item.height = height; first = Math.min(first, item.index); }
+  }
+  if (first === layout.items.length) return;
+  let top = first > 0 ? layout.items[first - 1]?.bottom ?? 0 : 0;
+  for (let index = first; index < layout.items.length; index++) {
+    const item = layout.items[index]; if (!item) continue;
+    item.top = top; item.bottom = top + item.height; top = item.bottom;
+  }
+  layout.totalHeight = top;
+}
 function firstAfter(layout: VirtualLayout, position: number): number {
   let lo = 0;
   let hi = layout.items.length;

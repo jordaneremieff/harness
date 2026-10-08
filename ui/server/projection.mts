@@ -129,7 +129,9 @@ class MessageProjector {
     return parts;
   }
   message(raw: unknown, id: string, state: 'partial' | 'final'): MessageView {
-    const source = object(raw); const parts = this.parts(source);
+    const source = object(raw);
+    const hidden = source.role === 'custom' && source.display === false;
+    const parts = hidden ? [] : this.parts(source);
     if (typeof source.role !== 'string') this.omitted++;
     if (source.role === 'toolResult' && !parts.some(part => part.type === 'toolResult')) {
       const result: PartView = {type: 'toolResult', callId: safeText(source.toolCallId, 256), name: safeText(source.toolName, 256), parts: [...parts], isError: source.isError === true};
@@ -161,11 +163,16 @@ function entryMessages(source: Record<string, unknown>): unknown[] | undefined {
   if (typeof source.role === 'string') return [source];
   return undefined;
 }
+function entryHeading(source: Record<string, unknown>, kind: string): string | undefined {
+  if ((kind === 'custom' || kind === 'custom_message') && typeof source.customType === 'string') return safeText(source.customType, 256);
+  return typeof source.head === 'string' ? safeText(source.head, 256) : undefined;
+}
 function displayEntry(raw: unknown, fallbackId: string): EntryView {
   const source = object(raw);
   const id = safeText(typeof source.id === 'string' || typeof source.id === 'number' ? String(source.id) : fallbackId, 256);
   const kind = safeText(source.type ?? source.kind, 256) || 'unknown'; const result: EntryView = {id, kind};
-  const messages = entryMessages(source);
+  const hiddenCustom = kind === 'custom_message' && source.display === false;
+  const messages = hiddenCustom ? [{...source, role: 'custom', content: []}] : entryMessages(source);
   if (messages) {
     result.messages = messages.slice(0, 8).map((item, index) => {
       const message = object(item); const messageId = Array.isArray(message.parts) && typeof message.id === 'string' ? message.id : `${id}:message:${index}`;
@@ -173,13 +180,53 @@ function displayEntry(raw: unknown, fallbackId: string): EntryView {
     });
     if (messages.length > 8) result.data = {value: 'Additional messages omitted', truncated: true};
   } else result.data = displayData(source.data ?? source);
-  if (typeof source.head === 'string') result.head = safeText(source.head, 256);
-  return sizeOf(result) <= DISPLAY_BYTES ? result : {id, kind, data: {value: '[entry display byte limit; content omitted]', truncated: true}};
+  const head = entryHeading(source, kind); if (head !== undefined) result.head = head;
+  return sizeOf(result) <= DISPLAY_BYTES ? result : {id, kind, ...(head !== undefined ? {head} : {}), data: {value: '[entry display byte limit; content omitted]', truncated: true}};
 }
 export function projectEntry(raw: unknown, id: string = randomUUID()): EntryView {
   try { return displayEntry(raw, id); }
   catch { return {id: safeText(id, 256), kind: 'unknown', data: {value: '[malformed entry omitted]', truncated: true}}; }
 }
+const OUTPUT_BYTES = 8192;
+/** Off-thread callers protect the whole text before byte paging so credentials cannot straddle chunks. */
+export function protectedTextPage(source: string, offset: number, limit = OUTPUT_BYTES): {text: string; nextOffset: number | null; totalBytes: number} {
+  const bytes = Buffer.from(safeText(source, Number.MAX_SAFE_INTEGER));
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > bytes.length || (offset < bytes.length && (bytes[offset] & 0xc0) === 0x80)) throw new Error('Invalid output byte offset.');
+  let end = Math.min(bytes.length, offset + limit);
+  while (end > offset && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+  return {text: bytes.subarray(offset, end).toString('utf8'), nextOffset: end < bytes.length ? end : null, totalBytes: bytes.length};
+}
+function savedOutput(part: PartView, preview: ReturnType<typeof protectedTextPage> | undefined, entryId: string, index: number): boolean {
+  if (!preview || (part.type !== 'text' && part.type !== 'thinking')) return false;
+  const text = part.text === preview.text ? part.text : part.text.replace(/\n\[truncated\]$/, '');
+  if (!preview.text.startsWith(text)) return false;
+  const offset = Buffer.byteLength(text); if (offset >= preview.totalBytes) return false;
+  part.text = text; part.more = {entryId, part: index, offset}; return true;
+}
+/** SessionMessageEntry text previews remain recoverable through protected output pages. */
+export function projectSavedEntry(raw: unknown): EntryView {
+  const source = object(raw);
+  if (source.type !== 'message' || typeof source.id !== 'string') return projectEntry(raw);
+  const message = object(source.message);
+  if (message.role === 'custom' && message.display === false) return projectEntry(raw);
+  const content = messageContent(message);
+  const previews = content.map((rawPart, index) => {
+    const part = object(rawPart);
+    const value = part.type === 'text' ? part.text : part.type === 'thinking' ? part.thinking ?? part.text : undefined;
+    if (typeof value !== 'string' || part.redacted === true) return {part, index};
+    const preview = protectedTextPage(value, 0);
+    return {part: {...part, ...(part.type === 'text' ? {text: preview.text} : {thinking: preview.text, text: preview.text})}, index, preview};
+  });
+  const entry = projectEntry({...source, message: {...message, content: previews.map(item => item.part)}});
+  const displayed = entry.messages?.[0];
+  if (!displayed) return entry;
+  const parts = message.role === 'toolResult' && displayed.parts[0]?.type === 'toolResult' ? displayed.parts[0].parts : displayed.parts;
+  let more = false;
+  parts.forEach((part, index) => { more = savedOutput(part, previews[index]?.preview, String(source.id), index) || more; });
+  if (more) displayed.coverage = {...displayed.coverage, complete: false, truncated: true, reason: 'Additional output is available on request.'};
+  return entry;
+}
+
 function scalarRows(value: unknown): JsonDisplay | undefined {
   if (!Array.isArray(value)) return undefined;
   const rows = value.slice(0, 32).map(raw => {

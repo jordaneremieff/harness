@@ -1,12 +1,19 @@
 import type { EntryView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView } from '../shared/api.ts';
 import { byId, button, copy, element, rawText, setText } from './dom.ts';
 import { markdownDom } from './safe-markdown.ts';
+import { setIcon } from './icons.ts';
 import type { ToolState } from './state.ts';
 import { absoluteTime, previewText, relativeTime, timestampDetails } from './format.ts';
-import { captureAnchor, layoutItems, restoreAnchor, visibleWindow } from './virtual.ts';
+import { entryVisible, presentEntry, presentMessage } from './entry-presentation.ts';
+import { presentTool } from './cards.ts';
+import { TranscriptIndex, slot } from './transcript-tools.ts';
+import type { JoinedTool } from './transcript-tools.ts';
+import { outputPages } from './transcript-output.ts';
+import type { OutputContinuation, OutputPage } from '../shared/api.ts';
+import { captureAnchor, layoutItems, restoreAnchor, visibleWindow, updateHeights } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 
-export type ViewHooks = {presentation: (expanded: string[], showThinking: boolean) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void};
+export type ViewHooks = {presentation: (expanded: string[], showThinking: boolean) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>};
 const RAW_LIMIT = 65536;
 function partText(parts: PartView[]): string {
   return parts.map(part => {
@@ -37,12 +44,6 @@ function metadata(display?: JsonDisplay): string {
     if (typeof value === 'string' || typeof value === 'number') facts.push(`${key} ${bounded(String(value), 4096)}`);
   }
   return facts.join(' · ');
-}
-function sessionNote(entry: EntryView, data: JsonDisplay): string | undefined {
-  const value = record(data);
-  if (entry.kind === 'model_change' && typeof value.provider === 'string' && typeof value.modelId === 'string') return `Model changed to ${value.provider}/${value.modelId}`;
-  if (entry.kind === 'thinking_level_change' && typeof value.thinkingLevel === 'string') return `Thinking changed to ${value.thinkingLevel}`;
-  return undefined;
 }
 function timestamp(time: number): HTMLButtonElement {
   const node = button(relativeTime(time, Date.now()), () => {
@@ -97,38 +98,17 @@ export function reconcileChildren(parent: HTMLElement, wanted: HTMLElement[]): v
 type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
 type MessageNode = {node: HTMLElement; header: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; time?: number; fork?: HTMLButtonElement};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement};
-type JoinedTool = {callId: string; name: string; owner: string; slot: string; args?: JsonDisplay; result?: PartView[]; status: string; duration?: number; argumentText?: string};
-type ToolNode = {card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; expanded: HTMLElement; source?: JoinedTool};
-function slot(entry: string, message: string, index: number): string { return JSON.stringify([entry, message, index]); }
-function indexTools(entries: EntryView[], states: ReadonlyMap<string, ToolState>): Map<string, JoinedTool> {
-  const tools = new Map<string, JoinedTool>(); const calls = new Set<string>();
-  for (const entry of entries) for (const message of entry.messages ?? []) {
-    message.parts.forEach((part, index) => { indexPart(tools, calls, part, entry.id, slot(entry.id, message.id, index)); });
-  }
-  for (const [id, state] of states) {
-    const tool = tools.get(id); if (!tool) continue;
-    tool.args = state.arguments ?? tool.args; tool.argumentText = state.argumentText;
-    tool.result = state.parts ?? tool.result; tool.duration = state.durationMs;
-    if (state.phase !== 'end') tool.status = 'working';
-    else tool.status = state.isError ? 'error' : 'success';
-  }
-  return tools;
-}
-function indexPart(tools: Map<string, JoinedTool>, calls: Set<string>, part: PartView, owner: string, location: string): void {
-  if (part.type !== 'toolCall' && part.type !== 'toolResult') return;
-  const tool = tools.get(part.callId) ?? {callId: part.callId, name: part.name, owner, slot: location, status: 'working'};
-  if (part.type === 'toolCall') {
-    tool.args = part.arguments;
-    if (!calls.has(part.callId)) { tool.owner = owner; tool.slot = location; calls.add(part.callId); }
-  } else { tool.result = part.parts; tool.status = part.isError ? 'error' : 'success'; }
-  tools.set(part.callId, tool);
-}
+type ToolNode = {card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; expanded: HTMLElement; source?: JoinedTool; presentation?: HTMLElement; output?: HTMLElement; contentSource?: JoinedTool};
 export class Transcript {
   private entries: EntryView[] = [];
   private displayed: EntryView[] = [];
   private cache = new Map<string, EntryNode>();
   private tools = new Map<string, ToolNode>();
-  private joined = new Map<string, JoinedTool>();
+  private index = new TranscriptIndex();
+  private joined = this.index.joined;
+  private visible = new Map<string, boolean>();
+  private dirtyLayout = true;
+  private generation = 0;
   private expanded = new Set<string>();
   private showThinking = false;
   private follow = true;
@@ -163,13 +143,19 @@ export class Transcript {
     this.applyPreferences();
   }
   reset(): void {
-    this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.joined.clear(); this.pins.clear(); this.heights.clear(); this.gaps.clear();
+    this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.showThinking = false; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(); this.node.scrollTop = 0;
   }
   set(entries: EntryView[], tools: ReadonlyMap<string, ToolState> = new Map()): void {
-    this.entries = entries; this.joined = indexTools(entries, tools);
-    this.displayed = entries.filter(entry => this.visibleEntry(entry)); this.schedule();
+    this.entries = entries; this.index.update(entries, tools);
+    for (const id of this.index.changed) {
+      const entry = this.index.entries.get(id);
+      if (entry) this.visible.set(id, this.visibleEntry(entry)); else this.visible.delete(id);
+    }
+    const displayed = entries.filter(entry => this.visible.get(entry.id));
+    if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
+    this.displayed = displayed; this.prune(); this.schedule();
   }
   restore(reading?: ReadingView): void {
     if (!reading || reading.followTail) return;
@@ -185,7 +171,8 @@ export class Transcript {
   private anchor(): {id: string; offsetPx: number} | null {
     for (const child of this.node.children) {
       const node = child as HTMLElement;
-      if (node.dataset.entryId && node.offsetTop + node.offsetHeight > this.node.scrollTop + this.node.offsetTop) {
+      const top = node.offsetTop - this.node.offsetTop;
+      if (node.dataset.entryId && top <= this.node.scrollTop && top + node.offsetHeight > this.node.scrollTop) {
         return {id: node.dataset.entryId, offsetPx: this.node.scrollTop - (node.offsetTop - this.node.offsetTop)};
       }
     }
@@ -197,21 +184,21 @@ export class Transcript {
   }
   private paint(): void {
     const anchor = this.follow ? null : this.anchor();
-    this.prune(); this.layout = layoutItems(this.displayed.map(entry => entry.id), this.heights, 140);
-    this.prepareScroll();
+    if (this.dirtyLayout) { this.layout = layoutItems(this.displayed.map(entry => entry.id), this.heights, 140); this.dirtyLayout = false; }
+    const scrollTop = this.prepareScroll();
     const pins = this.currentPins(); if (anchor) pins.add(anchor.id);
-    const selected = this.displayed.length > 150 ? visibleWindow(this.layout, this.node.scrollTop, this.node.clientHeight, {pins}).items : this.layout.items;
+    const selected = visibleWindow(this.layout, scrollTop, this.node.clientHeight, {pins}).items;
     reconcileChildren(this.node, this.children(selected));
     this.measure(selected);
-    this.layout = layoutItems(this.displayed.map(entry => entry.id), this.heights, 140);
     this.refreshGaps(selected);
+    this.evict(new Set(selected.map(item => item.id)));
     if (this.follow && !this.hasSelection()) this.node.scrollTop = this.node.scrollHeight;
     else this.restorePosition(anchor);
     byId(`${this.prefix}-latest`).hidden = this.follow;
   }
-  private prepareScroll(): void {
-    if (this.restoring) this.node.scrollTop = restoreAnchor(this.layout, this.readingAnchor(), this.node.clientHeight);
-    else if (this.follow) this.node.scrollTop = Math.max(0, this.layout.totalHeight - this.node.clientHeight);
+  private prepareScroll(): number {
+    if (this.restoring) return restoreAnchor(this.layout, this.readingAnchor(), this.node.clientHeight);
+    return this.follow ? Math.max(0, this.layout.totalHeight - this.node.clientHeight) : this.node.scrollTop;
   }
   private readingAnchor(): {id: string; offsetPx: number} | null {
     const value = this.restoring;
@@ -231,10 +218,8 @@ export class Transcript {
     const pins = new Set(this.pins); const selection = document.getSelection();
     for (const [id, entry] of this.cache) {
       if (entry.node.contains(document.activeElement) || entry.node.contains(selection?.anchorNode ?? null) || entry.node.contains(selection?.focusNode ?? null)) pins.add(id);
-      if (entry.node.querySelector('details[open]')) pins.add(id);
+      if ([...entry.node.querySelectorAll<HTMLDetailsElement>('details[open]')].some(node => !node.dataset.disclosure)) pins.add(id);
     }
-    for (const tool of this.joined.values()) if (this.expanded.has(`tool:${tool.callId}`)) pins.add(tool.owner);
-    for (const entry of this.entries) if ([...this.expanded].some(id => id.startsWith(`thinking:${entry.id}:`))) pins.add(entry.id);
     if (this.restoring?.anchorId) pins.add(this.restoring.anchorId);
     return pins;
   }
@@ -264,15 +249,25 @@ export class Transcript {
     const tail = this.gaps.get('tail'); if (tail) tail.style.height = `${Math.max(0, this.layout.totalHeight - offset)}px`;
   }
   private measure(items: LayoutItem[]): void {
+    const measurements = new Map<string, number>();
     for (const item of items) {
-      const node = this.cache.get(item.id)?.node;
-      if (node && node.offsetHeight > 0) this.heights.set(item.id, node.offsetHeight);
+      const height = this.cache.get(item.id)?.node.offsetHeight;
+      if (height && height > 0 && this.heights.get(item.id) !== height) { this.heights.set(item.id, height); measurements.set(item.id, height); }
     }
+    updateHeights(this.layout, measurements);
   }
   private prune(): void {
-    const ids = new Set(this.entries.map(entry => entry.id));
-    for (const [id, entry] of this.cache) if (!ids.has(id)) { entry.node.remove(); this.cache.delete(id); this.heights.delete(id); this.pins.delete(id); }
-    for (const [id, tool] of this.tools) if (!this.joined.has(id)) { tool.node.remove(); this.tools.delete(id); }
+    for (const [id, entry] of this.cache) if (!this.index.entries.has(id)) { entry.node.remove(); this.cache.delete(id); this.pins.delete(id); }
+    for (const id of this.index.changed) if (!this.index.entries.has(id)) this.heights.delete(id);
+    for (const [id, tool] of this.tools) if (!this.joined.has(id)) { tool.card.remove(); this.tools.delete(id); }
+  }
+  private evict(mounted: ReadonlySet<string>): void {
+    const offscreen = [...this.cache.keys()].filter(id => !mounted.has(id));
+    for (const id of offscreen.slice(0, Math.max(0, offscreen.length - 32))) this.cache.delete(id);
+    for (const [id, tool] of this.tools) {
+      const owner = this.joined.get(id)?.owner;
+      if (!owner || !this.cache.has(owner)) { tool.card.remove(); this.tools.delete(id); }
+    }
   }
   private updateEntry(entry: EntryView): HTMLElement {
     let cached = this.cache.get(entry.id);
@@ -284,7 +279,7 @@ export class Transcript {
     const children: HTMLElement[] = cached.custom ? [cached.custom] : [];
     const ids = new Set<string>();
     for (const message of entry.messages ?? []) {
-      if (this.joinedMessage(entry.id, message)) continue;
+      if (!presentMessage(message).visible || this.joinedMessage(entry.id, message)) continue;
       ids.add(message.id); children.push(this.updateMessage(cached, message, entry).node);
     }
     for (const id of cached.messages.keys()) if (!ids.has(id)) cached.messages.delete(id);
@@ -299,12 +294,13 @@ export class Transcript {
     });
   }
   private visibleEntry(entry: EntryView): boolean {
+    if (!entryVisible(entry)) return false;
     if (entry.data || !entry.messages?.length) return true;
-    return entry.messages.some(message => !this.joinedMessage(entry.id, message));
+    return entry.messages.some(message => presentMessage(message).visible && !this.joinedMessage(entry.id, message));
   }
   private displayId(id: string): string {
-    if (this.displayed.some(entry => entry.id === id)) return id;
-    const entry = this.entries.find(entry => entry.id === id);
+    if (this.visible.get(id)) return id;
+    const entry = this.index.entries.get(id);
     for (const message of entry?.messages ?? []) for (const part of message.parts) {
       if (part.type === 'toolResult') return this.joined.get(part.callId)?.owner ?? id;
     }
@@ -313,18 +309,12 @@ export class Transcript {
   private updateCustom(cached: EntryNode, entry: EntryView): void {
     if (!entry.data && entry.messages?.length) { cached.custom = undefined; return; }
     if (cached.source === entry) return;
-    if (!cached.custom) cached.custom = element('article', 'custom-entry');
-    const data = entry.data ?? {value: {kind: entry.kind}, truncated: false};
-    if (cached.source?.data !== entry.data || cached.source?.head !== entry.head || !cached.custom.firstChild) {
-      const note = sessionNote(entry, data);
-      cached.custom.className = note ? 'system-note' : 'custom-entry';
-      cached.custom.replaceChildren(...(note ? [inspection(bounded(note, 4096), () => rawText(data.value))] : [element('h2', undefined, bounded(entry.head ?? entry.kind, 4096)), structured(data)]));
-    }
+    if (cached.source?.data !== entry.data || cached.source?.head !== entry.head || !cached.custom) cached.custom = presentEntry(entry, {bounded, rawText, inspection, structured});
   }
   private createMessage(entry: EntryNode, message: MessageView): MessageNode {
     const node = element('article', `message ${message.role === 'user' ? 'user' : ''}`);
     const header = element('header', 'message-header'); const body = element('div', 'message-body'); const error = element('p', 'error message-error'); error.hidden = true;
-    const role = message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Assistant' : message.role;
+    const role = presentMessage(message).label;
     header.append(element('span', undefined, bounded(role, 4096)));
     header.append(button('Copy', () => { void copy(partText(entry.messages.get(message.id)?.source.parts ?? []), node); }, 'copy'));
     node.append(header, body, error);
@@ -342,6 +332,10 @@ export class Transcript {
       if (node) children.push(node);
     });
     for (const key of cached.parts.keys()) if (!keys.has(key)) cached.parts.delete(key);
+    if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
+      const reason = previewText(message.coverage.reason ?? '', 6, 4096).text.trim();
+      children.push(element('p', 'secondary', reason || 'Message content is not fully displayed.'));
+    }
     reconcileChildren(cached.body, children); setText(cached.error, bounded(message.error ?? '')); cached.error.hidden = !message.error;
     cached.source = message; return cached;
   }
@@ -365,7 +359,12 @@ export class Transcript {
     const key = `${index}:${part.type}`; const previous = message.parts.get(key);
     if (previous?.source === part && previous.partial === partial) return previous.node;
     const node = previous?.node ?? this.createPart(part, entryId, message.source.id, index);
+    node.querySelector('.output-pages')?.remove();
     this.partContent(node, part, partial, previous);
+    if ((part.type === 'text' || part.type === 'thinking') && part.more) {
+      const source = part; const generation = this.generation;
+      node.append(outputPages(part.more, this.hooks.output, () => generation === this.generation && message.parts.get(key)?.source === source, () => this.schedule()));
+    }
     message.parts.set(key, {node, source: part, partial}); return node;
   }
   private createPart(part: PartView, entryId: string, messageId: string, index: number): HTMLElement {
@@ -379,13 +378,14 @@ export class Transcript {
     if (part.type === 'text') {
       this.textContent(node, part.text, partial, previous);
     } else if (part.type === 'thinking') {
-      const content = node.lastElementChild; if (content) setText(content, part.redacted ? 'Thinking omitted by host' : bounded(part.text));
+      const content = node.querySelector('.stream-text'); if (content) setText(content, part.redacted ? 'Thinking omitted by host' : bounded(part.text));
     } else if (part.type === 'omitted') { node.className = 'secondary'; setText(node, bounded(part.label)); }
   }
   private textContent(node: HTMLElement, text: string, partial: boolean, previous?: PartNode): void {
     if (previous?.source.type === 'text' && previous.source.text === text && previous.partial === partial) return;
     node.className = partial ? 'stream-text' : '';
-    if (partial) setText(node, bounded(text)); else node.replaceChildren(markdownDom(bounded(text)));
+    if (partial) setText(node, bounded(text, 8192)); else if (text.length > 8192) node.replaceChildren(markdownDom(bounded(text, 8192)), inspection('Retained text (bounded)', () => text));
+    else node.replaceChildren(markdownDom(text));
   }
   private createTool(source: JoinedTool): ToolNode {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
@@ -394,10 +394,11 @@ export class Transcript {
     const meta = element('div', 'tool-secondary'); summary.append(tier, meta);
     const preview = element('div', 'tool-preview'); const expanded = element('div', 'tool-expanded'); summary.append(preview); node.append(summary, expanded);
     node.dataset.disclosure = `tool:${source.callId}`; node.open = this.expanded.has(`tool:${source.callId}`);
-    const action = button('⧉', () => { void copy(tool.source?.result ? partText(tool.source.result) : '', tool.card).then(copied => { if (copied) { setText(action, '✓'); action.title = 'Copied'; } }); }, 'quiet tool-copy');
+    const action = button('', () => { void copy(tool.source?.result ? partText(tool.source.result) : '', tool.card).then(copied => { if (copied) { setIcon(action, 'check'); action.title = 'Copied'; } }); }, 'quiet tool-copy');
+    setIcon(action, 'copy');
     action.setAttribute('aria-label', 'Copy tool output'); action.title = 'Copy tool output';
     action.addEventListener('click', event => event.stopPropagation());
-    action.addEventListener('blur', () => { setText(action, '⧉'); action.title = 'Copy tool output'; }); card.append(action);
+    action.addEventListener('blur', () => { setIcon(action, 'copy'); action.title = 'Copy tool output'; }); card.append(action);
     const tool: ToolNode = {card, node, copy: action, title, glyph, meta, preview, expanded}; this.tools.set(source.callId, tool);
     this.trackDisclosure(node, `tool:${source.callId}`);
     node.addEventListener('toggle', () => this.toolExpansion(tool)); return tool;
@@ -405,6 +406,7 @@ export class Transcript {
   private updateTool(source: JoinedTool): HTMLElement {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
     const previous = tool.source; tool.source = source;
+    if (previous === source) return tool.card;
     const target = subject(source.args); setText(tool.title, `${source.name}${target ? ` · ${target}` : ''}`);
     setText(tool.glyph, source.status === 'success' ? '✓' : source.status === 'error' ? '!' : '●');
     tool.glyph.className = `tool-status ${source.status}`; tool.glyph.setAttribute('aria-label', source.status);
@@ -430,19 +432,52 @@ export class Transcript {
     const source = tool.source; if (!source) return '';
     return source.args ? `${rawText(source.args.value)}${source.args.truncated ? '\nArguments omitted by host' : ''}` : source.argumentText ?? '';
   }
+  private presentToolRegion(tool: ToolNode, source: JoinedTool): void {
+    const region = presentTool(source, {bounded, rawText, inspection, structured});
+    const previous = tool.contentSource;
+    if (previous?.args === source.args && previous?.name === source.name && tool.presentation && region) {
+      const heading = tool.presentation.querySelector('h3');
+      if (heading) setText(heading, region.querySelector('h3')?.textContent ?? '');
+      return;
+    }
+    tool.presentation?.remove(); tool.presentation = region;
+    if (region) tool.expanded.prepend(region);
+  }
+  private expandedContent(tool: ToolNode, source: JoinedTool): void {
+    if (tool.contentSource === source) return;
+    if (tool.contentSource?.args !== source.args || tool.contentSource?.name !== source.name || tool.contentSource?.status !== source.status) {
+      this.presentToolRegion(tool, source);
+    }
+    if (tool.contentSource?.result !== source.result) {
+      tool.output?.remove(); tool.output = element('div');
+      const generation = this.generation;
+      const append = (parts: PartView[]) => { for (const part of parts) {
+        if (part.type === 'toolResult') append(part.parts);
+        else if ((part.type === 'text' || part.type === 'thinking') && part.more) tool.output?.append(outputPages(part.more, this.hooks.output, () => generation === this.generation && this.tools.get(source.callId) === tool && tool.source?.result === source.result, () => this.schedule()));
+      } };
+      append(source.result ?? []); tool.expanded.append(tool.output);
+    }
+    tool.contentSource = source;
+  }
   private expandTool(tool: ToolNode): void {
     const source = tool.source; if (!source) return;
     const output = source.result ? partText(source.result) : '';
-    let pre = tool.expanded.querySelector('pre');
+    this.expandedContent(tool, source);
+    let pre = tool.expanded.querySelector('.tool-output-text');
     if (!pre) {
-      pre = element('pre'); tool.expanded.append(element('span', 'secondary', 'Output'), pre,
+      pre = element('pre', 'tool-output-text'); tool.expanded.append(element('span', 'secondary', 'Output'), pre,
         inspection('Arguments', () => this.toolArguments(tool)),
         inspection('Raw result', () => rawText(tool.source?.result ?? [])));
       for (const node of tool.expanded.querySelectorAll('details')) node.className = 'tool-inspection';
     }
     setText(pre, bounded(output || (source.status === 'working' ? 'Working' : 'Returned successfully')));
+    this.refreshToolInspections(tool, source);
+  }
+  private refreshToolInspections(tool: ToolNode, source: JoinedTool): void {
     for (const node of tool.expanded.querySelectorAll<HTMLDetailsElement>('details[open]')) {
-      const data = node.querySelector('pre'); if (data) setText(data, node.firstElementChild?.textContent === 'Arguments' ? bounded(this.toolArguments(tool)) : bounded(rawText(source.result ?? [])));
+      const title = node.firstElementChild?.textContent;
+      if (title !== 'Arguments' && title !== 'Raw result') continue;
+      const data = node.querySelector('pre'); if (data) setText(data, title === 'Arguments' ? bounded(this.toolArguments(tool)) : bounded(rawText(source.result ?? [])));
     }
   }
   private trackDisclosure(node: HTMLDetailsElement, id: string): void {
@@ -479,12 +514,7 @@ export class Transcript {
     this.follow = false; this.hooks.presentation([...this.expanded], this.showThinking); this.schedule();
   }
   private loadedDisclosures(tools: boolean): string[] {
-    if (tools) return [...this.joined.keys()].map(id => `tool:${id}`);
-    const ids: string[] = [];
-    for (const entry of this.entries) for (const message of entry.messages ?? []) message.parts.forEach((part, index) => {
-      if (part.type === 'thinking') ids.push(`thinking:${entry.id}:${message.id}:${index}`);
-    });
-    return ids;
+    return [...this.index.disclosures.keys()].filter(id => id.startsWith(tools ? 'tool:' : 'thinking:'));
   }
   find(query: string): void {
     if (!query.trim()) return;

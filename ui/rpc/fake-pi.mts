@@ -24,8 +24,8 @@ async function response(record: Record<string, unknown>, data?: unknown): Promis
   await emit({ type: 'response', id: record.id, command: record.type, success: true, ...(data === undefined ? {} : { data }) });
 }
 async function append(message: unknown): Promise<void> {
-  const id = randomUUID(); entries.push({ type: 'message', id, parentId: leafId, message }); leafId = id;
-  await writeFile(sessionFile, `${JSON.stringify({ type: 'session', id: sessionId })}\n${entries.map((e) => JSON.stringify(e)).join('\n')}\n`);
+  const id = randomUUID(); entries.push({ type: 'message', id, parentId: leafId, timestamp: new Date().toISOString(), message }); leafId = id;
+  await writeFile(sessionFile, `${JSON.stringify({ type: 'session', version: 3, id: sessionId, timestamp: new Date(0).toISOString(), cwd: process.cwd() })}\n${entries.map((e) => JSON.stringify(e)).join('\n')}\n`);
 }
 async function finish(): Promise<void> {
   if (!running) return;
@@ -43,7 +43,11 @@ try {
 async function command(record: Record<string, unknown>): Promise<void> {
   switch (record.type) {
     case 'get_state': await response(record, { sessionId, sessionFile, sessionName, model, thinkingLevel: level, isStreaming: running, isCompacting: false, pendingMessageCount: 0 }); return;
-    case 'get_entries': await response(record, { entries, leafId }); return;
+    case 'get_entries': {
+      const since = record.since === undefined ? -1 : entries.findIndex(entry => entry.id === record.since);
+      if (record.since !== undefined && since < 0) { await emit({type: 'response', id: record.id, command: 'get_entries', success: false, error: 'Entry not found.'}); return; }
+      await response(record, {entries: entries.slice(since + 1), leafId}); return;
+    }
     case 'get_session_stats': await response(record, { tokens: { input: entries.length * 10, output: entries.length * 5, cacheRead: 0, cacheWrite: 0, total: entries.length * 15 }, cost: 0, contextUsage: { tokens: entries.length * 15, contextWindow: 128000, percent: entries.length * 15 / 128000 * 100 } }); return;
     case 'get_commands': await response(record, { commands: [{ name: 'fixture', description: 'Run deterministic fixture output', source: 'extension' }] }); return;
     case 'get_available_models': await response(record, { models: [model, { ...model, id: 'alternate', name: 'Alternate fixture' }] }); return;

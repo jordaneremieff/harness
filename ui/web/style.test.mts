@@ -4,9 +4,9 @@ import test from 'node:test';
 const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');
 const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 function palette(selector: string): Map<string, string> {
-  const start = css.indexOf(`${selector}{`); assert.notEqual(start, -1);
-  const text = css.slice(start, css.indexOf('}', start));
-  return new Map([...text.matchAll(/--([a-z-]+):(#[a-f\d]{3,6})(?=[;}]|$)/gi)].map(match => [match[1], match[2]]));
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`${escaped}\\s*\\{([^}]+)\\}`).exec(css); assert.ok(match);
+  return new Map([...match[1].matchAll(/--([a-z-]+):\s*(#[a-f\d]{3,6})(?=[;}]|$)/gi)].map(value => [value[1], value[2]]));
 }
 function luminance(color: string): number {
   if (color.length === 4) color = `#${color.slice(1).split('').map(char => char + char).join('')}`;
@@ -36,6 +36,6 @@ test('the native shell preserves separate labeled primary and agent composers', 
 });
 test('responsive layout has the specified collapse breakpoints and no animated liveness', () => {
   for (const width of [1600, 1179, 899, 599]) assert.ok(css.includes(`${width}px`));
-  assert.match(css, /@media\(forced-colors:active\)/); assert.match(css, /@media\(pointer:coarse\)/);
+  assert.match(css, /@media\s*\(forced-colors:\s*active\)/); assert.match(css, /@media\s*\(pointer:\s*coarse\)/);
   assert.doesNotMatch(css, /animation:|transition:|scroll-behavior:smooth/);
 });

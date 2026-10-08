@@ -11,21 +11,34 @@ export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () =
 export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
+  private resourceTarget = '';
+  private commandPaint?: () => void;
   private displayedHandoffs = new Set<string>();
   private ctx: ActionContext;
   constructor(ctx: ActionContext) { this.ctx = ctx; }
   private target(primary: PrimaryView): Target { return {kind: 'primary', key: primary.key, epoch: primary.epoch}; }
   private path(primary: PrimaryView, suffix: string): string { return `/api/primaries/${encodeURIComponent(primary.key)}/${suffix}`; }
+  private observeResources(primary?: PrimaryView): boolean {
+    const target = primary ? `${primary.key}:${primary.epoch}:${primary.lifecycle}` : '';
+    if (this.resourceTarget === target) return false;
+    this.resourceTarget = target; this.resources.clear(); this.commands = []; this.commandPaint?.(); return true;
+  }
   async load(kind: 'commands' | 'models' | 'thinking'): Promise<ResourcePage> {
-    const primary = this.ctx.primary(); if (!primary) return {items: [], nextCursor: null, revision: ''};
+    const primary = this.ctx.primary(); this.observeResources(primary);
+    if (primary?.lifecycle !== 'ready') return {items: [], nextCursor: null, revision: ''};
     const key = `${primary.key}:${primary.epoch}:${kind}`;
     let cache = this.resources.get(key);
-    if (!cache) { cache = request<ResourcePage>(this.path(primary, `resources/${kind}?limit=100`)); this.resources.set(key, cache); cache.catch(() => this.resources.delete(key)); }
+    if (!cache) {
+      cache = request<ResourcePage>(this.path(primary, `resources/${kind}?limit=100`)); this.resources.set(key, cache);
+      const pending = cache; cache.catch(() => { if (this.resources.get(key) === pending) this.resources.delete(key); });
+    }
     const result = await cache;
-    if (kind === 'commands' && this.ctx.primary()?.key === primary.key && this.ctx.primary()?.epoch === primary.epoch) this.commands = result.items as CommandView[];
+    if (kind === 'commands' && this.resources.get(key) === cache && this.ctx.primary()?.lifecycle === 'ready' && this.ctx.primary()?.key === primary.key && this.ctx.primary()?.epoch === primary.epoch) { this.commands = result.items as CommandView[]; this.commandPaint?.(); }
     return result;
   }
-  warm(): void { this.commands = []; void this.load('commands').catch(() => undefined); }
+  warm(): void {
+    if (this.observeResources(this.ctx.primary())) void this.load('commands').catch(() => undefined);
+  }
   async control(control: Omit<PrimaryControl, 'epoch'>, captured?: PrimaryView): Promise<void> {
     const primary = captured ?? this.ctx.primary(); if (!primary) return;
     const result = await operation('primary.control', this.path(primary, 'control'), {...control, epoch: primary.epoch}, this.target(primary)); this.ctx.result(result);
@@ -146,6 +159,7 @@ export class Actions {
     };
     search.field.addEventListener('input', paint); search.field.addEventListener('keydown', raw => { const event = raw as KeyboardEvent; if (event.key === 'ArrowDown') { event.preventDefault(); list.querySelector<HTMLButtonElement>('button')?.focus(); } });
     list.addEventListener('keydown', event => navigateOptions(event, list));
+    this.commandPaint = () => { if (modal.owns(token)) paint(); };
     paint(); search.field.focus(); void this.load('commands').then(page => {
       if (!modal.owns(token)) return;
       paint(); if (page.nextCursor) {

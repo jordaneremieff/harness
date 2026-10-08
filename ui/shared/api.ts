@@ -23,7 +23,9 @@ export type Success<T> = {ok: true; data: T};
 export type Failure = {ok: false; error: ErrorView};
 export type ApiResult<T> = Success<T> | Failure;
 export type DisplayCoverage = {complete: boolean; truncated: boolean; omitted: number; reason?: string};
-export type PartView = {type: 'text' | 'thinking'; text: string; redacted?: boolean} |
+export type OutputContinuation = {entryId: string; part: number; offset: number};
+export type OutputPage = {entryId: string; part: number; text: string; nextOffset: number | null; totalBytes: number};
+export type PartView = {type: 'text' | 'thinking'; text: string; redacted?: boolean; more?: OutputContinuation} |
   {type: 'toolCall'; callId: string; name: string; arguments: JsonDisplay} |
   {type: 'toolResult'; callId: string; name: string; parts: PartView[]; isError: boolean} |
   {type: 'omitted'; label: string};
@@ -131,7 +133,7 @@ export type EventEnvelope<N extends EventName = EventName> = {at: string; worksp
 export const ROUTES = [
   'GET /', 'POST /api/auth/launch', 'POST /api/auth/logout', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
   'POST /api/workspaces', 'POST /api/operations', 'GET /api/operations/:id', 'POST /api/operations/:id/reconcile', 'DELETE /api/operations/:id',
-  'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/resources/:kind',
+  'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/history/output', 'GET /api/primaries/:key/resources/:kind',
   'GET /api/primaries/:key/diagnostics', 'POST /api/primaries/:key/inputs', 'POST /api/primaries/:key/stop',
   'POST /api/primaries/:key/session', 'POST /api/primaries/:key/control', 'POST /api/primaries/:key/dialogs/:dialogId', 'POST /api/primaries/:key/handoff',
   'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'POST /api/agents/:identity/inspect',
@@ -140,3 +142,8 @@ export const ROUTES = [
   'PUT /api/workspaces/:id/targets/:targetKey/reading', 'PUT /api/workspaces/:id/targets/:targetKey/presentation',
   'GET /api/workspaces/:id/unconfirmed/:operationId', 'POST /api/workspaces/:id/unconfirmed/:operationId/restore', 'DELETE /api/workspaces/:id/unconfirmed/:operationId',
 ] as const;
+
+export type SavedSession = {id: string; path: string; revision: string; project: string; title: string; titleState?: 'pending' | 'ready' | 'unavailable'; modifiedAt: string; size: number};
+export type RecentProject = {path: string; name: string; modifiedAt: string};
+export type SavedSessionPage = {items: SavedSession[]; total: number; omitted: number; nextCursor: string | null; titleCursor: string | null; observedAt: string};
+export type RecentProjectPage = {items: RecentProject[]; total: number; omitted: number; nextCursor: string | null; observedAt: string};

@@ -14,6 +14,8 @@ the package, and machine configuration.
 
 - [Extensions](extensions/): executable tools, commands, and interface changes.
   Each extension directory has its own README.
+- [Web interface](ui/README.md): local browser access to ordinary conversations
+  and Durable agents. Start with `npm run ui`.
 - [Skills](skills/): task procedures, each defined in a `SKILL.md` file.
 - [Prompt templates](prompts/): operator-invoked shortcuts, including
   [`/tldr [hint]`](prompts/tldr.md) for a short, plain-language summary.
