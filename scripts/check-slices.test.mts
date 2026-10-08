@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -165,6 +165,7 @@ import {
 	checkSettingsReadme,
 	type Declaration,
 	environmentReads,
+	extensionSources,
 	literalSpecifiers,
 	settingsReadme,
 	validateSettingsDeclaration,
@@ -219,6 +220,181 @@ for (const [name, form] of moduleForms) {
 	}
 }
 
+const callForms = [
+	["parenthesized argument", (s: string) => `import((${s}));`],
+	["as argument", (s: string) => `import(${s} as string);`],
+	["satisfies argument", (s: string) => `import(${s} satisfies string);`],
+	["non-null argument", (s: string) => `import(${s}!);`],
+	["type-asserted argument", (s: string) => `import(<string>${s});`],
+	["nested argument wrappers", (s: string) => `require(((<string>(${s} satisfies string)) as string)!);`],
+	["single-element array", (s: string) => `import([${s}]);`],
+	["wrapped array element", (s: string) => `require(([(${s} as string)!]));`],
+	["parenthesized callee", (s: string) => `(require)(${s});`],
+	["as callee", (s: string) => `(require as Function)(${s});`],
+	["satisfies callee", (s: string) => `(require satisfies Function)(${s});`],
+	["non-null callee", (s: string) => `require!(${s});`],
+	["type-asserted callee", (s: string) => `(<Function>require)(${s});`],
+	["comma callee", (s: string) => `(0, require)(${s});`],
+	["nested comma callee", (s: string) => `(0, (0, require!))(${s});`],
+	[
+		"createRequire reader alias",
+		(s: string) =>
+			`import { createRequire } from "node:module"; const load = createRequire(import.meta.url); load(${s});`,
+	],
+	[
+		"createRequire imported alias",
+		(s: string) =>
+			`import { createRequire as factory } from "module"; const read = factory(import.meta.url); read(${s});`,
+	],
+	[
+		"wrapped createRequire initializer",
+		(s: string) =>
+			`import { createRequire } from "module"; const read = (createRequire(import.meta.url) as Function)!; read(${s});`,
+	],
+	[
+		"direct createRequire",
+		(s: string) => `import { createRequire } from "node:module"; createRequire(import.meta.url)(${s});`,
+	],
+	[
+		"wrapped direct createRequire",
+		(s: string) =>
+			`import { createRequire as factory } from "node:module"; ((factory)(import.meta.url) as Function)!(${s});`,
+	],
+	[
+		"comma createRequire factory",
+		(s: string) =>
+			`import { createRequire } from "module"; const read = (0, createRequire)(import.meta.url); (0, read)(${s});`,
+	],
+	[
+		"comma direct createRequire",
+		(s: string) => `import { createRequire } from "node:module"; (0, (0, createRequire)(import.meta.url))(${s});`,
+	],
+] as const;
+
+for (const [name, form] of callForms) {
+	test(`module call: ${name}`, () => {
+		for (const quote of ['"', "'", "`"]) {
+			for (const [specifier, allowed] of [
+				["../memory/settings.ts", false],
+				["./local.ts", true],
+				["node:fs", true],
+				["package", true],
+			] as const) {
+				const source = form(`${quote}${specifier}${quote}`);
+				assert.ok(literalSpecifiers(source).includes(specifier), source);
+				assert.equal(
+					auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", source).length,
+					allowed ? 0 : 1,
+					source,
+				);
+			}
+		}
+	});
+	test(`settings entrypoint call guard: ${name}`, async () => {
+		const f = declarationFixture();
+		try {
+			writeFileSync(f.declarationPath, `${readFileSync(f.declarationPath, "utf8")}\n${form('"./index.ts"')}`);
+			assert.deepEqual(await auditSettings(f.root, [f.runtime, f.declarationPath]), [
+				"extensions/example/settings.ts: cannot load valid plain settings declaration and local functions",
+			]);
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+}
+
+for (const [name, source] of [
+	["unterminated regex", 'const pattern = /[/; import "../memory/settings.ts";'],
+	["missing expression", 'const value = ; import "../memory/settings.ts";'],
+] as const) {
+	test(`syntax failure: ${name}`, () => {
+		assert.deepEqual(auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", source), [
+			"extensions/example/runtime.ts: TypeScript syntax errors prevent a complete import check",
+		]);
+	});
+}
+
+test("syntax failure reaches the CLI gate", () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		writeFileSync(join(root, "extensions/example/broken.ts"), 'const pattern = /[/; import "../memory/settings.ts";');
+		const result = spawnSync(process.execPath, [join(root, "scripts/check-slices.mts")], {
+			cwd: root,
+			encoding: "utf8",
+		});
+		assert.equal(result.status, 1, result.stdout + result.stderr);
+		assert.match(result.stderr, /broken\.ts: TypeScript syntax errors/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+for (const extension of ["js", "mjs", "cjs", "cts", "jsx", "tsx"]) {
+	test(`source walk rejects .${extension}`, () => {
+		const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+		try {
+			const path = join(root, `extensions/example/unsupported.${extension}`);
+			writeFileSync(path, "export {};\n");
+			assert.deepEqual(extensionSources(root).violations, [
+				`extensions/example/unsupported.${extension}: unsupported extension source type; use .ts or .mts`,
+			]);
+			const result = spawnSync(process.execPath, [join(root, "scripts/check-slices.mts")], {
+				cwd: root,
+				encoding: "utf8",
+			});
+			assert.equal(result.status, 1, result.stdout + result.stderr);
+			assert.match(result.stderr, /unsupported extension source type/);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+}
+
+for (const name of ["foreign.ts", ".hidden.ts", "nested", ".hidden", "node_modules", "dangling.ts", "index.ts"]) {
+	test(`source walk rejects symlink ${name}`, () => {
+		const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+		try {
+			const target = join(root, name === "dangling.ts" ? "absent" : "target");
+			if (name !== "dangling.ts") mkdirSync(target);
+			if (name === "index.ts") rmSync(join(root, "extensions/example/index.ts"));
+			symlinkSync(target, join(root, "extensions/example", name));
+			assert.deepEqual(extensionSources(root).violations, [
+				`extensions/example/${name}: symbolic links are forbidden under extensions/`,
+			]);
+			const result = spawnSync(process.execPath, [join(root, "scripts/check-slices.mts")], {
+				cwd: root,
+				encoding: "utf8",
+			});
+			assert.equal(result.status, 1, result.stdout + result.stderr);
+			assert.match(result.stderr, /symbolic links are forbidden/);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+}
+
+test("source walk skips hidden and node_modules directories, not visible nested sources", () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		for (const name of [".hidden", "node_modules", "nested"]) {
+			const directory = join(root, "extensions/example", name);
+			mkdirSync(directory);
+			writeFileSync(join(directory, "source.ts"), "export {};\n");
+			if (name !== "nested") writeFileSync(join(directory, "ignored.js"), "export {};\n");
+		}
+		mkdirSync(join(root, "extensions/node_modules"));
+		writeFileSync(join(root, "extensions/node_modules/ignored.js"), "export {};\n");
+		const result = extensionSources(root);
+		assert.deepEqual(result.violations, []);
+		assert.ok(result.files.includes(join(root, "extensions/example/nested/source.ts")));
+		assert.ok(result.files.every((path) => !path.includes(".hidden") && !path.includes("node_modules")));
+		const cli = spawnSync(process.execPath, [join(root, "scripts/check-slices.mts")], { cwd: root, encoding: "utf8" });
+		assert.equal(cli.status, 0, cli.stdout + cli.stderr);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("literal extraction ignores comments, ordinary strings, and computed specifiers", () => {
 	assert.deepEqual(
 		literalSpecifiers(`
@@ -230,6 +406,11 @@ test("literal extraction ignores comments, ordinary strings, and computed specif
 		import("../" + path); require("../" + path);
 		import(\`../\${path}\`); require(\`../\${path}\`);
 		object.require("../memory/settings.ts");
+		import(["../memory/settings.ts", ""]); import([path]);
+		import(new URL("../memory/settings.ts", import.meta.url).href);
+		import(import.meta.resolve("../memory/settings.ts"));
+		import(require.resolve("../memory/settings.ts"));
+		const load = createRequire(import.meta.url); load("../memory/settings.ts");
 	`),
 		[],
 	);

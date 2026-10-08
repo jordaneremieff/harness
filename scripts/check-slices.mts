@@ -22,7 +22,7 @@
 // Exit status: 0 when all rules hold, 1 listing every violation otherwise.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
@@ -36,11 +36,21 @@ const main =
 
 const failures: string[] = [];
 const fail = (message: string) => failures.push(message);
+function reportFailures(): never {
+	console.error(`check-slices: ${failures.length} violation(s)`);
+	for (const failure of failures) console.error(`  - ${failure}`);
+	process.exit(1);
+}
+const sources = main ? extensionSources(root) : { files: [], violations: [] };
+const sourceFiles = sources.files;
+for (const violation of sources.violations) fail(violation);
+// Reject unsupported entries before anatomy or declaration reads can follow a link.
+if (failures.length) reportFailures();
 
 // --- rule 1: extension anatomy -----------------------------------------
 
 for (const entry of main ? readdirSync(extensionsRoot, { withFileTypes: true }) : []) {
-	if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+	if (!entry.isDirectory() || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
 	const slice = join(extensionsRoot, entry.name);
 	const label = `extensions/${entry.name}`;
 
@@ -64,20 +74,114 @@ for (const entry of main ? readdirSync(extensionsRoot, { withFileTypes: true }) 
 
 // --- rule 2: no sibling imports ----------------------------------------
 
-const sourceFiles: string[] = [];
-const walk = (dir: string) => {
-	for (const entry of readdirSync(dir, { withFileTypes: true })) {
-		if (entry.name.startsWith(".")) continue;
-		const path = join(dir, entry.name);
-		if (entry.isDirectory()) walk(path);
-		else if (entry.isFile() && /\.(ts|mts)$/.test(entry.name)) sourceFiles.push(path);
-	}
-};
-if (main && existsSync(extensionsRoot)) walk(extensionsRoot);
+function extensionEntryKind(entry: Dirent): "symlink" | "directory" | "unsupported" | "source" | "ignored" {
+	if (entry.isSymbolicLink()) return "symlink";
+	if (entry.isDirectory()) return entry.name.startsWith(".") || entry.name === "node_modules" ? "ignored" : "directory";
+	if (!entry.isFile()) return "ignored";
+	if (/\.(js|mjs|cjs|cts|jsx|tsx)$/.test(entry.name)) return "unsupported";
+	return /\.(ts|mts)$/.test(entry.name) ? "source" : "ignored";
+}
+
+export function extensionSources(repositoryRoot: string): { files: string[]; violations: string[] } {
+	const files: string[] = [];
+	const violations: string[] = [];
+	const walk = (dir: string): void => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const path = join(dir, entry.name);
+			switch (extensionEntryKind(entry)) {
+				case "symlink":
+					violations.push(`${relative(repositoryRoot, path)}: symbolic links are forbidden under extensions/`);
+					break;
+				case "directory":
+					walk(path);
+					break;
+				case "unsupported":
+					violations.push(`${relative(repositoryRoot, path)}: unsupported extension source type; use .ts or .mts`);
+					break;
+				case "source":
+					files.push(path);
+			}
+		}
+	};
+	const directory = join(repositoryRoot, "extensions");
+	if (existsSync(directory)) walk(directory);
+	return { files, violations };
+}
+
+function unwrapped(node: ts.Expression): ts.Expression {
+	while (
+		ts.isParenthesizedExpression(node) ||
+		ts.isAsExpression(node) ||
+		ts.isSatisfiesExpression(node) ||
+		ts.isNonNullExpression(node) ||
+		ts.isTypeAssertionExpression(node)
+	)
+		node = node.expression;
+	return node;
+}
+
+function callTarget(node: ts.Expression): ts.Expression {
+	node = unwrapped(node);
+	while (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.CommaToken)
+		node = unwrapped(node.right);
+	return node;
+}
+
+function moduleFactoryNames(node: ts.Statement): string[] {
+	if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) return [];
+	if (!["node:module", "module"].includes(node.moduleSpecifier.text) || node.importClause?.isTypeOnly) return [];
+	const bindings = node.importClause?.namedBindings;
+	if (!bindings || !ts.isNamedImports(bindings)) return [];
+	return bindings.elements
+		.filter((entry) => !entry.isTypeOnly && (entry.propertyName ?? entry.name).text === "createRequire")
+		.map((entry) => entry.name.text);
+}
+
+function requireBindings(file: ts.SourceFile): { factories: Set<string>; readers: Set<string> } {
+	const factories = new Set(file.statements.flatMap(moduleFactoryNames));
+	const readers = new Set<string>();
+	const visit = (node: ts.Node): void => {
+		if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+			const value = unwrapped(node.initializer);
+			if (ts.isCallExpression(value) && isRequireFactory(value.expression, factories)) readers.add(node.name.text);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(file);
+	return { factories, readers };
+}
+
+function isRequireFactory(node: ts.Expression, factories: Set<string>): boolean {
+	const target = callTarget(node);
+	return ts.isIdentifier(target) && factories.has(target.text);
+}
+
+function isModuleCall(node: ts.CallExpression, factories: Set<string>, readers: Set<string>): boolean {
+	const target = callTarget(node.expression);
+	if (target.kind === ts.SyntaxKind.ImportKeyword) return true;
+	if (ts.isIdentifier(target)) return target.text === "require" || readers.has(target.text);
+	return ts.isCallExpression(target) && isRequireFactory(target.expression, factories);
+}
+
+function literalArgument(node: ts.Expression): ts.Expression {
+	const value = unwrapped(node);
+	return ts.isArrayLiteralExpression(value) && value.elements.length === 1 ? unwrapped(value.elements[0]) : value;
+}
+
+function syntaxErrors(source: string): readonly ts.Diagnostic[] {
+	return (
+		ts.transpileModule(source, {
+			fileName: "source.ts",
+			reportDiagnostics: true,
+			compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.Preserve },
+		}).diagnostics ?? []
+	).filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+}
 
 export function literalSpecifiers(source: string): string[] {
 	const file = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	const specifiers: string[] = [];
+	const { factories, readers } = requireBindings(file);
 	const add = (node: ts.Node | undefined) => {
 		if (node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))) specifiers.push(node.text);
 	};
@@ -85,12 +189,8 @@ export function literalSpecifiers(source: string): string[] {
 		if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) add(node.moduleSpecifier);
 		else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference))
 			add(node.moduleReference.expression);
-		else if (
-			ts.isCallExpression(node) &&
-			(node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-				(ts.isIdentifier(node.expression) && node.expression.text === "require"))
-		)
-			add(node.arguments[0]);
+		else if (ts.isCallExpression(node) && isModuleCall(node, factories, readers) && node.arguments[0])
+			add(literalArgument(node.arguments[0]));
 		else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) add(node.argument.literal);
 		ts.forEachChild(node, visit);
 	};
@@ -110,6 +210,7 @@ export function auditSliceImports(root: string, file: string, source: string): s
 	const violations: string[] = [];
 	const fail = (message: string) => violations.push(message);
 	const rel = relative(root, file);
+	if (syntaxErrors(source).length) return [`${rel}: TypeScript syntax errors prevent a complete import check`];
 	const sliceName = rel.split(/[\\/]/)[1];
 	const sliceDir = join(root, "extensions", sliceName);
 	literalSpecifiers(source).forEach((specifier) => {
@@ -746,10 +847,6 @@ if (main) {
 	}
 	for (const violation of pillarAudit.violations) fail(violation);
 
-	if (failures.length > 0) {
-		console.error(`check-slices: ${failures.length} violation(s)`);
-		for (const failure of failures) console.error(`  - ${failure}`);
-		process.exit(1);
-	}
+	if (failures.length > 0) reportFailures();
 	console.log("check-slices: ok — extension anatomy, slice isolation, settings declarations, doc counts, test globs");
 }

@@ -93,7 +93,8 @@ and produces an `invalid` diagnostic that names the rejected source.
 
 Diagnostics have `field` (`<slice>.<key>`, `<slice>.<unknown key>` with the
 unknown key portion truncated to at most 64 UTF-16 code units without splitting
-a surrogate pair, `document`, `PI_HARNESS_FILE`, `<slice>` for a section that
+a surrogate pair, `<slice>.<invalid-key>` for an unknown key with control or
+format characters or an unpaired surrogate, `document`, `PI_HARNESS_FILE`, `<slice>` for a section that
 is not an object, or `coverage`), `source` (`env`, `file`, or `default`),
 `code`, and the fixed message for that code. Never copy raw input, parser
 messages, or validator exception text into a diagnostic.
@@ -243,8 +244,22 @@ Do not hand-edit the rows.
   declaration export, and a README table that differs from the declaration.
   It checks literal specifiers through a TypeScript syntax-tree walk, including
   imports, exports, import-equals, require calls, dynamic imports, and import
-  type nodes with strings or templates without substitutions. Computed
-  specifiers remain a review boundary.
+  type nodes with strings or templates without substitutions. Call arguments
+  may wrap the literal in parentheses, type assertions, `as`, `satisfies`,
+  non-null assertions, or a single-element array. The check unwraps callees
+  and takes the last operand of comma callees. It recognizes named
+  `createRequire` imports from `node:module` or `module`, including renamed
+  imports, identifiers initialized by those factories, and direct factory
+  result calls. Package specifiers and same-slice paths retain the same rules.
+  Specifiers obtained from variables, calls, concatenation, template
+  substitutions, multi-element arrays, `new URL(...)`, `import.meta.resolve(...)`,
+  or `require.resolve(...)` results remain a review boundary; the check does
+  not evaluate expressions or trace arbitrary aliases.
+  TypeScript syntactic diagnostics fail the check. The source walk rejects
+  symbolic links without following them and rejects `.js`, `.mjs`, `.cjs`,
+  `.cts`, `.jsx`, and `.tsx` files under `extensions/`. It skips hidden and
+  `node_modules` directories, but rejects encountered symlinks before those
+  skips, including hidden symlink entries.
   It imports each `settings.ts` and validates the `settings` export: slice name
   equal to the directory, valid keys, types, bounds, and choices, explicit and
   unique `PI_*` names, at most one of `default` and `defaultText`, and secrets
@@ -258,9 +273,11 @@ Do not hand-edit the rows.
   `extensions/*/settings.ts` and runs its `readSettings` and `publishSettings`
   against the cases of this contract with temporary agent directories and a
   fake synchronous bus: defaults, document values, environment precedence,
-  invalid input, declared bounds in each applicable source, absolute paths,
-  unknown keys and their diagnostic limit, Unicode-safe unknown-key truncation
-  with intact publication records and diagnostics, secrets, malformed and missing documents, a
+  invalid input, rejection outside declared bounds and acceptance at each
+  inclusive bound in each applicable source, absolute paths, unknown keys and
+  their diagnostic limit, invalid-key placeholders, Unicode-safe unknown-key
+  truncation with intact publication records and diagnostics, secrets,
+  malformed and missing documents, a
   section that is not an object, relative and absolute `PI_HARNESS_FILE`, and
   the publication handshake including unsubscribe.
 - Slice-local tests cover slice-specific semantics: session flags, semantic

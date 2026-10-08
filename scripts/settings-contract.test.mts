@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { type Declaration, type Field, validateSettingsDeclaration } from "./check-slices.mts";
 
@@ -185,6 +185,49 @@ function outsideBounds(field: Field): Array<{ bound: string; value: unknown }> {
 	return cases;
 }
 
+function atBounds(field: Field): Array<{ bound: string; value: unknown }> {
+	const cases: Array<{ bound: string; value: unknown }> = [];
+	for (const bound of ["min", "max"] as const)
+		if (field[bound] !== undefined) cases.push({ bound, value: field[bound] });
+	for (const bound of ["minLength", "maxLength"] as const) {
+		const length = field[bound];
+		if (length !== undefined)
+			cases.push({
+				bound,
+				value: field.type === "path" && length > 0 ? `/${"s".repeat(length - 1)}` : "s".repeat(length),
+			});
+	}
+	return cases;
+}
+
+function assertAcceptedBound(module: SettingsModule, key: string, field: Field, value: unknown, source: string): void {
+	const f = fixture();
+	try {
+		if (source === "file")
+			writeFileSync(f.path, JSON.stringify({ version: 1, [module.settings.slice]: { [key]: value } }));
+		else f.options.env = { [field.env]: environmentValue(field, value) };
+		const snapshot = module.readSettings(f.options);
+		assert.deepEqual(snapshot.values[key], value);
+		assert.equal(record(snapshot, key).origin, source);
+		assert.equal(record(snapshot, key).status, "valid");
+		assert.deepEqual(snapshot.diagnostics, []);
+	} finally {
+		f.close();
+	}
+}
+
+async function testInclusiveBounds(t: TestContext, module: SettingsModule): Promise<void> {
+	for (const [key, field] of Object.entries(module.settings.fields)) {
+		for (const { bound, value } of field.secret ? [] : atBounds(field)) {
+			for (const source of ["env", "file"]) {
+				await t.test(`inclusive bound: ${key} ${bound} ${source}`, () => {
+					assertAcceptedBound(module, key, field, value, source);
+				});
+			}
+		}
+	}
+}
+
 function assertRejectedBound(module: SettingsModule, key: string, field: Field, value: unknown, source: string): void {
 	const f = fixture();
 	try {
@@ -199,6 +242,47 @@ function assertRejectedBound(module: SettingsModule, key: string, field: Field, 
 		assert.deepEqual(snapshot.diagnostics, [
 			{ field: `${module.settings.slice}.${key}`, source, code: "invalid", message: messages.invalid },
 		]);
+	} finally {
+		f.close();
+	}
+}
+
+function assertUnknownKeyPublication(module: SettingsModule, key: string, suffix: string): void {
+	const f = fixture();
+	const { settings } = module;
+	try {
+		const field = Object.values(settings.fields)[0];
+		if (field) f.options.env = { [field.env]: "\u0000invalid" };
+		const section = { contractUnknown: true };
+		writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: section }));
+		const baseline = module.readSettings(f.options);
+		writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: { ...section, [key]: true } }));
+		const snapshot = module.readSettings(f.options);
+		const bus = new Bus();
+		const publications: Snapshot[] = [];
+		bus.on(PUBLISH, (data) => publications.push(data as Snapshot));
+		const off = module.publishSettings(bus, f.options);
+		try {
+			assert.equal(publications.length, 1);
+			for (const result of [snapshot, publications[0]]) {
+				assert.deepEqual(result.records, baseline.records);
+				const unknown = result.diagnostics.find((diagnostic) => diagnostic.field === `${settings.slice}.${suffix}`);
+				assert.ok(unknown, `Expected diagnostic field ${settings.slice}.${suffix}`);
+				assert.doesNotMatch(unknown.field, /[\p{Cc}\p{Cf}\ud800-\udfff]/u);
+				assert.deepEqual(unknown, {
+					field: `${settings.slice}.${suffix}`,
+					source: "file",
+					code: "unknown",
+					message: messages.unknown,
+				});
+				assert.deepEqual(
+					result.diagnostics.filter((diagnostic) => diagnostic !== unknown),
+					baseline.diagnostics,
+				);
+			}
+		} finally {
+			off();
+		}
 	} finally {
 		f.close();
 	}
@@ -220,6 +304,7 @@ for (const declaration of declarations) {
 		assert.equal(typeof module.readSettings, "function");
 		assert.equal(typeof module.publishSettings, "function");
 		const { settings } = module;
+		await testInclusiveBounds(t, module);
 		for (const [key, field] of Object.entries(settings.fields)) {
 			for (const { bound, value } of outsideBounds(field)) {
 				for (const source of field.secret ? ["env"] : ["env", "file"]) {
@@ -259,48 +344,20 @@ for (const declaration of declarations) {
 			}
 		});
 		await t.test("Unicode unknown key preserves publication records and diagnostics", () => {
-			const f = fixture();
-			try {
-				const field = Object.values(settings.fields)[0];
-				if (field) f.options.env = { [field.env]: "\u0000invalid" };
-				const section = { contractUnknown: true };
-				writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: section }));
-				const baseline = module.readSettings(f.options);
-				const prefix = "a".repeat(63);
-				writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: { ...section, [`${prefix}😀`]: true } }));
-				const snapshot = module.readSettings(f.options);
-				const bus = new Bus();
-				const publications: Snapshot[] = [];
-				bus.on(PUBLISH, (data) => publications.push(data as Snapshot));
-				const off = module.publishSettings(bus, f.options);
-				try {
-					assert.equal(publications.length, 1);
-					for (const result of [snapshot, publications[0]]) {
-						assert.deepEqual(result.records, baseline.records);
-						const unknown = result.diagnostics.find((diagnostic) =>
-							diagnostic.field.startsWith(`${settings.slice}.${prefix}`),
-						);
-						assert.ok(unknown);
-						assert.equal(unknown.field, `${settings.slice}.${prefix}`);
-						assert.doesNotMatch(unknown.field, /[\p{Cc}\p{Cf}\ud800-\udfff]/u);
-						assert.deepEqual(unknown, {
-							field: `${settings.slice}.${prefix}`,
-							source: "file",
-							code: "unknown",
-							message: messages.unknown,
-						});
-						assert.deepEqual(
-							result.diagnostics.filter((diagnostic) => diagnostic !== unknown),
-							baseline.diagnostics,
-						);
-					}
-				} finally {
-					off();
-				}
-			} finally {
-				f.close();
-			}
+			assertUnknownKeyPublication(module, `${"a".repeat(63)}😀`, "a".repeat(63));
 		});
+		for (const [name, key, suffix] of [
+			["control", "bad\u0000key", "<invalid-key>"],
+			["format", "bad\u200dkey", "<invalid-key>"],
+			["lone high surrogate", "bad\ud83dkey", "<invalid-key>"],
+			["lone low surrogate", "bad\ude00key", "<invalid-key>"],
+			["intact pair at units 62-63", `${"a".repeat(62)}😀`, `${"a".repeat(62)}😀`],
+			["ASCII at 64 units", "a".repeat(64), "a".repeat(64)],
+			["ASCII beyond 64 units", "a".repeat(65), "a".repeat(64)],
+			["intact pair before truncated suffix", `${"a".repeat(62)}😀z`, `${"a".repeat(62)}😀`],
+		]) {
+			await t.test(`unknown key: ${name}`, () => assertUnknownKeyPublication(module, key, suffix));
+		}
 		await t.test("defaults and metadata", () => {
 			const f = fixture();
 			try {
