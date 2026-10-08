@@ -94,6 +94,11 @@ function object(value: unknown): value is Record<string, unknown> {
 function textValid(value: string): boolean {
 	return !/[\p{Cc}\p{Cf}\ud800-\udfff]/u.test(value);
 }
+function unknownKey(key: string): string {
+	if (!textValid(key)) return "<invalid-key>";
+	const unit = key.charCodeAt(63);
+	return key.slice(0, unit >= 0xd800 && unit <= 0xdbff ? 63 : 64);
+}
 function diagnostic(field: string, source: Origin, code: Diagnostic["code"]): Diagnostic {
 	const messages = {
 		document: "Configuration document is invalid or unavailable.",
@@ -232,7 +237,7 @@ export function readSettings(options: ReadOptions): Snapshot {
 	};
 	for (const key of Object.keys(section)) {
 		if (!Object.hasOwn(settings.fields, key))
-			add(diagnostic(`agent.${textValid(key) ? key.slice(0, 64) : "<invalid-key>"}`, "file", "unknown"));
+			add(diagnostic(`agent.${unknownKey(key)}`, "file", "unknown"));
 	}
 	const values: Record<string, unknown> = Object.create(null);
 	const records: SettingRecord[] = [];
