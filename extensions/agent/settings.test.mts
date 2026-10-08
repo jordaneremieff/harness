@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import * as Durable from "@earendil-works/pi-durable";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readSettings, publishSettings, type SettingsPublication } from "./settings.ts";
+import { settings, readSettings, publishSettings, type SettingsPublication } from "./settings.ts";
 import {
 	readAgentPreferences,
 	parsePreferenceSnapshot,
@@ -140,6 +140,30 @@ it("retains structured settings within contract byte bounds without a second doc
 	const snapshot = readAgentPreferences(agentDir, undefined, { PI_AGENT_PRESETS: input });
 	assert.equal(Object.keys(snapshot.document?.presets ?? {}).length, 28);
 	assert.deepEqual(parsePreferenceSnapshot(snapshot), snapshot);
+});
+
+it("rejects invalid declared defaults before selected input without exposing validator details", (t) => {
+	const agentDir = fixture(t);
+	const cases = [
+		{ key: "idleMinutes", invalid: -1, input: "2" },
+		{ key: "presets", invalid: { standard: { model: "invalid-default-detail" } }, input: "{}" },
+	] as const;
+	for (const { key, invalid, input } of cases) {
+		const field = settings.fields[key] as { default: unknown; env: string };
+		const original = field.default;
+		try {
+			field.default = invalid;
+			for (const env of [{}, { [field.env]: input }]) {
+				assert.throws(() => readSettings({ agentDir, env }), {
+					name: "Error", message: `Invalid default for agent.${key}`,
+				});
+			}
+		} finally {
+			field.default = original;
+		}
+	}
+	assert.equal(readSettings({ agentDir, env: {} }).values.idleMinutes, 5);
+	assert.deepEqual(readSettings({ agentDir, env: {} }).values.presets, {});
 });
 
 it("rejects unbounded or unsafe structured input without leaking parser or validator text", (t) => {

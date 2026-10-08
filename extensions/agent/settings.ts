@@ -196,7 +196,12 @@ function environmentValue(type: "number" | "json", raw: string): unknown {
 function selectField(key: keyof SettingsValues, env: Environment, section: Record<string, unknown>, add: (fact: Diagnostic) => void) {
 	const field = settings.fields[key];
 	let origin: Origin = env[field.env] !== undefined ? "env" : Object.hasOwn(section, key) ? "file" : "default";
-	let value: unknown = structuredClone(field.default);
+	let value: unknown;
+	try {
+		value = checkedValue(key, structuredClone(field.default));
+	} catch {
+		throw new Error(`Invalid default for agent.${key}`);
+	}
 	let status: SettingRecord["status"] = "valid";
 	if (origin !== "default") {
 		try {
