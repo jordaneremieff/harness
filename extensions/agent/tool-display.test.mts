@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { createEventBus, initTheme, ToolExecutionComponent, type ExtensionAPI, type ToolDefinition, type ToolRenderers } from "@earendil-works/pi-coding-agent";
@@ -150,16 +153,36 @@ it("agent publication emits only card fields and responds only to current reques
 	assert.equal(bus.emitted.filter((event) => event.channel === first.channel).length, 2);
 });
 
-it("agent factory collects before requests and publishes actual registered card references", () => {
+it("agent factory collects before requests and publishes actual registered card references", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "agent-tool-display-"));
+	const previousAgentDir = process.env.PI_AGENT_DIR;
+	const previousHarnessFile = process.env.PI_HARNESS_FILE;
+	process.env.PI_AGENT_DIR = root;
+	process.env.PI_HARNESS_FILE = join(root, "absent.json");
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previousAgentDir;
+		if (previousHarnessFile === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = previousHarnessFile;
+		rmSync(root, { recursive: true, force: true });
+	});
 	const bus = new FakeBus();
 	const { events } = bus.scope();
+	const collectorsAtRequest: number[] = [];
+	events.on("harness:tool-display:request", () => {
+		collectorsAtRequest.push(bus.handlers.get("harness:tool-display:publish")?.size ?? 0);
+	});
 	const definitions: ToolDefinition[] = [];
 	registerAgentExtension({
 		events,
 		on() {}, registerToolRenderer() {}, registerShortcut() {}, registerMessageRenderer() {}, registerCommand() {},
 		registerTool: (definition: ToolDefinition) => definitions.push(definition),
 	} as unknown as ExtensionAPI);
-	assert.equal(bus.emitted[0].channel, "harness:tool-display:request");
+	assert.deepEqual(collectorsAtRequest, [1], "the collector exists before the single display request, independent of unrelated bus events");
+	const displaySequence = bus.emitted
+		.filter((event) => event.channel === "harness:tool-display:request" || event.channel === "harness:tool-display:publish")
+		.map((event) => event.channel);
+	assert.deepEqual(displaySequence, ["harness:tool-display:request", "harness:tool-display:publish"]);
 	assert.equal(bus.handlers.get("harness:tool-display:publish")?.size, 1);
 	const publication = bus.emitted.find((event) => event.channel === "harness:tool-display:publish")?.data as { tools: Array<{ name: string } & ToolRenderers> };
 	assert.ok(publication);

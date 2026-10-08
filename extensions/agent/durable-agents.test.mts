@@ -1,3 +1,4 @@
+import { machineConfig } from "./settings-fixture.mts";
 /**
  * durable-agents tests: the native agent contribution in a real Harness.
  *
@@ -7,14 +8,14 @@
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { agentPreferencesPath, type ExecutionSelection } from "./agent-preferences.ts";
+import type { ExecutionSelection } from "./agent-preferences.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, it } from "node:test";
 
-const preferenceOverride = process.env.PI_AGENT_PREFERENCES_FILE;
-delete process.env.PI_AGENT_PREFERENCES_FILE;
-after(() => { if (preferenceOverride !== undefined) process.env.PI_AGENT_PREFERENCES_FILE = preferenceOverride; });
+const preferenceOverride = process.env.PI_HARNESS_FILE;
+delete process.env.PI_HARNESS_FILE;
+after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, type AssistantMessage, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -52,7 +53,10 @@ const model = { provider: "faux", modelId: "faux-1" } as const;
 const testCwdAlias = mkdtempSync(join(tmpdir(), "durable-agents-cwd-"));
 const testCwd = realpathSync(testCwdAlias);
 const testAgentDir = mkdtempSync(join(tmpdir(), "durable-agents-config-"));
-beforeEach(() => writeFileSync(agentPreferencesPath(testAgentDir), JSON.stringify({ version: 1, presets: { standard: { model: `${model.provider}/${model.modelId}` } }, preferences: { defaultPreset: "standard" } })));
+const priorAgentDir = process.env.PI_AGENT_DIR;
+process.env.PI_AGENT_DIR = testAgentDir;
+after(() => { if (priorAgentDir === undefined) delete process.env.PI_AGENT_DIR; else process.env.PI_AGENT_DIR = priorAgentDir; });
+beforeEach(() => writeFileSync(join(testAgentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${model.provider}/${model.modelId}` } }, preferences: { defaultPreset: "standard" } }))));
 process.on("exit", () => {
 	rmSync(testCwd, { recursive: true, force: true });
 	rmSync(testAgentDir, { recursive: true, force: true });
@@ -385,11 +389,11 @@ const siblingExtension = Durable.defineExtension({
 function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true, sourceStorageId = storageId, catalogRoot?: string): { registry: Durable.Registry; extension: Durable.Extension } {
 	const registry = Durable.createRegistry();
 	if (checkIns) registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask] }));
-	const contribution = createAgentContribution({
+	const contribution = createAgentContribution({ configureSettings: () => {},
 		source: "/abs/extensions/agent/index.ts",
 		...(dispatch === undefined ? {} : { dispatch }),
 	});
-	const extension: Durable.Extension = contribution.create({
+	const extension: Durable.Extension = contribution.create({ onClose() {},
 		durable: Durable,
 		storageId: sourceStorageId,
 		catalogRoot,
@@ -520,7 +524,7 @@ it("declares every control tool with an explicit replay classification", () => {
 		"agent.reporter",
 		"agent.timer",
 	]);
-	const contribution = createAgentContribution({ source: "/abs/extensions/agent/index.ts" });
+	const contribution = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" });
 	assert.equal(contribution.name, "agent");
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
 });
@@ -556,7 +560,7 @@ it("forwards native await cancellation through the registered entrypoint contrib
 	});
 	t.after(restore);
 	const registry = Durable.createRegistry();
-	registry.install(contribution.create({ durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir, services: testServices }));
+	registry.install(contribution.create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir, services: testServices }));
 	const route = createRoute();
 	route.script.push({ tool: "agent_await", args: { results: [{ sessionId: "remote-storage", submissionId: 77 }] } });
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -1105,7 +1109,7 @@ it("keeps default check-ins and native scheduled delivery token-idle during the 
 	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
 	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); await tx.doc(AgentDeliveryDoc); }, context);
 	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	const admission = await submitConversation(root, { message: "START DEFAULT", requestId: "original-default", ownerId: "requester", origin: "model", checkInMinutes: checkInMinutes(undefined), senderIdentity: storageId }, context);
+	const admission = await submitConversation(root, { message: "START DEFAULT", requestId: "original-default", ownerId: "requester", origin: "model", checkInMinutes: checkInMinutes(undefined, "model", testAgentDir, {}), senderIdentity: storageId }, context);
 	await ready;
 	const original = await harness.submission(admission.submissionId, context); assert.ok(original);
 	const checks = (await harness.inspect(context)).tasks.filter((item) => item.record.kind === "agent.check-in");
@@ -1152,10 +1156,10 @@ it("reports the requested and effective thinking level when native creation clam
 it("retains native preset selection through replay after a machine file edit", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "native-preset-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const path = agentPreferencesPath(agentDir);
-	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "faux/faux-1", thinkingLevel: "max", role: "Review", checkInMinutes: 0 } } }));
+	const path = join(agentDir, "harness.json");
+	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: "faux/faux-1", thinkingLevel: "max", role: "Review", checkInMinutes: 0 } } })));
 	const registry = Durable.createRegistry(); const route = createRoute();
-	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts" }).create({ durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
+	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" }).create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
 	let original: ExecutionSelection | undefined;
 	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : { ...tool, execute: async (args, api, ctx) => {
 		const first = await tool.execute(args, api, ctx);
@@ -1175,15 +1179,15 @@ it("retains native preset selection through replay after a machine file edit", a
 	assert.deepEqual(selection.unapplied, ["role", "checkInMinutes"]);
 	assert.deepEqual(selection.thinking, { requested: "max", effective: "off" });
 	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 1);
-	assert.match(getCurrentSystemPrompt(route.requests.at(-1) ?? []), /Machine preferences are unavailable/u);
+	assert.match(getCurrentSystemPrompt(route.requests.at(-1) ?? []), /Machine document is invalid/u);
 });
 
 it("forwards native preset inputs and snapshots through handle, foreign, place, and configure dispatch", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "native-preset-dispatch-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	writeFileSync(agentPreferencesPath(agentDir), JSON.stringify({ version: 1, presets: { review: { model: "faux/faux-1", checkInMinutes: 2 } } }));
+	writeFileSync(join(agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "faux/faux-1", checkInMinutes: 2 } } })));
 	const seen: Array<{ method: string; params: Readonly<Record<string, unknown>> }> = [];
-	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts", dispatch: async (method, params) => { seen.push({ method, params }); return { sessionId: "foreign-storage", selection: { marker: "retained" } }; } }).create({ durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
+	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts", dispatch: async (method, params) => { seen.push({ method, params }); return { sessionId: "foreign-storage", selection: { marker: "retained" } }; } }).create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
 	const registry = Durable.createRegistry(); registry.install(extension);
 	const route = createRoute();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -1211,11 +1215,9 @@ it("uses isolated preferences despite an ambient agent directory", async (t) => 
 		else process.env.PI_AGENT_DIR = previous;
 		rmSync(ambientDir, { recursive: true, force: true });
 	});
-	writeFileSync(join(ambientDir, "agent-preferences.json"), JSON.stringify({
-		version: 1,
-		presets: { ambient: { model: "faux/faux-1" } },
+	writeFileSync(join(ambientDir, "harness.json"), JSON.stringify(machineConfig({ presets: { ambient: { model: "faux/faux-1" } },
 		preferences: { reportingNotes: "AMBIENT-PREFERENCES-MARKER" },
-	}));
+	})));
 	process.env.PI_AGENT_DIR = ambientDir;
 	const route = createRoute();
 	const { registry } = buildRegistry();
@@ -1229,7 +1231,7 @@ it("uses isolated preferences despite an ambient agent directory", async (t) => 
 	const selection = (outcome.details as { structuredContent: { selection: ExecutionSelection } }).structuredContent.selection;
 	assert.equal(selection.source.status, "loaded");
 	assert.equal(selection.origins.model, "defaultPreset");
-	assert.equal(selection.source.path, agentPreferencesPath(testAgentDir));
+	assert.equal(selection.source.path, join(testAgentDir, "harness.json"));
 });
 
 it("returns retained native creation facts without revalidating a later catalog", async (t) => {
@@ -1237,7 +1239,7 @@ it("returns retained native creation facts without revalidating a later catalog"
 	let catalogReads = 0;
 	const route = createRoute();
 	const registry = Durable.createRegistry();
-	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts" }).create({
+	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" }).create({ onClose() {},
 		durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir,
 		services: { modelRuntime: { getModel: (_provider, id) => { catalogReads++; return available ? fauxProvider().getModel(id) : undefined; } } },
 	});

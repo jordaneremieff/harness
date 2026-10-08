@@ -321,7 +321,7 @@ export class AgentManager {
 		}
 		const preferenceSnapshot = input.preferenceSnapshot === undefined ? readAgentPreferences(this.options.agentDir, caller.preferenceCatalog) : parsePreferenceSnapshot(input.preferenceSnapshot);
 		let selection = resolveExecutionPreset(preferenceSnapshot, input, retained ?? {}, { creation: !retained, reused: !!retained, role: !!input.handle, checkIn: input.prompt !== undefined });
-		if (input.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, input.origin ?? "operator"); selection.origins.checkInMinutes = "default"; }
+		if (input.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, input.origin ?? "operator", this.options.agentDir); selection.origins.checkInMinutes = "default"; }
 		if (retained) selection = effectiveExecutionSelection(selection, retained.thinkingLevel);
 		const { role: _role, ...base } = input;
 		return { ...base, ...selection.values, selection, preferenceSnapshot };
@@ -380,7 +380,7 @@ export class AgentManager {
 		const profile = await client.request("profile-read", { sessionId: id }) as AgentProfile;
 		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
 		const requestId = input.requestId ?? randomUUID();
-		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
+		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
 		this.rosterChanged();
 		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
 	}
@@ -453,7 +453,7 @@ export class AgentManager {
 			const versionError = input.prompt === undefined ? undefined : hostRequestVersionError("task-submit", client.runtimeContract);
 			if (versionError) throw versionError;
 			const requestId = input.requestId ?? randomUUID();
-			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator") });
+			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
 			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: admittedResult(record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
@@ -568,7 +568,7 @@ export class AgentManager {
 				const selected = await this.reuseExecutionInput(input, caller, this.catalog.read(existing.sessionId));
 				input = { ...input, ...selected };
 				await caller.retainExecutionSelection?.(selected.selection);
-				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator"), ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
+				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir), ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
 				return { value: { ...response as object, sessionId: existing.sessionId, selection: input.selection }, sessionId: existing.sessionId, topic: existing.topic };
 			}
 			const created = await this.spawn({ preset: input.preset, selection: input.selection, preferenceSnapshot: input.preferenceSnapshot, model: input.model, thinkingLevel: input.thinkingLevel, cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, checkInMinutes: input.checkInMinutes, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) as { sessionId: string };

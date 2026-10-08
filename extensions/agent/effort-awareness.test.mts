@@ -1,3 +1,4 @@
+import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -25,20 +26,19 @@ function fixture(t: { after(fn: () => void): void }) {
 }
 function ambientPreferences(t: { after(fn: () => void): void }): string {
 	const directory = mkdtempSync(join(tmpdir(), "effort-ambient-preferences-"));
-	const previous = { directory: process.env.PI_AGENT_DIR, file: process.env.PI_AGENT_PREFERENCES_FILE };
+	const previous = { directory: process.env.PI_AGENT_DIR, file: process.env.PI_HARNESS_FILE };
 	const marker = "AMBIENT-EFFORT-PREFERENCES-MARKER";
 	t.after(() => {
 		if (previous.directory === undefined) delete process.env.PI_AGENT_DIR;
 		else process.env.PI_AGENT_DIR = previous.directory;
-		if (previous.file === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE;
-		else process.env.PI_AGENT_PREFERENCES_FILE = previous.file;
+		if (previous.file === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = previous.file;
 		rmSync(directory, { recursive: true, force: true });
 	});
-	writeFileSync(join(directory, "agent-preferences.json"), JSON.stringify({
-		version: 1, presets: {}, preferences: { reportingNotes: marker },
-	}));
+	writeFileSync(join(directory, "harness.json"), JSON.stringify(machineConfig({ presets: {}, preferences: { reportingNotes: marker },
+	})));
 	process.env.PI_AGENT_DIR = directory;
-	delete process.env.PI_AGENT_PREFERENCES_FILE;
+	delete process.env.PI_HARNESS_FILE;
 	return marker;
 }
 
@@ -225,7 +225,7 @@ it("refreshes native root and child sections at model requests while stable stat
 		return fauxAssistantMessage("DONE");
 	}));
 	const registry = Durable.createRegistry();
-	const extension = createAgentContribution({ source: "/extensions/agent/index.ts" }).create({ durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } });
+	const extension = createAgentContribution({ configureSettings: () => {}, source: "/extensions/agent/index.ts" }).create({ onClose() {}, durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } });
 	registry.install(extension);
 	const context = BACKGROUND_CONTEXT;
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
@@ -284,7 +284,7 @@ it("adds awareness only to native untargeted status and preserves host fields an
 		return fauxAssistantMessage([fauxToolCall("agent_status", args)], { stopReason: "toolUse" });
 	}));
 	const registry = Durable.createRegistry();
-	registry.install(createAgentContribution({ source: "/extensions/agent/index.ts", dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return hostStatus; } }).create({ durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } }));
+	registry.install(createAgentContribution({ configureSettings: () => {}, source: "/extensions/agent/index.ts", dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return hostStatus; } }).create({ onClose() {}, durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } }));
 	const context = BACKGROUND_CONTEXT;
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	t.after(async () => { await harness.close(context); });

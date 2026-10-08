@@ -1,49 +1,26 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
-import { Type, type Static } from "typebox";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { THINKING_LEVELS, configurationModel } from "./configuration.ts";
 
-export const PREFERENCES_MAX_BYTES = 65536;
-const name = Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" });
+import { readSettings, type Environment, type Source } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
+import { name, presetSchema, AgentPreferencesSchema, validPresets, validPreferences, type AgentPreferences, type ExecutionPreset } from "./preference-schema.ts";
+export type { AgentPreferences } from "./preference-schema.ts";
 export function presetParameter(snapshot: PreferenceSnapshot) {
 	return Type.Optional({ ...name, description: `Delegate with a named execution preset. Omit model and preset for the machine default on creation. Explicit fields override the preset. ${presetInventory(snapshot)}` });
 }
 export const PresetParameter = Type.Optional({ ...name, description: "Delegate with a named execution preset. Omit model and preset for the machine default on creation; explicit fields override the preset." });
-const model = Type.String({ minLength: 3, maxLength: 512, pattern: "^[^/\\s]+/[^\\s]+$" });
-const provider = Type.String({ minLength: 1, maxLength: 256, pattern: "^[^/\\s]+$" });
+const model = presetSchema.properties.model;
 const thinking = Type.Union(THINKING_LEVELS.map((level) => Type.Literal(level)));
-const presetSchema = Type.Object({
-	model,
-	thinkingLevel: Type.Optional(thinking),
-	role: Type.Optional(Type.String({ maxLength: 2000 })),
-	checkInMinutes: Type.Optional(Type.Number({ minimum: 0, maximum: 35791 })),
-	notes: Type.Optional(Type.String({ maxLength: 2000 })),
-}, { additionalProperties: false });
-const preferenceSchema = Type.Object({
-	defaultPreset: Type.Optional(name),
-	enforceRoster: Type.Optional(Type.Boolean()),
-	excludedModels: Type.Optional(Type.Array(model, { maxItems: 64, uniqueItems: true })),
-	excludedProviders: Type.Optional(Type.Array(provider, { maxItems: 64, uniqueItems: true })),
-	contextBudgetTokens: Type.Optional(Type.Record(model, Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }), { maxProperties: 64, additionalProperties: false })),
-	quotaSubstitutionOrder: Type.Optional(Type.Array(name, { maxItems: 64, uniqueItems: true })),
-	reportingNotes: Type.Optional(Type.String({ maxLength: 4000 })),
-}, { additionalProperties: false });
-export const AgentPreferencesSchema = Type.Object({
-	version: Type.Literal(1),
-	presets: Type.Record(name, presetSchema, { maxProperties: 64, additionalProperties: false }),
-	preferences: Type.Optional(preferenceSchema),
-}, { additionalProperties: false });
-export type AgentPreferences = Static<typeof AgentPreferencesSchema>;
 export type PreferenceCatalog = {
 	getModel(provider: string, modelId: string): Model<Api> | undefined;
 	getModels?(): readonly Model<Api>[];
 };
 export type PreferenceDiagnostic = { field: string; message: string };
-export type PreferenceSource = { path: string; digest: string | null; observedAt: string; status: "loaded" | "missing" | "unavailable" };
+export type PreferenceSource = Source;
 export type PreferenceSnapshot = { source: PreferenceSource; document?: AgentPreferences; diagnostics: PreferenceDiagnostic[] };
 export type ExecutionFields = { model?: string; thinkingLevel?: string; role?: string; checkInMinutes?: number };
 export type ExecutionOrigin = "explicit" | "preset" | "defaultPreset" | "retained" | "default";
@@ -61,7 +38,7 @@ export type ExecutionSelection = {
 
 const selectionSchema = Type.Object({
 	inputDigest: Type.String({ pattern: "^[a-f0-9]{64}$" }),
-	source: Type.Object({ path: Type.String({ maxLength: 4096 }), digest: Type.Union([Type.String({ pattern: "^[a-f0-9]{64}$" }), Type.Null()]), observedAt: Type.String({ maxLength: 64 }), status: Type.Union([Type.Literal("loaded"), Type.Literal("missing"), Type.Literal("unavailable")]) }, { additionalProperties: false }),
+	source: Type.Object({ path: Type.String({ maxLength: 4096 }), digest: Type.Union([Type.String({ pattern: "^[a-f0-9]{64}$" }), Type.Null()]), observedAt: Type.String({ maxLength: 64 }), status: Type.Union([Type.Literal("loaded"), Type.Literal("missing"), Type.Literal("invalid"), Type.Literal("unavailable")]) }, { additionalProperties: false }),
 	preset: Type.Optional(name),
 	presetNames: Type.Array(name, { maxItems: 64, uniqueItems: true }),
 	values: Type.Object({ model: Type.Optional(model), thinkingLevel: Type.Optional(thinking), role: Type.Optional(Type.String({ maxLength: 2000 })), checkInMinutes: Type.Optional(Type.Number({ minimum: 0, maximum: 35791 })) }, { additionalProperties: false }),
@@ -74,41 +51,14 @@ const selectionSchema = Type.Object({
 export function parsePreferenceSnapshot(value: unknown): PreferenceSnapshot {
 	if (!Value.Check(Type.Object({ source: selectionSchema.properties.source, document: Type.Optional(AgentPreferencesSchema), diagnostics: selectionSchema.properties.diagnostics }, { additionalProperties: false }), value)) throw new Error("Invalid machine preference snapshot");
 	const snapshot = value as PreferenceSnapshot;
-	if ((snapshot.source.status === "loaded") !== (snapshot.document !== undefined)) throw new Error("Machine preference snapshot status does not match its document");
-	if (snapshot.document !== undefined) parseAgentPreferences(JSON.stringify(snapshot.document));
+	if (snapshot.document === undefined) throw new Error("Machine preference snapshot has no effective settings");
+	if (!validPresets(snapshot.document.presets) || !validPreferences(snapshot.document.preferences ?? {})) throw new Error("Invalid effective delegation settings");
 	return structuredClone(snapshot);
 }
 
 export function parseExecutionSelection(value: unknown): ExecutionSelection {
 	if (!Value.Check(selectionSchema, value)) throw new Error("Invalid retained execution selection");
 	return structuredClone(value) as ExecutionSelection;
-}
-
-/** This path is machine configuration, never cwd-based project discovery. */
-export function agentPreferencesPath(agentDir = process.env.PI_AGENT_DIR ?? getAgentDir()): string {
-	const override = process.env.PI_AGENT_PREFERENCES_FILE;
-	return override === undefined ? join(agentDir, "agent-preferences.json") : resolve(agentDir, override);
-}
-
-function wellFormed(value: unknown): boolean {
-	if (typeof value === "string") return !/[\u0000\ud800-\udfff]/u.test(value);
-	if (Array.isArray(value)) return value.every(wellFormed);
-	return value === null || typeof value !== "object" || Object.entries(value).every(([key, item]) => wellFormed(key) && wellFormed(item));
-}
-
-export function parseAgentPreferences(bytes: Uint8Array | string): AgentPreferences {
-	if (Buffer.byteLength(bytes) > PREFERENCES_MAX_BYTES) throw new Error(`Document exceeds ${PREFERENCES_MAX_BYTES} UTF-8 bytes`);
-	const text = typeof bytes === "string" ? bytes : new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	const value: unknown = JSON.parse(text);
-	if (!Value.Check(AgentPreferencesSchema, value)) {
-		const first = [...Value.Errors(AgentPreferencesSchema, value)][0];
-		throw new Error(`Invalid machine preferences at ${first?.instancePath ?? "/"}: ${first?.message ?? "schema mismatch"}`);
-	}
-	if (!wellFormed(value)) throw new Error("Machine preferences contain malformed text or NUL");
-	// Record key schemas describe patterns; enforce their length bounds explicitly.
-	for (const key of Object.keys(value.presets)) if (!Value.Check(name, key)) throw new Error("Invalid preset name (1-64 lowercase slug characters)");
-	for (const key of Object.keys(value.preferences?.contextBudgetTokens ?? {})) if (!Value.Check(model, key)) throw new Error("Invalid context budget model identity");
-	return value;
 }
 
 function catalogDiagnostics(document: AgentPreferences, catalog: PreferenceCatalog | undefined): PreferenceDiagnostic[] {
@@ -149,34 +99,14 @@ function catalogDiagnostics(document: AgentPreferences, catalog: PreferenceCatal
 	return facts;
 }
 
-/** A failed read is evidence, not a reason to retain stale prompt text. */
-export function readAgentPreferences(agentDir?: string, catalog?: PreferenceCatalog): PreferenceSnapshot {
-	const path = agentPreferencesPath(agentDir);
-	const source: PreferenceSource = { path, digest: null, observedAt: new Date().toISOString(), status: "unavailable" };
-	let fd: number | undefined;
-	try {
-		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
-		const stat = fstatSync(fd);
-		if (!stat.isFile() || stat.size > PREFERENCES_MAX_BYTES) throw new Error(`Expected a regular file within ${PREFERENCES_MAX_BYTES} bytes`);
-		const bytes = Buffer.alloc(PREFERENCES_MAX_BYTES + 1);
-		let length = 0;
-		while (length < bytes.length) {
-			const count = readSync(fd, bytes, length, bytes.length - length, length);
-			if (!count) break;
-			length += count;
-		}
-		const content = bytes.subarray(0, length);
-		source.digest = createHash("sha256").update(content).digest("hex");
-		const document = parseAgentPreferences(content);
-		source.status = "loaded";
-		let diagnostics: PreferenceDiagnostic[];
-		try { diagnostics = catalogDiagnostics(document, catalog); }
-		catch (error) { diagnostics = [{ field: "catalog", message: `Local catalog checks are unavailable: ${error instanceof Error ? error.message.slice(0, 512) : "catalog read failed"}` }]; }
-		return { source, document, diagnostics };
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { source: { ...source, status: "missing" }, diagnostics: [] };
-		return { source: { ...source, status: "unavailable" }, diagnostics: [{ field: "file", message: error instanceof Error ? error.message.slice(0, 512) : "Machine preferences could not be read" }] };
-	} finally { if (fd !== undefined) closeSync(fd); }
+/** Read effective delegation settings; file status never substitutes for field validation. */
+export function readAgentPreferences(agentDir = process.env.PI_AGENT_DIR ?? getAgentDir(), catalog?: PreferenceCatalog, env?: Environment): PreferenceSnapshot {
+	const snapshot = readSettings(settings, { agentDir, env });
+	const document: AgentPreferences = { version: 1, presets: snapshot.values.presets, preferences: snapshot.values.preferences };
+	const diagnostics: PreferenceDiagnostic[] = snapshot.diagnostics.map((fact) => ({ field: fact.field, message: `${fact.source}: ${fact.message}` }));
+	try { diagnostics.push(...catalogDiagnostics(document, catalog)); }
+	catch { diagnostics.push({ field: "catalog", message: "Local catalog checks are unavailable." }); }
+	return { source: snapshot.source, document, diagnostics };
 }
 
 function boundedDiagnostics(facts: PreferenceDiagnostic[]): PreferenceDiagnostic[] {
@@ -204,13 +134,12 @@ export function presetNames(snapshot: PreferenceSnapshot): string[] {
 export function presetInventory(snapshot: PreferenceSnapshot): string {
 	return `Presets: ${JSON.stringify(presetNames(snapshot))}; digest ${snapshot.source.digest ?? "none"}; file ${JSON.stringify(snapshot.source.path)} (${snapshot.source.status}).`;
 }
-type ExecutionPreset = Static<typeof presetSchema>;
 
 function selectedPreset(snapshot: PreferenceSnapshot, selector: string | undefined): ExecutionPreset | undefined {
 	if (selector === undefined) return undefined;
 	if (!Value.Check(name, selector)) throw new Error(`Invalid preset selector ${JSON.stringify(selector)}. ${presetInventory(snapshot)}`);
 	const preset = snapshot.document && Object.hasOwn(snapshot.document.presets, selector) ? snapshot.document.presets[selector] : undefined;
-	if (!preset) throw new Error(`Cannot resolve preset ${JSON.stringify(selector)} in ${snapshot.source.path}: ${snapshot.diagnostics.find((fact) => fact.field === "file")?.message ?? (snapshot.source.status === "missing" ? "file is missing" : "preset is absent")}. ${presetInventory(snapshot)}`);
+	if (!preset) throw new Error(`Cannot resolve preset ${JSON.stringify(selector)} in ${snapshot.source.path}: ${snapshot.diagnostics.find((fact) => fact.field === "document" || fact.field.startsWith("agent."))?.message ?? (snapshot.source.status === "missing" ? "file is missing" : "preset is absent")}. ${presetInventory(snapshot)}`);
 	return preset;
 }
 
@@ -294,7 +223,7 @@ export function renderPreferenceStatus(snapshot: PreferenceSnapshot): string[] {
 		`Preferences: ${snapshot.source.status === "missing" ? "absent" : snapshot.source.status}; default preset: ${snapshot.document?.preferences?.defaultPreset ?? "none"}`,
 		`File: ${snapshot.source.path}`,
 		`Digest: ${snapshot.source.digest ?? "none"}`,
-		...snapshot.diagnostics.filter((fact) => fact.field === "file").map((fact) => `Error: ${fact.message}`),
+		...snapshot.diagnostics.filter((fact) => fact.field !== "catalog").map((fact) => `Diagnostic ${fact.field}: ${fact.message}`),
 		`Roster enforcement: ${snapshot.document?.preferences?.enforceRoster ?? false}`,
 		...presetNames(snapshot).map((key) => `Preset ${key}: ${snapshot.document?.presets[key].model}`),
 		...(presetNames(snapshot).length ? [] : ["Presets: none"]),
@@ -303,10 +232,9 @@ export function renderPreferenceStatus(snapshot: PreferenceSnapshot): string[] {
 
 /** Compact current facts, with explicit omitted coverage rather than silent clipping. */
 export function renderAgentPreferences(snapshot: PreferenceSnapshot): string {
-	if (snapshot.source.status === "missing") return `No machine preferences file is present at ${JSON.stringify(snapshot.source.path)}. Creation requires an explicit model or a configured preset/defaultPreset. ${presetInventory(snapshot)}`;
 	const lines = ["Operator machine configuration for agent delegation. Catalog check results are local evidence.", `Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`];
-	if (snapshot.source.status === "unavailable") lines.push("Machine preferences are unavailable. Previous preference text is not current. Explicit preset selection fails until the file is repaired.");
-	else lines.push(...preferenceLines(snapshot.document));
+	if (snapshot.source.status === "unavailable" || snapshot.source.status === "invalid") lines.push(`Machine document is ${snapshot.source.status}. Previous preference text is not current. Invalid fields use safe defaults; valid environment settings remain available.`);
+	lines.push(...preferenceLines(snapshot.document));
 	for (const fact of snapshot.diagnostics) lines.push(`Diagnostic ${JSON.stringify(fact.field)}: ${JSON.stringify(fact.message)}`);
 	return boundedLines(lines);
 }

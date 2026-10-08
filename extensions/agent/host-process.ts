@@ -1,3 +1,6 @@
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { readSettings } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 /**
  * agent/host-process: one exclusive durable host process per storage.
  *
@@ -53,7 +56,7 @@ export type HostRuntimeFactory = () => HostRuntime | Promise<HostRuntime>;
 
 export interface RunHostOptions {
 	readonly metadata: HostMetadata;
-	/** Idle window in milliseconds. Defaults from `PI_AGENT_IDLE_MINUTES`. */
+	/** Idle window in milliseconds. Defaults from shared `agent.idleMinutes` settings. */
 	readonly idleMs?: number;
 	/** Environment used for the idle default; defaults to `process.env`. */
 	readonly env?: Readonly<Record<string, string | undefined>>;
@@ -130,16 +133,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Read `PI_AGENT_IDLE_MINUTES` with the same bounds as the ordinary agent host. */
-export function resolveIdleMs(idleMs?: number, env: Readonly<Record<string, string | undefined>> = process.env): number {
+/** Resolve the idle window from explicit input or the shared agent settings. */
+export function resolveIdleMs(idleMs?: number, env: Readonly<Record<string, string | undefined>> = process.env, agentDir = env.PI_AGENT_DIR ?? getAgentDir()): number {
 	if (idleMs !== undefined) {
 		if (!Number.isFinite(idleMs) || idleMs < 0 || idleMs > IDLE_MINUTES_MAX * 60_000) throw new Error(`idleMs must be a finite nonnegative number no greater than ${IDLE_MINUTES_MAX} minutes`);
 		return idleMs;
 	}
-	const raw = env.PI_AGENT_IDLE_MINUTES;
-	const minutes = raw === undefined ? 5 : Number(raw);
-	if (!Number.isFinite(minutes) || minutes < 0 || minutes > IDLE_MINUTES_MAX || raw?.trim() === "") throw new Error("PI_AGENT_IDLE_MINUTES must be a finite nonnegative number no greater than 35791");
-	return minutes * 60_000;
+	return readSettings(settings, { agentDir, env }).values.idleMinutes * 60_000;
 }
 
 function createClaimFile(path: string, record: ClaimRecord): void {
@@ -688,7 +688,7 @@ function cleanupClaim(claim: HeldClaim): void {
  */
 export async function runHost(createRuntime: HostRuntimeFactory, options: RunHostOptions): Promise<HostProcess> {
 	const metadata = parseHostMetadata(options.metadata);
-	const idleMs = resolveIdleMs(options.idleMs, options.env ?? process.env);
+	const idleMs = resolveIdleMs(options.idleMs, options.env ?? process.env, metadata.agentDir);
 	const paths = hostPaths(metadata);
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	chmodSync(paths.directory, 0o700);

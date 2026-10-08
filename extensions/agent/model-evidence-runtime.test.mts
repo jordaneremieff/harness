@@ -83,7 +83,7 @@ it("publishes real host evidence and reads fleet status locally from ordinary an
 	};
 	models.registerNativeProvider({ id: testModel.provider, name: "Fleet fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream: streamSimple, streamSimple });
 	const registry = fixtureRegistry();
-	const contribution = createAgentContribution({ source: fileURLToPath(new URL("./index.ts", import.meta.url)), dispatch: async () => { throw new Error("Fleet observation must not dispatch a host operation"); } }).create({ durable: Durable, storageId: "fixture-agent", cwd: f.cwd, catalogRoot: catalog.root, services: { modelRuntime: models } });
+	const contribution = createAgentContribution({ configureSettings: () => {}, source: fileURLToPath(new URL("./index.ts", import.meta.url)), dispatch: async () => { throw new Error("Fleet observation must not dispatch a host operation"); } }).create({ onClose() {}, durable: Durable, storageId: "fixture-agent", cwd: f.cwd, agentDir: f.agentDir, catalogRoot: catalog.root, services: { modelRuntime: models } });
 	registry.install(contribution);
 	for (const name of ["agent_spawn", "agent_configure"]) {
 		const ordinaryTool = tools.get(name);

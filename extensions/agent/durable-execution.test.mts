@@ -116,7 +116,7 @@ it("returns admitted spawn and send references as native codemode objects", { ti
 			const spawned = await tools.agent_spawn({ name: "working-agent", model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)}, prompt: "Reply with a result" });
 			const sent = await tools.agent_send({ sessionId: created.sessionId, message: "Reply with another result" });
 			return { created, spawned, sent };`,
-		builtinExtensions: (host) => [createAgentContribution({ source: fileURLToPath(new URL("./index.ts", import.meta.url)) }).create(host)],
+		builtinExtensions: (host) => [createAgentContribution({ configureSettings: () => {}, source: fileURLToPath(new URL("./index.ts", import.meta.url)) }).create(host)],
 	});
 	const result = await f.submit("Dispatch work and retain its exact references");
 	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as Record<string, { sessionId: string; result?: { sessionId: string; submissionId: number; requestId: string } }>;
@@ -155,7 +155,7 @@ it("preserves native lineage and effort awareness together through codemode", { 
 				socketPath: join(sessionsRoot, "missing.sock"), startedAt: "2026-10-04T09:00:00Z",
 				intentClaim: { purpose: "Shared native status", integration: "Test structured observations", authority: "Fixture only", scope: { paths: ["extensions/agent"], branches: ["topic"] }, updatedAt: "2026-10-04T10:00:00Z" },
 			}));
-			return [createAgentContribution({
+			return [createAgentContribution({ configureSettings: () => {},
 				source: fileURLToPath(new URL("./index.ts", import.meta.url)),
 				dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return hostStatus; },
 			}).create({ ...host, catalogRoot }), host.durable.defineExtension({
@@ -241,7 +241,7 @@ it("throws a native agent error without data to codemode with its text", { timeo
 		} catch (error) {
 			return { caught: true, error: error.message };
 		}`,
-		builtinExtensions: (host) => [createAgentContribution({
+		builtinExtensions: (host) => [createAgentContribution({ configureSettings: () => {},
 			source: fileURLToPath(new URL("./index.ts", import.meta.url)),
 			dispatch: async () => { throw new Error("target stream unavailable"); },
 		}).create(host)],

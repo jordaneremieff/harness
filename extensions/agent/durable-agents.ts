@@ -162,7 +162,8 @@ export interface AgentContributionHost {
 	readonly catalogRoot?: string;
 	/** Working directory this storage serves. One storage serves one cwd. */
 	readonly cwd: string;
-	readonly agentDir?: string;
+	readonly agentDir: string;
+	readonly onClose: (dispose: () => void) => void;
 	/** Pi's model runtime, read-only; used to clamp a requested thinking level. */
 	readonly services: {
 		readonly modelRuntime: {
@@ -182,6 +183,8 @@ export interface AgentContribution {
 }
 
 export interface AgentContributionOptions {
+	/** Rebind the factory publisher to the native host directory. */
+	readonly configureSettings: (host: AgentContributionHost) => void;
 	/** Absolute path of the emitting extension entrypoint, for example `fileURLToPath(import.meta.url)`. */
 	readonly source: string;
 	/** Host control dispatch; absent features report an explicit error result. */
@@ -323,7 +326,7 @@ function modelOf(value: string): Durable.ModelRef {
 
 const StringEnum = <T extends readonly string[]>(values: T) => Type.Union(values.map((value) => Type.Literal(value)));
 
-const CheckInParams = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval while unanswered, in minutes. Default PI_AGENT_CHECK_IN_MINUTES or 30; 0 disables." }));
+const CheckInParams = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval while unanswered, in minutes. Default configured agent.checkInMinutes (30 unless overridden); 0 disables." }));
 
 const SpawnParams = Type.Object(
 	{
@@ -578,6 +581,7 @@ export function createAgentContribution(options: AgentContributionOptions): Agen
 		source: options.source,
 		...(options.commands === undefined ? {} : { commands: options.commands }),
 		create(host) {
+			options.configureSettings(host);
 			return buildExtension(host, options);
 		},
 	};
@@ -935,7 +939,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (args.prompt !== undefined) {
 			const reporter = await tx.createTask(
 				Reporter,
-				reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes)),
+				reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)),
 				{ ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true },
 			);
 			registry.reporters[String(api.taskId)] = reporter;
@@ -1031,7 +1035,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return { kind: "local", child: { ...retained, conversationId: retained.conversationId, anchorTaskId: retained.anchorTaskId }, deduped: true };
 		}
 		const selection = resolveExecutionPreset(await preferenceSnapshot(api, context), args, {}, { creation: true, checkIn: args.prompt !== undefined });
-		if (args.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined); selection.origins.checkInMinutes = "default"; }
+		if (args.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, "model", host.agentDir); selection.origins.checkInMinutes = "default"; }
 		if (selection.values.model === undefined || selection.values.thinkingLevel === undefined) throw new Error("Creation has no resolved model or thinking level");
 		const parent = await resolveChildAgent(api, context, selection.values.model, selection.values.thinkingLevel as ModelThinkingLevel, selection);
 		if (parent.kind === "error") return parent;
@@ -1047,7 +1051,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const outcome = await localSpawn(api, context, args, cwd);
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		const child = outcome.child;
-		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
+		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${child.name} (${identity(child.conversationId)}).`
@@ -1198,7 +1202,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				message: args.message,
 				deliverAt: deadline,
 				mode,
-				checkInMinutes: checkInMinutes(args.checkInMinutes),
+				checkInMinutes: checkInMinutes(args.checkInMinutes, "model", host.agentDir),
 				origin: "model",
 				ownerId: identity(api.conversationId),
 				scheduleId,
@@ -1219,7 +1223,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined) return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
 				return dispatchControl("report", { sessionId: args.sessionId, senderIdentity: identity(api.conversationId), message: args.message, requestId: `report:${host.storageId}:${api.taskId}` }, "Report delivery failed");
 			}
-			return args.deliverAt === undefined ? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "steer", args.replyTo, checkInMinutes(args.checkInMinutes)) : scheduleSend(api, args);
+			return args.deliverAt === undefined ? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "steer", args.replyTo, checkInMinutes(args.checkInMinutes, "model", host.agentDir)) : scheduleSend(api, args);
 		},
 	});
 

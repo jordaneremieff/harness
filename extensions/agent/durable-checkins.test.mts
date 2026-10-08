@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -9,31 +12,28 @@ import { scheduleFixture } from "./durable-schedule-fixture.mts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { AwaitDoc } from "./awaited-results.ts";
 
-it("applies the env default only to model tool admissions and accepts zero", () => {
-	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
-	try {
-		delete process.env.PI_AGENT_CHECK_IN_MINUTES;
-		assert.equal(checkInMinutes(undefined), 30);
-		assert.equal(checkInMinutes(undefined, "operator"), 0);
-		process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
-		assert.equal(checkInMinutes(undefined), 7);
-		assert.equal(checkInMinutes(0), 0);
-		process.env.PI_AGENT_CHECK_IN_MINUTES = "0";
-		assert.equal(checkInMinutes(undefined), 0);
-		assert.throws(() => checkInMinutes(-1));
-		assert.throws(() => checkInMinutes(Infinity));
-		assert.throws(() => checkInMinutes(35792));
-	} finally { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; }
+function settingsDirectory(t: { after(fn: () => void): void }): string {
+ const directory = mkdtempSync(join(tmpdir(), "check-in-settings-"));
+ t.after(() => rmSync(directory, { recursive: true, force: true }));
+ return directory;
+}
+
+it("applies the configured default only to model tool admissions and accepts zero", (t) => {
+ const directory = settingsDirectory(t);
+ assert.equal(checkInMinutes(undefined, "model", directory, {}), 30);
+ assert.equal(checkInMinutes(undefined, "operator", directory, {}), 0);
+ assert.equal(checkInMinutes(undefined, "model", directory, { PI_AGENT_CHECK_IN_MINUTES: "7" }), 7);
+ assert.equal(checkInMinutes(0, "model", directory, {}), 0);
+ assert.equal(checkInMinutes(undefined, "model", directory, { PI_AGENT_CHECK_IN_MINUTES: "0" }), 0);
+ for (const value of [-1, Infinity, 35792]) assert.throws(() => checkInMinutes(value, "model", directory, {}));
 });
 
-for (const raw of ["", "  ", "bad", "-1", "Infinity", "35792"]) it(`rejects invalid environment interval ${JSON.stringify(raw)}`, () => {
-	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
-	try {
-		process.env.PI_AGENT_CHECK_IN_MINUTES = raw;
-		assert.throws(() => checkInMinutes(undefined), /PI_AGENT_CHECK_IN_MINUTES.*0.*35791/u);
-		assert.equal(checkInMinutes(0), 0, "a per-call override does not use the default");
-		assert.equal(checkInMinutes(undefined, "operator"), 0);
-	} finally { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; }
+for (const raw of ["", "  ", "bad", "-1", "Infinity", "35792"]) it(`uses the safe default for invalid environment interval ${JSON.stringify(raw)}`, (t) => {
+ const directory = settingsDirectory(t);
+ const env = { PI_AGENT_CHECK_IN_MINUTES: raw };
+ assert.equal(checkInMinutes(undefined, "model", directory, env), 30);
+ assert.equal(checkInMinutes(0, "model", directory, env), 0, "a per-call override does not use the default");
+ assert.equal(checkInMinutes(undefined, "operator", directory, env), 0);
 });
 
 it("creates a host-owned check-in without a native agent contribution, and ends it at settlement", { timeout: 60000 }, async (t) => {

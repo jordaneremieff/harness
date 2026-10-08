@@ -1,3 +1,5 @@
+import { publishSettings } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { mkdirSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -85,7 +87,7 @@ const message = Type.Object(
 	{ sessionId: id, message: Type.String({ minLength: 1 }), replyTo: Type.Optional(id) },
 	{ additionalProperties: false },
 );
-const checkIn = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval in minutes while unanswered; 0 disables. Default: PI_AGENT_CHECK_IN_MINUTES or 30." }));
+const checkIn = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval in minutes while unanswered; 0 disables. Default: configured agent.checkInMinutes (30 unless overridden)." }));
 const send = Type.Object(
 	{
 		sessionId: id,
@@ -206,11 +208,18 @@ function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
 }
 
 export default function registerAgentExtension(pi: ExtensionAPI): void {
+	const settingsAgentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
+	const disposeFactorySettings = publishSettings(pi.events, settings, { agentDir: settingsAgentDir });
 	const toolDisplay = collectToolDisplay(pi.events);
 	pi.events.emit(
 		"durable:contribution",
 		createAgentContribution({
 			source: fileURLToPath(import.meta.url),
+			configureSettings: (host) => {
+				disposeFactorySettings();
+				const disposeNativeSettings = publishSettings(pi.events, settings, { agentDir: host.agentDir });
+				host.onClose(disposeNativeSettings);
+			},
 			dispatch: (method, params, context) => resolveAgentControlDispatch()(method, params, context),
 		}),
 	);
@@ -884,6 +893,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		disposeFactorySettings();
 		selfCompaction.clear();
 		const id = ctx.sessionManager.getSessionId();
 		primaries.get(id)?.abort();

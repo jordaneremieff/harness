@@ -1,3 +1,4 @@
+import { machineConfig } from "./settings-fixture.mts";
 /**
  * Real ordinary primary AgentSession coverage for the `agent.peer` notice
  * path: the registered primary channel receives a delivery, the extension calls
@@ -291,8 +292,8 @@ it("refreshes preset descriptions and base guidance before peer-message turns wi
 	const f = await noticeFixture(t);
 	const dependency = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.resolve("@earendil-works/pi-coding-agent"))), "utf8")) as { version: string };
 	t.diagnostic(`Coding-agent runtime dependency: ${dependency.version}`);
-	const path = join(f.sessionsRoot, "..", "agent", "agent-preferences.json");
-	const write = (key: string, model: string) => writeFileSync(path, JSON.stringify({ version: 1, presets: { [key]: { model } }, preferences: { defaultPreset: key } }));
+	const path = join(f.sessionsRoot, "..", "agent", "harness.json");
+	const write = (key: string, model: string) => writeFileSync(path, JSON.stringify(machineConfig({ presets: { [key]: { model } }, preferences: { defaultPreset: key } })));
 	for (const [index, key, model] of [[1, "standard", "acme/model-x"], [2, "economy", "other/model-y"]] as const) {
 		write(key, model);
 		const starts = f.promptStarts();
@@ -336,7 +337,7 @@ it("refreshes preset descriptions and base guidance before peer-message turns wi
 	for (const declaration of declarations) {
 		const text = JSON.stringify(declaration.parameters);
 		assert.match(text, /Presets: \[\]/u);
-		assert.match(text, /unavailable/u);
+		assert.match(text, /invalid/u);
 		assert.doesNotMatch(text, /economy/u);
 	}
 });

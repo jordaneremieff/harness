@@ -1,4 +1,7 @@
 /** Durable owner check-ins for unanswered tool admissions. */
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { readSettings, type Environment } from "../../settings/index.ts";
+import { settings } from "./settings.ts";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { AgentDeliveryDoc, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
@@ -7,15 +10,11 @@ import { awaitFactLines, retryFactLines } from "./await-facts.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 
 export const CHECK_IN_MAX_MINUTES = 35791;
-/** Only model tool admissions apply the environment default. */
-export function checkInMinutes(value: unknown, origin: DeliveryOrigin = "model"): number {
+/** Only model tool admissions apply the configured default. */
+export function checkInMinutes(value: unknown, origin: DeliveryOrigin = "model", agentDir = process.env.PI_AGENT_DIR ?? getAgentDir(), env?: Environment): number {
 	if (value === undefined) {
 		if (origin !== "model") return 0;
-		const raw = process.env.PI_AGENT_CHECK_IN_MINUTES;
-		const minutes = Number(raw ?? 30);
-		if (raw?.trim() === "" || !Number.isFinite(minutes) || minutes < 0 || minutes > CHECK_IN_MAX_MINUTES)
-			throw new TypeError(`PI_AGENT_CHECK_IN_MINUTES must be a finite number from 0 through ${CHECK_IN_MAX_MINUTES}`);
-		return minutes;
+		return readSettings(settings, { agentDir, env }).values.checkInMinutes;
 	}
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > CHECK_IN_MAX_MINUTES)
 		throw new TypeError(`checkInMinutes must be a finite number from 0 through ${CHECK_IN_MAX_MINUTES}`);

@@ -1535,8 +1535,9 @@ message content rather than the answer preview. Catalog follow-ups between Durab
 existing form.
 
 Automatic owner check-ins do not depend on voluntary worker reports. Model
-`agent_spawn` and `agent_place` prompts and `agent_send` tasks use `PI_AGENT_CHECK_IN_MINUTES`
-(default 30); per-call `checkInMinutes` overrides it, including 0 to disable.
+`agent_spawn` and `agent_place` prompts and `agent_send` tasks use the effective
+`agent.checkInMinutes` setting (default 30); per-call `checkInMinutes` overrides
+it, including 0 to disable.
 Operator admissions get no default. An admission creates no check-in when its
 owner resolves to the conversation that runs the work, even with a positive
 explicit interval. This applies to both origins and alternate root identity
@@ -1780,13 +1781,15 @@ stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 
 ## Execution presets and delegation preferences
 
-The agent extension reads one optional machine document,
-`<effectiveAgentDir>/agent-preferences.json`. The effective Pi agent directory
-comes from `PI_AGENT_DIR` or public `getAgentDir()`; a usual default is
-`~/.pi/agent`. `PI_AGENT_PREFERENCES_FILE` overrides the document path.
-The repository supplies the mechanism and portable examples, not a machine
-roster. The reader does not discover project files or follow include chains.
-Pi settings, provider configuration, credentials, and trust remain host-owned.
+The agent section of the optional `<agentDir>/harness.json` machine document
+contains execution presets and delegation preferences. The package-level
+[settings contract](../../settings/README.md) owns reading, source evidence,
+validation, and environment precedence. Ordinary hosts use `PI_AGENT_DIR` or
+public `getAgentDir()`; native and standalone hosts supply their own directory.
+`PI_HARNESS_FILE` selects another machine document. The repository supplies
+portable examples, not a machine roster. The reader discovers no project files
+and follows no include chains. Pi settings, providers, credentials, and trust
+remain host-owned.
 
 An execution preset is a named bundle of creation or configuration values.
 It is separate from an agent's durable role and sourced expertise, which remain
@@ -1794,13 +1797,20 @@ on `agent_profile` and the native `agent.profile` document.
 
 ### Machine document schema
 
-The file is strict JSON with this closed top-level shape:
-`{ "version": 1, "presets": { "name": { "model": "provider/model" } }, "preferences": {} }`.
-`version` and `presets` are required; `preferences` is optional. The document
-is at most 65536 UTF-8 bytes and contains at most 64 presets. Preset names have
-1 through 64 characters and match `[a-z][a-z0-9]*(-[a-z0-9]+)*`. Each preference
-array or map contains at most 64 entries. The reader rejects unknown keys, wrong
-types, unsupported versions, and invalid numbers. Presets have no include,
+The file is strict JSON with a `version: 1` envelope and an optional `agent`
+section. Its fields are `idleMinutes`, `checkInMinutes`, `presets`, and
+`preferences`. All fields are optional. Each field selects a present environment
+value, then its document value, then its safe default. Structured environment
+values use JSON. An invalid selected field uses its default, not a lower-priority
+file value; other fields remain usable. Shared diagnostics identify rejected
+sources and unknown fields. The shared reader bounds the document and JSON
+structure as described in its README.
+
+The extension owns the closed structure of each preset and preference object.
+The presets map contains at most 64 presets. Names have 1 through 64 characters
+and match `[a-z][a-z0-9]*(-[a-z0-9]+)*`. Each preference array or map contains
+at most 64 entries. Invalid names, unknown structured keys, wrong types, and
+invalid numbers reject that structured field. Presets have no include,
 inheritance, credentials, cwd, tools, or trust fields.
 
 | Preset field | Meaning |
@@ -1829,27 +1839,29 @@ configured catalog:
 ```json
 {
   "version": 1,
-  "presets": {
-    "review": {
-      "model": "acme/model-x",
-      "thinkingLevel": "high",
-      "role": "Review current source and report cited findings.",
-      "checkInMinutes": 20,
-      "notes": "Use for source review."
+  "agent": {
+    "presets": {
+      "review": {
+        "model": "acme/model-x",
+        "thinkingLevel": "high",
+        "role": "Review current source and report cited findings.",
+        "checkInMinutes": 20,
+        "notes": "Use for source review."
+      },
+      "economy": {
+        "model": "acme/model-x",
+        "thinkingLevel": "low"
+      }
     },
-    "economy": {
-      "model": "acme/model-y",
-      "thinkingLevel": "low"
+    "preferences": {
+      "defaultPreset": "review",
+      "enforceRoster": false,
+      "excludedModels": [],
+      "excludedProviders": [],
+      "contextBudgetTokens": { "acme/model-x": 16000 },
+      "quotaSubstitutionOrder": ["review", "economy"],
+      "reportingNotes": "Report catalog diagnostics and unapplied fields."
     }
-  },
-  "preferences": {
-    "defaultPreset": "review",
-    "enforceRoster": false,
-    "excludedModels": [],
-    "excludedProviders": [],
-    "contextBudgetTokens": { "acme/model-x": 16000 },
-    "quotaSubstitutionOrder": ["review", "economy"],
-    "reportingNotes": "Report catalog diagnostics and unapplied fields."
   }
 }
 ```
@@ -1871,7 +1883,7 @@ import any fields from `defaultPreset`.
 - Missing optional thinking defaults to `off`, then Pi clamps it to the selected
   model's capabilities. A missing role is empty for new handles and unapplied
   otherwise. A missing check-in interval uses the existing admission default:
-  `PI_AGENT_CHECK_IN_MINUTES` for model tasks and no automatic interval for
+  the effective `agent.checkInMinutes` setting for model tasks and no automatic interval for
   operator tasks. Check-ins apply only when a prompt starts work.
 - Place accepts `model` and `thinkingLevel` for creation alongside `preset`.
   A reused place owner keeps its retained configuration; supplied model,
@@ -1890,7 +1902,7 @@ import any fields from `defaultPreset`.
 
 ### Refresh, errors, and catalog facts
 
-Each new spawn, place, or configure admission reads one file snapshot and
+Each new spawn, place, or configure admission reads one effective settings snapshot and
 retains the resolved values and source digest for replay. Ordinary callers use
 custom session entries. Native host-dispatched creation requests use caller-conversation
 documents keyed by request identity; local children retain selections in native
@@ -1908,7 +1920,7 @@ change busy work.
 
 An explicit model remains usable with an absent, malformed, or unreadable file;
 its receipt preserves load diagnostics. Creation with neither model nor preset
-fails when no readable defaultPreset exists. Unknown presets, including an
+fails when no effective defaultPreset exists. Unknown presets, including an
 unknown configured default, fail with the requested name, file path/problem,
 all valid preset names, and file digest (or `none`). No preset request silently
 falls back to parent settings. Configure without a preset retains target values
@@ -1951,8 +1963,9 @@ refresh. Fresh, bounded prompt sections supply exclusion facts, context budgets,
 substitution order, reporting notes, and diagnostics. Equal document and diagnostic facts render
 identical text; observation times remain in receipts, not prompt sections.
 Ordinary callers receive them through `before_agent_start`; native Durable callers receive them through
-`durable.section`. Read errors render explicit unavailable/error text instead
-of throwing and leaving previous preferences apparently current.
+`durable.section`. Read errors render source diagnostics and current safe-default or environment
+values instead of leaving previous preferences apparently current. Environment
+presets remain usable when the document is absent or invalid.
 
 Every spawn/place creation receipt exposes all valid preset names and the source
 digest. Spawn, place, and configure receipts also expose the selected preset when
@@ -1965,7 +1978,7 @@ to the target's configuration.
 The existing `/agent` dashboard shows current load state and default preset on
 its main panel when space permits. Warnings, the draft, and status take priority
 at minimum height. Its scrollable Help view always starts with the file path,
-absent/loaded/unavailable status, full digest, file error, enforcement setting, and every
+absent/loaded/invalid/unavailable document status, full digest, diagnostics, enforcement setting, and every
 preset name with its model. Reopen or the existing roster refresh updates these
 facts. No new command is required.
 
@@ -1976,9 +1989,34 @@ facts. No new command is required.
 | `PI_AGENT_DIR` | Pi configuration directory, otherwise public `getAgentDir()`. |
 | `PI_MANAGED_INSTALL_ROOT` | Standalone terminal managed-install directory. Otherwise locate the managed `pi` launcher on `PATH`; read its install directory's `current-version` afresh. |
 | `PI_AGENT_SESSIONS_DIR` | Agent store root, otherwise `<agentDir>/agent-sessions`. |
-| `PI_AGENT_PREFERENCES_FILE` | Strict machine execution configuration, including default preset and opt-in roster enforcement; optional path override, otherwise `<effectiveAgentDir>/agent-preferences.json`. See [execution presets and delegation preferences](#execution-presets-and-delegation-preferences) for schema, precedence, refresh, and errors. |
-| `PI_AGENT_IDLE_MINUTES` | Idle host retirement interval. Default 5; zero disables; finite range 0 through 35791 minutes, including fractions. Passive clients do not extend the interval. |
-| `PI_AGENT_CHECK_IN_MINUTES` | Default automatic owner check-in interval for model `agent_spawn` and `agent_place` prompts and `agent_send` tasks. Default 30; zero disables; finite range 0 through 35791 minutes, including fractions. Blank and invalid values are rejected with the variable name and range. Per-call `checkInMinutes` overrides it. Operator admissions have no default. |
+
+<!-- harness:settings:start -->
+| Key | Environment | Type | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| idleMinutes | `PI_AGENT_IDLE_MINUTES` | number | 5 | min 0; max 35791 | Idle host retirement interval in minutes; zero disables. |
+| checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 30 | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero disables. |
+| presets | `PI_AGENT_PRESETS` | json | {} | none | Named execution presets with exact model identities and optional creation fields. |
+| preferences | `PI_AGENT_PREFERENCES` | json | {} | none | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |
+<!-- harness:settings:end -->
+
+Passive clients do not extend the idle interval. Per-call `checkInMinutes`
+overrides the configured interval; operator admissions have no default check-in.
+Invalid machine values use the declared safe defaults with diagnostics. Explicit
+invalid call arguments still fail admission.
+
+The ordinary factory publishes current configured fields on the public settings
+bus. Native creation replaces that publisher with one bound to the native host's
+agent directory on the same resource-loader bus. Ordinary shutdown disposes only
+its factory publisher; native host cleanup owns the native publisher. Registry refresh reads current configured values and sources; it does
+not retune existing agents, admission receipts, or host idle windows.
+
+For an isolated idle preset trial, write a synthetic machine document with
+`agent.presets.standard.model` set to an available exact model identity. Load
+this entrypoint in a fresh ordinary process with an explicit fixture agent
+directory and `PI_HARNESS_FILE`, then call `agent_spawn({ preset: "standard" })`.
+No prompt means no model work. Native hosts use the same call with their supplied
+`agentDir`. Inspect the receipt's preset, model, origin, source path, and digest;
+an idle admission does not establish model response behavior.
 
 Current storage lives under `<store>/durable/`: a bounded discovery metadata
 record and a SQLite file for each storage, plus directory bindings. Metadata

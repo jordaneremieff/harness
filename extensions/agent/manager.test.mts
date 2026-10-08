@@ -1,3 +1,4 @@
+import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -6,9 +7,9 @@ import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, it } from "node:test";
 
-const preferenceOverride = process.env.PI_AGENT_PREFERENCES_FILE;
-delete process.env.PI_AGENT_PREFERENCES_FILE;
-after(() => { if (preferenceOverride !== undefined) process.env.PI_AGENT_PREFERENCES_FILE = preferenceOverride; });
+const preferenceOverride = process.env.PI_HARNESS_FILE;
+delete process.env.PI_HARNESS_FILE;
+after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
 import { hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { dashboardText } from "./dashboard-roster.ts";
 import { connectHost, type HostConnection } from "./host-client.ts";
@@ -17,7 +18,7 @@ import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
-import { agentPreferencesPath, type ExecutionSelection } from "./agent-preferences.ts";
+import type { ExecutionSelection } from "./agent-preferences.ts";
 import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
 import type { createPrimaryChannel } from "./primary-channel.ts";
 
@@ -25,7 +26,7 @@ function fixtureRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "agent-manager-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	mkdirSync(join(root, "agent"));
-	writeFileSync(join(root, "agent", "agent-preferences.json"), JSON.stringify({ version: 1, presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard" } }));
+	writeFileSync(join(root, "agent", "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard" } })));
 	return root;
 }
 
@@ -551,8 +552,8 @@ it("refreshes the durable footer from published views at startup and after a hos
 it("resolves ordinary presets once for creation and preserves replay after file edits", async (t) => {
 	const root = fixtureRoot(t); const options = managerOptions(root);
 	mkdirSync(options.agentDir, { recursive: true });
-	const path = agentPreferencesPath(options.agentDir);
-	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } }));
+	const path = join(options.agentDir, "harness.json");
+	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } })));
 	const admitted: Record<string, unknown>[] = [];
 	const manager = new AgentManager({ ...options, validateModel: () => "off", acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
 		if (method === "task-submit") { admitted.push(params as Record<string, unknown>); return nativeAdmission(params); }
@@ -572,7 +573,7 @@ it("resolves ordinary presets once for creation and preserves replay after file 
 	assert.deepEqual(replay.selection, first.selection);
 	assert.equal(replay.sessionId, first.sessionId);
 	assert.equal(admitted[1].checkInMinutes, 2);
-	await assert.rejects(manager.spawn({ preset: "review" }, caller), /review.*agent-preferences.json/u);
+	await assert.rejects(manager.spawn({ preset: "review" }, caller), /review.*harness.json/u);
 	await assert.rejects(manager.spawn({ ...args, thinkingLevel: "off", selection: first.selection }, caller), /different execution inputs/u);
 });
 
@@ -600,7 +601,7 @@ for (const kind of ["handle", "place"] as const) it(`awaits ${kind} selection re
 it("reports preset creation fields as unapplied for reused handles and places", async (t) => {
 	const root = fixtureRoot(t); const options = managerOptions(root);
 	mkdirSync(options.agentDir, { recursive: true });
-	writeFileSync(agentPreferencesPath(options.agentDir), JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } }));
+	writeFileSync(join(options.agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } })));
 	const manager = new AgentManager({ ...options, validateModel: () => "off", acquire: async (metadata) => fakeConnection(metadata, async (method, params) => method === "profile-read" ? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel } : method === "task-submit" ? nativeAdmission(params) : {}) });
 	t.after(() => manager.close());
 	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" } };
@@ -619,13 +620,13 @@ it("reports preset creation fields as unapplied for reused handles and places", 
 it("ordinary spawn and place creation share defaults, errors, override receipts, and opt-in enforcement", async (t) => {
 	const root = fixtureRoot(t);
 	const options = managerOptions(root);
-	const path = agentPreferencesPath(options.agentDir);
+	const path = join(options.agentDir, "harness.json");
 	const validated: Array<{ model: string; level: string }> = [];
 	const manager = new AgentManager({ ...options, validateModel: (model, level) => { validated.push({ model: `${model.provider}/${model.modelId}`, level }); return level; }, acquire: async (metadata) => fakeConnection(metadata, async (method) => method === "profile-read" ? { model: metadata.model, thinkingLevel: metadata.thinkingLevel } : {}) });
 	t.after(() => manager.close());
 	const caller = { id: "owner", cwd: root, model: { provider: "parent", modelId: "model-z" }, thinkingLevel: "max" };
 	const document = (enforceRoster = false) => ({ version: 1, presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard", enforceRoster } });
-	writeFileSync(path, JSON.stringify(document()));
+	writeFileSync(path, JSON.stringify(machineConfig(document())));
 	for (const method of ["spawn", "place"] as const) {
 		const first = await manager[method]({}, caller) as { sessionId: string; selection: ExecutionSelection };
 		assert.equal(first.selection.origins.model, "defaultPreset");
@@ -637,17 +638,17 @@ it("ordinary spawn and place creation share defaults, errors, override receipts,
 	const override = await manager.spawn({ model: "other/model-y" }, caller) as { selection: ExecutionSelection };
 	assert.equal(override.selection.origins.model, "explicit");
 	assert.match(override.selection.diagnostics[0].message, /Explicit model override.*matches no preset/u);
-	writeFileSync(path, JSON.stringify(document(true)));
+	writeFileSync(path, JSON.stringify(machineConfig(document(true))));
 	await assert.rejects(manager.spawn({ model: "other/model-y" }, caller), /enforceRoster.*Presets: \["standard"\].*digest/u);
 	const reused = await manager.place({ model: "other/model-y" }, caller) as { selection: ExecutionSelection };
 	assert.equal(reused.selection.origins.model, "retained");
 	assert.ok(reused.selection.unapplied.includes("model"));
-	for (const content of [JSON.stringify({ version: 1, presets: {} }), "malformed"]) {
+	for (const content of [JSON.stringify(machineConfig({ presets: {} })), "malformed"]) {
 		writeFileSync(path, content);
-		await assert.rejects(manager.spawn({}, caller), /defaultPreset.*agent-preferences.json/u);
+		await assert.rejects(manager.spawn({}, caller), /defaultPreset.*harness.json/u);
 	}
 	rmSync(path);
-	await assert.rejects(manager.spawn({}, caller), /defaultPreset.*agent-preferences.json/u);
+	await assert.rejects(manager.spawn({}, caller), /defaultPreset.*harness.json/u);
 	const explicit = await manager.spawn({ model: "acme/model-x" }, caller) as { selection: ExecutionSelection };
 	assert.equal(explicit.selection.source.status, "missing");
 	assert.deepEqual(explicit.selection.presetNames, []);
@@ -656,8 +657,8 @@ it("ordinary spawn and place creation share defaults, errors, override receipts,
 it("retains ordinary reuse selections before dispatch and reports a raced handle as reused", async (t) => {
 	const root = fixtureRoot(t); const options = managerOptions(root);
 	mkdirSync(options.agentDir, { recursive: true });
-	const path = agentPreferencesPath(options.agentDir);
-	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", role: "Review", checkInMinutes: 2 } } }));
+	const path = join(options.agentDir, "harness.json");
+	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", role: "Review", checkInMinutes: 2 } } })));
 	const entered = deferred(); const release = deferred(); let validation = 0;
 	const selections: ExecutionSelection[] = [];
 	const manager = new AgentManager({ ...options, validateModel: async () => { if (++validation === 1) { entered.resolve(); await release.promise; } return "off"; }, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => method === "profile-read" ? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel } : method === "task-submit" ? nativeAdmission(params) : {}) });
@@ -674,7 +675,7 @@ it("retains ordinary reuse selections before dispatch and reports a raced handle
 	assert.deepEqual(raced.selection.unapplied, ["model", "role"]);
 	const replay = await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task", selection: selections.at(-1) }, caller) as typeof raced;
 	assert.deepEqual(replay.selection, raced.selection);
-	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", checkInMinutes: 3 } } }));
+	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", checkInMinutes: 3 } } })));
 	await manager.place({ area: root, preset: "review" }, caller);
 	const placed = await manager.place({ area: root, preset: "review", prompt: "Work" }, caller) as typeof raced;
 	writeFileSync(path, "malformed");
@@ -685,8 +686,8 @@ it("retains ordinary reuse selections before dispatch and reports a raced handle
 
 it("a fresh admission selects a replacement provider after a valid preset edit without retuning earlier agents", async (t) => {
 	const root = fixtureRoot(t); const options = managerOptions(root); mkdirSync(options.agentDir, { recursive: true });
-	const path = agentPreferencesPath(options.agentDir);
-	const writePreset = (model: string) => writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model }, alternate: { model: "other/model-y" } }, preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"] } }));
+	const path = join(options.agentDir, "harness.json");
+	const writePreset = (model: string) => writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model }, alternate: { model: "other/model-y" } }, preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"] } })));
 	const validated: string[] = [];
 	const manager = new AgentManager({ ...options, validateModel: (model) => { validated.push(`${model.provider}/${model.modelId}`); return "off"; }, acquire: async (metadata) => fakeConnection(metadata, async () => ({})) });
 	t.after(() => manager.close());
@@ -708,7 +709,7 @@ it("a fresh admission selects a replacement provider after a valid preset edit w
 
 it("handle and place reuse report current configured evidence rather than immutable creation metadata", async (t) => {
 	const root = fixtureRoot(t); const options = managerOptions(root); mkdirSync(options.agentDir, { recursive: true });
-	writeFileSync(agentPreferencesPath(options.agentDir), JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x", thinkingLevel: "high" } } }));
+	writeFileSync(join(options.agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", thinkingLevel: "high" } } })));
 	const current = new Map<string, { model: { provider: string; modelId: string }; thinkingLevel: string }>();
 	let evidenceUnavailable = false;
 	const manager = new AgentManager({ ...options, validateModel: (_model, level) => level, acquire: async (metadata) => {

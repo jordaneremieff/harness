@@ -1,3 +1,4 @@
+import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,9 +19,9 @@ import type { ProducerAwaitFact } from "./await-facts.ts";
 import type { AwaitReply } from "./await-execution.ts";
 import type { ResultReference } from "./result-reference.ts";
 
-const preferenceOverride = process.env.PI_AGENT_PREFERENCES_FILE;
-delete process.env.PI_AGENT_PREFERENCES_FILE;
-after(() => { if (preferenceOverride !== undefined) process.env.PI_AGENT_PREFERENCES_FILE = preferenceOverride; });
+const preferenceOverride = process.env.PI_HARNESS_FILE;
+delete process.env.PI_HARNESS_FILE;
+after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
 
 const context = BACKGROUND_CONTEXT;
 const storageId = "retry-test";
@@ -59,7 +60,7 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 		}, ctx), async (changed) => harness.subscribeCommits(changed), params.publish as (fact: ProducerAwaitFact) => Promise<void>, ctx);
 	};
 	const registry = Durable.createRegistry();
-	registry.install(createAgentContribution({ source: "extensions/agent/index.ts", dispatch }).create({ durable: Durable, storageId, cwd: process.cwd(), agentDir, services: { modelRuntime: { getModel: () => undefined } } }));
+	registry.install(createAgentContribution({ configureSettings: () => {}, source: "extensions/agent/index.ts", dispatch }).create({ onClose() {}, durable: Durable, storageId, cwd: process.cwd(), agentDir, services: { modelRuntime: { getModel: () => undefined } } }));
 	harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry, settings: { retry: { enabled: true, maxRetries: 4, baseDelayMs } } }, context);
 	harness.resume();
 	t.after(() => harness.close(context));
@@ -95,21 +96,19 @@ async function waitForState(harness: Durable.Harness, predicate: (state: AwaitSt
 
 it("uses isolated retry preferences despite an ambient agent directory", async (t) => {
 	const ambientDir = mkdtempSync(join(tmpdir(), "retry-ambient-preferences-"));
-	const previous = { agentDir: process.env.PI_AGENT_DIR, preferences: process.env.PI_AGENT_PREFERENCES_FILE };
+	const previous = { agentDir: process.env.PI_AGENT_DIR, preferences: process.env.PI_HARNESS_FILE };
 	t.after(() => {
 		if (previous.agentDir === undefined) delete process.env.PI_AGENT_DIR;
 		else process.env.PI_AGENT_DIR = previous.agentDir;
-		if (previous.preferences === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE;
-		else process.env.PI_AGENT_PREFERENCES_FILE = previous.preferences;
+		if (previous.preferences === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = previous.preferences;
 		rmSync(ambientDir, { recursive: true, force: true });
 	});
-	writeFileSync(join(ambientDir, "agent-preferences.json"), JSON.stringify({
-		version: 1,
-		presets: { ambient: { model: "faux/faux-1" } },
+	writeFileSync(join(ambientDir, "harness.json"), JSON.stringify(machineConfig({ presets: { ambient: { model: "faux/faux-1" } },
 		preferences: { reportingNotes: "AMBIENT-RETRY-PREFERENCES-MARKER" },
-	}));
+	})));
 	process.env.PI_AGENT_DIR = ambientDir;
-	delete process.env.PI_AGENT_PREFERENCES_FILE;
+	delete process.env.PI_HARNESS_FILE;
 	const f = await setup(t, () => fauxAssistantMessage("FINISHED"));
 	const producer = await f.submitProducer("PRODUCER ISOLATED");
 	await producer.input.wait(context);

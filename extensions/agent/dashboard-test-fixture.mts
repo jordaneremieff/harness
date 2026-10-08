@@ -9,15 +9,15 @@ import type { AgentObservationSource } from "./agent-observation.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
 import { createDashboardState, type DashboardState } from "./dashboard-state.ts";
-const previousPreferences = process.env.PI_AGENT_PREFERENCES_FILE;
+const previousPreferences = process.env.PI_HARNESS_FILE;
 let preferencesRoot: string | undefined;
 before(() => {
 	preferencesRoot = mkdtempSync(join(tmpdir(), "dashboard-preferences-"));
-	process.env.PI_AGENT_PREFERENCES_FILE = join(preferencesRoot, "absent.json");
+	process.env.PI_HARNESS_FILE = join(preferencesRoot, "absent.json");
 });
 after(() => {
-	if (previousPreferences === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE;
-	else process.env.PI_AGENT_PREFERENCES_FILE = previousPreferences;
+	if (previousPreferences === undefined) delete process.env.PI_HARNESS_FILE;
+	else process.env.PI_HARNESS_FILE = previousPreferences;
 	if (preferencesRoot) rmSync(preferencesRoot, { recursive: true, force: true });
 });
 initTheme("dark");

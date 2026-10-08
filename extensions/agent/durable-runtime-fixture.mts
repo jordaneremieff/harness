@@ -1,3 +1,4 @@
+import { machineConfig } from "./settings-fixture.mts";
 /**
  * Helpers for the durable-runtime production SIGKILL tests.
  *
@@ -65,7 +66,7 @@ export function runtimeFixture(t: { after(fn: () => void): void }, options: { wi
 		ownerId,
 	}, "primary");
 	const metadata = hostMetadata(record);
-	writeFileSync(join(agentDir, "agent-preferences.json"), JSON.stringify({ version: 1, presets: { standard: { model: `${metadata.model.provider}/${metadata.model.modelId}` } }, preferences: { defaultPreset: "standard" } }));
+	writeFileSync(join(agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${metadata.model.provider}/${metadata.model.modelId}` } }, preferences: { defaultPreset: "standard" } })));
 	const markers = markerFixture(t, testDir);
 	return {
 		root,

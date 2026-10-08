@@ -268,13 +268,14 @@ it("publishes changed state to a public subscription", { timeout: 15000 }, async
 	await client.dispose();
 });
 
-it("parses the idle window with the configured bounds", () => {
-	assert.equal(resolveIdleMs(undefined, {}), 5 * 60_000);
-	assert.equal(resolveIdleMs(undefined, { PI_AGENT_IDLE_MINUTES: "0.5" }), 30_000);
-	assert.equal(resolveIdleMs(undefined, { PI_AGENT_IDLE_MINUTES: "0" }), 0);
-	assert.equal(resolveIdleMs(1234, { PI_AGENT_IDLE_MINUTES: "1" }), 1234);
+it("parses the idle window with the configured bounds", (t) => {
+	const directory = fixtureRoot(t);
+	assert.equal(resolveIdleMs(undefined, {}, directory), 5 * 60_000);
+	assert.equal(resolveIdleMs(undefined, { PI_AGENT_IDLE_MINUTES: "0.5" }, directory), 30_000);
+	assert.equal(resolveIdleMs(undefined, { PI_AGENT_IDLE_MINUTES: "0" }, directory), 0);
+	assert.equal(resolveIdleMs(1234, { PI_AGENT_IDLE_MINUTES: "1" }, directory), 1234);
 	for (const value of ["", "abc", "-1", "40000", "NaN"]) {
-		assert.throws(() => resolveIdleMs(undefined, { PI_AGENT_IDLE_MINUTES: value }), /PI_AGENT_IDLE_MINUTES/u, value);
+		assert.equal(resolveIdleMs(undefined, { PI_AGENT_IDLE_MINUTES: value }, directory), 5 * 60_000, value);
 	}
 	assert.throws(() => resolveIdleMs(-1, {}), /idleMs/u);
 	assert.throws(() => resolveIdleMs(Number.POSITIVE_INFINITY, {}), /idleMs/u);

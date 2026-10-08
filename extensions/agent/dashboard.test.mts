@@ -1,3 +1,4 @@
+import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -17,10 +18,10 @@ import type { AwaitFact } from "./await-facts.ts";
 it("dashboard shows current machine file state, digest, default, names and models without a new command", async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "dashboard-machine-preferences-"));
 	const path = join(directory, "preferences.json");
-	const previous = process.env.PI_AGENT_PREFERENCES_FILE;
-	process.env.PI_AGENT_PREFERENCES_FILE = path;
-	t.after(() => { if (previous === undefined) delete process.env.PI_AGENT_PREFERENCES_FILE; else process.env.PI_AGENT_PREFERENCES_FILE = previous; rmSync(directory, { recursive: true, force: true }); });
-	for (const content of [undefined, JSON.stringify({ version: 1, presets: { standard: { model: "acme/model-x\u001b[2J" }, economy: { model: "other/model-y" } }, preferences: { defaultPreset: "standard" } }), "malformed"]) {
+	const previous = process.env.PI_HARNESS_FILE;
+	process.env.PI_HARNESS_FILE = path;
+	t.after(() => { if (previous === undefined) delete process.env.PI_HARNESS_FILE; else process.env.PI_HARNESS_FILE = previous; rmSync(directory, { recursive: true, force: true }); });
+	for (const content of [undefined, JSON.stringify(machineConfig({ presets: { standard: { model: "acme/model-x\u001b[2J" }, economy: { model: "other/model-y" } }, preferences: { defaultPreset: "standard" } })), "malformed"]) {
 		if (content !== undefined) writeFileSync(path, content);
 		const f = fixture(120, 60, source([row("one")]));
 		try {
@@ -34,7 +35,7 @@ it("dashboard shows current machine file state, digest, default, names and model
 			if (content === undefined) { assert.match(screen, /Preferences: absent/u); assert.match(screen, /Digest: none/u); assert.match(screen, /Presets: none/u); }
 			else {
 				assert.ok(screen.includes(createHash("sha256").update(content).digest("hex")));
-				if (content === "malformed") { assert.match(screen, /Preferences: unavailable/u); assert.match(screen, /Error:/u); assert.doesNotMatch(screen, /acme\/model-x/u); }
+				if (content === "malformed") { assert.match(screen, /Preferences: invalid/u); assert.match(screen, /Diagnostic document:/u); assert.doesNotMatch(screen, /acme\/model-x/u); }
 				else { assert.match(screen, /Preferences: loaded; default preset: standard/u); assert.match(screen, /Preset standard: acme\/model-x/u); assert.match(screen, /Preset economy: other\/model-y/u); }
 			}
 		} finally { f.ui.dispose(); }

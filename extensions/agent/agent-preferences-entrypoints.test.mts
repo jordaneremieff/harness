@@ -1,3 +1,4 @@
+import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -5,15 +6,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, it } from "node:test";
 
-const preferenceOverride = process.env.PI_AGENT_PREFERENCES_FILE;
-delete process.env.PI_AGENT_PREFERENCES_FILE;
-after(() => { if (preferenceOverride !== undefined) process.env.PI_AGENT_PREFERENCES_FILE = preferenceOverride; });
+const preferenceOverride = process.env.PI_HARNESS_FILE;
+delete process.env.PI_HARNESS_FILE;
+after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
 import registerAgentExtension from "./index.ts";
 import { AgentManager } from "./manager.ts";
-import { agentPreferencesPath, type ExecutionSelection, type PreferenceSnapshot } from "./agent-preferences.ts";
+import type { ExecutionSelection, PreferenceSnapshot } from "./agent-preferences.ts";
 import * as Durable from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -56,7 +57,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	assert.deepEqual(seen.map((entry) => entry.method), ["spawn", "place", "configure"]);
 	for (const entry of seen) assert.equal((entry.input as { preset: string }).preset, "review");
 	const snapshots = seen.map((entry) => (entry.input as { preferenceSnapshot: unknown }).preferenceSnapshot);
-	writeFileSync(agentPreferencesPath(directory), "malformed");
+	writeFileSync(join(directory, "harness.json"), "malformed");
 	for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
 		const input = { preset: "review", model: "acme/model-x", thinkingLevel: "high", ...(name === "agent_configure" ? { sessionId: "target" } : {}) };
 		const tool = tools.get(name); assert.ok(tool);
@@ -66,7 +67,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	const spawn = tools.get("agent_spawn"); const send = tools.get("agent_send"); assert.ok(spawn && send);
 	await assert.rejects(spawn.execute("agent_spawn", { preset: "other" }, undefined, undefined, ctx), /different inputs/u);
 	assert.equal(Value.Check(send.parameters, { sessionId: "target", message: "hello", preset: "review" }), false);
-	writeFileSync(agentPreferencesPath(directory), JSON.stringify({ version: 1, presets: { review: { model: "acme/model-x" }, alternate: { model: "other/model-y" } }, preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"], reportingNotes: "Current note" } }));
+	writeFileSync(join(directory, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x" }, alternate: { model: "other/model-y" } }, preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"], reportingNotes: "Current note" } })));
 	assert.ok(beforeStart);
 	const first: StartEvent = { systemPromptOptions: { sections: {} } }; await beforeStart(first, ctx);
 	assert.match(first.systemPromptOptions.sections["agent-preferences"], /Current note/u);
@@ -83,7 +84,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		(request) => { requests.push([...request.messages]); return fauxAssistantMessage("Done"); },
 	]);
 	const registry = Durable.createRegistry();
-	registry.install(createAgentContribution({ source: "/abs/extensions/agent/index.ts" }).create({ durable: Durable, storageId: "shared-machine", cwd: directory, agentDir: directory, services: { modelRuntime: models } }));
+	registry.install(createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" }).create({ onClose() {}, durable: Durable, storageId: "shared-machine", cwd: directory, agentDir: directory, services: { modelRuntime: models } }));
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
 	harness.resume();
 	try {
@@ -106,7 +107,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 			assert.match(prompt, /other\/model-y/u);
 			assert.match(prompt, /never automatic fallback/u);
 		}
-		writeFileSync(agentPreferencesPath(directory), JSON.stringify({ version: 1, presets: { review: { model: "other/model-y" } } }));
+		writeFileSync(join(directory, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "other/model-y" } } })));
 		primaryProvider.appendResponses([
 			() => fauxAssistantMessage([fauxToolCall("agent_spawn", { preset: "review" })], { stopReason: "toolUse" }),
 			(request) => { requests.push([...request.messages]); return fauxAssistantMessage("Done"); },
@@ -121,24 +122,24 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		assert.deepEqual((await harness.snapshot(Durable.AgentDoc, replacement.conversationId, BACKGROUND_CONTEXT))?.model, { provider: "other", modelId: "model-y" });
 		assert.deepEqual((await harness.snapshot(Durable.AgentDoc, result.conversationId, BACKGROUND_CONTEXT))?.model, { provider: "acme", modelId: "model-x" });
 	} finally { await harness.close(BACKGROUND_CONTEXT); }
-	writeFileSync(agentPreferencesPath(directory), "malformed");
+	writeFileSync(join(directory, "harness.json"), "malformed");
 	const next: StartEvent = { systemPromptOptions: { sections: {} } }; await beforeStart(next, ctx);
-	assert.match(next.systemPromptOptions.sections["agent-preferences"], /unavailable/u);
+	assert.match(next.systemPromptOptions.sections["agent-preferences"], /Machine document is invalid/u);
 	assert.doesNotMatch(next.systemPromptOptions.sections["agent-preferences"], /Current note/u);
 });
 
 it("native local creation uses the common default, override, and refusal precedence without caller inheritance", async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "native-default-presets-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
-	const path = agentPreferencesPath(directory);
+	const path = join(directory, "harness.json");
 	const models = createModels();
 	const parent = fauxProvider({ provider: "acme", models: [{ id: "model-x" }] });
 	const worker = fauxProvider({ provider: "other", models: [{ id: "model-y" }] });
 	models.setProvider(parent.provider); models.setProvider(worker.provider);
-	const write = (enforceRoster = false) => writeFileSync(path, JSON.stringify({ version: 1, presets: { standard: { model: "other/model-y", thinkingLevel: "low", role: "Review", checkInMinutes: 2 } }, preferences: { defaultPreset: "standard", enforceRoster, ...(enforceRoster ? { excludedProviders: ["other"] } : {}) } }));
+	const write = (enforceRoster = false) => writeFileSync(path, JSON.stringify(machineConfig({ presets: { standard: { model: "other/model-y", thinkingLevel: "low", role: "Review", checkInMinutes: 2 } }, preferences: { defaultPreset: "standard", enforceRoster, ...(enforceRoster ? { excludedProviders: ["other"] } : {}) } })));
 	write();
 	const registry = Durable.createRegistry();
-	const extension = createAgentContribution({ source: "/abs/extensions/agent/index.ts" }).create({ durable: Durable, storageId: "native-default", cwd: directory, agentDir: directory, services: { modelRuntime: models } });
+	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" }).create({ onClose() {}, durable: Durable, storageId: "native-default", cwd: directory, agentDir: directory, services: { modelRuntime: models } });
 	registry.install(extension);
 	for (const name of ["agent_spawn", "agent_place", "agent_configure"]) assert.match(JSON.stringify(extension.tools?.find((tool) => tool.name === name)?.parameters), /standard/u);
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
@@ -175,18 +176,18 @@ it("native local creation uses the common default, override, and refusal precede
 		assert.ok(refused.role === "toolResult" && refused.isError);
 		assert.match(JSON.stringify(refused), /enforceRoster.*standard.*digest/u);
 	}
-	writeFileSync(path, JSON.stringify({ version: 1, presets: {} }));
+	writeFileSync(path, JSON.stringify(machineConfig({ presets: {} })));
 	const absentDefault = await run({});
 	assert.ok(absentDefault.role === "toolResult" && absentDefault.isError);
-	assert.match(JSON.stringify(absentDefault), /defaultPreset.*agent-preferences.json/u);
+	assert.match(JSON.stringify(absentDefault), /defaultPreset.*harness.json/u);
 	assert.deepEqual((await root.agent(BACKGROUND_CONTEXT)).model, { provider: "acme", modelId: "model-x" });
 	assert.equal(worker.state.callCount, 0, "idle children start no model work");
 });
 
 it("configure resolves a preset against its target and retains the snapshot across retries", { timeout: 30000 }, async (t) => {
 	const fixture = runtimeFixture(t);
-	const path = agentPreferencesPath(fixture.agentDir);
-	writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model: `${fixture.metadata.model.provider}/${fixture.metadata.model.modelId}`, thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } }));
+	const path = join(fixture.agentDir, "harness.json");
+	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: `${fixture.metadata.model.provider}/${fixture.metadata.model.modelId}`, thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } })));
 	const client = await acquireHost(fixture.metadata, { env: fixture.env("tool-round") }); trackHost(t, client.pid);
 	t.after(() => client.close());
 	const first = await client.request("configure", { preset: "review", thinkingLevel: "low", requestId: "preset-configure" }) as { outcome: string; after: { thinkingLevel: string }; selection: ExecutionSelection };
@@ -198,19 +199,19 @@ it("configure resolves a preset against its target and retains the snapshot acro
 	for (let index = 0; index < 65; index++) await client.request("configure", { name: `Name ${index}`, requestId: `another-configure-${index}` });
 	const replay = await client.request("configure", { preset: "review", thinkingLevel: "low", requestId: "preset-configure" }) as typeof first;
 	assert.deepEqual(replay.selection, first.selection);
-	await assert.rejects(client.request("configure", { preset: "review", requestId: "new-configure" }), /review.*agent-preferences.json/u);
+	await assert.rejects(client.request("configure", { preset: "review", requestId: "new-configure" }), /review.*harness.json/u);
 	const plain = await client.request("configure", { name: "Renamed", requestId: "plain-configure" }) as typeof first;
 	assert.equal(plain.outcome, "applied");
-	assert.equal(plain.selection.source.status, "unavailable");
+	assert.equal(plain.selection.source.status, "invalid");
 	assert.equal(plain.selection.origins.model, "retained");
 	assert.equal(plain.after.thinkingLevel, "low");
 });
 
 for (const method of ["resolve-agent", "place"] as const) it(`native ${method} replay retains its selection after a lost result, file edit, and target configure`, { timeout: 60000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });
-	const path = agentPreferencesPath(f.agentDir);
+	const path = join(f.agentDir, "harness.json");
 	const model = `${f.metadata.model.provider}/${f.metadata.model.modelId}`;
-	const writePreset = (thinkingLevel: string, checkInMinutes: number) => writeFileSync(path, JSON.stringify({ version: 1, presets: { review: { model, thinkingLevel, checkInMinutes, role: "Review sources" } } }));
+	const writePreset = (thinkingLevel: string, checkInMinutes: number) => writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model, thinkingLevel, checkInMinutes, role: "Review sources" } } })));
 	writePreset("low", 0);
 	const args = { preset: "review", prompt: "Review this input", senderIdentity: f.metadata.storageId, origin: "model", ...(method === "resolve-agent" ? { handle: "reviewer" } : { area: f.childCwd }) };
 	let caller = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, caller.pid);
