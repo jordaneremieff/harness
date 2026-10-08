@@ -170,6 +170,40 @@ function environmentValue(field: Field, value: unknown): string {
 	return field.type === "json" ? JSON.stringify(value) : String(value);
 }
 
+function outsideBounds(field: Field): Array<{ bound: string; value: unknown }> {
+	const cases: Array<{ bound: string; value: unknown }> = [];
+	if (field.min !== undefined) cases.push({ bound: "min", value: field.min - 1 });
+	if (field.max !== undefined) cases.push({ bound: "max", value: field.max + 1 });
+	if (field.minLength !== undefined && field.minLength > 0)
+		cases.push({ bound: "minLength", value: "s".repeat(field.minLength - 1) });
+	if (field.maxLength !== undefined)
+		cases.push({
+			bound: "maxLength",
+			value: field.type === "path" ? `/${"s".repeat(field.maxLength)}` : "s".repeat(field.maxLength + 1),
+		});
+	if (field.absolute) cases.push({ bound: "absolute", value: "relative" });
+	return cases;
+}
+
+function assertRejectedBound(module: SettingsModule, key: string, field: Field, value: unknown, source: string): void {
+	const f = fixture();
+	try {
+		const baseline = module.readSettings(f.options);
+		if (source === "file")
+			writeFileSync(f.path, JSON.stringify({ version: 1, [module.settings.slice]: { [key]: value } }));
+		else f.options.env = { [field.env]: environmentValue(field, value) };
+		const snapshot = module.readSettings(f.options);
+		assert.deepEqual(snapshot.values[key], baseline.values[key]);
+		assert.equal(record(snapshot, key).origin, "default");
+		assert.equal(record(snapshot, key).status, "invalid");
+		assert.deepEqual(snapshot.diagnostics, [
+			{ field: `${module.settings.slice}.${key}`, source, code: "invalid", message: messages.invalid },
+		]);
+	} finally {
+		f.close();
+	}
+}
+
 const extensionsRoot = fileURLToPath(new URL("../extensions/", import.meta.url));
 const declarations = readdirSync(extensionsRoot, { withFileTypes: true })
 	.filter((entry) => entry.isDirectory() && existsSync(join(extensionsRoot, entry.name, "settings.ts")))
@@ -186,6 +220,87 @@ for (const declaration of declarations) {
 		assert.equal(typeof module.readSettings, "function");
 		assert.equal(typeof module.publishSettings, "function");
 		const { settings } = module;
+		for (const [key, field] of Object.entries(settings.fields)) {
+			for (const { bound, value } of outsideBounds(field)) {
+				for (const source of field.secret ? ["env"] : ["env", "file"]) {
+					await t.test(`declared bound: ${key} ${bound} ${source}`, () => {
+						assertRejectedBound(module, key, field, value, source);
+					});
+				}
+			}
+		}
+		await t.test("unknown diagnostics stop at the exact limit with coverage", () => {
+			const f = fixture();
+			try {
+				const baseline = module.readSettings(f.options);
+				for (const count of [256, 257, 400]) {
+					const keys = Array.from({ length: count }, (_, index) => `unknown${index}`);
+					writeFileSync(
+						f.path,
+						JSON.stringify({ version: 1, [settings.slice]: Object.fromEntries(keys.map((key) => [key, true])) }),
+					);
+					const snapshot = module.readSettings(f.options);
+					assert.deepEqual(snapshot.values, baseline.values);
+					assert.deepEqual(snapshot.records, baseline.records);
+					assert.deepEqual(snapshot.diagnostics, [
+						...keys.slice(0, 256).map((key) => ({
+							field: `${settings.slice}.${key}`,
+							source: "file",
+							code: "unknown",
+							message: messages.unknown,
+						})),
+						...(count > 256
+							? [{ field: "coverage", source: "file", code: "coverage", message: messages.coverage }]
+							: []),
+					]);
+				}
+			} finally {
+				f.close();
+			}
+		});
+		await t.test("Unicode unknown key preserves publication records and diagnostics", () => {
+			const f = fixture();
+			try {
+				const field = Object.values(settings.fields)[0];
+				if (field) f.options.env = { [field.env]: "\u0000invalid" };
+				const section = { contractUnknown: true };
+				writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: section }));
+				const baseline = module.readSettings(f.options);
+				const prefix = "a".repeat(63);
+				writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: { ...section, [`${prefix}😀`]: true } }));
+				const snapshot = module.readSettings(f.options);
+				const bus = new Bus();
+				const publications: Snapshot[] = [];
+				bus.on(PUBLISH, (data) => publications.push(data as Snapshot));
+				const off = module.publishSettings(bus, f.options);
+				try {
+					assert.equal(publications.length, 1);
+					for (const result of [snapshot, publications[0]]) {
+						assert.deepEqual(result.records, baseline.records);
+						const unknown = result.diagnostics.find((diagnostic) =>
+							diagnostic.field.startsWith(`${settings.slice}.${prefix}`),
+						);
+						assert.ok(unknown);
+						assert.equal(unknown.field, `${settings.slice}.${prefix}`);
+						assert.doesNotMatch(unknown.field, /[\p{Cc}\p{Cf}\ud800-\udfff]/u);
+						assert.deepEqual(unknown, {
+							field: `${settings.slice}.${prefix}`,
+							source: "file",
+							code: "unknown",
+							message: messages.unknown,
+						});
+						assert.deepEqual(
+							result.diagnostics.filter((diagnostic) => diagnostic !== unknown),
+							baseline.diagnostics,
+						);
+					}
+				} finally {
+					off();
+				}
+			} finally {
+				f.close();
+			}
+		});
 		await t.test("defaults and metadata", () => {
 			const f = fixture();
 			try {

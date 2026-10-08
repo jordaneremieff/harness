@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -8,7 +8,11 @@ import { fileURLToPath } from "node:url";
 
 const sourceScript = join(dirname(fileURLToPath(import.meta.url)), "check-slices.mts");
 function installGate(scripts: string): void {
-	copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+	// Fixture roots have no dependency installation; use the same compiler as this test.
+	writeFileSync(
+		join(scripts, "check-slices.mts"),
+		readFileSync(sourceScript, "utf8").replace('"typescript"', JSON.stringify(import.meta.resolve("typescript"))),
+	);
 }
 
 test("ignores a tracked document deleted from the working tree", () => {
@@ -157,12 +161,85 @@ test("accepts tracked test files once a glob covers them", () => {
 import {
 	auditPillars,
 	auditSettings,
+	auditSliceImports,
 	checkSettingsReadme,
 	type Declaration,
 	environmentReads,
+	literalSpecifiers,
 	settingsReadme,
 	validateSettingsDeclaration,
 } from "./check-slices.mts";
+
+const moduleForms = [
+	["import declaration", (s: string) => `import { x } from /* boundary */ ${s};`],
+	["type import declaration", (s: string) => `import type { X } from /* boundary */ ${s};`],
+	["side-effect import", (s: string) => `import /* boundary */ ${s};`],
+	["export declaration", (s: string) => `export { x } from /* boundary */ ${s};`],
+	["export star", (s: string) => `export * from /* boundary */ ${s};`],
+	["import equals", (s: string) => `import x = require(/* boundary */ ${s});`],
+	["require call", (s: string) => `const x = () => require(/* boundary */ ${s});`],
+	["dynamic import", (s: string) => `const x = () => import(/* boundary */ ${s});`],
+	["import type node", (s: string) => `type X = import(/* boundary */ ${s}).X;`],
+] as const;
+
+for (const [name, form] of moduleForms) {
+	for (const quote of name === "side-effect import" ? ['"', "'"] : ['"', "'", "`"]) {
+		test(`literal specifiers: ${name} with ${quote}`, () => {
+			const root = "/fixture";
+			const file = join(root, "extensions/example/runtime.ts");
+			for (const [specifier, allowed] of [
+				["./local.ts", true],
+				["./nested/local.ts", true],
+				["node:fs", true],
+				["package", true],
+				["package/extensions/example/local.ts", true],
+				["../memory/settings.ts", false],
+				["./../memory/settings.ts", false],
+				["/absolute.ts", false],
+				["extensions/example/local.ts", false],
+				["package/extensions/memory/settings.ts", false],
+			] as const) {
+				const source = form(`${quote}${specifier}${quote}`);
+				assert.deepEqual(literalSpecifiers(source), [specifier]);
+				assert.equal(auditSliceImports(root, file, source).length, allowed ? 0 : 1, source);
+			}
+			for (const [consumer, target, allowed] of [
+				["suite.eval.mts", "../../evals/vitest-evals.mts", true],
+				["suite.test.mts", "../../evals/subjects/pi-sdk.mts", true],
+				["runtime.ts", "../../evals/vitest-evals.mts", false],
+				["suite.eval.mts", "../../evals/subjects/pi-sdk.mts", false],
+				["fixtures/nested.eval.mts", "../../../evals/vitest-evals.mts", false],
+			] as const) {
+				assert.equal(
+					auditSliceImports(root, join(root, "extensions/example", consumer), form(`${quote}${target}${quote}`)).length,
+					allowed ? 0 : 1,
+				);
+			}
+		});
+	}
+}
+
+test("literal extraction ignores comments, ordinary strings, and computed specifiers", () => {
+	assert.deepEqual(
+		literalSpecifiers(`
+		// import x from "../memory/settings.ts";
+		/* export * from "../memory/settings.ts"; */
+		const prose = 'import "../memory/settings.ts"';
+		const template = \`import "../memory/settings.ts"\`;
+		import(path); require(path);
+		import("../" + path); require("../" + path);
+		import(\`../\${path}\`); require(\`../\${path}\`);
+		object.require("../memory/settings.ts");
+	`),
+		[],
+	);
+});
+
+test("literal extraction decodes escapes before applying slice rules", () => {
+	const source = 'import("\\x2e\\x2e/memory/settings.ts")';
+	assert.deepEqual(literalSpecifiers(source), ["../memory/settings.ts"]);
+	assert.equal(auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", source).length, 1);
+});
 
 function pillarFixtureRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "check-slices-pillars-"));
@@ -631,15 +708,36 @@ test("malformed named declaration exports fail the configuration gate", async ()
 	}
 });
 
-test("settings modules cannot import extension entrypoints", async () => {
+for (const [name, form] of moduleForms) {
+	for (const quote of name === "side-effect import" ? ['"', "'"] : ['"', "'", "`"]) {
+		test(`settings entrypoint guard: ${name} with ${quote}`, async () => {
+			const f = declarationFixture();
+			try {
+				const declaration = readFileSync(f.declarationPath, "utf8");
+				writeFileSync(f.runtime, "export const x = 1; export type X = string; export default x;\n");
+				writeFileSync(f.declarationPath, `${form(`${quote}./index.ts${quote}`)}\n${declaration}`);
+				assert.deepEqual(await auditSettings(f.root, [f.runtime, f.declarationPath]), [
+					"extensions/example/settings.ts: cannot load valid plain settings declaration and local functions",
+				]);
+			} finally {
+				rmSync(f.root, { recursive: true, force: true });
+			}
+		});
+	}
+}
+
+test("settings entrypoint guard ignores computed paths and non-code import text", async () => {
 	const f = declarationFixture();
 	try {
-		writeFileSync(f.runtime, 'throw new Error("entrypoint executed");\n');
-		writeFileSync(f.declarationPath, 'import "./index.ts"; export const settings = {};\n');
-		const failures = await auditSettings(f.root, [f.runtime, f.declarationPath]);
-		assert.ok(
-			failures.some((failure) => failure.includes("cannot load valid plain settings declaration and local functions")),
+		writeFileSync(
+			f.declarationPath,
+			`${readFileSync(f.declarationPath, "utf8")}\n
+			// import "./index.ts";
+			const prose = 'import "./index.ts"';
+			const load = (path: string) => import(path);
+			`,
 		);
+		assert.deepEqual(await auditSettings(f.root, [f.runtime, f.declarationPath]), []);
 	} finally {
 		rmSync(f.root, { recursive: true, force: true });
 	}

@@ -17,8 +17,7 @@
 //      `test` script of package.json, so a slice that owns a new top-level
 //      directory cannot ship tests that `npm test` silently never runs.
 //
-// Dependency-free by design (node builtins only), mirroring the established
-// pattern of skills/harness/scripts/validate-skill.mts.
+// Literal module specifiers are extracted with the TypeScript compiler API.
 //
 // Exit status: 0 when all rules hold, 1 listing every violation otherwise.
 
@@ -26,6 +25,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const extensionsRoot = join(root, "extensions");
@@ -75,38 +75,67 @@ const walk = (dir: string) => {
 };
 if (main && existsSync(extensionsRoot)) walk(extensionsRoot);
 
-const specifierPattern = /(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']/g;
+export function literalSpecifiers(source: string): string[] {
+	const file = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const specifiers: string[] = [];
+	const add = (node: ts.Node | undefined) => {
+		if (node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))) specifiers.push(node.text);
+	};
+	const visit = (node: ts.Node): void => {
+		if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) add(node.moduleSpecifier);
+		else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference))
+			add(node.moduleReference.expression);
+		else if (
+			ts.isCallExpression(node) &&
+			(node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+				(ts.isIdentifier(node.expression) && node.expression.text === "require"))
+		)
+			add(node.arguments[0]);
+		else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) add(node.argument.literal);
+		ts.forEachChild(node, visit);
+	};
+	visit(file);
+	return specifiers;
+}
 
-for (const file of sourceFiles) {
+function evaluationImport(root: string, file: string, sliceDir: string, target: string | undefined): boolean {
+	return (
+		dirname(file) === sliceDir &&
+		((file.endsWith(".eval.mts") && target === join(root, "evals", "vitest-evals.mts")) ||
+			(file.endsWith(".test.mts") && target === join(root, "evals", "subjects", "pi-sdk.mts")))
+	);
+}
+
+export function auditSliceImports(root: string, file: string, source: string): string[] {
+	const violations: string[] = [];
+	const fail = (message: string) => violations.push(message);
 	const rel = relative(root, file);
 	const sliceName = rel.split(/[\\/]/)[1];
-	const sliceDir = join(extensionsRoot, sliceName);
-	const source = readFileSync(file, "utf8");
-	for (const match of source.matchAll(specifierPattern)) {
-		const specifier = match[1];
+	const sliceDir = join(root, "extensions", sliceName);
+	literalSpecifiers(source).forEach((specifier) => {
 		// Literal './' and '../' spellings are resolved against the importing
 		// file before comparison, so a './' prefix cannot dodge the escape
 		// check (e.g. './../sibling/index.ts').
 		const isRelative = specifier.startsWith("./") || specifier.startsWith("../");
 		const normalized = isRelative ? relative(sliceDir, resolve(dirname(file), specifier)) : specifier;
 		const target = isRelative ? resolve(dirname(file), specifier) : undefined;
-		const evaluationContract =
-			dirname(file) === sliceDir &&
-			((file.endsWith(".eval.mts") && target === join(root, "evals", "vitest-evals.mts")) ||
-				(file.endsWith(".test.mts") && target === join(root, "evals", "subjects", "pi-sdk.mts")));
+		const evaluationContract = evaluationImport(root, file, sliceDir, target);
+		const cross = normalized.match(/\/extensions\/([^/]+)\//);
 		if (isRelative && normalized.startsWith("..") && !evaluationContract) {
 			fail(`${rel}: import "${specifier}" escapes the extension slice`);
 		} else if (specifier.startsWith("/")) {
 			fail(`${rel}: absolute import "${specifier}"`);
 		} else if (/^extensions\//.test(normalized)) {
 			fail(`${rel}: import "${specifier}" reaches into extensions/ by path`);
-		} else {
-			const cross = normalized.match(/\/extensions\/([^/]+)\//);
-			if (cross && cross[1] !== sliceName) {
-				fail(`${rel}: import "${specifier}" reaches into extension "${cross[1]}"`);
-			}
+		} else if (cross && cross[1] !== sliceName) {
+			fail(`${rel}: import "${specifier}" reaches into extension "${cross[1]}"`);
 		}
-	}
+	});
+	return violations;
+}
+
+for (const file of sourceFiles) {
+	for (const violation of auditSliceImports(root, file, readFileSync(file, "utf8"))) fail(violation);
 }
 
 // --- configuration declaration and documentation contract -------------
@@ -321,8 +350,8 @@ async function loadSettingsDeclaration(
 	slice: string,
 ): Promise<Declaration> {
 	const source = readFileSync(declarationPath, "utf8");
-	const importsEntrypoint = [...source.matchAll(specifierPattern)].some((match) => {
-		const target = resolve(dirname(declarationPath), match[1]);
+	const importsEntrypoint = literalSpecifiers(source).some((specifier) => {
+		const target = resolve(dirname(declarationPath), specifier);
 		return target.startsWith(`${join(repositoryRoot, "extensions")}/`) && target.endsWith("/index.ts");
 	});
 	if (importsEntrypoint) throw new Error("Settings module imports an entrypoint");
