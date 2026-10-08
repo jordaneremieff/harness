@@ -1,5 +1,4 @@
-import { publishSettings } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { publishSettings } from "./settings.ts";
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { mkdirSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -209,7 +208,7 @@ function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
 
 export default function registerAgentExtension(pi: ExtensionAPI): void {
 	const settingsAgentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
-	const disposeFactorySettings = publishSettings(pi.events, settings, { agentDir: settingsAgentDir });
+	const disposeFactorySettings = publishSettings(pi.events, { agentDir: settingsAgentDir });
 	const toolDisplay = collectToolDisplay(pi.events);
 	pi.events.emit(
 		"durable:contribution",
@@ -217,7 +216,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			source: fileURLToPath(import.meta.url),
 			configureSettings: (host) => {
 				disposeFactorySettings();
-				const disposeNativeSettings = publishSettings(pi.events, settings, { agentDir: host.agentDir });
+				const disposeNativeSettings = publishSettings(pi.events, { agentDir: host.agentDir });
 				host.onClose(disposeNativeSettings);
 			},
 			dispatch: (method, params, context) => resolveAgentControlDispatch()(method, params, context),

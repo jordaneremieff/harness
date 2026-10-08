@@ -1783,9 +1783,10 @@ stop and retry. Intentional disconnects and unmarked storage do not relaunch.
 
 The agent section of the optional `<agentDir>/harness.json` machine document
 contains execution presets and delegation preferences. The package-level
-[settings contract](../../settings/README.md) owns reading, source evidence,
-validation, and environment precedence. Ordinary hosts use `PI_AGENT_DIR` or
-public `getAgentDir()`; native and standalone hosts supply their own directory.
+[settings contract](../../docs/conventions/extension-config.md) defines source evidence,
+validation, and environment precedence. The extension implements its own reader.
+Ordinary hosts use `PI_AGENT_DIR` or public `getAgentDir()`; native and standalone
+hosts supply their own directory.
 `PI_HARNESS_FILE` selects another machine document. The repository supplies
 portable examples, not a machine roster. The reader discovers no project files
 and follows no include chains. Pi settings, providers, credentials, and trust
@@ -1802,9 +1803,9 @@ section. Its fields are `idleMinutes`, `checkInMinutes`, `presets`, and
 `preferences`. All fields are optional. Each field selects a present environment
 value, then its document value, then its safe default. Structured environment
 values use JSON. An invalid selected field uses its default, not a lower-priority
-file value; other fields remain usable. Shared diagnostics identify rejected
-sources and unknown fields. The shared reader bounds the document and JSON
-structure as described in its README.
+file value; other fields remain usable. Diagnostics identify rejected
+sources and unknown fields. The local reader bounds the document and JSON
+structure as specified in the settings contract.
 
 The extension owns the closed structure of each preset and preference object.
 The presets map contains at most 64 presets. Names have 1 through 64 characters

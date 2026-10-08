@@ -5,8 +5,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { THINKING_LEVELS, configurationModel } from "./configuration.ts";
 
-import { readSettings, type Environment, type Source } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { readSettings, type Environment, type Source } from "./settings.ts";
 import { name, presetSchema, AgentPreferencesSchema, validPresets, validPreferences, type AgentPreferences, type ExecutionPreset } from "./preference-schema.ts";
 export type { AgentPreferences } from "./preference-schema.ts";
 export function presetParameter(snapshot: PreferenceSnapshot) {
@@ -101,7 +100,7 @@ function catalogDiagnostics(document: AgentPreferences, catalog: PreferenceCatal
 
 /** Read effective delegation settings; file status never substitutes for field validation. */
 export function readAgentPreferences(agentDir = process.env.PI_AGENT_DIR ?? getAgentDir(), catalog?: PreferenceCatalog, env?: Environment): PreferenceSnapshot {
-	const snapshot = readSettings(settings, { agentDir, env });
+	const snapshot = readSettings({ agentDir, env });
 	const document: AgentPreferences = { version: 1, presets: snapshot.values.presets, preferences: snapshot.values.preferences };
 	const diagnostics: PreferenceDiagnostic[] = snapshot.diagnostics.map((fact) => ({ field: fact.field, message: `${fact.source}: ${fact.message}` }));
 	try { diagnostics.push(...catalogDiagnostics(document, catalog)); }

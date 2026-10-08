@@ -1,6 +1,5 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { readSettings } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { readSettings } from "./settings.ts";
 /**
  * agent/host-process: one exclusive durable host process per storage.
  *
@@ -56,7 +55,7 @@ export type HostRuntimeFactory = () => HostRuntime | Promise<HostRuntime>;
 
 export interface RunHostOptions {
 	readonly metadata: HostMetadata;
-	/** Idle window in milliseconds. Defaults from shared `agent.idleMinutes` settings. */
+	/** Idle window in milliseconds. Defaults from local `agent.idleMinutes` settings. */
 	readonly idleMs?: number;
 	/** Environment used for the idle default; defaults to `process.env`. */
 	readonly env?: Readonly<Record<string, string | undefined>>;
@@ -133,13 +132,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Resolve the idle window from explicit input or the shared agent settings. */
+/** Resolve the idle window from explicit input or the local agent settings. */
 export function resolveIdleMs(idleMs?: number, env: Readonly<Record<string, string | undefined>> = process.env, agentDir = env.PI_AGENT_DIR ?? getAgentDir()): number {
 	if (idleMs !== undefined) {
 		if (!Number.isFinite(idleMs) || idleMs < 0 || idleMs > IDLE_MINUTES_MAX * 60_000) throw new Error(`idleMs must be a finite nonnegative number no greater than ${IDLE_MINUTES_MAX} minutes`);
 		return idleMs;
 	}
-	return readSettings(settings, { agentDir, env }).values.idleMinutes * 60_000;
+	return readSettings({ agentDir, env }).values.idleMinutes * 60_000;
 }
 
 function createClaimFile(path: string, record: ClaimRecord): void {

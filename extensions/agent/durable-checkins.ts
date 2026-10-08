@@ -1,7 +1,6 @@
 /** Durable owner check-ins for unanswered tool admissions. */
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { readSettings, type Environment } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { readSettings, type Environment } from "./settings.ts";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { AgentDeliveryDoc, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
@@ -14,7 +13,7 @@ export const CHECK_IN_MAX_MINUTES = 35791;
 export function checkInMinutes(value: unknown, origin: DeliveryOrigin = "model", agentDir = process.env.PI_AGENT_DIR ?? getAgentDir(), env?: Environment): number {
 	if (value === undefined) {
 		if (origin !== "model") return 0;
-		return readSettings(settings, { agentDir, env }).values.checkInMinutes;
+		return readSettings({ agentDir, env }).values.checkInMinutes;
 	}
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > CHECK_IN_MAX_MINUTES)
 		throw new TypeError(`checkInMinutes must be a finite number from 0 through ${CHECK_IN_MAX_MINUTES}`);

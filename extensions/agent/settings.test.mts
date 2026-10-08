@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import * as Durable from "@earendil-works/pi-durable";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { collectSettings, readSettings, settingsPublication } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { readSettings, publishSettings, type SettingsPublication } from "./settings.ts";
 import {
 	readAgentPreferences,
 	parsePreferenceSnapshot,
@@ -63,7 +63,7 @@ it("selects each agent field from injected environment, document, or default wit
 		PI_AGENT_PREFERENCES: '{"defaultPreset":"override"}',
 		PI_AGENT_PRESETS: '{"override":{"model":"acme/model-x","thinkingLevel":"low"}}',
 	};
-	const snapshot = readSettings(settings, { agentDir, env });
+	const snapshot = readSettings({ agentDir, env });
 	assert.equal(snapshot.values.idleMinutes, 1.25);
 	assert.equal(snapshot.values.checkInMinutes, 30);
 	assert.ok(snapshot.diagnostics.some((fact) => fact.field === "agent.checkInMinutes" && fact.source === "env"));
@@ -85,7 +85,7 @@ it("selects each agent field from injected environment, document, or default wit
 	assert.equal(selection.values.thinkingLevel, "low");
 	assert.equal(selection.origins.model, "defaultPreset");
 	assert.deepEqual(
-		settingsPublication(snapshot).records.map((record) => record.key),
+		snapshot.records.map((record) => record.key),
 		["idleMinutes", "checkInMinutes", "presets", "preferences"],
 	);
 });
@@ -105,7 +105,7 @@ it("keeps valid structured settings and env presets usable beside invalid select
 			},
 		}),
 	);
-	let snapshot = readSettings(settings, { agentDir, env: {} });
+	let snapshot = readSettings({ agentDir, env: {} });
 	assert.equal(snapshot.values.idleMinutes, 5);
 	assert.equal(snapshot.values.checkInMinutes, 0.25);
 	assert.deepEqual(snapshot.values.presets, {});
@@ -127,12 +127,12 @@ it("keeps valid structured settings and env presets usable beside invalid select
 	assert.match(renderAgentPreferences(preferences), /Preset "standard"/u);
 	rmSync(join(agentDir, "harness.json"));
 	assert.match(renderAgentPreferences(readAgentPreferences(agentDir, undefined, env)), /Preset "standard"/u);
-	snapshot = readSettings(settings, { agentDir, env: { PI_AGENT_PRESETS: "not json" } });
+	snapshot = readSettings({ agentDir, env: { PI_AGENT_PRESETS: "not json" } });
 	assert.equal(snapshot.records.find((record) => record.key === "presets")?.status, "invalid");
 	assert.deepEqual(snapshot.values.presets, {});
 });
 
-it("retains structured settings within shared byte bounds without a second document limit", (t) => {
+it("retains structured settings within contract byte bounds without a second document limit", (t) => {
 	const agentDir = fixture(t);
 	const presets = Object.fromEntries(Array.from({ length: 28 }, (_, i) => [`p${i}`, { model: "acme/model-x", role: "x".repeat(2000), notes: "y".repeat(2000) }]));
 	const input = JSON.stringify(presets);
@@ -140,6 +140,90 @@ it("retains structured settings within shared byte bounds without a second docum
 	const snapshot = readAgentPreferences(agentDir, undefined, { PI_AGENT_PRESETS: input });
 	assert.equal(Object.keys(snapshot.document?.presets ?? {}).length, 28);
 	assert.deepEqual(parsePreferenceSnapshot(snapshot), snapshot);
+});
+
+it("rejects unbounded or unsafe structured input without leaking parser or validator text", (t) => {
+	const agentDir = fixture(t);
+	const valid = { standard: { model: "acme/model-x", notes: "line one\nline two 😀" } };
+	assert.deepEqual(readSettings({ agentDir, env: { PI_AGENT_PRESETS: JSON.stringify(valid) } }).values.presets, valid);
+	const inputs = [
+		" ".repeat(131073),
+		JSON.stringify({ standard: { model: "acme/model-x", role: "\u0000" } }),
+		JSON.stringify({ standard: { model: "acme/model-x", notes: "\ud800" } }),
+		JSON.stringify({ "hidden\u200b": { model: "acme/model-x" } }),
+		`${"[".repeat(33)}0${"]".repeat(33)}`,
+		JSON.stringify(Array.from({ length: 10001 }, () => 0)),
+		'{"standard":',
+	];
+	for (const input of inputs) {
+		const snapshot = readSettings({ agentDir, env: { PI_AGENT_PRESETS: input } });
+		assert.deepEqual(snapshot.values.presets, {});
+		assert.deepEqual(snapshot.diagnostics, [{
+			field: "agent.presets", source: "env", code: "invalid",
+			message: "Selected input is invalid; the safe default is in effect.",
+		}]);
+	}
+});
+
+it("isolates default objects, rejects non-JSON numbers, and bounds unknown diagnostics", (t) => {
+	const agentDir = fixture(t);
+	const snapshot = readSettings({ agentDir, env: {} });
+	snapshot.values.presets.modified = { model: "acme/model-x" };
+	assert.deepEqual(readSettings({ agentDir, env: {} }).values.presets, {});
+	for (const raw of ["", " 1", "01", "+1", "NaN", "Infinity", "1e999", "-1", "35792"]) {
+		const result = readSettings({ agentDir, env: { PI_AGENT_IDLE_MINUTES: raw } });
+		assert.equal(result.values.idleMinutes, 5);
+		assert.equal(result.records[0].status, "invalid");
+	}
+	assert.equal(readSettings({ agentDir, env: { PI_AGENT_IDLE_MINUTES: "1.25e1" } }).values.idleMinutes, 12.5);
+	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({ version: 1, agent: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`extra${i}`, true])) }));
+	const crowded = readSettings({ agentDir, env: {} });
+	assert.equal(crowded.diagnostics.length, 257);
+	assert.equal(crowded.diagnostics.at(-1)?.code, "coverage");
+});
+
+it("keeps bounded document evidence and environment values when a document is invalid", (t) => {
+	const agentDir = fixture(t);
+	const path = join(agentDir, "alternate.json");
+	const input = '{"version":1,"agent":{"idleMinutes":2}}';
+	writeFileSync(path, input);
+	const options = { agentDir, env: { PI_HARNESS_FILE: "alternate.json" } };
+	const snapshot = readSettings(options);
+	assert.equal(snapshot.source.path, path);
+	assert.equal(snapshot.source.digest, createHash("sha256").update(input).digest("hex"));
+	assert.equal(snapshot.values.idleMinutes, 2);
+	for (const bytes of [Buffer.from("\ufeff{}"), Buffer.from([0xff]), Buffer.from("{}")]) {
+		writeFileSync(path, bytes);
+		const invalid = readSettings({ agentDir, env: { ...options.env, PI_AGENT_IDLE_MINUTES: "3" } });
+		assert.equal(invalid.source.status, "invalid");
+		assert.equal(invalid.source.digest, createHash("sha256").update(bytes).digest("hex"));
+		assert.equal(invalid.values.idleMinutes, 3);
+		assert.equal(invalid.diagnostics[0].code, "document");
+	}
+	const invalidPath = readSettings({ agentDir, env: { PI_HARNESS_FILE: "" } });
+	assert.equal(invalidPath.source.status, "unavailable");
+	assert.equal(invalidPath.diagnostics[0].field, "PI_HARNESS_FILE");
+});
+
+it("publishes fresh protocol data without local values and stops after disposal", (t) => {
+	const agentDir = fixture(t);
+	const events = bus();
+	const publications: SettingsPublication[] = [];
+	events.on("harness:settings:publish", (value) => publications.push(value as SettingsPublication));
+	const dispose = publishSettings(events, { agentDir, env: {} });
+	assert.equal(publications.length, 1);
+	assert.equal(Object.hasOwn(publications[0], "values"), false);
+	assert.equal(publications[0].source.status, "missing");
+	for (const request of [null, {}, { version: 2 }, { version: "1" }]) events.emit("harness:settings:request", request);
+	assert.equal(publications.length, 1);
+	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({ version: 1, agent: { idleMinutes: 2 } }));
+	events.emit("harness:settings:request", { version: 1 });
+	assert.equal(publications.length, 2);
+	assert.equal(publications[1].records[0].value, 2);
+	dispose();
+	dispose();
+	events.emit("harness:settings:request", { version: 1 });
+	assert.equal(publications.length, 2);
 });
 
 it("replaces the factory publisher with the native host directory and keeps cleanup ownership separate", (t) => {
@@ -173,8 +257,18 @@ it("replaces the factory publisher with the native host directory and keeps clea
 		registerMessageRenderer() {},
 		registerToolRenderer() {},
 	} as unknown as ExtensionAPI);
-	const collector = collectSettings(events);
-	t.after(() => collector.dispose());
+	let publications: SettingsPublication[] = [];
+	const stopObserving = events.on("harness:settings:publish", (value) => publications.push(value as SettingsPublication));
+	t.after(stopObserving);
+	const collector = {
+		refresh() {
+			publications = [];
+			events.emit("harness:settings:request", { version: 1 });
+			assert.ok(publications.length <= 1, "Only one agent publisher owns the lifecycle");
+		},
+		snapshots: () => publications,
+	};
+	collector.refresh();
 	assert.equal(collector.snapshots()[0].source.path, join(ordinaryDir, "harness.json"));
 	let dispose: (() => void) | undefined;
 	assert.ok(contribution);
