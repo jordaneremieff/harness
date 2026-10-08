@@ -15,13 +15,11 @@ import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { publishSettings, readSettings, type SettingsBus } from "../../settings/index.ts";
-import { settings, type StashSettings } from "./settings.ts";
+import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import {
 	CAPACITY_NOTICE_HEADER,
 	capacityConfig,
 	capacityDirectiveLines,
-	invalidCapacityFields,
 } from "./capacity.ts";
 import {
 	buildDistillPrompt,
@@ -603,7 +601,7 @@ async function capacityCommand(
 	}
 	let config: ReturnType<typeof capacityConfig>;
 	try {
-		config = capacityConfig(readSettings(settings, { agentDir: host.agentDir }).values);
+		config = capacityConfig(readSettings({ agentDir: host.agentDir }).values);
 	} catch (error) {
 		throw new Error(error instanceof Error ? error.message : String(error));
 	}
@@ -697,9 +695,8 @@ export function stashDurableContribution(
 			disposeFactorySettings();
 			const publicationOptions = {
 				agentDir: host.agentDir,
-				validate: (snapshot: { values: StashSettings }) => invalidCapacityFields(snapshot.values),
 			};
-			const dispose = publishSettings(bus, settings, publicationOptions);
+			const dispose = publishSettings(bus, publicationOptions);
 			host.onClose(dispose);
 			return createStashDurableExtension(host);
 		},
@@ -757,7 +754,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 			try {
 				const destination = params.checkpoint
 					? await checkpointDirectory(
-							readSettings(settings, { agentDir: host.agentDir }).values.checkpointDir,
+							readSettings({ agentDir: host.agentDir }).values.checkpointDir,
 							storeDir,
 						)
 					: storeDir;
@@ -1081,7 +1078,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		hooks: [
 			host.durable.hook(host.durable.GenerationTask, {
 				beforeRequest: async (request, api, context) => {
-					const config = capacityConfig(readSettings(settings, { agentDir: host.agentDir }).values);
+					const config = capacityConfig(readSettings({ agentDir: host.agentDir }).values);
 					if (!config.enabled) return undefined;
 					const conversation = String(api.conversationId);
 					const doc = await api.snapshot(capacityDoc, api.conversationId, context);

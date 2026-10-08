@@ -8,17 +8,10 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createEventBus, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
-import {
-	checkSettingsReadme,
-	collectSettings,
-	readSettings,
-	SETTINGS_PUBLISH,
-	type SettingsPublication,
-} from "../../settings/index.ts";
+import { readSettings, SETTINGS_PUBLISH, type SettingsPublication, type SettingsBus, settings } from "./settings.ts";
 import { capacityConfig, invalidCapacityFields } from "./capacity.ts";
 import type { StashDurableContribution, StashDurableHost } from "./durable.ts";
 import registerStash from "./index.ts";
-import { settings } from "./settings.ts";
 import { listStashes } from "./store.ts";
 
 let root: string;
@@ -53,7 +46,7 @@ async function document(stash: Record<string, unknown>) {
 	await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, stash }));
 }
 function read(env: Record<string, string | undefined> = {}) {
-	return readSettings(settings, { agentDir, env });
+	return readSettings({ agentDir, env });
 }
 
 test("declared defaults and file/environment selection preserve derived path dependencies", async () => {
@@ -68,6 +61,7 @@ test("declared defaults and file/environment selection preserve derived path dep
 		intakeTokenBudget: undefined,
 	});
 	await document({ dir: "file-store", checkpointPercent: 60, decisionPercent: 75, intakeTokenBudget: 2000 });
+	assert.equal(read().values.checkpointDir, join(agentDir, "file-store", "checkpoints"));
 	snapshot = read({ PI_STASH_DIR: "env-store", PI_STASH_CHECKPOINT_PERCENT: "65" });
 	assert.equal(snapshot.values.dir, join(agentDir, "env-store"));
 	assert.equal(snapshot.values.checkpointDir, join(agentDir, "env-store", "checkpoints"));
@@ -122,7 +116,13 @@ test("invalid selected thresholds, budgets, and paths use defaults and name reje
 
 test("owning threshold validation rejects enabled relations and skips disabled observation", async () => {
 	await document({ checkpointPercent: 90, decisionPercent: 90 });
-	const values = read().values;
+	const raw = read();
+	assert.equal(
+		raw.diagnostics.some((issue) => issue.code === "relation"),
+		false,
+	);
+	assert.ok(raw.records.every((record) => record.status !== "invalid"));
+	const values = raw.values;
 	assert.deepEqual(invalidCapacityFields(values), ["checkpointPercent", "decisionPercent"]);
 	assert.throws(() => capacityConfig(values), /stash.checkpointPercent.*stash.decisionPercent/);
 	assert.deepEqual(invalidCapacityFields({ ...values, capacity: false }), []);
@@ -158,7 +158,7 @@ function factory() {
 test("ordinary factory publishes fresh relation diagnostics and releases its subscription", async () => {
 	await document({ checkpointPercent: 90, decisionPercent: 90 });
 	const { bus, shutdowns } = factory();
-	const collector = collectSettings(bus);
+	const collector = captureSettings(bus);
 	let publication = collector.snapshots()[0];
 	assert.ok(publication);
 	assert.equal(publication.source.path, join(agentDir, "harness.json"));
@@ -186,7 +186,7 @@ test("native creation replaces the ordinary publisher with the host agent direct
 		JSON.stringify({ version: 1, stash: { dir: "native-store", capacity: false } }),
 	);
 	const { bus, contribution, shutdowns } = factory();
-	const collector = collectSettings(bus);
+	const collector = captureSettings(bus);
 	assert.equal(
 		collector.snapshots()[0].records.find((record) => record.key === "dir")?.value,
 		join(agentDir, "ordinary-store"),
@@ -304,7 +304,55 @@ test("native tools use file settings and resolve checkpoint paths against their 
 	assert.doesNotMatch(message, /PI_STASH_CAPACITY=0/);
 });
 
-test("README table matches the passive declaration", async () => {
+test("README table lists each declared field and environment name", async () => {
 	const readme = await readFile(new URL("./README.md", import.meta.url), "utf8");
-	assert.equal(checkSettingsReadme(settings, readme), true);
+	for (const [key, field] of Object.entries(settings.fields)) {
+		assert.ok(readme.includes(`| ${key} | \`${field.env}\` |`));
+	}
+});
+
+function captureSettings(bus: SettingsBus) {
+	let publications: SettingsPublication[] = [];
+	const dispose = bus.on("harness:settings:publish", (value) => {
+		publications.push(value as SettingsPublication);
+	});
+	const refresh = () => {
+		publications = [];
+		bus.emit("harness:settings:request", { version: 1 });
+	};
+	refresh();
+	return { snapshots: () => publications, refresh, dispose };
+}
+
+test("zero thresholds are invalid for file and environment selections", async () => {
+	await document({ checkpointPercent: 0, decisionPercent: 0 });
+	const file = read();
+	assert.equal(file.values.checkpointPercent, 85);
+	assert.equal(file.values.decisionPercent, 90);
+	assert.deepEqual(
+		file.diagnostics.map((issue) => [issue.field, issue.source, issue.code]),
+		[
+			["stash.checkpointPercent", "file", "invalid"],
+			["stash.decisionPercent", "file", "invalid"],
+		],
+	);
+	await document({ checkpointPercent: 60, decisionPercent: 75 });
+	const env = read({ PI_STASH_CHECKPOINT_PERCENT: "0", PI_STASH_DECISION_PERCENT: "0" });
+	assert.equal(env.values.checkpointPercent, 85);
+	assert.equal(env.values.decisionPercent, 90);
+	assert.ok(
+		env.records
+			.filter((record) => record.type === "number")
+			.every((record) => record.status === "invalid" && record.origin === "default"),
+	);
+});
+test("invalid safe defaults throw only a field-naming declaration error", async () => {
+	const field = settings.fields.checkpointPercent as { default: number };
+	const original = field.default;
+	try {
+		field.default = 0;
+		assert.throws(() => read(), { message: "Invalid default for stash.checkpointPercent" });
+	} finally {
+		field.default = original;
+	}
 });

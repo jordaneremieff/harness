@@ -4,8 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, type Dirent, type Stats } from "node:fs";
 import { chmod, type FileHandle, link, lstat, mkdir, open, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { readSettings, type Environment } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { readSettings, type Environment } from "./settings.ts";
 import {
 	isStashState,
 	parseFrontmatter,
@@ -71,7 +70,7 @@ export interface StashEntry {
 }
 
 export function resolveStoreDir(env: Environment, agentDir: string): string {
-	return readSettings(settings, { agentDir, env }).values.dir;
+	return readSettings({ agentDir, env }).values.dir;
 }
 
 function hasCode(error: unknown, code: string): boolean {

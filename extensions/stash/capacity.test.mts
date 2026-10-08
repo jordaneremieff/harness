@@ -3,8 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { readSettings, type Environment } from "../../settings/index.ts";
-import { settings } from "./settings.ts";
+import { readSettings, type Environment } from "./settings.ts";
 import {
 	SessionManager,
 	type BoundaryResult,
@@ -27,7 +26,7 @@ import { transcriptEntries } from "./test-fixtures.mts";
 const agentDir = mkdtempSync(join(tmpdir(), "stash-capacity-settings-"));
 after(() => rmSync(agentDir, { recursive: true, force: true }));
 function capacityConfig(env: Environment) {
-	return capacityFromValues(readSettings(settings, { agentDir, env }).values);
+	return capacityFromValues(readSettings({ agentDir, env }).values);
 }
 const defaults = capacityConfig({});
 

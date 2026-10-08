@@ -411,7 +411,7 @@ apply.
 ### Machine settings
 
 The passive `settings.ts` declaration uses the
-[settings contract](../../settings/README.md): environment input, then the
+[settings contract](../../docs/conventions/extension-config.md): environment input, then the
 `stash` section in `<agentDir>/harness.json`, then the declared default.
 Invalid selected scalar input uses its safe default and reports the rejected
 source. It never falls through to a file value beneath an invalid override.

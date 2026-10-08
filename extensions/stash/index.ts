@@ -14,15 +14,13 @@ import {
 	getAgentDir,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { publishSettings, readSettings } from "../../settings/index.ts";
-import { settings, type StashSettings } from "./settings.ts";
+import { publishSettings, readSettings } from "./settings.ts";
 import {
 	CAPACITY_STATE,
 	capacityConfig,
 	capacityReset,
 	capacityStatus,
 	capacityTurnEnd,
-	invalidCapacityFields,
 } from "./capacity.ts";
 import { prepareDistillSource } from "./distill.ts";
 import { stashDurableContribution } from "./durable.ts";
@@ -93,7 +91,7 @@ type StashExtensionApi = Pick<
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
 
 async function checkpointDirectory(): Promise<string> {
-	const { dir: handovers, checkpointDir: directory } = readSettings(settings, { agentDir: getAgentDir() }).values;
+	const { dir: handovers, checkpointDir: directory } = readSettings({ agentDir: getAgentDir() }).values;
 	if (directory === handovers) throw new Error("The checkpoint directory must differ from stash.dir.");
 	await mkdir(directory, { recursive: true, mode: 0o700 });
 	const checkpointPath = await realpath(directory);
@@ -505,9 +503,8 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	const { registerTool, publish } = toolDisplayPublisher(pi);
 	const publicationOptions = {
 		agentDir: getAgentDir(),
-		validate: (snapshot: { values: StashSettings }) => invalidCapacityFields(snapshot.values),
 	};
-	const disposeSettings = publishSettings(pi.events, settings, publicationOptions);
+	const disposeSettings = publishSettings(pi.events, publicationOptions);
 	pi.on("session_shutdown", disposeSettings);
 	pi.events.emit(
 		"durable:contribution",
@@ -516,7 +513,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	let capacityErrorReported = false;
 	pi.on("turn_end", (event, ctx) => {
 		try {
-			return capacityTurnEnd(event, ctx, capacityConfig(readSettings(settings, { agentDir: getAgentDir() }).values));
+			return capacityTurnEnd(event, ctx, capacityConfig(readSettings({ agentDir: getAgentDir() }).values));
 		} catch (error) {
 			if (capacityErrorReported) return;
 			capacityErrorReported = true;
@@ -824,7 +821,7 @@ function capacityCommand(
 	}
 	let message: string;
 	try {
-		const config = capacityConfig(readSettings(settings, { agentDir: getAgentDir() }).values);
+		const config = capacityConfig(readSettings({ agentDir: getAgentDir() }).values);
 		if (parts[1] === "reset") pi.appendEntry(CAPACITY_STATE, capacityReset(ctx));
 		message = capacityStatus(ctx, config);
 	} catch (error) {
