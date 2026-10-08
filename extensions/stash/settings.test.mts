@@ -8,7 +8,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createEventBus, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
-import { readSettings, SETTINGS_PUBLISH, type SettingsPublication, type SettingsBus, settings } from "./settings.ts";
+import { readSettings, publishSettings, SETTINGS_PUBLISH, type SettingsPublication, type SettingsBus, settings } from "./settings.ts";
 import { capacityConfig, invalidCapacityFields } from "./capacity.ts";
 import type { StashDurableContribution, StashDurableHost } from "./durable.ts";
 import registerStash from "./index.ts";
@@ -358,5 +358,41 @@ test("invalid safe defaults throw only a field-naming declaration error", async 
 		assert.throws(() => read(), { message: "Invalid default for stash.checkpointPercent" });
 	} finally {
 		field.default = original;
+	}
+});
+
+test("unknown diagnostic fields stay bounded and preserve Unicode and publication data", async () => {
+	const section = { capacity: "invalid" };
+	await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, stash: section }));
+	const baseline = readSettings({ agentDir, env: {} });
+	const prefix = "stash.";
+	const cases = [
+		[`${"x".repeat(63)}😀`, `${prefix}${"x".repeat(63)}`],
+		[`${"x".repeat(62)}😀`, `${prefix}${"x".repeat(62)}😀`],
+		["x".repeat(64), `${prefix}${"x".repeat(64)}`],
+		[`${"x".repeat(64)}\ud800`, `${prefix}<invalid-key>`],
+		["bad\u0000key", `${prefix}<invalid-key>`],
+	] as const;
+	for (const [key, expected] of cases) {
+		await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, stash: { ...section, [key]: true } }));
+		const events = createEventBus();
+		const publications: SettingsPublication[] = [];
+		const off = events.on("harness:settings:publish", (value) => publications.push(value as SettingsPublication));
+		const stop = publishSettings(events, { agentDir, env: {} });
+		try {
+			assert.equal(publications.length, 1);
+			const publication = publications[0];
+			assert.deepEqual(publication.records, baseline.records);
+			assert.deepEqual(publication.diagnostics.filter((issue) => issue.code !== "unknown"), baseline.diagnostics);
+			const unknown = publication.diagnostics.filter((issue) => issue.code === "unknown");
+			assert.equal(unknown.length, 1);
+			assert.equal(unknown[0].field, expected);
+			assert.ok(unknown[0].field.slice(prefix.length).length <= 64);
+			assert.doesNotMatch(unknown[0].field, /[\p{Cc}\p{Cf}\ud800-\udfff]/u);
+			assert.equal(unknown[0].source, "file");
+		} finally {
+			stop();
+			off();
+		}
 	}
 });
