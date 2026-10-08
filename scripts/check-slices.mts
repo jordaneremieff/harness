@@ -6,7 +6,7 @@
 //      index.ts with a default-export factory, README.md, and at least one
 //      colocated *.test.mts;
 //   2. no extension imports a sibling or escapes its slice except through the
-//      documented package-level evaluation interfaces in colocated suites/tests;
+//      documented settings entrypoint or evaluation interfaces in suites/tests;
 //   3. no hardcoded counts of tests, tools, or files in tracked docs
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation");
 //   4. pillar corpus contract: strict frontmatter on every entry, README as
@@ -25,7 +25,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkSettingsReadme, type Declaration } from "../settings/index.ts";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const extensionsRoot = join(root, "extensions");
@@ -90,7 +91,8 @@ for (const file of sourceFiles) {
 			dirname(file) === sliceDir &&
 			((file.endsWith(".eval.mts") && target === join(root, "evals", "vitest-evals.mts")) ||
 				(file.endsWith(".test.mts") && target === join(root, "evals", "subjects", "pi-sdk.mts")));
-		if (isRelative && normalized.startsWith("..") && !evaluationContract) {
+		const settingsContract = target === join(root, "settings", "index.ts");
+		if (isRelative && normalized.startsWith("..") && !evaluationContract && !settingsContract) {
 			fail(`${rel}: import "${specifier}" escapes the extension slice`);
 		} else if (specifier.startsWith("/")) {
 			fail(`${rel}: absolute import "${specifier}"`);
@@ -104,6 +106,104 @@ for (const file of sourceFiles) {
 		}
 	}
 }
+
+// --- configuration declaration and documentation contract -------------
+
+function configurationSource(repositoryRoot: string, file: string): boolean {
+	const path = relative(join(repositoryRoot, "extensions"), file).replaceAll("\\", "/");
+	return (
+		!/\.(test|eval)\.mts$/.test(path) &&
+		!/(?:^|\/)(?:fixtures|test-fixtures)\//.test(path) &&
+		!/(?:^|\/)[^/]*-fixture\.(ts|mts)$/.test(path)
+	);
+}
+const contextVariables = new Set(["PI_AGENT_DIR", "PI_AGENT_SESSIONS_DIR", "PI_MANAGED_INSTALL_ROOT", "PI_SESSION_ID"]);
+const configurationVariable = (name: string) => !contextVariables.has(name) && !/^PI_.*_TEST_/.test(name);
+// Lexical detection covers direct and injected env access, not arbitrary aliases.
+export function environmentReads(source: string): string[] {
+	const pattern = /(?:\benv|\bprocess\s*\.\s*env|\))\s*(?:\.\s*(PI_[A-Z0-9_]+)|\[\s*["'](PI_[A-Z0-9_]+)["']\s*\])/g;
+	return [...new Set([...source.matchAll(pattern)].map((match) => match[1] ?? match[2]).filter(configurationVariable))];
+}
+
+function hasSettingsReader(repositoryRoot: string, runtime: string[]): boolean {
+	return runtime.some((file) => {
+		const source = readFileSync(file, "utf8");
+		return (
+			/\breadSettings\s*\(/.test(source) &&
+			[...source.matchAll(specifierPattern)].some(
+				(match) => resolve(dirname(file), match[1]) === join(repositoryRoot, "settings", "index.ts"),
+			)
+		);
+	});
+}
+async function loadSettingsDeclaration(
+	repositoryRoot: string,
+	declarationPath: string,
+	slice: string,
+): Promise<Declaration> {
+	const source = readFileSync(declarationPath, "utf8");
+	const importsEntrypoint = [...source.matchAll(specifierPattern)].some((match) => {
+		const target = resolve(dirname(declarationPath), match[1]);
+		return target.startsWith(`${join(repositoryRoot, "extensions")}/`) && target.endsWith("/index.ts");
+	});
+	if (
+		importsEntrypoint ||
+		/\b(?:readSettings|publishSettings|registerTool|registerCommand)\s*\(/.test(source) ||
+		environmentReads(source).length
+	)
+		throw new Error("Active declaration module");
+	const module = await import(pathToFileURL(declarationPath).href);
+	const declaration: Declaration = module.settings;
+	if (!declaration || declaration.slice !== slice || !declaration.fields)
+		throw new Error("Declaration export mismatch");
+	return declaration;
+}
+
+export async function auditSettings(repositoryRoot: string, files: string[]): Promise<string[]> {
+	const violations: string[] = [];
+	const sliceNames = [
+		...new Set(files.map((file) => relative(join(repositoryRoot, "extensions"), file).split(/[\\/]/)[0])),
+	];
+	for (const slice of sliceNames) {
+		const directory = join(repositoryRoot, "extensions", slice);
+		const runtime = files.filter(
+			(file) => file.startsWith(`${directory}/`) && configurationSource(repositoryRoot, file),
+		);
+		const reads = runtime.flatMap((file) =>
+			environmentReads(readFileSync(file, "utf8")).map((name) => ({ file, name })),
+		);
+		const declarationPath = join(directory, "settings.ts");
+		const readmePath = join(directory, "README.md");
+		const readme = existsSync(readmePath) ? readFileSync(readmePath, "utf8") : "";
+		if (!existsSync(declarationPath)) {
+			// Undeclared consumers still require owning README documentation.
+			violations.push(
+				...reads
+					.filter(({ name }) => !readme.includes(`\`${name}\``))
+					.map(({ file, name }) => `${relative(repositoryRoot, file)}: ${name} is missing from the owning README`),
+			);
+			continue;
+		}
+		try {
+			const declaration = await loadSettingsDeclaration(repositoryRoot, declarationPath, slice);
+			if (!checkSettingsReadme(declaration, readme))
+				violations.push(
+					`extensions/${slice}/README.md: configuration table differs from settings.ts; use settingsReadme(settings)`,
+				);
+			violations.push(
+				...reads.map(
+					({ file, name }) => `${relative(repositoryRoot, file)}: direct ${name} read bypasses readSettings`,
+				),
+			);
+			if (!hasSettingsReader(repositoryRoot, runtime))
+				violations.push(`extensions/${slice}: declared settings lack a readSettings consumer`);
+		} catch {
+			violations.push(`extensions/${slice}/settings.ts: cannot load passive named settings declaration`);
+		}
+	}
+	return violations;
+}
+for (const violation of await auditSettings(root, sourceFiles)) fail(violation);
 
 // --- rule 3: no hardcoded counts in tracked docs -----------------------
 

@@ -7,6 +7,12 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const sourceScript = join(dirname(fileURLToPath(import.meta.url)), "check-slices.mts");
+function installGate(scripts: string): void {
+	copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+	const settings = join(dirname(scripts), "settings");
+	mkdirSync(settings, { recursive: true });
+	copyFileSync(join(dirname(sourceScript), "../settings/index.ts"), join(settings, "index.ts"));
+}
 
 test("ignores a tracked document deleted from the working tree", () => {
 	const root = mkdtempSync(join(tmpdir(), "check-slices-deletion-"));
@@ -15,7 +21,7 @@ test("ignores a tracked document deleted from the working tree", () => {
 		const extension = join(root, "extensions", "example");
 		mkdirSync(scripts, { recursive: true });
 		mkdirSync(extension, { recursive: true });
-		copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+		installGate(scripts);
 		writeFileSync(join(extension, "index.ts"), "export default function () {}\n");
 		writeFileSync(join(extension, "README.md"), "# Example\n");
 		writeFileSync(join(extension, "index.test.mts"), "// fixture\n");
@@ -38,7 +44,7 @@ test("flags dot-prefixed relative specifiers that escape the slice", () => {
 	try {
 		const scripts = join(root, "scripts");
 		mkdirSync(scripts, { recursive: true });
-		copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+		installGate(scripts);
 		for (const name of ["a", "b"]) {
 			const slice = join(root, "extensions", name);
 			mkdirSync(slice, { recursive: true });
@@ -70,7 +76,7 @@ test("permits only the documented evaluation consumers and producer paths", () =
 		mkdirSync(scripts, { recursive: true });
 		mkdirSync(join(slice, "fixtures"), { recursive: true });
 		mkdirSync(join(root, "evals", "subjects"), { recursive: true });
-		copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+		installGate(scripts);
 		writeFileSync(join(slice, "index.ts"), "export default function () {}\n");
 		writeFileSync(join(slice, "README.md"), "# Example\n");
 		writeFileSync(join(slice, "index.test.mts"), "// fixture\n");
@@ -106,14 +112,14 @@ function testGlobFixtureRoot(globs: string[]): string {
 	mkdirSync(scripts, { recursive: true });
 	mkdirSync(extension, { recursive: true });
 	mkdirSync(join(root, "feature"), { recursive: true });
-	copyFileSync(sourceScript, join(scripts, "check-slices.mts"));
+	installGate(scripts);
 	writeFileSync(join(extension, "index.ts"), "export default function () {}\n");
 	writeFileSync(join(extension, "README.md"), "# Example\n");
 	writeFileSync(join(extension, "index.test.mts"), "// fixture\n");
 	writeFileSync(join(root, "feature", "thing.test.mts"), "// fixture\n");
 	writeFileSync(
 		join(root, "package.json"),
-		`${JSON.stringify({ name: "fixture", scripts: { test: `node --test ${globs.map((g) => `"${g}"`).join(" ")}` } }, null, 2)}\n`,
+		`${JSON.stringify({ name: "fixture", type: "module", scripts: { test: `node --test ${globs.map((g) => `"${g}"`).join(" ")}` } }, null, 2)}\n`,
 	);
 	execFileSync("git", ["init", "-q"], { cwd: root });
 	execFileSync("git", ["add", "."], { cwd: root });
@@ -151,7 +157,8 @@ test("accepts tracked test files once a glob covers them", () => {
 	}
 });
 
-import { auditPillars } from "./check-slices.mts";
+import { auditPillars, auditSettings, environmentReads } from "./check-slices.mts";
+import { defineSettings, settingsReadme, stringSetting } from "../settings/index.ts";
 
 function pillarFixtureRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "check-slices-pillars-"));
@@ -421,5 +428,150 @@ test("reordering README rows is not a violation", () => {
 		assert.equal(result.readmeProjection, "");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("only the settings public entrypoint is a permitted package escape", () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		const runtime = join(root, "extensions/example/runtime.ts");
+		for (const [specifier, allowed] of [
+			["../../settings/index.ts", true],
+			["./../../settings/index.ts", true],
+			["../../settings/private.ts", false],
+			["../../settings/index.test.mts", false],
+			["../../scripts/check-slices.mts", false],
+			["../other/settings.ts", false],
+		] as const) {
+			writeFileSync(runtime, `import "${specifier}";\n`);
+			const result = spawnSync(process.execPath, [join(root, "scripts/check-slices.mts")], {
+				cwd: root,
+				encoding: "utf8",
+			});
+			assert.equal(result.status, allowed ? 0 : 1, result.stderr);
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("configuration access detection covers direct and injected lexical spellings", () => {
+	assert.deepEqual(
+		environmentReads(`
+		process.env.PI_EXAMPLE_ONE;
+		process.env["PI_EXAMPLE_TWO"];
+		env.PI_EXAMPLE_THREE;
+		env['PI_EXAMPLE_FOUR'];
+		(options.env ?? process.env).PI_EXAMPLE_FIVE;
+		process.env.PI_AGENT_DIR; env.PI_AGENT_SESSIONS_DIR;
+		env.PI_MANAGED_INSTALL_ROOT; env.PI_SESSION_ID;
+		process.env.PI_EXAMPLE_TEST_ROOT;
+	`),
+		["PI_EXAMPLE_ONE", "PI_EXAMPLE_TWO", "PI_EXAMPLE_THREE", "PI_EXAMPLE_FOUR", "PI_EXAMPLE_FIVE"],
+	);
+});
+
+function declarationFixture() {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	const directory = join(root, "extensions/example");
+	const runtime = join(directory, "index.ts");
+	const declarationPath = join(directory, "settings.ts");
+	const declaration = defineSettings("example", { name: stringSetting({ description: "Name.", default: "safe" }) });
+	writeFileSync(
+		declarationPath,
+		'import { defineSettings, stringSetting } from "../../settings/index.ts";\nexport const settings = defineSettings("example", { name: stringSetting({ description: "Name.", default: "safe" }) });\n',
+	);
+	writeFileSync(
+		runtime,
+		'import { readSettings } from "../../settings/index.ts"; import { settings } from "./settings.ts"; export default function () { return readSettings(settings, { agentDir: "/fixture/agent", env: {} }); }\n',
+	);
+	writeFileSync(join(directory, "README.md"), settingsReadme(declaration));
+	return { root, directory, runtime, declarationPath };
+}
+
+test("declared slices require an exact README table and a shared reader", async () => {
+	const f = declarationFixture();
+	try {
+		assert.deepEqual(await auditSettings(f.root, [f.runtime, f.declarationPath]), []);
+		writeFileSync(join(f.directory, "README.md"), "# Drifted README\n");
+		writeFileSync(f.runtime, "export default function () {}\n");
+		const failures = await auditSettings(f.root, [f.runtime, f.declarationPath]);
+		assert.ok(failures.some((failure) => failure.includes("configuration table differs")));
+		assert.ok(failures.some((failure) => failure.includes("lack a readSettings consumer")));
+	} finally {
+		rmSync(f.root, { recursive: true, force: true });
+	}
+});
+
+test("a declaration does not authorize raw environment reads or undocumented extra settings", async () => {
+	const f = declarationFixture();
+	try {
+		writeFileSync(f.runtime, `${readFileSync(f.runtime, "utf8")}\nconst raw = env["PI_EXAMPLE_NAME"];\n`);
+		const failures = await auditSettings(f.root, [f.runtime, f.declarationPath]);
+		assert.ok(failures.some((failure) => failure.includes("direct PI_EXAMPLE_NAME read bypasses readSettings")));
+	} finally {
+		rmSync(f.root, { recursive: true, force: true });
+	}
+});
+
+test("undeclared slices retain owning README documentation checks", async () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		const runtime = join(root, "extensions/example/runtime.ts");
+		writeFileSync(runtime, "const value = env.PI_EXAMPLE_NAME;\n");
+		assert.equal((await auditSettings(root, [runtime])).length, 1);
+		writeFileSync(join(root, "extensions/example/README.md"), "# Example\n\nUse `PI_EXAMPLE_NAME`.\n");
+		assert.deepEqual(await auditSettings(root, [runtime]), []);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("configuration exclusions apply only to tests and explicitly named fixtures", async () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		const directory = join(root, "extensions/example");
+		mkdirSync(join(directory, "fixtures"));
+		const files = [
+			"foo.test.mts",
+			"foo.eval.mts",
+			"eval-fixture.ts",
+			"fixtures/foo.ts",
+			"runtime-fixture-support.ts",
+			"runtime.ts",
+		].map((name) => join(directory, name));
+		for (const file of files) writeFileSync(file, "const value = env.PI_EXAMPLE_NAME;\n");
+		const failures = await auditSettings(root, files);
+		assert.equal(failures.length, 2);
+		assert.ok(failures.some((failure) => failure.includes("runtime-fixture-support.ts")));
+		assert.ok(failures.some((failure) => failure.includes("runtime.ts")));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("malformed named declaration exports fail the configuration gate", async () => {
+	const f = declarationFixture();
+	try {
+		writeFileSync(f.declarationPath, "export const other = {};\n");
+		assert.ok(
+			(await auditSettings(f.root, [f.runtime, f.declarationPath])).some((failure) =>
+				failure.includes("cannot load passive named settings declaration"),
+			),
+		);
+	} finally {
+		rmSync(f.root, { recursive: true, force: true });
+	}
+});
+
+test("active declaration modules fail before the checker imports an entrypoint", async () => {
+	const f = declarationFixture();
+	try {
+		writeFileSync(f.runtime, 'throw new Error("entrypoint executed");\n');
+		writeFileSync(f.declarationPath, 'import "./index.ts"; export const settings = {};\n');
+		const failures = await auditSettings(f.root, [f.runtime, f.declarationPath]);
+		assert.ok(failures.some((failure) => failure.includes("cannot load passive named settings declaration")));
+	} finally {
+		rmSync(f.root, { recursive: true, force: true });
 	}
 });

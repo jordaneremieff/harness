@@ -32,6 +32,8 @@
 			"prompts/*.eval.mts",
 			"prompts/*.test.mts",
 			"scripts/**/*.mts",
+			"settings/**/*.ts",
+			"settings/**/*.mts",
 			"skills/**/*.mts"
 		]
 	},

@@ -1,23 +1,56 @@
 # Extension configuration conventions
 
-Repository-level convention for how extensions receive configuration. The
-standard mechanism is `PI_*` environment variables, documented in the owning
-extension README. Extension-specific defaults, validation, and precedence live
-there, not in a second variable registry. Keep secrets and local paths out of
-committed content.
+The package-level [settings contract](../../settings/README.md) owns machine
+configuration reading, validation, source evidence, and redacted publication.
+Extensions declare their fields once in a passive `settings.ts` module, export
+`settings`, and import only `settings/index.ts` across the slice boundary.
 
-## Environment variables
+## One machine document
 
-Every environment variable an extension reads is named `PI_*` and documented in
-that extension's README. A variable this harness reads is harness
-configuration, whatever external service it authenticates to; provider naming
-conventions from outside this repository do not apply.
+The optional strict UTF-8 JSON document is `<agentDir>/harness.json`, with
+`version: 1` and one section per slice. The host supplies the absolute agent
+directory. `PI_HARNESS_FILE` selects a different document: relative paths resolve
+against that directory. There is no project discovery, include chain, second
+configuration registry, watcher, migration, or retired-document reader.
 
-Configuration references for extensions that read environment variables, plus
-the agent extension's optional machine document:
+Per-field precedence is present `PI_*` environment input, document field, then
+safe default. Invalid selected input returns the safe default and names its
+rejected source in a diagnostic. It never uses the file value beneath an invalid
+environment override. Secrets are environment-only and appear as set/unset in
+public records. Do not put secrets, credentials, machine rosters, or personal
+paths in committed examples or declarations.
 
-- [Agent environment variables](../../extensions/agent/README.md#configuration-and-storage)
-  and [execution presets and delegation preferences](../../extensions/agent/README.md#execution-presets-and-delegation-preferences)
+## Declaration and documentation
+
+- Use `defineSettings` and the scalar or structured declaration helpers.
+- Name environment inputs `PI_*`; preserve existing names with explicit `env`
+  declarations where needed. Otherwise use the derived `PI_<SLICE>_<KEY>` name.
+- Derive runtime defaults with `derivedDefault` and the supplied agent directory
+  or declared nonsecret dependencies. Do not reproduce path-resolution policy.
+- Keep declaration modules and validators passive. They must not import extension
+  entrypoints, read files/environment, register tools, or start runtime work.
+- Runtime consumers call `readSettings(settings, { agentDir, env })` and use its
+  typed values. Ordinary and Durable entrypoints use the same declaration.
+- Generate README configuration tables with `settingsReadme(settings)` between
+  the checked markers. `npm run check` compares the projection, requires a shared
+  reader, and rejects raw configuration reads for slices with declarations.
+- Undeclared consumers retain owning README environment-name checks. This is not
+  a claim that every consumer uses the settings contract.
+- Extension-owned pure validators define structured settings such as execution
+  presets. Shared settings code must not import extension types or lifecycle
+  state. Runtime semantic checks such as model catalog validation remain owned
+  by that extension.
+
+The lexical gate checks direct process environment access and ordinary injected
+`env` dot/literal-bracket access, not arbitrary aliases. Context inputs
+`PI_AGENT_DIR`, `PI_AGENT_SESSIONS_DIR`, `PI_MANAGED_INSTALL_ROOT`, `PI_SESSION_ID`,
+and `PI_*_TEST_*` are not document settings. Tests and explicitly named fixture
+sources are excluded from configuration read checks, not from slice isolation.
+See the settings README for precise scope and publication limits.
+
+Configuration references remain owned by each slice:
+
+- [Agent](../../extensions/agent/README.md#configuration-and-storage)
 - [Brave](../../extensions/brave/README.md)
 - [Clipboard](../../extensions/clipboard/README.md)
 - [Memory](../../extensions/memory/README.md)
@@ -25,35 +58,23 @@ the agent extension's optional machine document:
 - [Policy](../../extensions/policy/README.md)
 - [Stash](../../extensions/stash/README.md)
 
-## Rules
+## Inspection and refresh
 
-- Name every extension-read variable in the `PI_*` namespace. No exceptions.
-- Document the variable in the extension README when the extension reads it.
-- Keep defaults derivable from the Pi agent directory
-  (`getAgentDir()`/`~/.pi/agent`) so tests and isolated deployments can
-  override the location.
-- Introduce no extension-owned configuration-file mechanism without amending
-  this convention first. Public Pi settings, provider configuration, project
-  trust, and MCP configuration remain host-owned surfaces; consuming them does
-  not create a harness configuration format.
-- The agent extension owns one optional strict JSON machine configuration
-  document for named execution presets and delegation preferences. Its default
-  path derives from the effective Pi agent directory with a documented
-  `PI_AGENT_*` override, `PI_AGENT_PREFERENCES_FILE`. The agent README defines its schema,
-  precedence, refresh, and error behavior. The repository carries the mechanism
-  and portable examples, never a machine roster. This mechanism has no
-  project-file discovery or include chain and does not replace host-owned Pi
-  settings, provider configuration, credentials, or trust.
+Owners publish redacted snapshots through the versioned public
+`harness:settings:publish` / `harness:settings:request` handshake. Publications
+contain settings records and diagnostics, never execution capabilities. Both
+ordinary factory load orders work through subscribe-before-emit. Owners clean up
+subscriptions on shutdown/reload. A fresh request reads current configuration,
+notifies no runtime to apply it, and proves no already-running runtime change.
+The shared module performs no writes or live reload.
 
-## Operator-controlled application state
+## Host and application state
+
+Public Pi settings, provider configuration, project trust, and MCP configuration
+remain host-owned. This document is the authority for harness configuration;
+introduce no extension-owned configuration-file mechanism.
 
 Policy definitions, proposals, approvals, and named tables/schemas are application
-state in policy's existing private event log. The explicit policy surfaces manage
-that state. Rules refer to approved binding names, not arbitrary files. This does
-not introduce ambient configuration-file discovery or a general file loader.
-
-## Contract
-
-- An extension documents every configuration variable it reads in its README.
-- This document is the only authority for the convention; a new mechanism
-  amends it before it ships.
+state in policy's private event log. Explicit policy surfaces manage that state.
+Rules refer to approved binding names, not arbitrary files. The machine document
+neither contains that state nor creates ambient file discovery.
