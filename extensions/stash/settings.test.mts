@@ -14,6 +14,10 @@ import type { StashDurableContribution, StashDurableHost } from "./durable.ts";
 import registerStash from "./index.ts";
 import { listStashes } from "./store.ts";
 
+test("configuration path resolution remains internal", async () => {
+	assert.equal("settingsPath" in (await import("./settings.ts")), false);
+});
+
 let root: string;
 let agentDir: string;
 const environmentKeys = [
