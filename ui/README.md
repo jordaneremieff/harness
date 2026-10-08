@@ -5,11 +5,10 @@ A local browser interface for ordinary Pi conversations and retained Durable age
 ## Start
 
 ```sh
-npm run ui:build
-npm run ui:start -- --cwd <project-directory>
+npm run ui
 ```
 
-Open the printed launch URL in your browser. The shell removes its launch fragment and exchanges it for an HttpOnly cookie. Opening a project or saved session is an explicit action; backend startup and tab refresh never create a primary or send model input.
+This builds the browser modules, starts the backend for the current directory, and opens the launch URL in the default browser. Pass flags after `--`, for example `npm run ui -- --cwd <project-directory>`. Without `--open`, start the backend alone with `npm run ui:build` and `npm run ui:start -- --cwd <project-directory>`, then open the printed launch URL yourself. Press Ctrl-C to stop; stopping closes browser links and the owned primary process, not Durable agent work. The shell removes its launch fragment and exchanges it for an HttpOnly cookie. Opening a project or saved session is an explicit action; backend startup and tab refresh never create a primary or send model input.
 
 Flags:
 
@@ -19,6 +18,7 @@ Flags:
 | `--port` | Local TCP port, default `4318`; `0` requests an assigned port. |
 | `--pi` | Pi executable, default `pi` on PATH. Arguments are supplied as an array, without a shell. |
 | `--state-dir` | Private UI state directory; default `<agentDir>/ui`. |
+| `--open` | Open the launch URL in the default browser through the macOS `open` command after the backend listens. A failed open leaves the backend running and prints the URL. |
 
 The backend uses native Node TypeScript stripping; runtime files contain only erasable TypeScript. Browser modules compile through `tsc` to `dist/web`; generated output is ignored. No bundler, framework, transpilation loader, or new runtime package is required.
 

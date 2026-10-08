@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -5,17 +6,28 @@ import { Registry, type RegistryOptions } from './registry.mts';
 import { LocalHttp, assetMap, type Asset } from './http.mts';
 import { ApiError } from './errors.mts';
 
-export type Options = {cwd: string; port: number; pi: string; stateDir?: string};
+export type Options = {cwd: string; port: number; pi: string; stateDir?: string; open?: boolean};
 /** CLI flags select process boundaries, never environment or arbitrary commands. */
 export function parseArgs(args: string[], cwd = process.cwd()): Options {
-  const result: Options = {cwd,port:4318,pi:'pi'};
+  const result: Options = {cwd,port:4318,pi:'pi',open:false};
   const flags = new Set(['--cwd','--port','--pi','--state-dir']);
-  for(let i=0;i<args.length;i+=2) {
-    const flag=args[i]; const value=args[i+1];
-    if(!flag || !flags.has(flag) || !value || value.startsWith('--')) throw new ApiError('invalid_request','Use --cwd, --port, --pi, and --state-dir with values.');
+  for(let i=0;i<args.length;i+=1) {
+    const flag=args[i];
+    if(flag==='--open') {result.open=true;continue;}
+    const value=args[i+1];
+    if(!flag || !flags.has(flag) || !value || value.startsWith('--')) throw new ApiError('invalid_request','Use --cwd, --port, --pi, and --state-dir with values, or --open.');
     assignFlag(result,flag,value);
+    i+=1;
   }
   return result;
+}
+/** Opens a URL in the default macOS browser through the system opener, without a shell. */
+export function openInBrowser(url: string): Promise<void> {
+  return new Promise((resolve,reject)=> {
+    const child=spawn('open',[url],{stdio:'ignore'});
+    child.once('error',reject);
+    child.once('exit',code=>code===0?resolve():reject(new Error(`The browser opener exited with code ${code}.`)));
+  });
 }
 function assignFlag(result: Options, flag: string, value: string) {
   if(flag==='--cwd') result.cwd=resolve(value);
@@ -52,9 +64,11 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     return {registry,http,launchUrl,close};
   } catch(error) {await registry.close().catch(()=>{});throw error;}
 }
-export async function main(args=process.argv.slice(2)) {
-  const app=await startBackend(parseArgs(args));
+export async function main(args=process.argv.slice(2), opener: (url: string) => Promise<void> = openInBrowser, injection: Parameters<typeof startBackend>[1] = {}) {
+  const options=parseArgs(args);
+  const app=await startBackend(options, injection);
   process.stdout.write(`${app.launchUrl}\n`);
+  if(options.open) await opener(app.launchUrl).catch(()=>process.stderr.write('The browser did not open; use the printed launch URL.\n'));
   let closing=false;
   const shutdown=()=> {
     if(closing) return;closing=true;
