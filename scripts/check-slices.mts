@@ -334,7 +334,11 @@ async function loadSettingsDeclaration(
 	return module.settings;
 }
 
-export async function auditSettings(repositoryRoot: string, files: string[]): Promise<string[]> {
+export async function auditSettings(
+	repositoryRoot: string,
+	files: string[],
+	onReadmeMismatch?: (path: string, projection: string) => void,
+): Promise<string[]> {
 	const violations: string[] = [];
 	const sliceNames = [
 		...new Set(files.map((file) => relative(join(repositoryRoot, "extensions"), file).split(/[\\/]/)[0])),
@@ -362,10 +366,12 @@ export async function auditSettings(repositoryRoot: string, files: string[]): Pr
 		const readme = existsSync(readmePath) ? readFileSync(readmePath, "utf8") : "";
 		try {
 			const declaration = await loadSettingsDeclaration(repositoryRoot, declarationPath, slice);
-			if (!checkSettingsReadme(declaration, readme))
+			if (!checkSettingsReadme(declaration, readme)) {
+				onReadmeMismatch?.(`extensions/${slice}/README.md`, settingsReadme(declaration));
 				violations.push(
-					`extensions/${slice}/README.md: configuration table differs from settings.ts; use settingsReadme(settings)`,
+					`extensions/${slice}/README.md: configuration table differs from settings.ts; apply the replacement printed above`,
 				);
+			}
 			violations.push(
 				...reads
 					.filter(({ name }) => !Object.values(declaration.fields).some((field) => field.env === name))
@@ -379,7 +385,14 @@ export async function auditSettings(repositoryRoot: string, files: string[]): Pr
 	}
 	return violations;
 }
-if (main) for (const violation of await auditSettings(root, sourceFiles)) fail(violation);
+if (main) {
+	const violations = await auditSettings(root, sourceFiles, (path, projection) => {
+		console.log(
+			`check-slices: paste-ready replacement for ${path}\n--- BEGIN ${path} configuration ---\n${projection}\n--- END ${path} configuration ---`,
+		);
+	});
+	for (const violation of violations) fail(violation);
+}
 
 // --- rule 3: no hardcoded counts in tracked docs -----------------------
 

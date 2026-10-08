@@ -512,6 +512,62 @@ test("declared slices permit local function bodies and require an exact README t
 	}
 });
 
+test("CLI prints complete replacements for every drifted settings table only", () => {
+	const f = declarationFixture();
+	try {
+		const gate = join(f.root, "scripts/check-slices.mts");
+		const table = readFileSync(join(f.directory, "README.md"), "utf8");
+		const run = () => spawnSync(process.execPath, [gate], { cwd: f.root, encoding: "utf8" });
+		const valid = run();
+		assert.equal(valid.status, 0, valid.stderr);
+		assert.equal(
+			valid.stdout,
+			"check-slices: ok — extension anatomy, slice isolation, settings declarations, doc counts, test globs\n",
+		);
+		assert.equal(valid.stderr, "");
+		writeFileSync(join(f.directory, "README.md"), "# Drifted table\n");
+		const second = join(f.root, "extensions/second");
+		mkdirSync(second);
+		writeFileSync(join(second, "index.ts"), "export default function () {}\n");
+		writeFileSync(join(second, "index.test.mts"), "// fixture\n");
+		writeFileSync(
+			join(second, "settings.ts"),
+			readFileSync(f.declarationPath, "utf8").replaceAll("example", "second").replaceAll("EXAMPLE", "SECOND"),
+		);
+		writeFileSync(join(second, "README.md"), "# Missing table\n");
+		const drifted = run();
+		assert.equal(drifted.status, 1, drifted.stderr);
+		const expected = ["example", "second"]
+			.map((slice) => {
+				const path = `extensions/${slice}/README.md`;
+				const projection = table.replaceAll("EXAMPLE", slice.toUpperCase());
+				assert.ok(
+					drifted.stderr.includes(
+						`${path}: configuration table differs from settings.ts; apply the replacement printed above`,
+					),
+				);
+				return `check-slices: paste-ready replacement for ${path}\n--- BEGIN ${path} configuration ---\n${projection}\n--- END ${path} configuration ---\n`;
+			})
+			.join("");
+		assert.equal(drifted.stdout, expected);
+		assert.doesNotMatch(drifted.stderr, /use settingsReadme/);
+		const imported = spawnSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`const { auditSettings } = await import(${JSON.stringify(gate)}); const failures = await auditSettings(${JSON.stringify(f.root)}, ${JSON.stringify([f.runtime, f.declarationPath, join(second, "settings.ts")])}); if (failures.length !== 2) throw new Error("Expected table mismatches");`,
+			],
+			{ cwd: f.root, encoding: "utf8" },
+		);
+		assert.equal(imported.status, 0, imported.stderr);
+		assert.equal(imported.stdout, "");
+		assert.equal(imported.stderr, "");
+	} finally {
+		rmSync(f.root, { recursive: true, force: true });
+	}
+});
+
 test("declared lexical environment reads pass and undeclared reads fail", async () => {
 	const f = declarationFixture();
 	try {
