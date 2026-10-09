@@ -20,12 +20,12 @@ export function outputPages(more: OutputContinuation, load: OutputLoader | undef
     pageIndex = index; nextOffset = page.nextOffset; offsets[index] = offset;
     if (offsets.length > 64) { offsets = offsets.slice(-64); pageIndex = offsets.length - 1; }
     setText(content, page.text); content.hidden = false;
-    setText(status, `Retained output · ${offset}–${offset + bytes} of ${page.totalBytes} bytes`);
+    setText(status, `retained output · ${offset}–${offset + bytes} of ${page.totalBytes} bytes`);
   }
   const active = (request: number) => request === version && current();
   const requestPage = async (offset: number, index: number) => {
     if (!load || busy || !current()) return;
-    busy = true; const request = ++version; setText(status, 'Loading output'); controls(); changed();
+    busy = true; const request = ++version; setText(status, 'loading output'); controls(); changed();
     try {
       const page = await load({...more, offset});
       if (!active(request)) return;
@@ -37,16 +37,16 @@ export function outputPages(more: OutputContinuation, load: OutputLoader | undef
       if (active(request)) { busy = false; controls(); changed(); }
     }
   };
-  const next = button('Load more output', () => { if (nextOffset !== null) void requestPage(nextOffset, pageIndex + 1); });
-  const previous = button('Previous output', () => { const index = pageIndex - 1; const offset = offsets[index]; if (offset !== undefined) void requestPage(offset, index); });
-  const restart = button('Start over', () => {
+  const next = button('more output', () => { if (nextOffset !== null) void requestPage(nextOffset, pageIndex + 1); });
+  const previous = button('previous output', () => { const index = pageIndex - 1; const offset = offsets[index]; if (offset !== undefined) void requestPage(offset, index); });
+  const restart = button('start over', () => {
     if (busy) return;
     version++; offsets = [more.offset]; pageIndex = -1; nextOffset = more.offset;
     content.hidden = true; setText(content, ''); setText(status, ''); controls(); changed();
   });
-  const copyPage = button('Copy page', () => { void copy(content.textContent ?? '', node); });
+  const copyPage = button('copy page', () => { void copy(content.textContent ?? '', node); });
   function controls(): void {
-    next.disabled = busy || !load || nextOffset === null; setText(next, pageIndex < 0 ? 'Load more output' : 'Next output');
+    next.disabled = busy || !load || nextOffset === null; setText(next, pageIndex < 0 ? 'more output' : 'next output');
     previous.hidden = pageIndex <= 0; previous.disabled = busy; restart.disabled = busy; restart.hidden = pageIndex < 0 && !busy;
     copyPage.hidden = content.hidden;
     if (!load) setText(status, 'More retained output is unavailable in this view.');

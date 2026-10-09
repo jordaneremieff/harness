@@ -23,7 +23,7 @@ function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
 function codeBlock(node: Extract<MarkdownBlock, {type: 'code'}>): HTMLElement {
   const wrap = element('div', 'code-block'); const pre = element('pre'); const code = element('code', undefined, node.text);
   if (node.language) code.dataset.language = node.language;
-  pre.append(code); wrap.append(button('Copy code', () => { void copy(node.text, wrap); }, 'copy'), pre); return wrap;
+  pre.append(code); wrap.append(button('copy', () => { void copy(node.text, wrap); }, 'copy'), pre); return wrap;
 }
 function tableBlock(node: Extract<MarkdownBlock, {type: 'table'}>): HTMLElement {
   const table = element('table'); const head = element('thead'); const row = element('tr');

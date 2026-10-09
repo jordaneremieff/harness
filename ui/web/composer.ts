@@ -160,7 +160,8 @@ export class Composer {
     byId(`${this.prefix}-composer`).hidden = !buffer; this.editor.disabled = !buffer;
     this.renderControls();
     byId<HTMLButtonElement>(`${this.prefix}-send`).disabled = !buffer || !this.ready || this.admissionBlocked || buffer.submitting || buffer.review || this.pendingBlocks(buffer) || !buffer.data.text.trim();
-    for (const node of this.modes()) node.setAttribute('aria-pressed', String(node.dataset.mode === mode));
+    const active = this.deliveryMode(mode);
+    for (const node of this.modes()) node.setAttribute('aria-pressed', String(node.dataset.mode === active));
     setText(byId(`${this.prefix}-save`), this.saveSummary(buffer));
   }
   private renderControls(): void {
@@ -169,14 +170,18 @@ export class Composer {
     if (this.prefix === 'agent') {
       byId('agent-send').hidden = unavailableAgent; byId('agent-acquire').hidden = this.sidebar || !unavailableAgent;
       this.editor.setAttribute('aria-label', unavailableAgent ? 'Draft for this agent' : 'Message to this agent');
-      this.editor.placeholder = unavailableAgent ? 'Draft for this agent' : 'Message this agent';
+      this.editor.placeholder = unavailableAgent ? 'draft only · agent not live' : '';
     }
     byId(`${this.prefix}-send`).setAttribute('aria-description', !this.connected ? 'Connection lost. Reconnect before sending.' : this.gated ? 'View change in progress. Wait before sending.' : !this.ready ? 'No compatible input operation is available.' : '');
     setText(byId(`${this.prefix}-caption`), this.modeCaption());
   }
   private modeCaption(): string {
     if (!this.ready || !this.connected || (this.prefix === 'primary' && !this.busy)) return '';
-    return this.current?.data.mode === 'steer' ? 'steer at next step' : 'follow-up after answer';
+    return this.deliveryMode(this.current?.data.mode) === 'steer' ? 'steer at next step' : 'follow-up after answer';
+  }
+  /** A primary prompt draft is delivered as steer while work runs; the saved mode changes on the next edit or send. */
+  private deliveryMode(mode?: string): string | undefined {
+    return this.prefix === 'primary' && this.busy && mode === 'prompt' ? 'steer' : mode;
   }
   private records(buffer?: Buffer): OperationView[] {
     const operations = this.operations.length ? this.operations : buffer?.lastOperation ? [buffer.lastOperation] : [];
@@ -400,7 +405,7 @@ export class Composer {
   async send(literal = false): Promise<void> {
     const buffer = this.current; if (!buffer || this.blocked(buffer)) return;
     this.commandMenu?.close();
-    const snapshot: Edit = {text: buffer.data.text, mode: this.prefix === 'primary' && !this.busy ? 'prompt' : buffer.data.mode, edit: buffer.data.edit};
+    const snapshot: Edit = {text: buffer.data.text, mode: this.prefix === 'primary' && !this.busy ? 'prompt' : this.deliveryMode(buffer.data.mode) ?? buffer.data.mode, edit: buffer.data.edit};
     const confirmation = {target: {...buffer.state.target}, revision: buffer.data.server.revision, mode: buffer.data.mode};
     if (!literal && this.prefix === 'primary' && this.hooks.unknownCommand(snapshot.text, () => {
       if (this.current === buffer && sameTarget(confirmation.target, buffer.state.target) && buffer.data.text === snapshot.text &&

@@ -37,17 +37,17 @@ test('entry headings use public head text and session changes keep collapsed ins
     const entry: EntryView = {id: 'entry', kind: 'custom', head: '<public-type>', data: {value: {text: 'data'}, truncated: false}};
     assert.equal(presentEntry(entry, context).textContent, '<public-type> · data');
     const generic = presentEntry({...entry, head: undefined}, context);
-    assert.equal(generic.textContent, 'Custom entry · data'); assert.equal(generic.children.length, 1);
+    assert.equal(generic.textContent, 'custom · data'); assert.equal(generic.children.length, 1);
     presentEntry({...entry, kind: 'model_change', data: {value: {provider: 'p', modelId: 'm'}, truncated: false}}, context);
     presentEntry({...entry, kind: 'thinking_level_change', data: {value: {thinkingLevel: 'high'}, truncated: false}}, context);
-    assert.deepEqual(inspectionTitles, ['<public-type> · data', 'Custom entry · data', 'Model changed to p/m', 'Thinking changed to high']);
+    assert.deepEqual(inspectionTitles, ['<public-type> · data', 'custom · data', 'model changed to p/m', 'thinking changed to high']);
     assert.equal(sources[0](), JSON.stringify({text: 'data'}));
     const omitted = presentEntry({...entry, head: 'message', data: {value: {values: ['<script>']}, truncated: true, omittedBytes: 42}}, context);
-    assert.equal(omitted.textContent, 'Message entry · valuesOutput omitted by host · 42 bytes');
+    assert.equal(omitted.textContent, 'message · valuesOutput omitted by host · 42 bytes');
     assert.equal(sources.at(-1)?.(), JSON.stringify({values: ['<script>']}));
     const fields = presentEntry({...entry, head: undefined, data: {value: {a: 1, b: 2, c: 3, d: 4, e: 5}, truncated: false}}, context);
-    assert.equal(fields.textContent, 'Custom entry · a, b, c, d, …');
+    assert.equal(fields.textContent, 'custom · a, b, c, d, …');
     const multiline = presentEntry({...entry, head: undefined, data: {value: 'first line\n  second', truncated: false}}, context);
-    assert.equal(multiline.textContent, 'Custom entry · first line second');
+    assert.equal(multiline.textContent, 'custom · first line second');
   } finally { if (old) Object.defineProperty(globalThis, 'document', old); else Reflect.deleteProperty(globalThis, 'document'); }
 });

@@ -41,16 +41,19 @@ for (const [name, page, status] of [
   Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: Node});
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {activeElement: null, createElement: (tag: string) => new Node(tag), createDocumentFragment: () => new Node('fragment')}});
   globalThis.fetch = async url => new Response(JSON.stringify({ok: true, data: String(url).includes('/api/projects') ? {items: [], total: 0, omitted: 0, nextCursor: null, observedAt: saved.observedAt} : page}), {status: 200, headers: {'content-type': 'application/json'}});
-  const modal = {token: 1, open: () => { body.replaceChildren(); return body; }, owns: (token: number) => token === 1, actions: (...buttons: Node[]) => body.append(...buttons), error: (error: unknown) => { throw error; }};
+  const modal = {node: {dataset: {} as Record<string, string>}, token: 1, open: () => { body.replaceChildren(); return body; }, owns: (token: number) => token === 1, actions: (...buttons: Node[]) => body.append(...buttons), error: (error: unknown) => { throw error; }};
   try {
     const picker = new ProjectPicker({modal: modal as unknown as Modal, snapshot: () => ({launchCwd: '/project', primaries: []}) as unknown as Bootstrap, primary: () => undefined, selection: async () => {}, reload: async () => {}});
-    picker.open(); const next = descendants(body).find(node => node.textContent === 'Continue'); assert.ok(next); next.click();
+    picker.open(); assert.equal(modal.node.dataset.variant, 'picker', 'pickers open as the top-anchored panel');
+    const next = descendants(body).find(node => node.textContent === 'Continue'); assert.ok(next); next.click();
     await new Promise<void>(resolve => setImmediate(resolve));
     const nodes = descendants(body); const search = nodes.find(node => node.id === 'picker-search'); assert.ok(search);
     const label = nodes.find(node => node.tag === 'label' && node.htmlFor === search.id); assert.ok(label);
     assert.equal(label.className, 'sr-only'); assert.equal(label.textContent, 'Search saved sessions');
     const heading = body.children.findIndex(node => node.textContent === 'Resume a saved session');
-    assert.equal(body.children[heading + 1], label); assert.equal(body.children[heading + 2], search);
+    const line = body.children[heading + 1]; assert.ok(line); assert.equal(line.className, 'palette-input');
+    assert.equal(line.children[0]?.textContent, '›'); assert.equal(line.children[0]?.attributes['aria-hidden'], 'true');
+    assert.equal(line.children[1], label); assert.equal(line.children[2], search);
     const coverage = nodes.find(node => node.id === 'picker-coverage'); assert.ok(coverage);
     assert.equal(coverage.className, 'secondary'); assert.equal(coverage.attributes['aria-live'], 'polite');
     assert.equal(coverage.textContent, status);
@@ -74,7 +77,7 @@ test('project loading retains its list surface and autofocus exposes the start o
   globalThis.fetch = async () => response;
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new Node(tag)}});
   const path = `/projects/${'long-project-'.repeat(24)}`;
-  const modal = {token: 1, open: () => body, owns: (token: number) => token === 1, actions: (...buttons: Node[]) => body.append(...buttons), error: (error: unknown) => { throw error; }};
+  const modal = {node: {dataset: {} as Record<string, string>}, token: 1, open: () => body, owns: (token: number) => token === 1, actions: (...buttons: Node[]) => body.append(...buttons), error: (error: unknown) => { throw error; }};
   try {
     const picker = new ProjectPicker({modal: modal as unknown as Modal, snapshot: () => ({launchCwd: path, primaries: []}) as unknown as Bootstrap, primary: () => undefined, selection: async () => {}, reload: async () => {}});
     picker.open();

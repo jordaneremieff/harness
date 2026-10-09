@@ -18,7 +18,7 @@ export class Modal {
       focus.focus();
     });
     this.node.addEventListener('click', event => {
-      if (this.node.dataset.variant !== 'menu' || event.target !== this.node) return;
+      if (!['menu', 'palette'].includes(this.node.dataset.variant ?? '') || event.target !== this.node) return;
       const box = this.node.getBoundingClientRect();
       if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) this.cancel();
     });

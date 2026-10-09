@@ -187,6 +187,10 @@ test('a clean same-target snapshot updates saved text and mode', () => {
   assert.equal(f.composer.editor.value, 'remote'); assert.equal(f.composer.state?.draft.revision, 2); assert.equal(f.composer.unsaved, false);
   assert.equal(f.node('modes').children[0]?.attrs.get('aria-pressed'), 'true');
 });
+test('a busy primary shows a prompt-mode draft as steer, the mode it delivers', () => {
+  const f = fixture(); f.connect(state('a', draft(2, 'queued words', 'prompt'))); void f.composer.send(); f.composer.availability(true, true, true);
+  assert.equal(f.node('modes').children[0]?.attrs.get('aria-pressed'), 'true'); assert.equal(f.node('modes').children[1]?.attrs.get('aria-pressed'), 'false');
+});
 test('stale save retains both exact copies from the error without a receipt fetch', async () => {
   const f = fixture(); f.connect(); f.composer.setText(' local\n '); const sending = f.composer.send();
   const call = f.pick('PUT', '/draft'); f.calls.splice(f.calls.indexOf(call), 1);

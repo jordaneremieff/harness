@@ -6,6 +6,11 @@ import type { Modal } from './modal.ts';
 import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, type SessionList } from './picker-state.ts';
 import { operation, request } from './transport.ts';
 
+/** A picker field reads as a prompt line: a '›' gutter, the input, and a screen-reader label. */
+function promptLine(control: {label: HTMLLabelElement; field: HTMLElement}): HTMLElement {
+  const line = element('div', 'palette-input'); const prompt = element('span', 'palette-prompt', '›'); prompt.setAttribute('aria-hidden', 'true');
+  control.label.className = 'sr-only'; line.append(prompt, control.label, control.field); return line;
+}
 function projectPage(previous: RecentProjectPage | undefined, page: RecentProjectPage, append: boolean): RecentProjectPage {
   return {...page, items: append ? [...(previous?.items ?? []), ...page.items] : page.items};
 }
@@ -24,6 +29,7 @@ export class ProjectPicker {
   private begin(title: string): {body: HTMLElement; token: number; signal: AbortSignal} {
     this.pending.abort(); this.pending = new AbortController();
     const body = this.ctx.modal.open(title, () => { this.pending.abort(); this.ctx.modal.close(); }, () => this.pending.abort());
+    this.ctx.modal.node.dataset.variant = 'picker';
     return {body, token: this.ctx.modal.token, signal: this.pending.signal};
   }
   open(): void {
@@ -40,7 +46,7 @@ export class ProjectPicker {
       });
     };
     const progress = element('p', 'secondary'); progress.setAttribute('role', 'status');
-    body.append(directory.label, directory.field, error, progress);
+    body.append(promptLine(directory), error, progress);
     const launch = (snapshot as Bootstrap | undefined)?.launchCwd;
     modal.actions(button('Cancel', () => modal.cancel()), ...(launch ? [button('Use launch directory', () => { directory.field.value = launch; })] : []), button('Continue', next, 'main-action'));
     directory.field.addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter') { event.preventDefault(); next(); } });
@@ -73,11 +79,11 @@ export class ProjectPicker {
       finally { if (current()) more.disabled = false; }
     };
     const projectActions = element('div', 'picker-project-actions');
-    projectActions.append(more, button('Refresh recent projects', () => { void load(); }));
-    body.append(rows, status, projectActions); rows.addEventListener('keydown', event => this.navigate(event, rows));
+    projectActions.append(status, more, button('Refresh recent projects', () => { void load(); }));
+    body.append(rows, projectActions); rows.addEventListener('keydown', event => this.navigate(event, rows));
     if (this.projects) paint(); else void load();
     this.openPrimaries(body, snapshot);
-    body.append(button('Open saved session path…', () => this.manual(directory.field.value)));
+    projectActions.append(button('Open saved session path…', () => this.manual(directory.field.value)));
     directory.field.focus(); directory.field.setSelectionRange(0, 0); directory.field.scrollLeft = 0;
   }
   private openPrimaries(body: HTMLElement, snapshot?: Snapshot): void {
@@ -109,7 +115,7 @@ export class ProjectPicker {
     modal.actions(button('Back to projects', () => this.open()), button('Start new session', () => { void modal.run(() => this.start(project)); }, 'main-action'));
     body.append(element('h2', 'picker-heading', 'Resume a saved session'));
     const search = input('Search saved sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search loaded sessions…';
-    search.label.className = 'sr-only'; body.append(search.label, search.field);
+    body.append(promptLine(search));
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
     let data = first ? mergeSessions(undefined, first) : existing;
@@ -170,7 +176,9 @@ export class ProjectPicker {
         }
       } catch (cause) { if (!signal.aborted && modal.owns(token)) { error.textContent = 'Some session titles did not load. Use Refresh.'; modal.error(cause); } }
     };
-    body.append(list, coverage, error, more, button('Refresh', () => { void load(); }), button('Open saved session path…', () => this.manual(project)));
+    const utilities = element('div', 'picker-project-actions');
+    utilities.append(coverage, more, button('Refresh', () => { void load(); }), button('Open saved session path…', () => this.manual(project)));
+    body.append(list, error, utilities);
     list.addEventListener('keydown', event => this.navigate(event, list));
     search.field.addEventListener('input', paint); search.field.addEventListener('keydown', event => {
       if (!(event instanceof KeyboardEvent)) return;

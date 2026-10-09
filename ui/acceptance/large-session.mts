@@ -115,7 +115,7 @@ export function servedAssets(hashes: Hashes): {diskPath: string; path: string; h
     const name = /^\.\.\/dist\/web\/([a-zA-Z0-9_-]+\.js)$/.exec(diskPath)?.[1];
     if (name) assets.push({diskPath, path: `/web/${name}`});
   }
-  for (const required of ['../dist/web/app.js', '../dist/web/icons.js']) if (!hashes[required]) throw new Error(`Missing served asset ${required}`);
+  if (!hashes['../dist/web/app.js']) throw new Error('Missing served asset ../dist/web/app.js');
   return assets.map(asset => {
     const hash = hashes[asset.diskPath]; if (!hash) throw new Error(`Missing served asset ${asset.diskPath}`);
     return {...asset, hash};

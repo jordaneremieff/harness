@@ -1,10 +1,11 @@
-import type { Bootstrap, CommandView, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
+import type { AgentRow, Bootstrap, CommandView, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
 import { button, copy, details, element, input, rawText } from './dom.ts';
 import type { Modal } from './modal.ts';
 import { operation, request } from './transport.ts';
 import type { Composer } from './composer.ts';
-import { navigateOptions } from './list-navigation.ts';
-import type { CommandInventory, CommandOption } from './command-menu-state.ts';
+import { rankCommands } from './command-menu-state.ts';
+import { relativeTime } from './format.ts';
+import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
 export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
 type ResourceKind = 'commands' | 'models' | 'thinking';
 const appCommands: CommandOption[] = [
@@ -16,9 +17,50 @@ const appCommands: CommandOption[] = [
   {name: 'thinking', description: 'Choose the thinking level', source: 'app'},
 ];
 
+export type PaletteEntry = CommandOption & {enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string};
+function compactAge(value: number, now: number): string {
+  const full = relativeTime(value, now); if (!full) return '';
+  const seconds = (now - value) / 1000;
+  if (seconds < -60 || seconds >= 30 * 86400) return new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric'}).format(new Date(value));
+  return full.replace(/hr ago$/, 'h').replace(/ ago$/, '');
+}
+function agentName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
+function agentTail(identity: string, counts: Map<string, number>[]): string {
+  const colon = identity.lastIndexOf(':');
+  if (colon >= 0 && colon < identity.length - 1) return identity.slice(colon + 1);
+  const index = counts.findIndex((values, index) => values.get(identity.slice(-(index + 4))) === 1);
+  return index < 0 ? identity : identity.slice(-(index + 4));
+}
+function duplicateAgentTails(rows: AgentRow[]): Map<string, string> {
+  const groups = new Map<string, string[]>();
+  for (const row of rows) { const name = agentName(row); const group = groups.get(name) ?? []; group.push(row.identity); groups.set(name, group); }
+  const labels = new Map<string, string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const counts = Array.from({length: 5}, (_, index) => {
+      const values = new Map<string, number>();
+      for (const identity of group) { const tail = identity.slice(-(index + 4)); values.set(tail, (values.get(tail) ?? 0) + 1); }
+      return values;
+    });
+    for (const identity of group) labels.set(identity, agentTail(identity, counts));
+  }
+  return labels;
+}
+function paletteSourceOrder(item: CommandOption): number { return item.source === 'app' ? 0 : item.source === 'agent' ? 2 : 1; }
+function agentOrder(row: AgentRow): number { return row.availability === 'live' || row.state === 'working' ? 0 : 1; }
+export function rankPalette(entries: PaletteEntry[], query: string): CommandMatch[] {
+  if (!query.trim()) return entries.map(item => ({item, rank: 1, marks: []})).sort((a, b) => paletteSourceOrder(a.item) - paletteSourceOrder(b.item));
+  const matches = new Map<CommandOption, CommandMatch>(rankCommands(entries, query).map(match => [match.item, match]));
+  for (const item of entries) {
+    const alias = rankCommands((item.search ?? []).map(name => ({name, description: '', source: item.source})), query)[0];
+    const visible = matches.get(item);
+    if (alias && (!visible || alias.rank < visible.rank)) matches.set(item, {item, rank: alias.rank, marks: visible?.marks ?? []});
+  }
+  return [...matches.values()].sort((a, b) => a.rank - b.rank || a.item.name.localeCompare(b.item.name));
+}
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; modal: Modal;
-  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]};
+  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void};
 export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
@@ -132,13 +174,6 @@ export class Actions {
     body.append(element('p', 'secondary', 'Enter an exact saved session path. Browsing this picker does not start Pi.'));
     directory.field.focus();
   }
-  sessionMenu(): void {
-    const modal = this.ctx.modal; const primary = this.ctx.primary();
-    modal.open('Session actions');
-    const actions: [string, () => void][] = [['New session', () => this.newSession()], ['Resume saved session', () => this.projectPicker()], ['Fork from message…', () => this.forkPicker()], ['Compact…', () => this.compact()], ['Automatic retry…', () => this.automaticSettings('autoRetry')], ['Automatic compaction…', () => this.automaticSettings('autoCompaction')], ['Continue in terminal…', () => this.handoff()], ['Session details', () => this.sessionDetails()], ['Saved drafts and input copies', () => this.ctx.recovery()], ['Appearance', () => this.appearance()], ['Help', () => this.help()]];
-    const rows = element('div', 'options');
-    for (const [name, action] of actions) { const node = button(name, action); node.disabled = !primary && !['Resume saved session', 'Saved drafts and input copies', 'Appearance', 'Help'].includes(name); rows.append(node); } modal.body.append(rows);
-  }
   newSession(): void {
     const primary = this.ctx.primary(); if (!primary) return;
     this.ctx.modal.confirm('New session', 'Your current draft stays with this session. Pi changes the session only after its response.', async () => {
@@ -211,19 +246,91 @@ export class Actions {
       const list = element('div', 'options'); for (const level of page.items as string[]) list.append(button(level, () => { void modal.run(() => this.control({action: 'thinking', level} as PrimaryControl, primary)); })); modal.body.append(list);
     }, false);
   }
+  paletteEntries(): PaletteEntry[] {
+    const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent();
+    const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(alias ? {search: [alias, `/${alias}`]} : {})});
+    const entries = [
+      entry('New session', 'Start a new primary session', () => this.newSession(), !!primary, 'new'),
+      entry('Resume saved session', 'Open an exact saved session path', () => this.projectPicker(), true, 'resume'),
+      entry('Fork from message…', 'Branch from a loaded user message', () => this.forkPicker(), !!primary, 'fork'),
+      entry('Compact…', 'Summarize primary context', () => this.compact(), !!primary, 'compact'),
+      entry('Automatic retry…', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), !!primary),
+      entry('Automatic compaction…', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), !!primary),
+      entry('Continue in terminal…', 'Release the browser writer', () => this.handoff(), !!primary),
+      entry('Session details', 'Identity, state and diagnostics', () => this.sessionDetails(), !!primary),
+      entry('Saved drafts and input copies', 'Review retained input', () => this.ctx.recovery()),
+      entry('Appearance', 'Choose dark, light or system', () => this.appearance()),
+      entry('Help', 'Browser controls and terminal fallback', () => this.help()),
+      entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), !!primary),
+      entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), !!primary),
+      entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), !!primary),
+      entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), !!primary),
+      entry('Find in loaded messages', 'Find text in the primary transcript', () => this.find(), !!primary),
+      entry('Notifications', 'Read and dismiss notices', () => this.ctx.notices()),
+      entry('Refresh agent roster', 'Request a fresh agent scan', () => this.ctx.rosterRefresh()),
+      entry('New agent through primary', 'Prepare /agent new in the primary', () => this.prepareText('/agent new')),
+      entry('Hide sidebar', 'Hide the conversation sidebar', () => this.ctx.sidebar(false)),
+      entry('Show sidebar', 'Show the conversation sidebar', () => this.ctx.sidebar(true)),
+      entry('Open project or session', 'Choose a project or primary', () => this.projectPicker()),
+      entry('Model', 'Choose the primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model'),
+      entry('Thinking', 'Choose the primary thinking level', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking'),
+    ];
+    if (primary?.lastError) entries.push(entry('Review retry prompt', 'Restore the last loaded user prompt for review', () => this.retryOutput()));
+    if (agent) {
+      entries.push(entry('Copy agent identity', agent.identity, () => this.ctx.copyAgent()));
+      if (agent.capabilities?.inspect) entries.push(entry('Inspect agent activity', agent.identity, () => this.ctx.inspectAgent()));
+    }
+    if (primary?.lifecycle === 'ready' && this.resourceTarget === `${primary.key}:${primary.epoch}:${primary.lifecycle}`) {
+      for (const command of this.commands) entries.push({...command, name: `/${command.name}`, enabled: true, run: () => this.prepareText(`/${command.name}`)});
+    }
+    const now = Date.now(); const agents = this.ctx.agents(); const tails = duplicateAgentTails(agents);
+    for (const row of agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b))) entries.push({name: agentName(row), tail: tails.get(row.identity), description: [row.availability === 'live' ? row.state : row.availability, compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => this.ctx.selectAgent(row)});
+    return entries;
+  }
   palette(): void {
     const modal = this.ctx.modal; modal.open('Commands'); const token = modal.token;
-    const search = input('Search actions and resources'); const list = element('div', 'options'); modal.body.append(search.label, search.field, list);
-    const builtins: [string, () => void][] = [['New session', () => this.newSession()], ['Resume saved session', () => this.projectPicker()], ['Fork', () => this.forkPicker()], ['Compact', () => this.compact()], ['Review retry prompt', () => this.retryOutput()], ['Automatic retry', () => this.automaticSettings('autoRetry')], ['Automatic compaction', () => this.automaticSettings('autoCompaction')], ['Model', () => this.modelPicker()], ['Thinking', () => this.thinkingPicker()], ['Agents', () => { modal.close(); void this.ctx.selection({sidebarVisible: true}); }], ['Appearance', () => this.appearance()], ['Saved drafts and input copies', () => this.ctx.recovery()], ['Continue in terminal', () => this.handoff()], ['Find in loaded messages', () => this.find()], ['Help', () => this.help()]];
-    const paint = () => {
-      const query = search.field.value.toLocaleLowerCase(); list.replaceChildren();
-      for (const [name, action] of builtins) if (name.toLocaleLowerCase().includes(query)) list.append(button(`${name} · Action`, action));
-      for (const command of this.commands) if (`${command.name} ${command.description}`.toLocaleLowerCase().includes(query)) {
-        const node = button(`/${command.name}`, () => { modal.close(); this.prepareText(`/${command.name}`); }); node.append(element('span', 'secondary', `${command.description} · ${command.source}`)); list.append(node);
-      }
+    modal.node.dataset.variant = 'palette';
+    const search = input('Search commands and agents'); search.label.className = 'sr-only';
+    search.field.setAttribute('role', 'combobox'); search.field.setAttribute('aria-autocomplete', 'list'); search.field.setAttribute('aria-expanded', 'true'); search.field.setAttribute('aria-controls', 'palette-list');
+    const prompt = element('span', 'palette-prompt', '›'); prompt.setAttribute('aria-hidden', 'true');
+    const line = element('div', 'palette-input'); line.append(prompt, search.label, search.field);
+    const list = element('div', 'palette-list'); list.id = 'palette-list'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', 'Commands and agents'); modal.body.append(line, list);
+    let active = 0; let matches: ReturnType<typeof rankCommands> = [];
+    const run = (index: number) => {
+      if (!modal.owns(token)) return;
+      const selected = matches[index]?.item as PaletteEntry | undefined; if (!selected?.enabled) return;
+      modal.close(); selected.run();
     };
-    search.field.addEventListener('input', paint); search.field.addEventListener('keydown', raw => { const event = raw as KeyboardEvent; if (event.key === 'ArrowDown') { event.preventDefault(); list.querySelector<HTMLButtonElement>('button')?.focus(); } });
-    list.addEventListener('keydown', event => navigateOptions(event, list));
+    const select = () => {
+      const rows = [...list.children] as HTMLElement[];
+      rows.forEach((row, index) => { row.setAttribute('aria-selected', String(index === active)); });
+      const selected = rows[active];
+      if (selected) { search.field.setAttribute('aria-activedescendant', selected.id); selected.scrollIntoView({block: 'nearest'}); }
+      else search.field.removeAttribute('aria-activedescendant');
+    };
+    const paint = () => {
+      const previous = matches[active]?.item as PaletteEntry | undefined; const entries = this.paletteEntries();
+      matches = rankPalette(entries, search.field.value.trim());
+      active = Math.max(0, matches.findIndex(match => match.item.name === previous?.name && match.item.source === previous?.source && (match.item as PaletteEntry).title === previous?.title)); list.replaceChildren();
+      matches.forEach((match, index) => {
+        const item = match.item as PaletteEntry; const row = button('', () => run(index), 'palette-row'); row.id = `palette-option-${index}`; row.tabIndex = -1;
+        if (item.title) row.title = item.title;
+        row.setAttribute('role', 'option'); row.setAttribute('aria-disabled', String(!item.enabled)); row.disabled = !item.enabled;
+        const name = element('span', 'palette-name');
+        const marks = new Set(match.marks);
+        for (let offset = 0; offset < item.name.length; offset++) name.append(element(marks.has(offset) ? 'mark' : 'span', undefined, item.name[offset]));
+        if (item.tail) name.append(element('span', 'palette-tail', ` ${item.tail}`));
+        row.append(name, element('span', 'palette-desc', item.description), element('span', 'palette-source', item.source.toLowerCase()));
+        list.append(row);
+      });
+      select();
+    };
+    search.field.addEventListener('input', () => { active = 0; matches = []; paint(); });
+    search.field.addEventListener('keydown', raw => {
+      const event = raw as KeyboardEvent; if (event.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); active = Math.max(0, Math.min(matches.length - 1, active + (event.key === 'ArrowDown' ? 1 : -1))); select(); }
+      else if (event.key === 'Enter') { event.preventDefault(); if (!event.repeat) run(active); }
+    });
     this.commandPaint = () => { if (modal.owns(token)) paint(); };
     paint(); search.field.focus(); void this.load('commands').then(page => {
       if (!modal.owns(token)) return;

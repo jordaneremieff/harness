@@ -66,18 +66,18 @@ test('rich synthetic fixture has a linked tool and thinking cohort above 25 MiB'
   }
   assert(options(['--rich']).rich); assert.throws(() => options(['--rich', '--session', 'file']), /synthetic input/);
 });
-test('source inventory binds runtime, stylesheet, markup and icons with byte bounds', async () => {
+test('source inventory binds runtime, stylesheet, markup and browser modules with byte bounds', async () => {
   const root = await mkdtemp(join(homedir(), 'Workspace', 'dump', 'source-binding-'));
   try {
     for (const directory of ['server', 'rpc', 'agents', 'shared', 'web', 'dist/web', 'dist/shared']) await mkdir(join(root, directory), {recursive:true});
-    for (const path of ['rpc/client.mts', 'rpc/events.mts', 'rpc/session.mts', 'web/style.css', 'web/index.html', 'web/icons.ts', 'dist/web/icons.js']) await writeFile(join(root, path), path);
+    for (const path of ['rpc/client.mts', 'rpc/events.mts', 'rpc/session.mts', 'web/style.css', 'web/index.html', 'web/render.ts', 'dist/web/render.js']) await writeFile(join(root, path), path);
     await writeFile(join(root, 'rpc/client.test.mts'), 'not runtime');
     const before = await sourceHashes(pathToFileURL(`${root}/`));
     assert.equal(Object.keys(before).length, 7); assert(!('../rpc/client.test.mts' in before));
     assert.match(before['../web/style.css'] ?? '', /^[a-f0-9]{64}$/);
     await writeFile(join(root, 'rpc/client.mts'), 'changed');
     assert.deepEqual(hashChanges(before, await sourceHashes(pathToFileURL(`${root}/`))), ['../rpc/client.mts']);
-    await writeFile(join(root, 'web/icons.ts'), Buffer.alloc(1024 * 1024 + 1));
+    await writeFile(join(root, 'web/render.ts'), Buffer.alloc(1024 * 1024 + 1));
     await assert.rejects(sourceHashes(pathToFileURL(`${root}/`)), /byte bound/);
   } finally { await rm(root, {recursive:true,force:true}); }
 });
@@ -86,8 +86,8 @@ test('hash comparison detects inventory additions and removals independent of or
   assert.deepEqual(hashChanges({a:'1', removed:'2'}, {a:'3', added:'4'}), ['a', 'added', 'removed']);
 });
 test('served inventory maps exact HTTP asset paths and refuses missing frozen builds', () => {
-  const hashes = {'../web/index.html':'html', '../web/style.css':'css', '../dist/shared/api.js':'api', '../dist/web/app.js':'app', '../dist/web/icons.js':'icons', '../web/icons.ts':'source'};
-  assert.deepEqual(servedAssets(hashes).map(asset => asset.path), ['/', '/shared/api.js', '/style.css', '/web/app.js', '/web/icons.js']);
+  const hashes = {'../web/index.html':'html', '../web/style.css':'css', '../dist/shared/api.js':'api', '../dist/web/app.js':'app', '../dist/web/render.js':'render', '../web/render.ts':'source'};
+  assert.deepEqual(servedAssets(hashes).map(asset => asset.path), ['/', '/shared/api.js', '/style.css', '/web/app.js', '/web/render.js']);
   assert.equal(servedAssets(hashes).find(asset => asset.path === '/style.css')?.hash, 'css');
   assert.throws(() => servedAssets({}), /Missing served asset/);
   assert.throws(() => servedAssets({...hashes, '../dist/web/app.js':''}), /Missing served asset/);

@@ -72,6 +72,8 @@ test('a menu anchors under its trigger, closes on an outside click, and reverts 
     const inside = Object.assign(new Event('click'), {clientX: 1100, clientY: 100}); dialog.dispatchEvent(inside); assert.equal(modal.openNow, true);
     const outside = Object.assign(new Event('click'), {clientX: 200, clientY: 500}); dialog.dispatchEvent(outside); assert.equal(modal.openNow, false);
     assert.equal(fake.nodes.get('invoke')?.focused, true);
+    modal.open('Commands'); dialog.dataset.variant = 'palette';
+    dialog.dispatchEvent(Object.assign(new Event('click'), {clientX: 200, clientY: 500})); assert.equal(modal.openNow, false, 'an outside click closes the palette');
     modal.open('Compact'); assert.equal(dialog.dataset.variant, undefined);
     dialog.dispatchEvent(Object.assign(new Event('click'), {clientX: 200, clientY: 500})); assert.equal(modal.openNow, true);
   } finally {

@@ -7,7 +7,6 @@ import { ConnectionRecovery, connectionSurface as connectionSurfaceFor, type Con
 import { announce, byId, button, copy, details, element, empty, rawText, setText } from './dom.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
-import { installIcons } from './icons.ts';
 import { Transcript } from './render.ts';
 import { historyBecameReady } from './transcript-history.ts';
 import { Roster } from './roster.ts';
@@ -18,7 +17,7 @@ import { hydrateVisible, refreshVisible } from './hydrate.ts';
 import { MessageTarget, SelectionQueue, navigationState, visibleReceipt } from './selection-state.ts';
 import { usageSummary } from './usage.ts';
 import { entryVisible } from './entry-presentation.ts';
-import { primaryBusy, primaryActivityLabel, primaryEmpty } from './primary-presentation.ts';
+import { primaryBusy, primaryEmpty } from './primary-presentation.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { renderFacts } from './facts.ts';
@@ -26,7 +25,6 @@ import { newerOperation, mergeOperationMap } from './operation-state.ts';
 import { ApiError, authenticate, connect, errorMessage, operation, request } from './transport.ts';
 import type { ReceivedEvent } from './transport.ts';
 
-installIcons();
 let state = createState();
 let snapshot: Bootstrap | Snapshot | undefined;
 let source: EventSource | undefined;
@@ -69,7 +67,7 @@ async function loadPrimaryOutput(more: import('../shared/api.ts').OutputContinua
   return page;
 }
 const agentTranscript = new Transcript('agent', {presentation: (expanded, showThinking) => { void savePresentation(agentTranscriptTarget, expanded, showThinking); }, reading: reading => { void saveReading(agentTranscriptTarget, reading); }});
-const actions: Actions = new Actions({snapshot: currentSnapshot, primary, composer: primaryComposer, modal, selection, reload, result: showOperation, rosterRefresh: refreshRoster, find: query => primaryTranscript.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : []});
+const actions: Actions = new Actions({snapshot: currentSnapshot, primary, composer: primaryComposer, modal, selection, reload, result: showOperation, rosterRefresh: refreshRoster, find: query => primaryTranscript.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => primaryTranscript.expandLoaded(tools, expand), copyAgent: () => { void copy(selectedAgent() ?? '', modal.body); }, inspectAgent});
 const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload});
 actions.projectPicker = () => picker.open();
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
@@ -256,10 +254,10 @@ function measureScrollbar(): void {
 function focusEditor(): void { byId(navigationState(state.workspace, false).editor).focus(); }
 function toggleSidebar(visible: boolean): void {
   if (!matchMedia('(min-width: 900px)').matches) {
-    drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'sidebar-hide' : 'sidebar-show').focus(); return;
+    drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'project-button' : 'sidebar-show').focus(); return;
   }
   const applied = selection({sidebarVisible: visible});
-  byId(visible ? 'sidebar-hide' : 'sidebar-show').focus();
+  byId(visible ? 'project-button' : 'sidebar-show').focus();
   void applied.catch(showError);
 }
 function selectPrimary(): void {
@@ -285,25 +283,26 @@ function renderPrimary(): void {
   if (!item) document.title = 'Pi · Open a project';
 }
 function primaryChrome(item?: PrimaryView): void {
-  setText(byId('project-name'), item?.cwd.split('/').filter(Boolean).at(-1) ?? 'Open a project');
+  setText(byId('project-name'), item?.cwd.split('/').filter(Boolean).at(-1) ?? 'open a project');
   primaryNavigation(item);
   setText(byId('session-title'), item?.extension?.title ?? item?.sessionName ?? item?.sessionId ?? 'Pi');
-  if (item) document.title = `Pi · ${item.sessionName ?? item.sessionId ?? 'Primary'}`;
-  const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(model, item?.model ? `${item.model.provider}/${item.model.id} ▾` : 'Model');
+  if (item && !selectedAgent()) document.title = `Pi · ${item.extension?.title ?? item.sessionName ?? item.sessionId ?? 'Primary'} · ${primaryState(item)}`;
+  const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(model, item?.model ? `${item.model.provider}/${item.model.id}` : 'Model');
   setText(byId('primary-usage'), usageSummary(item));
-  const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; setText(thinking, item?.thinkingLevel ? `${item.thinkingLevel} ▾` : '');
+  const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; setText(thinking, item?.thinkingLevel ? item.thinkingLevel : '');
 }
+function primaryState(item: PrimaryView): string { return item.lifecycle !== 'ready' ? item.lifecycle : item.lastError ? 'failed' : item.activity; }
 function primaryNavigation(item?: PrimaryView): void {
-  const glyph = !item ? '◌' : item.lifecycle === 'failed' || item.lastError ? '!' : primaryBusy(item) ? '●' : '○';
+  const glyph = !item ? '○' : item.lifecycle === 'failed' || item.lastError ? '!' : primaryBusy(item) ? '●' : '○';
   const status = byId('primary-row-state'); setText(status, glyph);
-  status.dataset.state = ({'◌': 'none', '!': 'failed', '●': 'running', '○': 'idle'} as const)[glyph];
-  setText(byId('primary-row-title'), item?.extension?.title ?? item?.sessionName ?? item?.sessionId ?? 'No primary session');
-  setText(byId('primary-row-meta'), item ? [item.model?.id, item.lifecycle === 'ready' ? item.activity : item.lifecycle].filter(Boolean).join(' · ') : 'Open a project');
+  status.dataset.state = !item ? 'none' : ({'!': 'failed', '●': 'running', '○': 'idle'} as const)[glyph];
+  setText(byId('primary-row-title'), item?.extension?.title ?? item?.sessionName ?? item?.sessionId ?? 'no session');
+  setText(byId('primary-row-meta'), item ? primaryState(item) : '');
 }
 function primaryActivity(item?: PrimaryView, target?: Target): void {
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
   const recovery = conversation?.recovery;
-  setText(byId('primary-activity'), item?.lifecycle === 'ready' && recovery?.kind === 'retry' && recovery.phase !== 'end' ? `Retrying${recovery.error ? ` after ${recovery.error}` : ''}${recovery.attempt ? ` · attempt ${recovery.attempt}` : ''}` : primaryActivityLabel(item));
+  setText(byId('primary-activity'), item?.lifecycle === 'ready' && recovery?.kind === 'retry' && recovery.phase !== 'end' ? `Retrying${recovery.error ? ` after ${recovery.error}` : ''}${recovery.attempt ? ` · attempt ${recovery.attempt}` : ''}` : item?.lastError?.message ?? (item?.activity === 'retrying' ? 'Retrying' : ''));
   if (item?.lastError) byId('primary-activity').append(button('Review retry prompt…', () => actions.retryOutput()));
   byId('primary-stop').hidden = !(connected && primaryBusy(item, conversation?.queue?.pending));
 }
@@ -315,10 +314,8 @@ function renderPrimaryTranscript(): void {
   const presentation = primaryEmpty(item, blocks.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry)), !!target && historyReadyTarget === targetIdentity(target));
   const empty = byId('primary-empty'); empty.hidden = !presentation;
   if (presentation) {
-    const heading = empty.querySelector('h2'); if (heading) setText(heading, presentation.heading);
-    setText(byId('primary-empty-caption'), !item && state.workspace?.primaryKey ? 'Loading the selected session' : presentation.caption);
+    setText(byId('primary-empty-caption'), !item ? state.workspace?.primaryKey ? 'Loading the selected session' : 'no session · ⌘K or click the project name' : presentation.caption);
   }
-  byId('primary-open-project').hidden = !!item || !!state.workspace?.primaryKey;
 }
 function renderRoster(): void {
   setText(byId('agent-count'), String(state.roster.size)); roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent());
@@ -367,16 +364,20 @@ function renderAgent(): void {
   agentComposer.availability(connected, row?.availability === 'live' && row.capabilities?.input === true, false, selecting);
   agentComposer.attach(state.workspace?.id ?? '', saved); agentComposer.receipts(state.operations.values());
   agentChrome(identity, row);
-  agentAvailability(identity, row); renderAvailability();
+  agentAvailability(row); renderAvailability();
+}
+function agentTitle(identity: string, row?: AgentRow): void {
+  const state = row?.availability !== 'live' ? row?.availability ?? 'stored' : row?.state ?? 'idle';
+  document.title = `Pi · ${row?.name ?? row?.handle ?? identity} · ${state}`;
 }
 function agentChrome(identity: string, row?: AgentRow): void {
-  setText(byId('agent-name'), row?.name ?? row?.handle ?? identity); setText(byId('agent-identity'), identity);
+  setText(byId('agent-name'), row?.name ?? row?.handle ?? identity);
+  agentTitle(identity, row);
   const conversation = state.conversations.get(targetIdentity({kind: 'agent', identity})); const frame = conversation?.frame;
   agentTranscript.set(conversation ? conversationBlocks(conversation) : agentBlocks(state));
   setText(byId('agent-status'), frame?.status.model ? `${frame.status.model.provider}/${frame.status.model.modelId}${frame.status.thinkingLevel ? ` · ${frame.status.thinkingLevel}` : ''}` : row?.model ? `${row.model.provider}/${row.model.modelId}${row.thinkingLevel ? ` · ${row.thinkingLevel}` : ''}` : '');
   agentBefore = frame?.nextBefore ?? agentBefore; byId('agent-earlier').hidden = agentBefore === null;
   byId('agent-abort').hidden = !connected || row?.availability !== 'live' || !row?.capabilities?.input || !row?.capabilities?.abort;
-  byId('agent-inspect').hidden = !row?.capabilities?.inspect;
   agentFacts(row, frame);
 }
 function agentFacts(row?: AgentRow, frame?: ProjectedFrame): void {
@@ -387,10 +388,9 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): void {
   if (frame?.status.submissions) facts.push({key: 'submissions', label: 'Reported submissions', text: rawText(frame.status.submissions.value)});
   renderFacts(byId('agent-facts'), facts);
 }
-function agentAvailability(identity: string, row?: AgentRow): void {
-  const frame = state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame;
+function agentAvailability(row?: AgentRow): void {
   const availability = byId('agent-availability');
-  if (row?.availability === 'live') setText(availability, !frame ? 'Live · loading history' : frame.status.busy ? 'Live · working' : 'Live · idle');
+  if (row?.availability === 'live') setText(availability, '');
   else {
     setText(availability, row?.availability === 'incompatible' ? 'Host contract mismatch. This agent control is unavailable.' : 'Stored · no live compatible host');
   }
@@ -406,7 +406,6 @@ function renderAvailability(): void {
   agentComposer.availability(connected, messageTarget.current ? messageTarget.ready : row?.availability === 'live' && row.capabilities?.input === true, frame?.status.busy ?? false, selecting);
   if (messageTarget.current) { byId('agent-abort').hidden = true; byId('agent-acquire').hidden = true; }
   if (!connected && (connectionPhase === 'offline' || connectionPhase === 'auth')) {
-    setText(byId('primary-activity'), 'Last observed');
     if (identity) setText(byId('agent-availability'), 'Last observed');
   }
 }
@@ -445,7 +444,7 @@ function primaryHistoryFailure(error: unknown, controller: AbortController, curs
 }
 function earlierFeedback(prefix: 'primary' | 'agent', pending: boolean): void {
   const control = byId<HTMLButtonElement>(`${prefix}-earlier`); control.disabled = pending;
-  setText(control, pending ? 'Loading earlier messages…' : 'Load earlier messages');
+  setText(control, pending ? '↑ earlier…' : '↑ earlier');
 }
 function historyFeedback(prefix: 'primary' | 'agent', text: string): void {
   const notice = byId(`${prefix}-view-notice`); notice.dataset.kind = 'history'; setText(notice, text);
@@ -496,7 +495,7 @@ function showOperation(result: OperationView): void {
   primaryComposer.receipts(state.operations.values()); agentComposer.receipts(state.operations.values());
   if (result.state !== 'reserved' && result.state !== 'dispatched') announce(operationLabel(result));
 }
-function noticesBadge(): void { const unread = unreadNotices(state); setText(byId('notices-count'), unread ? String(unread) : ''); byId('notices-count').hidden = !unread; byId('notices-button').setAttribute('aria-label', unread ? `Notifications (${unread} unread)` : 'Notifications'); }
+function noticesBadge(): void { const unread = unreadNotices(state); setText(byId('notices-count'), String(unread)); byId('notices-button').hidden = !unread; byId('notices-button').setAttribute('aria-label', unread ? `Notifications (${unread} unread)` : 'Notifications'); }
 function notices(): void {
   state = markReadNotices(state); noticesBadge(); modal.open('Notifications'); if (!state.notices.length) modal.body.append(empty('No notifications'));
   for (const notice of state.notices) {
@@ -524,28 +523,17 @@ function inspectAgent(): void {
     if (modal.owns(token)) modal.body.append(details('Reported activity', rawText(data)));
   }, false);
 }
-function viewActions(): void {
-  modal.open('Loaded conversation view');
-  for (const [label, tools, expand] of [['Expand loaded tools', true, true], ['Collapse loaded tools', true, false], ['Show thinking', false, true], ['Hide thinking', false, false]] as const) modal.body.append(button(label, () => { primaryTranscript.expandLoaded(tools, expand); modal.close(); }));
-  modal.body.append(button('Find in loaded messages', () => actions.find()));
-}
 function bind(): void {
-  byId('primary-open-project').addEventListener('click', () => actions.projectPicker());
-  byId('project-button').addEventListener('click', () => actions.projectPicker()); byId('session-title').addEventListener('click', () => actions.sessionDetails());
-  byId('session-actions').addEventListener('click', () => { actions.sessionMenu(); modal.anchor(byId('session-actions')); modal.body.append(button('Conversation view…', viewActions)); }); byId('commands-button').addEventListener('click', () => actions.palette());
+  byId('project-button').addEventListener('click', () => actions.projectPicker());
+  byId('commands-button').addEventListener('click', () => actions.palette());
   byId('model-button').addEventListener('click', () => actions.modelPicker()); byId('thinking-button').addEventListener('click', () => actions.thinkingPicker());
   byId('notices-button').addEventListener('click', notices);
   byId('agent-message-close').addEventListener('click', () => closeMessagePanel());
   byId('agent-acquire').addEventListener('click', () => { if (messageTarget.current) return; const identity = selectedAgent(); if (connected && identity) actions.prepareText(`/agent attach ${identity}`); });
   byId('primary-row').addEventListener('click', selectPrimary);
-  byId('sidebar-hide').addEventListener('click', () => toggleSidebar(false));
   byId('sidebar-show').addEventListener('click', () => toggleSidebar(true));
-  byId('sessions-button').addEventListener('click', () => actions.projectPicker());
-  byId('appearance-button').addEventListener('click', () => actions.appearance());
   byId('skip-composer').addEventListener('click', event => { event.preventDefault(); focusEditor(); });
-  byId('agent-copy').addEventListener('click', () => { void copy(selectedAgent() ?? '', byId('agent-availability')); });
-  byId('agent-inspect').addEventListener('click', inspectAgent); byId('agent-facts').addEventListener('toggle', renderAgent, true);
-  byId('agent-refresh').addEventListener('click', refreshRoster); byId('agent-new').addEventListener('click', () => actions.prepareText('/agent new'));
+  byId('agent-facts').addEventListener('toggle', renderAgent, true);
   byId('primary-earlier').addEventListener('click', () => { void loadPrimaryHistory(primaryCursor ?? undefined); }); byId('agent-earlier').addEventListener('click', () => { void loadAgentHistory().catch(showError); });
   byId('primary-stop').addEventListener('click', () => { const target = primaryTarget(); if (target?.kind !== 'primary') return; setText(byId('primary-receipt'), 'Stop requested'); void operation('primary.stop', `/api/primaries/${encodeURIComponent(target.key)}/stop`, {epoch: target.epoch}, target).then(showOperation).catch(showError); });
   byId('agent-abort').addEventListener('click', () => { if (messageTarget.current) return; const identity = selectedAgent(); if (!identity) return; modal.confirm('Abort selected agent', `${identity}\nThis requests foreground abort only. Background work and timers remain separate.`, async () => { setText(byId('agent-receipt'), 'Abort requested'); showOperation(await operation('agent.abort', `/api/agents/${encodeURIComponent(identity)}/abort`, {background: false}, {kind: 'agent', identity})); }, 'Abort'); });

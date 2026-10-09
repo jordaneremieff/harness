@@ -23,8 +23,8 @@ function record(display: JsonDisplay): Record<string, unknown> {
 }
 function entryHeading(entry: EntryView): string {
   const label = entry.head ?? entry.kind;
-  if (label === 'custom') return 'Custom entry';
-  if (label === 'message') return 'Message entry';
+  if (label === 'custom') return 'custom';
+  if (label === 'message') return 'message';
   if (entry.head) return entry.head;
   return label.replace(/[_-]/g, ' ').replace(/^./, char => char.toUpperCase());
 }
@@ -38,8 +38,8 @@ function dataPreview(display: JsonDisplay): string {
 }
 function sessionNote(entry: EntryView, data: JsonDisplay): string | undefined {
   const value = record(data);
-  if (entry.kind === 'model_change' && typeof value.provider === 'string' && typeof value.modelId === 'string') return `Model changed to ${value.provider}/${value.modelId}`;
-  if (entry.kind === 'thinking_level_change' && typeof value.thinkingLevel === 'string') return `Thinking changed to ${value.thinkingLevel}`;
+  if (entry.kind === 'model_change' && typeof value.provider === 'string' && typeof value.modelId === 'string') return `model changed to ${value.provider}/${value.modelId}`;
+  if (entry.kind === 'thinking_level_change' && typeof value.thinkingLevel === 'string') return `thinking changed to ${value.thinkingLevel}`;
   return undefined;
 }
 export function presentEntry(entry: EntryView, context: PresentationContext): HTMLElement {

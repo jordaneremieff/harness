@@ -18,7 +18,7 @@ test('section changes hide retained nodes and explicit skip navigation focuses t
 });
 test('earlier-history loads expose pending and result states without restoring an old saved anchor', () => {
   assert.match(source, /control\.disabled = pending/);
-  assert.match(source, /pending \? 'Loading earlier messages…' : 'Load earlier messages'/);
+  assert.match(source, /pending \? '↑ earlier…' : '↑ earlier'/);
   assert.match(source, /if \(cursor\) historyFeedback\('primary', `Loaded earlier history/);
   assert.match(source, /else if \(!selectedAgent\(\)\) primaryTranscript\.restore\(targetState\(target\)\?\.reading\)/);
   assert.match(source, /Earlier history unavailable:/);
@@ -90,4 +90,29 @@ test('Resume uses revision-aware reconciliation and restores its exact buffer wh
 test('the app delegates composer recovery without a duplicate renderer or hook', () => {
   assert.doesNotMatch(source, /function recover\(|recover: recover|exactInput/);
   assert.match(source, /recovery: \(\) => recovery.open\(\)/);
+});
+
+test('bare shell has palette-first controls, exception-only activity and dim sidebar state', () => {
+  assert.doesNotMatch(source, /installIcons|primaryActivityLabel|sessionMenu\(\)|viewActions\(/);
+  for (const id of ['sidebar-hide', 'sessions-button', 'appearance-button', 'agent-refresh', 'agent-new', 'session-actions', 'agent-copy', 'agent-identity', 'agent-inspect', 'primary-open-project']) assert.equal(html.includes(`id="${id}"`), false);
+  assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/);
+  assert.ok(source.includes("setText(byId('primary-row-meta'), item ? primaryState(item) : '')"));
+  assert.ok(source.includes('$' + '{primaryState(item)}'));
+  assert.doesNotMatch(source, /model\.id\} ▾|thinkingLevel\} ▾|Live · (idle|working|loading)/);
+  assert.ok(source.includes("byId('notices-button').hidden = !unread"));
+  assert.ok(source.includes("item?.activity === 'retrying' ? 'Retrying' : ''"));
+  assert.ok(source.includes('if (item?.lastError)'));
+  assert.ok(source.includes('selectedAgent: () =>'));
+  assert.ok(source.includes('view: (tools, expand) => primaryTranscript.expandLoaded(tools, expand)'));
+});
+
+test('the project prompt uses lowercase instrument chrome', () => {
+  assert.ok(source.includes("setText(byId('project-name'), item?.cwd.split('/').filter(Boolean).at(-1) ?? 'open a project')"));
+});
+
+test('the no-session primary row uses the allowed empty state glyph', () => {
+  const navigation = source.slice(source.indexOf('function primaryNavigation('), source.indexOf('function primaryActivity('));
+  assert.ok(navigation.includes("const glyph = !item ? '○'"));
+  assert.ok(navigation.includes("?? 'no session'"));
+  assert.doesNotMatch(navigation, /◌/);
 });

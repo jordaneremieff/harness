@@ -30,7 +30,7 @@ test('structured edit previews every supplied old/new pair without invented file
   assert.match(card.textContent, /- return a - b;\n- \n\+ return a \+ b;\n\+ /);
   assert.match(card.textContent, /- <script>\nNew text: empty\n/);
   assert.equal(card.children[0]?.tag, 'p'); assert.equal(card.children[0]?.className, 'secondary tool-caption');
-  assert.equal(card.children[0]?.textContent, 'Supplied old and new text, not an inferred diff');
+  assert.equal(card.children[0]?.textContent, 'supplied old and new text, not an inferred diff');
   assert.equal(card.children.some(child => ['h3', 'h4'].includes(child.tag)), false);
   const blocks = card.children.filter(child => child.tag === 'pre');
   assert.deepEqual(blocks[0]?.children.filter(child => child.tag === 'span').map(child => [child.className, child.textContent]),
@@ -54,14 +54,14 @@ test('write shows supplied content with a truthful success, pending, or error la
   const {context} = setup();
   const contents = '<img src=x onerror=alert(1)>\nhello';
   const written = node(presentTool(source('write', {content: contents}), context));
-  assert.match(written.textContent, /Written content<img src=x onerror=alert\(1\)>\nhello/);
+  assert.match(written.textContent, /written content<img src=x onerror=alert\(1\)>\nhello/);
   assert.equal(written.children[0]?.tag, 'p'); assert.equal(written.children[0]?.className, 'secondary tool-caption');
-  assert.equal(written.children[0]?.textContent, 'Written content');
+  assert.equal(written.children[0]?.textContent, 'written content');
   for (const status of ['working', 'error']) {
     const pending = node(presentTool(source('write', {content: ''}, status), context));
-    assert.match(pending.textContent, /Content to write\(empty content\)/);
+    assert.match(pending.textContent, /content to write\(empty content\)/);
     assert.equal(pending.children[0]?.tag, 'p'); assert.equal(pending.children[0]?.className, 'secondary tool-caption');
-    assert.equal(pending.children[0]?.textContent, 'Content to write');
+    assert.equal(pending.children[0]?.textContent, 'content to write');
   }
 });
 test('long replacements and written content have bounded previews and lazy retained inspection', () => {

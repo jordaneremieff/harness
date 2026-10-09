@@ -1,7 +1,6 @@
 import type { EntryView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView } from '../shared/api.ts';
 import { byId, button, copy, element, rawText, setText } from './dom.ts';
 import { markdownDom } from './safe-markdown.ts';
-import { setIcon } from './icons.ts';
 import type { ToolState } from './state.ts';
 import { absoluteTime, previewText, relativeTime, timestampDetails } from './format.ts';
 import { entryVisible, presentEntry, presentMessage } from './entry-presentation.ts';
@@ -122,9 +121,12 @@ export class Transcript {
   readonly node: HTMLElement;
   readonly prefix: 'primary' | 'agent';
   private hooks: ViewHooks;
+  /** The earlier-history control is the first line inside the scroller, above the virtual window. */
+  private lead?: HTMLElement;
   constructor(prefix: 'primary' | 'agent', hooks: ViewHooks) {
     this.prefix = prefix; this.hooks = hooks;
     this.node = byId(`${prefix}-transcript`);
+    this.lead = document.getElementById(`${prefix}-earlier`) ?? undefined;
     this.node.addEventListener('scroll', () => {
       if (this.hidden()) return;
       this.follow = this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight < 48 && !this.hasSelection();
@@ -171,9 +173,14 @@ export class Transcript {
     });
   }
   private anchor(): {id: string; offsetPx: number} | null {
+    let first = true;
     for (const child of this.node.children) {
       const node = child as HTMLElement;
+      if (node === this.lead) continue;
       const top = node.offsetTop - this.node.offsetTop;
+      // Above the first laid-out item (padding and the earlier control) there is no entry to anchor.
+      if (first && this.node.scrollTop < top) return null;
+      first = false;
       if (node.dataset.entryId && top <= this.node.scrollTop && top + node.offsetHeight > this.node.scrollTop) {
         return {id: node.dataset.entryId, offsetPx: this.node.scrollTop - (node.offsetTop - this.node.offsetTop)};
       }
@@ -233,7 +240,7 @@ export class Transcript {
     node.style.height = `${height}px`; return node;
   }
   private children(items: LayoutItem[]): HTMLElement[] {
-    const children: HTMLElement[] = []; let offset = 0;
+    const children: HTMLElement[] = this.lead ? [this.lead] : []; let offset = 0;
     for (const item of items) {
       if (item.top > offset) children.push(this.gap(item.id, item.top - offset));
       const entry = this.displayed[item.index]; if (!entry) continue;
@@ -320,7 +327,7 @@ export class Transcript {
     const header = element('header', 'message-header'); const body = element('div', 'message-body'); const error = element('p', 'error message-error'); error.hidden = true;
     const role = presentMessage(message).label;
     header.append(element('span', 'sr-only', bounded(role, 4096)));
-    header.append(button('Copy', () => { void copy(partText(entry.messages.get(message.id)?.source.parts ?? []), node); }, 'copy'));
+    header.append(button('copy', () => { void copy(partText(entry.messages.get(message.id)?.source.parts ?? []), node); }, 'copy'));
     node.append(header, body, error);
     const cached = {node, header, body, error, parts: new Map<string, PartNode>(), source: message}; entry.messages.set(message.id, cached); return cached;
   }
@@ -348,7 +355,7 @@ export class Transcript {
     const eligible = retained && message.role === 'user' && message.state === 'final' && !!this.hooks.fork;
     if (!eligible) { cached.fork?.remove(); cached.fork = undefined; return; }
     if (cached.fork) return;
-    cached.fork = button('Fork', () => this.hooks.fork?.(cached.source, entry.id), 'copy'); cached.header.append(cached.fork);
+    cached.fork = button('fork', () => this.hooks.fork?.(cached.source, entry.id), 'copy'); cached.header.append(cached.fork);
   }
   private updateTime(message: MessageNode, time?: number): void {
     if (message.time === time) return;
@@ -375,7 +382,7 @@ export class Transcript {
     if (part.type !== 'thinking') return element('div');
     const node = element('details', 'thinking'); const id = `thinking:${entryId}:${messageId}:${index}`;
     node.dataset.disclosure = id; node.open = this.showThinking || this.expanded.has(id);
-    node.append(element('summary', undefined, 'Thinking'), element('div', 'stream-text'));
+    node.append(element('summary', undefined, 'thinking'), element('div', 'stream-text'));
     this.trackDisclosure(node, id); return node;
   }
   private partContent(node: HTMLElement, part: PartView, partial: boolean, previous?: PartNode): void {
@@ -398,11 +405,10 @@ export class Transcript {
     tier.append(glyph, title, target, meta); summary.append(tier);
     const preview = element('div', 'tool-preview'); const expanded = element('div', 'tool-expanded'); summary.append(preview); node.append(summary, expanded);
     node.dataset.disclosure = `tool:${source.callId}`; node.open = this.expanded.has(`tool:${source.callId}`);
-    const action = button('', () => { void copy(tool.source?.result ? partText(tool.source.result) : '', tool.card).then(copied => { if (copied) { setIcon(action, 'check'); action.title = 'Copied'; } }); }, 'quiet tool-copy');
-    setIcon(action, 'copy');
+    const action = button('copy', () => { void copy(tool.source?.result ? partText(tool.source.result) : '', tool.card).then(copied => { if (copied) { setText(action, 'copied'); action.title = 'Copied'; } }); }, 'tool-copy');
     action.setAttribute('aria-label', 'Copy tool output'); action.title = 'Copy tool output';
     action.addEventListener('click', event => event.stopPropagation());
-    action.addEventListener('blur', () => { setIcon(action, 'copy'); action.title = 'Copy tool output'; }); card.append(action);
+    action.addEventListener('blur', () => { setText(action, 'copy'); action.title = 'Copy tool output'; }); card.append(action);
     const tool: ToolNode = {card, node, copy: action, title, target, glyph, meta, preview, expanded}; this.tools.set(source.callId, tool);
     this.trackDisclosure(node, `tool:${source.callId}`);
     node.addEventListener('toggle', () => this.toolExpansion(tool)); return tool;
@@ -424,7 +430,7 @@ export class Transcript {
     const source = tool.source; if (!source) return;
     const output = source.result ? partText(source.result) : '';
     const args = source.argumentText ?? (source.args ? rawText(source.args.value) : '');
-    const preview = previewText(output || args, 5, 1800);
+    const preview = previewText(output || args, 2, 1800);
     setText(tool.preview, `${preview.text}${preview.truncated ? '\n…' : ''}`);
     if (tool.node.open) this.expandTool(tool);
   }
@@ -459,7 +465,9 @@ export class Transcript {
         if (part.type === 'toolResult') append(part.parts);
         else if ((part.type === 'text' || part.type === 'thinking') && part.more) tool.output?.append(outputPages(part.more, this.hooks.output, () => generation === this.generation && this.tools.get(source.callId) === tool && tool.source?.result === source.result, () => this.schedule()));
       } };
-      append(source.result ?? []); tool.expanded.append(tool.output);
+      append(source.result ?? []);
+      const text = tool.expanded.querySelector('.tool-output-text');
+      if (text) text.after(tool.output); else tool.expanded.append(tool.output);
     }
     tool.contentSource = source;
   }
@@ -469,19 +477,19 @@ export class Transcript {
     this.expandedContent(tool, source);
     let pre = tool.expanded.querySelector('.tool-output-text');
     if (!pre) {
-      pre = element('pre', 'tool-output-text'); tool.expanded.append(element('span', 'secondary', 'Output'), pre,
-        inspection('Arguments', () => this.toolArguments(tool)),
-        inspection('Raw result', () => rawText(tool.source?.result ?? [])));
+      pre = element('pre', 'tool-output-text'); tool.expanded.append(element('span', 'secondary', 'output'), pre);
+      if (tool.output) pre.after(tool.output);
+      tool.expanded.append(inspection('arguments', () => this.toolArguments(tool)), inspection('raw result', () => rawText(tool.source?.result ?? [])));
       for (const node of tool.expanded.querySelectorAll('details')) node.className = 'tool-inspection';
     }
-    setText(pre, bounded(output || (source.status === 'working' ? 'Working' : 'Returned successfully')));
+    setText(pre, bounded(output || (source.status === 'working' ? 'working' : 'returned successfully')));
     this.refreshToolInspections(tool, source);
   }
   private refreshToolInspections(tool: ToolNode, source: JoinedTool): void {
     for (const node of tool.expanded.querySelectorAll<HTMLDetailsElement>('details[open]')) {
       const title = node.firstElementChild?.textContent;
-      if (title !== 'Arguments' && title !== 'Raw result') continue;
-      const data = node.querySelector('pre'); if (data) setText(data, title === 'Arguments' ? bounded(this.toolArguments(tool)) : bounded(rawText(source.result ?? [])));
+      if (title !== 'arguments' && title !== 'raw result') continue;
+      const data = node.querySelector('pre'); if (data) setText(data, title === 'arguments' ? bounded(this.toolArguments(tool)) : bounded(rawText(source.result ?? [])));
     }
   }
   private trackDisclosure(node: HTMLDetailsElement, id: string): void {

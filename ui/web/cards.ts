@@ -37,7 +37,7 @@ function replacementPreview(edit: Replacement, budget: number): {text: string; l
 function written(source: ToolPresentationSource, content: string, context: PresentationContext): HTMLElement {
   const node = element('section', 'tool-content');
   const text = preview(content, PREVIEW_CHARS);
-  node.append(element('p', 'secondary tool-caption', source.status === 'success' ? 'Written content' : 'Content to write'),
+  node.append(element('p', 'secondary tool-caption', source.status === 'success' ? 'written content' : 'content to write'),
     element('pre', undefined, content === '' ? '(empty content)' : context.bounded(text.text, TOTAL_CHARS)));
   if (text.limited) {
     node.append(element('p', 'secondary', 'Content preview limited.'), context.inspection('Retained supplied content (bounded)', () => content));
@@ -55,7 +55,7 @@ function replacementBlock(text: string): HTMLElement {
 }
 function edited(edits: Replacement[], context: PresentationContext): HTMLElement {
   const node = element('section', 'tool-content');
-  node.append(element('p', 'secondary tool-caption', 'Supplied old and new text, not an inferred diff'));
+  node.append(element('p', 'secondary tool-caption', 'supplied old and new text, not an inferred diff'));
   let budget = TOTAL_CHARS;
   for (const [index, edit] of edits.slice(0, EDITS).entries()) {
     const text = replacementPreview(edit, Math.max(0, budget / 2));

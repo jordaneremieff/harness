@@ -9,177 +9,145 @@ function palette(selector: string): Map<string, string> {
   return new Map([...match[1].matchAll(/--([a-z-]+):\s*(#[a-f\d]{3,6})(?=[;}]|$)/gi)].map(value => [value[1], value[2]]));
 }
 function luminance(color: string): number {
-  if (color.length === 4) color = `#${color.slice(1).split('').map(char => char + char).join('')}`;
   const channels = [1, 3, 5].map(index => Number.parseInt(color.slice(index, index + 2), 16) / 255).map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 }
-function contrast(a: string, b: string): number { const values = [luminance(a), luminance(b)].sort((a, b) => b - a); return (values[0] + 0.05) / (values[1] + 0.05); }
+function contrast(a: string, b: string): number { const values = [luminance(a), luminance(b)].sort((x, y) => y - x); return (values[0] + 0.05) / (values[1] + 0.05); }
 function rule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]+)\\}`).exec(css);
   assert.ok(match, `Missing ${selector}`); return match[1];
 }
-const inks = ['text', 'secondary', 'muted', 'info', 'success', 'warning', 'danger'];
-const surfaces = ['canvas', 'surface', 'tint', 'tint-strong', 'code'];
+const declarations = (property: string): string[] => [...css.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g'))].map(match => match[1].trim());
 for (const [theme, selector] of [['dark', ':root'], ['light', ':root[data-appearance=light]'], ['system light', ':root[data-appearance=system]']]) {
-  test(`${theme} inks pass AA on every surface and the inverted action stays legible`, () => {
+  test(`${theme} inks pass AA on the canvas`, () => {
     const colors = palette(selector);
-    for (const ink of inks) for (const surface of surfaces) {
-      const ratio = contrast(colors.get(ink) ?? '', colors.get(surface) ?? '');
-      assert.ok(ratio >= 4.5, `${ink} on ${surface}: ${ratio}`);
+    assert.deepEqual([...colors.keys()].filter(name => name !== 'backdrop').sort(), ['canvas', 'dim', 'fg', 'green', 'red', 'rule']);
+    for (const ink of ['fg', 'dim', 'red', 'green']) {
+      const ratio = contrast(colors.get(ink) ?? '', colors.get('canvas') ?? '');
+      assert.ok(ratio >= 4.5, `${ink} on canvas: ${ratio}`);
     }
-    for (const fill of ['text', 'secondary']) assert.ok(contrast(colors.get('canvas') ?? '', colors.get(fill) ?? '') >= 4.5, `canvas on ${fill}`);
   });
 }
-test('the palette has no brand accent and state colors never fill surfaces', () => {
-  assert.doesNotMatch(css, /--accent|--user|--selected|--raised/);
-  for (const state of ['info', 'success', 'warning', 'danger']) assert.doesNotMatch(css, new RegExp(`background(?:-color)?: var\\(--${state}\\)`));
-  assert.doesNotMatch(css, /border-radius: (?:50%|1[2-9]px|[2-9]\dpx)/);
-  assert.doesNotMatch(css, /backdrop-filter|filter:|text-shadow|animation:|transition:|scroll-behavior:\s*smooth/);
-  assert.deepEqual([...css.matchAll(/box-shadow: ([^;}]+)/g)].map(match => match[1]), ['0 1px 0 var(--text)', '0 0 0 100vmax #0000004d']);
+test('one monospace family, one size, one line height and two weights', () => {
+  assert.match(rule(':root'), /--font: ui-monospace, "SF Mono", Menlo, monospace;/);
+  assert.match(css, /html, body, button, input, textarea, select, pre, code, kbd, table, h1, h2, h3, h4, h5, h6 \{ font: 400 13px\/20px var\(--font\); \}/);
+  assert.deepEqual(declarations('font-family'), []);
+  assert.deepEqual(declarations('font-size'), []);
+  assert.deepEqual(declarations('line-height'), []);
+  assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '600']);
+  assert.deepEqual(declarations('font').filter(value => value !== '400 13px/20px var(--font)'), []);
 });
-test('the native shell keeps labeled composers, text controls and no kind labels', () => {
-  assert.match(html, /id="primary-editor"/); assert.match(html, /id="agent-editor"/);
+test('no radius, shadows, tints, motion or icons', () => {
+  assert.deepEqual([...new Set(declarations('border-radius'))], ['0']);
+  assert.deepEqual(declarations('box-shadow'), []);
+  const backgrounds = new Set(declarations('background').concat(declarations('background-color')));
+  assert.deepEqual([...backgrounds].sort(), ['transparent', 'var(--backdrop)', 'var(--canvas)']);
+  assert.match(rule('dialog::backdrop'), /background: var\(--backdrop\)/);
+  assert.doesNotMatch(css, /animation:|transition:|scroll-behavior:\s*smooth|backdrop-filter|filter:|text-shadow|gradient/);
+  assert.doesNotMatch(html, /<svg|class="icon/);
+});
+test('the shell has no header band and keeps labeled composers', () => {
+  assert.doesNotMatch(html, /conversation-head|head-title|head-actions|id="session-actions"|id="sidebar-hide"|id="sessions-button"|id="appearance-button"|id="agent-refresh"|id="agent-new"/);
+  assert.match(html, /<h1 id="session-title" class="sr-only">/); assert.match(html, /<h1 id="agent-name" class="sr-only" tabindex="-1">/);
   assert.match(html, /for="primary-editor"/); assert.match(html, /for="agent-editor"/);
   assert.match(html, /<dialog id="modal" aria-labelledby="modal-title"/);
   assert.match(html, /src="\/web\/app.js"/); assert.doesNotMatch(html, /on(?:load|click|error)=|<script[^>]*>[^<]+<\/script>/);
-  assert.match(html, /id="primary-send" type="submit" class="send" disabled title="Send \(Enter\)">Send<\/button>/);
-  assert.match(html, /id="agent-send" type="submit" class="send" disabled title="Send \(Enter\)">Send<\/button>/);
-  assert.match(html, /id="commands-button" class="nav-action" type="button" aria-haspopup="dialog">Commands<kbd>/);
-  assert.match(html, /id="sessions-button" class="nav-action" type="button" aria-haspopup="dialog">Sessions<\/button>/);
-  assert.doesNotMatch(html, /class="kind"|class="composer-card"|class="accent"/);
-  assert.match(html, /id="primary-editor" rows="1"/); assert.match(html, /id="agent-editor" rows="1"/);
-  assert.match(html, /<div class="head-sub"><button id="agent-copy"[^>]*><span id="agent-identity"><\/span><\/button><span id="agent-availability"/);
+  assert.match(html, /id="primary-send" type="submit" class="send" disabled aria-label="Send" title="Send \(Enter\)">↵<\/button>/);
+  assert.match(html, /id="commands-button" class="palette-hint" type="button" aria-haspopup="dialog" aria-label="Commands" title="Commands \(⌘K\)">⌘K<\/button>/);
+  assert.match(html, /<input id="agent-search" class="nav-filter"[^>]*hidden>/);
 });
-test('header, transcript, composer and controls share one reading column with a marker gutter', () => {
-  assert.match(rule(':root'), /--column: 46rem;\s*--gutter: 28px/);
-  assert.match(rule('.app'), /grid-template-columns: 248px minmax\(0,1fr\)/);
-  assert.match(rule('.app:has(> .sidebar[hidden])'), /grid-template-columns: minmax\(0,1fr\)/);
-  assert.match(rule('.conversation-head, .workspace-alert, .availability, .facts-panel, .transcript-actions, .widgets, .composer'), /width: min\(var\(--column\), calc\(100% - 2 \* var\(--edge\)\)\); margin-inline: auto/);
-  assert.match(rule('.transcript > .entry'), /width: min\(var\(--column\), calc\(100% - 2 \* var\(--edge\) \+ 2 \* var\(--scrollbar, 0px\)\)\); margin-inline: auto; padding-left: var\(--gutter\)/);
-  assert.match(rule('.transcript'), /scrollbar-gutter: stable both-edges/);
-  for (const selector of ['.conversation-head', '.transcript-actions', '.composer-input', '.composer-line', '.receipt']) assert.match(rule(selector), /var\(--gutter\)/);
-  assert.match(rule('.message.user::before'), /content: "›"; position: absolute; top: 0; left: calc\(-1 \* var\(--gutter\)\)/);
-  assert.match(rule('.composer-input::before'), /content: "›"/);
-  assert.match(css, /\.app\.drawer-open > \.sidebar/);
-  assert.match(rule('.workspace:has(> .sidebar-show:not([hidden]))'), /--edge: 52px/);
+test('sidebar and transcript sit on a ch grid without centering', () => {
+  assert.match(rule(':root'), /--line: 20px;\s*--half: 10px;\s*--sidebar: 34ch;\s*--measure: 100ch;/);
+  assert.match(rule('.app'), /grid-template-columns: var\(--sidebar\) minmax\(0,1fr\)/);
+  assert.match(rule('.sidebar'), /border-right: 1px solid var\(--rule\)/);
+  assert.match(rule('.transcript > .entry'), /max-width: calc\(var\(--measure\) \+ 2ch\); padding-left: 2ch/);
+  assert.doesNotMatch(css, /margin-inline: auto|margin: 0 auto|text-align: center;[^}]*empty/);
+  assert.match(rule('.message.user::before'), /content: "›"; position: absolute; top: 0; left: -2ch; width: 2ch; color: var\(--dim\)/);
+  assert.match(rule('.message.user > .message-body'), /font-weight: 600/);
+  for (const value of declarations('margin').concat(declarations('padding'), declarations('margin-top'), declarations('padding-top'), declarations('padding-bottom'), declarations('margin-bottom'))) {
+    for (const length of value.match(/-?[\d.]+px/g) ?? []) assert.ok(['0px', '1px', '-1px', '2px', '-2px', '20px', '10px'].includes(length) || length === '0', `off-grid length ${length} in ${value}`);
+  }
 });
-test('transcript content has no boxes and turn actions reveal without moving text', () => {
-  assert.doesNotMatch(rule('.message'), /background|border|padding/);
-  assert.doesNotMatch(rule('.tool-card > summary'), /border|background/);
-  assert.match(rule('.message-header'), /float: right;[^}]*opacity: 0; pointer-events: none/);
-  assert.match(rule('.message:hover > .message-header, .message:focus-within > .message-header'), /opacity: 1; pointer-events: auto/);
-  assert.match(rule('.message-header'), /^ position: relative; z-index: 2;/, 'turn actions stay above the transcript edge fade');
-  assert.match(rule('.facts-panel summary::before'), /position: absolute; top: 0; left: calc\(-1 \* var\(--gutter\)\)/);
-  assert.match(rule('.tool-expanded .tool-output-text'), /padding: 0; background: transparent/);
-  assert.match(rule('.agent-message-panel .composer textarea'), /scroll-margin-bottom: 40px/);
-  assert.match(css, /@container transcript \(min-width: 66rem\) \{\s*\.message-header \{ position: absolute; top: 0; left: calc\(100% \+ 16px\); flex-wrap: wrap; float: none; width: max-content; max-width: 140px; height: auto; margin: 0; \}\s*\.message-header \.timestamp \{ white-space: nowrap;/);
-  assert.match(rule('.message-body pre, .message-body table, .message-body > .tool-shell:first-child'), /clear: right/);
-  assert.match(rule('.tool-status'), /position: absolute; top: 0; left: calc\(-1 \* var\(--gutter\)\)/);
-  assert.match(rule('.tool-preview'), /overflow: hidden;[^}]*-webkit-line-clamp: 6/);
-  assert.match(rule('.tool-shell:hover > .tool-copy, .tool-shell:focus-within > .tool-copy'), /opacity: 1; pointer-events: auto/);
-  assert.match(rule('.code-block pre'), /margin: 0/); assert.doesNotMatch(rule('pre'), /border:/);
-});
-test('Latest sits above the composer at the column edge without changing transcript geometry', () => {
-  assert.match(rule('.latest'), /position: absolute; right: max\(var\(--edge\), calc\(\(100% - var\(--column\)\) \/ 2\)\); bottom: 2px/);
-  assert.match(rule('.latest'), /border: 1px solid var\(--faint\); border-radius: 4px; background: var\(--canvas\)/);
-  assert.match(rule('.latest'), /white-space: nowrap/);
-  assert.match(rule('.transcript-region'), /position: relative/);
-  assert.match(rule('.transcript-region > .transcript'), /height: calc\(100% - 24px\)/);
-  assert.doesNotMatch(css, /:has\(\.latest/);
-});
-test('history and agent actions are small text controls aligned to the column', () => {
-  assert.match(rule('.transcript-actions'), /display: flex; flex: none; gap: 16px; padding: 0 0 4px var\(--gutter\)/);
-  assert.doesNotMatch(rule('.transcript-actions'), /justify-content|position: (?:absolute|fixed)/);
-  assert.match(rule('.transcript-actions button, .head-actions > button:not(.icon-button), .latest'), /color: var\(--muted\); font-size: 12px/);
-  assert.match(html, /<div class="head-actions"><button id="agent-inspect" type="button" hidden>Inspect activity<\/button><\/div>/);
-});
-test('the composer is one borderless line with a statusline and text delivery controls', () => {
-  assert.match(rule('.composer'), /border-top: 1px solid var\(--faint\)/);
-  assert.match(rule('.composer:has(textarea:focus)'), /border-top-color: var\(--muted\)/);
-  assert.match(rule('.composer-input:has(textarea:focus)::before'), /color: var\(--text\)/);
-  assert.match(rule('.composer textarea'), /min-height: 40px; padding: 8px 0; border: 0; background: transparent/);
-  assert.match(rule('.composer textarea'), /resize: none/);
-  assert.match(rule('.statusline'), /font-family: var\(--font-code\)/);
-  assert.match(rule('.statusline'), /margin: -4px; padding: 4px; overflow: hidden/, 'focus outlines of statusline controls stay inside its clip');
-  assert.match(rule('.statusline button, .statusline summary'), /margin: 0; padding: 0/);
-  assert.match(rule('.statusline > button, .statusline > .fact'), /flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis/);
-  assert.match(rule('.statusline > .draft-state, .statusline > .receipt-details'), /flex: none/);
-  assert.match(rule('.send'), /color: var\(--text\); font-weight: 600/);
-  assert.match(rule('.caption'), /position: absolute; width: 1px; height: 1px;[^}]*clip: rect\(0,0,0,0\)/); assert.doesNotMatch(css, /\.caption[^{]*\{[^}]*display: none/);
-  assert.match(rule('.receipt:empty'), /display: none/);
-  assert.match(rule('.receipt-details pre'), /position: absolute; right: 0; bottom: calc\(100% \+ 4px\); left: 0/);
-});
-test('completion is a hairline popover flush with the input and selection uses tint and weight', () => {
-  const menu = rule('.command-menu');
-  assert.match(menu, /position: absolute; right: 0; bottom: 100%; left: 0/);
-  assert.match(menu, /max-height: min\(320px,40vh\)/); assert.match(menu, /border: 1px solid var\(--faint\)/);
-  assert.match(rule('.command-option[aria-selected=true]'), /^ background: var\(--tint-strong\); $/);
-  assert.match(rule('.command-name mark'), /background: transparent; color: inherit; font-weight: 700/);
-  assert.match(rule('.command-hint'), /position: sticky; bottom: 0/);
-  assert.match(rule('.command-hint'), /background: var\(--surface\)/);
-});
-test('sidebar rows are two lines with hover actions and Resume kept visible', () => {
-  assert.match(rule('.sidebar'), /border-right: 1px solid var\(--faint\)/);
-  assert.match(rule('.roster'), /overflow-y: auto/); assert.match(rule('.roster'), /scrollbar-width: thin/);
+test('roster rows are one line and Message takes the age slot without changing height', () => {
+  assert.match(rule('.nav-row, .row-select'), /display: flex; align-items: baseline;[^}]*white-space: nowrap/);
+  assert.match(rule('.nav-row[aria-current=page]::before, .row-select[aria-current=page]::before'), /content: "›"/);
+  assert.match(rule('.row-age, .row-message'), /position: absolute; top: 0; right: 0/);
   assert.match(rule('.row-message'), /opacity: 0; pointer-events: none/);
-  assert.match(rule('.agent-row:hover > .row-message, .agent-row:focus-within > .row-message'), /opacity: 1; pointer-events: auto/);
-  assert.match(rule('.agent-row[data-action=resume] > .row-message'), /opacity: 1; pointer-events: auto/);
-  assert.match(rule('.nav-row[aria-current=page], .agent-row:has(> .row-select[aria-current=page])'), /background: var\(--tint-strong\)/);
-  assert.doesNotMatch(css, /inset 2px/);
+  assert.match(rule('.agent-row:hover > .row-message, .agent-row:focus-within > .row-message, .agent-row[data-action=resume] > .row-message'), /opacity: 1; pointer-events: auto/);
+  assert.match(rule('.agent-row:hover > .row-age, .agent-row:focus-within > .row-age, .agent-row[data-action=resume] > .row-age'), /visibility: hidden/);
+  assert.match(rule('.roster-older, .roster-more'), /color: var\(--dim\)/);
+  assert.match(rule('.agent-row[data-live=false] .row-name'), /color: var\(--dim\)/);
+  assert.match(rule('.nav-row[aria-current=page]::before, .row-select[aria-current=page]::before'), /left: 0; width: 1ch/);
+  assert.match(rule('.sidebar'), /padding: var\(--line\) 1ch var\(--half\) 1ch/, 'a 1ch pointer gutter keeps › off the window edge');
 });
-test('focus, skip link, picker space and sticky modal heading remain available', () => {
-  assert.match(rule(':focus-visible'), /outline: 1.5px solid var\(--text\); outline-offset: 2px/);
-  assert.match(rule('input:focus-visible, dialog textarea:focus-visible, select:focus-visible'), /border-bottom-color: var\(--text\); box-shadow: 0 1px 0 var\(--text\)/);
+test('code, tables, tools and disclosures stay text on the canvas', () => {
+  assert.match(rule('pre'), /padding-left: calc\(2ch - 1px\); border-left: 1px solid var\(--dim\); white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto/, 'bounded output scrolls inside its block instead of spilling over later lines');
+  assert.match(rule('.transcript > button'), /display: block; margin: 0 0 var\(--line\) 2ch; color: var\(--dim\)/);
+  assert.doesNotMatch(css, /\.transcript-region::before/);
+  assert.match(rule('.message-body code'), /color: var\(--dim\)/);
+  assert.match(rule('.message-body thead th'), /border-bottom: 1px solid var\(--rule\)/);
+  assert.match(rule('.message-body ul > li::before'), /content: "-"; position: absolute; left: -2ch; color: var\(--dim\)/);
+  assert.match(rule('.tool-preview'), /-webkit-line-clamp: 3/);
+  assert.match(rule('.tool-status'), /position: absolute; top: 0; left: -2ch/);
+  assert.match(rule('.tool-expanded'), /padding-left: 2ch/);
+  assert.match(rule('summary::before'), /content: "▸"/); assert.match(rule('details[open] > summary::before'), /content: "▾"/);
+  assert.match(rule('.message-header'), /opacity: 0; pointer-events: none/);
+  assert.match(rule('.message:hover > .message-header, .message:focus-within > .message-header'), /opacity: 1; pointer-events: auto/);
+});
+test('the composer is a prompt line with one statusline', () => {
+  assert.match(rule('.composer'), /border-top: 1px solid var\(--rule\)/);
+  assert.match(rule('.composer-input::before'), /content: "›"/);
+  assert.match(rule('.composer-input:has(textarea:focus)::before'), /color: var\(--fg\)/);
+  assert.match(rule('.composer textarea'), /min-height: var\(--line\); padding: 0; border: 0; background: transparent/);
+  assert.match(rule('.statusline'), /margin: -2px; padding: 2px; overflow: hidden/, 'focus outlines stay inside the statusline clip');
+  assert.match(rule('.statusline > * + *::before'), /content: "· "/);
+  assert.match(rule('.send'), /color: var\(--fg\); font-weight: 600/); assert.match(rule('.send:disabled'), /color: var\(--dim\)/);
+  assert.match(rule('.modes button + button::before'), /content: "\|"/);
+  assert.match(rule('.latest'), /position: absolute; right: max\(0px, calc\(100% - var\(--measure\) - 2ch\)\); bottom: 0/);
+  assert.match(rule('.transcript-region > .transcript'), /height: calc\(100% - var\(--line\)\)/);
+  assert.match(rule('.statusline > .receipt-details'), /max-width: 0; overflow: hidden; opacity: 0/);
+});
+test('palette and menus are canvas panels with a dim edge and a › active row', () => {
+  assert.match(rule('dialog'), /border: 1px solid var\(--dim\); border-radius: 0; background: var\(--canvas\)/);
+  assert.match(rule('dialog[data-variant=palette], dialog[data-variant=picker]'), /inset: 0 auto auto calc\(var\(--sidebar\) \+ 2ch\)/);
+  assert.match(rule('#app:has(> .sidebar[hidden]) ~ dialog[data-variant=palette], #app:has(> .sidebar[hidden]) ~ dialog[data-variant=picker]'), /left: 2ch/);
+  assert.match(rule('.command-option[aria-selected=true]::before, .palette-row[aria-selected=true]::before'), /content: "›"/);
+  assert.match(rule('.command-name mark, .palette-name mark'), /background: transparent; color: inherit; font-weight: 600/);
+  assert.match(rule('.command-menu'), /border: 1px solid var\(--dim\); background: var\(--canvas\)/);
+});
+test('focus is a square 1 px fg outline', () => {
+  assert.match(rule(':focus-visible'), /outline: 1px solid var\(--fg\); outline-offset: 1px/);
   assert.match(rule('.skip-link:focus'), /translateY\(0\)/);
-  assert.match(rule('.picker-projects'), /height: min\(192px,25dvh\)/);
-  assert.match(rule('.modal-heading'), /position: sticky/);
-  assert.match(rule('dialog'), /border: 1px solid var\(--faint\); border-radius: 10px/); assert.doesNotMatch(rule('dialog'), /box-shadow/);
-  assert.match(rule('.transcript-region > .empty-state'), /width: min\(var\(--column\), calc\(100% - 2 \* var\(--edge\)\)\)/);
-  assert.doesNotMatch(rule('.transcript-region > .empty-state'), /text-align: center|translate/);
 });
-test('responsive layout has the collapse breakpoints, coarse pointers and forced colors', () => {
+test('responsive, short, coarse and forced-color paths remain', () => {
   for (const width of [899, 599]) assert.ok(css.includes(`${width}px`));
-  assert.match(css, /@media\s*\(max-height:599px\)/);
-  assert.match(css, /@media\s*\(forced-colors:\s*active\)/); assert.match(css, /@media\s*\(pointer:\s*coarse\)/);
+  assert.match(css, /@media\s*\(max-height:599px\)/); assert.match(css, /@media\s*\(forced-colors:\s*active\)/); assert.match(css, /@media\s*\(pointer:\s*coarse\)/);
   const coarse = css.slice(css.indexOf('@media (pointer:coarse)'), css.indexOf('@media (forced-colors:active)'));
-  assert.match(coarse, /\.message-header, \.tool-copy, \.code-block > \.copy, \.statusline > \.receipt-details \{ opacity: 1; pointer-events: auto; \}\n {2}\.statusline > \.receipt-details \{ max-width: none; \}/);
-  assert.match(coarse, /\.row-message \{ position: static;[^}]*opacity: 1; pointer-events: auto; \}/);
-  assert.match(coarse, /\.message-header \{ position: static; float: right; width: auto; max-width: 50%; height: 44px; margin-left: 16px; \}/, 'always-visible coarse turn actions stay in flow so stacked headers cannot overlap');
-  const targets = [...coarse.matchAll(/\n {2}([^{\n]+) \{ min-height: 44px; \}/g)].flatMap(match => match[1]?.split(', ') ?? []);
-  for (const selector of ['.row-age', '.message-header button', '.row-message', '.statusline button', '.statusline summary', '.transcript-actions button', '.head-actions > button:not(.icon-button)', '.latest', '.code-block > .copy']) assert.ok(targets.includes(selector), `coarse target ${selector}`);
-});
-test('one disclosure marker, a quiet scroll edge, a clear dark backdrop and an anchored session menu', () => {
-  assert.match(rule('summary'), /list-style: none/); assert.match(rule('summary::-webkit-details-marker'), /display: none/);
-  assert.match(rule('summary::before'), /content: "▸"; display: inline-block; width: 14px; color: var\(--muted\); font: 12px\/1 var\(--font-code\)/);
-  assert.match(rule('details[open] > summary::before'), /content: "▾"/);
-  assert.match(rule('.tool-card > summary::before, .tool-card[open] > summary::before, .receipt-details summary::before, .receipt-details details[open] > summary::before'), /content: none/, 'tool lines keep their status glyph as the only marker, open or closed');
-  assert.doesNotMatch(css, /summary::before \{ content: "[^▸▾]/);
-  assert.match(rule('.transcript-region::before'), /height: 24px; background: linear-gradient\(var\(--canvas\) 6px, transparent\); pointer-events: none/);
-  assert.match(rule(':root'), /--backdrop: #00000099/); assert.match(rule(':root[data-appearance=light]'), /--backdrop: #00000033/);
-  assert.match(rule('dialog::backdrop'), /background: var\(--backdrop\)/);
-  assert.match(rule('dialog[data-variant=menu]'), /inset: var\(--menu-top\) var\(--menu-right\) auto auto; width: 232px;[^}]*margin: 0/);
-  assert.match(rule('dialog[data-variant=menu] .options'), /border-top: 0/);
-  assert.match(rule('dialog[data-variant=menu] .options > button, dialog[data-variant=menu] #modal-body > button'), /border-bottom: 0/);
-  assert.match(html, /id="session-actions" class="icon-button" type="button" aria-label="Session actions" aria-haspopup="dialog" title="Session actions"><span class="more-glyph" aria-hidden="true">⋯<\/span>/);
-  assert.match(rule('.statusline > .receipt-details'), /display: flex; align-items: center; max-width: 0; overflow: hidden; opacity: 0/);
-  assert.match(rule('.statusline:hover > .receipt-details, .statusline:focus-within > .receipt-details, .statusline > .receipt-details:has(details[open])'), /max-width: none; opacity: 1/);
-  assert.match(rule('.diff-del'), /color: var\(--danger\)/); assert.match(css, /\.diff-add \{ color: var\(--success\); \}/);
-});
-test('sidebar message form has compact controls and bounded independent overflow', () => {
-  assert.match(rule('.agent-message-panel'), /max-height: 50dvh;[^}]*overflow: auto/);
-  assert.match(rule('.agent-message-panel .composer'), /--gutter: 20px; width: 100%/);
-  assert.match(rule('.agent-message-panel .composer-line'), /flex-wrap: wrap/);
-  assert.match(rule('.message-panel-head > div'), /min-width: 0/);
-});
-test('an open Message panel reserves two roster rows and lets short sidebars scroll without overlap', () => {
-  const open = '.sidebar:has(> .agent-message-panel:not([hidden]))';
-  assert.match(rule(open), /overflow-y: auto/);
-  assert.match(rule(`${open} > *`), /flex-shrink: 0/);
-  assert.match(rule(`${open} .roster-section`), /display: grid; grid-template-rows: auto auto minmax\(96px,1fr\) auto/);
-  assert.match(rule(`${open} .roster-section`), /flex: 1 0 0; min-height: min-content/);
-  assert.match(rule(`${open} .roster`), /min-height: 96px/);
+  assert.match(coarse, /button, summary, \.row-age, \.row-message, \.message-header button, \.statusline button, \.transcript-actions button, \.latest, \.code-block > \.copy, \.tool-copy \{ min-height: 44px; min-width: 44px; \}/);
+  assert.match(coarse, /\.message-header, \.tool-copy, \.code-block > \.copy, \.statusline > \.receipt-details, \.row-message \{ opacity: 1; pointer-events: auto; \}/);
+  assert.match(coarse, /\.message-header \{ position: static; float: right;/);
   const short = css.slice(css.indexOf('@media (max-height:599px)'), css.indexOf('@media (pointer:coarse)'));
-  assert.ok(short.includes(`${open} .roster-section { min-height: 0; }`), 'short sidebars shrink the roster before the panel');
-  assert.ok(short.includes(`${open} .agent-message-panel { min-height: min-content; max-height: none; overflow: visible; }`), 'short sidebars keep the whole panel and its controls');
+  assert.ok(short.includes('.sidebar > .roster-section { min-height: 2lh; }'));
+  assert.match(css, /\.app\.drawer-open > \.sidebar/);
+});
+test('the Message panel is pinned to the sidebar bottom and only the roster scrolls', () => {
+  assert.match(rule('.sidebar'), /overflow: hidden/);
+  assert.match(rule('.sidebar > *'), /flex-shrink: 0/);
+  assert.match(rule('.sidebar > .roster-section'), /flex: 1 1 auto; min-height: 3lh/);
+  assert.match(rule('.roster'), /flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto/);
+  assert.match(rule('.agent-message-panel'), /flex: none; max-height: calc\(100dvh - 12lh\);[^}]*overflow: auto/);
+  assert.doesNotMatch(css, /\.sidebar:has/);
+});
+test('round-two corrections: diff ink, palette columns, heading rhythm, coarse rows and native search chrome', () => {
+  assert.match(css, /\.diff-del \{ color: var\(--dim\); \} \.diff-add \{ color: var\(--fg\); \}/);
+  assert.match(rule('.command-option, .palette-row'), /grid-template-columns: 28ch minmax\(0,1fr\) 10ch/);
+  assert.match(rule('.message-body :is(h1, h2, h3, h4, h5, h6) + :not(h1, h2, h3, h4, h5, h6)'), /margin-top: 0/, 'consecutive headings keep their blank line');
+  assert.match(rule('input[type=search]::-webkit-search-cancel-button'), /display: none/);
+  assert.doesNotMatch(css, /@container/);
+  const coarse = css.slice(css.indexOf('@media (pointer:coarse)'), css.indexOf('@media (forced-colors:active)'));
+  assert.doesNotMatch(coarse, /\.row-message \{ position: static/, 'coarse actions stay in the age slot on one line');
+  assert.match(coarse, /\.agent-row:is\(\[data-action=message\],\[data-action=resume\]\) > \.row-age \{ visibility: hidden; \}/);
+  assert.match(rule('.picker-select'), /display: flex;[^}]*white-space: nowrap/);
+  assert.match(rule('dialog[data-variant=picker]'), /padding: 0 2ch var\(--line\)/);
 });

@@ -9,39 +9,23 @@ const cssPath = process.env.CONTRAST_CSS
 	? resolve(process.env.CONTRAST_CSS)
 	: fileURLToPath(new URL("./style.css", import.meta.url));
 const css = readFileSync(cssPath, "utf8");
-const foregrounds = ["text", "secondary", "muted", "success", "warning", "danger", "info"];
-const surfaces = ["canvas", "surface", "tint", "tint-strong", "code"];
-// The one primary action per view inverts ink: canvas-colored text on an ink fill.
-const inverseFills = ["text", "secondary"];
-const required = [...foregrounds, ...surfaces, "faint"];
-// Faint hairlines decorate content already identified by text, position, or a label.
-// Any new use of the low-contrast hairline needs a deliberate classification.
+const foregrounds = ["fg", "dim", "red", "green"];
+// The canvas is the only surface: no tints, fills, or raised panels.
+const surfaces = ["canvas"];
+// No inverted fills exist; the list stays explicit so a new one needs a deliberate model.
+const inverseFills: string[] = [];
+const required = [...foregrounds, ...surfaces, "rule"];
+// Rule hairlines decorate content already identified by text or position.
+// Any new use of the low-contrast rule needs a deliberate classification.
 const decorativeHairlines = new Set([
-	".skip-link|border",
 	".sidebar|border-right",
-	".nav-filter|border-bottom",
-	".sidebar-foot|border-top",
 	".agent-message-panel|border-top",
-	".message-body blockquote|border-left",
-	".message-body th, .message-body td|border-bottom",
-	".latest|border",
+	".message-body thead th|border-bottom",
+	".message-body hr|border-top",
 	".composer|border-top",
-	".receipt-details pre|border",
-	".command-menu|border",
-	".command-hint|border-top",
-	"dialog|border",
-	"dialog[data-variant=menu] #modal-body > button|border-top",
-	".options|border-top",
-	".options > button|border-bottom",
-	".notification|border-bottom",
-	".picker-sessions|border-top",
-	".picker-session|border-bottom",
 ]);
-// Non-content paint: the dialog backdrop dims the page and the scroll fade masks clipped lines.
-const decorativeBackgrounds = new Set([
-	"dialog::backdrop|var(--backdrop)",
-	".transcript-region::before|linear-gradient(var(--canvas) 6px, transparent)",
-]);
+// Non-content paint: the dialog backdrop dims the page behind a dialog.
+const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)"]);
 type RGB = [number, number, number];
 type Rule = { selector: string; contexts: string[]; declarations: { property: string; value: string }[] };
 type Measurement = {
@@ -229,8 +213,8 @@ function matrix(palette: Palette, theme: string, measure: Measure) {
 	}
 	for (const fg of foregrounds) for (const bg of surfaces) measure("text-matrix", `--${fg} / --${bg}`, fg, bg, 4.5);
 	for (const fill of inverseFills) measure("inverse-text", `--canvas / --${fill}`, "canvas", fill, 4.5);
-	for (const bg of surfaces) measure("border-matrix", `--muted / --${bg}`, "muted", bg, 3);
-	for (const bg of surfaces) measure("focus-matrix", `--text / --${bg}`, "text", bg, 3);
+	for (const bg of surfaces) measure("border-matrix", `--dim / --${bg}`, "dim", bg, 3);
+	for (const bg of surfaces) measure("focus-matrix", `--fg / --${bg}`, "fg", bg, 3);
 }
 function textDeclaration(context: Context, property: string, value: string) {
 	const { theme, source, exclusions, issues, measure, decl } = context;
@@ -239,11 +223,11 @@ function textDeclaration(context: Context, property: string, value: string) {
 		return;
 	}
 	const name = token(value);
-	if (!name || ![...foregrounds, "canvas"].includes(name)) {
+	if (!name || !foregrounds.includes(name)) {
 		issues.push(`${theme}: non-token text color ${source} ${property}: ${value}`);
 		return;
 	}
-	for (const bg of name === "canvas" ? inverseFills : surfaces)
+	for (const bg of surfaces)
 		measure("text-declaration", `${source} ${property}: ${value} / --${bg}`, name, bg, 4.5);
 	const localBg = token(decl["background-color"] ?? decl.background ?? "");
 	if (localBg) measure("local-pair", `${source} ${property} on --${localBg}`, name, localBg, 4.5);
@@ -270,12 +254,13 @@ function backgroundDeclaration(context: Context, value: string) {
 		return;
 	}
 	if (inverseFills.includes(name)) inverseBackground(context, name);
+	else if (!surfaces.includes(name)) issues.push(`${theme}: non-canvas surface ${source}: ${value}`);
 	else for (const fg of foregrounds) measure("background-declaration", `${source} --${fg} / --${name}`, fg, name, 4.5);
 }
 function decorativeEdge(context: Context, property: string, edge: string, name: string | undefined): boolean {
-	if (edge !== "transparent" && name !== "faint") return false;
+	if (edge !== "transparent" && name !== "rule") return false;
 	const { theme, rule, source, issues, exclusions } = context;
-	if (name === "faint" && !decorativeHairlines.has(`${rule.selector}|${property}`))
+	if (name === "rule" && !decorativeHairlines.has(`${rule.selector}|${property}`))
 		issues.push(`${theme}: unclassified low-contrast hairline ${source} ${property}`);
 	exclusions.push(`${theme}: decorative edge ${source} ${property}: ${edge}`);
 	return true;
@@ -427,8 +412,8 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 		);
 	}
 	assert.ok(
-		audit(`${css}\n.probe { color: var(--text); background: var(--text); }`).measurements.some(
-			(m) => m.source.includes(".probe") && m.ratio === 1,
+		audit(`${css}\n.probe { color: var(--dim); background: var(--canvas); }`).measurements.some(
+			(m) => m.source.includes(".probe") && m.kind === "local-pair",
 		),
 	);
 	assert.ok(audit(`${css}\n:root { color: #f00; }`).issues.some((i) => i.includes("non-token text color")));
@@ -439,19 +424,19 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 		),
 	);
 	assert.ok(
-		audit(`${css}\ninput { border: 1px solid var(--faint); }`).issues.some((i) =>
+		audit(`${css}\ninput { border: 1px solid var(--rule); }`).issues.some((i) =>
 			i.includes("unclassified low-contrast hairline"),
 		),
 	);
 	assert.ok(
-		audit(`${css}\n.probe { color: var(--canvas); background: var(--tint); }`).measurements.some(
-			(m) => m.source.includes(".probe") && m.ratio < m.threshold,
+		audit(`${css}\n.probe { color: var(--rule); background: var(--canvas); }`).issues.some((i) =>
+			i.includes("non-token text color"),
 		),
 	);
-	assert.ok(audit(`${css}\n.probe { background: var(--text); }`).issues.some((i) => i.includes("ink fill lacks")));
+	assert.ok(audit(`${css}\n.probe { background: var(--fg); }`).issues.some((i) => i.includes("non-canvas surface")));
 	assert.ok(audit(`${css}\ndialog::backdrop { background: #000000cc; }`).issues.some((i) => i.includes("unmodeled background")));
-	assert.throws(() => audit(`${css}\n.probe { background: var(--backdrop); }`), /opaque hex/, "the translucent backdrop token is not a content surface");
-	assert.ok(audit(`${css}\n.probe { --muted: #000000; }`).issues.some((i) => i.includes("Component-local variable")));
+	assert.ok(audit(`${css}\n.probe { background: var(--backdrop); }`).issues.some((i) => i.includes("non-canvas surface")), "the translucent backdrop token is not a content surface");
+	assert.ok(audit(`${css}\n.probe { --dim: #000000; }`).issues.some((i) => i.includes("Component-local variable")));
 	assert.deepEqual(audit(`${css}\n.probe { --edge: 12px; }`).issues, []);
 });
 test("contrast thresholds use exact ratios, not rounded display values", () => {
@@ -462,7 +447,7 @@ test("contrast thresholds use exact ratios, not rounded display values", () => {
 });
 test("system light overrides match explicit light exactly", () => {
 	assert.throws(
-		() => audit(`${css}\n@media (prefers-color-scheme: light) { :root[data-appearance=system] { --muted: #000000; } }`),
+		() => audit(`${css}\n@media (prefers-color-scheme: light) { :root[data-appearance=system] { --dim: #000000; } }`),
 		/System light override differs/,
 	);
 });
