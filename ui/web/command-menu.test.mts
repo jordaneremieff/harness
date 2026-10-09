@@ -27,7 +27,7 @@ const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
 afterEach(() => { if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument); else Reflect.deleteProperty(globalThis, 'document'); });
 function fixture() {
   const editor = new FakeNode(); const menu = new FakeNode(); menu.id = 'primary-command-menu'; const announcements = new FakeNode(); const changed: string[] = [];
-  let inventory: CommandInventory = {state: 'ready', items: ['compact', 'model', 'thinking'].map(name => ({name, description: `${name} description`, source: 'App'}))};
+  let inventory: CommandInventory = {state: 'ready', items: ['compact', 'model', 'thinking'].map(name => ({name, description: `${name} description`, source: 'app'}))};
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => {const node = new FakeNode(); node.tag = tag; return node;}, getElementById: () => announcements}});
   const controller = new CommandMenu(editor as unknown as HTMLTextAreaElement, menu as unknown as HTMLElement, () => inventory, text => {changed.push(text); controller.update();});
   const text = (value: string, caret = value.length, end = caret) => {editor.value = value; editor.setSelectionRange(caret, end); editor.fire('focus'); controller.update();};
@@ -89,7 +89,7 @@ test('Escape persists across inventory updates; ShiftEnter, blur and composition
 });
 test('each settled query announces at most once and never announces each arrow or inventory paint', () => {
   const f = fixture(); f.inventory({state: 'loading', items: []}); f.text('/'); assert.equal(f.announcements.writes, 0);
-  f.inventory({state: 'ready', items: ['a', 'b'].map(name => ({name, description: '', source: 'App'}))});
+  f.inventory({state: 'ready', items: ['a', 'b'].map(name => ({name, description: '', source: 'app'}))});
   assert.equal(f.announcements.textContent, '2 commands'); const writes = f.announcements.writes;
   f.key('ArrowDown'); f.controller.update(); f.key('Escape'); f.controller.update(); assert.equal(f.announcements.writes, writes);
   f.text('/a'); assert.equal(f.announcements.textContent, '1 command for /a');

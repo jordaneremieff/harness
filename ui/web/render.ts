@@ -98,7 +98,7 @@ export function reconcileChildren(parent: HTMLElement, wanted: HTMLElement[]): v
 type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
 type MessageNode = {node: HTMLElement; header: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; time?: number; fork?: HTMLButtonElement};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement};
-type ToolNode = {card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; expanded: HTMLElement; source?: JoinedTool; presentation?: HTMLElement; output?: HTMLElement; contentSource?: JoinedTool};
+type ToolNode = {card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; expanded: HTMLElement; source?: JoinedTool; presentation?: HTMLElement; output?: HTMLElement; contentSource?: JoinedTool};
 export class Transcript {
   private entries: EntryView[] = [];
   private displayed: EntryView[] = [];
@@ -319,7 +319,7 @@ export class Transcript {
     const node = element('article', `message ${message.role === 'user' ? 'user' : ''}`);
     const header = element('header', 'message-header'); const body = element('div', 'message-body'); const error = element('p', 'error message-error'); error.hidden = true;
     const role = presentMessage(message).label;
-    header.append(element('span', undefined, bounded(role, 4096)));
+    header.append(element('span', 'sr-only', bounded(role, 4096)));
     header.append(button('Copy', () => { void copy(partText(entry.messages.get(message.id)?.source.parts ?? []), node); }, 'copy'));
     node.append(header, body, error);
     const cached = {node, header, body, error, parts: new Map<string, PartNode>(), source: message}; entry.messages.set(message.id, cached); return cached;
@@ -393,9 +393,9 @@ export class Transcript {
   }
   private createTool(source: JoinedTool): ToolNode {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
-    const tier = element('span', 'tool-tier'); const title = element('span'); const glyph = element('span', 'tool-status');
-    const chevron = element('span', 'tool-chevron'); chevron.setAttribute('aria-hidden', 'true'); tier.append(chevron, title, glyph);
-    const meta = element('div', 'tool-secondary'); summary.append(tier, meta);
+    const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status'); glyph.setAttribute('role', 'img');
+    const title = element('span', 'tool-name'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
+    tier.append(glyph, title, target, meta); summary.append(tier);
     const preview = element('div', 'tool-preview'); const expanded = element('div', 'tool-expanded'); summary.append(preview); node.append(summary, expanded);
     node.dataset.disclosure = `tool:${source.callId}`; node.open = this.expanded.has(`tool:${source.callId}`);
     const action = button('', () => { void copy(tool.source?.result ? partText(tool.source.result) : '', tool.card).then(copied => { if (copied) { setIcon(action, 'check'); action.title = 'Copied'; } }); }, 'quiet tool-copy');
@@ -403,7 +403,7 @@ export class Transcript {
     action.setAttribute('aria-label', 'Copy tool output'); action.title = 'Copy tool output';
     action.addEventListener('click', event => event.stopPropagation());
     action.addEventListener('blur', () => { setIcon(action, 'copy'); action.title = 'Copy tool output'; }); card.append(action);
-    const tool: ToolNode = {card, node, copy: action, title, glyph, meta, preview, expanded}; this.tools.set(source.callId, tool);
+    const tool: ToolNode = {card, node, copy: action, title, target, glyph, meta, preview, expanded}; this.tools.set(source.callId, tool);
     this.trackDisclosure(node, `tool:${source.callId}`);
     node.addEventListener('toggle', () => this.toolExpansion(tool)); return tool;
   }
@@ -411,7 +411,7 @@ export class Transcript {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
     const previous = tool.source; tool.source = source;
     if (previous === source) return tool.card;
-    const target = subject(source.args); setText(tool.title, `${source.name}${target ? ` · ${target}` : ''}`);
+    setText(tool.title, source.name); setText(tool.target, subject(source.args)); tool.target.hidden = !tool.target.textContent;
     setText(tool.glyph, source.status === 'success' ? '✓' : source.status === 'error' ? '!' : '●');
     tool.glyph.className = `tool-status ${source.status}`; tool.glyph.setAttribute('aria-label', source.status);
     setText(tool.meta, [metadata(source.args), source.duration !== undefined && source.status !== 'working' ? `${source.duration} ms` : ''].filter(Boolean).join(' · '));
@@ -424,8 +424,8 @@ export class Transcript {
     const source = tool.source; if (!source) return;
     const output = source.result ? partText(source.result) : '';
     const args = source.argumentText ?? (source.args ? rawText(source.args.value) : '');
-    const preview = previewText(output || args, 6, 1800);
-    setText(tool.preview, `${source.status === 'working' ? 'Working' : source.status === 'error' ? 'Tool error' : 'Tool returned successfully'}\n${preview.text}${preview.truncated ? '\nExpand for retained data.' : ''}`);
+    const preview = previewText(output || args, 5, 1800);
+    setText(tool.preview, `${preview.text}${preview.truncated ? '\n…' : ''}`);
     if (tool.node.open) this.expandTool(tool);
   }
   private toolExpansion(tool: ToolNode): void {
@@ -440,8 +440,8 @@ export class Transcript {
     const region = presentTool(source, {bounded, rawText, inspection, structured});
     const previous = tool.contentSource;
     if (previous?.args === source.args && previous?.name === source.name && tool.presentation && region) {
-      const heading = tool.presentation.querySelector('h3');
-      if (heading) setText(heading, region.querySelector('h3')?.textContent ?? '');
+      const heading = tool.presentation.querySelector('.tool-caption');
+      if (heading) setText(heading, region.querySelector('.tool-caption')?.textContent ?? '');
       return;
     }
     tool.presentation?.remove(); tool.presentation = region;

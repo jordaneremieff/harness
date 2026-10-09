@@ -49,7 +49,7 @@ class FakeNode {
     if (this.style.height) return Number.parseFloat(this.style.height);
     if (this.measured !== undefined) return this.measured;
     if (this.className === 'entry') return 140;
-    if (this.className === 'agent-row') return 110;
+    if (this.className === 'agent-row') return 48;
     return 20;
   }
   get offsetTop(): number {
@@ -162,14 +162,17 @@ test('callId joins call and results across entries with one bounded disclosure a
   const result = {type: 'toolResult' as const, callId: 'call-1', name: 'read', isError: false, parts: [{type: 'text' as const, text: 'x'.repeat(5000)}]};
   const entries = [{id: 'call', kind: 'message', messages: [{...message('m-call', ''), parts: [call]}]}, {id: 'result', kind: 'message', messages: [{...message('m-result', ''), parts: [result]}]}];
   view.set(entries); flush(); const cards = node('primary-transcript').querySelectorAll('.tool-card'); assert.equal(cards.length, 1);
-  const card = cards[0]; assert.ok(card); assert.match(card.textContent, /read · \/full\/path/); assert.match(card.textContent, /offset 1 · limit 10/);
-  assert.match(card.textContent, /Tool returned successfully/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) < 2000);
+  const card = cards[0]; assert.ok(card); assert.equal(card.querySelector('.tool-name')?.textContent, 'read'); assert.equal(card.querySelector('.tool-target')?.textContent, '/full/path');
+  assert.equal(card.querySelector('.tool-secondary')?.textContent, 'offset 1 · limit 10'); assert.equal(card.querySelector('.tool-tier')?.children[0], card.querySelector('.tool-status'));
+  assert.equal(card.querySelector('.tool-status')?.attributes.role, 'img'); assert.equal(card.querySelector('.tool-status')?.attributes['aria-label'], 'success');
+  assert.doesNotMatch(card.textContent, /Tool returned successfully|Working|Tool error/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) < 2000);
+  assert.match(card.querySelector('.tool-preview')?.textContent ?? '', /\n…$/);
   assert.equal(card.querySelector('.tool-preview')?.parentNode, card.querySelector('summary'));
   assert.equal(card.querySelectorAll('details').length, 0); card.open = true; card.dispatch('toggle'); flush();
   assert.equal(card.querySelector('pre')?.textContent, 'x'.repeat(5000));
   const raw = card.querySelectorAll('details').find(node => node.querySelector('summary')?.textContent === 'Raw result');
   assert.ok(raw); raw.open = true; raw.dispatch('toggle'); assert.match(raw.querySelector('pre')?.textContent ?? '', /"type": "text"/);
-  assert.equal(card.querySelectorAll('.tool-chevron').length, 1); assert.equal(card.parentNode?.querySelectorAll('.tool-copy').length, 1);
+  assert.equal(card.querySelectorAll('.tool-chevron').length, 0); assert.equal(card.parentNode?.querySelectorAll('.tool-copy').length, 1);
   view.set(entries, new Map([['call-1', {callId: 'call-1', name: 'read', phase: 'end' as const, parts: [{type: 'text' as const, text: 'failure cause'}], isError: true}]])); flush();
   assert.equal(node('primary-transcript').querySelector('.tool-card'), card); assert.match(card.textContent, /failure cause/);
   assert.equal(card.querySelector('.tool-status')?.attributes['aria-label'], 'error');
@@ -270,18 +273,19 @@ test('roster empty states distinguish discovery, loading, failure and successful
   const empty = node('roster').children[0]; const refresh = node('roster-footer').querySelector('button'); assert.equal(refresh?.textContent, 'Refresh'); refresh?.dispatch('click');
   assert.doesNotMatch(node('roster-footer').textContent, /0 shown|More/);
   view.set([], {scan: {...scan, state: 'running'}, stale: false}); flush(); assert.equal(node('roster').children[0], empty);
-  assert.equal(node('roster').textContent, 'Loading roster'); assert.equal(node('roster-footer').querySelector('button'), null);
+  assert.equal(node('roster').textContent, 'Loading roster'); assert.equal(node('roster-footer').querySelector('button'), null); assert.equal(node('roster-footer').hidden, false);
   view.set([], {scan: {...scan, state: 'failed'}, stale: false, error: {code: 'catalog', message: 'Record unreadable', retry: 'read'}}); flush();
   assert.match(node('roster').textContent, /Roster discovery failed: Record unreadable/); const retry = node('roster').querySelector('button'); assert.equal(retry?.textContent, 'Retry'); retry?.dispatch('click');
   view.set([], {scan: {...scan, state: 'ready', complete: true}, stale: false}); flush();
   assert.equal(node('roster').textContent, 'No agents in this view'); assert.equal(node('roster-footer').querySelector('button'), null);
+  assert.equal(node('roster-footer').hidden, true); assert.equal(node('roster-footer').textContent, '');
   assert.deepEqual(actions, ['refresh', 'refresh']);
 });
 test('roster More uses cached page cursors independently from scan completeness', () => {
   setup(); const actions: Array<string | undefined> = []; const view = new Roster(() => {}, action => actions.push(action));
   const scan = {state: 'ready' as const, complete: true, visited: 2, skipped: 0, omitted: 0};
   view.set([row('one')], {scan, stale: false, nextCursor: 'page-2'}); flush();
-  const more = node('roster-footer').querySelector('button'); assert.equal(more?.textContent, '1 shown · More'); more?.dispatch('click');
+  const more = node('roster-footer').querySelector('button'); assert.equal(more?.textContent, '1 shown · More'); assert.equal(node('roster-footer').hidden, false); more?.dispatch('click');
   view.set([], {scan: {...scan, complete: false, scanId: 'scan-2'}, stale: false, nextCursor: null}); flush();
   const continuation = node('roster-footer').querySelector('button'); assert.equal(continuation?.textContent, 'Continue roster scan'); continuation?.dispatch('click');
   view.set([], {scan: {...scan, complete: false}, stale: false}); flush(); assert.equal(node('roster-footer').querySelector('button'), null);
@@ -294,7 +298,7 @@ test('roster virtual rows retain selected/focused pins, internal gaps and measur
   view.set(rows, undefined, 'full-identity-200'); flush(); const container = node('roster'); const pinned = container.children.find(child => child.dataset.identity === 'full-identity-200'); assert.ok(pinned);
   pinned.measured = 250; pinned.focus(); view.set(rows, undefined, 'full-identity-0'); flush();
   assert.equal(pinned.isConnected, true); assert.equal(fakeDocument.activeElement, pinned); assert.equal(pinned.offsetHeight, 250);
-  assert.equal(pinned.offsetTop, 200 * 110); assert.ok(container.children.filter(child => child.className === 'spacer').length >= 2);
+  assert.equal(pinned.offsetTop, 200 * 48); assert.ok(container.children.filter(child => child.className === 'spacer').length >= 2);
   assert.ok(container.children.filter(child => child.className === 'agent-row').length < 40);
 });
 test('fork appears only at finalized retained user entries and sends the retained entry ID', () => {

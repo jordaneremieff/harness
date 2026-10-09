@@ -146,7 +146,7 @@ export class Composer {
       const style = getComputedStyle(this.editor); const line = Number.parseFloat(style.lineHeight);
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
       const short = matchMedia('(max-height: 599px)').matches;
-      const baseline = (short || this.sidebar ? 2 : 3) * line + extra;
+      const baseline = line + extra;
       const available = this.editor.closest<HTMLElement>('.conversation')?.clientHeight ?? innerHeight;
       const cap = Math.max(baseline, Math.min(10 * line + extra, available * (short ? 0.25 : 0.3)));
       this.editor.style.maxHeight = `${cap}px`;

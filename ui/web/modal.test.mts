@@ -3,6 +3,9 @@ import test from 'node:test';
 import { Modal } from './modal.ts';
 class FakeNode extends EventTarget {
   textContent = ''; open = false; isConnected = true; focused = false; disabled = false; buttons: FakeNode[] = [];
+  dataset: Record<string, string> = {}; properties = new Map<string, string>(); box = {left: 0, top: 0, right: 0, bottom: 0};
+  style = {setProperty: (name: string, value: string) => { this.properties.set(name, value); }};
+  getBoundingClientRect(): {left: number; top: number; right: number; bottom: number} {return this.box;}
   querySelectorAll(): FakeNode[] {return this.buttons;}
   replaceChildren(): void {this.textContent = '';}
   showModal(): void {this.open = true;}
@@ -56,6 +59,25 @@ test('Escape invokes protocol cancellation rather than untracked dismissal', () 
     const event = new Event('cancel', {cancelable: true}); fake.nodes.get('modal')?.dispatchEvent(event);
     assert.equal(event.defaultPrevented, true); assert.equal(cancels, 1); assert.equal(modal.openNow, true);
   } finally {fake.restore();}
+});
+test('a menu anchors under its trigger, closes on an outside click, and reverts on the next open', () => {
+  const fake = setup(); const width = Object.getOwnPropertyDescriptor(globalThis, 'innerWidth');
+  Object.defineProperty(globalThis, 'innerWidth', {configurable: true, value: 1440});
+  try {
+    const modal = new Modal(); const dialog = fake.nodes.get('modal'); const trigger = new FakeNode(); assert.ok(dialog);
+    trigger.box = {left: 1180, top: 12, right: 1208, bottom: 40};
+    modal.open('Session actions'); modal.anchor(trigger as unknown as HTMLElement);
+    assert.equal(dialog.dataset.variant, 'menu'); assert.equal(dialog.properties.get('--menu-top'), '44px'); assert.equal(dialog.properties.get('--menu-right'), '232px');
+    dialog.box = {left: 1000, top: 44, right: 1208, bottom: 300};
+    const inside = Object.assign(new Event('click'), {clientX: 1100, clientY: 100}); dialog.dispatchEvent(inside); assert.equal(modal.openNow, true);
+    const outside = Object.assign(new Event('click'), {clientX: 200, clientY: 500}); dialog.dispatchEvent(outside); assert.equal(modal.openNow, false);
+    assert.equal(fake.nodes.get('invoke')?.focused, true);
+    modal.open('Compact'); assert.equal(dialog.dataset.variant, undefined);
+    dialog.dispatchEvent(Object.assign(new Event('click'), {clientX: 200, clientY: 500})); assert.equal(modal.openNow, true);
+  } finally {
+    if (width) Object.defineProperty(globalThis, 'innerWidth', width); else Reflect.deleteProperty(globalThis, 'innerWidth');
+    fake.restore();
+  }
 });
 test('stale errors do not overwrite a replacement dialog', async () => {
   const fake = setup();

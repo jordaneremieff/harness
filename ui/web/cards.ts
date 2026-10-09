@@ -37,21 +37,31 @@ function replacementPreview(edit: Replacement, budget: number): {text: string; l
 function written(source: ToolPresentationSource, content: string, context: PresentationContext): HTMLElement {
   const node = element('section', 'tool-content');
   const text = preview(content, PREVIEW_CHARS);
-  node.append(element('h3', undefined, source.status === 'success' ? 'Written content' : 'Content to write'),
+  node.append(element('p', 'secondary tool-caption', source.status === 'success' ? 'Written content' : 'Content to write'),
     element('pre', undefined, content === '' ? '(empty content)' : context.bounded(text.text, TOTAL_CHARS)));
   if (text.limited) {
     node.append(element('p', 'secondary', 'Content preview limited.'), context.inspection('Retained supplied content (bounded)', () => content));
   }
   return node;
 }
+function replacementBlock(text: string): HTMLElement {
+  const block = element('pre');
+  if (!text) return block;
+  for (const line of text.split('\n')) {
+    const className = line.startsWith('- ') ? 'diff-del' : line.startsWith('+ ') ? 'diff-add' : undefined;
+    block.append(className ? element('span', className, line) : document.createTextNode(line), document.createTextNode('\n'));
+  }
+  return block;
+}
 function edited(edits: Replacement[], context: PresentationContext): HTMLElement {
   const node = element('section', 'tool-content');
-  node.append(element('h3', undefined, 'Supplied replacements'), element('p', 'secondary', '- old text · + new text; no file context inferred'));
+  node.append(element('p', 'secondary tool-caption', 'Supplied old and new text, not an inferred diff'));
   let budget = TOTAL_CHARS;
   for (const [index, edit] of edits.slice(0, EDITS).entries()) {
     const text = replacementPreview(edit, Math.max(0, budget / 2));
-    const shown = preview(text.text, Math.max(0, budget), Number.MAX_SAFE_INTEGER); budget -= shown.text.length;
-    node.append(element('h4', undefined, `Replacement ${index + 1}`), element('pre', undefined, context.bounded(shown.text, TOTAL_CHARS)));
+    const shown = preview(text.text, Math.max(0, budget - 1), Number.MAX_SAFE_INTEGER);
+    if (shown.text) budget -= shown.text.length + 1;
+    node.append(replacementBlock(context.bounded(shown.text, TOTAL_CHARS)));
     if (text.limited || shown.limited) node.append(element('p', 'secondary', 'Replacement preview limited.'),
       context.inspection(`Replacement ${index + 1}: retained old text (bounded)`, () => edit.oldText),
       context.inspection(`Replacement ${index + 1}: retained new text (bounded)`, () => edit.newText));

@@ -7,6 +7,8 @@ import { reconcileChildren } from './render.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
 const SEARCH_PAGE_LIMIT = 20;
+/** Estimated two-line row height before measurement. */
+const ROW_HEIGHT = 48;
 type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; model: HTMLElement; activity: HTMLElement; source: AgentRow; absolute: boolean};
 function rowName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
 function duplicateLabels(rows: AgentRow[]): Map<string, string> {
@@ -29,10 +31,10 @@ function status(row: AgentRow): {glyph: string; label: string} {
   const values: Record<string, string> = {working: '●', failed: '!', done: '✓', idle: '○'};
   return {glyph: values[row.state] ?? '◇', label: row.state};
 }
-function modelText(row: AgentRow): string {
+function modelText(row: AgentRow, provider = true): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
-  return `${row.model.provider}/${row.model.modelId}${thinking ? ` · ${thinking}` : ''}`;
+  return `${provider ? `${row.model.provider}/` : ''}${row.model.modelId}${thinking ? ` · ${thinking}` : ''}`;
 }
 function activityText(row: AgentRow): string {
   if (row.error) return row.error;
@@ -61,7 +63,7 @@ export class Roster {
   private searchController?: AbortController;
   private searchQuery = '';
   private searchNotice = '';
-  private layout: VirtualLayout = layoutItems([], new Map(), 110);
+  private layout: VirtualLayout = layoutItems([], new Map(), ROW_HEIGHT);
   private select: (row: AgentRow) => void;
   private more: (action?: 'refresh' | 'more') => void;
   private empty = element('p', 'empty-state');
@@ -92,7 +94,8 @@ export class Roster {
   }
   private messageAction(cached: RowNode): void {
     cached.message.hidden = !!this.selected || !this.message;
-    setText(cached.message, this.resumes.has(cached.source.identity) ? 'Resume' : 'Message');
+    const resume = this.resumes.has(cached.source.identity);
+    setText(cached.message, resume ? 'Resume' : 'Message'); cached.node.dataset.action = cached.message.hidden ? '' : resume ? 'resume' : 'message';
     cached.message.setAttribute('aria-label', `${this.resumes.has(cached.source.identity) ? 'Resume message to' : 'Message'} ${rowName(cached.source)} · ${cached.source.identity}`);
   }
   private query(): string { return byId<HTMLInputElement>('agent-search').value.trim().toLocaleLowerCase(); }
@@ -137,9 +140,12 @@ export class Roster {
     if (this.searchNotice) footer.append(element('p', 'roster-search-status', this.searchNotice));
     if (count && meta?.error) footer.append(element('p', 'error', `Roster discovery failed: ${meta.error.message}`));
     if (count && meta?.scan.state === 'running') footer.append(element('p', undefined, 'Loading roster'));
-    if (meta?.observedAt) footer.append(element('p', undefined, `${meta.stale ? 'Saved roster' : 'Roster'} · ${relativeTime(meta.observedAt, now)}`));
+    const refresh = document.getElementById('agent-refresh');
+    if (refresh) refresh.title = meta?.observedAt ? `Refresh agent roster · updated ${relativeTime(meta.observedAt, now)}` : 'Refresh agent roster';
+    if (meta?.stale) footer.append(element('p', undefined, meta.observedAt ? `Saved roster · ${relativeTime(meta.observedAt, now)}` : 'Saved roster'));
     this.footerAction(footer, count, meta);
     if (meta?.scan.skipped) footer.append(element('p', undefined, 'Some records could not be read'));
+    footer.hidden = !footer.children.length && !meta?.stale && !meta?.error && meta?.scan.state !== 'failed' && meta?.scan.state !== 'running';
   }
   private footerAction(footer: HTMLElement, count: number, meta?: Omit<CachedRoster, 'rows'>): void {
     if (this.query() && this.search) {
@@ -188,7 +194,7 @@ export class Roster {
   }
   private paint(): void {
     const anchor = captureAnchor(this.layout, this.node.scrollTop); const rows = this.filtered();
-    this.layout = layoutItems(rows.map(row => row.identity), this.heights, 110);
+    this.layout = layoutItems(rows.map(row => row.identity), this.heights, ROW_HEIGHT);
     const pins = this.pins(); if (anchor) pins.add(anchor.id);
     const selected = rows.length > 100 ? visibleWindow(this.layout, this.node.scrollTop, this.node.clientHeight, {pins}).items : this.layout.items;
     const children = this.children(selected, rows, duplicateLabels(this.rows));
@@ -197,7 +203,7 @@ export class Roster {
     for (const item of selected) {
       const node = this.cache.get(item.id)?.node; if (node && node.offsetHeight > 0) this.heights.set(item.id, node.offsetHeight);
     }
-    this.layout = layoutItems(rows.map(row => row.identity), this.heights, 110);
+    this.layout = layoutItems(rows.map(row => row.identity), this.heights, ROW_HEIGHT);
     this.refreshGaps(selected);
     if (anchor) this.node.scrollTop = restoreAnchor(this.layout, anchor, this.node.clientHeight, this.node.scrollTop);
   }
@@ -234,9 +240,9 @@ export class Roster {
     const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'); heading.append(state, name, identity);
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); }, 'row-age'); ageButton.append(age);
-    const model = element('div', 'row-model'); const activity = element('div', 'row-activity');
+    const detail = element('span', 'row-detail'); const model = element('span', 'row-model'); const activity = element('span', 'row-activity'); detail.append(model, activity);
     const message = button('Message', () => this.message?.(row.identity), 'row-message');
-    select.append(heading, model, activity); node.append(select, ageButton, message);
+    select.append(heading, detail); node.append(select, ageButton, message);
     const cached = {node, select, state, name, identity, ageButton, message, age, model, activity, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;
   }
@@ -245,7 +251,7 @@ export class Roster {
     const state = status(row); setText(cached.state, state.glyph); setText(cached.name, rowName(row));
     setText(cached.identity, identity); cached.identity.hidden = !identity;
     cached.state.dataset.state = row.availability === 'live' ? row.state : 'retained';
-    setText(cached.model, modelText(row)); cached.model.hidden = !cached.model.textContent;
+    setText(cached.model, modelText(row, false)); cached.model.hidden = !cached.model.textContent; cached.model.title = modelText(row);
     setText(cached.activity, activityLine(row, state.label));
     cached.select.setAttribute('aria-current', row.identity === this.selected ? 'page' : 'false');
     cached.select.setAttribute('aria-label', `${rowName(row)} · ${row.identity} · ${state.label}`);

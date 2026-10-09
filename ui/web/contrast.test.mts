@@ -9,28 +9,38 @@ const cssPath = process.env.CONTRAST_CSS
 	? resolve(process.env.CONTRAST_CSS)
 	: fileURLToPath(new URL("./style.css", import.meta.url));
 const css = readFileSync(cssPath, "utf8");
-const foregrounds = ["text", "secondary", "muted", "accent", "success", "warning", "danger", "info"];
-const surfaces = ["canvas", "surface", "raised", "user", "custom", "sidebar", "hover", "selected"];
-const required = [...foregrounds, ...surfaces, "accent-text", "border", "separator", "focus"];
-// These separators decorate content already identified by text, fill, or position.
-// Any new use of the low-contrast separator needs a deliberate classification.
-const decorativeSeparators = new Set([
-	"button|border",
-	"button:disabled|border-color",
-	"button.accent:disabled|border-color",
-	"pre|border",
+const foregrounds = ["text", "secondary", "muted", "success", "warning", "danger", "info"];
+const surfaces = ["canvas", "surface", "tint", "tint-strong", "code"];
+// The one primary action per view inverts ink: canvas-colored text on an ink fill.
+const inverseFills = ["text", "secondary"];
+const required = [...foregrounds, ...surfaces, "faint"];
+// Faint hairlines decorate content already identified by text, position, or a label.
+// Any new use of the low-contrast hairline needs a deliberate classification.
+const decorativeHairlines = new Set([
+	".skip-link|border",
 	".sidebar|border-right",
+	".nav-filter|border-bottom",
 	".sidebar-foot|border-top",
 	".agent-message-panel|border-top",
-	".conversation-head|border-bottom",
+	".message-body blockquote|border-left",
+	".message-body th, .message-body td|border-bottom",
+	".latest|border",
+	".composer|border-top",
+	".receipt-details pre|border",
+	".command-menu|border",
 	".command-hint|border-top",
-	".thinking > .stream-text|border-left",
-	".tool-card|border",
-	".tool-expanded|border-top",
 	"dialog|border",
+	"dialog[data-variant=menu] #modal-body > button|border-top",
+	".options|border-top",
+	".options > button|border-bottom",
 	".notification|border-bottom",
-	"th, td|border",
+	".picker-sessions|border-top",
 	".picker-session|border-bottom",
+]);
+// Non-content paint: the dialog backdrop dims the page and the scroll fade masks clipped lines.
+const decorativeBackgrounds = new Set([
+	"dialog::backdrop|var(--backdrop)",
+	".transcript-region::before|linear-gradient(var(--canvas) 6px, transparent)",
 ]);
 type RGB = [number, number, number];
 type Rule = { selector: string; contexts: string[]; declarations: { property: string; value: string }[] };
@@ -117,7 +127,7 @@ function parse(input: string): Rule[] {
 			const end = blockEnd(body, index);
 			const inner = body.slice(index + 1, end - 1);
 			if (selector.startsWith("@")) {
-				assert.match(selector, /^@media\b/, `Unsupported at-rule: ${selector}`);
+				assert.match(selector, /^@(?:media|container)\b/, `Unsupported at-rule: ${selector}`);
 				walk(inner, [...contexts, selector]);
 			} else rules.push({ selector, contexts, declarations: declarations(inner) });
 			start = end;
@@ -218,9 +228,9 @@ function matrix(palette: Palette, theme: string, measure: Measure) {
 		rgb(palette[`--${name}`]);
 	}
 	for (const fg of foregrounds) for (const bg of surfaces) measure("text-matrix", `--${fg} / --${bg}`, fg, bg, 4.5);
-	measure("accent-text", "--accent-text / --accent", "accent-text", "accent", 4.5);
-	for (const bg of ["canvas", "surface", "raised"]) measure("border-matrix", `--border / --${bg}`, "border", bg, 3);
-	for (const bg of surfaces) measure("focus-matrix", `--focus / --${bg}`, "focus", bg, 3);
+	for (const fill of inverseFills) measure("inverse-text", `--canvas / --${fill}`, "canvas", fill, 4.5);
+	for (const bg of surfaces) measure("border-matrix", `--muted / --${bg}`, "muted", bg, 3);
+	for (const bg of surfaces) measure("focus-matrix", `--text / --${bg}`, "text", bg, 3);
 }
 function textDeclaration(context: Context, property: string, value: string) {
 	const { theme, source, exclusions, issues, measure, decl } = context;
@@ -229,22 +239,20 @@ function textDeclaration(context: Context, property: string, value: string) {
 		return;
 	}
 	const name = token(value);
-	if (!name || ![...foregrounds, "accent-text"].includes(name)) {
+	if (!name || ![...foregrounds, "canvas"].includes(name)) {
 		issues.push(`${theme}: non-token text color ${source} ${property}: ${value}`);
 		return;
 	}
-	for (const bg of name === "accent-text" ? ["accent"] : surfaces)
+	for (const bg of name === "canvas" ? inverseFills : surfaces)
 		measure("text-declaration", `${source} ${property}: ${value} / --${bg}`, name, bg, 4.5);
 	const localBg = token(decl["background-color"] ?? decl.background ?? "");
 	if (localBg) measure("local-pair", `${source} ${property} on --${localBg}`, name, localBg, 4.5);
 }
-function accentBackground(context: Context) {
-	const { theme, source, decl, rule, measure, issues } = context;
+function inverseBackground(context: Context, fill: string) {
+	const { theme, source, decl, measure, issues } = context;
 	const fg = token(decl.color ?? "");
-	if (fg) measure("background-declaration", `${source} explicit --${fg} on --accent`, fg, "accent", 4.5);
-	else if (!split(rule.selector, ",").every((s) => s.startsWith("button.accent")))
-		issues.push(`${theme}: accent background lacks a known accent foreground: ${source}`);
-	else measure("background-declaration", `${source} inherits button.accent foreground`, "accent-text", "accent", 4.5);
+	if (fg) measure("background-declaration", `${source} explicit --${fg} on --${fill}`, fg, fill, 4.5);
+	else issues.push(`${theme}: ink fill lacks an explicit foreground: ${source}`);
 }
 function backgroundDeclaration(context: Context, value: string) {
 	const { theme, source, exclusions, issues, rule, palette, measure } = context;
@@ -252,9 +260,8 @@ function backgroundDeclaration(context: Context, value: string) {
 		exclusions.push(`${theme}: inherited/transparent background ${source}`);
 		return;
 	}
-	// Backdrops dim the page behind a dialog, not the dialog's foreground.
-	if (rule.selector === "dialog::backdrop" && value === "#080b1299") {
-		exclusions.push(`${theme}: non-content dialog backdrop ${value}`);
+	if (decorativeBackgrounds.has(`${rule.selector}|${value}`)) {
+		exclusions.push(`${theme}: non-content paint ${source}: ${value}`);
 		return;
 	}
 	const name = token(value);
@@ -262,14 +269,14 @@ function backgroundDeclaration(context: Context, value: string) {
 		issues.push(`${theme}: unmodeled background ${source}: ${value}`);
 		return;
 	}
-	if (name === "accent") accentBackground(context);
+	if (inverseFills.includes(name)) inverseBackground(context, name);
 	else for (const fg of foregrounds) measure("background-declaration", `${source} --${fg} / --${name}`, fg, name, 4.5);
 }
 function decorativeEdge(context: Context, property: string, edge: string, name: string | undefined): boolean {
-	if (edge !== "transparent" && name !== "separator") return false;
+	if (edge !== "transparent" && name !== "faint") return false;
 	const { theme, rule, source, issues, exclusions } = context;
-	if (name === "separator" && !decorativeSeparators.has(`${rule.selector}|${property}`))
-		issues.push(`${theme}: unclassified low-contrast separator ${source} ${property}`);
+	if (name === "faint" && !decorativeHairlines.has(`${rule.selector}|${property}`))
+		issues.push(`${theme}: unclassified low-contrast hairline ${source} ${property}`);
 	exclusions.push(`${theme}: decorative edge ${source} ${property}: ${edge}`);
 	return true;
 }
@@ -289,7 +296,7 @@ function edgeDeclaration(context: Context, property: string, value: string): boo
 	const isFocus = rule.selector.includes(":focus") || property.startsWith("outline");
 	const names = edge === "currentColor" ? foregrounds : [name ?? edge];
 	for (const fg of names)
-		for (const bg of fg === "accent-text" ? ["accent"] : surfaces)
+		for (const bg of surfaces)
 			measure(
 				isFocus ? "focus-declaration" : "border-declaration",
 				`${source} ${property}: ${value} / --${bg}`,
@@ -309,7 +316,8 @@ function auditDeclaration(context: Context, property: string, raw: string): bool
 	const { rule, source, theme, issues } = context;
 	const value = raw.replace(/\s*!important$/, "");
 	if (property.startsWith("--")) {
-		if (!rule.selector.startsWith(":root"))
+		// Component-local lengths adjust layout; any other local value could change a modeled color.
+		if (!rule.selector.startsWith(":root") && !/^-?[\d.]+(?:px|rem|em)$/.test(value))
 			issues.push(`Component-local variable requires explicit analysis: ${source} ${property}`);
 		return false;
 	}
@@ -383,6 +391,7 @@ test("CSS parser preserves nested media, strings, and functions", () => {
 	assert.equal(parsed.length, 1);
 	assert.equal(parsed[0].declarations.length, 2);
 	assert.equal(parsed[0].contexts[0], "@media (max-width: 99px)");
+	assert.equal(parse("@container t (min-width: 9rem) { .x { color: var(--text); } }")[0].contexts[0], "@container t (min-width: 9rem)");
 	assert.throws(() => parse("@import 'external.css';"), /Unparsed/);
 });
 test("every required matrix pair is measured in both themes", () => {
@@ -390,8 +399,8 @@ test("every required matrix pair is measured in both themes", () => {
 		result.measurements.filter((m) => m.kind === "text-matrix").length,
 		foregrounds.length * surfaces.length * 2,
 	);
-	assert.equal(result.measurements.filter((m) => m.kind === "accent-text").length, 2);
-	assert.equal(result.measurements.filter((m) => m.kind === "border-matrix").length, 6);
+	assert.equal(result.measurements.filter((m) => m.kind === "inverse-text").length, inverseFills.length * 2);
+	assert.equal(result.measurements.filter((m) => m.kind === "border-matrix").length, surfaces.length * 2);
 	assert.equal(result.measurements.filter((m) => m.kind === "focus-matrix").length, surfaces.length * 2);
 });
 test("normal text meets 4.5:1; meaningful borders and focus meet 3:1", (context) => {
@@ -430,15 +439,20 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 		),
 	);
 	assert.ok(
-		audit(`${css}\ninput { border: 1px solid var(--separator); }`).issues.some((i) =>
-			i.includes("unclassified low-contrast separator"),
+		audit(`${css}\ninput { border: 1px solid var(--faint); }`).issues.some((i) =>
+			i.includes("unclassified low-contrast hairline"),
 		),
 	);
 	assert.ok(
-		audit(`${css}\n.probe { color: var(--accent-text); background: var(--canvas); }`).measurements.some(
+		audit(`${css}\n.probe { color: var(--canvas); background: var(--tint); }`).measurements.some(
 			(m) => m.source.includes(".probe") && m.ratio < m.threshold,
 		),
 	);
+	assert.ok(audit(`${css}\n.probe { background: var(--text); }`).issues.some((i) => i.includes("ink fill lacks")));
+	assert.ok(audit(`${css}\ndialog::backdrop { background: #000000cc; }`).issues.some((i) => i.includes("unmodeled background")));
+	assert.throws(() => audit(`${css}\n.probe { background: var(--backdrop); }`), /opaque hex/, "the translucent backdrop token is not a content surface");
+	assert.ok(audit(`${css}\n.probe { --muted: #000000; }`).issues.some((i) => i.includes("Component-local variable")));
+	assert.deepEqual(audit(`${css}\n.probe { --edge: 12px; }`).issues, []);
 });
 test("contrast thresholds use exact ratios, not rounded display values", () => {
 	assert.ok(ratio("#777777", "#ffffff") < 4.5);

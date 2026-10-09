@@ -112,9 +112,9 @@ test('command options report lifecycle state, merge Pi with App aliases, and not
   assert.deepEqual(actions.commandOptions(), {state: 'unavailable', items: []});
   selected = {...primary}; assert.equal(actions.commandOptions().state, 'loading'); await actions.load('commands');
   const options = actions.commandOptions(); assert.equal(options.state, 'ready'); assert.equal(options.items.filter(item => item.name === 'model').length, 1);
-  assert.deepEqual(options.items.find(item => item.name === 'model'), {name: 'model', description: 'Choose a model for the primary', source: 'App'});
+  assert.deepEqual(options.items.find(item => item.name === 'model'), {name: 'model', description: 'Choose a model for the primary', source: 'app'});
   assert.equal(options.items.find(item => item.name === 'fixture')?.source, 'extension');
-  assert.deepEqual(options.items.filter(item => item.source === 'App').map(item => item.name).sort(), ['compact', 'fork', 'model', 'new', 'resume', 'thinking']);
+  assert.deepEqual(options.items.filter(item => item.source === 'app').map(item => item.name).sort(), ['compact', 'fork', 'model', 'new', 'resume', 'thinking']);
   assert.equal(notifications, 2); const first = options.items[0]; assert.ok(first); first.description = 'mutated'; assert.equal(actions.commandOptions().items[0]?.description, 'Choose a model for the primary');
   selected = {...primary, epoch: 2}; assert.equal(actions.commandOptions().state, 'loading'); actions.warm(); await actions.load('commands'); assert.ok(notifications > 2);
   selected = undefined; actions.warm(); assert.equal(actions.commandOptions().state, 'unavailable');
@@ -122,7 +122,7 @@ test('command options report lifecycle state, merge Pi with App aliases, and not
 test('a failed Pi command load leaves the App actions usable and never stays in a loading state', async () => {
   globalThis.fetch = async () => {throw new Error('offline');};
   const actions = new Actions(context()); await assert.rejects(actions.load('commands'), /offline/);
-  assert.equal(actions.commandOptions().state, 'ready'); assert.equal(actions.commandOptions().items.every(item => item.source === 'App'), true);
+  assert.equal(actions.commandOptions().state, 'ready'); assert.equal(actions.commandOptions().items.every(item => item.source === 'app'), true);
 });
 test('a stale command response cannot populate options for another epoch', async () => {
   let selected = {...primary}; let resolveOld: (value: Response) => void = () => {};

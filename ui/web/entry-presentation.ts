@@ -1,5 +1,6 @@
 import type { EntryView, JsonDisplay, MessageView, PartView } from '../shared/api.ts';
 import { element } from './dom.ts';
+import { previewText } from './format.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 
 function meaningfulPart(part: PartView): boolean {
@@ -22,20 +23,33 @@ function record(display: JsonDisplay): Record<string, unknown> {
 }
 function entryHeading(entry: EntryView): string {
   const label = entry.head ?? entry.kind;
-  if (['custom', 'message'].includes(label)) return 'Session event';
+  if (label === 'custom') return 'Custom entry';
+  if (label === 'message') return 'Message entry';
   if (entry.head) return entry.head;
   return label.replace(/[_-]/g, ' ').replace(/^./, char => char.toUpperCase());
 }
+/** One collapsed line of context: a leading text field, a string value, or the field names. */
+function dataPreview(display: JsonDisplay): string {
+  const value = display.value; const fields = record(display);
+  const text = typeof value === 'string' ? value : ['text', 'message', 'summary', 'content', 'label', 'title'].map(key => fields[key]).find(item => typeof item === 'string');
+  if (typeof text === 'string') return previewText(text.replace(/\s+/g, ' ').trim(), 1, 160).text;
+  const keys = Object.keys(fields).slice(0, 4);
+  return keys.length ? `${keys.join(', ')}${Object.keys(fields).length > 4 ? ', …' : ''}` : '';
+}
+function sessionNote(entry: EntryView, data: JsonDisplay): string | undefined {
+  const value = record(data);
+  if (entry.kind === 'model_change' && typeof value.provider === 'string' && typeof value.modelId === 'string') return `Model changed to ${value.provider}/${value.modelId}`;
+  if (entry.kind === 'thinking_level_change' && typeof value.thinkingLevel === 'string') return `Thinking changed to ${value.thinkingLevel}`;
+  return undefined;
+}
 export function presentEntry(entry: EntryView, context: PresentationContext): HTMLElement {
   const data = entry.data ?? {value: 'No retained display data', truncated: false};
-  const value = record(data);
-  let note: string | undefined;
-  if (entry.kind === 'model_change' && typeof value.provider === 'string' && typeof value.modelId === 'string') note = `Model changed to ${value.provider}/${value.modelId}`;
-  if (entry.kind === 'thinking_level_change' && typeof value.thinkingLevel === 'string') note = `Thinking changed to ${value.thinkingLevel}`;
+  const note = sessionNote(entry, data);
   const node = element('section', note ? 'system-note' : 'custom-entry');
   if (note) node.append(context.inspection(context.bounded(note, 4096), () => context.rawText(data.value)));
   else {
-    node.append(context.inspection(context.bounded(entryHeading(entry), 4096), () => context.rawText(data.value)));
+    const preview = entry.data ? dataPreview(entry.data) : '';
+    node.append(context.inspection(context.bounded(`${entryHeading(entry)}${preview ? ` · ${preview}` : ''}`, 4096), () => context.rawText(data.value)));
     if (data.truncated) node.append(element('p', 'warning', `Output omitted by host${data.omittedBytes !== undefined ? ` · ${data.omittedBytes} bytes` : ''}`));
   }
   return node;

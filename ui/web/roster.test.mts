@@ -30,7 +30,7 @@ class FakeNode {
   set textContent(value: string) { this.replaceChildren(); this.text = value; }
   get firstChild(): FakeNode | null { return this.children[0] ?? null; }
   get nextSibling(): FakeNode | null { const peers = this.parentNode?.children ?? []; return peers[peers.indexOf(this) + 1] ?? null; }
-  get offsetHeight(): number { return this.hidden ? 0 : this.style.height ? Number.parseFloat(this.style.height) : this.className === 'agent-row' ? 110 : 20; }
+  get offsetHeight(): number { return this.hidden ? 0 : this.style.height ? Number.parseFloat(this.style.height) : this.className === 'agent-row' ? 48 : 20; }
   append(...nodes: FakeNode[]): void { for (const node of nodes) { node.remove(); node.parentNode = this; this.children.push(node); node.moves++; } }
   prepend(node: FakeNode): void { node.remove(); node.parentNode = this; this.children.unshift(node); node.moves++; }
   after(node: FakeNode): void {
@@ -50,8 +50,8 @@ class FakeNode {
     throw new Error(`Missing ${className}`);
   }
 }
-function setup() {
-  const ids = new Map(['roster', 'agent-search', 'roster-footer'].map(id => [id, new FakeNode('div')]));
+function setup(withRefresh = true) {
+  const ids = new Map(['roster', 'agent-search', 'roster-footer', ...(withRefresh ? ['agent-refresh'] : [])].map(id => [id, new FakeNode('div')]));
   const frames: Array<() => void> = [];
   const document = {activeElement: null as FakeNode | null, createElement: (tag: string) => new FakeNode(tag), getElementById: (id: string) => ids.get(id)};
   Object.assign(globalThis, {document, requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length; }});
@@ -61,6 +61,33 @@ function row(identity: string, facts: Partial<AgentRow> = {}): AgentRow {
   return {identity, name: 'Agent', storageId: identity, cwd: '/project', modifiedAt: 0, state: 'working', availability: 'live', owner: 'here', partial: false, ...facts};
 }
 
+test('routine ready roster hides the footer and puts freshness in the refresh title', t => {
+  t.mock.method(Date, 'now', () => 600000);
+  const fixture = setup(); const roster = new Roster(() => {}, () => {});
+  const meta = {...page([]), observedAt: new Date(0).toISOString()};
+  roster.set([row('one')], meta); fixture.flush();
+  const refresh = required(fixture.document.getElementById('agent-refresh'));
+  assert.equal(fixture.footer.hidden, true); assert.equal(fixture.footer.textContent, '');
+  assert.equal(refresh.title, 'Refresh agent roster · updated 10m ago');
+  roster.set([row('one')], {...meta, stale: true}); fixture.flush();
+  assert.equal(fixture.footer.hidden, false); assert.equal(fixture.footer.textContent, 'Saved roster · 10m ago');
+  assert.equal(refresh.title, 'Refresh agent roster · updated 10m ago');
+  roster.set([], page([])); fixture.flush();
+  assert.equal(fixture.footer.hidden, true); assert.equal(refresh.title, 'Refresh agent roster');
+  const absent = setup(false); const withoutRefresh = new Roster(() => {}, () => {});
+  assert.doesNotThrow(() => withoutRefresh.set([], meta)); absent.flush(); assert.equal(absent.footer.hidden, true);
+});
+test('roster footer remains visible for exceptional states and continuation actions', () => {
+  const fixture = setup(); const roster = new Roster(() => {}, () => {});
+  for (const meta of [
+    {...page([]), scan: {...page([]).scan, state: 'running' as const}},
+    {...page([]), scan: {...page([]).scan, state: 'failed' as const}},
+    {...page([]), scan: {...page([]).scan, skipped: 1}},
+    {...page([]), nextCursor: 'more'},
+    {...page([]), scan: {...page([]).scan, complete: false, scanId: 'scan'}},
+  ]) { roster.set([row('one')], meta); fixture.flush(); assert.equal(fixture.footer.hidden, false); }
+  roster.set([row('one')], page([])); fixture.flush(); assert.equal(fixture.footer.hidden, true);
+});
 test('roster has sibling native actions and preserves retained, idle and working glyphs', t => {
   t.mock.method(Date, 'now', () => 600000);
   const fixture = setup(); const selected: string[] = [];
@@ -80,7 +107,7 @@ test('roster has sibling native actions and preserves retained, idle and working
   assert.match(select.attributes['aria-label'] ?? '', /stored/);
   assert.equal(idle.attributes['aria-current'], undefined); assert.equal(idle.query('row-select').attributes['aria-current'], 'page');
   assert.equal(stored.query('row-select').attributes['aria-current'], 'false');
-  assert.equal(select.children.length, 3); assert.match(stored.query('row-activity').textContent, /^stored/);
+  assert.equal(select.children.length, 2); assert.equal(stored.query('row-detail').children.length, 2); assert.match(stored.query('row-activity').textContent, /^stored/);
   assert.equal(age.tabIndex, 0); assert.equal(age.query('timestamp').textContent, '10m ago');
   assert.equal(age.query('timestamp').dateTime, '1970-01-01T00:00:00.000Z');
   assert.match(age.attributes['aria-description'] ?? '', /1969|1970/); assert.match(age.title, /1970-01-01T00:00:00.000Z/);
@@ -88,6 +115,14 @@ test('roster has sibling native actions and preserves retained, idle and working
   age.click(); assert.deepEqual(selected, []); assert.doesNotMatch(age.textContent, /ago/); assert.equal(age.dataset.absolute, 'true');
   age.click(); assert.equal(age.textContent, '10m ago'); assert.deepEqual(selected, []); assert.equal(age.dataset.absolute, 'false');
   select.click(); assert.deepEqual(selected, ['stored']);
+});
+test('rows show the model id and thinking level while title and filter keep the provider', () => {
+  const fixture = setup(); const roster = new Roster(() => {}, () => {});
+  roster.set([row('one', {model: {provider: 'vendor', modelId: 'model-x', thinkingLevel: 'high'}} as Partial<AgentRow>)]); fixture.flush();
+  const model = required(fixture.node.children[0]).query('row-model');
+  assert.equal(model.textContent, 'model-x · high'); assert.equal(model.title, 'vendor/model-x · high');
+  fixture.search.value = 'vendor/'; fixture.search.dispatch('input'); fixture.flush();
+  assert.equal(fixture.node.children.filter(child => child.className === 'agent-row').length, 1);
 });
 test('activity line never repeats the status and keeps distinct details', () => {
   const live = {identity: 's:2', storageId: 's', cwd: '/p', modifiedAt: 0, state: 'working', owner: 'here', availability: 'live', partial: false} as AgentRow;
@@ -170,12 +205,12 @@ function searchFixture() {
 }
 test('cached search reaches a match beyond the first loaded page without discovery', async () => {
   const fixture = searchFixture(); fixture.query('needle');
-  assert.match(fixture.footer.textContent, /Searching cached pages/);
+  assert.match(fixture.footer.textContent, /Searching cached pages/); assert.equal(fixture.footer.hidden, false);
   required(fixture.loads[0]).pending.resolve(page([row('other')], 'page-2')); await required(fixture.loads[0]).pending.promise;
   assert.equal(required(fixture.loads[1]).cursor, 'page-2'); assert.match(fixture.footer.textContent, /Searching cached pages/);
   required(fixture.loads[1]).pending.resolve(page([row('needle', {name: 'Needle'})])); await required(fixture.loads[1]).pending.promise; await Promise.resolve(); fixture.flush();
   assert.equal(fixture.loads.length, 2); assert.match(fixture.node.textContent, /Needle/);
-  assert.doesNotMatch(fixture.footer.textContent, /Searching/); assert.deepEqual(fixture.actions, []);
+  assert.doesNotMatch(fixture.footer.textContent, /Searching/); assert.equal(fixture.footer.hidden, true); assert.deepEqual(fixture.actions, []);
 });
 test('obsolete cached searches abort and never merge late responses', async () => {
   const fixture = searchFixture(); fixture.query('old'); const old = required(fixture.loads[0]);

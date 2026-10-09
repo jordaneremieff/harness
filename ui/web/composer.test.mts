@@ -300,7 +300,7 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     const paint = () => {for (const frame of f.frames.splice(0)) frame();};
     f.composer.setText(Array(10).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
     f.composer.setText(Array(20).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
-    f.composer.setText('one'); paint(); assert.equal(editor.style.height, '85.5px');
+    f.composer.setText('one'); paint(); assert.equal(editor.style.height, '40.5px');
     editor.style.height = '180px'; editor.fire('pointerup'); f.composer.setText('two'); paint(); assert.equal(editor.style.height, '180px');
     assert.equal(f.calls.length, 1);
   } finally {
@@ -357,7 +357,7 @@ test('loading or empty primary menus consume Enter and agent composers never ope
   let inventory: CommandInventory = {state: 'loading', items: []}; const f = fixture('primary', () => inventory); f.connect(state('a', draft(1, '/missing')));
   f.node('editor').setSelectionRange(8, 8); f.node('editor').fire('focus'); f.node('editor').fire('keydown', {key: 'Enter'}); await turn(); assert.equal(f.calls.length, 0);
   inventory = {state: 'ready', items: []}; f.composer.commandsChanged(); f.node('editor').fire('keydown', {key: 'Enter'}); await turn(); assert.equal(f.calls.length, 0);
-  const agent = fixture('agent', () => ({state: 'ready', items: [{name: 'model', description: '', source: 'App'}]})); agent.connect();
+  const agent = fixture('agent', () => ({state: 'ready', items: [{name: 'model', description: '', source: 'app'}]})); agent.connect();
   agent.composer.setText('/mo'); agent.node('editor').setSelectionRange(3, 3); agent.node('editor').fire('focus'); agent.composer.commandsChanged();
   assert.equal(agent.node('command-menu').children.length, 0); assert.equal(agent.node('editor').fire('keydown', {key: 'Tab'}).defaultPrevented, false);
 });

@@ -15,7 +15,7 @@ class Node extends EventTarget {
 const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
 afterEach(() => { if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document'); });
 function setup(): {context: PresentationContext; inspections: {title: string; source: () => string}[]} {
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new Node(tag)}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new Node(tag), createTextNode: (text: string) => { const node = new Node('#text'); node.textContent = text; return node; }}});
   const inspections: {title: string; source: () => string}[] = [];
   const context: PresentationContext = {bounded: (text, limit = 65536) => text.slice(0, limit), rawText: value => JSON.stringify(value), structured: () => new Node('div') as unknown as HTMLElement,
     inspection: (title, source) => { inspections.push({title, source}); const node = new Node('details'); node.textContent = title; return node as unknown as HTMLDetailsElement; }};
@@ -28,15 +28,41 @@ test('structured edit previews every supplied old/new pair without invented file
   const {context} = setup();
   const card = node(presentTool(source('edit', {path: 'math.ts', edits: [{oldText: 'return a - b;\n', newText: 'return a + b;\n'}, {oldText: '<script>', newText: ''}]}), context));
   assert.match(card.textContent, /- return a - b;\n- \n\+ return a \+ b;\n\+ /);
-  assert.match(card.textContent, /Replacement 2- <script>\nNew text: empty/);
+  assert.match(card.textContent, /- <script>\nNew text: empty\n/);
+  assert.equal(card.children[0]?.tag, 'p'); assert.equal(card.children[0]?.className, 'secondary tool-caption');
+  assert.equal(card.children[0]?.textContent, 'Supplied old and new text, not an inferred diff');
+  assert.equal(card.children.some(child => ['h3', 'h4'].includes(child.tag)), false);
+  const blocks = card.children.filter(child => child.tag === 'pre');
+  assert.deepEqual(blocks[0]?.children.filter(child => child.tag === 'span').map(child => [child.className, child.textContent]),
+    [['diff-del', '- return a - b;'], ['diff-del', '- '], ['diff-add', '+ return a + b;'], ['diff-add', '+ ']]);
+  for (const block of blocks) for (let i = 1; i < block.children.length; i += 2) {
+    assert.equal(block.children[i]?.tag, '#text'); assert.equal(block.children[i]?.textContent, '\n');
+  }
+  assert.deepEqual(blocks[1]?.children.map(child => [child.tag, child.className, child.textContent]),
+    [['span', 'diff-del', '- <script>'], ['#text', '', '\n'], ['#text', '', 'New text: empty'], ['#text', '', '\n']]);
   assert.doesNotMatch(card.textContent, /@@|successfully replaced/);
   assert.equal(card.children.filter(child => child.tag === 'pre').length, 2);
+});
+test('empty supplied old and new text keep plain labels inside their replacement', () => {
+  const {context} = setup();
+  const card = node(presentTool(source('edit', {oldText: '', newText: ''}), context));
+  const block = card.children.find(child => child.tag === 'pre'); assert.ok(block);
+  assert.equal(block.textContent, 'Old text: empty\nNew text: empty\n');
+  assert.equal(block.children.every(child => child.tag === '#text' && child.className === ''), true);
 });
 test('write shows supplied content with a truthful success, pending, or error label', () => {
   const {context} = setup();
   const contents = '<img src=x onerror=alert(1)>\nhello';
-  assert.match(node(presentTool(source('write', {content: contents}), context)).textContent, /Written content<img src=x onerror=alert\(1\)>\nhello/);
-  for (const status of ['working', 'error']) assert.match(node(presentTool(source('write', {content: ''}, status), context)).textContent, /Content to write\(empty content\)/);
+  const written = node(presentTool(source('write', {content: contents}), context));
+  assert.match(written.textContent, /Written content<img src=x onerror=alert\(1\)>\nhello/);
+  assert.equal(written.children[0]?.tag, 'p'); assert.equal(written.children[0]?.className, 'secondary tool-caption');
+  assert.equal(written.children[0]?.textContent, 'Written content');
+  for (const status of ['working', 'error']) {
+    const pending = node(presentTool(source('write', {content: ''}, status), context));
+    assert.match(pending.textContent, /Content to write\(empty content\)/);
+    assert.equal(pending.children[0]?.tag, 'p'); assert.equal(pending.children[0]?.className, 'secondary tool-caption');
+    assert.equal(pending.children[0]?.textContent, 'Content to write');
+  }
 });
 test('long replacements and written content have bounded previews and lazy retained inspection', () => {
   const {context, inspections} = setup(); const content = 'line\n'.repeat(10000);

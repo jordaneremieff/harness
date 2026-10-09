@@ -17,12 +17,25 @@ export class Modal {
       const focus = this.restore?.isConnected ? this.restore : byId('primary-editor');
       focus.focus();
     });
+    this.node.addEventListener('click', event => {
+      if (this.node.dataset.variant !== 'menu' || event.target !== this.node) return;
+      const box = this.node.getBoundingClientRect();
+      if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) this.cancel();
+    });
+  }
+  /** Presents the open dialog as a compact menu under its trigger; modal focus and Escape stay unchanged. */
+  anchor(trigger: HTMLElement): void {
+    const box = trigger.getBoundingClientRect();
+    this.node.dataset.variant = 'menu';
+    this.node.style.setProperty('--menu-top', `${Math.round(box.bottom + 4)}px`);
+    this.node.style.setProperty('--menu-right', `${Math.max(8, Math.round(innerWidth - box.right))}px`);
   }
   open(title: string, cancel?: () => void, closed?: () => void): HTMLElement {
     this.revision++;
     if (!this.node.open) this.restore = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     this.body.replaceChildren();
     setText(byId('modal-title'), title); setText(byId('modal-error'), '');
+    delete this.node.dataset.variant;
     this.cancelAction = cancel; this.closeAction = closed;
     if (!this.node.open) this.node.showModal();
     return this.body;

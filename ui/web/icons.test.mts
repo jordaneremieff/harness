@@ -48,7 +48,7 @@ test('icon updates retain the control and its accessible label', () => {
   setIcon(control as unknown as HTMLElement, 'arrowLeft', 'Agents');
   assert.equal(control.textContent, 'Agents');
 });
-test('static control icons retain the notice badge node and visible action labels', () => {
+test('static control icons retain the notice badge node and leave text controls as text', () => {
   const badge = new Element('span', '', '3'); badge.setAttribute('id', 'notices-count');
   const notice = new Element('button'); notice.append(badge);
   const agents = new Element('button'); const stop = new Element('button');
@@ -56,7 +56,7 @@ test('static control icons retain the notice badge node and visible action label
   installIcons();
   assert.equal(notice.children.at(-1), badge);
   assert.equal(agents.textContent, 'Agents');
-  assert.equal(stop.textContent, 'Stop');
+  assert.equal(stop.children.length, 0);
   installIcons();
   assert.equal(notice.children.filter(child => child === badge).length, 1);
 });

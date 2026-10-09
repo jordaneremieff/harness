@@ -50,6 +50,7 @@ let primaryTranscriptTarget: TranscriptTarget | undefined;
 let agentTranscriptTarget: TranscriptTarget | undefined;
 let hiddenPanel = false;
 let selecting = false;
+let scrollbarPending = false;
 let reloadTail = Promise.resolve();
 const snapshotBuffers = new Set<{events: UiEvent[]; bytes: number; overflow: boolean}>();
 let observationStart: {identity: string; at: number} | undefined;
@@ -240,7 +241,17 @@ function renderNavigation(): void {
   byId('primary').hidden = agentSelected;
   byId('agent-detail').hidden = !agentSelected;
   byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
-  renderConnection();
+  renderConnection(); measureScrollbar();
+}
+/** Transcript entries widen by the scrollbar gutters so they align with the header and composer column. */
+function measureScrollbar(): void {
+  if (scrollbarPending) return; scrollbarPending = true;
+  requestAnimationFrame(() => {
+    scrollbarPending = false;
+    const node = byId(selectedAgent() ? 'agent-transcript' : 'primary-transcript'); if (!node.offsetWidth) return;
+    const width = `${(node.offsetWidth - node.clientWidth) / 2}px`;
+    if (byId('workspace').style.getPropertyValue('--scrollbar') !== width) byId('workspace').style.setProperty('--scrollbar', width);
+  });
 }
 function focusEditor(): void { byId(navigationState(state.workspace, false).editor).focus(); }
 function toggleSidebar(visible: boolean): void {
@@ -323,7 +334,7 @@ function renderMessagePanel(): void {
   panel.hidden = !captured; if (!captured) return;
   const row = agentRow(captured.identity);
   setText(byId('agent-message-name'), row?.name ?? row?.handle ?? 'Agent');
-  setText(byId('agent-message-identity'), `${captured.identity.slice(0, 8)}${captured.identity.includes(':') ? captured.identity.slice(captured.identity.lastIndexOf(':')) : ''}`);
+  setText(byId('agent-message-identity'), captured.identity);
   byId('agent-message-identity').title = captured.identity;
   setText(byId('agent-message-status'), captured.error ?? captured.prepared?.reason ?? (captured.prepared ? '' : 'Preparing message…'));
   const form = byId('agent-composer'); if (form.parentElement !== panel) panel.append(form);
@@ -379,11 +390,10 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): void {
 function agentAvailability(identity: string, row?: AgentRow): void {
   const frame = state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame;
   const availability = byId('agent-availability');
-  if (row?.availability === 'live') setText(availability, !frame ? 'Loading history' : frame.status.busy ? '● Working' : 'Last observed · live host');
+  if (row?.availability === 'live') setText(availability, !frame ? 'Live · loading history' : frame.status.busy ? 'Live · working' : 'Live · idle');
   else {
-    setText(availability, row?.availability === 'incompatible' ? 'Host contract mismatch. This agent control is unavailable.' : 'Stored metadata; no live compatible host');
+    setText(availability, row?.availability === 'incompatible' ? 'Host contract mismatch. This agent control is unavailable.' : 'Stored · no live compatible host');
   }
-
 }
 function renderAvailability(): void {
   const item = primary(); const identity = selectedAgent(); const row = identity ? agentRow(identity) : undefined;
@@ -522,7 +532,7 @@ function viewActions(): void {
 function bind(): void {
   byId('primary-open-project').addEventListener('click', () => actions.projectPicker());
   byId('project-button').addEventListener('click', () => actions.projectPicker()); byId('session-title').addEventListener('click', () => actions.sessionDetails());
-  byId('session-actions').addEventListener('click', () => { actions.sessionMenu(); modal.body.append(button('Conversation view…', viewActions)); }); byId('commands-button').addEventListener('click', () => actions.palette());
+  byId('session-actions').addEventListener('click', () => { actions.sessionMenu(); modal.anchor(byId('session-actions')); modal.body.append(button('Conversation view…', viewActions)); }); byId('commands-button').addEventListener('click', () => actions.palette());
   byId('model-button').addEventListener('click', () => actions.modelPicker()); byId('thinking-button').addEventListener('click', () => actions.thinkingPicker());
   byId('notices-button').addEventListener('click', notices);
   byId('agent-message-close').addEventListener('click', () => closeMessagePanel());

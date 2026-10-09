@@ -8,12 +8,12 @@ import type { CommandInventory, CommandOption } from './command-menu-state.ts';
 export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
 type ResourceKind = 'commands' | 'models' | 'thinking';
 const appCommands: CommandOption[] = [
-  {name: 'new', description: 'Start a new session', source: 'App'},
-  {name: 'resume', description: 'Open a saved session', source: 'App'},
-  {name: 'fork', description: 'Start a branch from a user message', source: 'App'},
-  {name: 'compact', description: 'Summarize the session context', source: 'App'},
-  {name: 'model', description: 'Choose a model for the primary', source: 'App'},
-  {name: 'thinking', description: 'Choose the thinking level', source: 'App'},
+  {name: 'new', description: 'Start a new session', source: 'app'},
+  {name: 'resume', description: 'Open a saved session', source: 'app'},
+  {name: 'fork', description: 'Start a branch from a user message', source: 'app'},
+  {name: 'compact', description: 'Summarize the session context', source: 'app'},
+  {name: 'model', description: 'Choose a model for the primary', source: 'app'},
+  {name: 'thinking', description: 'Choose the thinking level', source: 'app'},
 ];
 
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
@@ -123,7 +123,7 @@ export class Actions {
     };
     const launch = (snapshot as Bootstrap | undefined)?.launchCwd;
     if (launch) body.append(button('Use launch directory', () => { directory.field.value = launch; }));
-    modal.actions(button('Cancel', () => modal.close()), button('Resume saved session', () => { modal.confirm('Confirm saved session resume', `${session.field.value}\nConfirm that this exact file is not open in a terminal or another Pi writer. Pi exposes no external writer lock query.`, () => start(true), 'No other writer · Resume'); }), button('Start new session', () => { void modal.run(() => start(false)); }, 'accent'));
+    modal.actions(button('Cancel', () => modal.close()), button('Resume saved session', () => { modal.confirm('Confirm saved session resume', `${session.field.value}\nConfirm that this exact file is not open in a terminal or another Pi writer. Pi exposes no external writer lock query.`, () => start(true), 'No other writer · Resume'); }), button('Start new session', () => { void modal.run(() => start(false)); }, 'main-action'));
     if (snapshot?.primaries.length) {
       body.append(element('h2', undefined, 'Open in this workspace'));
       for (const item of snapshot.primaries) body.append(button(`${item.sessionName ?? item.sessionId ?? 'Session'} · ${item.cwd} · ${item.lifecycle}`, () => { void modal.run(() => this.ctx.selection({primaryKey: item.key, selectedTarget: null})); }));
@@ -163,7 +163,7 @@ export class Actions {
     const primary = this.ctx.primary(); if (!primary) return;
     const modal = this.ctx.modal; modal.open(`Compact · ${primary.sessionName ?? primary.sessionId ?? 'Primary'}`);
     const instructions = input('Optional instructions', '', true); modal.body.append(instructions.label, instructions.field);
-    modal.actions(button('Cancel', () => modal.close()), button('Compact', () => { void modal.run(() => this.control({action: 'compact', customInstructions: instructions.field.value} as PrimaryControl, primary)); }, 'accent'));
+    modal.actions(button('Cancel', () => modal.close()), button('Compact', () => { void modal.run(() => this.control({action: 'compact', customInstructions: instructions.field.value} as PrimaryControl, primary)); }, 'main-action'));
   }
   automaticSettings(action: 'autoRetry' | 'autoCompaction'): void {
     const primary = this.ctx.primary(); if (!primary) return;

@@ -6,10 +6,7 @@ const paths = {
   refresh: 'M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 18 17',
   copy: 'M9 9h11v11H9zM5 15H3V3h12v2',
   check: 'm5 12 4 4L19 6',
-  stop: 'M6 6h12v12H6z',
-  arrowDown: 'M12 4v16m-6-6 6 6 6-6',
   arrowLeft: 'M20 12H4m6-6-6 6 6 6',
-  more: 'M5 12h.01M12 12h.01M19 12h.01',
 } as const;
 export type IconName = keyof typeof paths;
 export function icon(name: IconName): SVGSVGElement {
@@ -28,11 +25,9 @@ export function setIcon(node: HTMLElement, name: IconName, label?: string): void
 }
 export function installIcons(): void {
   const controls: Array<[string, IconName, string?]> = [
-    ['notices-button', 'bell'], ['agents-button', 'agents', 'Agents'], ['session-actions', 'more'],
+    ['notices-button', 'bell'], ['agents-button', 'agents', 'Agents'],
     ['agent-refresh', 'refresh'], ['agent-close', 'close'], ['agent-detail-close', 'close'],
-    ['modal-close', 'close'], ['primary-stop', 'stop', 'Stop'],
-    ['primary-latest', 'arrowDown', 'Latest'], ['agent-latest', 'arrowDown', 'Latest'],
-    ['agent-back', 'arrowLeft', 'Agents'],
+    ['modal-close', 'close'], ['agent-back', 'arrowLeft', 'Agents'],
   ];
   for (const [id, name, label] of controls) {
     const node = document.getElementById(id);
