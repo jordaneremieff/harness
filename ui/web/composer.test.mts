@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
 import type { CommandInventory } from './command-menu-state.ts';
 beforeEach(context => { context.mock.timers.enable({apis: ['setTimeout', 'Date'], now: 0}); });
-import type { DraftView, OperationView, TargetState } from '../shared/api.ts';
+import type { DraftView, OperationView, Target, TargetIndex, TargetState } from '../shared/api.ts';
 
 import { Composer } from './composer.ts';
+import { MessageTarget } from './selection-state.ts';
 class NodeFake {
   id = ''; selectionStart = 0; selectionEnd = 0; offsetTop = 0; scrollTop = 0; clientHeight = 80;
   removeAttribute(name: string): void { this.attrs.delete(name); }
@@ -58,8 +59,9 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
     return new Promise((resolve, reject) => calls.push({path, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : {},
       id: (init.headers as Record<string, string>)['Idempotency-Key'], resolve: value => resolve({json: async () => value}), reject}));
   }});
-  const submitted: OperationView[] = []; let unknown = (_text: string, _send: () => void) => false; let recovered = 0;
-  const composer = new Composer(prefix, {submitted: result => submitted.push(result), recover: () => { recovered++; }, unknownCommand: (text, send) => unknown(text, send), commands});
+  const submitted: OperationView[] = []; let unknown = (_text: string, _send: () => void) => false;
+  const retained: {workspace: string; target: Target; value: boolean}[] = [];
+  const composer = new Composer(prefix, {submitted: result => submitted.push(result), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
   const node = (id: string) => nodes.get(`${prefix}-${id}`) as NodeFake;
   const pick = (method: string, suffix: string) => { const call = calls.find(item => item.method === method && item.path.endsWith(suffix)); assert.ok(call, `${method} ${suffix}`); return call; };
   const ok = (call: Call, value: unknown) => { calls.splice(calls.indexOf(call), 1); call.resolve({ok: true, data: value}); };
@@ -72,8 +74,8 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
   const click = (text: string) => { const found = node('receipt').find(text); assert.ok(found, text); found.fire('click'); };
   const connect = (targetState = state('a', draft(0, '', prefix === 'agent' ? 'followUp' : 'prompt'), prefix === 'agent')) => { composer.attach('w', targetState); composer.availability(true, true, false); return targetState; };
   const openReceipt = () => { const details = node('receipt-details').children[0]; assert.ok(details); details.open = true; details.fire('toggle'); };
-  return {composer, node, calls, pick, ok, fail, saved, admit, click, connect, submitted, frames, copied, openReceipt, reservations: () => sequence,
-    unknown: (handler: typeof unknown) => { unknown = handler; }, recovered: () => recovered};
+  return {composer, node, calls, retained, pick, ok, fail, saved, admit, click, connect, submitted, frames, copied, openReceipt, reservations: () => sequence,
+    unknown: (handler: typeof unknown) => { unknown = handler; }};
 }
 
 test('local echo and one save per target coalesce newer unsent text across switches', async () => {
@@ -141,9 +143,11 @@ test('restoring uncertain input does not replace a newer draft without an explic
   f.composer.availability(false, false, false); f.composer.setText('newer'); f.click('Restore to draft'); await turn(); assert.equal(f.composer.editor.value, 'newer');
   f.click('Replace draft with original'); assert.equal(f.composer.editor.value, 'original');
 });
-test('restored backend unconfirmed input invokes recover, blocks duplicate sends, and accepts late receipt', async () => {
+test('restored input uses one Composer recovery UI, blocks duplicates, and accepts late receipt', async () => {
   const f = fixture(); const a = state('a', draft(2, 'original')); a.unconfirmed.push({operationId: 'retained', target: a.target, text: 'original', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown'});
-  f.connect(a); assert.equal(f.recovered(), 1); await f.composer.send(); assert.equal(f.calls.length, 0);
+  f.connect(a); assert.equal(f.node('receipt').textContent.split('Send not confirmed').length - 1, 1);
+  for (const label of ['Check receipt', 'Copy', 'Restore to draft']) assert.ok(f.node('receipt').find(label));
+  await f.composer.send(); assert.equal(f.calls.length, 0);
   assert.equal(f.composer.updateOperation({id: 'retained', kind: 'primary.input', target: a.target, state: 'accepted', createdAt: '', updatedAt: ''}), true);
   await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(3, ''))); await turn(); assert.equal(f.composer.editor.value, '');
 });
@@ -387,4 +391,69 @@ test('an outstanding save settles during a healthy gate but newer text waits unt
   f.saved('first'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, true);
   f.composer.availability(true, true, false); assert.equal(f.pick('PUT', '/draft').body.text, 'newer'); f.saved('newer', 2); await turn();
   f.composer.availability(false, true, false, true); f.composer.setText('offline edit'); assert.equal(f.node('save').textContent, 'Draft not saved · offline');
+});
+
+test('closing a targeted composer preserves unsaved and conflicting copies with one retention transition', () => {
+  const f = fixture('agent'); const a = state('a', draft(0, '', 'followUp'), true);
+  f.composer.attach('w', a); f.composer.placement(true); f.composer.availability(false, false, false);
+  f.composer.setText('first'); f.composer.setText('second'); f.composer.setText('exact local');
+  assert.deepEqual(f.retained.map(item => item.value), [false, true]); assert.deepEqual(f.retained.at(-1)?.target, a.target);
+  f.composer.attach('w'); assert.equal(f.composer.target, undefined); assert.equal(f.composer.retained('w', a.target), true);
+  f.composer.attach('w', {...a, draft: draft(1, 'remote', 'followUp')});
+  assert.equal(f.composer.editor.value, 'exact local'); assert.match(f.node('receipt').textContent, /Review/);
+  f.composer.attach('w'); f.composer.attach('w', a); assert.match(f.node('receipt').textContent, /exact local/); assert.match(f.node('receipt').textContent, /remote/);
+  assert.equal(f.composer.retained('other', a.target), undefined);
+});
+test('close retains pending and unconfirmed sends and reopening never sends them again', async () => {
+  const f = fixture('agent'); const a = f.connect(state('a', draft(2, 'original', 'followUp'), true));
+  const sending = f.composer.send(); await turn(); f.composer.attach('w');
+  assert.equal(f.composer.retained('w', a.target), true); f.admit(a, 'uncertain'); await sending;
+  f.composer.attach('w', a); assert.match(f.node('receipt').textContent, /Send not confirmed/);
+  assert.ok(f.node('receipt').find('Check receipt')); assert.ok(f.node('receipt').find('Copy')); assert.ok(f.node('receipt').find('Restore to draft'));
+  await f.composer.send(); assert.equal(f.calls.length, 0);
+});
+test('sidebar placement hides Open through primary across edits and connection changes', () => {
+  const f = fixture('agent'); f.connect(); f.composer.placement(true); f.composer.availability(true, false, false);
+  f.composer.setText('safe draft'); assert.equal(f.node('acquire').hidden, true); assert.equal(f.node('send').disabled, true);
+  f.composer.availability(false, false, false); f.composer.availability(true, false, false); assert.equal(f.node('acquire').hidden, true);
+  f.composer.placement(false); assert.equal(f.node('acquire').hidden, false);
+});
+
+function targetIndex(saved: TargetState, changes: Partial<TargetIndex> = {}): TargetIndex {
+  return {targetKey: saved.targetKey, target: saved.target, draftRevision: saved.draft.revision, hasDraft: !!saved.draft.text, unconfirmedOperationIds: saved.unconfirmed.map(item => item.operationId), ...changes};
+}
+test('Resume reconciles indexed revisions and unresolved IDs against an empty retained buffer', () => {
+  const f = fixture('agent'); const a = state('a', draft(4, '', 'followUp'), true); f.composer.attach('w', a); f.composer.attach('w');
+  assert.equal(f.composer.retained('w', a.target, targetIndex(a)), false);
+  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {draftRevision: 5, hasDraft: true})), true);
+  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {draftRevision: 3, hasDraft: true})), false);
+  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {unconfirmedOperationIds: ['remote-input']})), true);
+  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {draftRevision: 3, unconfirmedOperationIds: ['remote-input']})), true);
+  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {target: {kind: 'agent', identity: 'other'}, hasDraft: true, draftRevision: 9})), false);
+});
+test('an old index cannot resurrect a draft or input copy cleared by this tab', async () => {
+  const f = fixture('agent'); const a = state('a', draft(4, 'sent', 'followUp'), true);
+  a.unconfirmed.push({operationId: 'retained', target: a.target, text: 'sent', mode: 'followUp', submittedDraftRevision: 4, createdAt: '', reason: 'unknown'});
+  f.connect(a); const oldIndex = targetIndex(a);
+  f.composer.updateOperation({id: 'retained', kind: 'agent.input', target: a.target, state: 'accepted', createdAt: '', updatedAt: ''});
+  await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(5, '', 'followUp'), true)); await turn(); f.composer.attach('w');
+  assert.equal(f.composer.retained('w', a.target, oldIndex), false);
+  assert.equal(f.composer.retained('w', a.target, {...oldIndex, draftRevision: 6}), true);
+});
+test('offline Resume attaches the exact buffer before preparation and keeps it after refusal', async () => {
+  const f = fixture('agent'); const a = state('a', draft(2, 'saved draft', 'followUp'), true);
+  f.composer.attach('w', a); f.composer.setText('unsaved exact draft'); f.composer.attach('w');
+  const response = Promise.withResolvers<never>();
+  const message: MessageTarget = new MessageTarget({workspace: () => ({id: 'w', revision: 0}), prepare: () => response.promise, paint: () => {
+    const captured = message.current; assert.ok(captured);
+    f.composer.availability(false, message.ready, false);
+    f.composer.attachRetained(captured.workspaceId, {kind: 'agent', identity: captured.identity});
+  }});
+  const pending = message.open('a');
+  assert.equal(f.composer.editor.value, 'unsaved exact draft'); assert.equal(f.node('composer').hidden, false); assert.equal(f.node('editor').disabled, false); assert.equal(f.node('send').disabled, true);
+  f.composer.setText('still editable offline'); response.reject(new Error('offline')); await pending;
+  assert.equal(f.composer.editor.value, 'still editable offline'); assert.equal(f.node('composer').hidden, false); assert.equal(f.node('send').disabled, true); assert.equal(f.calls.length, 0);
+  assert.equal(f.composer.attachRetained('other-workspace', a.target), false); assert.equal(f.composer.target, undefined);
+  assert.equal(f.composer.attachRetained('w', {kind: 'agent', identity: 'other'}), false);
+  assert.equal(f.composer.attachRetained('w', a.target), true); assert.equal(f.composer.editor.value, 'still editable offline');
 });

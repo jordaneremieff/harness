@@ -94,6 +94,10 @@ a { color: var(--info); text-underline-offset: 3px; }
 .app { display: grid; grid-template-columns: var(--sidebar-width,272px) minmax(0,1fr); height: 100%; min-height: 0; }
 .app:has(> .sidebar[hidden]) { grid-template-columns: minmax(0,1fr); }
 .sidebar { display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0; padding: 12px; background: var(--sidebar); border-right: 1px solid var(--separator); }
+.sidebar:has(> .agent-message-panel:not([hidden])) { overflow-y: auto; }
+.sidebar:has(> .agent-message-panel:not([hidden])) > * { flex-shrink: 0; }
+.sidebar:has(> .agent-message-panel:not([hidden])) .roster-section { display: grid; grid-template-rows: auto auto minmax(220px,1fr) auto; flex: 1 0 0; min-height: min-content; }
+.sidebar:has(> .agent-message-panel:not([hidden])) .roster { min-height: 220px; }
 .sidebar-head { display: flex; align-items: center; gap: 4px; min-height: 28px; }
 .project-button { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding: 4px 8px; border-color: transparent; background: transparent; text-align: left; font-size: 13px; font-weight: 600; }
 #project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -127,6 +131,7 @@ a { color: var(--info); text-underline-offset: 3px; }
 .row-select:not(:disabled):hover { background: transparent; }
 .row-select .row-heading { padding-right: 64px; }
 .row-age { position: absolute; top: 4px; right: 4px; min-height: 26px; max-width: 80px; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 12px; line-height: 16px; font-weight: 400; }
+.row-message { display: block; margin: 0 8px 6px auto; padding: 0 6px; min-height: 26px; font-size: 12px; background: transparent; }
 .row-age time { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-age[data-absolute=true] { position: static; display: block; max-width: 100%; padding: 0 8px 8px 32px; text-align: left; }
 .row-age[data-absolute=true] time { white-space: normal; overflow-wrap: anywhere; }
@@ -234,6 +239,23 @@ button.stop { margin-left: auto; padding: 4px 8px; border-color: transparent; ba
 .composer-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-height: 36px; padding: 4px; font-size: 12px; line-height: 16px; color: var(--muted); }
 .composer-foot button { font-size: 12px; font-weight: 400; padding: 2px 4px; min-height: 28px; color: var(--secondary); }
 .composer-foot > span:empty { display: none; }
+.agent-message-panel { flex: 0 1 auto; min-height: 132px; max-height: 50dvh; overflow: auto; border-top: 1px solid var(--separator); padding-top: 8px; }
+.message-panel-head { display: flex; align-items: flex-start; gap: 4px; margin-bottom: 6px; }
+.message-panel-head > div { flex: 1; min-width: 0; }
+.message-panel-head h2 { font-size: 13px; overflow-wrap: anywhere; }
+.message-panel-head code { color: var(--muted); font-size: 11px; }
+.message-panel-status { font-size: 12px; overflow-wrap: anywhere; }
+.message-panel-status:empty { display: none; }
+.agent-message-panel .composer { width: 100%; padding: 0; }
+.agent-message-panel .composer textarea { min-height: 60px; padding: 8px; font-size: 13px; }
+.agent-message-panel .composer-bar { flex-wrap: wrap; gap: 4px; padding: 0 4px 4px; }
+.agent-message-panel .modes { gap: 0; }
+.agent-message-panel .modes button { padding: 4px 6px; }
+.agent-message-panel .caption { display: none; }
+.agent-message-panel .send { margin-left: auto; }
+.agent-message-panel .composer-foot { min-height: 0; }
+.agent-message-panel .receipt pre { max-height: 120px; }
+.agent-message-panel .receipt-details pre { position: static; max-height: 120px; }
 .fact { min-width: 0; overflow-wrap: anywhere; }
 .draft-state { margin-left: auto; }
 .receipt-details { margin-left: auto; }

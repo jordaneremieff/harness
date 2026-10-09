@@ -291,6 +291,10 @@ export class AgentService {
 		this.#hidden.delete(workspaceId);
 		return this.#request("reconnect", [workspaceId]);
 	}
+	async prepare(identity: string): Promise<Record<string, boolean>> {
+		this.#ready();
+		return this.#request("prepare", [identity]);
+	}
 	async history(identity: string, options: HistoryOptions = {}): Promise<Snapshot> {
 		this.#ready();
 		return this.#request("history", [identity, options]);

@@ -5,17 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test, { type TestContext } from 'node:test';
-import type { AgentServiceOptions, CatalogPage, CatalogRow } from '../agents/index.mts';
+import { AgentError, type AgentServiceOptions, type CatalogPage, type CatalogRow } from '../agents/index.mts';
+import { ApiError } from './errors.mts';
 import { RpcClient } from '../rpc/client.mts';
 import { PrimarySession, type PrimarySessionOptions } from '../rpc/session.mts';
-import { LIMITS, type PrimaryView } from '../shared/api.ts';
+import { LIMITS, type PrimaryView, type TargetPreparation } from '../shared/api.ts';
 import { Registry, type AgentAdapter, type RegistryOptions } from './registry.mts';
 import { StateStore } from './state.mts';
 
 const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
 function fakeAgents() {
   const forbidden = async (): Promise<never> => { throw new Error('No native work in a registry fixture'); };
-  const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, refresh: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, inspect: forbidden,
+  const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, refresh: forbidden, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, inspect: forbidden,
     submit: forbidden, retrySubmit: forbidden, abort: forbidden, configure: () => { throw new Error('No native configuration'); },
     hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
   return () => adapter;
@@ -239,6 +240,71 @@ test('negotiated selected-agent capabilities survive a snapshot cut and remain s
   await registry.store.updateSelection(workspace.id, {expectedRevision: current.revision, selectedTarget: {kind: 'agent', identity: otherIdentity.id}});
   const changed = await registry.snapshot(workspace.id); assert.equal(changed.selectedAgent?.identity, otherIdentity.id); assert.notEqual(changed.selectedAgent?.capabilities?.input, true);
   assert.equal(setup.counts.started, 0);
+});
+
+function prepareRoute(registry: Registry, workspace: string, body: Record<string,unknown>) {
+  return registry.dispatch({parts:['api','workspaces',workspace,'targets'],body,method:'POST',
+    url:new URL(`http://localhost/api/workspaces/${workspace}/targets`),session:'fixture'}) as Promise<TargetPreparation>;
+}
+
+test('agent target preparation validates exact fields and workspace before native work', async context => {
+  const setup = await fixture(context); const calls: string[] = []; const inert = fakeAgents()();
+  setup.options.agents = () => ({...inert, prepare: async identity => {calls.push(identity); return {};}});
+  const registry = await setup.open(); const workspace = await registry.store.workspace();
+  const target = {kind:'agent',identity:'storage:2'};
+  for(const body of [{}, {target,extra:true}, {target:{...target,extra:true}}, {target:{kind:'agent'}},
+    {target:{kind:'agent',identity:3}}, {target:{kind:'primary',key:'primary',epoch:1}}, {target:null}]) {
+    await assert.rejects(prepareRoute(registry,workspace.id,body), {code:'invalid_request'});
+  }
+  await assert.rejects(prepareRoute(registry,'missing',{target}), {code:'invalid_request',status:404});
+  assert.deepEqual(calls, []); assert.equal(registry.store.snapshot(workspace.id).targets.length, 0);
+  assert.deepEqual(await registry.store.workspace(workspace.id), workspace);
+});
+
+test('repeated agent preparation returns the same saved draft without selection or observation', async context => {
+  const setup = await fixture(context); const calls: string[] = []; const inert = fakeAgents()();
+  setup.options.agents = () => ({...inert, prepare: async identity => {calls.push(identity); return {
+    snapshot:true,'observe-open':true,'observe-frame':true,'observe-close':true,'task-submit':true,abort:true,inspect:true,configure:true};}});
+  const registry = await setup.open(); const workspace = await registry.store.workspace();
+  const target = {kind:'agent',identity:'storage:2'};
+  const first = await prepareRoute(registry,workspace.id,{target});
+  await registry.store.putDraft(workspace.id,first.targetState.targetKey,{expectedRevision:0,text:'Retain this exact draft.',mode:'steer'});
+  const second = await prepareRoute(registry,workspace.id,{target});
+  assert.equal(second.targetState.targetKey,first.targetState.targetKey);
+  assert.equal(second.targetState.draft.text,'Retain this exact draft.');
+  assert.equal(second.targetState.draft.revision,1); assert.equal(second.availability,'live'); assert.equal(second.reason,undefined);
+  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,abort:true,configure:false,inspect:true});
+  assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
+  assert.equal(registry.frames.size,0); assert.equal(registry.availability.size,0);
+  assert.equal(setup.counts.started,0); assert.deepEqual(calls,['storage:2','storage:2']);
+});
+
+test('expected preparation refusals keep target drafts and disable every capability', async context => {
+  const setup = await fixture(context); const inert = fakeAgents()(); let failure = new AgentError('stored','No live host.');
+  setup.options.agents = () => ({...inert, prepare: async () => {throw failure;}});
+  const registry = await setup.open(); const workspace = await registry.store.workspace();
+  const target = {kind:'agent',identity:'storage:2'};
+  const state = await registry.store.target(workspace.id,target as {kind:'agent';identity:string});
+  await registry.store.putDraft(workspace.id,state.targetKey,{expectedRevision:0,text:'Safe offline draft.',mode:'followUp'});
+  for(const [code,availability] of [['stored','stored'],['host_unavailable','unavailable'],['not_ready','unavailable'],
+    ['capacity','unavailable'],['contract_mismatch','incompatible'],['protocol_error','incompatible'],['unsupported','incompatible']] as const) {
+    failure = new AgentError(code,`Preparation refused: ${code}.`);
+    const prepared = await prepareRoute(registry,workspace.id,{target});
+    assert.equal(prepared.availability,availability); assert.equal(prepared.reason,failure.message);
+    assert.equal(prepared.targetState.targetKey,state.targetKey); assert.equal(prepared.targetState.draft.text,'Safe offline draft.');
+    assert.deepEqual(prepared.capabilities,{history:false,observe:false,input:false,abort:false,configure:false,inspect:false});
+  }
+  assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
+  assert.equal(registry.frames.size,0); assert.equal(registry.availability.size,0); assert.equal(setup.counts.started,0);
+});
+
+test('unexpected preparation errors become public API errors', async context => {
+  const setup = await fixture(context); const inert = fakeAgents()(); let failure: Error = new AgentError('invalid_request','Invalid identity.');
+  setup.options.agents = () => ({...inert, prepare: async () => {throw failure;}});
+  const registry = await setup.open(); const workspace = await registry.store.workspace(); const target = {kind:'agent',identity:'storage:2'};
+  await assert.rejects(prepareRoute(registry,workspace.id,{target}), error => error instanceof ApiError && error.code === 'invalid_request');
+  failure = new Error('Private implementation details.');
+  await assert.rejects(prepareRoute(registry,workspace.id,{target}), error => error instanceof ApiError && error.code === 'internal' && !error.message.includes('Private'));
 });
 
 test('registry validates path kind and refuses stale epochs without a primary effect', {timeout: 10000}, async context => {

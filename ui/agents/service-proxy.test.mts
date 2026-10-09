@@ -101,6 +101,21 @@ test("proxy has no startup scan and synchronous roster uses only callback deltas
 	assert.equal(service.roster().rows[0]?.cwd, "/fixture");
 });
 
+test("prepare proxies exact identities without selection and worker failure is not mutation uncertainty", async (t) => {
+  const callbacks: unknown[][] = [];
+  const { worker, service } = fixture(t, { onAvailability: (...args) => callbacks.push(args) });
+  const prepared = service.prepare("storage:2");
+  const request = worker.requests[0]; assert.ok(request);
+  assert.deepEqual(request, { id: request.id, member: "prepare", args: ["storage:2"] });
+  const supported = { "task-submit": true, abort: false };
+  worker.respond(request.id, supported);
+  assert.deepEqual(await prepared, supported);
+  const failed = assert.rejects(service.prepare("storage:3"), code("host_unavailable", false));
+  worker.emit("exit", 1); await failed;
+  assert.deepEqual(callbacks, []);
+  assert.deepEqual(worker.requests.map(item => item.member), ["prepare", "prepare"]);
+});
+
 test("proxy correlates out-of-order responses and preserves serialized errors", async (t) => {
 	const { worker, service } = fixture(t);
 	const one = service.refresh(),

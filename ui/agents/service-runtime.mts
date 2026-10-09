@@ -52,6 +52,12 @@ export class AgentService {
     await this.#discardLink(this.#record(identity).storageId);
     await this.#observations.reconnect(workspaceId);
   }
+  async prepare(identity: string): Promise<Record<string, boolean>> {
+    this.#ready();
+    const link = await this.#link(identity, true, true);
+    if (!link.connected) throw new AgentError("host_unavailable", "Host connection is unavailable. Reconnect explicitly.");
+    return link.capabilities();
+  }
   async history(identity: string, options: HistoryOptions = {}): Promise<Snapshot> {
     this.#ready();
     const params: JsonObject = { sessionId: identity, limit: 50, maxBytes: 65536 };
@@ -138,19 +144,25 @@ export class AgentService {
     if (!record) throw new AgentError("host_unavailable", "Agent storage is not in the retained catalog. Refresh explicitly.");
     return record;
   }
-  async #link(identity: string, reconnect = false): Promise<HostLink> {
+  #checkReplacement(storageId: string, link: HostLink, protectObservation: boolean): void {
+    if (!protectObservation || !link.connected) return;
+    const active = new Set(this.#observations.identities().map(identity => this.#record(identity).storageId));
+    if (active.has(storageId)) throw new AgentError("host_unavailable", "Retained host endpoint changed while observed. Reconnect the observation explicitly.");
+  }
+  async #link(identity: string, reconnect = false, protectObservation = false): Promise<HostLink> {
     this.#ready();
     const record = this.#record(identity);
     const endpoint = deriveEndpoint(record);
     const existing = this.#links.get(record.storageId);
     if (existing) {
       const link = await existing;
-      if (this.#links.get(record.storageId) !== existing) return this.#link(identity, reconnect);
+      if (this.#links.get(record.storageId) !== existing) return this.#link(identity, reconnect, protectObservation);
       const sameEndpoint = link.endpoint.serverId === endpoint.serverId && link.endpoint.socketPath === endpoint.socketPath;
       if (sameEndpoint && (link.connected || !reconnect)) return link;
       if (!reconnect) throw new AgentError("host_unavailable", "Retained host endpoint changed. Reconnect explicitly.");
+      this.#checkReplacement(record.storageId, link, protectObservation);
       this.#links.delete(record.storageId); await link.close();
-      if (this.#links.has(record.storageId)) return this.#link(identity, reconnect);
+      if (this.#links.has(record.storageId)) return this.#link(identity, reconnect, protectObservation);
     }
     if (this.#links.size >= 32) throw new AgentError("capacity", "Host link capacity reached.");
     const pending = (async () => {

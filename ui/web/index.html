@@ -30,6 +30,10 @@
 <div id="roster" class="roster" role="list" aria-labelledby="agents-heading"></div>
 <div id="roster-footer" class="roster-footer"></div>
 </section>
+<section id="agent-message-panel" class="agent-message-panel" aria-labelledby="agent-message-name" hidden>
+<header class="message-panel-head"><div><h2 id="agent-message-name"></h2><code id="agent-message-identity"></code></div><button id="agent-message-close" class="icon-button" type="button" aria-label="Close message panel" title="Close message panel">×</button></header>
+<p id="agent-message-status" class="message-panel-status" role="status"></p>
+</section>
 <footer class="sidebar-foot">
 <div id="connection" class="connection" role="status" aria-live="polite"></div>
 <button id="notices-button" class="icon-button" type="button" aria-label="Notifications" title="Notifications"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 7.5a4.5 4.5 0 0 0-9 0c0 5-2 5.75-2 6.75h13c0-1-2-1.75-2-6.75M8.5 16.75h3"></path></svg><span id="notices-count" class="badge" hidden></span></button>
@@ -86,7 +90,7 @@
 <form id="agent-composer" class="composer">
 <div id="agent-receipt" class="receipt" role="status"></div>
 <div class="composer-card">
-<label class="sr-only" for="agent-editor">Message to selected agent</label>
+<label class="sr-only" for="agent-editor">Message to this agent</label>
 <textarea id="agent-editor" rows="2" placeholder="Message this agent" spellcheck="false"></textarea>
 <div class="composer-bar">
 <div id="agent-modes" class="modes" role="group" aria-label="Delivery while working"><button type="button" data-mode="steer" aria-pressed="false">Steer</button><button type="button" data-mode="followUp" aria-pressed="true">Follow-up</button></div>

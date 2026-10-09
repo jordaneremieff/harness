@@ -62,3 +62,22 @@ test('a failed hydration never turns a missing draft into a blank saved draft', 
   await assert.rejects(hydrateVisible(original, async () => {throw new Error('read unavailable');}), /read unavailable/);
   assert.deepEqual(original.targets, []);
 });
+
+test('an explicit message draft hydrates independently of main selection', async () => {
+  const seen: string[] = []; const original = snapshot(); const explicit = {kind: 'agent' as const, identity: 'a'};
+  original.targetIndex?.push({targetKey: 'a', target: explicit, draftRevision: 2, hasDraft: true, unconfirmedOperationIds: []});
+  const agent = {...target, targetKey: 'a', target: explicit};
+  const result = await hydrateVisible(original, reader({'/api/workspaces/workspace/targets/a': agent}, seen), explicit);
+  assert.deepEqual(seen, ['/api/workspaces/workspace/targets/a']); assert.equal(result.targets?.at(-1), agent); assert.deepEqual(result.workspace, original.workspace);
+});
+
+test('visible target hydration reconciles newer indexed drafts and missing unresolved inputs', async () => {
+  for (const newerDraft of [false, true]) {
+    const seen: string[] = []; const original = snapshot(); const explicit = {kind: 'agent' as const, identity: 'a'};
+    const saved = {...target, targetKey: 'a', target: explicit, draft: {...target.draft, revision: 2, text: ''}};
+    const fresh = {...saved, draft: {...saved.draft, revision: newerDraft ? 3 : 2, text: newerDraft ? 'remote draft' : ''}, unconfirmed: newerDraft ? [] : [{operationId: 'remote', target: explicit, text: 'remote input', mode: 'followUp', submittedDraftRevision: 2, createdAt: '', reason: 'unknown'}]};
+    original.targets?.push(saved); original.targetIndex?.push({targetKey: 'a', target: explicit, draftRevision: fresh.draft.revision, hasDraft: newerDraft, unconfirmedOperationIds: newerDraft ? [] : ['remote']});
+    const result = await hydrateVisible(original, reader({'/api/workspaces/workspace/targets/a': fresh}, seen), explicit);
+    assert.deepEqual(seen, ['/api/workspaces/workspace/targets/a']); assert.equal(result.targets?.filter(item => item.targetKey === 'a').length, 1); assert.equal(result.targets?.find(item => item.targetKey === 'a'), fresh);
+  }
+});

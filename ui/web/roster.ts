@@ -7,7 +7,7 @@ import { reconcileChildren } from './render.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
 const SEARCH_PAGE_LIMIT = 20;
-type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; age: HTMLTimeElement; model: HTMLElement; activity: HTMLElement; source: AgentRow; absolute: boolean};
+type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; model: HTMLElement; activity: HTMLElement; source: AgentRow; absolute: boolean};
 function rowName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
 function duplicateLabels(rows: AgentRow[]): Map<string, string> {
   const groups = new Map<string, AgentRow[]>();
@@ -52,6 +52,8 @@ export class Roster {
   private gaps = new Map<string, HTMLElement>();
   private rows: AgentRow[] = [];
   private selected?: string;
+  private message?: (identity: string) => void;
+  private resumes = new Set<string>();
   private pending = false;
   private meta?: Omit<CachedRoster, 'rows'>;
   private footerCount = -1;
@@ -64,8 +66,8 @@ export class Roster {
   private more: (action?: 'refresh' | 'more') => void;
   private empty = element('p', 'empty-state');
   readonly node = byId('roster');
-  constructor(select: (row: AgentRow) => void, more: (action?: 'refresh' | 'more') => void, search?: CachedPageSearch) {
-    this.select = select; this.more = more; this.search = search;
+  constructor(select: (row: AgentRow) => void, more: (action?: 'refresh' | 'more') => void, search?: CachedPageSearch, message?: (identity: string) => void) {
+    this.select = select; this.more = more; this.search = search; this.message = message;
     byId<HTMLInputElement>('agent-search').addEventListener('input', () => { this.node.scrollTop = 0; this.paint(); void this.searchCached(); });
     this.node.addEventListener('scroll', () => this.schedule(), {passive: true});
   }
@@ -78,6 +80,20 @@ export class Roster {
     this.prune(new Set(rows.map(row => row.identity))); this.schedule();
     if (this.meta !== meta || this.footerCount !== rows.length) { this.meta = meta; this.footerCount = rows.length; this.footer(rows.length, meta, now); }
     void this.searchCached();
+  }
+  resume(identity: string, retained: boolean): void {
+    if (retained) this.resumes.add(identity); else this.resumes.delete(identity);
+    const cached = this.cache.get(identity); if (cached) this.messageAction(cached);
+  }
+  focusMessage(identity: string): boolean {
+    const cached = this.cache.get(identity);
+    if (!cached || cached.message.hidden || !this.node.contains(cached.node)) return false;
+    cached.message.focus(); return true;
+  }
+  private messageAction(cached: RowNode): void {
+    cached.message.hidden = !!this.selected || !this.message;
+    setText(cached.message, this.resumes.has(cached.source.identity) ? 'Resume' : 'Message');
+    cached.message.setAttribute('aria-label', `${this.resumes.has(cached.source.identity) ? 'Resume message to' : 'Message'} ${rowName(cached.source)} · ${cached.source.identity}`);
   }
   private query(): string { return byId<HTMLInputElement>('agent-search').value.trim().toLocaleLowerCase(); }
   private async searchCached(more = false): Promise<void> {
@@ -219,8 +235,9 @@ export class Roster {
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); }, 'row-age'); ageButton.append(age);
     const model = element('div', 'row-model'); const activity = element('div', 'row-activity');
-    select.append(heading, model, activity); node.append(select, ageButton);
-    const cached = {node, select, state, name, identity, ageButton, age, model, activity, source: row, absolute: false}; this.cache.set(row.identity, cached);
+    const message = button('Message', () => this.message?.(row.identity), 'row-message');
+    select.append(heading, model, activity); node.append(select, ageButton, message);
+    const cached = {node, select, state, name, identity, ageButton, message, age, model, activity, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;
   }
   private row(row: AgentRow, identity: string): RowNode {
@@ -234,7 +251,7 @@ export class Roster {
     cached.select.setAttribute('aria-label', `${rowName(row)} · ${row.identity} · ${state.label}`);
     cached.node.setAttribute('aria-label', rowName(row));
     cached.node.title = `${row.identity}\n${state.label}\n${row.ownerLabel ?? row.availability}`;
-    cached.source = row; if (changed || !cached.age.textContent) this.updateAge(cached);
+    cached.source = row; this.messageAction(cached); if (changed || !cached.age.textContent) this.updateAge(cached);
     return cached;
   }
   private updateAge(cached: RowNode, deliberate = false): void {

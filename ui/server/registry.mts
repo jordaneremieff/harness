@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import { createAgentService, type AgentService, type AgentServiceOptions } from '../agents/index.mts';
+import { AgentError, createAgentService, type AgentService, type AgentServiceOptions } from '../agents/index.mts';
 import { PrimarySession, type PrimarySessionOptions } from '../rpc/session.mts';
-import { LIMITS, type AgentCapabilities, type Bootstrap, type EventData, type EventName, type PrimaryView, type ProjectedFrame, type Snapshot, type Target } from '../shared/api.ts';
+import { LIMITS, type AgentCapabilities, type Bootstrap, type EventData, type EventName, type PrimaryView, type ProjectedFrame, type Snapshot, type Target, type TargetPreparation } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 import { Journal, type Measure } from './journal.mts';
 import { Operations } from './operations.mts';
@@ -16,12 +16,16 @@ import { dispatchPrimary } from './routes-primary.mts';
 import { dispatchAgent } from './routes-agent.mts';
 import { dispatchView } from './routes-view.mts';
 
-export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'>;
+export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'>;
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
   agents?: (options: AgentServiceOptions) => AgentAdapter; primary?: (options: PrimarySessionOptions) => PrimarySession; measure?: Measure};
 const live = (view: PrimaryView) => !['stopped','failed'].includes(view.lifecycle);
 const ownsWriter = (session: PrimarySession) => !!session.client.child && !session.client.exited;
 const owned = (session: PrimarySession) => live(session.view) || ownsWriter(session);
+function preparationAvailability(code: string): TargetPreparation['availability'] {
+  if(code === 'stored') return 'stored';
+  return ['contract_mismatch','protocol_error','unsupported'].includes(code) ? 'incompatible' : 'unavailable';
+}
 /** Process ownership is independent of browser connections and saved view state. */
 export class Registry {
   readonly journal: Journal;
@@ -78,6 +82,20 @@ export class Registry {
   private capabilities(supported?: Record<string,boolean>): AgentCapabilities {
     return {history: supported?.snapshot === true, observe: ['observe-open','observe-frame','observe-close','snapshot'].every(key=>supported?.[key] === true),
       input:supported?.['task-submit'] === true,abort:supported?.abort === true,configure:false,inspect:supported?.inspect === true};
+  }
+  async prepareTarget(workspace: string, target: Extract<Target,{kind:'agent'}>): Promise<TargetPreparation> {
+    let availability: TargetPreparation['availability'] = 'live';
+    let supported: Record<string,boolean> | undefined;
+    let reason: string | undefined;
+    try { supported = await this.agents.prepare(target.identity); }
+    catch(error) {
+      if(error instanceof AgentError && ['stored','host_unavailable','not_ready','capacity','contract_mismatch','protocol_error','unsupported'].includes(error.code)) {
+        availability = preparationAvailability(error.code);
+        reason = safeText(error.message,512) || 'The agent host is unavailable.';
+      } else if(error instanceof AgentError) throw new ApiError(error.code,safeText(error.message,512));
+      else throw new ApiError('internal','Agent preparation failed.',500,'manual');
+    }
+    return {targetState:await this.store.target(workspace,target),availability,capabilities:this.capabilities(supported),...(reason ? {reason} : {})};
   }
   async workspace(id?: string) { return (await this.store.workspace(id)).id; }
   views() { return [...this.saved.values()].map(view=>structuredClone(this.sessions.get(view.key)?.view ?? view)); }

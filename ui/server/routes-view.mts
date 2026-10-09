@@ -12,7 +12,9 @@ export async function dispatchView(registry:Registry,context:RequestContext):Pro
   if(parts[1]==='operations') return operations(registry,context);
   if(parts[1]!=='workspaces') throw new ApiError('invalid_request','The route does not exist.',404);
   if(parts.length===2) {v.fields(body,[]);return {workspace:await registry.store.createWorkspace()};}
-  const workspace=v.string(parts[2],'workspace ID');await registry.store.workspace(workspace);
+  const workspace=v.string(parts[2],'workspace ID');
+  if(parts[3]==='targets' && parts.length===4 && method==='POST') return prepareTarget(registry,workspace,body);
+  await registry.store.workspace(workspace);
   if(parts[3]==='selection') return selection(registry,workspace,body);
   if(parts[3]==='unconfirmed') return unconfirmed(registry,workspace,context);
   const key=v.string(parts[4],'target key');
@@ -31,6 +33,13 @@ export async function dispatchView(registry:Registry,context:RequestContext):Pro
     return registry.store.putPresentation(workspace,key,{expectedRevision,expanded:body.expanded as string[],showThinking:v.boolean(body.showThinking,'thinking visibility')});
   }
   throw new ApiError('invalid_request','The view action does not exist.',404);
+}
+async function prepareTarget(registry:Registry,workspace:string,body:Record<string,unknown>) {
+  await registry.workspace(workspace);
+  v.fields(body,['target'],['target']);
+  const target=v.target(body.target);
+  if(target.kind!=='agent') throw new ApiError('invalid_request','Preparation requires an agent target.');
+  return registry.prepareTarget(workspace,target);
 }
 async function unconfirmed(registry:Registry,workspace:string,context:RequestContext) {
   const {parts,body,method}=context;

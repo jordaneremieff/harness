@@ -1,5 +1,5 @@
 import { LIMITS } from '../shared/api.ts';
-import type { DraftView, OperationView, Target, TargetState, UnconfirmedInput } from '../shared/api.ts';
+import type { DraftView, OperationView, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
 import { announce, byId, button, copy, element, rawText, setText } from './dom.ts';
 import { exactInput } from './recovery.ts';
 import { targetReceipts } from './receipt.ts';
@@ -12,11 +12,11 @@ import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draft
 import type { DraftState, Submission } from './draft-state.ts';
 import { ApiError, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; recover: (state: TargetState) => void; commands?: () => CommandInventory};
+export type ComposerHooks = {submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; commands?: () => CommandInventory; retained?: (workspace: string, target: Target, retained: boolean) => void};
 type Edit = {text: string; mode: string; edit: number};
 type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; authorized?: boolean; cleanup?: DraftView; settling?: Promise<void>};
 type Buffer = {workspace: string; state: TargetState; data: DraftState; saving?: Promise<DraftView>; submitting: boolean;
-  review: boolean; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; lastOperation?: OperationView};
+  review: boolean; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; lastOperation?: OperationView; retained?: boolean};
 const encoded = encodeURIComponent;
 const sameTarget = (a: Target, b?: Target): boolean => JSON.stringify(a) === JSON.stringify(b);
 
@@ -29,6 +29,7 @@ export class Composer {
   private get admissionBlocked(): boolean { return !this.connected || this.gated; }
   private ready = false;
   private busy = false;
+  private sidebar = false;
   private operations: OperationView[] = [];
   private sizePending = false;
   private manualHeight?: number;
@@ -53,6 +54,7 @@ export class Composer {
     byId<HTMLFormElement>(`${prefix}-composer`).addEventListener('submit', event => { event.preventDefault(); void this.send(); });
     for (const node of this.modes()) node.addEventListener('click', () => this.change(this.editor.value, node.dataset.mode === 'steer' ? 'steer' : 'followUp'));
   }
+  placement(sidebar: boolean): void { this.sidebar = sidebar; this.resize(); this.renderControls(); }
   commandsChanged(): void { this.commandMenu?.update(); }
   attach(workspace: string, state?: TargetState): void {
     const previousTarget = this.current?.state.target;
@@ -69,7 +71,6 @@ export class Composer {
     const switched = this.current !== buffer; this.current = buffer;
     if (switched || !sameTarget(state.target, previousTarget)) this.commandMenu?.reset();
     this.hydrate(buffer, state); this.paint(buffer); this.prepare(buffer);
-    if (switched && state.unconfirmed.length) this.hooks.recover(buffer.state);
     this.receipt(buffer); this.flush(buffer);
   }
   updateDraft(draft: DraftView): void { if (this.current) { this.receive(this.current, draft); this.paint(this.current); this.receipt(this.current); } }
@@ -84,6 +85,25 @@ export class Composer {
   }
   receipts(operations: Iterable<OperationView>): void { this.operations = [...operations]; this.receipt(this.current); this.render(); }
   get unsaved(): boolean { return [...this.buffers.values()].some(item => !draftSaved(item.data) || item.review); }
+  private retainedBuffer(workspace: string, target: Target): Buffer | undefined {
+    return [...this.buffers.values()].find(item => item.workspace === workspace && sameTarget(item.state.target, target));
+  }
+  attachRetained(workspace: string, target: Target): boolean {
+    const buffer = this.retainedBuffer(workspace, target); this.attach(workspace, buffer?.state); return !!buffer;
+  }
+  retained(workspace: string, target: Target, index?: TargetIndex): boolean | undefined {
+    const buffer = this.retainedBuffer(workspace, target);
+    if (index && !sameTarget(index.target, target)) index = undefined;
+    if (!buffer) return index ? index.hasDraft || index.unconfirmedOperationIds.length > 0 : undefined;
+    if (this.hasRetained(buffer)) return true;
+    if (index?.unconfirmedOperationIds.some(id => !buffer.resolved.has(id))) return true;
+    return !!index && index.draftRevision > buffer.data.server.revision && index.hasDraft;
+  }
+  private hasRetained(buffer: Buffer): boolean { return !!buffer.data.text || !draftSaved(buffer.data) || buffer.review || buffer.submitting || buffer.pending.size > 0 || buffer.state.unconfirmed.some(item => !buffer.resolved.has(item.operationId)); }
+  private notifyRetained(buffer: Buffer): void {
+    const retained = this.hasRetained(buffer); if (buffer.retained === retained) return;
+    buffer.retained = retained; this.hooks.retained?.(buffer.workspace, buffer.state.target, retained);
+  }
   get target(): Target | undefined { return this.current?.state.target; }
   get state(): TargetState | undefined { return this.current?.state; }
   setText(text: string): void { this.editor.value = text; this.change(text); }
@@ -96,7 +116,7 @@ export class Composer {
   private base(buffer: Buffer): string { return `/api/workspaces/${encoded(buffer.workspace)}/targets/${encoded(buffer.state.targetKey)}`; }
   private change(text: string, mode = this.current?.data.mode): void {
     const buffer = this.current; if (!buffer) return;
-    buffer.data = editDraft(buffer.data, text, mode); this.resize(); this.render(); this.commandMenu?.update(); this.flush(buffer);
+    buffer.data = editDraft(buffer.data, text, mode); this.notifyRetained(buffer); this.resize(); this.render(); this.commandMenu?.update(); this.flush(buffer);
   }
   private key(event: KeyboardEvent): void {
     if (event.defaultPrevented || this.composing || event.isComposing || event.keyCode === 229) return;
@@ -126,7 +146,7 @@ export class Composer {
       const style = getComputedStyle(this.editor); const line = Number.parseFloat(style.lineHeight);
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
       const short = matchMedia('(max-height: 599px)').matches;
-      const baseline = (short ? 2 : 3) * line + extra;
+      const baseline = (short || this.sidebar ? 2 : 3) * line + extra;
       const available = this.editor.closest<HTMLElement>('.conversation')?.clientHeight ?? innerHeight;
       const cap = Math.max(baseline, Math.min(10 * line + extra, available * (short ? 0.25 : 0.3)));
       this.editor.style.maxHeight = `${cap}px`;
@@ -147,8 +167,8 @@ export class Composer {
     const unavailableAgent = this.prefix === 'agent' && this.connected && !this.ready;
     byId(`${this.prefix}-modes`).hidden = !this.ready || !this.connected || (this.prefix === 'primary' && !this.busy);
     if (this.prefix === 'agent') {
-      byId('agent-send').hidden = unavailableAgent; byId('agent-acquire').hidden = !unavailableAgent;
-      this.editor.setAttribute('aria-label', unavailableAgent ? 'Draft for this agent' : 'Message to selected agent');
+      byId('agent-send').hidden = unavailableAgent; byId('agent-acquire').hidden = this.sidebar || !unavailableAgent;
+      this.editor.setAttribute('aria-label', unavailableAgent ? 'Draft for this agent' : 'Message to this agent');
       this.editor.placeholder = unavailableAgent ? 'Draft for this agent' : 'Message this agent';
     }
     byId(`${this.prefix}-send`).setAttribute('aria-description', !this.connected ? 'Connection lost. Reconnect before sending.' : this.gated ? 'View change in progress. Wait before sending.' : !this.ready ? 'No compatible input operation is available.' : '');
@@ -231,6 +251,7 @@ export class Composer {
     this.paint(buffer); this.receipt(buffer); this.flush(buffer);
   }
   private receipt(buffer?: Buffer): void {
+    if (buffer) this.notifyRetained(buffer);
     if (!buffer || this.current !== buffer) return;
     const slot = this.slot(); slot.replaceChildren();
     const records = this.records(buffer); this.receiptDetails(records);

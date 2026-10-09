@@ -93,3 +93,21 @@ test('responsive layout has the specified collapse breakpoints and no animated l
   assert.match(css, /@media\s*\(forced-colors:\s*active\)/); assert.match(css, /@media\s*\(pointer:\s*coarse\)/);
   assert.doesNotMatch(css, /animation:|transition:|scroll-behavior:smooth/);
 });
+
+test('sidebar message form has compact controls and bounded independent overflow', () => {
+  assert.match(rule('.agent-message-panel'), /max-height: 50dvh; overflow: auto/);
+  assert.match(rule('.agent-message-panel .composer'), /width: 100%/);
+  assert.match(rule('.agent-message-panel .composer textarea'), /min-height: 60px; padding: 8px/);
+  assert.match(rule('.agent-message-panel .composer-bar'), /flex-wrap: wrap; gap: 4px/);
+  assert.match(rule('.message-panel-head > div'), /min-width: 0/);
+});
+
+test('an open Message panel reserves two roster rows and lets short sidebars scroll without overlap', () => {
+  const open = '.sidebar:has(> .agent-message-panel:not([hidden]))';
+  assert.match(rule(open), /overflow-y: auto/);
+  assert.match(rule(`${open} > *`), /flex-shrink: 0/);
+  assert.match(rule(`${open} .roster-section`), /display: grid; grid-template-rows: auto auto minmax\(220px,1fr\) auto/);
+  assert.match(rule(`${open} .roster-section`), /flex: 1 0 0; min-height: min-content/);
+  assert.match(rule(`${open} .roster`), /min-height: 220px/);
+  assert.match(rule('.agent-message-panel'), /overflow: auto/);
+});

@@ -21,6 +21,7 @@ const decorativeSeparators = new Set([
 	"pre|border",
 	".sidebar|border-right",
 	".sidebar-foot|border-top",
+	".agent-message-panel|border-top",
 	".conversation-head|border-bottom",
 	".command-hint|border-top",
 	".thinking > .stream-text|border-left",

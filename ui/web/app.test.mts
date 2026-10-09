@@ -46,3 +46,48 @@ test('collapsed connection failures have a single reachable owner and tab hiding
   assert.match(source, /selection\(\{panelVisible: true\}\)/);
   assert.doesNotMatch(source, /setInterval/);
 });
+
+test('message panel moves the existing form outside the roster without changing the main view', () => {
+  assert.equal([...html.matchAll(/id="agent-composer"/g)].length, 1); assert.equal([...html.matchAll(/id="agent-editor"/g)].length, 1);
+  assert.ok(html.includes('</section>\n<section id="agent-message-panel"'));
+  assert.ok(html.indexOf('id="agent-message-panel"') < html.indexOf('<footer class="sidebar-foot">'));
+  assert.match(source, /form.parentElement !== panel\) panel.append\(form\)/);
+  assert.match(source, /form.parentElement !== detail\) detail.append\(form\)/);
+  const panel = source.slice(source.indexOf('function renderMessagePanel()'), source.indexOf('function renderAgent()'));
+  assert.doesNotMatch(panel, /selection\(|primaryTranscript\.|primaryComposer\.(attach|setText)/);
+  assert.match(source, /targets`, 'POST', \{target\}/);
+});
+test('transcript saves use their captured workspace and target rather than the movable composer', () => {
+  assert.match(source, /saveReading\(agentTranscriptTarget, reading\)/); assert.match(source, /savePresentation\(agentTranscriptTarget, expanded, showThinking\)/);
+  const saves = source.slice(source.indexOf('function saveReading('), source.indexOf('function showOperation('));
+  assert.doesNotMatch(saves, /composer\.state|agentComposer|selectedAgent/);
+  assert.match(saves, /const \{saved, workspaceId, prefix\} = captured/);
+  assert.match(saves, /encodeURIComponent\(workspaceId\)/); assert.match(saves, /encodeURIComponent\(saved.targetKey\)/);
+});
+test('close and Escape retain buffers, return focus by identity, and hide unsafe controls', () => {
+  assert.match(source, /byId\('agent-message-close'\).addEventListener\('click', \(\) => closeMessagePanel\(\)/);
+  assert.match(source, /event.key === 'Escape' && messageTarget.current && !modal.openNow/);
+  assert.match(source, /roster.focusMessage\(identity\)/); assert.match(source, /primaryComposer.editor.focus\(\)/);
+  for (const control of ['agent-abort', 'agent-acquire']) assert.ok(source.includes(`byId('${control}').addEventListener('click', () => { if (messageTarget.current) return;`));
+  assert.match(source, /messageTarget.current \? messageTarget.ready : row\?\.availability/);
+  assert.match(source, /agentComposer.placement\(true\)/);
+});
+
+test('only arrived roster and availability events invalidate message preparation', () => {
+  const events = source.slice(source.indexOf('function applyEvent('), source.indexOf('function renderObservedAgent('));
+  assert.match(events, /messageTarget.rosterChanged\(event.envelope.data as EventData\['agent.roster'\]\)/);
+  assert.match(events, /messageTarget.availabilityChanged\(event.envelope.data as EventData\['agent.availability'\]\)/);
+  const panel = source.slice(source.indexOf('function renderMessagePanel()'), source.indexOf('function closeMessagePanel('));
+  assert.doesNotMatch(panel, /messageTarget\.(rosterChanged|availabilityChanged)/);
+  assert.match(source, /messageTarget.current && !messageTarget.current.invalidated\) await messageTarget.open/);
+});
+test('Resume uses revision-aware reconciliation and restores its exact buffer while prepare is pending', () => {
+  assert.match(source, /agentComposer.retained\(state.workspace\?\.id \?\? '', target, index\) \?\? false/);
+  assert.doesNotMatch(source, /retained\([^\n]+\) \?\? !!\(index/);
+  assert.match(source, /else agentComposer.attachRetained\(captured.workspaceId, \{kind: 'agent', identity: captured.identity\}\)/);
+  assert.match(source, /agentComposer.availability\(connected, messageTarget.ready, false, selecting\)/);
+});
+test('the app delegates composer recovery without a duplicate renderer or hook', () => {
+  assert.doesNotMatch(source, /function recover\(|recover: recover|exactInput/);
+  assert.match(source, /recovery: \(\) => recovery.open\(\)/);
+});

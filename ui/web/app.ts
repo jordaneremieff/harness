@@ -1,4 +1,4 @@
-import type { AgentHistoryPage, AgentRow, Bootstrap, DraftView, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
+import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
@@ -11,11 +11,11 @@ import { installIcons } from './icons.ts';
 import { Transcript } from './render.ts';
 import { historyBecameReady } from './transcript-history.ts';
 import { Roster } from './roster.ts';
-import { Recovery, exactInput } from './recovery.ts';
+import { Recovery } from './recovery.ts';
 import { agentBlocks, conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
 import type { UiEvent } from './state.ts';
 import { hydrateVisible, refreshVisible } from './hydrate.ts';
-import { SelectionQueue, navigationState, visibleReceipt } from './selection-state.ts';
+import { MessageTarget, SelectionQueue, navigationState, visibleReceipt } from './selection-state.ts';
 import { usageSummary } from './usage.ts';
 import { entryVisible } from './entry-presentation.ts';
 import { primaryBusy, primaryActivityLabel, primaryEmpty } from './primary-presentation.ts';
@@ -45,6 +45,9 @@ let agentEarlier: {target: string; controller: AbortController} | undefined;
 let primaryTargetKey = '';
 let historyReadyTarget = '';
 let agentTargetKey = '';
+type TranscriptTarget = {workspaceId: string; saved: TargetState; prefix: 'primary' | 'agent'};
+let primaryTranscriptTarget: TranscriptTarget | undefined;
+let agentTranscriptTarget: TranscriptTarget | undefined;
 let hiddenPanel = false;
 let selecting = false;
 let reloadTail = Promise.resolve();
@@ -52,16 +55,19 @@ const snapshotBuffers = new Set<{events: UiEvent[]; bytes: number; overflow: boo
 let observationStart: {identity: string; at: number} | undefined;
 const modal = new Modal();
 const preferences = new PreferenceQueue();
-const primaryComposer: Composer = new Composer('primary', {submitted: showOperation, unknownCommand: (text, literal): boolean => actions.unknown(text, literal), commands: () => actions.commandOptions(), recover: recover});
-const agentComposer = new Composer('agent', {submitted: showOperation, unknownCommand: () => false, recover: recover});
-const primaryTranscript = new Transcript('primary', {presentation: (expanded, showThinking) => { void savePresentation(primaryComposer, expanded, showThinking); }, reading: reading => { void saveReading(primaryComposer, reading); }, fork: (message, entry) => actions.fork(entry, rawText(message.parts)), output: loadPrimaryOutput});
+const primaryComposer: Composer = new Composer('primary', {submitted: showOperation, unknownCommand: (text, literal): boolean => actions.unknown(text, literal), commands: () => actions.commandOptions()});
+const agentComposer = new Composer('agent', {submitted: showOperation, unknownCommand: () => false, retained: (workspace, target) => {
+  if (workspace === state.workspace?.id && target.kind === 'agent') renderMessageResume(target.identity);
+}});
+const messageTarget = new MessageTarget({workspace: () => state.workspace, prepare: (workspaceId, target) => request(`/api/workspaces/${encodeURIComponent(workspaceId)}/targets`, 'POST', {target}), paint: renderMessagePanel});
+const primaryTranscript = new Transcript('primary', {presentation: (expanded, showThinking) => { void savePresentation(primaryTranscriptTarget, expanded, showThinking); }, reading: reading => { void saveReading(primaryTranscriptTarget, reading); }, fork: (message, entry) => actions.fork(entry, rawText(message.parts)), output: loadPrimaryOutput});
 async function loadPrimaryOutput(more: import('../shared/api.ts').OutputContinuation): Promise<import('../shared/api.ts').OutputPage> {
   const captured = primary(); if (!captured) throw new Error('Primary history is unavailable.');
   const page = await request<import('../shared/api.ts').OutputPage>(`/api/primaries/${encodeURIComponent(captured.key)}/history/output?epoch=${captured.epoch}&entry=${encodeURIComponent(more.entryId)}&part=${more.part}&offset=${more.offset}`, 'GET', undefined, undefined, historyAbort.signal);
   if (primary()?.key !== captured.key || primary()?.epoch !== captured.epoch) throw new Error('The primary conversation changed.');
   return page;
 }
-const agentTranscript = new Transcript('agent', {presentation: (expanded, showThinking) => { void savePresentation(agentComposer, expanded, showThinking); }, reading: reading => { void saveReading(agentComposer, reading); }});
+const agentTranscript = new Transcript('agent', {presentation: (expanded, showThinking) => { void savePresentation(agentTranscriptTarget, expanded, showThinking); }, reading: reading => { void saveReading(agentTranscriptTarget, reading); }});
 const actions: Actions = new Actions({snapshot: currentSnapshot, primary, composer: primaryComposer, modal, selection, reload, result: showOperation, rosterRefresh: refreshRoster, find: query => primaryTranscript.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : []});
 const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload});
 actions.projectPicker = () => picker.open();
@@ -69,6 +75,10 @@ const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
   merge: page => { state = mergeRosterPage(state, page); renderRoster(); },
+}, identity => {
+  const preparing = messageTarget.open(identity); const captured = messageTarget.current;
+  if (agentComposer.target?.kind === 'agent' && agentComposer.target.identity === identity) agentComposer.editor.focus(); else byId('agent-message-close').focus();
+  void preparing.then(() => { if (captured && messageTarget.valid(captured) && captured.prepared && document.activeElement === byId('agent-message-close')) agentComposer.editor.focus(); });
 });
 const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary);
 const connectionRecovery = new ConnectionRecovery({attempt: resync, unauthorized: error => error instanceof ApiError && error.view.code === 'unauthorized', paint: (phase, error) => {
@@ -109,7 +119,8 @@ async function refreshSnapshot(): Promise<void> {
   if (!state.workspace) return;
   const before = state; const buffered = {events: [] as UiEvent[], bytes: 0, overflow: false}; snapshotBuffers.add(buffered);
   try {
-    const current = await hydrateVisible(await request<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`));
+    const explicit = messageTarget.current;
+    const current = await hydrateVisible(await request<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`), request, explicit ? {kind: 'agent', identity: explicit.identity} : undefined);
     if (buffered.overflow) throw new Error('Current view changed too quickly during restore. Reconnect to request a fresh baseline.');
     snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)}; renderAll();
   } finally { snapshotBuffers.delete(buffered); }
@@ -150,6 +161,7 @@ async function resync(): Promise<void> {
   resynchronizing = (async () => {
     try {
       if (state.workspace) await reload(); else await refreshVisible(bootstrap, loadPrimaryHistory, showError);
+      if (messageTarget.current && !messageTarget.current.invalidated) await messageTarget.open(messageTarget.current.identity);
       await stream(); renderAll();
     } finally { resynchronizing = undefined; }
   })();
@@ -181,13 +193,18 @@ function applyEvent(event: ReceivedEvent): void {
   else if (name === 'primary.state') { renderPrimary(); extensionDialogs.update(); }
   else if (name === 'primary.recovery' || name === 'primary.queue') renderPrimary();
   else if (name === 'agent.frame') renderObservedAgent(event.envelope.data as EventData['agent.frame']);
-  else if (name === 'agent.roster' || name === 'agent.availability') { renderRoster(); renderAgent(); }
+  else if (name === 'agent.roster' || name === 'agent.availability') renderRosterEvent(event);
   else if (name === 'workspace.changed') { renderAll(); void loadPrimaryHistory(); }
   else if (name === 'draft.changed') updateDraft(event.envelope.data as EventData['draft.changed']);
   else if (name === 'operation.changed') showOperation(event.envelope.data as OperationView);
   else if (name === 'notice') noticesBadge();
   else if (name === 'extension.request') applyExtension(event);
   else if (name === 'extension.expired') extensionDialogs.update();
+}
+function renderRosterEvent(event: ReceivedEvent): void {
+  if (event.name === 'agent.roster') messageTarget.rosterChanged(event.envelope.data as EventData['agent.roster']);
+  else messageTarget.availabilityChanged(event.envelope.data as EventData['agent.availability']);
+  renderRoster(); renderAgent(); renderMessagePanel();
 }
 function renderObservedAgent(data: EventData['agent.frame']): void {
   renderAgent();
@@ -210,7 +227,8 @@ function renderAll(): void {
   if (!state.workspace) return;
   document.documentElement.dataset.appearance = state.workspace.appearance ?? 'dark';
   renderNavigation();
-  renderPrimary(); renderRoster(); renderAgent(); noticesBadge(); extensionDialogs.update();
+  if (messageTarget.current && !messageTarget.valid(messageTarget.current)) closeMessagePanel(false);
+  renderPrimary(); renderRoster(); renderAgent(); renderMessagePanel(); noticesBadge(); extensionDialogs.update();
 }
 function renderNavigation(): void {
   const narrow = !matchMedia('(min-width: 900px)').matches;
@@ -246,6 +264,7 @@ function renderPrimary(): void {
   if (saved?.targetKey !== primaryTargetKey) {
     primaryTargetKey = saved?.targetKey ?? ''; primaryCursor = null; primaryEarlier = undefined; earlierFeedback('primary', false); byId('primary-view-notice').replaceChildren(); primaryTranscript.reset(); primaryTranscript.configure(saved?.presentation, saved?.reading);
   }
+  primaryTranscriptTarget = saved && state.workspace ? {workspaceId: state.workspace.id, saved, prefix: 'primary'} : undefined;
   primaryComposer.attach(state.workspace?.id ?? '', saved); primaryComposer.receipts(state.operations.values());
   byId('primary-composer').hidden = !saved; byId('primary-status').hidden = !item;
   byId('session-title').hidden = !item;
@@ -290,13 +309,51 @@ function renderPrimaryTranscript(): void {
   }
   byId('primary-open-project').hidden = !!item || !!state.workspace?.primaryKey;
 }
-function renderRoster(): void { setText(byId('agent-count'), String(state.roster.size)); roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent()); }
+function renderRoster(): void {
+  setText(byId('agent-count'), String(state.roster.size)); roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent());
+  for (const identity of state.roster.keys()) renderMessageResume(identity);
+}
+function renderMessageResume(identity: string): void {
+  const target = {kind: 'agent' as const, identity};
+  const index = [...state.targetIndex.values()].find(item => sameTarget(item.target, target));
+  roster.resume(identity, agentComposer.retained(state.workspace?.id ?? '', target, index) ?? false);
+}
+function renderMessagePanel(): void {
+  const captured = messageTarget.current; const panel = byId('agent-message-panel');
+  panel.hidden = !captured; if (!captured) return;
+  const row = agentRow(captured.identity);
+  setText(byId('agent-message-name'), row?.name ?? row?.handle ?? 'Agent');
+  setText(byId('agent-message-identity'), `${captured.identity.slice(0, 8)}${captured.identity.includes(':') ? captured.identity.slice(captured.identity.lastIndexOf(':')) : ''}`);
+  byId('agent-message-identity').title = captured.identity;
+  setText(byId('agent-message-status'), captured.error ?? captured.prepared?.reason ?? (captured.prepared ? '' : 'Preparing message…'));
+  const form = byId('agent-composer'); if (form.parentElement !== panel) panel.append(form);
+  agentComposer.placement(true); agentComposer.availability(connected, messageTarget.ready, false, selecting);
+  if (captured.prepared) {
+    const prepared = captured.prepared.targetState; const current = state.targets.get(prepared.targetKey);
+    const saved = current && current.draft.revision >= prepared.draft.revision ? current : prepared;
+    agentComposer.attach(captured.workspaceId, saved); agentComposer.receipts(state.operations.values());
+  } else agentComposer.attachRetained(captured.workspaceId, {kind: 'agent', identity: captured.identity});
+  byId('agent-status').hidden = true;
+  byId('agent-abort').hidden = true; byId('agent-acquire').hidden = true;
+}
+function closeMessagePanel(focus = true): void {
+  const identity = messageTarget.current?.identity; messageTarget.close();
+  byId('agent-message-panel').hidden = true;
+  agentComposer.attach(state.workspace?.id ?? '');
+  renderRoster();
+  if (focus && (!identity || byId('sidebar').hidden || !roster.focusMessage(identity))) primaryComposer.editor.focus();
+}
 function renderAgent(): void {
   const identity = selectedAgent(); if (!identity) return;
   const row = agentRow(identity); const saved = targetState({kind: 'agent', identity});
   if (saved?.targetKey !== agentTargetKey) {
     agentTargetKey = saved?.targetKey ?? ''; agentBefore = null; agentEarlier = undefined; earlierFeedback('agent', false); byId('agent-view-notice').replaceChildren(); byId('agent-facts').replaceChildren(); agentTranscript.reset(); agentTranscript.configure(saved?.presentation, saved?.reading);
   }
+  agentTranscriptTarget = saved && state.workspace ? {workspaceId: state.workspace.id, saved, prefix: 'agent'} : undefined;
+  const form = byId('agent-composer'); const detail = byId('agent-detail'); if (form.parentElement !== detail) detail.append(form);
+  byId('agent-status').hidden = false;
+  agentComposer.placement(false);
+  agentComposer.availability(connected, row?.availability === 'live' && row.capabilities?.input === true, false, selecting);
   agentComposer.attach(state.workspace?.id ?? '', saved); agentComposer.receipts(state.operations.values());
   agentChrome(identity, row);
   agentAvailability(identity, row); renderAvailability();
@@ -336,7 +393,8 @@ function renderAvailability(): void {
   primaryComposer.availability(connected, item?.lifecycle === 'ready', busy, selecting);
   byId('primary-stop').hidden = !connected || !busy;
   byId('agent-abort').hidden = !connected || row?.availability !== 'live' || !row?.capabilities?.input || !row?.capabilities?.abort;
-  agentComposer.availability(connected, row?.availability === 'live' && row.capabilities?.input === true, frame?.status.busy ?? false, selecting);
+  agentComposer.availability(connected, messageTarget.current ? messageTarget.ready : row?.availability === 'live' && row.capabilities?.input === true, frame?.status.busy ?? false, selecting);
+  if (messageTarget.current) { byId('agent-abort').hidden = true; byId('agent-acquire').hidden = true; }
   if (!connected && (connectionPhase === 'offline' || connectionPhase === 'auth')) {
     setText(byId('primary-activity'), 'Last observed');
     if (identity) setText(byId('agent-availability'), 'Last observed');
@@ -394,25 +452,26 @@ async function loadAgentHistory(): Promise<void> {
   } catch (error) { if (!controller.signal.aborted && selectedAgent() === identity) historyFeedback('agent', `Earlier history unavailable: ${errorMessage(error)}`); }
   finally { if (agentEarlier === pending) { agentEarlier = undefined; earlierFeedback('agent', false); } }
 }
-function saveReading(composer: Composer, reading: TargetState['reading']): Promise<void> {
-  return saveView(composer, 'reading', {anchorId: reading.anchorId, offsetPx: reading.offsetPx, followTail: reading.followTail});
+function saveReading(captured: TranscriptTarget | undefined, reading: TargetState['reading']): Promise<void> {
+  return saveView(captured, 'reading', {anchorId: reading.anchorId, offsetPx: reading.offsetPx, followTail: reading.followTail});
 }
-function savePresentation(composer: Composer, expanded: string[], showThinking: boolean): Promise<void> {
-  return saveView(composer, 'presentation', {expanded: expanded.slice(), showThinking});
+function savePresentation(captured: TranscriptTarget | undefined, expanded: string[], showThinking: boolean): Promise<void> {
+  return saveView(captured, 'presentation', {expanded: expanded.slice(), showThinking});
 }
-async function saveView(composer: Composer, kind: 'reading' | 'presentation', values: object): Promise<void> {
-  const saved = composer.state; const workspace = state.workspace; if (!saved || !workspace || !connected) return;
-  const notice = byId(`${composer.prefix}-view-notice`);
-  try { await preferences.save(`${workspace.id}/${saved.targetKey}/${kind}`, async () => {
+async function saveView(captured: TranscriptTarget | undefined, kind: 'reading' | 'presentation', values: object): Promise<void> {
+  if (!captured || !connected || captured.workspaceId !== state.workspace?.id) return;
+  const {saved, workspaceId, prefix} = captured;
+  const notice = byId(`${prefix}-view-notice`);
+  try { await preferences.save(`${workspaceId}/${saved.targetKey}/${kind}`, async () => {
     const latest = state.targets.get(saved.targetKey) ?? saved;
-    const result = await request<TargetState['reading'] | NonNullable<TargetState['presentation']>>(`/api/workspaces/${encodeURIComponent(workspace.id)}/targets/${encodeURIComponent(saved.targetKey)}/${kind}`, 'PUT', {expectedRevision: latest[kind]?.revision ?? 0, ...values});
+    const result = await request<TargetState['reading'] | NonNullable<TargetState['presentation']>>(`/api/workspaces/${encodeURIComponent(workspaceId)}/targets/${encodeURIComponent(saved.targetKey)}/${kind}`, 'PUT', {expectedRevision: latest[kind]?.revision ?? 0, ...values});
     const current = state.targets.get(saved.targetKey) ?? saved;
     if (result.revision >= (current[kind]?.revision ?? 0)) state = {...state, targets: new Map(state.targets).set(saved.targetKey, {...current, [kind]: result})};
     if (notice.dataset.kind === kind) notice.replaceChildren();
   }); } catch (error) {
     notice.dataset.kind = kind; notice.replaceChildren(element('p', 'error', `View not saved for ${targetIdentity(saved.target)}: ${errorMessage(error)}`), button('Reload saved view', () => { void reload().then(() => {
-      if (composer.state?.targetKey !== saved.targetKey) return;
-      const latest = state.targets.get(saved.targetKey); const transcript = composer.prefix === 'primary' ? primaryTranscript : agentTranscript;
+      if ((prefix === 'primary' ? primaryTranscriptTarget : agentTranscriptTarget)?.saved.targetKey !== saved.targetKey) return;
+      const latest = state.targets.get(saved.targetKey); const transcript = prefix === 'primary' ? primaryTranscript : agentTranscript;
       transcript.configure(latest?.presentation, latest?.reading); notice.replaceChildren();
     }).catch(showError); }));
   }
@@ -426,15 +485,6 @@ function showOperation(result: OperationView): void {
   }
   primaryComposer.receipts(state.operations.values()); agentComposer.receipts(state.operations.values());
   if (result.state !== 'reserved' && result.state !== 'dispatched') announce(operationLabel(result));
-}
-function recover(saved: TargetState): void {
-  const prefix = saved.target.kind === 'primary' ? 'primary' : 'agent'; const receipt = byId(`${prefix}-receipt`); receipt.replaceChildren();
-  for (const item of saved.unconfirmed) {
-    const row = element('div'); row.append(element('p', 'warning', 'Send not confirmed'), element('pre', undefined, item.text));
-    row.append(button('Check receipt', () => { void request<OperationView>(`/api/operations/${encodeURIComponent(item.operationId)}/reconcile`, 'POST', {}).then(showOperation).catch(showError); }), button('Copy', () => { void exactInput(state.workspace?.id ?? '', item).then(exact => copy(exact.text, row)).catch(showError); }), button('Restore to draft', () => {
-      void request<DraftView>(`/api/workspaces/${encodeURIComponent(state.workspace?.id ?? '')}/unconfirmed/${encodeURIComponent(item.operationId)}/restore`, 'POST', {expectedDraftRevision: saved.draft.revision}).then(() => reload()).catch(showError);
-    }), button('Discard copy…', () => modal.confirm('Discard input copy', 'This deletes only the local copy. It does not cancel work or prove non-admission.', async () => { await request(`/api/workspaces/${encodeURIComponent(state.workspace?.id ?? '')}/unconfirmed/${encodeURIComponent(item.operationId)}`, 'DELETE'); await reload(); }, 'Discard copy'))); receipt.append(row);
-  }
 }
 function noticesBadge(): void { const unread = unreadNotices(state); setText(byId('notices-count'), unread ? String(unread) : ''); byId('notices-count').hidden = !unread; byId('notices-button').setAttribute('aria-label', unread ? `Notifications (${unread} unread)` : 'Notifications'); }
 function notices(): void {
@@ -475,7 +525,8 @@ function bind(): void {
   byId('session-actions').addEventListener('click', () => { actions.sessionMenu(); modal.body.append(button('Conversation view…', viewActions)); }); byId('commands-button').addEventListener('click', () => actions.palette());
   byId('model-button').addEventListener('click', () => actions.modelPicker()); byId('thinking-button').addEventListener('click', () => actions.thinkingPicker());
   byId('notices-button').addEventListener('click', notices);
-  byId('agent-acquire').addEventListener('click', () => { const identity = selectedAgent(); if (connected && identity) actions.prepareText(`/agent attach ${identity}`); });
+  byId('agent-message-close').addEventListener('click', () => closeMessagePanel());
+  byId('agent-acquire').addEventListener('click', () => { if (messageTarget.current) return; const identity = selectedAgent(); if (connected && identity) actions.prepareText(`/agent attach ${identity}`); });
   byId('primary-row').addEventListener('click', selectPrimary);
   byId('sidebar-hide').addEventListener('click', () => toggleSidebar(false));
   byId('sidebar-show').addEventListener('click', () => toggleSidebar(true));
@@ -487,8 +538,8 @@ function bind(): void {
   byId('agent-refresh').addEventListener('click', refreshRoster); byId('agent-new').addEventListener('click', () => actions.prepareText('/agent new'));
   byId('primary-earlier').addEventListener('click', () => { void loadPrimaryHistory(primaryCursor ?? undefined); }); byId('agent-earlier').addEventListener('click', () => { void loadAgentHistory().catch(showError); });
   byId('primary-stop').addEventListener('click', () => { const target = primaryTarget(); if (target?.kind !== 'primary') return; setText(byId('primary-receipt'), 'Stop requested'); void operation('primary.stop', `/api/primaries/${encodeURIComponent(target.key)}/stop`, {epoch: target.epoch}, target).then(showOperation).catch(showError); });
-  byId('agent-abort').addEventListener('click', () => { const identity = selectedAgent(); if (!identity) return; modal.confirm('Abort selected agent', `${identity}\nThis requests foreground abort only. Background work and timers remain separate.`, async () => { setText(byId('agent-receipt'), 'Abort requested'); showOperation(await operation('agent.abort', `/api/agents/${encodeURIComponent(identity)}/abort`, {background: false}, {kind: 'agent', identity})); }, 'Abort'); });
-  document.addEventListener('keydown', event => { if (event.key === 'Escape' && drawerOpen && !modal.openNow) { event.preventDefault(); toggleSidebar(false); return; } if (event.metaKey && event.key.toLowerCase() === 'k') { event.preventDefault(); if (!modal.openNow) actions.palette(); } });
+  byId('agent-abort').addEventListener('click', () => { if (messageTarget.current) return; const identity = selectedAgent(); if (!identity) return; modal.confirm('Abort selected agent', `${identity}\nThis requests foreground abort only. Background work and timers remain separate.`, async () => { setText(byId('agent-receipt'), 'Abort requested'); showOperation(await operation('agent.abort', `/api/agents/${encodeURIComponent(identity)}/abort`, {background: false}, {kind: 'agent', identity})); }, 'Abort'); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && messageTarget.current && !modal.openNow) { event.preventDefault(); closeMessagePanel(); return; } if (event.key === 'Escape' && drawerOpen && !modal.openNow) { event.preventDefault(); toggleSidebar(false); return; } if (event.metaKey && event.key.toLowerCase() === 'k') { event.preventDefault(); if (!modal.openNow) actions.palette(); } });
   window.addEventListener('resize', () => { renderNavigation(); primaryComposer.resize(); agentComposer.resize(); roster.schedule(); });
   window.addEventListener('beforeunload', event => { if (primaryComposer.unsaved || agentComposer.unsaved) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {

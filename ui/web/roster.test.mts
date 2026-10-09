@@ -221,3 +221,17 @@ test('focused timestamp pins its wrapper outside the virtual roster window', t =
   assert.ok(fixture.node.children.filter(child => child.className === 'agent-row').length < 40);
   roster.set(rows.slice(1)); fixture.flush(); assert.equal(wrapper.parentNode, null);
 });
+
+test('Message captures identity across rename and reorder; Resume changes only its own action', () => {
+  const f = setup(); const messages: string[] = []; const selections: string[] = [];
+  const roster = new Roster(value => selections.push(value.identity), () => {}, undefined, identity => messages.push(identity));
+  roster.set([row('a', {name: 'First'}), row('b')]); f.flush();
+  const a = required(f.node.children[0]); const action = a.query('row-message');
+  assert.equal(action.hidden, false); assert.equal(action.parentNode, a); assert.equal(a.query('row-select').contains(action), false);
+  roster.set([row('b'), row('a', {name: 'Renamed'})]); f.flush();
+  action.click(); assert.deepEqual(messages, ['a']); assert.deepEqual(selections, []); assert.match(action.attributes['aria-label'] ?? '', /Renamed/);
+  const moves = a.moves; roster.resume('a', true); assert.equal(action.textContent, 'Resume'); assert.equal(a.moves, moves);
+  assert.equal(required(f.node.children[1]).query('row-message').textContent, 'Message');
+  roster.set([row('a'), row('b')], undefined, 'b'); f.flush(); assert.equal(action.hidden, true);
+  roster.set([row('a'), row('b')]); f.flush(); assert.equal(action.hidden, false); assert.equal(action.textContent, 'Resume');
+});

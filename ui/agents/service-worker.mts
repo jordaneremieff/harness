@@ -28,6 +28,7 @@ async function invoke(member: string, args: unknown[]): Promise<unknown> {
     case "hide": return service.hide(identity);
     case "reconnect": return service.reconnect(identity);
     case "disconnectWorkspace": return service.disconnectWorkspace(identity);
+    case "prepare": return service.prepare(identity);
     case "history": return transferSnapshot(await service.history(identity, args[1] as HistoryOptions));
     case "inspect": return transferInspect(await service.inspect(identity, args[1] as InspectOptions));
     case "submit": return service.submit(identity, args[1] as SubmitInput);

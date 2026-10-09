@@ -64,6 +64,8 @@ export type UnconfirmedInput = {operationId: string; target: Target; text: strin
 export type TargetIndex = {targetKey: string; target: Target; draftRevision: number; hasDraft: boolean; unconfirmedOperationIds: string[]};
 export type TargetState = {targetKey: string; target: Target; draft: DraftView; reading: ReadingView;
   unconfirmed: UnconfirmedInput[]; presentation?: PresentationView};
+export type TargetPreparation = {targetState: TargetState; availability: 'live' | 'stored' | 'unavailable' | 'incompatible';
+  capabilities: AgentCapabilities; reason?: string};
 export type AgentCapabilities = {history: boolean; observe: boolean; input: boolean; abort: boolean; configure: boolean; inspect?: boolean};
 /** Published metadata and claim state, not an assertion of fresh native idle state. */
 export type AgentRow = {identity: string; storageId: string; cwd: string; name?: string; handle?: string;
@@ -138,7 +140,7 @@ export const ROUTES = [
   'POST /api/primaries/:key/session', 'POST /api/primaries/:key/control', 'POST /api/primaries/:key/dialogs/:dialogId', 'POST /api/primaries/:key/handoff',
   'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'POST /api/agents/:identity/inspect',
   'POST /api/agents/:identity/inputs', 'POST /api/agents/:identity/abort', 'POST /api/agents/:identity/configure',
-  'PUT /api/workspaces/:id/selection', 'GET /api/workspaces/:id/targets/:targetKey', 'PUT /api/workspaces/:id/targets/:targetKey/draft',
+  'POST /api/workspaces/:id/targets', 'PUT /api/workspaces/:id/selection', 'GET /api/workspaces/:id/targets/:targetKey', 'PUT /api/workspaces/:id/targets/:targetKey/draft',
   'PUT /api/workspaces/:id/targets/:targetKey/reading', 'PUT /api/workspaces/:id/targets/:targetKey/presentation',
   'GET /api/workspaces/:id/unconfirmed/:operationId', 'POST /api/workspaces/:id/unconfirmed/:operationId/restore', 'DELETE /api/workspaces/:id/unconfirmed/:operationId',
 ] as const;
