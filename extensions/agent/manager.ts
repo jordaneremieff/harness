@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
 import { subscribeCatalogChanges } from "./catalog-events.ts";
 import { sessionFigures } from "./footer.ts";
+import { sentWorkIdentity } from "./session-work.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { firstInteractivePurpose, purposeExcerpt } from "./effort-purpose.ts";
 import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
@@ -78,7 +79,7 @@ export interface AgentManagerOptions {
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
 }
-interface PrimaryClient { send(text: string, details: unknown): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
+interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; send(text: string, details: unknown): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
 interface ListRecordStep { record: CatalogRecord; catalog?: string }
@@ -381,8 +382,9 @@ export class AgentManager {
 		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
 		const requestId = input.requestId ?? randomUUID();
 		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
+		const result = admission === undefined ? undefined : this.sentWorkResult(caller.id, id, admission, requestId);
 		this.rosterChanged();
-		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result: admittedResult(id, admission, requestId) }) };
+		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result }) };
 	}
 
 	private async creationMetadata(input: AgentSpawnInput, caller: AgentCaller): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
@@ -454,7 +456,7 @@ export class AgentManager {
 			if (versionError) throw versionError;
 			const requestId = input.requestId ?? randomUUID();
 			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
-			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: admittedResult(record.storageId, admission, requestId) }) };
+			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: this.sentWorkResult(caller.id, record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
 			this.rosterChanged();
@@ -510,7 +512,9 @@ export class AgentManager {
 		const outcome = requested === "task-submit"
 			? await client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" })
 			: await client.request(method, params);
-		if (requested === "task-submit") return { ...outcome as object, result: admittedResult(sessionId, outcome, String(params.requestId)) };
+		if (requested === "task-submit") return { ...outcome as object, result: this.sentWorkResult(caller.id, sessionId, outcome, String(params.requestId)) };
+		const values = record(outcome);
+		if ((method === "rewind" && Number.isSafeInteger(values.submissionId) && Number(values.submissionId) > 0) || (method === "timer-schedule" && Number.isSafeInteger(values.timerId) && Number(values.timerId) > 0)) this.rememberSentWork(caller.id, values.identity);
 		return ["fork", "rewind", "configure"].includes(method) ? this.mutationSnapshot(client, outcome, sessionId) : outcome;
 	}
 
@@ -1074,13 +1078,39 @@ export class AgentManager {
 		else this.subscriptions.set(storageId, unsubscribe);
 	}
 
-	/** UI-local session totals from a bounded dashboard page and creating-owner metadata. */
+	private sentWorkResult(ownerId: string, sessionId: string, admission: unknown, requestId: string) {
+		const result = admittedResult(sessionId, admission, requestId);
+		this.rememberSentWork(ownerId, result.sessionId);
+		return result;
+	}
+
+	/** Marker or presentation failure never changes a successful native admission. */
+	private rememberSentWork(ownerId: string, target: unknown): void {
+		const primary = this.primaries.get(ownerId);
+		const identity = sentWorkIdentity(target);
+		if (!primary || identity === undefined) return;
+		primary.sentWork ??= new Set();
+		if (primary.sentWork.has(identity)) return;
+		primary.sentWork.add(identity);
+		try { primary.retainSentWork?.(identity); }
+		catch (error) { this.failures.set(`sent-work:${ownerId}`, `Sent-work marker was not saved; this target may be absent after restart. ${errorText(error)}`); }
+		try { primary.status?.(this.figuresForRows(ownerId, this.toolCardRows) || undefined); }
+		catch (error) { this.failures.set("footer", errorText(error)); }
+		try { this.rosterChanged(); }
+		catch (error) { this.failures.set("footer", errorText(error)); }
+	}
+
+	/** UI-local session totals reuse the roster and the primary's retained sent-work identities. */
 	async sessionFigures(ownerId: string, page?: AgentConversationPage): Promise<string> {
 		const observed = page ?? await this.dashboardPage();
-		return sessionFigures(observed.rows, ownerId, (storageId) => {
+		return this.figuresForRows(ownerId, observed.rows);
+	}
+
+	private figuresForRows(ownerId: string, rows: readonly AgentConversationSummary[]): string {
+		return sessionFigures(rows, ownerId, (storageId) => {
 			try { return this.catalog.read(storageId).ownerId; }
 			catch { return undefined; }
-		});
+		}, this.primaries.get(ownerId)?.sentWork);
 	}
 
 	private async refreshFooter(): Promise<void> {

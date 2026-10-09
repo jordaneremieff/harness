@@ -7,11 +7,12 @@ import type { AgentConversationSummary } from "./dashboard-types.ts";
 const MAX_OWNER_DEPTH = 64;
 const MAX_OWNER_READS = 1024;
 
-/** Follow creating owners through storage identities, not writer claims or display names. */
+/** Creation lineage owns cost; sent-work targets also count, with only working lineage and root-storage delegates. */
 export function sessionFigures(
 	rows: readonly AgentConversationSummary[],
 	ownerId: string,
 	readOwner: (storageId: string) => string | undefined,
+	sentWork: ReadonlySet<string> = new Set(),
 ): string {
 	const owners = new Map<string, string | undefined>();
 	const ownerOf = (storageId: string): string | undefined => {
@@ -21,7 +22,7 @@ export function sessionFigures(
 		owners.set(storageId, owner);
 		return owner;
 	};
-	const inScope = (storageId: string): boolean => {
+	const inLineage = (storageId: string, roots: ReadonlySet<string>): boolean => {
 		let identity = storageId;
 		const visited = new Set<string>();
 		for (let depth = 0; depth < MAX_OWNER_DEPTH; depth++) {
@@ -29,19 +30,31 @@ export function sessionFigures(
 			if (visited.has(storageId)) return false;
 			visited.add(storageId);
 			const owner = ownerOf(storageId);
-			if (owner === ownerId) return true;
+			if (owner !== undefined && roots.has(owner)) return true;
 			if (!owner) return false;
 			identity = owner;
 		}
 		return false;
 	};
-	return formatDurableFooter(rows.filter((row) => inScope(row.storageId)));
+	const creationRoots = new Set([ownerId]);
+	const creationRows: AgentConversationSummary[] = [];
+	const scopedRows = rows.filter((row) => {
+		if (inLineage(row.storageId, creationRoots)) {
+			creationRows.push(row);
+			return true;
+		}
+		return sentWork.has(row.id) || (row.state === "working" && (sentWork.has(row.storageId) || inLineage(row.storageId, sentWork)));
+	});
+	return formatDurableFooter(scopedRows, creationRows);
 }
 
 /** Recorded-pricing estimate for already-scoped rows; hide costs below half a cent. */
-export function formatDurableFooter(rows: readonly AgentConversationSummary[]): string {
+export function formatDurableFooter(
+	rows: readonly AgentConversationSummary[],
+	costRows: readonly AgentConversationSummary[] = rows,
+): string {
 	if (rows.length === 0) return "";
 	const working = rows.filter((row) => row.state === "working").length;
-	const cost = rows.reduce((sum, row) => sum + (Number.isFinite(row.cost) && row.cost >= 0 ? row.cost : 0), 0);
+	const cost = costRows.reduce((sum, row) => sum + (Number.isFinite(row.cost) && row.cost >= 0 ? row.cost : 0), 0);
 	return `agents: ${working}/${rows.length} active${cost >= 0.005 ? ` · ~$${cost.toFixed(2)}` : ""}`;
 }

@@ -100,6 +100,55 @@ test("owner traversal reads ancestors absent from the roster and preserves exact
 	assert.equal(sessionFigures(rows, "primary", readOwner), "");
 });
 
+test("sent-work scope keeps exact reused targets and only working creation descendants without their lifetime costs", () => {
+	const rows = [
+		row("reused:2", { storageId: "reused", cost: 50 }),
+		row("reused:3", { storageId: "reused", state: "working", cost: 60 }),
+		row("child", { storageId: "child", state: "working", cost: 70 }),
+		row("child:4", { storageId: "child", cost: 80 }),
+		row("grandchild", { storageId: "grandchild", state: "working", cost: 90 }),
+		row("old", { storageId: "old", state: "done", cost: 100 }),
+		row("owned", { storageId: "owned", cost: 0.25 }),
+	];
+	const owners = new Map([["reused", "other-primary"], ["child", "reused:2"], ["grandchild", "child:4"], ["old", "reused:2"], ["owned", "primary"]]);
+	const sent = new Set(["reused:2", "owned"]);
+	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), sent), "agents: 2/4 active · ~$0.25");
+	assert.equal(sessionFigures(rows.slice(0, 6), "primary", (id) => owners.get(id), sent), "agents: 2/3 active");
+	assert.equal(sessionFigures(rows, "other", (id) => owners.get(id)), "");
+	rows[2].state = "idle";
+	rows[4].state = "interrupted";
+	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), sent), "agents: 0/2 active · ~$0.25");
+});
+
+test("sent-work roots include only working same-storage delegates; non-root targets exclude siblings and reused cost", () => {
+	const rows = [
+		row("reused", { storageId: "reused", cost: 50 }),
+		row("reused:2", { storageId: "reused", state: "working", cost: 60 }),
+		row("reused:3", { storageId: "reused", cost: 70 }),
+		row("reused:4", { storageId: "reused", state: "interrupted", cost: 80 }),
+		row("owned", { storageId: "owned", cost: 0.25 }),
+	];
+	const owner = (id: string) => id === "owned" ? "primary" : "other-primary";
+	assert.equal(sessionFigures(rows, "primary", owner, new Set(["reused"])), "agents: 1/3 active · ~$0.25");
+	assert.equal(sessionFigures(rows.slice(1), "primary", owner, new Set(["reused"])), "agents: 1/2 active · ~$0.25", "root scope does not require the root row to be present");
+	rows[0].state = "working";
+	assert.equal(sessionFigures(rows, "primary", owner, new Set(["reused:3"])), "agents: 0/2 active · ~$0.25", "a non-root target excludes its working root and siblings");
+	assert.equal(sessionFigures(rows.slice(0, 4), "primary", owner, new Set(["reused"])), "agents: 2/2 active", "same-storage reused scope never contributes lifetime cost");
+});
+
+test("creation lineage keeps idle reused descendants and cost when both scope rules apply", () => {
+	const rows = [row("created:2", { storageId: "created", cost: 1 }), row("child", { storageId: "child", cost: 2 })];
+	const owners = new Map([["created", "primary"], ["child", "created:2"]]);
+	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["created:2"])), "agents: 0/2 active · ~$3.00");
+});
+
+test("working reused descendants follow exact ancestors absent from the roster and terminate cycles", () => {
+	const owners = new Map([["child", "absent:4"], ["absent", "reused:2"], ["cycle", "cycle:3"]]);
+	const rows = [row("child", { storageId: "child", state: "working", cost: 10 }), row("cycle", { storageId: "cycle", state: "working" })];
+	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["reused:2"])), "agents: 1/1 active");
+	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["reused:3"])), "");
+});
+
 test("cycles terminate without importing unrelated agents into a primary scope", () => {
 	const rows = [
 		row("a", { storageId: "a", state: "working", cost: 1 }),

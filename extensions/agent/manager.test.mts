@@ -148,6 +148,99 @@ function nativeAdmission(params: unknown, submissionId = 9): Record<string, unkn
 	return { submissionId, identity: sessionId, requestId: input.requestId, result: { sessionId, submissionId, requestId: input.requestId } };
 }
 
+for (const failure of ["persistence", "status", "listener"] as const) it(`keeps successful admission and in-memory scope after a sent-work ${failure} callback throws`, async (t) => {
+	const root = fixtureRoot(t);
+	let failCallbacks = false;
+	const scope = new Set<string>();
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+			assert.equal(method, "task-submit");
+			failCallbacks = true;
+			return nativeAdmission(params);
+		}),
+	}));
+	let unsubscribe = () => {};
+	t.after(() => { failCallbacks = false; unsubscribe(); manager.close(); });
+	const target = createRecord(manager, root, "other-primary").storageId;
+	manager.catalog.updateView(target, {
+		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
+		rows: [{ id: `${target}:2`, storageId: target, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 50, partial: false }],
+	});
+	await manager.registerPrimary("primary", {
+		signal: new AbortController().signal, send() {}, sentWork: scope,
+		retainSentWork: () => { if (failCallbacks && failure === "persistence") throw new Error("marker write failed"); },
+		status: () => { if (failCallbacks && failure === "status") throw new Error("status callback failed"); },
+	});
+	unsubscribe = manager.subscribeRoster(() => { if (failCallbacks && failure === "listener") throw new Error("roster callback failed"); });
+	const outcome = await manager.control("submit", { sessionId: `${target}:2`, message: "Task", requestId: "admission" }, { id: "primary", cwd: root }) as { result: unknown; submissionId: number };
+	assert.equal(outcome.submissionId, 9);
+	assert.deepEqual(outcome.result, { sessionId: `${target}:2`, submissionId: 9, requestId: "admission" });
+	assert.deepEqual([...scope], [`${target}:2`]);
+	const page = await manager.dashboardPage();
+	assert.equal(await manager.sessionFigures("primary", page), "agents: 0/1 active", "admitted scope survives callback failure and excludes reused cost");
+	const overview = await manager.status() as { failures: Array<{ error: string }> };
+	assert.ok(overview.failures.some(({ error }) => error.includes(failure === "persistence" ? "marker write failed" : `${failure === "status" ? "status" : "roster"} callback failed`)));
+});
+
+it("retains successful work targets across manager submission paths, not reports, attachment, or failed admissions", async (t) => {
+	const root = fixtureRoot(t);
+	const retained: string[] = [];
+	const primary = fakePrimary(new AbortController().signal);
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory, validateModel: () => {},
+		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+			const input = params as Record<string, unknown>;
+			switch (method) {
+				case "task-submit":
+					if (input.message === "fail") throw new Error("admission refused");
+					return nativeAdmission(params);
+				case "profile-read": return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: "off" };
+				case "rewind": return { identity: `${metadata.storageId}:5`, submissionId: 10 };
+				case "timer-schedule": return { identity: `${metadata.storageId}:6`, timerId: 1 };
+				default: return {};
+			}
+		}),
+	}));
+	t.after(() => manager.close());
+	await manager.registerPrimary("primary", { ...primary.client, retainSentWork: (id) => retained.push(id) });
+	const caller = { id: "primary", cwd: root };
+	const target = createRecord(manager, root, "other-primary").storageId;
+	for (const [method, suffix, whenBusy] of [["submit", 2, "followUp"], ["submit", 3, "steer"], ["task-submit", 4, "followUp"]] as const) {
+		await manager.control(method, { sessionId: `${target}:${suffix}`, message: "Task", whenBusy, replyTo: "another-primary" }, caller);
+		assert.ok(retained.includes(`${target}:${suffix}`));
+	}
+	await manager.control("rewind", { sessionId: target, correction: "Correction", entryId: "1" }, caller);
+	await manager.control("timer-schedule", { sessionId: target, message: "Task" }, caller);
+	assert.ok(retained.includes(`${target}:5`));
+	assert.ok(retained.includes(`${target}:6`));
+	const beforeIdle = retained.length;
+	await manager.control("submit", { sessionId: `${target}:2`, message: "Again" }, caller);
+	await manager.control("report", { sessionId: target, message: "Report" }, caller);
+	await manager.control("attach", { sessionId: target }, caller);
+	await assert.rejects(manager.control("submit", { sessionId: target, message: "fail" }, caller), /admission refused/u);
+	await manager.spawn({}, caller);
+	assert.equal(retained.length, beforeIdle, "duplicate targets and non-work controls add no markers");
+	const spawned = await manager.spawn({ prompt: "Task" }, caller) as { sessionId: string };
+	assert.ok(retained.includes(spawned.sessionId));
+	const handled = await manager.spawn({ handle: "reviewer", role: "Review", prompt: "Task" }, caller) as { sessionId: string };
+	assert.ok(retained.includes(handled.sessionId));
+	const count = retained.length;
+	await manager.spawn({ handle: "reviewer", prompt: "Again" }, caller);
+	assert.equal(retained.length, count);
+	const placed = await manager.place({ area: root, prompt: "Task" }, caller) as { sessionId: string };
+	assert.ok(retained.includes(placed.sessionId));
+	const placeCount = retained.length;
+	await manager.place({ area: root, prompt: "Again" }, caller);
+	assert.equal(retained.length, placeCount);
+	const secondPrimary = fakePrimary(new AbortController().signal);
+	const other: string[] = [];
+	await manager.registerPrimary("second-primary", { ...secondPrimary.client, retainSentWork: (id) => other.push(id) });
+	await manager.control("submit", { sessionId: target, message: "Task" }, { id: "second-primary", cwd: root });
+	assert.deepEqual(other, [target]);
+	assert.equal(retained.includes(target), false, "one primary never adopts another primary's work");
+});
+
 for (const operation of ["submit", "task-submit"] as const) for (const minutes of [undefined, 0, 2.5]) it(`preserves the place model interval ${minutes} through ${operation} on create and reuse`, async (t) => {
 	const root = fixtureRoot(t);
 	const submits: Array<Record<string, unknown>> = [];

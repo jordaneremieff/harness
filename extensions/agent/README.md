@@ -769,15 +769,49 @@ when rows remain available; repeated failures or an empty roster show a notice
 on the roster’s last line. A successful refresh clears that notice.
 
 The primary status line and dashboard heading use the same session scope:
-agents created by the current primary session plus agents reached through
-retained creation records. Other primary sessions and unrelated retained agents do not
-contribute to these figures. The roster still lists discovered agents across
-sessions. The status says `agents: <working>/<total> active · ~$<cost>`
-and disappears when no session-scoped rows are found. The numerator counts only
-`working` rows; the denominator includes all states in scope. Each registered
-primary receives its own figures. The dashboard reuses its scanned roster page
-for these figures without another catalog scan. Repeated reads never add the
-same usage twice. These figures cover this session's readable agent data. The
+agents created by the current primary session and their creation descendants,
+plus exact conversations this session sent work to. Sent-work targets remain in
+scope after settlement. Their creation descendants contribute only while
+`working`, so old idle delegates do not enter the session count. When a sent-work
+target is a storage root, its other same-storage conversations contribute only
+while `working`. The roster lacks conversation-level creator evidence, so these
+working conversations serve as practical root delegation scope. A non-root
+target does not pull in its storage siblings.
+Creation lineage remains in scope in every state. Other primary sessions and
+unrelated retained agents do not contribute. The roster still lists discovered
+agents across sessions.
+
+Sent-work scope comes from successful native admissions in retained tool results
+and `agent.sent-work` custom session entries. The extension reads all session
+branches once at session start, then records targets incrementally through Pi's
+public `appendEntry` API. Send, steer, spawn and place with a prompt, rewind
+corrections, and scheduled inputs record exact targets. Reports, generic
+`agent_command` calls, collaboration notifications, idle attachment, and failed
+admissions are not task
+admissions for this scope. Report exclusion follows the requester/task contract;
+the scope does not count every input that wakes a provider. The scope is
+session-wide, not selected-branch-wide.
+
+Historical nested or codemode sends without markers cannot be reconstructed:
+Pi's public `NestedToolCalls` records names, arguments and execution status, not
+results or canonical admitted targets. Nested sends admitted through the
+registered manager path persist markers. A failed marker write preserves
+admission success and in-memory scope; the existing manager failure report names
+the possible restart coverage gap.
+
+It uses sent work rather than open requests because an alternate `replyTo`
+routes settlement elsewhere; the primary's retained results cannot establish
+that every request settled. No catalog schema or host protocol carries this scope.
+
+The status says `agents: <working>/<total> active · ~$<cost>` and disappears when
+no session-scoped rows are found. The numerator counts only `working` rows;
+the denominator includes every scoped row. Each registered primary receives its
+own figures. The dashboard reuses its scanned roster page for these figures
+without another catalog scan or native profile read. Cost includes only creation
+lineage. Sent-work-only targets and their delegates contribute no cost because
+Durable lifetime usage is not attributable to this session's request. Repeated
+reads never add the same usage twice. These figures cover this session's readable
+agent data. The
 `~` marks a recorded-pricing estimate, like the main session cost, not a billing
 statement. Cost uses two decimals; the entire cost segment is hidden below half
 a cent, leaving, for example, `agents: 0/1 active`. The dashboard shows unreadable

@@ -9,6 +9,7 @@ import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { DispatchOutputSchema } from "./result-reference.ts";
 import { AwaitParams, AwaitOutputSchema } from "./awaited-results.ts";
 import { ordinaryReportedUsage } from "./agent-usage.ts";
+import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { profileCommand } from "./profile-dialog.ts";
 import { join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -834,6 +835,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		primaries.set(sessionId, abort);
 		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
 		await getManager().registerPrimary(sessionId, {
+			sentWork: retainedSentWork(ctx.sessionManager.getEntries()),
+			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),
 			signal: abort.signal,
 			cwd: ctx.cwd,
 			sessionFile: ctx.sessionManager.getSessionFile(),
