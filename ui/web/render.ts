@@ -126,13 +126,15 @@ export class Transcript {
     this.prefix = prefix; this.hooks = hooks;
     this.node = byId(`${prefix}-transcript`);
     this.node.addEventListener('scroll', () => {
+      if (this.hidden()) return;
       this.follow = this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight < 48 && !this.hasSelection();
       byId(`${prefix}-latest`).hidden = this.follow; this.schedule();
     }, {passive: true});
     this.node.addEventListener('scrollend', () => this.saveReading());
     byId(`${prefix}-latest`).addEventListener('click', () => { this.follow = true; this.pins.clear(); this.paint(); });
-    document.addEventListener('selectionchange', () => { if (this.hasSelection()) { this.follow = false; this.schedule(); } });
+    document.addEventListener('selectionchange', () => { if (!this.hidden() && this.hasSelection()) { this.follow = false; this.schedule(); } });
   }
+  private hidden(): boolean { return this.node.closest<HTMLElement>('.conversation')?.hidden === true; }
   private hasSelection(): boolean {
     const selection = document.getSelection();
     return !!selection && !selection.isCollapsed && (this.node.contains(selection.anchorNode) || this.node.contains(selection.focusNode));
@@ -158,7 +160,7 @@ export class Transcript {
     this.displayed = displayed; this.prune(); this.schedule();
   }
   restore(reading?: ReadingView): void {
-    if (!reading || reading.followTail) return;
+    if (this.hidden() || !reading || reading.followTail) return;
     this.follow = false; this.restoring = reading; this.schedule();
   }
   schedule(): void {
@@ -179,10 +181,12 @@ export class Transcript {
     return captureAnchor(this.layout, this.node.scrollTop);
   }
   private saveReading(): void {
+    if (this.hidden()) return;
     const anchor = this.anchor();
     this.hooks.reading({revision: this.readingRevision, anchorId: anchor?.id ?? null, offsetPx: anchor?.offsetPx ?? 0, followTail: this.follow});
   }
   private paint(): void {
+    if (this.hidden()) return;
     const anchor = this.follow ? null : this.anchor();
     if (this.dirtyLayout) { this.layout = layoutItems(this.displayed.map(entry => entry.id), this.heights, 140); this.dirtyLayout = false; }
     const scrollTop = this.prepareScroll();

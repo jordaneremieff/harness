@@ -20,6 +20,12 @@ function record(display: JsonDisplay): Record<string, unknown> {
   const value = display.value;
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+function entryHeading(entry: EntryView): string {
+  const label = entry.head ?? entry.kind;
+  if (['custom', 'message'].includes(label)) return 'Session event';
+  if (entry.head) return entry.head;
+  return label.replace(/[_-]/g, ' ').replace(/^./, char => char.toUpperCase());
+}
 export function presentEntry(entry: EntryView, context: PresentationContext): HTMLElement {
   const data = entry.data ?? {value: 'No retained display data', truncated: false};
   const value = record(data);
@@ -28,6 +34,9 @@ export function presentEntry(entry: EntryView, context: PresentationContext): HT
   if (entry.kind === 'thinking_level_change' && typeof value.thinkingLevel === 'string') note = `Thinking changed to ${value.thinkingLevel}`;
   const node = element('section', note ? 'system-note' : 'custom-entry');
   if (note) node.append(context.inspection(context.bounded(note, 4096), () => context.rawText(data.value)));
-  else node.append(element('h2', undefined, context.bounded(entry.head ?? entry.kind, 4096)), context.structured(data));
+  else {
+    node.append(context.inspection(context.bounded(entryHeading(entry), 4096), () => context.rawText(data.value)));
+    if (data.truncated) node.append(element('p', 'warning', `Output omitted by host${data.omittedBytes !== undefined ? ` · ${data.omittedBytes} bytes` : ''}`));
+  }
   return node;
 }

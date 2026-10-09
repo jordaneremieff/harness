@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { PrimaryView, SavedSession, SavedSessionPage } from '../shared/api.ts';
-import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionOwner, sessionSize } from './picker-state.ts';
+import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize } from './picker-state.ts';
 const item = (id: string, title = id): SavedSession => ({id, title, revision: id, path: `/sessions/${id}.jsonl`, project: '/project', modifiedAt: '2026-01-01T00:00:00Z', size: 1024});
 const page = (items: SavedSession[]): SavedSessionPage => ({items, total: 1259, omitted: 0, nextCursor: 'next', titleCursor: null, observedAt: '2026-01-01T00:00:00Z'});
 test('local search matches title, exact identity and saved path, not unloaded sessions', () => {
@@ -50,6 +50,13 @@ test('coverage separates loaded-list matches from total store coverage', () => {
   assert.equal(sessionCoverage(list, 20, ''), '20 of 1259 shown');
   assert.equal(sessionCoverage(list, 2, 'id'), '2 matches in loaded sessions · 20 of 1259 shown');
   assert.match(sessionCoverage({...list, omitted: 3}, 20, ''), /3 unavailable or outside the scan bound/);
+});
+test('empty search only offers More when another saved-session page exists', () => {
+  const list = mergeSessions(undefined, page([item('one')]));
+  assert.match(sessionEmptyMessage(list), /Use More/);
+  assert.equal(sessionEmptyMessage({...list, nextCursor: null}), 'No saved sessions match this search.');
+  assert.equal(sessionEmptyMessage({...list, items: [], nextCursor: null}), 'No saved sessions in this project.');
+  assert.match(sessionEmptyMessage({...list, items: []}), /Use More/);
 });
 test('manual Resume requires an absolute nonempty path', () => {
   for (const path of ['', 'relative.jsonl', '   ', '/bad\0path', `/${'x'.repeat(4096)}`]) assert.equal(savedPathValid(path), false);

@@ -31,14 +31,19 @@ test('entry headings use public head text and session changes keep collapsed ins
   const old = Object.getOwnPropertyDescriptor(globalThis, 'document');
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: () => new Node()}});
   try {
-    const inspectionTitles: string[] = [];
-    const context: PresentationContext = {bounded: text => text, rawText: JSON.stringify, structured: () => new Node() as unknown as HTMLElement,
-      inspection: title => { inspectionTitles.push(title); return new Node() as unknown as HTMLDetailsElement; }};
+    const inspectionTitles: string[] = []; const sources: (() => string)[] = [];
+    const context: PresentationContext = {bounded: text => text, rawText: JSON.stringify, structured: () => { throw new Error('Generic entries must not create nested structured disclosures'); },
+      inspection: (title, source) => { inspectionTitles.push(title); sources.push(source); const node = new Node(); node.textContent = title; return node as unknown as HTMLDetailsElement; }};
     const entry: EntryView = {id: 'entry', kind: 'custom', head: '<public-type>', data: {value: {text: 'data'}, truncated: false}};
     assert.equal(presentEntry(entry, context).textContent, '<public-type>');
-    assert.equal(presentEntry({...entry, head: undefined}, context).textContent, 'custom');
+    const generic = presentEntry({...entry, head: undefined}, context);
+    assert.equal(generic.textContent, 'Session event'); assert.equal(generic.children.length, 1);
     presentEntry({...entry, kind: 'model_change', data: {value: {provider: 'p', modelId: 'm'}, truncated: false}}, context);
     presentEntry({...entry, kind: 'thinking_level_change', data: {value: {thinkingLevel: 'high'}, truncated: false}}, context);
-    assert.deepEqual(inspectionTitles, ['Model changed to p/m', 'Thinking changed to high']);
+    assert.deepEqual(inspectionTitles, ['<public-type>', 'Session event', 'Model changed to p/m', 'Thinking changed to high']);
+    assert.equal(sources[0](), JSON.stringify({text: 'data'}));
+    const omitted = presentEntry({...entry, head: 'message', data: {value: {values: ['<script>']}, truncated: true, omittedBytes: 42}}, context);
+    assert.equal(omitted.textContent, 'Session eventOutput omitted by host · 42 bytes');
+    assert.equal(sources.at(-1)?.(), JSON.stringify({values: ['<script>']}));
   } finally { if (old) Object.defineProperty(globalThis, 'document', old); else Reflect.deleteProperty(globalThis, 'document'); }
 });

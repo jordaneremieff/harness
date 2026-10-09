@@ -75,6 +75,7 @@ class FakeNode {
   setAttribute(key: string, value: string): void { this.attributes[key] = value; }
   addEventListener(name: string, handler: Handler): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]); }
   dispatch(name: string, event: Record<string, unknown> = {}): void { for (const handler of this.handlers.get(name) ?? []) handler(event); }
+  closest(selector: string): FakeNode | null { return matches(this, selector) ? this : this.parentNode?.closest(selector) ?? null; }
   querySelector(selector: string): FakeNode | null { return this.querySelectorAll(selector)[0] ?? null; }
   querySelectorAll(selector: string): FakeNode[] {
     const found: FakeNode[] = [];
@@ -125,6 +126,25 @@ function row(identity: string, name?: string) {
   return {identity, name, storageId: identity, cwd: '/project', modifiedAt: 0, state: 'working', availability: 'live' as const, owner: 'here' as const, partial: false};
 }
 
+test('hidden conversations skip queued paints, restore and reading writes until reveal', () => {
+  setup(); const section = new FakeNode('section'); section.className = 'conversation'; roots.push(section);
+  const container = node('primary-transcript'); section.append(container);
+  const saved: import('../shared/api.ts').ReadingView[] = [];
+  const view = new Transcript('primary', {presentation: () => {}, reading: value => saved.push(value)});
+  const entries = Array.from({length: 40}, (_, i) => entry(`e${i}`));
+  view.configure(undefined, {revision: 3, anchorId: 'e10', offsetPx: 33, followTail: false}); view.set(entries);
+  section.hidden = true; flush(); assert.equal(container.children.length, 0);
+  container.dispatch('scroll'); container.dispatch('scrollend');
+  view.restore({revision: 4, anchorId: 'e20', offsetPx: 0, followTail: false}); flush();
+  assert.deepEqual(saved, []); assert.equal(container.scrollTop, 0);
+  section.hidden = false; view.set(entries); flush();
+  const target = container.children.find(child => child.dataset.entryId === 'e10'); assert.ok(target);
+  assert.equal(container.scrollTop, target.offsetTop - container.offsetTop + 33);
+  container.dispatch('scrollend'); assert.equal(saved[0]?.anchorId, 'e10'); assert.equal(saved[0]?.offsetPx, 33); assert.equal(saved[0]?.followTail, false);
+  const position = container.scrollTop; view.set(entries); section.hidden = true; flush();
+  container.dispatch('scrollend'); assert.equal(saved.length, 1); assert.equal(container.scrollTop, position);
+  section.hidden = false; view.set(entries); flush(); assert.equal(container.scrollTop, position);
+});
 test('final message DOM stays stable and only the changed partial text updates', () => {
   setup(); const view = transcript(); const first = entry('one'); const second = {id: 'two', kind: 'message', messages: [message('m-two', 'a', 'partial')]};
   const editor = node('primary-editor'); editor.value = 'untouched draft';
@@ -184,11 +204,15 @@ test('joined result-only wrappers disappear while unmatched results, prose and e
 test('generic entries update, unknown entries remain inspectable, and expansion stays bounded', () => {
   setup(); const view = transcript(); const data = {value: {identity: 'full-identity', enabled: false, absent: null, nested: {huge: 'x'.repeat(100000)}}, truncated: true, omittedBytes: 7};
   view.set([{id: 'custom', kind: 'custom_kind', data}]); flush(); const custom = node('primary-transcript').children[0]; assert.ok(custom);
-  assert.match(custom.textContent, /false/); assert.match(custom.textContent, /null/); assert.match(custom.textContent, /7 bytes/);
+  assert.match(custom.textContent, /Custom kind/); assert.match(custom.textContent, /7 bytes/);
+  assert.equal(custom.querySelectorAll('details').length, 1);
   const detail = custom.querySelector('details'); assert.ok(detail); assert.equal(detail.querySelector('pre'), null);
   detail.open = true; detail.dispatch('toggle'); assert.ok((detail.querySelector('pre')?.textContent.length ?? Infinity) < 66000);
+  assert.match(detail.textContent, /false/); assert.match(detail.textContent, /null/);
   view.set([{id: 'custom', kind: 'custom_kind', data: {value: {identity: 'new'}, truncated: false}}, {id: 'unknown', kind: 'unrecognized'}]); flush();
-  assert.equal(node('primary-transcript').children[0], custom); assert.match(custom.textContent, /new/); assert.match(node('primary-transcript').textContent, /unrecognized/);
+  assert.equal(node('primary-transcript').children[0], custom);
+  const updated = custom.querySelector('details'); assert.ok(updated); updated.open = true; updated.dispatch('toggle');
+  assert.match(updated.textContent, /new/); assert.match(node('primary-transcript').textContent, /Unrecognized/);
   assert.ok(structured({value: ['a'], truncated: false}));
 });
 test('thinking preference applies to new blocks and reset removes old tools and nodes', () => {
@@ -226,11 +250,13 @@ test('find mounts a loaded virtual match before focus and restore works outside 
   const target = node('primary-transcript').children.find(child => child.dataset.entryId === 'e180'); assert.ok(target);
   assert.equal(node('primary-transcript').scrollTop, target.offsetTop + 33);
 });
-test('roster preserves order, full duplicate identities, keyed rows and data-arrival ages', () => {
+test('roster preserves order, visible duplicate identities, keyed rows and data-arrival ages', () => {
   setup(); const now = Date.now; let clock = 600000; Date.now = () => clock;
   try {
     const selected: string[] = []; const view = new Roster(row => selected.push(row.identity), () => {}); const one = row('one', 'same'); const two = row('two', 'same');
-    view.set([one, two]); flush(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m ago'); assert.match(first.textContent, /one/);
+    view.set([one, two]); flush(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m ago'); assert.match(first.querySelector('.row-select')?.attributes['aria-label'] ?? '', /one/);
+    assert.equal(first.querySelector('.row-identity')?.textContent, 'one');
+    assert.equal(node('roster').children[1]?.querySelector('.row-identity')?.textContent, 'two');
     clock = 900000; view.set([two, one], undefined, 'two'); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '10m ago');
     first.querySelector('.row-select')?.dispatch('click'); assert.deepEqual(selected, ['one']);
     view.set([{...one, latestReply: 'new'}, two]); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '15m ago');
@@ -246,7 +272,7 @@ test('roster empty states distinguish discovery, loading, failure and successful
   view.set([], {scan: {...scan, state: 'running'}, stale: false}); flush(); assert.equal(node('roster').children[0], empty);
   assert.equal(node('roster').textContent, 'Loading roster'); assert.equal(node('roster-footer').querySelector('button'), null);
   view.set([], {scan: {...scan, state: 'failed'}, stale: false, error: {code: 'catalog', message: 'Record unreadable', retry: 'read'}}); flush();
-  assert.match(node('roster').textContent, /Roster discovery failed: Record unreadable/); const retry = node('roster-footer').querySelector('button'); assert.equal(retry?.textContent, 'Retry'); retry?.dispatch('click');
+  assert.match(node('roster').textContent, /Roster discovery failed: Record unreadable/); const retry = node('roster').querySelector('button'); assert.equal(retry?.textContent, 'Retry'); retry?.dispatch('click');
   view.set([], {scan: {...scan, state: 'ready', complete: true}, stale: false}); flush();
   assert.equal(node('roster').textContent, 'No agents in this view'); assert.equal(node('roster-footer').querySelector('button'), null);
   assert.deepEqual(actions, ['refresh', 'refresh']);

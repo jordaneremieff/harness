@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { beforeEach, test } from 'node:test';
+import type { CommandInventory } from './command-menu-state.ts';
+beforeEach(context => { context.mock.timers.enable({apis: ['setTimeout', 'Date'], now: 0}); });
 import type { DraftView, OperationView, TargetState } from '../shared/api.ts';
 
 import { Composer } from './composer.ts';
 class NodeFake {
+  id = ''; selectionStart = 0; selectionEnd = 0; offsetTop = 0; scrollTop = 0; clientHeight = 80;
+  removeAttribute(name: string): void { this.attrs.delete(name); }
+  setSelectionRange(start: number, end: number): void { this.selectionStart = start; this.selectionEnd = end; }
   isConnected = false; style = {height: '', maxHeight: ''};
   get offsetHeight(): number { return Number.parseFloat(this.style.height) || 85.5; }
   get scrollHeight(): number { return this.value.split('\n').length * 22.5 + 16; }
   closest(): {clientHeight: number} { return {clientHeight: 900}; }
+  getBoundingClientRect(): {top: number; bottom: number} { return {top: 0, bottom: 0}; }
   open = false; value = ''; dataset: Record<string, string> = {}; hidden = false; disabled = false; focused = false;
   private text = ''; children: NodeFake[] = []; attrs = new Map<string, string>(); listeners = new Map<string, ((event: EventFake) => void)[]>();
   get textContent(): string { return this.text + this.children.map(child => child.textContent).join('\n'); }
@@ -38,9 +44,9 @@ function state(key = 'a', saved = draft(), agent = false): TargetState {
     reading: {revision: 0, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: []};
 }
 const turn = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
-function fixture(prefix: 'primary' | 'agent' = 'primary') {
+function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory) {
   const nodes = new Map<string, NodeFake>();
-  for (const id of ['editor', 'composer', 'modes', 'send', 'caption', 'save', 'receipt', 'receipt-details', 'acquire']) nodes.set(`${prefix}-${id}`, new NodeFake());
+  for (const id of ['editor', 'composer', 'modes', 'send', 'caption', 'save', 'receipt', 'receipt-details', 'acquire', 'command-menu']) { const node = new NodeFake(); node.id = `${prefix}-${id}`; nodes.set(node.id, node); }
   nodes.set('announcements', new NodeFake());
   for (const mode of ['steer', 'followUp']) { const node = new NodeFake(); node.dataset.mode = mode; nodes.get(`${prefix}-modes`)?.append(node); }
   const calls: Call[] = []; let sequence = 0; const frames: (() => void)[] = []; const copied: string[] = [];
@@ -53,7 +59,7 @@ function fixture(prefix: 'primary' | 'agent' = 'primary') {
       id: (init.headers as Record<string, string>)['Idempotency-Key'], resolve: value => resolve({json: async () => value}), reject}));
   }});
   const submitted: OperationView[] = []; let unknown = (_text: string, _send: () => void) => false; let recovered = 0;
-  const composer = new Composer(prefix, {submitted: result => submitted.push(result), recover: () => { recovered++; }, unknownCommand: (text, send) => unknown(text, send)});
+  const composer = new Composer(prefix, {submitted: result => submitted.push(result), recover: () => { recovered++; }, unknownCommand: (text, send) => unknown(text, send), commands});
   const node = (id: string) => nodes.get(`${prefix}-${id}`) as NodeFake;
   const pick = (method: string, suffix: string) => { const call = calls.find(item => item.method === method && item.path.endsWith(suffix)); assert.ok(call, `${method} ${suffix}`); return call; };
   const ok = (call: Call, value: unknown) => { calls.splice(calls.indexOf(call), 1); call.resolve({ok: true, data: value}); };
@@ -72,7 +78,7 @@ function fixture(prefix: 'primary' | 'agent' = 'primary') {
 
 test('local echo and one save per target coalesce newer unsent text across switches', async () => {
   const f = fixture(); f.connect(); f.composer.setText('one'); f.composer.setText('two'); f.composer.setText('three');
-  assert.equal(f.composer.editor.value, 'three'); assert.equal(f.calls.length, 1); assert.match(f.node('save').textContent, /not saved/);
+  assert.equal(f.composer.editor.value, 'three'); assert.equal(f.calls.length, 1); assert.equal(f.node('save').textContent, '');
   f.composer.attach('w', state('b')); f.composer.setText('other'); assert.equal(f.calls.length, 2);
   f.composer.attach('w', state()); assert.equal(f.composer.editor.value, 'three'); f.saved('one'); await turn();
   const next = f.calls.find(call => call.path.includes('/a/draft')); assert.equal(next?.body.text, 'three'); assert.equal(next?.body.expectedRevision, 1);
@@ -146,12 +152,12 @@ test('unknown or expired reservation rejects explicitly without blind resend', a
   assert.equal(f.composer.editor.value, 'sent'); assert.match(f.node('receipt').textContent, /reservation expired or unknown/); assert.doesNotMatch(f.node('receipt').textContent, /Send not confirmed/);
   assert.equal(f.calls.length, 0); assert.equal(f.reservations(), 2);
 });
-test('IME, repeat, ShiftEnter, prevented autocomplete, and modified Enter do not submit; busy Tab moves focus once', async () => {
+test('IME, repeat, ShiftEnter, prevented autocomplete, and modified Enter do not submit; busy Tab stays native', async () => {
   const f = fixture(); f.connect(state('a', draft(1, 'sent')));
   for (const option of [{isComposing: true}, {repeat: true}, {shiftKey: true}, {defaultPrevented: true}, {ctrlKey: true}, {metaKey: true}, {altKey: true}]) f.node('editor').fire('keydown', {key: 'Enter', ...option});
   await turn(); assert.equal(f.calls.length, 0); f.composer.availability(true, true, true);
-  const tab = f.node('editor').fire('keydown', {key: 'Tab'}); assert.equal(tab.defaultPrevented, true);
-  assert.equal(f.node('modes').children.find(node => node.dataset.mode === 'followUp')?.focused, true);
+  const tab = f.node('editor').fire('keydown', {key: 'Tab'}); assert.equal(tab.defaultPrevented, false);
+  assert.equal(f.node('modes').children.some(node => node.focused), false);
   assert.equal(f.node('modes').children[1]?.fire('keydown', {key: 'Tab'}).defaultPrevented, false);
   assert.equal(f.node('editor').fire('keydown', {key: 'Tab', shiftKey: true}).defaultPrevented, false);
 });
@@ -278,7 +284,7 @@ test('input and control receipts share one disclosure and never leak across targ
   const result: OperationView = {id: 'input', target: a.target, kind: 'primary.input', state: 'accepted', createdAt: '2026-10-08T12:00:00Z', updatedAt: '2026-10-08T12:00:00Z'};
   f.composer.receipts([result, {...result, id: 'control', kind: 'primary.control', state: 'completed', updatedAt: '2026-10-08T12:01:00Z'}]);
   assert.equal(f.node('receipt-details').children.length, 1); f.openReceipt(); assert.match(f.node('receipt-details').textContent, /Input receipt/); assert.match(f.node('receipt-details').textContent, /Control receipt/); assert.equal(f.node('receipt').textContent, '');
-  f.composer.attach('w', state('b')); assert.equal(f.node('receipt-details').textContent, ''); assert.equal(f.node('save').textContent, 'Saved');
+  f.composer.attach('w', state('b')); assert.equal(f.node('receipt-details').textContent, ''); assert.equal(f.node('save').textContent, '');
 });
 
 test('editor height grows locally, caps long drafts, shrinks, and preserves explicit manual sizing', () => {
@@ -297,4 +303,88 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     if (computed) Object.defineProperty(globalThis, 'getComputedStyle', computed); else Reflect.deleteProperty(globalThis, 'getComputedStyle');
     if (media) Object.defineProperty(globalThis, 'matchMedia', media); else Reflect.deleteProperty(globalThis, 'matchMedia');
   }
+});
+
+test('fast serialized saves remain silent and only one outstanding request reaches the slow threshold', async context => {
+  const f = fixture(); f.connect(); f.composer.setText('one');
+  context.mock.timers.tick(999); assert.equal(f.node('save').textContent, '');
+  context.mock.timers.tick(1); assert.equal(f.node('save').textContent, 'Saving draft…');
+  f.composer.setText('two'); f.saved('one'); await turn(); assert.equal(f.node('save').textContent, '');
+  context.mock.timers.tick(999); assert.equal(f.node('save').textContent, '');
+  f.saved('two', 2); await turn(); context.mock.timers.tick(2000); assert.equal(f.node('save').textContent, '');
+  assert.equal(f.composer.unsaved, false);
+});
+test('a slow-save timer never paints another target and a late settle clears its own presentation', async context => {
+  const f = fixture(); f.connect(); f.composer.setText('one'); f.composer.attach('w', state('b'));
+  context.mock.timers.tick(1000); assert.equal(f.node('save').textContent, '');
+  f.composer.attach('w', state()); assert.equal(f.node('save').textContent, 'Saving draft…');
+  f.saved('one'); await turn(); assert.equal(f.node('save').textContent, '');
+});
+test('a clean acknowledged draft stays quiet offline while unsaved text gets the offline exception', async () => {
+  const f = fixture(); f.connect(state('a', draft(1, 'retained'))); f.composer.availability(false, true, false);
+  assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, true);
+  f.composer.setText('unsaved'); assert.equal(f.node('save').textContent, 'Draft not saved · offline'); assert.equal(f.calls.length, 0);
+  f.composer.availability(true, true, false); assert.equal(f.node('save').textContent, '');
+  f.saved('unsaved', 2); await turn(); assert.equal(f.node('save').textContent, '');
+});
+test('a failed save exposes Retry and latches through edits until an explicit retry succeeds', async () => {
+  const f = fixture(); f.connect(); f.composer.setText('one'); f.fail(f.pick('PUT', '/draft'), 'host_unavailable'); await turn();
+  assert.equal(f.node('save').textContent, 'Draft not saved'); assert.match(f.node('receipt').textContent, /Draft not saved/);
+  f.composer.setText('two'); assert.equal(f.calls.length, 0); f.click('Retry'); assert.equal(f.pick('PUT', '/draft').body.text, 'two');
+  f.saved('two'); await turn(); assert.equal(f.node('save').textContent, ''); assert.equal(f.node('receipt').textContent, '');
+});
+test('routine admitted notices announce once without persistent text but queued input remains visible', async () => {
+  const f = fixture(); const a = f.connect(state('a', draft(2, 'sent'))); const sending = f.composer.send(); await turn();
+  f.admit(a); await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(3, ''))); await sending;
+  assert.equal(f.node('receipt').textContent, ''); assert.equal(f.node('save').textContent, '');
+  f.composer.receipts([{id: 'queued', kind: 'primary.input', target: a.target, state: 'accepted', receipt: {kind: 'rpc', disposition: 'queued'}, createdAt: '', updatedAt: ''}]);
+  assert.match(f.node('receipt').textContent, /Follow-up queued/); assert.equal(f.node('save').textContent, '');
+});
+test('an open primary menu accepts an exact name without dispatch and normal Enter returns after acceptance', async () => {
+  const commands = () => ({state: 'ready' as const, items: [{name: 'fixture', description: 'public command', source: 'extension'}]});
+  const f = fixture('primary', commands); const a = f.connect(state('a', draft(1, '/fixture')));
+  f.node('editor').setSelectionRange(8, 8); f.node('editor').fire('focus'); f.composer.commandsChanged();
+  assert.equal(f.node('command-menu').hidden, false); f.node('editor').fire('keydown', {key: 'Enter'}); await turn();
+  assert.equal(f.composer.editor.value, '/fixture '); assert.equal(f.calls.some(call => call.path.endsWith('/inputs')), false);
+  f.saved('/fixture ', 2); await turn(); f.node('editor').fire('keydown', {key: 'Enter'}); await turn();
+  assert.equal(f.calls.filter(call => call.path.endsWith('/inputs')).length, 1); f.admit(a, 'rejected'); await turn();
+});
+test('loading or empty primary menus consume Enter and agent composers never open slash menus', async () => {
+  let inventory: CommandInventory = {state: 'loading', items: []}; const f = fixture('primary', () => inventory); f.connect(state('a', draft(1, '/missing')));
+  f.node('editor').setSelectionRange(8, 8); f.node('editor').fire('focus'); f.node('editor').fire('keydown', {key: 'Enter'}); await turn(); assert.equal(f.calls.length, 0);
+  inventory = {state: 'ready', items: []}; f.composer.commandsChanged(); f.node('editor').fire('keydown', {key: 'Enter'}); await turn(); assert.equal(f.calls.length, 0);
+  const agent = fixture('agent', () => ({state: 'ready', items: [{name: 'model', description: '', source: 'App'}]})); agent.connect();
+  agent.composer.setText('/mo'); agent.node('editor').setSelectionRange(3, 3); agent.node('editor').fire('focus'); agent.composer.commandsChanged();
+  assert.equal(agent.node('command-menu').children.length, 0); assert.equal(agent.node('editor').fire('keydown', {key: 'Tab'}).defaultPrevented, false);
+});
+test('a matching stream acknowledgment stays quiet if its later HTTP response is lost', async () => {
+  const f = fixture(); f.connect(); f.composer.setText('retained'); f.composer.updateDraft(draft(1, 'retained'));
+  f.pick('PUT', '/draft').reject(new Error('response lost')); await turn();
+  assert.equal(f.composer.unsaved, false); assert.equal(f.node('save').textContent, ''); assert.equal(f.node('receipt').textContent, '');
+  f.composer.availability(false, true, false); assert.equal(f.node('save').textContent, '');
+});
+test('save Retry clears the matching failed-send notice after an acknowledged retry', async () => {
+  const f = fixture(); f.connect(); f.composer.setText('text'); const sending = f.composer.send(); f.fail(f.pick('PUT', '/draft'), 'host_unavailable'); await sending;
+  assert.match(f.node('receipt').textContent, /Draft not saved/); f.click('Retry'); f.saved('text'); await turn();
+  assert.equal(f.node('receipt').textContent, ''); assert.equal(f.node('save').textContent, ''); assert.equal(f.calls.length, 0);
+});
+test('journal refusals and uncertain input remain visible outside routine admission notices', () => {
+  const f = fixture(); const a = f.connect(); const result: OperationView = {id: 'other-tab', kind: 'primary.input', target: a.target, state: 'uncertain', createdAt: '', updatedAt: ''};
+  f.composer.receipts([result]); assert.match(f.node('receipt').textContent, /Send not confirmed/);
+  f.composer.receipts([{...result, state: 'rejected'}]); assert.match(f.node('receipt').textContent, /Input refused/);
+  f.composer.receipts([{...result, state: 'accepted'}]); assert.equal(f.node('receipt').textContent, '');
+});
+test('a healthy selection gate blocks Send and draft writes without offline presentation', async () => {
+  const f = fixture(); f.connect(); f.composer.availability(true, true, false, true); f.composer.setText('unsaved');
+  assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, true); assert.equal(f.composer.unsaved, true);
+  assert.match(f.node('send').attrs.get('aria-description') ?? '', /View change/);
+  await f.composer.send(); assert.equal(f.calls.length, 0);
+  f.composer.availability(true, true, false, false); assert.equal(f.pick('PUT', '/draft').body.text, 'unsaved'); f.saved('unsaved'); await turn();
+  assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, false);
+});
+test('an outstanding save settles during a healthy gate but newer text waits until the gate clears', async () => {
+  const f = fixture(); f.connect(); f.composer.setText('first'); f.composer.availability(true, true, false, true); f.composer.setText('newer');
+  f.saved('first'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, true);
+  f.composer.availability(true, true, false); assert.equal(f.pick('PUT', '/draft').body.text, 'newer'); f.saved('newer', 2); await turn();
+  f.composer.availability(false, true, false, true); f.composer.setText('offline edit'); assert.equal(f.node('save').textContent, 'Draft not saved · offline');
 });

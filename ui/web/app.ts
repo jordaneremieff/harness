@@ -3,6 +3,7 @@ import { Actions } from './actions.ts';
 import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
 import { Composer } from './composer.ts';
+import { ConnectionRecovery, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
 import { announce, byId, button, copy, details, element, empty, rawText, setText } from './dom.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
@@ -13,10 +14,11 @@ import { Roster } from './roster.ts';
 import { Recovery, exactInput } from './recovery.ts';
 import { agentBlocks, conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
 import type { UiEvent } from './state.ts';
-import { hydrateVisible } from './hydrate.ts';
-import { SelectionQueue } from './selection-state.ts';
+import { hydrateVisible, refreshVisible } from './hydrate.ts';
+import { SelectionQueue, navigationState, visibleReceipt } from './selection-state.ts';
 import { usageSummary } from './usage.ts';
-import { primaryBusy, primaryActivityLabel } from './primary-presentation.ts';
+import { entryVisible } from './entry-presentation.ts';
+import { primaryBusy, primaryActivityLabel, primaryEmpty } from './primary-presentation.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { renderFacts } from './facts.ts';
@@ -29,11 +31,19 @@ let state = createState();
 let snapshot: Bootstrap | Snapshot | undefined;
 let source: EventSource | undefined;
 let connected = false;
+let drawerOpen = false;
+let connectionPhase: ConnectionPhase = 'healthy';
+let connectionError: unknown;
+let connectionSurface = '';
+let streamWait: {resolve: () => void; reject: (error: unknown) => void} | undefined;
 let resynchronizing: Promise<void> | undefined;
 let historyAbort = new AbortController();
 let primaryCursor: string | null = null;
 let agentBefore: number | null = null;
+let primaryEarlier: {target: string; controller: AbortController} | undefined;
+let agentEarlier: {target: string; controller: AbortController} | undefined;
 let primaryTargetKey = '';
+let historyReadyTarget = '';
 let agentTargetKey = '';
 let hiddenPanel = false;
 let selecting = false;
@@ -42,7 +52,7 @@ const snapshotBuffers = new Set<{events: UiEvent[]; bytes: number; overflow: boo
 let observationStart: {identity: string; at: number} | undefined;
 const modal = new Modal();
 const preferences = new PreferenceQueue();
-const primaryComposer: Composer = new Composer('primary', {submitted: showOperation, unknownCommand: (text, literal): boolean => actions.unknown(text, literal), recover: recover});
+const primaryComposer: Composer = new Composer('primary', {submitted: showOperation, unknownCommand: (text, literal): boolean => actions.unknown(text, literal), commands: () => actions.commandOptions(), recover: recover});
 const agentComposer = new Composer('agent', {submitted: showOperation, unknownCommand: () => false, recover: recover});
 const primaryTranscript = new Transcript('primary', {presentation: (expanded, showThinking) => { void savePresentation(primaryComposer, expanded, showThinking); }, reading: reading => { void saveReading(primaryComposer, reading); }, fork: (message, entry) => actions.fork(entry, rawText(message.parts)), output: loadPrimaryOutput});
 async function loadPrimaryOutput(more: import('../shared/api.ts').OutputContinuation): Promise<import('../shared/api.ts').OutputPage> {
@@ -56,11 +66,15 @@ const actions: Actions = new Actions({snapshot: currentSnapshot, primary, compos
 const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload});
 actions.projectPicker = () => picker.open();
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
-const roster = new Roster(row => { void selectAgent(row).catch(showAgentError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
+const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
   merge: page => { state = mergeRosterPage(state, page); renderRoster(); },
 });
 const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary);
+const connectionRecovery = new ConnectionRecovery({attempt: resync, unauthorized: error => error instanceof ApiError && error.view.code === 'unauthorized', paint: (phase, error) => {
+  connectionPhase = phase; connectionError = error; connected = phase === 'healthy'; renderConnection();
+  if (connected) renderAll(); else renderAvailability();
+}});
 const selectionQueue = new SelectionQueue({current: () => state.workspace, reload, save: (workspace, change) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspace.id)}/selection`, 'PUT', {expectedRevision: workspace.revision, ...change}), paint: (workspace, pending) => { selecting = pending; state = {...state, workspace}; renderAll(); }});
 
 function currentSnapshot(): Snapshot | undefined {
@@ -79,12 +93,17 @@ function targetState(target?: Target): TargetState | undefined {
 }
 function sameTarget(a?: Target, b?: Target): boolean { return !!a && !!b && targetIdentity(a) === targetIdentity(b); }
 function selection(change: SelectionChange): Promise<void> {
+  if (change.selectedTarget !== undefined) drawerOpen = false;
+  if (change.sidebarVisible !== undefined && !matchMedia('(min-width: 900px)').matches) {
+    drawerOpen = change.sidebarVisible; const {sidebarVisible: _visible, ...rest} = change; change = rest; renderNavigation(); roster.schedule();
+    if (!Object.keys(change).length) return Promise.resolve();
+  }
   historyAbort.abort(); historyAbort = new AbortController(); const startedAt = performance.now();
   const task = selectionQueue.select(change);
   requestAnimationFrame(() => performance.measure('ui:cached-target-switch', {start: startedAt, end: performance.now()})); return task;
 }
 function reload(): Promise<void> {
-  const task = reloadTail.then(refreshSnapshot); reloadTail = task.catch(() => undefined); return task;
+  const task = reloadTail.then(() => refreshVisible(refreshSnapshot, loadPrimaryHistory, showError)); reloadTail = task.catch(() => undefined); return task;
 }
 async function refreshSnapshot(): Promise<void> {
   if (!state.workspace) return;
@@ -94,27 +113,45 @@ async function refreshSnapshot(): Promise<void> {
     if (buffered.overflow) throw new Error('Current view changed too quickly during restore. Reconnect to request a fresh baseline.');
     snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)}; renderAll();
   } finally { snapshotBuffers.delete(buffered); }
-  await loadPrimaryHistory();
 }
-function stream(): void {
-  source?.close(); if (!state.workspace || !state.cursor) return;
-  source = connect(state.workspace.id, state.cursor, receive, disconnected);
+function stream(): Promise<void> {
+  source?.close();
+  if (!state.workspace || !state.cursor) return Promise.reject(new Error('No current workspace baseline.'));
+  const ready = {resolve: () => {}, reject: (_error: unknown) => {}};
+  const promise = new Promise<void>((resolve, reject) => { ready.resolve = resolve; ready.reject = reject; }); streamWait = ready;
+  const current = connect(state.workspace.id, state.cursor, event => { if (source === current) receive(event); }, () => { if (source === current) disconnected(); });
+  source = current;
+  const timer = window.setTimeout(() => { if (source === current) disconnected(new Error('The event stream did not become ready.')); }, 15_000);
+  return promise.finally(() => { window.clearTimeout(timer); if (streamWait === ready) streamWait = undefined; });
 }
-function disconnected(): void {
-  connected = false; renderAvailability();
-  const banner = byId('connection'); banner.hidden = false;
-  banner.replaceChildren(element('span', undefined, 'Connection lost. Work may continue on the Mac.'), button('Reconnect', () => { void resync(); }), button('Details', () => {
-    modal.open('Connection details').append(element('p', undefined, 'Last observed primary and agent state stays readable. Unsaved text stays in this tab. No input resends automatically.'));
-  }));
+function disconnected(error: unknown = new Error('The event stream closed.')): void {
+  source?.close(); connected = false; renderAvailability();
+  if (streamWait) streamWait.reject(error);
+  else connectionRecovery.lost(error);
+}
+function connectionDetails(): void {
+  modal.open('Connection details').append(element('p', undefined, 'Last observed primary and agent state stays readable. Unsaved text stays in this tab. No input resends automatically.'));
+  if (connectionError) modal.body.append(element('p', 'error', errorMessage(connectionError)));
+}
+function renderConnection(): void {
+  const persistent = connectionPhase === 'offline' || connectionPhase === 'auth';
+  const {owner, visible} = connectionSurfaceFor(connectionPhase, !byId('sidebar').hidden);
+  const key = `${owner}/${connectionPhase}`; if (connectionSurface === key) return; connectionSurface = key;
+  for (const id of ['connection', 'workspace-alert']) { byId(id).hidden = true; byId(id).replaceChildren(); }
+  if (!visible) return;
+  const node = byId(owner); node.hidden = false;
+  if (connectionPhase === 'auth') node.append(element('span', undefined, 'Open the launch link from this Mac'), button('Retry', () => location.reload()), button('Details', connectionDetails));
+  else if (persistent) node.append(element('span', undefined, 'Offline'), button('Reconnect', () => connectionRecovery.reconnect()), button('Details', connectionDetails));
+  else setText(node, 'Reconnecting…');
 }
 async function resync(): Promise<void> {
   if (resynchronizing) return resynchronizing;
-  source?.close(); connected = false;
-  const banner = byId('connection'); banner.hidden = false; setText(banner, 'Restoring current view'); renderAvailability();
+  source?.close(); connected = false; renderAvailability();
   resynchronizing = (async () => {
-    try { await reload(); connected = true; banner.hidden = true; stream(); renderAll(); }
-    catch (error) { disconnected(); showError(error); }
-    finally { resynchronizing = undefined; }
+    try {
+      if (state.workspace) await reload(); else await refreshVisible(bootstrap, loadPrimaryHistory, showError);
+      await stream(); renderAll();
+    } finally { resynchronizing = undefined; }
   })();
   return resynchronizing;
 }
@@ -128,9 +165,9 @@ function receive(event: ReceivedEvent): void {
   }
   const reducerStartedAt = performance.now(); state = reduceEvent(state, reduced);
   performance.measure('ui:reducer', {start: reducerStartedAt, end: performance.now()});
-  if (state.needsResync) { void resync(); return; }
+  if (state.needsResync) { disconnected(new Error('The event baseline needs a refresh.')); return; }
   if (event.name === 'workspace.changed' && state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
-  if (event.name === 'ready') { connected = true; byId('connection').hidden = true; renderPrimary(); renderAgent(); return; }
+  if (event.name === 'ready') { streamWait?.resolve(); return; }
   if (old === state) return;
   applyEvent(event);
   if (event.name === 'primary.state') {
@@ -172,39 +209,66 @@ function updateDraft(event: EventData['draft.changed']): void {
 function renderAll(): void {
   if (!state.workspace) return;
   document.documentElement.dataset.appearance = state.workspace.appearance ?? 'dark';
-  const panelVisible = state.workspace.panelVisible ?? matchMedia('(min-width: 1180px)').matches;
-  byId('agent-panel').hidden = !panelVisible;
-  byId('workspace').classList.toggle('agents-open', panelVisible);
-  byId('workspace').classList.toggle('agent-selected', !!selectedAgent());
-  byId('agents-button').setAttribute('aria-expanded', String(panelVisible));
-  byId('agent-detail').hidden = !selectedAgent();
+  renderNavigation();
   renderPrimary(); renderRoster(); renderAgent(); noticesBadge(); extensionDialogs.update();
+}
+function renderNavigation(): void {
+  const narrow = !matchMedia('(min-width: 900px)').matches;
+  const {sidebarVisible: visible, agentSelected} = navigationState(state.workspace, narrow, drawerOpen);
+  byId('app').classList.toggle('drawer-open', narrow && drawerOpen);
+  byId('sidebar').hidden = !visible;
+  byId('sidebar-show').hidden = visible;
+  byId('sidebar-show').setAttribute('aria-expanded', String(visible));
+  byId('primary').hidden = agentSelected;
+  byId('agent-detail').hidden = !agentSelected;
+  byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
+  renderConnection();
+}
+function focusEditor(): void { byId(navigationState(state.workspace, false).editor).focus(); }
+function toggleSidebar(visible: boolean): void {
+  if (!matchMedia('(min-width: 900px)').matches) {
+    drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'sidebar-hide' : 'sidebar-show').focus(); return;
+  }
+  const applied = selection({sidebarVisible: visible});
+  byId(visible ? 'sidebar-hide' : 'sidebar-show').focus();
+  void applied.catch(showError);
+}
+function selectPrimary(): void {
+  const origin = document.activeElement; drawerOpen = false;
+  const applied = selection({selectedTarget: primaryTarget() ?? null});
+  focusEditor(); void applied.then(() => {
+    if (!selectedAgent() && (document.activeElement === origin || document.activeElement === document.body)) focusEditor();
+  }).catch(showError);
 }
 function renderPrimary(): void {
   const item = primary(); const target = primaryTarget(); const saved = targetState(target);
   actions.warm();
   if (saved?.targetKey !== primaryTargetKey) {
-    primaryTargetKey = saved?.targetKey ?? ''; primaryCursor = null; primaryTranscript.reset(); primaryTranscript.configure(saved?.presentation, saved?.reading);
+    primaryTargetKey = saved?.targetKey ?? ''; primaryCursor = null; primaryEarlier = undefined; earlierFeedback('primary', false); byId('primary-view-notice').replaceChildren(); primaryTranscript.reset(); primaryTranscript.configure(saved?.presentation, saved?.reading);
   }
   primaryComposer.attach(state.workspace?.id ?? '', saved); primaryComposer.receipts(state.operations.values());
   byId('primary-composer').hidden = !saved; byId('primary-status').hidden = !item;
   byId('session-title').hidden = !item;
   primaryChrome(item); primaryActivity(item, target);
   extensionStatus(item); renderPrimaryTranscript(); renderAvailability();
-  byId('primary-transcript').hidden = !item; byId('primary-empty').hidden = !!item;
-  if (!item) {
-    document.title = 'Pi · Open a project';
-    setText(byId('primary-empty-caption'), state.workspace?.primaryKey ? 'Loading the selected session' : 'Open a project to start or resume a session.');
-    byId('primary-open-project').hidden = !!state.workspace?.primaryKey;
-  }
+  byId('primary-transcript').hidden = !item;
+  if (!item) document.title = 'Pi · Open a project';
 }
 function primaryChrome(item?: PrimaryView): void {
-  setText(byId('project-button'), item?.cwd.split('/').filter(Boolean).at(-1) ?? 'Open a project');
+  setText(byId('project-name'), item?.cwd.split('/').filter(Boolean).at(-1) ?? 'Open a project');
+  primaryNavigation(item);
   setText(byId('session-title'), item?.extension?.title ?? item?.sessionName ?? item?.sessionId ?? 'Pi');
   if (item) document.title = `Pi · ${item.sessionName ?? item.sessionId ?? 'Primary'}`;
   const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(model, item?.model ? `${item.model.provider}/${item.model.id} ▾` : 'Model');
   setText(byId('primary-usage'), usageSummary(item));
   const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; setText(thinking, item?.thinkingLevel ? `${item.thinkingLevel} ▾` : '');
+}
+function primaryNavigation(item?: PrimaryView): void {
+  const glyph = !item ? '◌' : item.lifecycle === 'failed' || item.lastError ? '!' : primaryBusy(item) ? '●' : '○';
+  const status = byId('primary-row-state'); setText(status, glyph);
+  status.dataset.state = ({'◌': 'none', '!': 'failed', '●': 'running', '○': 'idle'} as const)[glyph];
+  setText(byId('primary-row-title'), item?.extension?.title ?? item?.sessionName ?? item?.sessionId ?? 'No primary session');
+  setText(byId('primary-row-meta'), item ? [item.model?.id, item.lifecycle === 'ready' ? item.activity : item.lifecycle].filter(Boolean).join(' · ') : 'Open a project');
 }
 function primaryActivity(item?: PrimaryView, target?: Target): void {
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
@@ -214,15 +278,24 @@ function primaryActivity(item?: PrimaryView, target?: Target): void {
   byId('primary-stop').hidden = !(connected && primaryBusy(item, conversation?.queue?.pending));
 }
 function renderPrimaryTranscript(): void {
+  if (selectedAgent()) return;
   const item = primary(); const target = primaryTarget();
-  if (item) primaryTranscript.set(primaryBlocks(state, item.key), target ? state.conversations.get(targetIdentity(target))?.tools : undefined);
+  const blocks = item ? primaryBlocks(state, item.key) : [];
+  if (item) primaryTranscript.set(blocks, target ? state.conversations.get(targetIdentity(target))?.tools : undefined);
+  const presentation = primaryEmpty(item, blocks.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry)), !!target && historyReadyTarget === targetIdentity(target));
+  const empty = byId('primary-empty'); empty.hidden = !presentation;
+  if (presentation) {
+    const heading = empty.querySelector('h2'); if (heading) setText(heading, presentation.heading);
+    setText(byId('primary-empty-caption'), !item && state.workspace?.primaryKey ? 'Loading the selected session' : presentation.caption);
+  }
+  byId('primary-open-project').hidden = !!item || !!state.workspace?.primaryKey;
 }
-function renderRoster(): void { roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent()); }
+function renderRoster(): void { setText(byId('agent-count'), String(state.roster.size)); roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent()); }
 function renderAgent(): void {
-  const identity = selectedAgent(); if (!identity) { agentComposer.attach(state.workspace?.id ?? ''); return; }
+  const identity = selectedAgent(); if (!identity) return;
   const row = agentRow(identity); const saved = targetState({kind: 'agent', identity});
   if (saved?.targetKey !== agentTargetKey) {
-    agentTargetKey = saved?.targetKey ?? ''; agentBefore = null; byId('agent-facts').replaceChildren(); agentTranscript.reset(); agentTranscript.configure(saved?.presentation, saved?.reading);
+    agentTargetKey = saved?.targetKey ?? ''; agentBefore = null; agentEarlier = undefined; earlierFeedback('agent', false); byId('agent-view-notice').replaceChildren(); byId('agent-facts').replaceChildren(); agentTranscript.reset(); agentTranscript.configure(saved?.presentation, saved?.reading);
   }
   agentComposer.attach(state.workspace?.id ?? '', saved); agentComposer.receipts(state.operations.values());
   agentChrome(identity, row);
@@ -260,35 +333,66 @@ function renderAvailability(): void {
   const frame = identity ? state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame : undefined;
   const conversation = item ? state.conversations.get(targetIdentity({kind: 'primary', key: item.key, epoch: item.epoch})) : undefined;
   const busy = primaryBusy(item, conversation?.queue?.pending);
-  primaryComposer.availability(connected && !selecting, item?.lifecycle === 'ready', busy);
+  primaryComposer.availability(connected, item?.lifecycle === 'ready', busy, selecting);
   byId('primary-stop').hidden = !connected || !busy;
   byId('agent-abort').hidden = !connected || row?.availability !== 'live' || !row?.capabilities?.input || !row?.capabilities?.abort;
-  agentComposer.availability(connected && !selecting, row?.availability === 'live' && row.capabilities?.input === true, frame?.status.busy ?? false);
-  if (!connected) {
-    setText(byId('primary-activity'), 'Last observed · Connection lost');
-    if (identity) setText(byId('agent-availability'), 'Last observed · Connection lost');
+  agentComposer.availability(connected, row?.availability === 'live' && row.capabilities?.input === true, frame?.status.busy ?? false, selecting);
+  if (!connected && (connectionPhase === 'offline' || connectionPhase === 'auth')) {
+    setText(byId('primary-activity'), 'Last observed');
+    if (identity) setText(byId('agent-availability'), 'Last observed');
   }
 }
 async function selectAgent(row: AgentRow): Promise<void> {
+  const origin = document.activeElement; drawerOpen = false;
   observationStart = {identity: row.identity, at: performance.now()};
   const applied = selection({panelVisible: true, selectedTarget: {kind: 'agent', identity: row.identity}});
-  byId('agent-name').focus(); await applied;
+  focusEditor(); await applied;
+  if (selectedAgent() === row.identity && (document.activeElement === origin || document.activeElement === document.body)) focusEditor();
 }
 async function loadPrimaryHistory(cursor?: string): Promise<void> {
   const item = primary(); const target = primaryTarget(); if (!item || !target) return;
   const captured = targetIdentity(target); const controller = historyAbort;
+  if (cursor && primaryEarlier?.target === captured && primaryEarlier.controller === controller) return;
+  const pending = {target: captured, controller};
+  if (cursor) { primaryEarlier = pending; earlierFeedback('primary', true); }
   try {
-    const page = await request<HistoryPage>(`/api/primaries/${encodeURIComponent(item.key)}/history?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, 'GET', undefined, undefined, controller.signal);
-    if (controller.signal.aborted || captured !== (primaryTarget() ? targetIdentity(primaryTarget() as Target) : '')) return;
-    state = mergePrimaryPage(state, target, page.items); primaryCursor = page.nextCursor; byId('primary-earlier').hidden = !primaryCursor; renderPrimaryTranscript();
-    primaryTranscript.restore(targetState(target)?.reading);
-  } catch (error) { if (!controller.signal.aborted) showError(error); }
+    const page = await request<HistoryPage>(`/api/primaries/${encodeURIComponent(item.key)}/history?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, 'GET', undefined, undefined, AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]));
+    if (controller.signal.aborted || !sameTarget(target, primaryTarget())) return;
+    applyPrimaryHistoryPage(target, page, cursor);
+  } catch (error) {
+    primaryHistoryFailure(error, controller, cursor);
+  } finally {
+    if (cursor && primaryEarlier === pending) { primaryEarlier = undefined; earlierFeedback('primary', false); }
+  }
+}
+function applyPrimaryHistoryPage(target: Target, page: HistoryPage, cursor?: string): void {
+  historyReadyTarget = targetIdentity(target);
+  state = mergePrimaryPage(state, target, page.items); primaryCursor = page.nextCursor; byId('primary-earlier').hidden = !primaryCursor; renderPrimaryTranscript();
+  if (cursor) historyFeedback('primary', `Loaded earlier history · ${page.items.length} entries`);
+  else if (!selectedAgent()) primaryTranscript.restore(targetState(target)?.reading);
+}
+function primaryHistoryFailure(error: unknown, controller: AbortController, cursor?: string): void {
+  if (controller.signal.aborted) return;
+  if (cursor) historyFeedback('primary', `Earlier history unavailable: ${errorMessage(error)}`); else showError(error);
+}
+function earlierFeedback(prefix: 'primary' | 'agent', pending: boolean): void {
+  const control = byId<HTMLButtonElement>(`${prefix}-earlier`); control.disabled = pending;
+  setText(control, pending ? 'Loading earlier messages…' : 'Load earlier messages');
+}
+function historyFeedback(prefix: 'primary' | 'agent', text: string): void {
+  const notice = byId(`${prefix}-view-notice`); notice.dataset.kind = 'history'; setText(notice, text);
 }
 async function loadAgentHistory(): Promise<void> {
-  const identity = selectedAgent(); if (!identity) return;
-  const page = await request<AgentHistoryPage>(`/api/agents/${encodeURIComponent(identity)}/history?limit=50${agentBefore ? `&before=${agentBefore}` : ''}`);
-  if (selectedAgent() !== identity) return;
-  state = mergeAgentPage(state, identity, page.entries); agentBefore = page.nextBefore; renderAgent();
+  const identity = selectedAgent(); const controller = historyAbort;
+  if (!identity || (agentEarlier?.target === identity && agentEarlier.controller === controller)) return;
+  const pending = {target: identity, controller}; agentEarlier = pending; earlierFeedback('agent', true);
+  try {
+    const page = await request<AgentHistoryPage>(`/api/agents/${encodeURIComponent(identity)}/history?limit=50${agentBefore ? `&before=${agentBefore}` : ''}`, 'GET', undefined, undefined, controller.signal);
+    if (controller.signal.aborted || selectedAgent() !== identity) return;
+    state = mergeAgentPage(state, identity, page.entries); agentBefore = page.nextBefore; renderAgent();
+    historyFeedback('agent', `Loaded earlier history · ${page.entries.length} entries`);
+  } catch (error) { if (!controller.signal.aborted && selectedAgent() === identity) historyFeedback('agent', `Earlier history unavailable: ${errorMessage(error)}`); }
+  finally { if (agentEarlier === pending) { agentEarlier = undefined; earlierFeedback('agent', false); } }
 }
 function saveReading(composer: Composer, reading: TargetState['reading']): Promise<void> {
   return saveView(composer, 'reading', {anchorId: reading.anchorId, offsetPx: reading.offsetPx, followTail: reading.followTail});
@@ -341,8 +445,7 @@ function notices(): void {
     modal.body.append(row);
   }
 }
-function showError(error: unknown): void { const message = errorMessage(error); announce(message); setText(byId('primary-receipt'), message); }
-function showAgentError(error: unknown): void { const message = errorMessage(error); announce(message); setText(byId('agent-receipt'), message); }
+function showError(error: unknown): void { const message = errorMessage(error); announce(message); setText(byId(visibleReceipt(state.workspace)), message); }
 function showRosterError(error: unknown): void { const message = errorMessage(error); announce(message); byId('roster-footer').replaceChildren(element('p', 'error', message), button('Retry roster read', () => { void reload().catch(showRosterError); })); }
 function refreshRoster(): void { void request('/api/agents/refresh', 'POST', {}).catch(showRosterError); }
 function moreRoster(): void {
@@ -373,36 +476,40 @@ function bind(): void {
   byId('model-button').addEventListener('click', () => actions.modelPicker()); byId('thinking-button').addEventListener('click', () => actions.thinkingPicker());
   byId('notices-button').addEventListener('click', notices);
   byId('agent-acquire').addEventListener('click', () => { const identity = selectedAgent(); if (connected && identity) actions.prepareText(`/agent attach ${identity}`); });
-  byId('agents-button').addEventListener('click', () => { void selection({panelVisible: byId('agent-panel').hidden}).catch(showError); });
-  for (const id of ['agent-close', 'agent-detail-close']) byId(id).addEventListener('click', () => { void selection({panelVisible: false}).catch(showError); });
-  byId('agent-back').addEventListener('click', () => { void selection({selectedTarget: null}).catch(showError); });
+  byId('primary-row').addEventListener('click', selectPrimary);
+  byId('sidebar-hide').addEventListener('click', () => toggleSidebar(false));
+  byId('sidebar-show').addEventListener('click', () => toggleSidebar(true));
+  byId('sessions-button').addEventListener('click', () => actions.projectPicker());
+  byId('appearance-button').addEventListener('click', () => actions.appearance());
+  byId('skip-composer').addEventListener('click', event => { event.preventDefault(); focusEditor(); });
   byId('agent-copy').addEventListener('click', () => { void copy(selectedAgent() ?? '', byId('agent-availability')); });
   byId('agent-inspect').addEventListener('click', inspectAgent); byId('agent-facts').addEventListener('toggle', renderAgent, true);
   byId('agent-refresh').addEventListener('click', refreshRoster); byId('agent-new').addEventListener('click', () => actions.prepareText('/agent new'));
-  byId('primary-earlier').addEventListener('click', () => { void loadPrimaryHistory(primaryCursor ?? undefined); }); byId('agent-earlier').addEventListener('click', () => { void loadAgentHistory().catch(showAgentError); });
+  byId('primary-earlier').addEventListener('click', () => { void loadPrimaryHistory(primaryCursor ?? undefined); }); byId('agent-earlier').addEventListener('click', () => { void loadAgentHistory().catch(showError); });
   byId('primary-stop').addEventListener('click', () => { const target = primaryTarget(); if (target?.kind !== 'primary') return; setText(byId('primary-receipt'), 'Stop requested'); void operation('primary.stop', `/api/primaries/${encodeURIComponent(target.key)}/stop`, {epoch: target.epoch}, target).then(showOperation).catch(showError); });
   byId('agent-abort').addEventListener('click', () => { const identity = selectedAgent(); if (!identity) return; modal.confirm('Abort selected agent', `${identity}\nThis requests foreground abort only. Background work and timers remain separate.`, async () => { setText(byId('agent-receipt'), 'Abort requested'); showOperation(await operation('agent.abort', `/api/agents/${encodeURIComponent(identity)}/abort`, {background: false}, {kind: 'agent', identity})); }, 'Abort'); });
-  document.addEventListener('keydown', event => { if (event.metaKey && event.key.toLowerCase() === 'k') { event.preventDefault(); if (!modal.openNow) actions.palette(); } });
-  window.addEventListener('resize', () => { primaryComposer.resize(); agentComposer.resize(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && drawerOpen && !modal.openNow) { event.preventDefault(); toggleSidebar(false); return; } if (event.metaKey && event.key.toLowerCase() === 'k') { event.preventDefault(); if (!modal.openNow) actions.palette(); } });
+  window.addEventListener('resize', () => { renderNavigation(); primaryComposer.resize(); agentComposer.resize(); roster.schedule(); });
   window.addEventListener('beforeunload', event => { if (primaryComposer.unsaved || agentComposer.unsaved) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && state.workspace?.panelVisible) { hiddenPanel = true; void selection({panelVisible: false}).catch(showError); }
     else if (!document.hidden && hiddenPanel) { hiddenPanel = false; void selection({panelVisible: true}).catch(showError); }
   });
 }
+async function bootstrap(): Promise<void> {
+  const workspace = new URL(location.href).searchParams.get('workspace');
+  const data = await hydrateVisible(await request<Bootstrap>(`/api/bootstrap${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`));
+  snapshot = data; state = replaceSnapshot(state, data);
+  const url = new URL(location.href); url.searchParams.set('workspace', data.workspace.id); history.replaceState(null, '', url);
+}
 async function start(): Promise<void> {
-  bind();
+  bind(); renderNavigation();
   try {
-    await authenticate(); const workspace = new URL(location.href).searchParams.get('workspace');
-    const data = await hydrateVisible(await request<Bootstrap>(`/api/bootstrap${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`));
-    snapshot = data; state = replaceSnapshot(state, data);
-    const url = new URL(location.href); url.searchParams.set('workspace', data.workspace.id); history.replaceState(null, '', url);
-    connected = true; renderAll(); stream(); await loadPrimaryHistory();
+    await authenticate(); await refreshVisible(bootstrap, loadPrimaryHistory, showError);
+    renderAll(); await stream(); connectionRecovery.healthy();
     document.dispatchEvent(new Event('ui-ready')); if (!primary()) actions.projectPicker();
   } catch (error) {
-    disconnected();
-    if (error instanceof ApiError && error.view.code === 'unauthorized') { byId('connection').replaceChildren(element('span', undefined, 'Open the launch link from this Mac'), button('Retry', () => location.reload())); }
-    else showError(error);
+    connectionRecovery.lost(error);
   }
 }
 void start();

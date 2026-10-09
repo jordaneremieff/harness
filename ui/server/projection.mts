@@ -360,6 +360,8 @@ export function projectRoster(raw: unknown): CachedRoster {
       bytes += size; rows.push(row);
     }
     const result: CachedRoster = {rows, stale: source.stale !== false, ...(typeof source.observedAt === 'string' ? {observedAt: safeText(source.observedAt, 256)} : {}), scan: rosterScan(source.scan, omitted)};
+    const failure = object(source.scan).error;
+    if (result.scan.state === 'failed' && typeof failure === 'string' && failure) result.error = {code: 'host_unavailable', message: safeText(failure, 1024), retry: 'read'};
     rosterCursor(source, result); return result;
   } catch { return {rows: [], stale: true, scan: {state: 'failed', complete: false, visited: 0, skipped: 0, omitted: 1}}; }
 }

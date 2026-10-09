@@ -104,6 +104,9 @@ test('roster projection preserves coverage and capabilities without raw catalog 
   assert.equal(roster.rows[0]?.capabilities?.input, true); assert.equal(roster.scan.complete, true); assert.equal(roster.stale, false);
   assert.doesNotMatch(JSON.stringify(roster), /databasePath|apiKey/);
   const partial = projectRoster({rows: [{identity: 1}], scan: {complete: true}}); assert.equal(partial.scan.complete, false); assert.equal(partial.scan.omitted, 1);
+  const failed = projectRoster({rows: [], scan: {state: 'failed', complete: false, error: 'Catalog worker failed'}});
+  assert.equal(failed.error?.message, 'Catalog worker failed'); assert.equal(failed.error?.retry, 'read');
+  assert.equal(projectRoster({rows: [], scan: {state: 'ready', complete: true, error: 'stale text'}}).error, undefined);
 });
 
 test('safe omission parts and prior coverage remain stable through repeated message and entry projection', () => {

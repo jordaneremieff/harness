@@ -48,13 +48,13 @@ const literal = (value: unknown): string => JSON.stringify(value);
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
 type PickerPage = Pick<Page, "evaluate" | "waitFor">;
 async function click(page: PickerPage, selector: string): Promise<void> {
-  await page.evaluate(`(()=>{const node=document.querySelector(${literal(selector)});if(!node||node.disabled||node.hidden)throw new Error('Control unavailable: '+${literal(selector)});node.click();})()`);
+  await page.evaluate(`(()=>{const node=document.querySelector(${literal(selector)});if(!node||node.disabled||node.closest('[hidden]'))throw new Error('Control unavailable: '+${literal(selector)});node.click();})()`);
 }
 async function button(page: PickerPage, text: string): Promise<void> {
   await page.evaluate(`(()=>{const node=Array.from(document.querySelectorAll('button')).find(n=>n.textContent.trim()===${literal(text)}&&!n.closest('[hidden]'));if(!node)throw new Error('Button unavailable: '+${literal(text)});node.click();})()`);
 }
 async function text(page: PickerPage, selector: string, value: string): Promise<void> {
-  await page.evaluate(`(()=>{const node=document.querySelector(${literal(selector)});if(!node)throw new Error('Editor unavailable');node.focus();node.value=${literal(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await page.evaluate(`(()=>{const node=document.querySelector(${literal(selector)});if(!node||node.disabled||node.closest('[hidden]'))throw new Error('Editor unavailable: '+${literal(selector)});node.focus();node.value=${literal(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);
 }
 async function field(page: PickerPage, label: string, value: string): Promise<void> {
   await page.evaluate(`(()=>{const caption=Array.from(document.querySelectorAll('#modal[open] label')).find(n=>n.textContent===${literal(label)});const node=caption&&document.getElementById(caption.htmlFor);if(!node)throw new Error('Field unavailable: '+${literal(label)});node.focus();node.value=${literal(value)};node.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -105,10 +105,31 @@ async function fixturePresentation(page: Page): Promise<void> {
   }))()`);
   assertFixturePresentation(value);
 }
+/** Routine draft persistence is silent; only exceptions may occupy the save status. */
+export function assertQuietSave(status: string): void {
+  assert(!/\bSaved\b/.test(status), `Routine save text is visible: ${status}`);
+  assert(!status.includes("Draft not saved") && !status.includes("Draft changed in another tab"), `Draft persistence exception: ${status}`);
+}
+type Recorded = { kind: "draft" | "input"; path: string; body: Record<string, unknown>; status?: number; error?: unknown; data?: Record<string, unknown> };
+/** Accepts only a completed HTTP record whose operation state is accepted. */
+export function assertAdmitted(record: Recorded | undefined): void {
+  assert(record, "No fixture input request was recorded");
+  assert.equal(record.error, undefined, `Fixture input refused: ${JSON.stringify(record.error)}`);
+  assert.equal(record.data?.state, "accepted", `Fixture input not admitted: ${JSON.stringify(record.data)}`);
+}
+async function waitRecord(page: Page, kind: Recorded["kind"], predicate: string, timeoutMs = 10_000): Promise<Recorded> {
+  return page.evaluate<Recorded>(`new Promise((resolve,reject)=>{
+    const match=record=>record.kind===${literal(kind)}&&record.status!==undefined&&(${predicate})(record);
+    const found=(window.__acceptanceRecords??[]).find(match);if(found){resolve(found);return;}
+    const cleanup=()=>{clearTimeout(timer);window.removeEventListener('acceptance-record',received);};
+    const received=event=>{if(match(event.detail)){cleanup();resolve(event.detail);}};
+    const timer=setTimeout(()=>{cleanup();reject(new Error('Acknowledged '+${literal(kind)}+' record timeout'));},${timeoutMs});
+    window.addEventListener('acceptance-record',received);
+  })`, timeoutMs + 1000);
+}
 async function saved(page: Page, value: string): Promise<void> {
-  await page.waitFor(`document.querySelector('#primary-save')?.textContent.startsWith('Saved') || document.querySelector('#primary-save')?.textContent.includes('Draft changed in another tab')`);
-  const status = await page.evaluate<string>("document.querySelector('#primary-save').textContent");
-  assert.match(status, /^Saved(?: ·|$)/, "Single-tab draft persistence did not reach a saved acknowledgment");
+  await waitRecord(page, "draft", `record=>!record.error&&record.data?.text===${literal(value)}`);
+  assertQuietSave(await page.evaluate<string>("document.querySelector('#primary-save').textContent"));
   const state = await snapshot(page); const target = primary(state);
   const draft = state.targets?.find((item) => item.target.kind === "primary" && item.target.key === target.key && item.target.epoch === target.epoch)?.draft;
   assert.equal(draft?.text, value, "Backend draft does not match the editor");
@@ -118,10 +139,16 @@ async function prompt(page: Page, value: string): Promise<void> {
   await text(page, editor, value);
   await saved(page, value);
   await page.waitFor(`!document.querySelector('#primary-send')?.disabled`);
+  const sent = await page.evaluate<number>("(window.__acceptanceRecords??[]).length");
   await click(page, "#primary-send");
-  await page.waitFor(`document.querySelector('#primary-save')?.textContent.includes('Admitted') || document.querySelector('#primary-receipt')?.textContent.includes('Send not confirmed') || document.querySelector('#primary-receipt')?.textContent.includes('refused')`);
-  const receipt = await page.evaluate<string>("document.querySelector('#primary-save').textContent+' '+document.querySelector('#primary-receipt').textContent");
-  assert(receipt.includes("Admitted"), `Fixture input not admitted: ${receipt}`);
+  assertAdmitted(await waitRecord(page, "input", `record=>(window.__acceptanceRecords??[]).indexOf(record)>=${sent}&&record.body.message===${literal(value)}`));
+  await page.waitFor(`!document.querySelector('#primary-receipt')?.textContent.includes('Send not confirmed')`);
+}
+
+async function showPrimary(page: Page): Promise<void> {
+  if (!(await page.evaluate<boolean>("document.querySelector('#primary').hidden"))) return;
+  await click(page, "#primary-row");
+  await page.waitFor(`!document.querySelector('#primary')?.hidden`);
 }
 
 type RunCheck = (name: string, action: () => Promise<void>, scope?: Check["scope"]) => Promise<void>;
@@ -219,14 +246,15 @@ export async function runSmoke(config: Options): Promise<Report> {
   };
   try {
     await page.send("Page.addScriptToEvaluateOnNewDocument", { source: `(()=>{
-      window.__acceptanceInputs=[];
+      window.__acceptanceInputs=[];window.__acceptanceRecords=[];
       const nativeFetch=window.fetch.bind(window);window.fetch=async(...args)=>{
         const path=new URL(typeof args[0]==='string'?args[0]:args[0].url,location.href).pathname;
-        const input=/^\\/api\\/primaries\\/[^/]+\\/inputs$/.test(path)&&args[1]?.method==='POST';
-        const record=input?{path,body:JSON.parse(args[1].body)}:undefined;
-        if(record)window.__acceptanceInputs.push(record);
+        const method=args[1]?.method;
+        const kind=/^\\/api\\/primaries\\/[^/]+\\/inputs$/.test(path)&&method==='POST'?'input':/\\/draft$/.test(path)&&method==='PUT'?'draft':undefined;
+        const record=kind?{kind,path,body:JSON.parse(args[1].body)}:undefined;
+        if(record){window.__acceptanceRecords.push(record);if(kind==='input')window.__acceptanceInputs.push(record);}
         const response=await nativeFetch(...args);
-        if(record){const result=await response.clone().json();record.status=response.status;record.error=result.ok?undefined:result.error;}
+        if(record){const result=await response.clone().json();record.error=result.ok?undefined:result.error;record.data=result.ok?result.data:undefined;record.status=response.status;window.dispatchEvent(new CustomEvent('acceptance-record',{detail:record}));}
         return response;
       };
       const Native=window.EventSource;window.__acceptanceStreams=[];window.__acceptanceRecoveries=[];
@@ -259,10 +287,13 @@ export async function runSmoke(config: Options): Promise<Report> {
       assert.equal(await page.evaluate("document.querySelector('#primary-editor').value"), draftText);
       await saved(page, draftText);
     }, "fixture");
-    await check("7.1 primary remains separate from the agent panel", async () => {
-      const hidden = await page.evaluate<boolean>("document.querySelector('#agent-panel').hidden");
-      if (hidden) await click(page, "#agents-button");
-      await page.waitFor(`!document.querySelector('#agent-panel')?.hidden`);
+    await check("7.1 left navigation and the selected primary conversation stay separate", async () => {
+      if (await page.evaluate<boolean>("document.querySelector('#sidebar').hidden")) await click(page, "#sidebar-show");
+      await page.waitFor(`!document.querySelector('#sidebar')?.hidden`);
+      const layout = await page.evaluate<{ sidebar: number; main: number; primary: boolean }>("({sidebar:document.querySelector('#sidebar').getBoundingClientRect().left,main:document.querySelector('#workspace').getBoundingClientRect().left,primary:!document.querySelector('#primary').hidden})");
+      assert.equal(layout.sidebar, 0, "Navigation is not on the left edge");
+      assert(layout.main > layout.sidebar, "Main conversation is not right of the navigation");
+      assert.equal(layout.primary, true, "Primary conversation is not visible");
       assert.equal(await page.evaluate("document.querySelector('#primary-editor').value"), draftText);
       assert.equal(primary(await snapshot(page)).key, selected.key);
     });
@@ -271,7 +302,6 @@ export async function runSmoke(config: Options): Promise<Report> {
       await check("7.2 fixture prompt admission, thinking and tool output", async () => {
         await prompt(page, config.prompt);
         await page.waitFor(`document.querySelector('#primary-transcript .tool-card') && document.querySelector('#primary-transcript .thinking')`);
-        await page.waitFor(`document.querySelector('#primary-save')?.textContent.includes('Admitted')`);
         await page.evaluate(`(()=>{const thinking=document.querySelector('#primary-transcript .thinking');const tool=document.querySelector('#primary-transcript .tool-card');for(const card of [thinking,tool]){const trigger=card.querySelector('summary,button');if(trigger)trigger.click();}})()`);
         await fixturePresentation(page);
       }, "fixture");
@@ -292,18 +322,20 @@ export async function runSmoke(config: Options): Promise<Report> {
       report.roster = roster;
       if (roster.scan.state === "failed") throw new Unavailable(`Roster discovery failed: ${roster.error?.message ?? "no usable catalog baseline"}`);
       if (!roster.rows.length) throw new Unavailable(`No selectable retained agent in the cached roster; omitted ${roster.scan.omitted}, discovery complete ${roster.scan.complete}`);
+      const primaryDraft = await page.evaluate<string>("document.querySelector('#primary-editor').value");
       await page.evaluate(`(()=>{const row=document.querySelector('#roster .row-select');if(!row)throw new Error('No selectable roster row');row.click();})()`);
       await page.waitFor(`!document.querySelector('#agent-detail')?.hidden && document.querySelector('#agent-identity')?.textContent`);
       const identity = await page.evaluate<string>("document.querySelector('#agent-identity').textContent");
       assert(roster.rows.some((row) => row.identity === identity), "Full known agent identity is not visible");
       assert.equal(primary(await snapshot(page)).key, selected.key);
-      if (config.fake) {
-        await text(page, editor, draftText); await saved(page, draftText);
-        await text(page, "#agent-editor", "Distinct agent draft, never sent");
-        assert.equal(await page.evaluate("document.querySelector('#primary-editor').value"), draftText);
-      }
+      assert.equal(await page.evaluate("document.querySelector('#primary').hidden"), true, "Primary conversation stays visible beside the selected agent");
+      if (config.fake) await text(page, "#agent-editor", "Distinct agent draft, never sent");
       await capture("04-agent-detail");
+      await showPrimary(page);
+      assert.equal(await page.evaluate("document.querySelector('#agent-detail').hidden"), true, "Agent conversation stays visible after primary selection");
+      assert.equal(await page.evaluate("document.querySelector('#primary-editor').value"), primaryDraft, "Primary draft changed across agent selection");
     }, config.fake ? "fixture" : "browser");
+    await showPrimary(page);
     unavailable("7.3 native steer/follow-up/abort and frame scroll stability", "Requires a prepared compatible disposable Durable agent and separately authorized native operations.");
     if (config.fake) await check("7.4 refresh preserves primary identity and saved draft", async () => {
       await text(page, editor, draftText); await saved(page, draftText);
@@ -313,13 +345,14 @@ export async function runSmoke(config: Options): Promise<Report> {
       await page.waitFor(`document.querySelector('#primary-editor')?.value===${literal(draftText)}`);
       const state = await snapshot(page); assert.equal(primary(state).key, selected.key); assert.equal(primary(state).epoch, selected.epoch);
     }, "fixture");
-    await check("7.4 browser event transport disconnect and explicit reconnect", async () => {
+    await check("7.4 browser event transport loss blocks Send and recovers automatically", async () => {
+      const streams = await page.evaluate<number>("window.__acceptanceStreams.length");
       await page.evaluate(`(()=>{for(const source of window.__acceptanceStreams){source.close();source.dispatchEvent(new Event('error'));}})()`);
-      await page.waitFor(`!document.querySelector('#connection')?.hidden`);
+      assert.equal(await page.evaluate("document.querySelector('#primary-send').disabled"), true, "Send stayed enabled after stream loss");
       assert.equal(await page.evaluate("document.querySelector('#primary-editor').value"), draftText);
+      await page.evaluate(`new Promise((resolve,reject)=>{const started=Date.now();const step=()=>{const source=window.__acceptanceStreams[${streams}];if(source&&source.readyState===1){resolve(true);return;}if(Date.now()-started>10000){reject(new Error('Automatic stream recovery timeout'));return;}requestAnimationFrame(step);};step();})`, 11000);
+      await page.waitFor(`document.querySelector('#connection')?.hidden && document.querySelector('#workspace-alert')?.hidden`);
       await capture("05-reconnect");
-      await button(page, "Reconnect");
-      await page.waitFor(`document.querySelector('#connection')?.hidden`);
       assert.equal(primary(await snapshot(page)).key, selected.key);
     });
     unavailable("7.4 uncertain input, replay gap and host mismatch", "No deterministic transport injection for these states supplied; disconnect alone does not establish them.");

@@ -55,7 +55,7 @@ export type PrimaryView = {key: string; epoch: number; cwd: string;
 export type Appearance = 'dark' | 'light' | 'system';
 /** Shared tabs use compare-and-set revisions for view state. */
 export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
-  panelVisible?: boolean; appearance?: Appearance};
+  panelVisible?: boolean; sidebarVisible?: boolean; appearance?: Appearance};
 export type DraftView = {revision: number; text: string; mode: string; persisted: true};
 export type ReadingView = {revision: number; anchorId: string | null; offsetPx: number; followTail: boolean};
 export type PresentationView = {revision: number; expanded: string[]; showThinking: boolean};

@@ -1,5 +1,12 @@
 import type { Workspace } from '../shared/api.ts';
 import type { SelectionChange } from './actions.ts';
+export function navigationState(workspace: Workspace | undefined, narrow: boolean, drawerOpen = false): {sidebarVisible: boolean; agentSelected: boolean; editor: 'primary-editor' | 'agent-editor'} {
+  const agentSelected = workspace?.selectedTarget?.kind === 'agent';
+  return {sidebarVisible: narrow ? drawerOpen : workspace?.sidebarVisible !== false, agentSelected, editor: agentSelected ? 'agent-editor' : 'primary-editor'};
+}
+export function visibleReceipt(workspace?: Workspace): 'primary-receipt' | 'agent-receipt' {
+  return workspace?.selectedTarget?.kind === 'agent' ? 'agent-receipt' : 'primary-receipt';
+}
 export type SelectionHooks = {current: () => Workspace | undefined; save: (workspace: Workspace, change: SelectionChange) => Promise<Workspace>; reload: () => Promise<void>; paint: (workspace: Workspace, pending: boolean) => void};
 /** Cached selection appears immediately; backend revisions advance in one ordered lane. */
 export class SelectionQueue {

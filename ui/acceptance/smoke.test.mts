@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Bootstrap } from "../shared/api.ts";
-import { assertFixturePresentation, openProject, options, requireFake, type Options } from "./smoke.mts";
+import { assertAdmitted, assertFixturePresentation, assertQuietSave, openProject, options, requireFake, type Options } from "./smoke.mts";
 
 function setupPage(calls: string[], provider = "acceptance-fixture") {
   const state = { workspace: { primaryKey: "fixture" }, primaries: [{ key: "fixture", model: { provider } }] } as Bootstrap;
@@ -59,6 +59,23 @@ test("fixture presentation refuses empty tool result headers and false send unce
   assert.throws(() => assertFixturePresentation({ emptyToolResultHeaders: 0, inputReceipt: "Send not confirmed" }), /unconfirmed send/);
   assert.throws(() => assertFixturePresentation({ emptyToolResultHeaders: 0, inputReceipt: "Admitted", controlReceipt: "Target exited before a receipt arrived" }), /provisional error/);
   assert.doesNotThrow(() => assertFixturePresentation({ emptyToolResultHeaders: 0, inputReceipt: "Admitted", controlReceipt: "Control completed" }));
+});
+
+test("draft acknowledgment is quiet: routine Saved text and persistence exceptions fail", () => {
+  assert.doesNotThrow(() => assertQuietSave(""));
+  assert.doesNotThrow(() => assertQuietSave("Saving draft…"));
+  assert.throws(() => assertQuietSave("Saved"), /Routine save text/);
+  assert.throws(() => assertQuietSave("Saved · Admitted"), /Routine save text/);
+  assert.throws(() => assertQuietSave("Draft not saved · offline"), /persistence exception/);
+  assert.throws(() => assertQuietSave("Draft changed in another tab · Review"), /persistence exception/);
+});
+
+test("fixture admission relies on the acknowledged operation state, not visible text", () => {
+  const record = { kind: "input" as const, path: "/api/primaries/p/inputs", body: { message: "no-dialog" }, status: 200 };
+  assert.doesNotThrow(() => assertAdmitted({ ...record, data: { state: "accepted" } }));
+  assert.throws(() => assertAdmitted(undefined), /No fixture input/);
+  assert.throws(() => assertAdmitted({ ...record, data: { state: "uncertain" } }), /not admitted/);
+  assert.throws(() => assertAdmitted({ ...record, status: 409, error: { code: "stale_epoch" } }), /refused/);
 });
 
 test("fixture prompt guard refuses absent and real providers and checks selected primary", () => {

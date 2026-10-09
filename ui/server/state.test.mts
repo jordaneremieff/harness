@@ -22,7 +22,7 @@ test('private state survives restart, retains distinct epochs, and publishes onl
   assert.equal(draft.persisted, true);
   await store.putReading(workspace.id, target.targetKey, {expectedRevision: 0, anchorId: 'message-a', offsetPx: 24, followTail: false});
   await store.putPresentation(workspace.id, target.targetKey, {expectedRevision: 0, expanded: ['call-a', 'call-a'], showThinking: true});
-  await store.updateSelection(workspace.id, {expectedRevision: 0, selectedTarget: target.target, panelVisible: false, appearance: 'light'});
+  await store.updateSelection(workspace.id, {expectedRevision: 0, selectedTarget: target.target, panelVisible: false, sidebarVisible: false, appearance: 'light'});
   const other = await store.target(workspace.id, {kind: 'primary', key: 'primary', epoch: 2});
   assert.equal(other.draft.text, ''); assert.notEqual(target.targetKey, other.targetKey);
   assert.equal((await stat(root)).mode & 0o777, 0o700);
@@ -36,7 +36,21 @@ test('private state survives restart, retains distinct epochs, and publishes onl
     assert.equal(saved.draft.text, 'exact\n draft '); assert.equal(saved.reading.anchorId, 'message-a');
     assert.deepEqual(saved.presentation?.expanded, ['call-a']);
     assert.equal(reopened.snapshot(workspace.id).workspace.appearance, 'light');
+    assert.equal(reopened.snapshot(workspace.id).workspace.sidebarVisible, false);
   } finally { await reopened.close(); }
+});
+
+test('sidebar preference is optional, boolean and independent of observation', async t => {
+  const {store, workspace} = await setup(t);
+  assert.equal(workspace.sidebarVisible, undefined);
+  const selected = await store.updateSelection(workspace.id, {expectedRevision: 0, sidebarVisible: false});
+  assert.equal(selected.sidebarVisible, false); assert.equal(selected.panelVisible, true);
+  const observed = await store.updateSelection(workspace.id, {expectedRevision: 1, panelVisible: false});
+  assert.equal(observed.sidebarVisible, false);
+  for (const value of [null, 'false', 0, {}]) {
+    await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 2, sidebarVisible: value as boolean}), /sidebar visibility/);
+  }
+  assert.equal((await store.workspace(workspace.id)).revision, 2);
 });
 
 test('draft writes serialize compare-and-set, errors retain the acknowledged draft', async t => {

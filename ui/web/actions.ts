@@ -4,6 +4,17 @@ import type { Modal } from './modal.ts';
 import { operation, request } from './transport.ts';
 import type { Composer } from './composer.ts';
 import { navigateOptions } from './list-navigation.ts';
+import type { CommandInventory, CommandOption } from './command-menu-state.ts';
+export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
+type ResourceKind = 'commands' | 'models' | 'thinking';
+const appCommands: CommandOption[] = [
+  {name: 'new', description: 'Start a new session', source: 'App'},
+  {name: 'resume', description: 'Open a saved session', source: 'App'},
+  {name: 'fork', description: 'Start a branch from a user message', source: 'App'},
+  {name: 'compact', description: 'Summarize the session context', source: 'App'},
+  {name: 'model', description: 'Choose a model for the primary', source: 'App'},
+  {name: 'thinking', description: 'Choose the thinking level', source: 'App'},
+];
 
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; modal: Modal;
@@ -12,6 +23,9 @@ export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
   private resourceTarget = '';
+  private resourceVersion = 0;
+  private commandsLoaded = false;
+  private commandsIncomplete = false;
   private commandPaint?: () => void;
   private displayedHandoffs = new Set<string>();
   private ctx: ActionContext;
@@ -21,20 +35,71 @@ export class Actions {
   private observeResources(primary?: PrimaryView): boolean {
     const target = primary ? `${primary.key}:${primary.epoch}:${primary.lifecycle}` : '';
     if (this.resourceTarget === target) return false;
-    this.resourceTarget = target; this.resources.clear(); this.commands = []; this.commandPaint?.(); return true;
+    this.resourceTarget = target; this.resourceVersion++; this.resources.clear(); this.commands = []; this.commandsLoaded = false; this.commandsIncomplete = false; this.commandsChanged(); return true;
   }
-  async load(kind: 'commands' | 'models' | 'thinking'): Promise<ResourcePage> {
-    const primary = this.ctx.primary(); this.observeResources(primary);
-    if (primary?.lifecycle !== 'ready') return {items: [], nextCursor: null, revision: ''};
-    const key = `${primary.key}:${primary.epoch}:${kind}`;
+  private commandsChanged(): void { this.commandPaint?.(); this.ctx.composer.commandsChanged(); }
+  commandOptions(): CommandInventory {
+    const primary = this.ctx.primary();
+    if (primary?.lifecycle !== 'ready') return {items: [], state: 'unavailable'};
+    if (this.resourceTarget !== `${primary.key}:${primary.epoch}:${primary.lifecycle}` || !this.commandsLoaded) return {items: [], state: 'loading'};
+    const items = new Map<string, CommandOption>(this.commands.map(item => [item.name, {...item}]));
+    for (const item of appCommands) items.set(item.name, {...item});
+    return {items: [...items.values()], state: 'ready', ...(this.commandsIncomplete ? {incomplete: true} : {})};
+  }
+  private currentResources(primary: PrimaryView, version: number): boolean {
+    const current = this.ctx.primary();
+    return this.resourceVersion === version && current?.lifecycle === 'ready' && current.key === primary.key && current.epoch === primary.epoch;
+  }
+  private resourcePage(primary: PrimaryView, kind: ResourceKind, cursor?: string): Promise<ResourcePage> {
+    const key = `${primary.key}:${primary.epoch}:${kind}:page:${cursor ?? ''}`;
     let cache = this.resources.get(key);
     if (!cache) {
-      cache = request<ResourcePage>(this.path(primary, `resources/${kind}?limit=100`)); this.resources.set(key, cache);
-      const pending = cache; cache.catch(() => { if (this.resources.get(key) === pending) this.resources.delete(key); });
+      cache = request<ResourcePage>(this.path(primary, `resources/${kind}?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`));
+      this.resources.set(key, cache); const pending = cache;
+      void cache.catch(() => { if (this.resources.get(key) === pending) this.resources.delete(key); });
     }
-    const result = await cache;
-    if (kind === 'commands' && this.resources.get(key) === cache && this.ctx.primary()?.lifecycle === 'ready' && this.ctx.primary()?.key === primary.key && this.ctx.primary()?.epoch === primary.epoch) { this.commands = result.items as CommandView[]; this.commandPaint?.(); }
+    return cache;
+  }
+  private async loadCommandInventory(primary: PrimaryView, version: number): Promise<ResourcePage> {
+    const result = {items: [] as CommandView[], nextCursor: null as string | null, revision: ''};
+    for (let pageIndex = 0; pageIndex < COMMAND_INVENTORY_PAGE_LIMIT; pageIndex++) {
+      if (!this.currentResources(primary, version)) return {items: [], nextCursor: null, revision: ''};
+      const page = await this.resourcePage(primary, 'commands', result.nextCursor ?? undefined);
+      if (!this.currentResources(primary, version)) return {items: [], nextCursor: null, revision: ''};
+      result.items = [...result.items, ...page.items as CommandView[]]; result.nextCursor = page.nextCursor; result.revision = page.revision;
+      this.commands = result.items; this.commandPaint?.();
+      if (!result.nextCursor) break;
+    }
     return result;
+  }
+  async load(kind: ResourceKind): Promise<ResourcePage> {
+    const primary = this.ctx.primary(); this.observeResources(primary);
+    if (primary?.lifecycle !== 'ready') return {items: [], nextCursor: null, revision: ''};
+    const version = this.resourceVersion; const key = `${primary.key}:${primary.epoch}:${kind}`;
+    let cache = this.resources.get(key);
+    if (!cache) {
+      if (kind === 'commands' && this.commandsLoaded) { this.commandsLoaded = false; this.commandsChanged(); }
+      cache = kind === 'commands' ? this.loadCommandInventory(primary, version) : this.resourcePage(primary, kind);
+      this.resources.set(key, cache); const pending = cache;
+      void cache.catch(() => { if (this.resources.get(key) === pending) this.resources.delete(key); });
+    }
+    try {
+      const result = await cache;
+      if (kind === 'commands' && this.resources.get(key) === cache && this.currentResources(primary, version)) {
+        this.commands = result.items as CommandView[]; this.commandsLoaded = true; this.commandsIncomplete = !!result.nextCursor; this.commandsChanged();
+      }
+      return result;
+    } catch (error) {
+      if (kind === 'commands' && this.currentResources(primary, version)) { this.commandsLoaded = true; this.commandsIncomplete = true; this.commandsChanged(); }
+      throw error;
+    }
+  }
+  private async moreCommands(primary: PrimaryView | undefined, version: number, page: ResourcePage): Promise<void> {
+    if (!primary || !page.nextCursor || !this.currentResources(primary, version)) return;
+    const next = await this.resourcePage(primary, 'commands', page.nextCursor);
+    if (!this.currentResources(primary, version)) return;
+    this.commands = [...page.items as CommandView[], ...next.items as CommandView[]]; page.items = this.commands; page.nextCursor = next.nextCursor;
+    this.commandsIncomplete = !!next.nextCursor; this.commandsChanged();
   }
   warm(): void {
     if (this.observeResources(this.ctx.primary())) void this.load('commands').catch(() => undefined);
@@ -149,7 +214,7 @@ export class Actions {
   palette(): void {
     const modal = this.ctx.modal; modal.open('Commands'); const token = modal.token;
     const search = input('Search actions and resources'); const list = element('div', 'options'); modal.body.append(search.label, search.field, list);
-    const builtins: [string, () => void][] = [['New session', () => this.newSession()], ['Resume saved session', () => this.projectPicker()], ['Fork', () => this.forkPicker()], ['Compact', () => this.compact()], ['Review retry prompt', () => this.retryOutput()], ['Automatic retry', () => this.automaticSettings('autoRetry')], ['Automatic compaction', () => this.automaticSettings('autoCompaction')], ['Model', () => this.modelPicker()], ['Thinking', () => this.thinkingPicker()], ['Agents', () => { modal.close(); void this.ctx.selection({panelVisible: true}); }], ['Appearance', () => this.appearance()], ['Saved drafts and input copies', () => this.ctx.recovery()], ['Continue in terminal', () => this.handoff()], ['Find in loaded messages', () => this.find()], ['Help', () => this.help()]];
+    const builtins: [string, () => void][] = [['New session', () => this.newSession()], ['Resume saved session', () => this.projectPicker()], ['Fork', () => this.forkPicker()], ['Compact', () => this.compact()], ['Review retry prompt', () => this.retryOutput()], ['Automatic retry', () => this.automaticSettings('autoRetry')], ['Automatic compaction', () => this.automaticSettings('autoCompaction')], ['Model', () => this.modelPicker()], ['Thinking', () => this.thinkingPicker()], ['Agents', () => { modal.close(); void this.ctx.selection({sidebarVisible: true}); }], ['Appearance', () => this.appearance()], ['Saved drafts and input copies', () => this.ctx.recovery()], ['Continue in terminal', () => this.handoff()], ['Find in loaded messages', () => this.find()], ['Help', () => this.help()]];
     const paint = () => {
       const query = search.field.value.toLocaleLowerCase(); list.replaceChildren();
       for (const [name, action] of builtins) if (name.toLocaleLowerCase().includes(query)) list.append(button(`${name} · Action`, action));
@@ -163,12 +228,10 @@ export class Actions {
     paint(); search.field.focus(); void this.load('commands').then(page => {
       if (!modal.owns(token)) return;
       paint(); if (page.nextCursor) {
+        const primary = this.ctx.primary(); const version = this.resourceVersion;
         const more = button('More discovered commands', () => { more.disabled = true; void modal.run(async () => {
-          try {
-            const primary = this.ctx.primary(); if (!primary) return;
-            const next = await request<ResourcePage>(this.path(primary, `resources/commands?limit=100&cursor=${encodeURIComponent(page.nextCursor ?? '')}`));
-            this.commands = [...this.commands, ...next.items as CommandView[]]; page.nextCursor = next.nextCursor; more.hidden = !next.nextCursor; paint();
-          } finally { more.disabled = false; }
+          try { await this.moreCommands(primary, version, page); more.hidden = !page.nextCursor; }
+          finally { more.disabled = false; }
         }, false); }); modal.body.append(more);
       }
     }).catch(error => { if (modal.owns(token)) modal.error(error); });
@@ -187,8 +250,14 @@ export class Actions {
     if (!composer.target || this.ctx.primary()?.lifecycle !== 'ready') {
       this.projectPicker(); this.ctx.modal.body.append(element('p', 'secondary', 'Open a primary, then use this text action. Your agent draft stays unchanged.'), element('pre', undefined, text)); return;
     }
-    if (!composer.editor.value) { composer.setText(text); composer.editor.focus(); return; }
-    this.ctx.modal.confirm('Use primary text action', 'Your current primary draft will be replaced. Copy it first if you need both texts.', async () => { composer.setText(text); composer.editor.focus(); }, 'Replace draft');
+    const target = {...composer.target}; const previousText = composer.editor.value;
+    const apply = async () => {
+      await this.ctx.selection({selectedTarget: target});
+      if (JSON.stringify(composer.target) !== JSON.stringify(target) || this.ctx.primary()?.lifecycle !== 'ready' || composer.editor.value !== previousText) return;
+      composer.setText(text); composer.editor.focus();
+    };
+    if (!composer.editor.value) { void this.ctx.modal.run(apply, false); return; }
+    this.ctx.modal.confirm('Use primary text action', 'Your current primary draft will be replaced. Copy it first if you need both texts.', apply, 'Replace draft');
     this.ctx.modal.body.append(element('pre', undefined, composer.editor.value), button('Copy draft', () => { void copy(composer.editor.value, this.ctx.modal.body); }));
   }
   private terminalOnly(name: string): void {

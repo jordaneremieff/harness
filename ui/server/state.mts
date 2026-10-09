@@ -62,19 +62,21 @@ async function syncDirectory(path: string): Promise<void> {
   const dir = await open(path, constants.O_RDONLY); try { await dir.sync(); } finally { await dir.close(); }
 }
 
-type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; appearance?: Appearance};
+type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; appearance?: Appearance};
 function validateSelection(input: SelectionInput): void {
       if (input.selectedTarget) validateTarget(input.selectedTarget);
       if (input.primaryKey !== undefined && (typeof input.primaryKey !== 'string' || input.primaryKey.length > 256)) throw new StateError('invalid_request', 'Invalid primary key');
       if (input.panelVisible !== undefined && typeof input.panelVisible !== 'boolean') throw new StateError('invalid_request', 'Invalid panel visibility');
+      if (input.sidebarVisible !== undefined && typeof input.sidebarVisible !== 'boolean') throw new StateError('invalid_request', 'Invalid sidebar visibility');
       if (input.appearance !== undefined && !['dark', 'light', 'system'].includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
-      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'appearance'];
+      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'appearance'];
       if (Object.keys(input).some(key => !allowed.includes(key))) throw new StateError('invalid_request', 'Unknown workspace field');
 }
 function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace {
       const value: Workspace = {...current, revision: current.revision + 1};
       if (input.primaryKey !== undefined) value.primaryKey = input.primaryKey;
       if (input.panelVisible !== undefined) value.panelVisible = input.panelVisible;
+      if (input.sidebarVisible !== undefined) value.sidebarVisible = input.sidebarVisible;
       if (input.appearance !== undefined) value.appearance = input.appearance;
       if (input.selectedTarget === null) delete value.selectedTarget;
       else if (input.selectedTarget !== undefined) value.selectedTarget = structuredClone(input.selectedTarget);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
 import { absoluteTime, relativeTime } from './format.ts';
-import { Roster } from './roster.ts';
+import { Roster, activityLine } from './roster.ts';
 
 function required<T>(value: T | undefined): T { assert.notEqual(value, undefined); return value as T; }
 class FakeNode {
@@ -38,7 +38,7 @@ class FakeNode {
     node.remove(); node.parentNode = parent; parent.children.splice(parent.children.indexOf(this) + 1, 0, node); node.moves++;
   }
   remove(): void { if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null; }
-  replaceChildren(): void { for (const child of [...this.children]) child.remove(); this.text = ''; }
+  replaceChildren(...nodes: FakeNode[]): void { for (const child of [...this.children]) child.remove(); this.text = ''; this.append(...nodes); }
   contains(node: FakeNode | null): boolean { return !!node && (node === this || this.children.some(child => child.contains(node))); }
   setAttribute(name: string, value: string): void { this.attributes[name] = value; }
   addEventListener(name: string, callback: () => void): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], callback]); }
@@ -73,12 +73,14 @@ test('roster has sibling native actions and preserves retained, idle and working
   assert.equal(stored.query('row-state').dataset.state, 'retained');
   assert.equal(stored.query('row-name').textContent, 'Agent');
   const select = stored.query('row-select'); const age = stored.query('row-age');
-  assert.equal(stored.tagName, 'div'); assert.equal(stored.attributes.role, 'group');
+  assert.equal(stored.tagName, 'div'); assert.equal(stored.attributes.role, 'listitem');
   assert.equal(select.tagName, 'button'); assert.equal(age.tagName, 'button');
   assert.equal(select.type, 'button'); assert.equal(age.type, 'button');
   assert.equal(select.parentNode, stored); assert.equal(age.parentNode, stored); assert.equal(select.contains(age), false);
   assert.match(select.attributes['aria-label'] ?? '', /stored/);
-  assert.equal(idle.attributes['aria-current'], 'true'); assert.equal(idle.query('row-select').attributes['aria-current'], 'true');
+  assert.equal(idle.attributes['aria-current'], undefined); assert.equal(idle.query('row-select').attributes['aria-current'], 'page');
+  assert.equal(stored.query('row-select').attributes['aria-current'], 'false');
+  assert.equal(select.children.length, 3); assert.match(stored.query('row-activity').textContent, /^stored/);
   assert.equal(age.tabIndex, 0); assert.equal(age.query('timestamp').textContent, '10m ago');
   assert.equal(age.query('timestamp').dateTime, '1970-01-01T00:00:00.000Z');
   assert.match(age.attributes['aria-description'] ?? '', /1969|1970/); assert.match(age.title, /1970-01-01T00:00:00.000Z/);
@@ -86,6 +88,37 @@ test('roster has sibling native actions and preserves retained, idle and working
   age.click(); assert.deepEqual(selected, []); assert.doesNotMatch(age.textContent, /ago/); assert.equal(age.dataset.absolute, 'true');
   age.click(); assert.equal(age.textContent, '10m ago'); assert.deepEqual(selected, []); assert.equal(age.dataset.absolute, 'false');
   select.click(); assert.deepEqual(selected, ['stored']);
+});
+test('activity line never repeats the status and keeps distinct details', () => {
+  const live = {identity: 's:2', storageId: 's', cwd: '/p', modifiedAt: 0, state: 'working', owner: 'here', availability: 'live', partial: false} as AgentRow;
+  assert.equal(activityLine(live, 'working'), 'working');
+  assert.equal(activityLine({...live, latestReply: 'Reviewing the diff'}, 'working'), 'working · Reviewing the diff');
+  assert.equal(activityLine({...live, currentTool: {name: 'read', argument: 'a.ts'}}, 'working'), 'working · read · a.ts');
+  assert.equal(activityLine({...live, latestReply: 'working'}, 'working'), 'working');
+  assert.equal(activityLine({...live, availability: 'stored'} as AgentRow, 'stored'), 'stored · working');
+});
+test('duplicate loaded names show distinguishing identity text on the name line', () => {
+  const fixture = setup(); const roster = new Roster(() => {}, () => {});
+  roster.set([row('storage:one'), row('storage:two'), row('unique', {name: 'Only'})]); fixture.flush();
+  const [one, two, unique] = fixture.node.children; assert.ok(one); assert.ok(two); assert.ok(unique);
+  assert.equal(one.query('row-heading').query('row-identity').textContent, 'one');
+  assert.equal(two.query('row-heading').query('row-identity').textContent, 'two');
+  assert.equal(unique.query('row-identity').hidden, true);
+  fixture.search.value = 'storage:one'; fixture.search.dispatch('input'); fixture.flush();
+  assert.equal(one.query('row-identity').hidden, false);
+  fixture.search.value = ''; roster.set([row('storage:one')]); fixture.flush();
+  assert.equal(one.query('row-identity').hidden, true);
+  roster.set([row('first:shared'), row('second:shared')]); fixture.flush();
+  assert.equal(fixture.node.children[0]?.query('row-identity').textContent, 'first:shared');
+  assert.equal(fixture.node.children[1]?.query('row-identity').textContent, 'second:shared');
+});
+test('empty roster discovery failure puts the reason and retry at the top', () => {
+  const fixture = setup(); const actions: Array<string | undefined> = [];
+  const roster = new Roster(() => {}, action => actions.push(action));
+  roster.set([], {stale: true, scan: {state: 'failed', complete: false, visited: 0, skipped: 0, omitted: 0}, error: {code: 'unavailable', message: 'Catalog could not be read', retry: 'read'}}); fixture.flush();
+  const failure = required(fixture.node.children[0]); assert.match(failure.textContent, /Catalog could not be read/);
+  required(failure.children.find(child => child.tagName === 'button')).click(); assert.deepEqual(actions, ['refresh']);
+  assert.equal(fixture.footer.children.some(child => child.tagName === 'button'), false);
 });
 test('keyed wrappers, actions, order and focused timestamps survive roster updates', t => {
   let clock = 600000; t.mock.method(Date, 'now', () => clock);

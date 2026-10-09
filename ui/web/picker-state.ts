@@ -29,6 +29,10 @@ export function sessionCoverage(list: SessionList, matches: number, search: stri
   const coverage = `${list.items.length} of ${list.total} shown${list.omitted ? ` · ${list.omitted} unavailable or outside the scan bound` : ''}`;
   return search.trim() ? `${matches} matches in loaded sessions · ${coverage}` : coverage;
 }
+export function sessionEmptyMessage(list: SessionList): string {
+  if (list.nextCursor) return 'No matches in loaded sessions. Use More to search more saved sessions.';
+  return list.items.length ? 'No saved sessions match this search.' : 'No saved sessions in this project.';
+}
 export function savedPathValid(path: string): boolean {
   return path.startsWith('/') && path.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(path);
 }

@@ -17,7 +17,7 @@ function contrast(a: string, b: string): number { const values = [luminance(a), 
 for (const [theme, selector] of [['dark', ':root'], ['light', ':root[data-appearance=light]'], ['system light', ':root[data-appearance=system]']]) {
   test(`${theme} normal and secondary text pass AA on rendered surfaces`, () => {
     const colors = palette(selector);
-    for (const foreground of ['text', 'secondary', 'muted', 'success', 'warning', 'danger', 'info', 'accent']) for (const background of ['canvas', 'surface', 'raised', 'user', 'custom']) {
+    for (const foreground of ['text', 'secondary', 'muted', 'success', 'warning', 'danger', 'info', 'accent']) for (const background of ['canvas', 'surface', 'raised', 'user', 'custom', 'sidebar', 'hover', 'selected']) {
       const ratio = contrast(colors.get(foreground), colors.get(background));
       assert.ok(ratio >= 4.5, `${foreground} on ${background}: ${ratio}`);
     }
@@ -25,7 +25,7 @@ for (const [theme, selector] of [['dark', ':root'], ['light', ':root[data-appear
   });
   test(`${theme} controls and focus pass graphical AA`, () => {
     const colors = palette(selector);
-    for (const foreground of ['border', 'accent']) for (const background of ['canvas', 'surface', 'raised', 'user']) assert.ok(contrast(colors.get(foreground), colors.get(background)) >= 3, `${foreground} on ${background}`);
+    for (const foreground of ['border', 'focus']) for (const background of ['canvas', 'surface', 'raised', 'user', 'sidebar', 'hover', 'selected']) assert.ok(contrast(colors.get(foreground), colors.get(background)) >= 3, `${foreground} on ${background}`);
   });
 }
 test('the native shell preserves separate labeled primary and agent composers', () => {
@@ -34,8 +34,62 @@ test('the native shell preserves separate labeled primary and agent composers', 
   assert.match(html, /<dialog id="modal" aria-labelledby="modal-title"/);
   assert.match(html, /src="\/web\/app.js"/); assert.doesNotMatch(html, /on(?:load|click|error)=|<script[^>]*>[^<]+<\/script>/);
 });
+function rule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]+)\\}`).exec(css);
+  assert.ok(match, `Missing ${selector}`); return match[1];
+}
+test('left navigation and conversation share a centered content column', () => {
+  assert.match(rule('.app'), /grid-template-columns: var\(--sidebar-width,272px\) minmax\(0,1fr\)/);
+  assert.match(rule('.app:has(> .sidebar[hidden])'), /grid-template-columns: minmax\(0,1fr\)/);
+  assert.match(rule('.sidebar'), /border-right:/);
+  assert.match(rule('.roster'), /overflow: auto/);
+  assert.match(rule('.message, .custom-entry'), /max-width: 820px/);
+  assert.match(rule('.composer'), /max-width: 820px/);
+  assert.match(css, /\.app\.drawer-open > \.sidebar/);
+  assert.match(rule('.workspace:has(> .sidebar-show:not([hidden])) .conversation-head'), /padding-left: 56px/);
+});
+test('Latest overlays its region without changing transcript geometry', () => {
+  assert.match(rule('.latest'), /position: absolute/);
+  assert.match(rule('.latest'), /width: auto; min-width: 96px/);
+  assert.match(rule('.latest'), /white-space: nowrap/);
+  assert.match(rule('.transcript-region'), /position: relative/);
+  assert.match(rule('.transcript-region > .transcript'), /height: 100%/);
+  assert.doesNotMatch(css, /:has\(\.latest/);
+});
+test('history controls align with the transcript and icon-only actions remain visible', () => {
+  assert.match(rule('.transcript-actions'), /justify-content: center/);
+  assert.match(rule('.transcript-actions'), /max-width: 820px; margin: 0 auto/);
+  assert.doesNotMatch(rule('.transcript-actions'), /position: (?:absolute|fixed)/);
+  assert.match(rule('.transcript'), /scrollbar-gutter: stable both-edges/);
+  assert.match(rule('.icon'), /stroke-width: 1.75/);
+  assert.match(rule('#session-actions'), /color: var\(--secondary\)/);
+  assert.match(rule('#session-actions .icon'), /stroke-width: 3/);
+});
+test('completion shares the composer edge and gives selection a non-color cue', () => {
+  const menu = rule('.command-menu');
+  assert.match(menu, /position: absolute/); assert.match(menu, /bottom: 100%/);
+  assert.match(menu, /left: -1px; right: -1px/); assert.match(menu, /border-bottom: 0/);
+  assert.match(menu, /max-height: min\(320px,40vh\)/);
+  assert.match(rule('.command-option[aria-selected=true]'), /box-shadow: inset 2px/);
+  assert.match(rule('.command-name mark'), /background: transparent/);
+  assert.match(rule('.command-hint'), /font-size: 11px; line-height: 16px/);
+  assert.match(rule('.command-hint'), /color: var\(--muted\)/);
+  assert.match(rule('.command-hint'), /position: sticky; bottom: 0/);
+  assert.match(rule('.command-hint'), /background: var\(--raised\)/);
+  assert.match(rule('.receipt:empty'), /display: none/);
+});
+test('focus, quiet actions, stable picker space and sticky modal heading remain available', () => {
+  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--focus\); outline-offset: 2px/);
+  assert.match(rule('.skip-link:focus'), /translateY\(0\)/);
+  assert.match(css, /\.message:focus-within \.copy/); assert.doesNotMatch(rule('.message .copy'), /display: none|visibility: hidden/);
+  assert.match(rule('.picker-projects'), /height: min\(192px,25dvh\)/);
+  assert.match(rule('.modal-heading'), /position: sticky/);
+});
 test('responsive layout has the specified collapse breakpoints and no animated liveness', () => {
-  for (const width of [1600, 1179, 899, 599]) assert.ok(css.includes(`${width}px`));
+  for (const width of [899, 599]) assert.ok(css.includes(`${width}px`));
+  assert.match(css, /@media\s*\(max-height:599px\)/);
+  assert.doesNotMatch(css, /#agent-panel|workspace-bar|1179px|1600px/);
   assert.match(css, /@media\s*\(forced-colors:\s*active\)/); assert.match(css, /@media\s*\(pointer:\s*coarse\)/);
   assert.doesNotMatch(css, /animation:|transition:|scroll-behavior:smooth/);
 });

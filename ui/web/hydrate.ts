@@ -2,6 +2,11 @@ import type { CachedRoster, PrimaryView, Snapshot, Target, TargetState } from '.
 import { targetIdentity } from './state.ts';
 import { request } from './transport.ts';
 export type SnapshotReader = <T>(path: string) => Promise<T>;
+/** History refresh is independent of the baseline needed for input and stream readiness. */
+export async function refreshVisible(snapshot: () => Promise<void>, history: () => Promise<void>, failure: (error: unknown) => void): Promise<void> {
+  await snapshot();
+  void history().catch(failure);
+}
 /** Missing active draft state stays unavailable until its exact target is read. */
 export async function hydrateVisible<T extends Snapshot>(snapshot: T, read: SnapshotReader = request): Promise<T> {
   let primaries = snapshot.primaries;
@@ -12,7 +17,7 @@ export async function hydrateVisible<T extends Snapshot>(snapshot: T, read: Snap
   }
   const primary = primaries.find(item => item.key === key);
   const visible: Target[] = primary ? [{kind: 'primary', key: primary.key, epoch: primary.epoch}] : [];
-  if (snapshot.workspace.panelVisible !== false && snapshot.workspace.selectedTarget?.kind === 'agent') visible.push(snapshot.workspace.selectedTarget);
+  if (snapshot.workspace.selectedTarget?.kind === 'agent') visible.push(snapshot.workspace.selectedTarget);
   const missing = (snapshot.targetIndex ?? []).filter(index => visible.some(target => targetIdentity(target) === targetIdentity(index.target)) && !snapshot.targets?.some(saved => saved.targetKey === index.targetKey));
   const [targets, roster] = await Promise.all([
     Promise.all(missing.map(index => read<TargetState>(`/api/workspaces/${encodeURIComponent(snapshot.workspace.id)}/targets/${encodeURIComponent(index.targetKey)}`))),

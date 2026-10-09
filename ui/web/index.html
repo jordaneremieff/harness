@@ -9,63 +9,99 @@
 <script type="module" src="/web/app.js"></script>
 </head>
 <body>
-<header class="workspace-bar">
-<button id="project-button" title="Choose project or session">Open a project</button>
-<button id="session-title" class="quiet" title="Session details">Pi</button>
-<nav aria-label="Workspace actions">
-<button id="commands-button" aria-label="Commands" title="Commands"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="6"></circle><path d="m15 15 5 5"></path></svg> <span class="command-label">Commands</span> <kbd>⌘K</kbd></button>
-<button id="notices-button" class="quiet" aria-label="Notifications" title="Notifications"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"></path></svg><span id="notices-count" hidden></span></button>
-<button id="agents-button" aria-expanded="false">Agents</button>
-<button id="session-actions" aria-label="Session actions">⋯</button>
+<a id="skip-composer" class="skip-link" href="#primary-editor">Skip to message box</a>
+<div id="app" class="app">
+<nav id="sidebar" class="sidebar" aria-label="Conversations">
+<div class="sidebar-head">
+<button id="project-button" class="project-button" type="button" title="Choose project or session"><span id="project-name">Open a project</span><svg class="icon chevron" aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"></path></svg></button>
+<button id="sidebar-hide" class="icon-button" type="button" aria-label="Hide sidebar" aria-controls="sidebar" title="Hide sidebar"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2.5"></rect><path d="M7.75 3.75v12.5"></path></svg></button>
+</div>
+<div class="sidebar-actions">
+<button id="commands-button" class="nav-action" type="button" aria-haspopup="dialog"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8.75" cy="8.75" r="5"></circle><path d="m12.5 12.5 4 4"></path></svg><span>Commands</span><kbd>⌘K</kbd></button>
+<button id="sessions-button" class="nav-action" type="button" aria-haspopup="dialog"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6.5h13M3.5 10h13M3.5 13.5h8"></path></svg><span>Sessions</span></button>
+</div>
+<section class="nav-section" aria-labelledby="primary-heading">
+<h2 id="primary-heading" class="nav-heading">Primary</h2>
+<button id="primary-row" class="nav-row primary-row" type="button"><span class="row-line"><span id="primary-row-state" class="state-glyph" aria-hidden="true"></span><span id="primary-row-title" class="row-title">No session open</span></span><span id="primary-row-meta" class="row-meta"></span></button>
+</section>
+<section id="roster-section" class="nav-section roster-section" aria-labelledby="agents-heading">
+<div class="nav-heading-row"><h2 id="agents-heading" class="nav-heading">Agents <span id="agent-count" class="count"></span></h2><button id="agent-refresh" class="icon-button" type="button" aria-label="Refresh agent roster" title="Refresh agent roster"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 9.5a5.5 5.5 0 1 1-1.8-4.1"></path><path d="M15.5 3.75v3.5H12"></path></svg></button><button id="agent-new" class="icon-button" type="button" aria-label="New agent through primary" title="New agent through primary"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M10 4.5v11M4.5 10h11"></path></svg></button></div>
+<label class="sr-only" for="agent-search">Filter agents</label><input id="agent-search" class="nav-filter" type="search" placeholder="Filter agents" autocomplete="off" spellcheck="false">
+<div id="roster" class="roster" role="list" aria-labelledby="agents-heading"></div>
+<div id="roster-footer" class="roster-footer"></div>
+</section>
+<footer class="sidebar-foot">
+<div id="connection" class="connection" role="status" aria-live="polite"></div>
+<button id="notices-button" class="icon-button" type="button" aria-label="Notifications" title="Notifications"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 7.5a4.5 4.5 0 0 0-9 0c0 5-2 5.75-2 6.75h13c0-1-2-1.75-2-6.75M8.5 16.75h3"></path></svg><span id="notices-count" class="badge" hidden></span></button>
+<button id="appearance-button" class="icon-button" type="button" aria-label="Appearance" title="Appearance"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="6.25"></circle><path d="M10 3.75v12.5a6.25 6.25 0 0 0 0-12.5Z" fill="currentColor"></path></svg></button>
+</footer>
 </nav>
+<main id="workspace" class="workspace">
+<button id="sidebar-show" class="icon-button sidebar-show" type="button" aria-label="Show sidebar" aria-controls="sidebar" aria-expanded="false" title="Show sidebar" hidden><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2.5"></rect><path d="M7.75 3.75v12.5"></path></svg></button>
+<div id="workspace-alert" class="workspace-alert" role="status" hidden></div>
+<section id="primary" class="conversation" aria-labelledby="session-title">
+<header class="conversation-head">
+<div class="head-title"><span class="kind">Primary</span><h1><button id="session-title" class="title-button" type="button" title="Session details">Pi</button></h1></div>
+<span id="primary-activity" class="head-state"></span>
+<div class="head-actions"><button id="session-actions" class="icon-button" type="button" aria-label="Session actions" title="Session actions"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="currentColor"><circle cx="5" cy="10" r="1.4"></circle><circle cx="10" cy="10" r="1.4"></circle><circle cx="15" cy="10" r="1.4"></circle></svg></button></div>
 </header>
-<div id="connection" class="connection" role="status" hidden></div>
-<main id="workspace">
-<section id="primary" class="conversation" aria-label="Primary conversation">
-<div class="transcript-actions"><button id="primary-earlier" hidden>Earlier messages</button></div>
 <div id="primary-view-notice" class="availability" role="status"></div>
-<div class="transcript-region"><div id="primary-empty" class="empty-state" hidden><h1>Your workspace</h1><p id="primary-empty-caption">Open a project to start or resume a session.</p><button id="primary-open-project" type="button">Open a project</button></div><div id="primary-transcript" class="transcript" tabindex="0" aria-label="Primary messages"></div>
-<button id="primary-latest" class="latest" hidden>↓ Latest</button></div>
+<div class="transcript-actions"><button id="primary-earlier" type="button" hidden>Load earlier messages</button></div>
+<div class="transcript-region">
+<div id="primary-empty" class="empty-state" hidden><h2>No session open</h2><p id="primary-empty-caption">Open a project to start or resume a session.</p><button id="primary-open-project" class="accent" type="button">Open a project</button></div>
+<div id="primary-transcript" class="transcript" tabindex="0" aria-label="Primary messages"></div>
+<button id="primary-latest" class="latest" type="button" hidden>Latest ↓</button>
+</div>
 <div id="primary-widgets-above" class="widgets"></div>
 <form id="primary-composer" class="composer">
-<div class="composer-actions"><div id="primary-modes" class="modes" hidden><button type="button" data-mode="steer" aria-pressed="true">Steer</button><button type="button" data-mode="followUp" aria-pressed="false">Follow-up</button></div><button type="button" id="primary-stop" class="danger" hidden title="Stop work and clear queued input">■ Stop</button></div>
-<label class="sr-only" for="primary-editor">Message to primary</label>
-<textarea id="primary-editor" rows="3" placeholder="Message the primary" spellcheck="false"></textarea>
-<div class="composer-footer"><span id="primary-caption"></span><div class="receipt-notice"><span id="primary-save">Draft not saved to Mac</span><span id="primary-receipt-details"></span></div><button id="primary-send" type="submit" class="accent" disabled>Send</button></div>
 <div id="primary-receipt" class="receipt" role="status"></div>
-
+<div class="composer-card">
+<div id="primary-command-menu" class="command-menu" hidden></div>
+<label class="sr-only" for="primary-editor">Message to primary</label>
+<textarea id="primary-editor" rows="2" placeholder="Message Pi · / for commands" spellcheck="false" aria-autocomplete="list" aria-controls="primary-command-menu"></textarea>
+<div class="composer-bar">
+<div id="primary-modes" class="modes" role="group" aria-label="Delivery while working" hidden><button type="button" data-mode="steer" aria-pressed="true">Steer</button><button type="button" data-mode="followUp" aria-pressed="false">Follow-up</button></div>
+<span id="primary-caption" class="caption"></span>
+<button type="button" id="primary-stop" class="stop" hidden title="Stop work and clear queued input">Stop</button>
+<button id="primary-send" type="submit" class="send" disabled aria-label="Send" title="Send (Enter)"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15.5v-11M5.5 9 10 4.5 14.5 9"></path></svg></button>
+</div>
+</div>
+<div id="primary-status" class="composer-foot"><button id="model-button" class="quiet" type="button" disabled>Model</button><button id="thinking-button" class="quiet" type="button" hidden></button><span id="primary-usage" class="fact"></span><span id="extension-status" class="fact"></span><span id="primary-save" class="draft-state"></span><span id="primary-receipt-details" class="receipt-details"></span></div>
 </form>
 <div id="primary-widgets-below" class="widgets"></div>
-<footer id="primary-status" class="status"><button id="model-button" class="quiet" disabled>Model</button><button id="thinking-button" class="quiet" hidden></button><span id="primary-usage"></span><span id="primary-activity"></span><span id="extension-status"></span></footer>
 </section>
-<aside id="agent-panel" aria-label="Agents" hidden>
-<section id="roster-section" class="roster-section">
-<header><h2>Agents</h2><button id="agent-refresh" aria-label="Refresh agent roster">↻</button><button id="agent-close" aria-label="Close agents">×</button></header>
-<label class="sr-only" for="agent-search">Find agent</label><input id="agent-search" type="search" placeholder="Find agent…">
-<div id="roster" class="roster" role="list" tabindex="0"></div>
-<footer id="roster-footer"></footer><button id="agent-new">New agent through primary…</button>
-</section>
-<section id="agent-detail" class="conversation" hidden>
-<header class="detail-heading"><button id="agent-back">← Agents</button><h2 id="agent-name" tabindex="-1"></h2><button id="agent-detail-close" aria-label="Close agents">×</button></header>
-<div class="identity"><span id="agent-identity"></span><button id="agent-copy">Copy identity</button></div>
-<div id="agent-availability" class="availability" role="status"></div>
-<div id="agent-facts" class="availability"></div>
-<div class="transcript-actions"><button id="agent-earlier" hidden>Earlier messages</button><button id="agent-inspect" hidden>Inspect activity</button></div>
-<div id="agent-view-notice" class="availability" role="status"></div>
-<div class="transcript-region"><div id="agent-transcript" class="transcript" tabindex="0" aria-label="Agent messages"></div>
-<button id="agent-latest" class="latest" hidden>↓ Latest</button></div>
-<form id="agent-composer" class="composer">
-<div class="composer-actions"><div id="agent-modes" class="modes"><button type="button" data-mode="steer" aria-pressed="false">Steer</button><button type="button" data-mode="followUp" aria-pressed="true">Follow-up</button></div><button type="button" id="agent-abort" class="danger">Abort</button></div>
-<label class="sr-only" for="agent-editor">Message to selected agent</label><textarea id="agent-editor" rows="3" placeholder="Message this agent" spellcheck="false"></textarea>
-<div class="composer-footer"><span id="agent-caption">follow-up after answer</span><div class="receipt-notice"><span id="agent-save">Draft not saved to Mac</span><span id="agent-receipt-details"></span></div><button id="agent-send" type="submit" class="accent" disabled>Send</button><button id="agent-acquire" type="button" hidden>Open through primary…</button></div>
-<div id="agent-receipt" class="receipt" role="status"></div>
+<section id="agent-detail" class="conversation" aria-labelledby="agent-name" hidden>
+<header class="conversation-head">
+<div class="head-title"><span class="kind">Agent</span><h1 id="agent-name" tabindex="-1"></h1><button id="agent-copy" class="identity" type="button" title="Copy identity"><span id="agent-identity"></span></button></div>
+<span id="agent-availability" class="head-state" role="status"></span>
 
+</header>
+<div id="agent-facts" class="facts-panel"></div>
+<div id="agent-view-notice" class="availability" role="status"></div>
+<div class="transcript-actions"><button id="agent-earlier" type="button" hidden>Load earlier messages</button><button id="agent-inspect" type="button" class="quiet" hidden>Inspect activity</button></div>
+<div class="transcript-region">
+<div id="agent-transcript" class="transcript" tabindex="0" aria-label="Agent messages"></div>
+<button id="agent-latest" class="latest" type="button" hidden>Latest ↓</button>
+</div>
+<form id="agent-composer" class="composer">
+<div id="agent-receipt" class="receipt" role="status"></div>
+<div class="composer-card">
+<label class="sr-only" for="agent-editor">Message to selected agent</label>
+<textarea id="agent-editor" rows="2" placeholder="Message this agent" spellcheck="false"></textarea>
+<div class="composer-bar">
+<div id="agent-modes" class="modes" role="group" aria-label="Delivery while working"><button type="button" data-mode="steer" aria-pressed="false">Steer</button><button type="button" data-mode="followUp" aria-pressed="true">Follow-up</button></div>
+<span id="agent-caption" class="caption"></span>
+<button type="button" id="agent-abort" class="stop" hidden>Abort</button>
+<button id="agent-acquire" type="button" hidden>Open through primary…</button>
+<button id="agent-send" type="submit" class="send" disabled aria-label="Send" title="Send (Enter)"><svg class="icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15.5v-11M5.5 9 10 4.5 14.5 9"></path></svg></button>
+</div>
+</div>
+<div class="composer-foot"><span id="agent-status" class="fact"></span><span id="agent-save" class="draft-state"></span><span id="agent-receipt-details" class="receipt-details"></span></div>
 </form>
-<footer id="agent-status" class="status"></footer>
 </section>
-</aside>
 </main>
+</div>
 <div id="announcements" class="sr-only" role="status" aria-live="polite"></div>
-<dialog id="modal" aria-labelledby="modal-title"><div class="modal-heading"><h2 id="modal-title"></h2><button id="modal-close" aria-label="Close dialog">×</button></div><div id="modal-body"></div><div id="modal-error" class="error" role="alert"></div></dialog>
+<dialog id="modal" aria-labelledby="modal-title"><div class="modal-heading"><h2 id="modal-title"></h2><button id="modal-close" class="icon-button" type="button" aria-label="Close dialog">×</button></div><div id="modal-body"></div><div id="modal-error" class="error" role="alert"></div></dialog>
 </body>
 </html>

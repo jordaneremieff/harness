@@ -10,8 +10,8 @@ const cssPath = process.env.CONTRAST_CSS
 	: fileURLToPath(new URL("./style.css", import.meta.url));
 const css = readFileSync(cssPath, "utf8");
 const foregrounds = ["text", "secondary", "muted", "accent", "success", "warning", "danger", "info"];
-const surfaces = ["canvas", "surface", "raised", "user", "custom"];
-const required = [...foregrounds, ...surfaces, "accent-text", "border", "separator"];
+const surfaces = ["canvas", "surface", "raised", "user", "custom", "sidebar", "hover", "selected"];
+const required = [...foregrounds, ...surfaces, "accent-text", "border", "separator", "focus"];
 // These separators decorate content already identified by text, fill, or position.
 // Any new use of the low-contrast separator needs a deliberate classification.
 const decorativeSeparators = new Set([
@@ -19,24 +19,17 @@ const decorativeSeparators = new Set([
 	"button:disabled|border-color",
 	"button.accent:disabled|border-color",
 	"pre|border",
-	".workspace-bar|border-bottom",
-	".workspace-bar #session-title|border-left",
-	".workspace-bar kbd|border",
-	"#agents-button[aria-expanded=true]|border-color",
-	".message.user|border",
-	".custom-entry|border",
+	".sidebar|border-right",
+	".sidebar-foot|border-top",
+	".conversation-head|border-bottom",
+	".command-hint|border-top",
 	".thinking > .stream-text|border-left",
 	".tool-card|border",
 	".tool-expanded|border-top",
-	".modes|border",
-	".receipt:not(:empty)|border-top",
-	"#agent-panel|border-left",
-	".agent-row|border-bottom",
 	"dialog|border",
 	".notification|border-bottom",
 	"th, td|border",
 	".picker-session|border-bottom",
-	"#workspace.agent-selected .roster-section|border-right",
 ]);
 type RGB = [number, number, number];
 type Rule = { selector: string; contexts: string[]; declarations: { property: string; value: string }[] };
@@ -226,7 +219,7 @@ function matrix(palette: Palette, theme: string, measure: Measure) {
 	for (const fg of foregrounds) for (const bg of surfaces) measure("text-matrix", `--${fg} / --${bg}`, fg, bg, 4.5);
 	measure("accent-text", "--accent-text / --accent", "accent-text", "accent", 4.5);
 	for (const bg of ["canvas", "surface", "raised"]) measure("border-matrix", `--border / --${bg}`, "border", bg, 3);
-	for (const bg of surfaces) measure("focus-matrix", `--accent / --${bg}`, "accent", bg, 3);
+	for (const bg of surfaces) measure("focus-matrix", `--focus / --${bg}`, "focus", bg, 3);
 }
 function textDeclaration(context: Context, property: string, value: string) {
 	const { theme, source, exclusions, issues, measure, decl } = context;

@@ -9,6 +9,21 @@ export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => P
 const SEARCH_PAGE_LIMIT = 20;
 type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; age: HTMLTimeElement; model: HTMLElement; activity: HTMLElement; source: AgentRow; absolute: boolean};
 function rowName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
+function duplicateLabels(rows: AgentRow[]): Map<string, string> {
+  const groups = new Map<string, AgentRow[]>();
+  for (const row of rows) { const name = rowName(row); const group = groups.get(name) ?? []; group.push(row); groups.set(name, group); }
+  const labels = new Map<string, string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const candidates = group.map(row => row.identity.includes(':') ? row.identity.slice(row.identity.lastIndexOf(':') + 1) : row.identity.slice(0, 8));
+    const counts = new Map<string, number>(); for (const candidate of candidates) counts.set(candidate, (counts.get(candidate) ?? 0) + 1);
+    for (const [index, row] of group.entries()) {
+      const candidate = candidates[index] ?? row.identity;
+      labels.set(row.identity, counts.get(candidate) === 1 ? candidate : row.identity);
+    }
+  }
+  return labels;
+}
 function status(row: AgentRow): {glyph: string; label: string} {
   if (row.availability !== 'live') return {glyph: '◌', label: row.availability};
   const values: Record<string, string> = {working: '●', failed: '!', done: '✓', idle: '○'};
@@ -22,7 +37,13 @@ function modelText(row: AgentRow): string {
 function activityText(row: AgentRow): string {
   if (row.error) return row.error;
   if (row.currentTool) return `${row.currentTool.name} · ${row.currentTool.argument}`;
-  return row.latestReply ?? row.firstMessage ?? row.state;
+  return row.latestReply ?? row.firstMessage ?? '';
+}
+/** Status label plus distinct detail; a row without detail shows its status once. */
+export function activityLine(row: AgentRow, label: string): string {
+  const detail = previewText(activityText(row), 1, 1200).text;
+  if (!detail || detail === label) return row.availability === 'live' || label === row.state ? label : `${label} · ${row.state}`;
+  return `${label} · ${detail}`;
 }
 export class Roster {
   private cache = new Map<string, RowNode>();
@@ -106,16 +127,18 @@ export class Roster {
   }
   private footerAction(footer: HTMLElement, count: number, meta?: Omit<CachedRoster, 'rows'>): void {
     if (this.query() && this.search) {
-      if (meta?.nextCursor && !this.searchController) footer.append(button('More cached agents', () => { void this.searchCached(true); }));
-      return;
+      this.cachedSearchAction(footer, meta); return;
     }
     const state = meta?.scan.state ?? 'not-started';
     if (meta?.nextCursor) footer.append(button(count > 0 ? `${count} shown · More` : 'More agents', () => this.more('more')));
     if (state === 'not-started') { footer.append(button('Refresh', () => this.more('refresh'))); return; }
-    if (state === 'failed') { footer.append(button('Retry', () => this.more('refresh'))); return; }
+    if (state === 'failed') { if (count) footer.append(button('Retry', () => this.more('refresh'))); return; }
     if (meta?.nextCursor || state !== 'ready' || meta?.scan.complete) return;
     if (count > 0) footer.append(button(`${count} shown · More`, () => this.more('more')));
     else if (meta?.scan.scanId) footer.append(button('Continue roster scan', () => this.more('more')));
+  }
+  private cachedSearchAction(footer: HTMLElement, meta?: Omit<CachedRoster, 'rows'>): void {
+    if (meta?.nextCursor && !this.searchController) footer.append(button('More cached agents', () => { void this.searchCached(true); }));
   }
   private emptyState(): HTMLElement {
     let text: string;
@@ -128,8 +151,11 @@ export class Roster {
         case 'ready': text = 'No agents in this view'; break;
       }
     }
-    this.empty.className = this.meta?.scan.state === 'failed' && !this.rows.length ? 'empty-state error' : 'empty-state';
-    setText(this.empty, text); return this.empty;
+    const failed = this.meta?.scan.state === 'failed' && !this.rows.length;
+    this.empty.className = failed ? 'roster-error error' : 'empty-state';
+    if (failed) this.empty.replaceChildren(element('span', undefined, text), button('Retry', () => this.more('refresh')));
+    else setText(this.empty, text);
+    return this.empty;
   }
   schedule(): void {
     if (this.pending) return;
@@ -149,8 +175,7 @@ export class Roster {
     this.layout = layoutItems(rows.map(row => row.identity), this.heights, 110);
     const pins = this.pins(); if (anchor) pins.add(anchor.id);
     const selected = rows.length > 100 ? visibleWindow(this.layout, this.node.scrollTop, this.node.clientHeight, {pins}).items : this.layout.items;
-    const names = new Map<string, number>(); for (const row of rows) names.set(rowName(row), (names.get(rowName(row)) ?? 0) + 1);
-    const children = this.children(selected, rows, names);
+    const children = this.children(selected, rows, duplicateLabels(this.rows));
     if (!children.length) children.push(this.emptyState());
     reconcileChildren(this.node, children);
     for (const item of selected) {
@@ -165,12 +190,12 @@ export class Roster {
     if (!node) { node = element('div', 'spacer'); node.setAttribute('aria-hidden', 'true'); this.gaps.set(key, node); }
     node.style.height = `${height}px`; return node;
   }
-  private children(items: LayoutItem[], rows: AgentRow[], names: Map<string, number>): HTMLElement[] {
+  private children(items: LayoutItem[], rows: AgentRow[], labels: Map<string, string>): HTMLElement[] {
     let offset = 0; const children: HTMLElement[] = [];
     for (const item of items) {
       if (item.top > offset) children.push(this.gap(item.id, item.top - offset));
       const row = rows[item.index]; if (!row) continue;
-      children.push(this.row(row, (names.get(rowName(row)) ?? 0) > 1).node); offset = item.bottom;
+      children.push(this.row(row, labels.get(row.identity) ?? '').node); offset = item.bottom;
     }
     if (offset < this.layout.totalHeight) children.push(this.gap('tail', this.layout.totalHeight - offset));
     const keep = new Set(children); for (const [id, gap] of this.gaps) if (!keep.has(gap)) this.gaps.delete(id);
@@ -186,27 +211,26 @@ export class Roster {
     const tail = this.gaps.get('tail'); if (tail) tail.style.height = `${Math.max(0, this.layout.totalHeight - offset)}px`;
   }
   private createRow(row: AgentRow): RowNode {
-    const node = element('div', 'agent-row'); node.setAttribute('role', 'group');
+    const node = element('div', 'agent-row'); node.setAttribute('role', 'listitem');
     const select = button('', () => { const current = this.cache.get(row.identity)?.source; if (current) this.select(current); }, 'row-select');
     node.dataset.identity = row.identity;
     const heading = element('span', 'row-heading'); const state = element('span', 'row-state'); state.setAttribute('aria-hidden', 'true');
-    const name = element('span', 'row-name'); heading.append(state, name);
+    const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'); heading.append(state, name, identity);
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); }, 'row-age'); ageButton.append(age);
-    const identity = element('div', 'identity'); const model = element('div', 'row-model'); const activity = element('div', 'row-activity');
-    select.append(heading, identity, model, activity); node.append(select, ageButton);
+    const model = element('div', 'row-model'); const activity = element('div', 'row-activity');
+    select.append(heading, model, activity); node.append(select, ageButton);
     const cached = {node, select, state, name, identity, ageButton, age, model, activity, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;
   }
-  private row(row: AgentRow, duplicate: boolean): RowNode {
+  private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row); const changed = cached.source !== row;
     const state = status(row); setText(cached.state, state.glyph); setText(cached.name, rowName(row));
+    setText(cached.identity, identity); cached.identity.hidden = !identity;
     cached.state.dataset.state = row.availability === 'live' ? row.state : 'retained';
-    setText(cached.identity, duplicate && rowName(row) !== row.identity ? row.identity : ''); cached.identity.hidden = !cached.identity.textContent;
     setText(cached.model, modelText(row)); cached.model.hidden = !cached.model.textContent;
-    setText(cached.activity, previewText(activityText(row), 2, 1200).text);
-    cached.node.setAttribute('aria-current', String(row.identity === this.selected));
-    cached.select.setAttribute('aria-current', String(row.identity === this.selected));
+    setText(cached.activity, activityLine(row, state.label));
+    cached.select.setAttribute('aria-current', row.identity === this.selected ? 'page' : 'false');
     cached.select.setAttribute('aria-label', `${rowName(row)} · ${row.identity} · ${state.label}`);
     cached.node.setAttribute('aria-label', rowName(row));
     cached.node.title = `${row.identity}\n${state.label}\n${row.ownerLabel ?? row.availability}`;

@@ -3,7 +3,7 @@ import type { SelectionChange } from './actions.ts';
 import { button, element, input } from './dom.ts';
 import { absoluteTime, relativeTime } from './format.ts';
 import type { Modal } from './modal.ts';
-import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionOwner, sessionSize, type SessionList } from './picker-state.ts';
+import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, type SessionList } from './picker-state.ts';
 import { operation, request } from './transport.ts';
 
 function projectPage(previous: RecentProjectPage | undefined, page: RecentProjectPage, append: boolean): RecentProjectPage {
@@ -45,13 +45,15 @@ export class ProjectPicker {
     modal.actions(button('Cancel', () => modal.cancel()), ...(launch ? [button('Use launch directory', () => { directory.field.value = launch; })] : []), button('Continue', next, 'accent'));
     directory.field.addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter') { event.preventDefault(); next(); } });
     body.append(element('h2', 'picker-heading', 'Recent projects'));
-    const rows = element('div', 'options picker-projects'); const status = element('p', 'secondary', 'Loading recent projects');
+    const rows = element('div', 'options picker-projects'); const status = element('p', 'secondary picker-project-status', 'Loading recent projects');
     const more = button('More recent projects', () => { void load(this.projects?.nextCursor ?? undefined); }); more.hidden = true;
     const paint = () => {
       rows.replaceChildren();
       for (const project of this.projects?.items ?? []) {
         const node = button('', () => { directory.field.value = project.path; next(); }, 'picker-project-row');
-        node.append(element('strong', undefined, project.name), element('span', 'secondary', project.path)); rows.append(node);
+        node.title = project.path;
+        node.setAttribute('aria-label', `${project.name} · ${project.path}`);
+        node.append(element('strong', undefined, project.name)); rows.append(node);
       }
       if (this.projects) { status.textContent = `${this.projects.items.length} of ${this.projects.total} projects shown · Saved list · ${relativeTime(this.projects.observedAt, Date.now())}${this.projects.omitted ? ` · ${this.projects.omitted} file or directory entries unexamined` : ''}`; more.hidden = !this.projects.nextCursor; }
     };
@@ -67,12 +69,13 @@ export class ProjectPicker {
       } catch (cause) { if (!signal.aborted && current()) { status.textContent = 'Recent projects are unavailable.'; modal.error(cause); } }
       finally { if (current()) more.disabled = false; }
     };
-    body.append(rows, status, more); rows.addEventListener('keydown', event => this.navigate(event, rows));
-    body.append(button('Refresh recent projects', () => { void load(); }));
+    const projectActions = element('div', 'picker-project-actions');
+    projectActions.append(more, button('Refresh recent projects', () => { void load(); }));
+    body.append(rows, status, projectActions); rows.addEventListener('keydown', event => this.navigate(event, rows));
     if (this.projects) paint(); else void load();
     this.openPrimaries(body, snapshot);
     body.append(button('Open saved session path…', () => this.manual(directory.field.value)));
-    directory.field.focus();
+    directory.field.focus(); directory.field.setSelectionRange(0, 0); directory.field.scrollLeft = 0;
   }
   private openPrimaries(body: HTMLElement, snapshot?: Snapshot): void {
     if (!snapshot?.primaries.length && !snapshot?.primaryIndex?.length) return;
@@ -97,7 +100,9 @@ export class ProjectPicker {
       if (!modal.owns(initialToken) || choosing !== this.choosing) return;
     }
     const {body, token, signal} = this.begin(project.split('/').filter(Boolean).at(-1) ?? project);
-    body.append(element('p', 'secondary picker-path', project));
+    const projectDetails = element('details', 'picker-path');
+    projectDetails.append(element('summary', 'secondary', 'Project directory'), element('p', 'identity', project));
+    body.append(projectDetails);
     modal.actions(button('Back to projects', () => this.open()), button('Start new session', () => { void modal.run(() => this.start(project)); }, 'accent'));
     body.append(element('h2', 'picker-heading', 'Resume a saved session'));
     const search = input('Search saved sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search loaded sessions…';
@@ -127,7 +132,7 @@ export class ProjectPicker {
         if (offset < matches.length) requestAnimationFrame(batch);
       };
       batch();
-      if (!matches.length) list.append(element('p', 'secondary', data.items.length ? 'No matches in loaded sessions. Use More to search more saved sessions.' : 'No saved sessions in this project.'));
+      if (!matches.length) list.append(element('p', 'secondary', sessionEmptyMessage(data)));
     };
     const save = () => {
       if (!data) return;
