@@ -46,13 +46,14 @@ export function statePaths(environment:NodeJS.ProcessEnv=process.env) {
   return {agentDir,agentStore,stateDir:join(agentDir,'ui')};
 }
 /** Test injection changes adapters, not the public HTTP route or authentication surface. */
-export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'>> & {assets?:Map<string,Asset>}={}) {
+export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'>> & {assets?:Map<string,Asset>; assetRoot?:string}={}) {
   const paths=statePaths();
   if(!isAbsolute(options.cwd)) throw new ApiError('invalid_request','The project directory must be absolute.');
-  const registry=await Registry.open({stateDir:options.stateDir??paths.stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,...injection});
+  const assets=injection.assets??await assetMap(injection.assetRoot);
+  const registry=await Registry.open({stateDir:options.stateDir??paths.stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,agents:injection.agents,primary:injection.primary,measure:injection.measure});
   try {
     await registry.validatePath(options.cwd,true);
-    const http=new LocalHttp(registry,injection.assets??await assetMap());
+    const http=new LocalHttp(registry,assets);
     const launchUrl=await http.listen(options.port);
     void registry.agents.refresh().catch(()=>registry.journal.publish('notice',undefined,{level:'warning',message:'The retained agent catalog is unavailable.',code:'catalog_unavailable'}));
     let closing:Promise<void>|undefined;

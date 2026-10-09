@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { access, chmod, mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { request, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import type { ApiResult, Bootstrap, EventData, EventEnvelope, EventName, OperationKind, OperationView, Target } from '../shared/api.ts';
 import { LIMITS } from '../shared/api.ts';
 import type { CatalogPage } from '../agents/index.mts';
 import { startBackend } from './main.mts';
+import { ASSET_ENTRY_LIMIT, ASSET_FILE_BYTES, ASSET_TOTAL_BYTES, assetMap, type Asset } from './http.mts';
+import { ApiError } from './errors.mts';
 import type { AgentAdapter } from './registry.mts';
 
 const executable = fileURLToPath(new URL('../rpc/fake-pi.mts', import.meta.url));
@@ -23,16 +27,16 @@ function agents() {
     disconnectWorkspace: async () => { counts.disconnect++; detached(); }, close: async () => { counts.close++; }};
   return {adapter, counts, disconnected};
 }
-type Reply = {status: number; headers: IncomingHttpHeaders; text: string; json?: ApiResult<unknown>};
+type Reply = {status: number; headers: IncomingHttpHeaders; bytes: Buffer; text: string; json?: ApiResult<unknown>};
 async function send(origin: string, path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}): Promise<Reply> {
   const raw = typeof body === 'string' ? body : body === undefined ? undefined : JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const req = request(origin, {path, method, agent: false, headers: {...(raw === undefined ? {} : {'Content-Type': 'application/json', ...(headers['Transfer-Encoding'] ? {} : {'Content-Length': String(Buffer.byteLength(raw))})}), ...headers}}, res => {
       const chunks: Buffer[] = []; res.on('data', chunk => chunks.push(Buffer.from(chunk))); res.on('error', reject);
       res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8'); let json: ApiResult<unknown> | undefined;
-        if (res.headers['content-type']?.startsWith('application/json')) json = JSON.parse(text);
-        resolve({status: res.statusCode ?? 0, headers: res.headers, text, json});
+        const bytes = Buffer.concat(chunks); const text = bytes.toString('utf8'); let json: ApiResult<unknown> | undefined;
+        if (method !== 'HEAD' && res.headers['content-type']?.startsWith('application/json')) json = JSON.parse(text);
+        resolve({status: res.statusCode ?? 0, headers: res.headers, bytes, text, json});
       });
     });
     req.on('error', reject); req.end(raw);
@@ -41,9 +45,9 @@ async function send(origin: string, path: string, method = 'GET', body?: unknown
 function data<T>(reply: Reply): T { assert.ok(reply.json?.ok, reply.text); return reply.json.data as T; }
 async function fixture(context: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'ui-http-')); const cwd = join(root, 'project'); await mkdir(cwd);
-  const shell = join(root, 'index.html'); await writeFile(shell, '<!doctype html><title>Fixture</title>');
+  const shell = Buffer.from('<!doctype html><title>Fixture</title>');
   const fake = agents();
-  const app = await startBackend({cwd, port: 0, pi: executable, stateDir: join(root, 'state')}, {agents: () => fake.adapter, assets: new Map([['/', {path: shell, type: 'text/html; charset=utf-8'}]])});
+  const app = await startBackend({cwd, port: 0, pi: executable, stateDir: join(root, 'state')}, {agents: () => fake.adapter, assets: new Map([['/', {data: shell, type: 'text/html; charset=utf-8'}]])});
   context.after(async () => { await app.close(); await rm(root, {recursive: true, force: true}); });
   const launch = new URL(app.launchUrl); const origin = launch.origin; let cookie = ''; let workspace: string | undefined;
   const call = (path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) => {
@@ -206,4 +210,155 @@ test('request rate accounting rejects the next request at a deterministic fixed 
   for (let i = 0; i < 240; i++) assert.equal((await app.call('/')).status, 200, String(i));
   const rejected = await app.call('/'); assert.equal(rejected.status, 429); assert.equal(rejected.json?.ok, false);
   assert.equal(app.fake.counts.refresh, 1); assert.equal(app.registry.sessions.size, 0);
+});
+
+const requiredAssets = ['web/index.html', 'web/style.css', 'dist/web/app.js', 'dist/shared/api.js'];
+async function browserBuild(context: TestContext, emptyFiles = false) {
+  const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));
+  const apps: Awaited<ReturnType<typeof startBackend>>[] = [];
+  context.after(async () => {
+    try { for (const app of apps) await app.close(); }
+    finally { await rm(root, {recursive: true, force: true}); }
+  });
+  await mkdir(join(root, 'web')); await mkdir(join(root, 'dist/web'), {recursive: true});
+  await mkdir(join(root, 'dist/shared'));
+  for (const path of requiredAssets) await writeFile(join(root, path), emptyFiles ? '' : `Original ${path}`);
+  return {root, start: async (state = 'state') => {
+    const fake = agents();
+    const app = await startBackend({cwd: root, port: 0, pi: executable, stateDir: join(root, state)}, {agents: () => fake.adapter, assetRoot: root});
+    apps.push(app); return {...app, origin: new URL(app.launchUrl).origin};
+  }};
+}
+function buildError(path: string, reason: string) {
+  return (error: unknown) => {
+    assert.ok(error instanceof ApiError); assert.ok(error.message.includes(path), error.message);
+    assert.ok(error.message.includes(reason), error.message);
+    assert.ok(error.message.includes('npm run ui:build'), error.message);
+    assert.ok(!error.message.includes('#launch=')); return true;
+  };
+}
+function assetHeaders(reply: Reply) {
+  return Object.fromEntries(['content-type', 'content-length', 'cache-control', 'x-content-type-options', 'referrer-policy', 'content-security-policy'].map(name => [name, reply.headers[name]]));
+}
+async function verifyBrowserBytes(origin: string, assets: Map<string, Asset>) {
+  const headers = new Map<string, ReturnType<typeof assetHeaders>>();
+  for (const [route, asset] of assets) {
+    const get = await send(origin, route); const head = await send(origin, route, 'HEAD');
+    assert.equal(get.status, 200, route); assert.equal(head.status, 200, route);
+    assert.deepEqual(get.bytes, asset.data, route); assert.equal(head.bytes.length, 0, route);
+    assert.equal(get.headers['content-type'], asset.type, route);
+    assert.equal(get.headers['content-length'], String(asset.data.length), route);
+    assert.equal(get.headers['cache-control'], 'no-store'); assert.equal(get.headers['x-content-type-options'], 'nosniff');
+    assert.equal(get.headers['referrer-policy'], 'no-referrer'); assert.match(String(get.headers['content-security-policy']), /default-src 'none'/);
+    assert.deepEqual(assetHeaders(head), assetHeaders(get), route); headers.set(route, assetHeaders(get));
+  }
+  return headers;
+}
+
+test('startup browser bytes survive overwrites and deletion; a fresh backend reads the rebuilt bytes', async context => {
+  const {root, start} = await browserBuild(context); const extra = 'dist/web/extra-module.js';
+  await writeFile(join(root, extra), Buffer.from([0, 255, 1, 127, 128]));
+  const original = await assetMap(root);
+  assert.deepEqual([...original.keys()].sort(), ['/', '/shared/api.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
+  const app = await start(); const headers = await verifyBrowserBytes(app.origin, original);
+  for (const path of [...requiredAssets, extra]) await writeFile(join(root, path), `Rebuilt ${path}`);
+  assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
+  const rebuilt = await assetMap(root); const fresh = await start('fresh-state');
+  await verifyBrowserBytes(fresh.origin, rebuilt);
+  for (const route of original.keys()) assert.notDeepEqual(rebuilt.get(route)?.data, original.get(route)?.data);
+  for (const path of [...requiredAssets, extra]) await rm(join(root, path));
+  assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
+  await verifyBrowserBytes(fresh.origin, rebuilt);
+  await assert.rejects(assetMap(root), buildError('dist/web/app.js', 'missing'));
+});
+
+test('missing browser builds reject before the backend creates its state directory or acquires a lock', async context => {
+  for (const path of ['dist/web', ...requiredAssets]) await context.test(path, async child => {
+    const {root} = await browserBuild(child); await rm(join(root, path), {recursive: true});
+    await assert.rejects(assetMap(root), buildError(path, 'missing'));
+    let adapterOpened = false;
+    await assert.rejects(startBackend({cwd: root, port: 0, pi: executable, stateDir: join(root, 'unopened-state')}, {
+      assetRoot: root, agents: () => { adapterOpened = true; return agents().adapter; },
+    }), buildError(path, 'missing'));
+    assert.equal(adapterOpened, false);
+    await assert.rejects(access(join(root, 'unopened-state')), {code: 'ENOENT'});
+  });
+});
+async function sizedAsset(root: string, path: string, bytes: number) {
+  const file = await open(join(root, path), 'w');
+  try { await file.truncate(bytes); } finally { await file.close(); }
+}
+
+test('browser file reads accept the exact per-file bound and reject larger files', async context => {
+  const {root} = await browserBuild(context, true); const path = 'web/index.html';
+  await sizedAsset(root, path, ASSET_FILE_BYTES);
+  assert.equal((await assetMap(root)).get('/')?.data.length, ASSET_FILE_BYTES);
+  await sizedAsset(root, path, ASSET_FILE_BYTES + 1);
+  await assert.rejects(assetMap(root), buildError(path, 'per-file bound'));
+  await sizedAsset(root, path, ASSET_FILE_BYTES * 1024);
+  await assert.rejects(assetMap(root), buildError(path, 'per-file bound'));
+});
+
+test('browser reads accept the exact total byte bound and stop at the next byte', async context => {
+  const {root} = await browserBuild(context, true);
+  for (let i = 0; i < ASSET_TOTAL_BYTES / ASSET_FILE_BYTES; i++) await sizedAsset(root, `dist/web/module-${i}.js`, ASSET_FILE_BYTES);
+  const assets = await assetMap(root);
+  assert.equal([...assets.values()].reduce((sum, asset) => sum + asset.data.length, 0), ASSET_TOTAL_BYTES);
+  const path = 'dist/shared/api.js'; await writeFile(join(root, path), 'x');
+  await assert.rejects(assetMap(root), buildError(path, 'total bound'));
+});
+
+test('browser traversal accepts the exact entry cap and rejects the next entry', async context => {
+  const {root} = await browserBuild(context);
+  for (let i = 1; i < ASSET_ENTRY_LIMIT; i++) await writeFile(join(root, `dist/web/ignored-${i}.txt`), '');
+  assert.equal((await assetMap(root)).size, 4);
+  await writeFile(join(root, 'dist/web/one-too-many.txt'), '');
+  await assert.rejects(assetMap(root), buildError('dist/web', `${ASSET_ENTRY_LIMIT} entries`));
+});
+
+test('browser traversal ignores non-matching names and does not recurse', async context => {
+  const {root} = await browserBuild(context);
+  for (const name of ['bad.name.js', '.hidden.js', 'space name.js', 'note.txt', 'app.js.map', '雪.js']) await writeFile(join(root, 'dist/web', name), 'ignored');
+  await mkdir(join(root, 'dist/web/nested')); await writeFile(join(root, 'dist/web/nested/valid.js'), 'ignored');
+  await writeFile(join(root, 'dist/web/Valid_0-module.js'), 'routed');
+  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/shared/api.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
+});
+
+test('browser startup rejects special build files without waiting on them', async context => {
+  const {root} = await browserBuild(context);
+  await mkdir(join(root, 'dist/web/folder.js'));
+  await assert.rejects(assetMap(root), buildError('dist/web/folder.js', 'not a regular file'));
+  await rm(join(root, 'dist/web/folder.js'), {recursive: true});
+  await promisify(execFile)('mkfifo', [join(root, 'dist/web/stalled.js')]);
+  await assert.rejects(assetMap(root), buildError('dist/web/stalled.js', 'not a regular file'));
+  await rm(join(root, 'web/style.css')); await mkdir(join(root, 'web/style.css'));
+  await rm(join(root, 'dist/web/stalled.js'));
+  await assert.rejects(assetMap(root), buildError('web/style.css', 'not a regular file'));
+});
+
+test('malformed build directories name the path and the build command; other read failures propagate', async context => {
+  const {root} = await browserBuild(context);
+  await rm(join(root, 'dist/shared'), {recursive: true}); await writeFile(join(root, 'dist/shared'), 'not a directory');
+  await assert.rejects(assetMap(root), buildError('dist/shared/api.js', 'not a directory'));
+  await rm(join(root, 'dist/web'), {recursive: true}); await writeFile(join(root, 'dist/web'), 'not a directory');
+  await assert.rejects(assetMap(root), buildError('dist/web', 'not a directory'));
+  const denied = await browserBuild(context); await chmod(join(denied.root, 'web/index.html'), 0);
+  await assert.rejects(assetMap(denied.root), {code: 'EACCES'});
+});
+
+test('browser asset routes preserve method errors and Host, Origin, and fetch metadata validation', async context => {
+  const {root, start} = await browserBuild(context); const app = await start();
+  await verifyBrowserBytes(app.origin, await assetMap(root));
+  for (const path of ['/', '/style.css', '/web/app.js', '/shared/api.js']) {
+    const post = await send(app.origin, path, 'POST', {}, {Origin: app.origin});
+    assert.equal(post.status, 405); assert.equal(post.json?.ok, false);
+    assert.equal(post.headers['content-type'], 'application/json; charset=utf-8');
+    if (post.json && !post.json.ok) assert.equal(post.json.error.code, 'invalid_request');
+    assert.equal((await send(app.origin, path, 'GET', undefined, {Host: 'foreign.invalid'})).status, 403);
+    assert.equal((await send(app.origin, path, 'HEAD', undefined, {Origin: 'http://foreign.invalid'})).status, 403);
+    assert.equal((await send(app.origin, path, 'POST', {}, {Origin: 'http://foreign.invalid'})).status, 403);
+    assert.equal((await send(app.origin, path, 'GET', undefined, {'Sec-Fetch-Site': 'cross-site'})).status, 403);
+  }
+  assert.equal((await send(app.origin, '/api/bootstrap')).status, 401);
+  assert.equal((await send(app.origin, '/web/not-built.js')).status, 404);
 });

@@ -1,4 +1,5 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, opendir } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -12,19 +13,63 @@ export type RequestContext = {method: string; parts: string[]; url: URL; body: R
   operationId?: string; workspace?: string; session: string};
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
   workspace(id?: string): Promise<string>; observe(workspace: string): Promise<void>; detached(workspace: string): void};
-export type Asset = {path: string; type: string};
+export type Asset = {type: string; data: Buffer};
+export const ASSET_FILE_BYTES = 2 * 1024 * 1024;
+export const ASSET_TOTAL_BYTES = 16 * 1024 * 1024;
+export const ASSET_ENTRY_LIMIT = 256;
 const MIME = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8'};
-/** Build outputs are inventoried once. Requests never resolve filesystem paths. */
+function missingAsset(path: string) {
+  return new ApiError('not_ready', `Browser assets are missing: ${path}. Run npm run ui:build before starting.`, 503);
+}
+/** Known malformed-build filesystem codes become build guidance with the relative path; other failures propagate. */
+function buildPathError(error: unknown, path: string): unknown {
+  const code = error instanceof Error && 'code' in error ? error.code : undefined;
+  if (code === 'ENOENT') return missingAsset(path);
+  if (code === 'ENOTDIR') return new ApiError('not_ready', `Browser asset path is not a directory where one is expected: ${path}. Run npm run ui:build before starting.`, 503);
+  return error;
+}
+/** Reads at most limit + 1 bytes so growth after any metadata check still crosses the bound. */
+async function readBounded(root: string, path: string, limit: number, buffer: Buffer): Promise<Buffer> {
+  const chunks: Buffer[] = []; let length = 0;
+  try {
+    // Nonblocking open lets a special file in the build fail startup instead of waiting for a writer.
+    const file = await open(join(root, path), constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      if (!(await file.stat()).isFile()) throw new ApiError('not_ready', `Browser asset is not a regular file: ${path}. Run npm run ui:build before starting.`, 503);
+      while (length <= limit) {
+        const {bytesRead} = await file.read(buffer, 0, Math.min(buffer.length, limit + 1 - length), null);
+        if (!bytesRead) break;
+        chunks.push(Buffer.from(buffer.subarray(0, bytesRead))); length += bytesRead;
+      }
+    } finally { await file.close(); }
+  } catch (error) { throw buildPathError(error, path); }
+  return Buffer.concat(chunks, length);
+}
+/** Startup retains bounded browser bytes. Requests never access the filesystem. */
 export async function assetMap(root = fileURLToPath(new URL('../', import.meta.url))) {
-  const assets = new Map<string, Asset>([['/', {path: join(root, 'web/index.html'), type: MIME['.html']}],
-    ['/style.css', {path: join(root, 'web/style.css'), type: MIME['.css']}]]);
-  let files: string[] = [];
-  try { files = await readdir(join(root, 'dist/web')); } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-  }
-  if (files.length > 256) throw new ApiError('capacity', 'The browser build contains too many assets.', 503);
-  for (const name of files) if (/^[a-zA-Z0-9_-]+\.js$/.test(name)) assets.set(`/web/${name}`, {path: join(root, 'dist/web', name), type: MIME['.js']});
-  assets.set('/shared/api.js', {path: join(root, 'dist/shared/api.js'), type: MIME['.js']});
+  const assets = new Map<string, Asset>();
+  const files: string[] = []; let entries = 0;
+  try {
+    const directory = await opendir(join(root, 'dist/web'), {bufferSize: 1});
+    for await (const entry of directory) {
+      if (++entries > ASSET_ENTRY_LIMIT) throw new ApiError('capacity', `Browser assets exceed ${ASSET_ENTRY_LIMIT} entries: dist/web. Remove extra build files and run npm run ui:build before starting.`, 503);
+      if (/^[a-zA-Z0-9_-]+\.js$/.test(entry.name)) files.push(entry.name);
+    }
+  } catch (error) { throw buildPathError(error, 'dist/web'); }
+  if (!files.includes('app.js')) throw missingAsset('dist/web/app.js');
+  let retained = 0;
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  const add = async (route: string, path: string, type: string) => {
+    const limit = Math.min(ASSET_FILE_BYTES, ASSET_TOTAL_BYTES - retained);
+    const data = await readBounded(root, path, limit, buffer); const length = data.length;
+    if (length > ASSET_FILE_BYTES) throw new ApiError('capacity', `Browser asset exceeds the ${ASSET_FILE_BYTES}-byte per-file bound: ${path}. Reduce the asset and run npm run ui:build before starting.`, 503);
+    if (length > limit) throw new ApiError('capacity', `Browser assets exceed the ${ASSET_TOTAL_BYTES}-byte total bound at ${path}. Reduce the build and run npm run ui:build before starting.`, 503);
+    retained += length; assets.set(route, {type, data});
+  };
+  await add('/', 'web/index.html', MIME['.html']);
+  await add('/style.css', 'web/style.css', MIME['.css']);
+  for (const name of files) await add(`/web/${name}`, `dist/web/${name}`, MIME['.js']);
+  await add('/shared/api.js', 'dist/shared/api.js', MIME['.js']);
   return assets;
 }
 function matchRoute(method: string, parts: string[]) {
@@ -162,12 +207,9 @@ export class LocalHttp {
   private logout(session: string, response: ServerResponse) {
     this.auth.logout(session, response); this.backend.journal.revoke(session); respond(response, {authenticated: false});
   }
-  private async staticAsset(method: string, asset: Asset, response: ServerResponse) {
+  private staticAsset(method: string, asset: Asset, response: ServerResponse) {
     if (method !== 'GET' && method !== 'HEAD') throw new ApiError('invalid_request', 'The asset does not accept this method.', 405);
-    let data: Buffer;
-    try { data = await readFile(asset.path); } catch { throw new ApiError('not_ready', 'Build the browser assets before use.', 503); }
-    if (data.length > 2 * 1024 * 1024) throw new ApiError('payload_too_large', 'The asset exceeds the size bound.', 413);
-    response.writeHead(200, {'Content-Type': asset.type, 'Content-Length': data.length}); response.end(method === 'HEAD' ? undefined : data);
+    response.writeHead(200, {'Content-Type': asset.type, 'Content-Length': asset.data.length}); response.end(method === 'HEAD' ? undefined : asset.data);
   }
   private async events(request: IncomingMessage, response: ServerResponse, url: URL, session: string) {
     const workspace = await this.backend.workspace(url.searchParams.get('workspace') ?? undefined);

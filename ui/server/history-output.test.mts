@@ -15,7 +15,7 @@ async function setup(t: import('node:test').TestContext) {
   const rows = [{type: 'message', id: 'text', parentId: null, message: {role: 'assistant', timestamp: 1, content: [{type: 'text', text: '雪'.repeat(10_000)}]}}];
   await writeFile(path, [{type: 'session', version: 3, id: 'fixture', timestamp: new Date(0).toISOString(), cwd: dir}, ...rows].map(row => `${JSON.stringify(row)}\n`).join(''));
   let resolveReady: () => void = () => {}; const ready = new Promise<void>(resolve => { resolveReady = resolve; });
-  const app = await startBackend({cwd: dir, pi: 'fixture', stateDir: join(dir, 'state'), port: 0}, {primary: options => {
+  const app = await startBackend({cwd: dir, pi: 'fixture', stateDir: join(dir, 'state'), port: 0}, {assets: new Map([['/', {type: 'text/html; charset=utf-8', data: Buffer.from('<title>Fixture</title>')}]]), primary: options => {
     const child = new FakeChild(); child.onCommand = record => {
       if (record.type === 'get_state') child.response(record, {sessionId: 'fixture', sessionFile: path, isStreaming: false, isCompacting: false});
       else if (record.type === 'get_entries') child.response(record, {entries: record.since ? [] : rows, leafId: 'text'});

@@ -9,6 +9,7 @@ import { ApiError } from './errors.mts';
 import { main, parseArgs } from './main.mts';
 import type { AgentAdapter } from './registry.mts';
 
+const assets = new Map([['/', {type: 'text/html; charset=utf-8', data: Buffer.from('<title>Fixture</title>')}]]);
 const executable = fileURLToPath(new URL('../rpc/fake-pi.mts', import.meta.url));
 const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
 const forbidden = async (): Promise<never> => { throw new Error('No native agent work belongs in this fixture'); };
@@ -42,16 +43,16 @@ test('parseArgs refuses a value-taking flag without a value and unknown flags', 
 test('main passes the launch URL to the opener only with --open', {timeout: 15000}, async context => {
   const {root, cwd, keep} = await project(context);
   const opened: string[] = [];
-  const app = keep(await main([...flags(cwd, root, 'state-open'), '--open'], async url => { opened.push(url); }, {agents: () => adapter}));
+  const app = keep(await main([...flags(cwd, root, 'state-open'), '--open'], async url => { opened.push(url); }, {agents: () => adapter, assets}));
   assert.deepEqual(opened, [app.launchUrl]);
   assert.match(app.launchUrl, /^http:\/\/127\.0\.0\.1:\d+\/#launch=/);
   let silent = 0;
-  keep(await main(flags(cwd, root, 'state-plain'), async () => { silent += 1; }, {agents: () => adapter}));
+  keep(await main(flags(cwd, root, 'state-plain'), async () => { silent += 1; }, {agents: () => adapter, assets}));
   assert.equal(silent, 0);
 });
 
 test('main keeps the backend running when the opener fails', {timeout: 15000}, async context => {
   const {root, cwd, keep} = await project(context);
-  const app = keep(await main([...flags(cwd, root, 'state-fail'), '--open'], async () => { throw new Error('no browser'); }, {agents: () => adapter}));
+  const app = keep(await main([...flags(cwd, root, 'state-fail'), '--open'], async () => { throw new Error('no browser'); }, {agents: () => adapter, assets}));
   assert.match(app.launchUrl, /^http:\/\/127\.0\.0\.1:\d+\//);
 });
