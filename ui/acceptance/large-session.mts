@@ -150,6 +150,30 @@ function trialFailed(report: Record<string, unknown>): boolean {
     (report.servedAssetsAfter as {allMatched?: boolean} | undefined)?.allMatched === false || (report.output as {passed?: boolean} | undefined)?.passed === false);
 }
 
+export function stdoutSummary(report: Record<string, unknown>, out: string) {
+  const section = (key: string) => report[key] as Record<string, unknown> | undefined;
+  const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const boolean = (value: unknown) => typeof value === 'boolean' ? value : null;
+  const resume = section('resume'), ack = section('getStateAckToPaint'), backend = section('backendFinal');
+  const earlier = section('earlierLatency'), scroll = section('scroll'), output = section('output');
+  return {
+    reportPath: join(out, 'report.json'), passed: !trialFailed(report),
+    mode: report.mode === 'synthetic' || report.mode === 'copied-real' ? report.mode : null,
+    sourceBytes: number(report.sourceBytes),
+    resumeToPaintMs: number(resume?.clickToTranscriptPaintMs), usableComposerMs: number(resume?.clickToUsableComposerMs),
+    rpcStateToPaintLowerMs: number(ack?.lowerMs), rpcStateToPaintUpperMs: number(ack?.upperMs),
+    backendRssBytes: number(backend?.rssBytes), backendPeakRssBytes: number(backend?.peakRssBytes),
+    backendLoopP95Ms: number(backend?.loopP95Ms), backendLoopMaxMs: number(backend?.loopMaxMs),
+    earlierPages: number(earlier?.count), earlierMedianMs: number(earlier?.medianMs), earlierP95Ms: number(earlier?.p95Ms),
+    scrollFrames: number(scroll?.count), scrollMaxMs: number(scroll?.maxMs), outputPassed: boolean(output?.passed),
+    inputRequests: Array.isArray(report.inputRequests) ? report.inputRequests.length : null,
+    servedAssetsBeforeMatched: boolean(section('servedAssetsBefore')?.allMatched),
+    servedAssetsAfterMatched: boolean(section('servedAssetsAfter')?.allMatched),
+    runtimeHashesUnchanged: boolean(report.runtimeHashesUnchanged), backendExited: boolean(report.backendExited),
+    backendExitCode: number(report.backendExitCode),
+  };
+}
+
 const launcher = (entry: string) => `
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { startBackend, parseArgs } from ${JSON.stringify(entry)};
@@ -556,8 +580,9 @@ export async function runLargeSession(config: Options): Promise<Record<string, u
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    const report = await runLargeSession(options(process.argv.slice(2)));
-    console.log(JSON.stringify(report, null, 2));
+    const config = options(process.argv.slice(2));
+    const report = await runLargeSession(config);
+    console.log(JSON.stringify(stdoutSummary(report, config.out)));
     if (trialFailed(report)) process.exitCode = 1;
   } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
 }

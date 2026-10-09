@@ -4,9 +4,47 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { calibratedSpan, copySession, distribution, hashChanges, isPromptInput, options, richSyntheticSession, servedAssets, sourceHashes, syntheticOutputText, syntheticSession } from './large-session.mts';
+import { calibratedSpan, copySession, distribution, hashChanges, isPromptInput, options, richSyntheticSession, servedAssets, sourceHashes, stdoutSummary, syntheticOutputText, syntheticSession } from './large-session.mts';
 
 const project = '/disposable-project';
+test('stdout summary keeps scalar measures and a report pointer without report payloads', () => {
+  const payload = 'report-only payload'.repeat(100000);
+  const report = {
+    mode: 'synthetic', sourceBytes: 26324704, testedSourceHashes: {payload},
+    resume: {clickToTranscriptPaintMs: 443.2, clickToUsableComposerMs: 409.9},
+    getStateAckToPaint: {lowerMs: 125.1, upperMs: 130.5},
+    backendFinal: {rssBytes: 158695424, peakRssBytes: 208207872, loopP95Ms: 1.74, loopMaxMs: 4.02, stages: [payload]},
+    pages: Array.from({length: 10000}, () => ({latencyMs: 22, coverage: payload})),
+    earlierLatency: {count: 440, medianMs: 22, p95Ms: 23.7}, scroll: {count: 120, maxMs: 24.6},
+    output: {passed: true, pages: [payload]}, inputRequests: [],
+    servedAssetsBefore: {allMatched: true, assets: [payload]}, servedAssetsAfter: {allMatched: true, assets: [payload]},
+    runtimeHashesUnchanged: true, backendExited: true, backendExitCode: 0,
+  };
+  const summary = stdoutSummary(report, '/measurements');
+  assert.deepEqual(summary, {
+    reportPath: '/measurements/report.json', passed: true, mode: 'synthetic', sourceBytes: 26324704,
+    resumeToPaintMs: 443.2, usableComposerMs: 409.9, rpcStateToPaintLowerMs: 125.1, rpcStateToPaintUpperMs: 130.5,
+    backendRssBytes: 158695424, backendPeakRssBytes: 208207872, backendLoopP95Ms: 1.74, backendLoopMaxMs: 4.02,
+    earlierPages: 440, earlierMedianMs: 22, earlierP95Ms: 23.7, scrollFrames: 120, scrollMaxMs: 24.6,
+    outputPassed: true, inputRequests: 0, servedAssetsBeforeMatched: true, servedAssetsAfterMatched: true,
+    runtimeHashesUnchanged: true, backendExited: true, backendExitCode: 0,
+  });
+  const text = JSON.stringify(summary);
+  assert(Buffer.byteLength(text) < 2048);
+  assert(!text.includes('report-only payload'));
+  for (const value of Object.values(summary)) assert(value === null || ['string', 'boolean', 'number'].includes(typeof value));
+  assert.equal(report.pages.length, 10000); assert.equal(report.backendFinal.stages[0], payload);
+  assert.equal(stdoutSummary({sourceBytes: {payload}, resume: {clickToTranscriptPaintMs: [payload]}}, '/measurements').sourceBytes, null);
+  assert.equal(stdoutSummary({resume: {clickToTranscriptPaintMs: [payload]}}, '/measurements').resumeToPaintMs, null);
+});
+test('stdout summary preserves the report failure verdict', () => {
+  assert.equal(stdoutSummary({}, '/measurements').passed, true);
+  for (const failure of [
+    {error: 'failed'}, {backendCleanupError: 'failed'}, {browserCleanupError: 'failed'},
+    {sourceUnchanged: false}, {runtimeHashesUnchanged: false},
+    {servedAssetsBefore: {allMatched: false}}, {servedAssetsAfter: {allMatched: false}}, {output: {passed: false}},
+  ]) assert.equal(stdoutSummary(failure, '/measurements').passed, false);
+});
 test('prompt guard matches only actual plural primary and agent input routes including queries', () => {
   for (const path of ['/api/primaries/key/inputs', '/api/primaries/key/inputs?workspace=x', '/api/agents/key/inputs', '/api/agents/key%3A1/inputs?workspace=x']) {
     assert(isPromptInput('POST', path)); assert(!isPromptInput('GET', path));
