@@ -52,9 +52,15 @@ Stash captures a bounded, redacted context projection, the operator's hint, sour
 metadata, and destination before independent work starts. Ordinary and native
 commands use the package-level
 [independent-command admission contract](conventions/durable-contributions.md).
-Successful admission adds no caller model acknowledgment, Stash status key, or
-automatic result or check-in route. Nonzero input redaction adds a one-time safety
-notice without starting a model turn. Setup failures remain command errors.
+Successful admission adds no caller model acknowledgment or automatic result
+or check-in route. Ordinary interactive commands show a temporary Stash status
+during source capture and admission, then clear it when admission succeeds or
+fails. This status does not track background generation or confirm artifact
+creation. This ordinary status boundary was source-checked 2026-10-10 against
+`extensions/stash/index.ts` and coding-agent 1.1.0
+`dist/modes/interactive/interactive-mode.js`; that check does not refresh the
+remaining 1.0.3 contracts in this section. Nonzero input redaction adds a one-time
+safety notice without starting a model turn. Setup failures remain command errors.
 
 The host resolves the model and thinking level from fresh cwd-bound Pi
 configuration under the normal project-trust decision, not from the caller's

@@ -75,7 +75,12 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		on: (event, handler) => {
 			if (event !== "session_shutdown") return () => {};
 			const shutdown = handler as (event: SessionShutdownEvent, ctx: ExtensionContext) => Promise<void>;
-			events.set(event, (_event, ctx) => shutdown({ type: "session_shutdown", reason: "quit" }, hostContext(ctx)));
+			events.set(event, (_event, ctx) =>
+				shutdown(
+					{ type: "session_shutdown", reason: (_event.reason ?? "quit") as SessionShutdownEvent["reason"] },
+					hostContext(ctx),
+				),
+			);
 			return () => {
 				events.delete(event);
 			};
@@ -1111,7 +1116,7 @@ function creationCtx(ui: TestUi = {}, extra: TestContext = {}): TestContext {
 			getSessionId: () => "source-session",
 			buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
 		},
-		ui,
+		ui: { setStatus: () => {}, ...ui },
 		...extra,
 	};
 }
@@ -1251,14 +1256,15 @@ describe("stash creation", () => {
 		assert.equal(launches[0].creatorId, originalSession);
 	});
 
-	it("admits work silently in every mode without caller selection or cancellation", async () => {
+	it("shows admission status only with UI without caller selection or cancellation", async () => {
 		for (const mode of ["tui", "rpc", "print", "json"] as const) {
 			const { commands, launches, events, sent } = registry();
 			const unexpected = () => {
 				throw new Error("caller state must not be used");
 			};
+			const statuses: Array<[string, string | undefined]> = [];
 			const ctx = creationCtx(
-				{ notify: unexpected, setStatus: unexpected },
+				{ notify: unexpected, setStatus: (key, text) => statuses.push([key, text]) },
 				{ mode, hasUI: mode === "tui" || mode === "rpc" },
 			);
 			Object.defineProperties(ctx, {
@@ -1268,6 +1274,15 @@ describe("stash creation", () => {
 			});
 			await commands.get("stash").handler("new isolated effort", ctx);
 			assert.equal(launches.length, 1);
+			assert.deepEqual(
+				statuses,
+				ctx.hasUI
+					? [
+							["stash", "Starting stash creation…"],
+							["stash", undefined],
+						]
+					: [],
+			);
 			assert.equal(events.has("session_shutdown"), true);
 			await events.get("session_shutdown")({}, ctx);
 			assert.deepEqual(sent, []);
@@ -1312,6 +1327,91 @@ describe("stash creation", () => {
 		} finally {
 			timeout.mock.restore();
 			interval.mock.restore();
+		}
+	});
+
+	it("keeps status until the last concurrent admission settles", async () => {
+		const { commands, pi } = registry();
+		const statuses: Array<string | undefined> = [];
+		const ctx = creationCtx({ setStatus: (_key, text) => statuses.push(text), notify: () => {} });
+		const admissions: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+		pi.events.emit = (_event, value) =>
+			(value as { provide: (launch: IndependentCommandLaunch) => void }).provide(async (input) => {
+				await new Promise<void>((resolve, reject) => admissions.push({ resolve, reject }));
+				return launchReceipt(input);
+			});
+		const first = commands.get("stash").handler("new first", ctx);
+		const second = commands.get("stash").handler("new second", ctx);
+		await Promise.resolve();
+		await Promise.resolve();
+		assert.equal(admissions.length, 2);
+		assert.deepEqual(statuses, ["Starting stash creation…", "Starting stash creation…"]);
+		admissions[1].reject(new Error("admission refused"));
+		await second;
+		assert.equal(statuses.at(-1), "Starting stash creation…");
+		admissions[0].resolve();
+		await first;
+		assert.equal(statuses.at(-1), undefined);
+	});
+
+	it("clears status on capture and admission errors", async () => {
+		const { commands, pi } = registry();
+		const statuses: Array<string | undefined> = [];
+		const errors: string[] = [];
+		const ui = {
+			setStatus: (_key: string, text: string | undefined) => statuses.push(text),
+			notify: (text: string) => errors.push(text),
+		};
+		await commands.get("stash").handler(
+			"new broken capture",
+			creationCtx(ui, {
+				sessionManager: {
+					getSessionId: () => "source",
+					buildSessionProjection: () => {
+						throw new Error("capture failed");
+					},
+				},
+			}),
+		);
+		pi.events.emit = (_event, value) =>
+			(value as { provide: (launch: IndependentCommandLaunch) => void }).provide(async () => {
+				throw new Error("admission failed");
+			});
+		await commands.get("stash").handler("new broken admission", creationCtx(ui));
+		assert.deepEqual(statuses, ["Starting stash creation…", undefined, "Starting stash creation…", undefined]);
+		assert.match(errors[0], /capture failed/);
+		assert.match(errors[1], /admission failed/);
+	});
+
+	it("clears and seals status on shutdown or reload without canceling admitted work", async () => {
+		for (const reason of ["quit", "reload"] as const) {
+			for (const failure of [false, true]) {
+				const { commands, pi, events } = registry();
+				const statuses: Array<string | undefined> = [];
+				const errors: string[] = [];
+				const ctx = creationCtx({
+					setStatus: (_key, text) => statuses.push(text),
+					notify: (text) => errors.push(text),
+				});
+				let settle!: () => void;
+				pi.events.emit = (_event, value) =>
+					(value as { provide: (launch: IndependentCommandLaunch) => void }).provide(async (input) => {
+						await new Promise<void>((resolve, reject) => {
+							settle = () => (failure ? reject(new Error("late failure")) : resolve());
+						});
+						return launchReceipt(input);
+					});
+				const pending = commands.get("stash").handler("new detached effort", ctx);
+				await Promise.resolve();
+				await Promise.resolve();
+				await events.get("session_shutdown")({ reason }, ctx);
+				await events.get("session_shutdown")({ reason }, ctx);
+				assert.deepEqual(statuses, ["Starting stash creation…", undefined]);
+				settle();
+				await pending;
+				assert.deepEqual(statuses, ["Starting stash creation…", undefined]);
+				assert.deepEqual(errors, []);
+			}
 		}
 	});
 

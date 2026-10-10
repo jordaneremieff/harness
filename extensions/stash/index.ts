@@ -140,7 +140,41 @@ function currentSessionId(ctx: Pick<ExtensionContext, "sessionManager">): string
 	}
 }
 
-async function startCreation(pi: StashExtensionApi, ctx: ExtensionCommandContext, hint: string): Promise<void> {
+class CreationStatus {
+	private pending = new Set<symbol>();
+	private ui: ExtensionContext["ui"] | undefined;
+	closed = false;
+
+	begin(ctx: ExtensionContext): () => void {
+		if (this.closed || !ctx.hasUI) return () => {};
+		const token = Symbol();
+		this.pending.add(token);
+		this.ui = ctx.ui;
+		this.ui.setStatus("stash", "Starting stash creation…");
+		return () => {
+			if (!this.pending.delete(token) || this.closed) return;
+			if (this.pending.size === 0) {
+				this.ui?.setStatus("stash", undefined);
+				this.ui = undefined;
+			}
+		};
+	}
+
+	close(): void {
+		this.closed = true;
+		this.pending.clear();
+		this.ui?.setStatus("stash", undefined);
+		this.ui = undefined;
+	}
+}
+
+async function startCreation(
+	pi: StashExtensionApi,
+	ctx: ExtensionCommandContext,
+	hint: string,
+	status: CreationStatus,
+): Promise<void> {
+	const finishStatus = status.begin(ctx);
 	try {
 		// Materialize before the first await; subsequent caller turns cannot alter this source.
 		const source = prepareDistillSource(ctx.sessionManager.buildSessionProjection());
@@ -169,11 +203,14 @@ async function startCreation(pi: StashExtensionApi, ctx: ExtensionCommandContext
 			),
 		);
 	} catch (error) {
+		if (status.closed && ctx.hasUI) return;
 		const scanned = redactSecretsWithReport(error instanceof Error ? error.message : String(error));
 		notifyCommandRedactions(pi, ctx, scanned.report);
 		const message = `Could not start stash creation: ${safeLine(scanned.text)}`;
 		if (ctx.hasUI) ctx.ui.notify(message, "error");
 		else throw new Error(message);
+	} finally {
+		finishStatus();
 	}
 }
 
@@ -505,7 +542,11 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		agentDir: getAgentDir(),
 	};
 	const disposeSettings = publishSettings(pi.events, publicationOptions);
-	pi.on("session_shutdown", disposeSettings);
+	const creationStatus = new CreationStatus();
+	pi.on("session_shutdown", () => {
+		creationStatus.close();
+		disposeSettings();
+	});
 	pi.events.emit(
 		"durable:contribution",
 		stashDurableContribution(fileURLToPath(import.meta.url), pi.events, disposeSettings),
@@ -749,7 +790,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	pi.registerCommand("stash", {
 		description: "Create, browse, get, complete, release, reopen, or rotate stashed efforts",
 		getArgumentCompletions: stashArgumentCompletions,
-		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser),
+		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, creationStatus),
 	});
 	pi.registerShortcut("ctrl+alt+s", {
 		description: "Open the stash browser",
@@ -766,6 +807,7 @@ async function handleStashCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
 	openBrowser: (ctx: ExtensionContext) => Promise<void>,
+	creationStatus: CreationStatus,
 ): Promise<void> {
 	const raw = args.trim();
 	const parts = raw.split(/\s+/).filter(Boolean);
@@ -785,7 +827,7 @@ async function handleStashCommand(
 
 	switch (verb) {
 		case "new":
-			return createCommand(pi, ctx, parts, fail);
+			return createCommand(pi, ctx, parts, fail, creationStatus);
 		case "help":
 			return helpCommand(ctx, parts, fail);
 		case "capacity":
@@ -837,10 +879,11 @@ async function createCommand(
 	ctx: ExtensionCommandContext,
 	parts: string[],
 	fail: CommandFailure,
+	status: CreationStatus,
 ): Promise<void> {
 	const hint = parts.slice(1).join(" ");
 	if (!hint) return fail("Usage: /stash new <hint>");
-	await startCreation(pi, ctx, hint);
+	await startCreation(pi, ctx, hint, status);
 }
 
 function helpCommand(ctx: ExtensionCommandContext, parts: string[], fail: CommandFailure): void {

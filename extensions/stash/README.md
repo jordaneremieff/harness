@@ -4,7 +4,7 @@ The ordinary extension publishes its registered tool renderers at factory load a
 on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
 The payload contains only tool names and renderer fields, never execution functions.
 
-The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; `/stash new <hint>` starts independent Durable work from a captured session snapshot, without a turn or status update in the caller.
+The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; `/stash new <hint>` starts independent Durable work from a captured session snapshot, without a caller turn. Ordinary UI callers show temporary status during admission.
 
 ## Surfaces
 
@@ -546,13 +546,21 @@ a skip response, or a generation failure writes no artifact. Only a complete
 text answer reaches publication.
 
 The command returns after durable admission, not after generation or publication.
-Ordinary success is silent in TUI, RPC, print, JSON, and native Durable callers:
-no model acknowledgment, completion message, check-in, status key, or timer.
+Ordinary UI callers set the public `stash` status to `Starting stash creation…`
+while the command captures its source, discovers the branch, and awaits durable
+admission. The last concurrent admission clears that status on success or error.
+Shutdown, reload, and session replacement clear it immediately; late results
+cannot restore it or send stale UI errors. The status describes admission, not
+background generation or artifact publication. Its duration follows the command
+lifecycle, with no minimum display delay or timer. Native Durable callers have
+no ordinary UI status. There is no model acknowledgment, completion message,
+or check-in in any mode.
 A nonzero input redaction report produces a one-time safety notice, not status.
 Ordinary callers retain a displayed custom message without a model turn;
 non-UI callers also receive the notice on stderr because text print ignores
 custom messages. Native callers receive the notice in the command result. Each invocation
-owns separate work. The caller neither tracks it nor cancels it on shutdown.
+owns separate work. The caller tracks only temporary admission status, not
+worker progress, and does not cancel independent work on shutdown.
 Admission errors still use the command's normal error channel. The independent
 agent remains discoverable through the host's existing agent controls; use those
 controls for explicit inspection or cancellation, including background work.
@@ -681,7 +689,8 @@ Durable differences from the ordinary entrypoint:
   `stash_list` and the explicit `get` and lifecycle verbs.
 - The source snapshot is committed Durable model context rather than Pi's
   persisted-session projection. Both paths publish through an independent
-  native worker with the same silence and ownership contract.
+  native worker with the same independent ownership contract. Native callers do
+  not use the ordinary UI admission status.
 - Capacity notices are delivered through the generation run's `onYield`
   continuation and re-armed by compaction or an explicit reset.
 
@@ -743,7 +752,7 @@ The component derives its row budget from the host TUI and the overlay's height 
 
 ## Files
 
-- `index.ts`: tool registrations, `/stash` and shortcut host, capacity hook, silent independent creation admission, and the Durable contribution emission.
+- `index.ts`: tool registrations, `/stash` and shortcut host, capacity hook, temporary UI status for independent creation admission, and the Durable contribution emission.
 - `durable.ts`: the native Durable extension: contribution, tools, capacity hooks and episode document, distillation task and receipt document, and agent commands.
 - `params.ts`: shared parameter schemas for both entrypoints.
 - `guidance.ts`: shared tool descriptions and model guidance for both entrypoints.
@@ -782,10 +791,11 @@ kills native creation after publication and reopens the SQLite storage; recovery
 must preserve the exact artifact without a second generation or publication.
 Existing native tool, lifecycle, and capacity tests cover the unchanged paths.
 
-Ordinary entrypoint tests cover silent admission in each mode, provider-discovery
-failures, snapshot immutability across an asynchronous boundary, independent
+Ordinary entrypoint tests cover UI admission status and no-UI silence, concurrent
+admission completion and failure, shutdown/reload cleanup with late results,
+provider-discovery failures, snapshot immutability across an asynchronous boundary, independent
 concurrent calls, and absence of caller model selection, timers, or shutdown
-hooks. Native SessionManager tests exercise omissions and replacements, branch
+cancellation. Native SessionManager tests exercise omissions and replacements, branch
 navigation, summaries, redaction, bounded references, and unchanged raw history.
 These controlled checks do not establish real provider quality, fresh host
 default selection, or independent host survival after a real caller exits.
