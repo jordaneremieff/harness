@@ -19,6 +19,8 @@ Information with different lifecycles, authority, and access patterns belongs in
 
 Promotion across layers is a judgment. Storage, indexing, expiry, and retrieval within a layer can be mechanism.
 
+Layer separation must survive retrieval. Consumers must receive provisional material with its provisional status intact. An uncommitted file or a label elsewhere does not establish that separation. If a retrieval path presents provisional material as established guidance without preserving its status, keep the material outside that path.
+
 ## Rationale
 
 Working material and durable knowledge serve different purposes.

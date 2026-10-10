@@ -167,6 +167,7 @@ A recorded application that contradicts a pillar's stated prediction is evidence
 - Do not invent ad hoc pillars in task prose.
 - Search live entries before drafting.
 - Prefer a clause extension when an existing pillar owns the mechanism.
+- For an incident-based mutation, compare the existing guidance with the proposed guidance under the incident’s conditions. State what the mutation changes. Distinguish what the record establishes from what the proposal infers. An incident alone does not establish a gap in guidance; leave unresolved causes open.
 - Every entry begins with frontmatter carrying exactly `title` and `index`.
   Revisit both whenever a mutation changes recognition scope, and keep the
   README row byte-identical to `index` — the checker prints corrections when
