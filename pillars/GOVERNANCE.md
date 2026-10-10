@@ -159,6 +159,7 @@ A recorded application that contradicts a pillar's stated prediction is evidence
 1. **Phantom Stewardship** verifies whether the prior author is truly absent and reads lineage from the substrate.
 2. **Survival Selection** identifies which structures remain load-bearing after transition.
 3. **Governing Context** preserves the frame needed by later workers.
+4. **Failure Cost Calibration** takes a cheap restore point before risky changes to state that cannot be regenerated.
 
 ## Mutation Rules
 

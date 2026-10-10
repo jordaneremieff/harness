@@ -1,6 +1,6 @@
 ---
 title: "Failure Cost Calibration"
-index: "A high-caliber pattern is proposed without quantified failure cost → compare real failure cost with pattern cost."
+index: "A high-caliber pattern is proposed, or a cheap protection is skipped, without quantified failure cost → compare real failure cost with protection cost."
 ---
 
 # Heuristic: Failure Cost Calibration
@@ -16,6 +16,13 @@ Cues:
 - Failure probability is discussed while impact remains abstract.
 - The environment may already retry, expire, deduplicate, or make cleanup cheap.
 - Pattern cost is treated as free because the pattern is familiar.
+
+It also fires in the inverse case: a cheap protection is absent while a risky change is about to touch state whose loss would be expensive. Nothing is proposed, so nothing invites a price. Cues:
+
+- Work exists in one mutable copy, with no commit, byte copy, or other restore point. A hash, manifest, or log records what the state was; it cannot restore it.
+- A risky phase is about to change that state: delegated or concurrent writers, bulk rewrites, generated overwrites, or recovery attempts.
+- The plan defers protection to a final integration step, such as one commit at the end.
+- The protection would take seconds, while reconstruction would take hours or might not succeed.
 
 ## Move
 
@@ -37,6 +44,16 @@ Protection cost: new persistent state and recovery path.
 Decision: use a local existence check and alert; escalate only if duplicates recur.
 ```
 
+The inverse case uses the same form:
+
+```text
+Failure: a delegated writer overwrites uncommitted files with truncated content.
+Expected impact: hours of reconstruction; exact recovery may be impossible.
+Existing mitigation: content hashes, which detect the loss but cannot reverse it.
+Protection cost: seconds for a byte-exact copy or commit before each risky phase.
+Decision: take a restore point before every risky phase, and have the system take it by default.
+```
+
 ## Negotiation
 
 | Condition | Calibration |
@@ -47,6 +64,7 @@ Decision: use a local existence check and alert; escalate only if duplicates rec
 | Low probability but catastrophic impact | Use expected loss only with care; hard safety bounds may dominate. |
 | Existing system supplies reliable protection | Avoid duplicating it unless its reach is insufficient. |
 | Failure cost is unknown | Improve measurement or choose a bounded reversible mechanism. |
+| Irreplaceable state, cheap restore point | Take the restore point before the risky phase; when such phases recur, make the system take it. |
 
 ## Why This Works
 
@@ -56,6 +74,8 @@ Complex protection is not free. It adds state, branches, migrations, coordinatio
 
 The heuristic is not "use simple solutions." A small-volume system can still have catastrophic consequences. Caliber follows consequence, not scale labels.
 
+Under-protection has the opposite blind spot. Working state feels temporary until it is lost, and a record that detects a loss can pass for one that reverses it. When the protection costs seconds and the loss costs hours, the comparison is decided before any precise estimate.
+
 ## When NOT to Apply
 
 - A binding safety, legal, contractual, or integrity requirement specifies the mechanism.
@@ -63,6 +83,7 @@ The heuristic is not "use simple solutions." A small-volume system can still hav
 - The pattern is already part of a stable platform and adds negligible marginal complexity.
 - The task is to implement a decided architecture rather than choose its caliber.
 - Quantification would delay an urgent containment action; contain first and calibrate the durable fix afterward.
+- For the inverse case: the state can be regenerated cheaply from a durable source.
 
 ## Relationship to Pillars
 
@@ -72,7 +93,8 @@ The heuristic is not "use simple solutions." A small-volume system can still hav
 - **Proof Burden:** applies cost calibration to an evidence prerequisite rather than protection machinery.
 - **Metric Reification:** guards against turning one observed rate into the frequency term without preserving conditions.
 - **Committed Contribution:** requires an explicit proportionality claim rather than ritual invocation of rigor.
+- **System Autonomy:** a protection that every risky phase needs belongs in the mechanism layer, not in an agent's memory.
 
 ## Summary
 
-Before applying high-caliber protection, quantify the concrete failure and the protection's total cost, account for existing mitigation, and choose the cheapest mechanism with acceptable residual risk.
+Before applying high-caliber protection or skipping a cheap one, quantify the concrete failure and the protection's total cost, account for existing mitigation, and choose the cheapest mechanism with acceptable residual risk.
