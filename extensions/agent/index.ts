@@ -894,11 +894,14 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		selfCompaction.clear();
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		disposeFactorySettings();
 		selfCompaction.clear();
 		const id = ctx.sessionManager.getSessionId();
-		primaries.get(id)?.abort();
+		const abort = primaries.get(id);
+		if (!abort) return;
+		abort.abort();
 		primaries.delete(id);
+		await observedManager?.closePrimary(id, abort.signal);
 	});
 }

@@ -137,7 +137,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/2.0.0`; a reload over an older retained manager
+The manager contract is `manager/2.1.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -1717,7 +1717,8 @@ observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/2.0.0` includes preset-first creation resolution and machine
+clearance. `manager/2.1.0` includes awaited primary endpoint teardown,
+preset-first creation resolution and machine
 preference snapshots, alongside caller usage for fleet observations, effective
 thinking from catalog validation, ordinary retained observation, first-input
 origin, independent command admission, exact result references, and
@@ -2149,6 +2150,14 @@ protocol requires a Pi restart before the changed controls load.
 session. It refuses unsaved sessions, active primary work, and unsupported host
 modes. Independent Durable hosts continue. Other extensions' process-local work
 still ends with the primary process.
+
+Ordinary session shutdown waits for its own primary channel and endpoint removal
+before process replacement. A status-display error does not bypass that cleanup.
+Reload refuses an older retained manager rather than mixing lifecycle interfaces.
+If an earlier process replacement left an endpoint registered under the still-live
+PID, another `/restart` does not recover it. Fully quit that Pi process, then start
+a new process with the same saved session. Registration replaces only a proven-dead
+local owner; a connection failure alone never permits endpoint replacement.
 
 Primary `agent_compact` requires an agent-authored summary and retains the whole
 requesting tool batch. It uses the ordinary `turn_end` boundary. A native Durable

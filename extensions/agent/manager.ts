@@ -221,6 +221,8 @@ export class AgentManager {
 	private readonly primaries = new Map<string, PrimaryClient>();
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
 	private readonly closingPrimaries = new Map<string, Promise<void>>();
+	private readonly primaryClosures = new WeakMap<AbortSignal, Map<string, Promise<void>>>();
+	private readonly registeringPrimaries = new WeakMap<AbortSignal, Map<string, Promise<void>>>();
 	private readonly subscriptions = new Map<string, () => void>();
 	private readonly lifecycle = new AbortController();
 	private refreshing = false;
@@ -792,16 +794,28 @@ export class AgentManager {
 		return buildStatusOverview({ ...page, rows: page.rows.map(({ profile: _profile, creatingOwnerId: _creatingOwnerId, ...row }) => row) }, [...this.primaries].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd ?? "", name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel })), failures, awareness);
 	}
 
-	async registerPrimary(ownerId: string, primary: PrimaryClient): Promise<void> {
+	registerPrimary(ownerId: string, primary: PrimaryClient): Promise<void> {
+		const registration = this.registerPrimaryChannel(ownerId, primary);
+		const pending = this.registeringPrimaries.get(primary.signal) ?? new Map<string, Promise<void>>();
+		pending.set(ownerId, registration);
+		this.registeringPrimaries.set(primary.signal, pending);
+		return registration.finally(() => {
+			if (pending.get(ownerId) === registration) pending.delete(ownerId);
+		});
+	}
+
+	private async registerPrimaryChannel(ownerId: string, primary: PrimaryClient): Promise<void> {
 		if (this.stopping(primary)) return;
 		await this.closingPrimaries.get(ownerId);
-		await this.primaryChannels.get(ownerId)?.close();
+		const previous = this.primaries.get(ownerId);
+		if (previous) await this.closePrimary(ownerId, previous.signal);
+		if (this.stopping(primary)) return;
 		const location = await discoverPrimaryLocation(primary.cwd ?? this.options.root);
 		if (this.stopping(primary)) return;
 		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({ id: ownerId, ...location, lastActivityAt: new Date().toISOString(), observedPurpose: this.observedPurpose(primary), sessionFile: primary.sessionFile, name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel, sessionsRoot: this.options.root, signal: primary.signal,
 			promptTrust: (cwd) => primary.promptTrust?.(cwd) ?? Promise.resolve(undefined),
 			deliver: (message) => {
-				if (this.stopping(primary)) throw new Error("Primary session is closed");
+				if (this.stopping(primary) || this.primaries.get(ownerId) !== primary) throw new Error("Primary session is closed");
 				const key = `${ownerId}:${message.sourceId}`;
 				if (this.delivered.has(key)) return;
 				primary.send(message.text, message.details);
@@ -809,20 +823,10 @@ export class AgentManager {
 			},
 		});
 		if (this.stopping(primary)) { await channel.close(); return; }
+		this.primaryClosures.get(primary.signal)?.delete(ownerId);
 		this.primaryChannels.set(ownerId, channel);
 		this.primaries.set(ownerId, primary);
-		primary.signal.addEventListener("abort", () => {
-			if (this.primaries.get(ownerId) !== primary) return;
-			primary.status?.(undefined);
-			this.primaries.delete(ownerId);
-			this.primaryChannels.delete(ownerId);
-			const closing = channel.close().catch((error) => { this.failures.set(`primary:${ownerId}`, errorText(error)); }).finally(() => {
-				if (this.closingPrimaries.get(ownerId) === closing) this.closingPrimaries.delete(ownerId);
-			});
-			this.closingPrimaries.set(ownerId, closing);
-			if (!this.primaries.size) this.releaseClients();
-			this.releaseCatalogObservation();
-		}, { once: true });
+		primary.signal.addEventListener("abort", () => { void this.closePrimary(ownerId, primary.signal).catch(() => {}); }, { once: true });
 		try { this.observeCatalogChanges(); }
 		catch (error) { this.failures.set("catalog-observation", `Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`); }
 		this.rosterChanged();
@@ -838,6 +842,34 @@ export class AgentManager {
 		}
 		if (cursor) this.failures.set("startup", "Startup recovery reached its inventory bound; use agent_list for the remaining storage");
 		await this.enqueueRecovery(due, primary);
+	}
+
+	/** Await only this registration's teardown, including endpoint removal before process replacement. */
+	async closePrimary(ownerId: string, signal: AbortSignal): Promise<void> {
+		const primary = this.primaries.get(ownerId);
+		if (!primary || primary.signal !== signal) {
+			await this.registeringPrimaries.get(signal)?.get(ownerId);
+			return this.primaryClosures.get(signal)?.get(ownerId);
+		}
+		const closures = this.primaryClosures.get(signal);
+		const channel = this.primaryChannels.get(ownerId);
+		this.primaries.delete(ownerId);
+		this.primaryChannels.delete(ownerId);
+		const closing = Promise.resolve().then(() => channel?.close()).catch((error) => {
+			this.failures.set(`primary:${ownerId}`, errorText(error));
+			throw error;
+		}).finally(() => {
+			if (this.closingPrimaries.get(ownerId) === closing) this.closingPrimaries.delete(ownerId);
+		});
+		const ownedClosures = closures ?? new Map<string, Promise<void>>();
+		ownedClosures.set(ownerId, closing);
+		this.primaryClosures.set(signal, ownedClosures);
+		this.closingPrimaries.set(ownerId, closing);
+		try { primary.status?.(undefined); }
+		catch (error) { this.failures.set(`primary-status:${ownerId}`, errorText(error)); }
+		if (!this.primaries.size) this.releaseClients();
+		this.releaseCatalogObservation();
+		await closing;
 	}
 
 	/** Bounded local-machine efforts with full intent only for a shared repository or cwd. */
@@ -1157,10 +1189,7 @@ export class AgentManager {
 		this.stopCatalogObservation?.();
 		this.stopCatalogObservation = undefined;
 		this.rosterListeners.clear();
-		for (const primary of this.primaries.values()) primary.status?.(undefined);
-		this.primaries.clear();
-		for (const channel of this.primaryChannels.values()) void channel.close();
-		this.primaryChannels.clear();
+		for (const [ownerId, primary] of this.primaries) void this.closePrimary(ownerId, primary.signal).catch(() => {});
 		this.releaseClients();
 	}
 

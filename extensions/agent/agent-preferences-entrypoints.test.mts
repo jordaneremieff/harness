@@ -309,7 +309,7 @@ for (const operation of ["creation", "configure"] as const) it(`native ${operati
 });
 
 it("advertises preset-aware process interfaces without changing message admission", () => {
-	assert.equal(MANAGER_CONTRACT, "manager/2.0.0");
+	assert.equal(MANAGER_CONTRACT, "manager/2.1.0");
 	assert.match(CONTROL_BINDING_CONTRACT, /^native-controls\/2\.0\.0;durable=/u);
 	for (const method of ["spawn", "resolve-agent", "place"]) assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/2.0.0`, response: `${method}/2.0.0` });
 	assert.deepEqual(HOST_CONTRACT.operations.configure, { request: "configure/1.3.0", response: "configure/1.3.0" });
