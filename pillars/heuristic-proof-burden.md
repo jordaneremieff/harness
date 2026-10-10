@@ -7,12 +7,13 @@ index: "An agent-set evidence condition delays a change → test its necessity, 
 
 ## Recognition
 
-This heuristic fires when an agent attaches or restores a discretionary evidence condition to a proposed change and any of these holds:
+This heuristic fires when an agent attaches, restores, or keeps a discretionary evidence condition on a proposed change and any of these holds:
 
 - The condition requires recurring evidence collection by a person who has not agreed to it.
 - The demanded proof has no proportionate collection path for the decision it gates.
 - No result from the proposed check would change the decision.
 - An explicitly waived proof requirement returns as a pilot, renamed check, or hidden blocker.
+- Collection has cost far more than expected when the condition was set, and the condition still stands.
 
 Discretionary means chosen by the agent, not required by the operator or a binding constraint. Merely mentioning collection cost does not make a condition proportionate.
 
