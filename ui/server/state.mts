@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { LIMITS } from '../shared/api.ts';
-import type { Appearance, DraftView, EventData, EventName, OperationView, PresentationView, PrimaryView, ReadingView, Target, TargetIndex, TargetState, UnconfirmedInput, Workspace } from '../shared/api.ts';
+import type { Appearance, ConversationLayout, DraftView, EventData, EventName, OperationView, PresentationView, PrimaryView, ReadingView, Target, TargetIndex, TargetState, UnconfirmedInput, Workspace } from '../shared/api.ts';
 
 import { safeText } from './projection.mts';
 
@@ -36,6 +36,38 @@ export function validateTarget(target: Target): void {
   if (typeof id !== 'string' || !id.length || id.length > LIMITS.idChars || /[\x00-\x1f]/.test(id)) throw new StateError('invalid_request', 'Invalid target identity');
   if (target.kind === 'primary' && (!Number.isSafeInteger(target.epoch) || target.epoch < 0)) throw new StateError('invalid_request', 'Invalid target epoch');
 }
+function layoutObject(value: unknown, keys: string[], name: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StateError('invalid_request', `Invalid ${name}`);
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== keys.length || keys.some(key => !Object.hasOwn(record, key))) throw new StateError('invalid_request', `Invalid ${name} fields`);
+  return record;
+}
+function conversationTabKey(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StateError('invalid_request', 'Invalid conversation tab');
+  const tab = value as Record<string, unknown>;
+  if (tab.kind === 'primary') { layoutObject(tab, ['kind'], 'primary tab'); return 'primary'; }
+  if (tab.kind !== 'agent') throw new StateError('invalid_request', 'Invalid conversation tab kind');
+  layoutObject(tab, ['kind', 'identity', 'split'], 'agent tab');
+  validateTarget({kind: 'agent', identity: tab.identity as string});
+  if (typeof tab.split !== 'boolean') throw new StateError('invalid_request', 'Invalid conversation tab split');
+  return `agent:${tab.identity}`;
+}
+/** Layout metadata never changes selection or admits additional agent observations. */
+export function validateConversationLayout(value: unknown): asserts value is ConversationLayout {
+  const layout = layoutObject(value, ['tabs', 'active', 'splitRatio'], 'conversation layout');
+  if (!Array.isArray(layout.tabs) || layout.tabs.length > LIMITS.conversationTabs) throw new StateError('invalid_request', 'Invalid conversation tab count');
+  const keys = new Set<string>();
+  for (const tab of layout.tabs) {
+    const key = conversationTabKey(tab);
+    if (keys.has(key)) throw new StateError('invalid_request', 'Duplicate conversation tab');
+    keys.add(key);
+  }
+  const active = layout.active;
+  const validActive = layout.tabs.length === 0 ? active === null : typeof active === 'number' && Number.isSafeInteger(active) && active >= 0 && active < layout.tabs.length;
+  if (!validActive) throw new StateError('invalid_request', 'Invalid active conversation tab');
+  const ratio = layout.splitRatio;
+  if (typeof ratio !== 'number' || !Number.isSafeInteger(ratio) || ratio < 20 || ratio > 80) throw new StateError('invalid_request', 'Invalid conversation split ratio');
+}
 function revision(actual: number, expected: number, current: unknown): void {
   if (!Number.isSafeInteger(expected) || expected !== actual) throw new StateError('stale_revision', 'The saved revision changed', 409, current);
 }
@@ -62,14 +94,16 @@ async function syncDirectory(path: string): Promise<void> {
   const dir = await open(path, constants.O_RDONLY); try { await dir.sync(); } finally { await dir.close(); }
 }
 
-type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; appearance?: Appearance};
+type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; conversationLayout?: ConversationLayout};
 function validateSelection(input: SelectionInput): void {
       if (input.selectedTarget) validateTarget(input.selectedTarget);
       if (input.primaryKey !== undefined && (typeof input.primaryKey !== 'string' || input.primaryKey.length > 256)) throw new StateError('invalid_request', 'Invalid primary key');
       if (input.panelVisible !== undefined && typeof input.panelVisible !== 'boolean') throw new StateError('invalid_request', 'Invalid panel visibility');
       if (input.sidebarVisible !== undefined && typeof input.sidebarVisible !== 'boolean') throw new StateError('invalid_request', 'Invalid sidebar visibility');
-      if (input.appearance !== undefined && !['dark', 'light', 'system'].includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
-      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'appearance'];
+      if (input.sidebarWidth !== undefined && (!Number.isSafeInteger(input.sidebarWidth) || input.sidebarWidth < LIMITS.sidebarWidthMin || input.sidebarWidth > LIMITS.sidebarWidthMax)) throw new StateError('invalid_request', 'Invalid sidebar width');
+      if (input.appearance !== undefined && !['dark', 'light', 'system', 'latte', 'frappe', 'macchiato', 'mocha'].includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
+      if (input.conversationLayout !== undefined) validateConversationLayout(input.conversationLayout);
+      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'conversationLayout'];
       if (Object.keys(input).some(key => !allowed.includes(key))) throw new StateError('invalid_request', 'Unknown workspace field');
 }
 function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace {
@@ -77,7 +111,9 @@ function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace
       if (input.primaryKey !== undefined) value.primaryKey = input.primaryKey;
       if (input.panelVisible !== undefined) value.panelVisible = input.panelVisible;
       if (input.sidebarVisible !== undefined) value.sidebarVisible = input.sidebarVisible;
+      if (input.sidebarWidth !== undefined) value.sidebarWidth = input.sidebarWidth;
       if (input.appearance !== undefined) value.appearance = input.appearance;
+      if (input.conversationLayout !== undefined) value.conversationLayout = structuredClone(input.conversationLayout);
       if (input.selectedTarget === null) delete value.selectedTarget;
       else if (input.selectedTarget !== undefined) value.selectedTarget = structuredClone(input.selectedTarget);
   return value;
@@ -128,6 +164,7 @@ export class StateStore {
       await this.load('workspaces', LIMITS.workspaces, 8192, value => {
         const record = value as Workspace;
         if (!UUID.test(record.id) || !Number.isSafeInteger(record.revision)) throw new StateError('not_ready', 'Invalid saved workspace', 503);
+        if (record.conversationLayout !== undefined) validateConversationLayout(record.conversationLayout);
         this.workspaces.set(record.id, record);
       });
       await this.load('targets', LIMITS.targets, 96 * 1024, value => {

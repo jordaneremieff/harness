@@ -1,12 +1,17 @@
-import type { AgentRow, Bootstrap, CommandView, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
+import type { AgentRow, Appearance, Bootstrap, CommandView, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
 import { button, copy, details, element, input, rawText } from './dom.ts';
 import type { Modal } from './modal.ts';
 import { operation, request } from './transport.ts';
 import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
 import { relativeTime } from './format.ts';
+import { navigateOptions } from './list-navigation.ts';
 import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
 export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
+const appearanceChoices: readonly [Appearance, string][] = [
+  ['dark', 'Dark'], ['light', 'Light'], ['system', 'System'], ['latte', 'Catppuccin Latte'],
+  ['frappe', 'Catppuccin Frappé'], ['macchiato', 'Catppuccin Macchiato'], ['mocha', 'Catppuccin Mocha'],
+];
 type ResourceKind = 'commands' | 'models' | 'thinking';
 const appCommands: CommandOption[] = [
   {name: 'new', description: 'Start a new session', source: 'app'},
@@ -46,6 +51,14 @@ function duplicateAgentTails(rows: AgentRow[]): Map<string, string> {
   }
   return labels;
 }
+function revealPaletteRow(container: HTMLElement, row: HTMLElement): void {
+  if (container.clientHeight <= 0 || container.scrollHeight <= container.clientHeight) return;
+  const top = container.getBoundingClientRect().top + container.clientTop;
+  const box = row.getBoundingClientRect(); const bottom = top + container.clientHeight;
+  const delta = box.top < top ? box.top - top : box.bottom > bottom ? box.bottom - bottom : 0;
+  const next = Math.max(0, Math.min(container.scrollHeight - container.clientHeight, container.scrollTop + delta));
+  if (next !== container.scrollTop) container.scrollTop = next;
+}
 function paletteSourceOrder(item: CommandOption): number { return item.source === 'app' ? 0 : item.source === 'agent' ? 2 : 1; }
 function agentOrder(row: AgentRow): number { return row.availability === 'live' || row.state === 'working' ? 0 : 1; }
 export function rankPalette(entries: PaletteEntry[], query: string): CommandMatch[] {
@@ -60,7 +73,7 @@ export function rankPalette(entries: PaletteEntry[], query: string): CommandMatc
 }
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; modal: Modal;
-  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void};
+  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; tabs?: {close: () => void; switch: (direction: number) => void; split: () => void; canSplit: () => boolean}};
 export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
@@ -157,7 +170,7 @@ export class Actions {
     const directory = input('Project directory', primary?.cwd ?? (snapshot as Bootstrap | undefined)?.launchCwd ?? '');
     const session = input('Saved session path (optional)'); body.append(directory.label, directory.field, session.label, session.field);
     const start = async (resume: boolean) => {
-      const result = await operation('primary.open', '/api/primaries', {cwd: directory.field.value, ...(resume ? {sessionFile: session.field.value, writerReleased: true} : {})});
+      const result = await operation('primary.open', '/api/primaries', {cwd: directory.field.value, ...(resume ? {sessionFile: session.field.value} : {})});
       const opened = result as unknown as {primaryKey?: string; operation?: OperationView};
       if (opened.operation?.error) throw new Error(opened.operation.error.message);
       if (!opened.primaryKey) throw new Error('Pi did not open the primary. Your project choice stays unchanged.');
@@ -165,7 +178,7 @@ export class Actions {
     };
     const launch = (snapshot as Bootstrap | undefined)?.launchCwd;
     if (launch) body.append(button('Use launch directory', () => { directory.field.value = launch; }));
-    modal.actions(button('Cancel', () => modal.close()), button('Resume saved session', () => { modal.confirm('Confirm saved session resume', `${session.field.value}\nConfirm that this exact file is not open in a terminal or another Pi writer. Pi exposes no external writer lock query.`, () => start(true), 'No other writer · Resume'); }), button('Start new session', () => { void modal.run(() => start(false)); }, 'main-action'));
+    modal.actions(button('Cancel', () => modal.close()), button('Resume saved session', () => { void modal.run(() => start(true)); }), button('Start new session', () => { void modal.run(() => start(false)); }, 'main-action'));
     if (snapshot?.primaries.length) {
       body.append(element('h2', undefined, 'Open in this workspace'));
       for (const item of snapshot.primaries) body.append(button(`${item.sessionName ?? item.sessionId ?? 'Session'} · ${item.cwd} · ${item.lifecycle}`, () => { void modal.run(() => this.ctx.selection({primaryKey: item.key, selectedTarget: null})); }));
@@ -259,7 +272,7 @@ export class Actions {
       entry('Continue in terminal…', 'Release the browser writer', () => this.handoff(), !!primary),
       entry('Session details', 'Identity, state and diagnostics', () => this.sessionDetails(), !!primary),
       entry('Saved drafts and input copies', 'Review retained input', () => this.ctx.recovery()),
-      entry('Appearance', 'Choose dark, light or system', () => this.appearance()),
+      {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', ...appearanceChoices.flatMap(([value, label]) => [value, label, ...(label.startsWith('Catppuccin ') ? [`Catppuccin ${value}`] : [])])]},
       entry('Help', 'Browser controls and terminal fallback', () => this.help()),
       entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), !!primary),
       entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), !!primary),
@@ -275,6 +288,13 @@ export class Actions {
       entry('Model', 'Choose the primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model'),
       entry('Thinking', 'Choose the primary thinking level', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking'),
     ];
+    if (this.ctx.tabs) {
+      const tabs = this.ctx.tabs;
+      entries.push(entry('Close conversation tab', 'Keep its session and draft', tabs.close),
+        entry('Next conversation tab', 'Select the next conversation', () => tabs.switch(1)),
+        entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)),
+        entry('Toggle split with Primary', 'Show Primary beside this agent', tabs.split, tabs.canSplit()));
+    }
     if (primary?.lastError) entries.push(entry('Review retry prompt', 'Restore the last loaded user prompt for review', () => this.retryOutput()));
     if (agent) {
       entries.push(entry('Copy agent identity', agent.identity, () => this.ctx.copyAgent()));
@@ -287,15 +307,57 @@ export class Actions {
     for (const row of agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b))) entries.push({name: agentName(row), tail: tails.get(row.identity), description: [row.availability === 'live' ? row.state : row.availability, compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => this.ctx.selectAgent(row)});
     return entries;
   }
-  palette(): void {
-    const modal = this.ctx.modal; modal.open('Commands'); const token = modal.token;
-    modal.node.dataset.variant = 'palette';
-    const search = input('Search commands and agents'); search.label.className = 'sr-only';
+  sessionMenuEntries(agent = false): PaletteEntry[] {
+    const names = new Set(agent ? ['Copy agent identity', 'Inspect agent activity', 'Saved drafts and input copies', 'Appearance', 'Help'] : ['New session', 'Resume saved session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Session details', 'Saved drafts and input copies', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find in loaded messages', 'Model', 'Thinking', 'Review retry prompt']);
+    return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
+  }
+  sessionMenu(agent = false): void {
+    const modal = this.ctx.modal; modal.open(agent ? 'Agent actions' : 'Session actions');
+    const list = element('div', 'options session-menu');
+    for (const item of this.sessionMenuEntries(agent)) {
+      const row = button(item.name, () => { if (!item.enabled) return; modal.close(); item.run(); }); row.disabled = !item.enabled; list.append(row);
+    }
+    list.append(button('Commands…', () => this.palette()));
+    list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list);
+    list.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }
+  gotoEntries(): PaletteEntry[] {
+    const entries = this.paletteEntries().filter(item => item.source === 'agent'); const primary = this.ctx.primary();
+    if (primary) entries.unshift({name: primary.extension?.title ?? primary.sessionName ?? primary.sessionId ?? 'Primary', description: 'Primary conversation', source: 'primary', enabled: true, title: `primary:${primary.key}:${primary.epoch}`, search: ['primary', primary.key, primary.cwd, ...(primary.sessionId ? [primary.sessionId] : [])], run: () => this.ctx.selectPrimary()});
+    return entries;
+  }
+  palette(mode: 'commands' | 'goto' = 'commands'): void {
+    let dispose = () => {};
+    const modal = this.ctx.modal; modal.open(mode === 'goto' ? 'Goto conversation' : 'Commands', undefined, () => dispose()); const token = modal.token;
+    modal.node.dataset.variant = 'palette'; modal.node.dataset.mode = mode;
+    const search = input(mode === 'goto' ? 'Search conversations' : 'Search commands and agents'); search.label.className = 'sr-only';
     search.field.setAttribute('role', 'combobox'); search.field.setAttribute('aria-autocomplete', 'list'); search.field.setAttribute('aria-expanded', 'true'); search.field.setAttribute('aria-controls', 'palette-list');
     const prompt = element('span', 'palette-prompt', '›'); prompt.setAttribute('aria-hidden', 'true');
     const line = element('div', 'palette-input'); line.append(prompt, search.label, search.field);
-    const list = element('div', 'palette-list'); list.id = 'palette-list'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', 'Commands and agents'); modal.body.append(line, list);
+    const list = element('div', 'palette-list'); list.id = 'palette-list'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', mode === 'goto' ? 'Conversations' : 'Commands and agents'); modal.body.append(line, list);
     let active = 0; let matches: ReturnType<typeof rankCommands> = [];
+    const reveal = () => {
+      const selected = list.children[active] as HTMLElement | undefined; if (!selected) return;
+      revealPaletteRow(list, selected); revealPaletteRow(modal.node, selected);
+    };
+    const view = list.ownerDocument.defaultView;
+    if (!view) throw new Error('The palette requires a document view.');
+    const sizePalette = () => {
+      if (!modal.owns(token)) { dispose(); return; }
+      const limit = Number.parseFloat(view.getComputedStyle(modal.node).maxHeight);
+      const row = Number.parseFloat(view.getComputedStyle(list).getPropertyValue('--palette-row-size'));
+      const border = list.offsetHeight - list.clientHeight;
+      // Scroll height includes the input, optional footer, and errors, but excludes dialog borders.
+      const chrome = modal.node.scrollHeight - list.offsetHeight + modal.node.offsetHeight - modal.node.clientHeight;
+      const budget = `${Math.max(row + border, limit - chrome)}px`;
+      if (list.style.getPropertyValue('--palette-available-height') !== budget) list.style.setProperty('--palette-available-height', budget);
+      reveal();
+    };
+    const observer = new ResizeObserver(sizePalette);
+    dispose = () => { observer.disconnect(); view.removeEventListener('resize', sizePalette); };
+    observer.observe(line); observer.observe(modal.body);
+    const error = modal.node.querySelector('#modal-error'); if (error) observer.observe(error);
+    view.addEventListener('resize', sizePalette);
     const run = (index: number) => {
       if (!modal.owns(token)) return;
       const selected = matches[index]?.item as PaletteEntry | undefined; if (!selected?.enabled) return;
@@ -305,11 +367,11 @@ export class Actions {
       const rows = [...list.children] as HTMLElement[];
       rows.forEach((row, index) => { row.setAttribute('aria-selected', String(index === active)); });
       const selected = rows[active];
-      if (selected) { search.field.setAttribute('aria-activedescendant', selected.id); selected.scrollIntoView({block: 'nearest'}); }
+      if (selected) { search.field.setAttribute('aria-activedescendant', selected.id); reveal(); }
       else search.field.removeAttribute('aria-activedescendant');
     };
     const paint = () => {
-      const previous = matches[active]?.item as PaletteEntry | undefined; const entries = this.paletteEntries();
+      const previous = matches[active]?.item as PaletteEntry | undefined; const entries = mode === 'goto' ? this.gotoEntries() : this.paletteEntries();
       matches = rankPalette(entries, search.field.value.trim());
       active = Math.max(0, matches.findIndex(match => match.item.name === previous?.name && match.item.source === previous?.source && (match.item as PaletteEntry).title === previous?.title)); list.replaceChildren();
       matches.forEach((match, index) => {
@@ -323,7 +385,7 @@ export class Actions {
         row.append(name, element('span', 'palette-desc', item.description), element('span', 'palette-source', item.source.toLowerCase()));
         list.append(row);
       });
-      select();
+      sizePalette(); select();
     };
     search.field.addEventListener('input', () => { active = 0; matches = []; paint(); });
     search.field.addEventListener('keydown', raw => {
@@ -332,14 +394,15 @@ export class Actions {
       else if (event.key === 'Enter') { event.preventDefault(); if (!event.repeat) run(active); }
     });
     this.commandPaint = () => { if (modal.owns(token)) paint(); };
-    paint(); search.field.focus(); void this.load('commands').then(page => {
+    paint(); search.field.focus(); if (mode === 'goto') return;
+    void this.load('commands').then(page => {
       if (!modal.owns(token)) return;
       paint(); if (page.nextCursor) {
         const primary = this.ctx.primary(); const version = this.resourceVersion;
         const more = button('More discovered commands', () => { more.disabled = true; void modal.run(async () => {
           try { await this.moreCommands(primary, version, page); more.hidden = !page.nextCursor; }
           finally { more.disabled = false; }
-        }, false); }); modal.body.append(more);
+        }, false); }); modal.body.append(more); sizePalette();
       }
     }).catch(error => { if (modal.owns(token)) modal.error(error); });
   }
@@ -374,7 +437,14 @@ export class Actions {
   }
   appearance(): void {
     const modal = this.ctx.modal; modal.open('Appearance'); const rows = element('div', 'options');
-    for (const appearance of ['dark', 'light', 'system'] as const) rows.append(button(appearance[0]?.toUpperCase() + appearance.slice(1), () => { void modal.run(() => this.ctx.selection({appearance})); })); modal.body.append(rows);
+    const current = this.ctx.snapshot()?.workspace.appearance ?? 'dark'; let selected: HTMLButtonElement | undefined;
+    rows.setAttribute('role', 'menu'); rows.setAttribute('aria-label', 'Appearance');
+    for (const [appearance, label] of appearanceChoices) {
+      const choice = button(label, () => { void modal.run(() => this.ctx.selection({appearance})); });
+      choice.setAttribute('role', 'menuitemradio'); choice.setAttribute('aria-checked', String(appearance === current)); rows.append(choice);
+      if (appearance === current) selected = choice;
+    }
+    rows.addEventListener('keydown', event => navigateOptions(event, rows)); modal.body.append(rows); selected?.focus();
   }
   find(): void {
     const modal = this.ctx.modal; modal.open('Find in loaded messages'); const query = input('Text'); modal.body.append(query.label, query.field);
@@ -382,7 +452,7 @@ export class Actions {
   }
   help(): void {
     const modal = this.ctx.modal; modal.open('Help');
-    modal.body.append(element('p', undefined, 'Local browser access only. Pi owns primary work. Durable hosts own agent work. Closing this tab does not stop either.'), element('p', undefined, 'Agent configure is unavailable in this browser. Use the existing primary text command.'), element('p', undefined, 'Enter sends; Shift+Enter inserts a newline. Cmd+K opens Commands. Escape closes a dialog and never stops work.'), element('p', undefined, 'Browser drafts stay in memory until the Mac confirms a save. A browser crash cannot restore text that the Mac did not receive.'));
+    modal.body.append(element('p', undefined, 'Local browser access only. Pi owns primary work. Durable hosts own agent work. Closing this tab does not stop either.'), element('p', undefined, 'Agent configure is unavailable in this browser. Use the existing primary text command.'), element('p', undefined, 'Use Commands to find actions. Closing a dialog never stops work.'), element('p', undefined, 'Browser drafts stay in memory until the Mac confirms a save. A browser crash cannot restore text that the Mac did not receive.'));
   }
   retryOutput(): void {
     const items = this.ctx.primaryEntries();

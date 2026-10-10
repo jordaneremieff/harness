@@ -1,7 +1,8 @@
 import { createReadStream } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
 import { parentPort } from 'node:worker_threads';
-import type { OutputPage } from '../shared/api.ts';
+import type { ImageSource, OutputPage } from '../shared/api.ts';
+import { readImage, type ImageBytes } from './images.mts';
 import type { ProjectedSnapshot } from '../rpc/events.mts';
 import { projectSavedEntry, protectedTextPage } from './projection.mts';
 
@@ -155,6 +156,12 @@ export class SessionIndex {
     }
     return {snapshot: {projected: true, entries, signatures, sizes, coverage: {complete: false, truncated: false, omitted: start}}, start};
   }
+  async image(leaf: string | null, source: ImageSource, digest: string): Promise<ImageBytes> {
+    await this.refresh(); this.branch(leaf);
+    const row = this.ordered.find(row => row.id === source.entryId);
+    if (!row) throw new HistorySourceError('The image entry is absent from the active branch.', 'invalid_request');
+    return readImage(await this.raw(row), source, digest);
+  }
   async output(leaf: string | null, entryId: string, part: number, offset: number): Promise<OutputPage> {
     await this.refresh(); this.branch(leaf);
     const row = this.ordered.find(row => row.id === entryId);
@@ -172,14 +179,15 @@ export class SessionIndex {
   }
 }
 
-type WorkerRequest = {id: number; path: string; action: 'index' | 'page' | 'output'; leaf?: string | null; before?: string; entryId?: string; part?: number; offset?: number};
+type WorkerRequest = {id: number; path: string; action: 'index' | 'page' | 'output' | 'image'; leaf?: string | null; before?: string; entryId?: string; part?: number; offset?: number; source?: ImageSource; digest?: string};
 async function readRequest(index: SessionIndex, request: WorkerRequest): Promise<unknown> {
   if (request.action === 'index') return index.refresh();
   if (request.action === 'page') return index.page(request.leaf ?? null, request.before);
+  if (request.action === 'image' && request.source) return index.image(request.leaf ?? null, request.source, request.digest ?? '');
   return index.output(request.leaf ?? null, request.entryId ?? '', request.part ?? -1, request.offset ?? -1);
 }
 function workerError(error: unknown): {code: string; message: string} {
-  if (error instanceof HistorySourceError) return {code: error.code, message: error.message};
+  if (error instanceof Error && 'code' in error && typeof error.code === 'string') return {code: error.code, message: error.message};
   const missing = error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT';
   return {code: missing ? 'missing_source' : 'history_limit', message: 'Saved history is unavailable.'};
 }

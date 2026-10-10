@@ -1,9 +1,10 @@
-import type { OperationKind } from '../shared/api.ts';
+import { LIMITS, type OperationKind } from '../shared/api.ts';
 import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { ApiError } from './errors.mts';
 import { execute } from './dispatch.mts';
 import * as v from './validate.mts';
+import { validateConversationLayout } from './state.mts';
 
 const KINDS:OperationKind[]=['primary.open','primary.input','primary.stop','primary.session','primary.control','primary.dialog','primary.handoff','agent.input','agent.abort','agent.configure'];
 export async function dispatchView(registry:Registry,context:RequestContext):Promise<unknown> {
@@ -50,7 +51,7 @@ async function unconfirmed(registry:Registry,workspace:string,context:RequestCon
   return registry.store.restoreUnconfirmed(workspace,id,v.integer(body.expectedDraftRevision,'draft revision'));
 }
 async function selection(registry:Registry,workspace:string,body:Record<string,unknown>) {
-  v.fields(body,['expectedRevision','primaryKey','selectedTarget','panelVisible','sidebarVisible','appearance'],['expectedRevision']);
+  v.fields(body,['expectedRevision','primaryKey','selectedTarget','panelVisible','sidebarVisible','sidebarWidth','appearance','conversationLayout'],['expectedRevision']);
   const selectedTarget=body.selectedTarget===undefined?undefined:body.selectedTarget===null?null:v.target(body.selectedTarget);
   const primaryKey=body.primaryKey===undefined?undefined:v.string(body.primaryKey,'primary key');
   if(primaryKey && !registry.saved.has(primaryKey)) throw new ApiError('invalid_request','The primary does not exist.',404);
@@ -65,11 +66,17 @@ async function selection(registry:Registry,workspace:string,body:Record<string,u
   return result;
 }
 function selectionFields(body:Record<string,unknown>,primaryKey:string|undefined,selectedTarget:ReturnType<typeof v.target>|null|undefined) {
+  const conversationLayout=body.conversationLayout;
+  if(conversationLayout!==undefined) validateConversationLayout(conversationLayout);
+  const sidebarWidth=body.sidebarWidth===undefined?undefined:v.integer(body.sidebarWidth,'sidebar width',LIMITS.sidebarWidthMin);
+  if(sidebarWidth!==undefined && sidebarWidth>LIMITS.sidebarWidthMax) throw new ApiError('invalid_request','The sidebar width is invalid.');
   return {expectedRevision:v.integer(body.expectedRevision,'workspace revision'),
     ...(primaryKey!==undefined?{primaryKey}:{}),...(selectedTarget!==undefined?{selectedTarget}:{}),
     ...(body.panelVisible!==undefined?{panelVisible:v.boolean(body.panelVisible,'panel visibility')}:{}),
     ...(body.sidebarVisible!==undefined?{sidebarVisible:v.boolean(body.sidebarVisible,'sidebar visibility')}:{}),
-    ...(body.appearance!==undefined?{appearance:v.choice(body.appearance,['dark','light','system'],'appearance')}: {})};
+    ...(sidebarWidth!==undefined?{sidebarWidth}:{}),
+    ...(conversationLayout!==undefined?{conversationLayout:structuredClone(conversationLayout)}:{}),
+    ...(body.appearance!==undefined?{appearance:v.choice(body.appearance,['dark','light','system','latte','frappe','macchiato','mocha'],'appearance')}: {})};
 }
 async function operations(registry:Registry,context:RequestContext) {
   const {parts,body,method}=context;

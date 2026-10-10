@@ -1,4 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { nativeImage } from "./images.mts";
 import { AgentError } from "./client.mts";
 import { AgentService, type HistoryOptions, type InspectOptions, type SubmitInput } from "./service-runtime.mts";
 import { transferFrame, transferInspect, transferSnapshot } from "./transfer.mts";
@@ -30,6 +31,7 @@ async function invoke(member: string, args: unknown[]): Promise<unknown> {
     case "disconnectWorkspace": return service.disconnectWorkspace(identity);
     case "prepare": return service.prepare(identity);
     case "history": return transferSnapshot(await service.history(identity, args[1] as HistoryOptions));
+    case "image": return nativeImage(service, identity, args[1], args[2]);
     case "inspect": return transferInspect(await service.inspect(identity, args[1] as InspectOptions));
     case "submit": return service.submit(identity, args[1] as SubmitInput);
     case "retrySubmit": return service.retrySubmit(identity, args[1] as SubmitInput);

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import type { ImageSource } from "../shared/api.ts";
+import type { ImageBytes } from "../server/images.mts";
 import { Worker } from "node:worker_threads";
 import type { WorkerOptions } from "node:worker_threads";
 import { AgentError, validateSubmitInput } from "./client.mts";
@@ -298,6 +300,10 @@ export class AgentService {
 	async history(identity: string, options: HistoryOptions = {}): Promise<Snapshot> {
 		this.#ready();
 		return this.#request("history", [identity, options]);
+	}
+	async image(identity: string, source: ImageSource, digest: string): Promise<ImageBytes> {
+		this.#ready();
+		return this.#request("image", [identity, source, digest]);
 	}
 	async inspect(identity: string, options: InspectOptions): Promise<InspectResult> {
 		this.#ready();

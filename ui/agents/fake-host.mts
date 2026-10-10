@@ -34,7 +34,7 @@ export function deferred<T>() {
 	return { promise, resolve, reject };
 }
 
-/** Fabricated wire values follow docs/agent-host-contract.md, not Agent internals. */
+/** Fabricated current host values remain independent of the UI decoder. */
 export function frame(revision = 1, identity = STORAGE): JsonObject {
 	const conversationId = identity === STORAGE ? 1 : Number(identity.split(":")[1]);
 	return {
@@ -92,6 +92,22 @@ export function receipt(identity = STORAGE, requestId = "input-example"): JsonOb
 		result: { sessionId: identity, submissionId: 7, requestId },
 	};
 }
+export function activity(identity = STORAGE): JsonObject {
+	return { view: "activity", format: "compact", sessionId: identity,
+		conversationId: identity === STORAGE ? 1 : Number(identity.split(":")[1]), turns: [], nextCursor: null,
+		metadata: { owner: "here", live: true, operation: null, pending: 0, runningTools: [] },
+		coverage: { scannedEntries: 0, scannedBytes: 0, complete: true, entryLimitReached: false,
+			scanByteLimitReached: false, byteLimitReached: false, bytes: 0, omittedEntries: 0, metadataTruncated: false }, detail: "" };
+}
+export function blockedResult(identity = STORAGE, requestId = "input-example"): JsonObject {
+	const conversationId = identity === STORAGE ? 1 : Number(identity.split(":")[1]);
+	return { view: "result", sessionId: identity, conversationId, submissionId: 7, status: "done", requestId,
+		usage: { models: {}, tools: {} }, recoveryOf: "previous-block",
+		providerBlock: { blockId: "block-example", conversationId, providerSessionId: "provider-example", epoch: 0,
+			model: { provider: "fixture", modelId: "fixture" }, error: "Quota exhausted.", errorRedacted: false,
+			errorTruncated: false, source: "provider", timestamp: 0,
+			originalResults: [{ sessionId: identity, submissionId: 7, requestId }], omittedOriginalResults: 0 } };
+}
 export async function descriptor(): Promise<JsonObject> {
 	const metadata = JSON.parse(
 		await readFile(new URL("../../node_modules/@earendil-works/pi-durable/package.json", import.meta.url), "utf8"),
@@ -104,11 +120,11 @@ export async function descriptor(): Promise<JsonObject> {
 	for (const member of ["snapshot", "observe-open", "observe-frame"]) {
 		operations[member] = { request: `${member}/1.0.0`, response: `${member}/1.0.0`, durable };
 	}
-	operations["task-submit"] = { request: "task-submit/1.0.0", response: "task-submit/1.1.0" };
-	operations.configure = { request: "configure/1.2.0", response: "configure/1.2.0" };
+	operations["task-submit"] = { request: "task-submit/1.0.0", response: "task-submit/1.2.0" };
+	operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
 	operations.inspect = {
 		request: "inspect/1.0.0",
-		response: "98cbec841b6626155420cf582d77e318ea0c8e7607f113dffe04d94bf1b99736",
+		response: "3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863",
 		durable,
 	};
 	operations.dashboard = {

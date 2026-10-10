@@ -5,7 +5,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { createAgentService, deriveEndpoint } from "./index.mts";
-import { deferred, descriptor, FakeHost, frame, receipt } from "./fake-host.mts";
+import { activity, blockedResult, deferred, descriptor, FakeHost, frame, receipt } from "./fake-host.mts";
 
 const storageId = "00000000-0000-4000-8000-000000000001";
 const input = { operationId: "operation-example", message: "An exact retained input.", mode: "steer" as const };
@@ -377,4 +377,23 @@ test("configure reports an explicit unavailable control without a host", async t
   await service.disconnectWorkspace("workspace");
   await service.close();
   await service.close();
+});
+
+
+test("current native input and inspect cross the unchanged worker response interface", async t => {
+  const identity = `${storageId}:2`;
+  const { service, host } = await liveFixture(t, { handler: call => {
+    if (call.member === "task-submit") return { ...receipt(identity, "ui:operation-example"), deduped: true };
+    if (call.member === "inspect") return call.params?.view === "result" ? blockedResult(identity) : activity(identity);
+    return undefined;
+  } });
+  const supported = await service.prepare(identity);
+  assert.equal(supported["task-submit"], true); assert.equal(supported.inspect, true); assert.equal(supported.configure, false);
+  const admitted = await service.submit(identity, input);
+  assert.equal(admitted.identity, identity); assert.equal(admitted.deduped, true);
+  assert.deepEqual(admitted.result, { sessionId: identity, submissionId: 7, requestId: "ui:operation-example" });
+  assert.deepEqual(await service.inspect(identity, { view: "activity" }), activity(identity));
+  assert.deepEqual(await service.inspect(identity, { view: "result", submissionId: 7 }), blockedResult(identity));
+  assert.equal(service.configure(identity, { name: "Not applied" }).available, false);
+  assert.deepEqual(host.calls.map(call => call.member), ["task-submit", "inspect", "inspect"]);
 });

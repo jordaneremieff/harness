@@ -13,7 +13,8 @@ class NodeFake {
   isConnected = false; style = {height: '', maxHeight: ''};
   get offsetHeight(): number { return Number.parseFloat(this.style.height) || 85.5; }
   get scrollHeight(): number { return this.value.split('\n').length * 22.5 + 16; }
-  closest(): {clientHeight: number} { return {clientHeight: 900}; }
+  conversationHeight = 900;
+  closest(): {clientHeight: number} { return {clientHeight: this.conversationHeight}; }
   getBoundingClientRect(): {top: number; bottom: number} { return {top: 0, bottom: 0}; }
   open = false; value = ''; dataset: Record<string, string> = {}; hidden = false; disabled = false; focused = false;
   private text = ''; children: NodeFake[] = []; attrs = new Map<string, string>(); listeners = new Map<string, ((event: EventFake) => void)[]>();
@@ -306,6 +307,14 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     f.composer.setText(Array(20).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
     f.composer.setText('one'); paint(); assert.equal(editor.style.height, '40.5px');
     editor.style.height = '180px'; editor.fire('pointerup'); f.composer.setText('two'); paint(); assert.equal(editor.style.height, '180px');
+    f.composer.setManualHeight(600); paint(); assert.equal(editor.style.height, '540px'); assert.equal(editor.style.maxHeight, '540px');
+    f.composer.setText('short'); paint(); assert.equal(editor.style.height, '540px');
+    editor.conversationHeight = 400; f.composer.resize(); paint(); assert.equal(editor.style.height, '240px');
+    editor.conversationHeight = 900; f.composer.resize(); paint(); assert.equal(editor.style.height, '540px');
+    f.composer.setManualHeight(300.6); paint(); assert.equal(editor.style.height, '301px');
+    f.composer.setManualHeight(0); paint(); assert.equal(editor.style.height, '40.5px');
+    f.composer.setManualHeight(undefined); paint(); assert.equal(editor.style.height, '40.5px'); assert.equal(editor.style.maxHeight, '243px');
+    for (const px of [NaN, Infinity, -1]) assert.throws(() => f.composer.setManualHeight(px), RangeError);
     assert.equal(f.calls.length, 1);
   } finally {
     if (computed) Object.defineProperty(globalThis, 'getComputedStyle', computed); else Reflect.deleteProperty(globalThis, 'getComputedStyle');
@@ -460,4 +469,19 @@ test('offline Resume attaches the exact buffer before preparation and keeps it a
   assert.equal(f.composer.attachRetained('other-workspace', a.target), false); assert.equal(f.composer.target, undefined);
   assert.equal(f.composer.attachRetained('w', {kind: 'agent', identity: 'other'}), false);
   assert.equal(f.composer.attachRetained('w', a.target), true); assert.equal(f.composer.editor.value, 'still editable offline');
+});
+
+
+test('ready agent Send requires a nonempty draft and readiness never submits input', () => {
+  const f = fixture('agent');
+  f.connect(state('a', draft(0, '', 'followUp'), true));
+  assert.equal(f.node('send').hidden, false); assert.equal(f.node('send').disabled, true);
+  f.composer.attach('w', state('a', draft(1, '  ', 'followUp'), true));
+  assert.equal(f.node('send').disabled, true);
+  f.composer.attach('w', state('a', draft(2, 'Fixture text', 'followUp'), true));
+  assert.equal(f.node('send').hidden, false); assert.equal(f.node('send').disabled, false);
+  assert.equal(f.calls.length, 0); assert.equal(f.reservations(), 1);
+  f.composer.availability(true, false, false);
+  assert.equal(f.node('send').hidden, true); assert.equal(f.node('send').disabled, true);
+  assert.equal(f.composer.editor.value, 'Fixture text'); assert.equal(f.calls.length, 0);
 });

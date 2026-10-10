@@ -78,7 +78,7 @@ export class CommandMenu {
     if (overlap > 0 && active.offsetHeight < visibleHeight + overlap) this.menu.scrollTop += overlap;
   }
   private emptyText(): string {
-    return this.state.incomplete ? 'Command list is incomplete · Open Commands (⌘K) to discover more' : `No commands match /${this.state.token?.name ?? ''} · Esc to keep typing`;
+    return this.state.incomplete ? 'Command list is incomplete. Open Commands to discover more.' : `No commands match /${this.state.token?.name ?? ''}`;
   }
   private paint(): void {
     const key = JSON.stringify([this.state.open, this.state.inventory, this.state.token?.name, this.state.active, this.state.matches, this.state.incomplete]);
@@ -89,7 +89,7 @@ export class CommandMenu {
     if (this.state.inventory === 'loading') this.menu.append(element('div', 'command-empty', 'Loading commands…'));
     else if (!this.state.matches.length) this.menu.append(element('div', 'command-empty', this.emptyText()));
     else this.menu.append(...this.state.matches.map((match, index) => this.row(match, index)));
-    const hint = element('div', 'command-hint', '↑↓ to choose · Enter or Tab to insert · Esc to close');
+    const hint = element('div', 'command-hint', `${this.state.matches.length} commands`);
     hint.setAttribute('aria-hidden', 'true'); this.menu.append(hint);
     if (this.state.matches.length) this.showActive(hint);
     const query = this.state.token?.name;

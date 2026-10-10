@@ -43,6 +43,7 @@ export class Modal {
   get openNow(): boolean { return this.node.open; }
   get token(): number { return this.revision; }
   owns(token: number): boolean { return this.node.open && this.revision === token; }
+  restoreFocus(node: HTMLElement): void { if (this.node.open) this.restore = node; else node.focus({preventScroll: true}); }
   close(): void { this.cancelAction = undefined; this.node.close(); }
   cancel(): void { if (this.cancelAction) this.cancelAction(); else this.close(); }
   error(error: unknown): void { setText(byId('modal-error'), errorMessage(error)); }

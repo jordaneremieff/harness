@@ -4,13 +4,14 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Bootstrap } from "../shared/api.ts";
-import { assertAdmitted, assertFixturePresentation, assertQuietSave, openProject, options, requireFake, type Options } from "./smoke.mts";
+import { assertAdmitted, assertFixturePresentation, assertQuietSave, emptyToolResultHeader, openProject, options, requireFake, type Options } from "./smoke.mts";
 
-function setupPage(calls: string[], provider = "acceptance-fixture") {
+function setupPage(calls: string[], provider = "acceptance-fixture", currentProject = false) {
   const state = { workspace: { primaryKey: "fixture" }, primaries: [{ key: "fixture", model: { provider } }] } as Bootstrap;
   return {
     async evaluate<T = unknown>(expression: string): Promise<T> {
       calls.push(`evaluate:${expression}`);
+      if (expression === "Boolean(document.querySelector('#modal[open] #picker-search'))") return currentProject as T;
       return state as T;
     },
     async waitFor(expression: string): Promise<void> { calls.push(`wait:${expression}`); },
@@ -19,7 +20,8 @@ function setupPage(calls: string[], provider = "acceptance-fixture") {
 const setupOptions: Options = { url: "http://127.0.0.1:1234/", out: ".", fake: true, cwd: "/fixture-project", prompt: "no-dialog" };
 const projectSteps = [
   /evaluate:.*"#project-button"/,
-  /wait:.*#modal\[open\] #picker-project/,
+  /wait:.*#modal\[open\] #picker-project, #modal\[open\] #picker-search/,
+  /evaluate:.*Boolean\(document.querySelector\('#modal\[open\] #picker-search'\)\)/,
   /evaluate:.*"#picker-project".*node.value="\/fixture-project"/,
   /evaluate:.*textContent.trim\(\)==="Continue"/,
   /wait:.*#modal\[open\] #picker-search/,
@@ -61,6 +63,18 @@ test("fixture presentation refuses empty tool result headers and false send unce
   assert.doesNotThrow(() => assertFixturePresentation({ emptyToolResultHeaders: 0, inputReceipt: "Admitted", controlReceipt: "Control completed" }));
 });
 
+test("fixture DOM assertion detects empty tool results by accessible role without a role header", () => {
+  const message = (label: string, children: number, errorHidden: boolean) => ({
+    getAttribute: (name: string) => name === "aria-label" ? label : null,
+    querySelector: (selector: string) => selector === ".message-body" ? {childElementCount: children} : selector === ".message-error" ? {hidden: errorHidden} : null,
+  });
+  const headers = (rows: ReturnType<typeof message>[]) => ({emptyToolResultHeaders: rows.filter(emptyToolResultHeader).length});
+  assert.throws(() => assertFixturePresentation({...headers([message("toolResult message", 0, true)]), inputReceipt: "Admitted"}), /empty toolResult/);
+  assert.doesNotThrow(() => assertFixturePresentation({...headers([message("toolResult message", 1, true)]), inputReceipt: "Admitted"}));
+  assert.doesNotThrow(() => assertFixturePresentation({...headers([message("toolResult message", 0, false)]), inputReceipt: "Admitted"}));
+  assert.doesNotThrow(() => assertFixturePresentation({...headers([message("User message", 0, true)]), inputReceipt: "Admitted"}));
+});
+
 test("draft acknowledgment is quiet: routine Saved text and persistence exceptions fail", () => {
   assert.doesNotThrow(() => assertQuietSave(""));
   assert.doesNotThrow(() => assertQuietSave("Saving draft…"));
@@ -100,10 +114,10 @@ test("fixture project setup continues before starting a new session", async () =
     await action();
   });
   assert.deepEqual(checks, ["7.1 explicit disposable project/session open:fixture"]);
-  assertSteps(calls, [...projectSteps, /evaluate:.*textContent.trim\(\)==="Start new session"/, ...readySteps]);
+  assertSteps(calls, [...projectSteps, /evaluate:.*textContent.trim\(\)==="New session"/, ...readySteps]);
 });
 
-test("fixture saved session setup uses the current named fields and writer confirmation", async () => {
+test("fixture saved session setup directly opens the current named fields without writer confirmation", async () => {
   const calls: string[] = [];
   await openProject(setupPage(calls), { ...setupOptions, session: "/fixture-session.jsonl" }, async (_name, action) => action());
   assertSteps(calls, [...projectSteps,
@@ -112,9 +126,17 @@ test("fixture saved session setup uses the current named fields and writer confi
     /evaluate:.*textContent==="Project directory".*node.value="\/fixture-project"/,
     /evaluate:.*textContent==="Saved session path".*node.value="\/fixture-session.jsonl"/,
     /evaluate:.*textContent.trim\(\)==="Resume saved session"/,
-    /evaluate:.*textContent.trim\(\)==="No other writer · Resume"/,
     ...readySteps,
   ]);
+});
+
+test("fixture project setup explicitly returns to Projects from the current project session list", async () => {
+  const calls: string[] = [];
+  await openProject(setupPage(calls, "acceptance-fixture", true), setupOptions, async (_name, action) => action());
+  assertSteps(calls, [...projectSteps.slice(0, 3),
+    /evaluate:.*textContent.trim\(\)==="Projects…"/,
+    /wait:.*#modal\[open\] #picker-project/,
+    ...projectSteps.slice(3), /evaluate:.*textContent.trim\(\)==="New session"/, ...readySteps]);
 });
 
 test("fixture setup leaves read-only runs untouched and still rejects a real selected provider", async () => {

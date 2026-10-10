@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { CatalogRow } from '../agents/index.mts';
-import type { AgentRow, CachedRoster, DisplayCoverage, EntryView, JsonDisplay, MessageView, PartView, ProjectedFrame } from '../shared/api.ts';
+import type { AgentRow, CachedRoster, DisplayCoverage, EntryView, ImageSource, JsonDisplay, MessageView, PartView, ProjectedFrame, ToolOutputInfo } from '../shared/api.ts';
+import { imagePart, imageSource } from './images.mts';
 
 const TEXT_BYTES = 64 * 1024;
 const DISPLAY_BYTES = 60 * 1024;
@@ -23,54 +24,129 @@ export function safeText(value: unknown, maxBytes = TEXT_BYTES): string {
   while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
   return `${bytes.subarray(0, end).toString('utf8')}\n[truncated]`;
 }
+/** Structured preview cuts mark their own tail without changing protected raw text. */
+function projectedText(value: string, maxBytes: number): string {
+  const clean = safeText(value, Number.MAX_SAFE_INTEGER);
+  const cap = Math.max(0, Math.floor(maxBytes));
+  if (Buffer.byteLength(clean) <= cap) return clean;
+  if (cap < 3) return '';
+  const bytes = Buffer.from(clean); let end = cap - 3;
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+  return `${bytes.subarray(0, end).toString('utf8')}…`;
+}
 export function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 function coverage(truncated = false, omitted = 0): DisplayCoverage {
   return {complete: !truncated, truncated, omitted, ...(truncated ? {reason: 'Display limits or protected content'} : {})};
 }
+const STRUCTURED_INPUT_BYTES = 128 * 1024;
+const STRUCTURED_OUTPUT_BYTES = 16 * 1024;
+type StructuredBudget = {input: number; output: number; nodes: number; scan?: number};
+/** Trust is selected by an internal caller, never by a field in a native result. */
+type ProjectionOptions = {trustedStructured?: boolean; structuredText?: boolean; retainedText?: ReadonlyMap<number, string>; budget?: StructuredBudget; deferred?: (() => void)[]};
+function structuredBudget(): StructuredBudget { return {input: STRUCTURED_INPUT_BYTES, output: STRUCTURED_OUTPUT_BYTES, nodes: 0}; }
+function structuredPriority(key: string, value: unknown): number {
+  const name = safeText(key, 256).replace(/[_\s-]/g, '').toLowerCase();
+  if (/^(?:metadata|meta|coverage|limits|pagination|cursor|nextcursor|usage|tokens?|cost|duration|elapsed|provenance|transport|headers?|source|requestid|entryid|identity|model|timestamp|id|query|queries|scans?|counters?|stats|statistics|consistency|representation|offsets?|start|end|excerptstart|excerptend|field)$/.test(name)) return 2;
+  if (/^(?:body|content|text|documents?|data|records?|results?|items|entries|rows|value|errors?)$/.test(name)) return 0;
+  return value !== null && typeof value === 'object' || typeof value === 'string' && (value.includes('\n') || value.length > 160) ? 0 : 1;
+}
+function structuredValuePriority(value: unknown): number {
+  if (Array.isArray(value)) return 0;
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).reduce((priority, key) => Math.min(priority, structuredPriority(key, record[key])), 2);
+  }
+  return structuredPriority('', value);
+}
+function jsonCandidate(text: string, nested = false): boolean {
+  const trimmed = text.trimStart(), first = trimmed[0];
+  if (nested) return first !== undefined && '{["'.includes(first);
+  return first !== undefined && '{["-0123456789'.includes(first) || /^(?:true|false|null)\s*$/.test(trimmed);
+}
+function decodeStructured(text: string, budget: StructuredBudget, nested = false): {value: unknown} | {blocked: true} | undefined {
+  if (!jsonCandidate(text, nested)) return undefined;
+  const bytes = Buffer.byteLength(text);
+  if (bytes > budget.input) return {blocked: true};
+  budget.input -= bytes;
+  try { return {value: JSON.parse(text)}; } catch { return undefined; }
+}
+function decodeRetained(text: string, budget: StructuredBudget): {value: unknown} | undefined {
+  const bytes = Buffer.byteLength(text); budget.scan ??= STRUCTURED_INPUT_BYTES;
+  if (bytes > budget.scan || bytes > budget.input) return undefined;
+  budget.scan -= bytes;
+  const whole = decodeStructured(text, budget);
+  if (whole) return 'value' in whole ? whole : undefined;
+  const lines = text.split('\n'); if (lines.length > 512) return undefined;
+  const values: unknown[] = [], prose: string[] = []; let roots = 0;
+  const flush = () => { if (prose.length) { values.push(prose.join('\n')); prose.length = 0; } };
+  for (const line of lines) {
+    const decoded = decodeStructured(line, budget, true);
+    if (decoded && 'blocked' in decoded) return undefined;
+    if (!decoded) { prose.push(line); continue; }
+    if (++roots > 128) return undefined;
+    flush(); values.push(decoded.value);
+  }
+  flush(); return roots ? {value: values} : undefined;
+}
 class JsonProjector {
   private nodes = 0;
   private readonly seen = new Set<object>();
   truncated = false;
   private remaining: number;
-  constructor(bytes: number) { this.remaining = bytes; }
-  private omit(): string { this.truncated = true; return OMITTED; }
+  private readonly structured?: StructuredBudget;
+  constructor(bytes: number, structured?: StructuredBudget) { this.remaining = bytes; this.structured = structured; }
+  private omit(): string { this.truncated = true; this.remaining -= sizeOf(OMITTED); return OMITTED; }
+  private unavailable(depth: number): boolean {
+    if (this.nodes >= 2048 || depth > 8 || this.remaining < 32 || this.structured && this.structured.nodes >= 2048) return true;
+    this.nodes++; if (this.structured) this.structured.nodes++; return false;
+  }
+  private string(value: string, depth: number): unknown {
+    const decoded = this.structured ? decodeStructured(value, this.structured, true) : undefined;
+    if (decoded && 'blocked' in decoded) return this.omit();
+    return decoded ? this.visit(decoded.value, depth + 1) : this.text(value);
+  }
   visit(value: unknown, depth = 0): unknown {
-    if (++this.nodes > 2048 || depth > 8 || this.remaining < 32) return this.omit();
+    if (this.unavailable(depth)) return this.omit();
     if (value === null || typeof value === 'boolean') { this.remaining -= 8; return value; }
     if (typeof value === 'number') { this.remaining -= 32; return Number.isFinite(value) ? value : null; }
-    if (typeof value === 'string') return this.text(value);
+    if (typeof value === 'string') return this.string(value, depth);
     if (typeof value !== 'object' || this.seen.has(value)) return this.omit();
     this.seen.add(value);
     return Array.isArray(value) ? this.array(value, depth) : this.record(value as Record<string, unknown>, depth);
   }
   private text(value: string): string {
-    let text = safeText(value, Math.min(TEXT_BYTES, this.remaining - 32));
-    if (sizeOf(text) > this.remaining) text = safeText(text, Math.floor((this.remaining - 32) / 6));
+    let text = projectedText(value, Math.min(TEXT_BYTES, this.remaining - 32));
+    if (sizeOf(text) > this.remaining) text = projectedText(text, Math.floor((this.remaining - 32) / 6));
     this.truncated ||= text !== value; this.remaining -= sizeOf(text); return text;
   }
   private array(value: unknown[], depth: number): unknown[] {
     const result: unknown[] = [];
     for (const item of value) {
-      if (this.nodes >= 2048 || this.remaining < 32) { result.push(this.omit()); break; }
+      if (this.nodes >= 2048 || this.structured && this.structured.nodes >= 2048 || this.remaining < 32) { result.push(this.omit()); break; }
       this.remaining -= 2; result.push(this.visit(item, depth + 1));
     }
     return result;
   }
   private record(value: Record<string, unknown>, depth: number): Record<string, unknown> {
+    const label = value.type === 'image' ? 'Image data omitted from structured display'
+      : (value.type === 'text' || value.type === 'thinking') && value.redacted === true ? 'Redacted content omitted from structured display' : undefined;
+    if (label) { const omitted = {type: 'omitted', label}; this.truncated = true; this.remaining -= sizeOf(omitted); return omitted; }
     const result: Record<string, unknown> = Object.create(null);
-    for (const key of Object.keys(value)) {
-      if (this.nodes >= 2048 || this.remaining < 512) { result['[omitted fields]'] = this.omit(); break; }
-      const displayKey = safeText(key, 256); this.remaining -= sizeOf(displayKey) + 4;
-      result[displayKey] = hiddenKey.test(key) ? this.omit() : this.visit(value[key], depth + 1);
+    const keys = Object.keys(value);
+    if (this.structured) keys.sort((a, b) => structuredPriority(a, value[a]) - structuredPriority(b, value[b]));
+    for (const key of keys) {
+      if (this.nodes >= 2048 || this.structured && this.structured.nodes >= 2048 || this.remaining < 512) { result['[omitted fields]'] = this.omit(); break; }
+      const displayKey = projectedText(key, 256); this.truncated ||= displayKey !== key; this.remaining -= sizeOf(displayKey) + 4;
+      result[displayKey] = hiddenKey.test(key) || hiddenKey.test(displayKey) ? this.omit() : this.visit(value[key], depth + 1);
     }
     return result;
   }
 }
-export function jsonDisplay(raw: unknown, maxBytes = DISPLAY_BYTES): JsonDisplay {
+export function jsonDisplay(raw: unknown, maxBytes = DISPLAY_BYTES, structured?: StructuredBudget): JsonDisplay {
   try {
-    const projector = new JsonProjector(maxBytes); const value = projector.visit(raw); const bytes = sizeOf(value);
+    const projector = new JsonProjector(maxBytes, structured); const value = projector.visit(raw); const bytes = sizeOf(value);
     if (bytes > maxBytes) return {value: '[display byte limit; content omitted]', truncated: true, omittedBytes: bytes};
     return {value, truncated: projector.truncated};
   } catch { return {value: '[malformed display content omitted]', truncated: true}; }
@@ -79,6 +155,28 @@ export const projectJson = jsonDisplay;
 function displayData(raw: unknown, bound = DISPLAY_BYTES): JsonDisplay {
   const data = object(raw), projected = jsonDisplay('value' in data && typeof data.truncated === 'boolean' ? data.value : raw, bound);
   projected.truncated ||= data.truncated === true; return projected;
+}
+function outputTruncation(raw: unknown): ToolOutputInfo['truncation'] {
+  const supplied = object(raw); if (supplied.truncated !== true) return undefined;
+  const result: NonNullable<ToolOutputInfo['truncation']> = {truncated: true};
+  if (supplied.truncatedBy === 'lines' || supplied.truncatedBy === 'bytes') result.truncatedBy = supplied.truncatedBy;
+  for (const field of ['totalLines', 'outputLines', 'totalBytes', 'outputBytes', 'maxLines', 'maxBytes'] as const) {
+    if (tokenCount(supplied[field])) result[field] = supplied[field];
+  }
+  if (supplied.lastLinePartial === true) result.lastLinePartial = true;
+  if (supplied.firstLineExceedsLimit === true) result.firstLineExceedsLimit = true;
+  return result;
+}
+/** Only public read/bash output facts cross this boundary, never details content or file access. */
+export function toolOutputInfo(name: string, raw: unknown): ToolOutputInfo | undefined {
+  if (name !== 'bash' && name !== 'read') return undefined;
+  const source = object(raw); const result: ToolOutputInfo = {};
+  const truncation = outputTruncation(source.truncation); if (truncation) result.truncation = truncation;
+  if (name === 'bash' && typeof source.fullOutputPath === 'string') {
+    const path = safeText(source.fullOutputPath.slice(0, 2048), 1024).trim();
+    if (path) result.fullOutputPath = path;
+  }
+  return result.truncation || result.fullOutputPath ? result : undefined;
 }
 function messageContent(source: Record<string, unknown>): unknown[] {
   if (typeof source.content === 'string') return [{type: 'text', text: source.content}];
@@ -89,37 +187,82 @@ class MessageProjector {
   private remaining = DISPLAY_BYTES - 2048;
   private omitted = 0;
   private changed = false;
-  constructor(privateDepth = 0) { this.depth = privateDepth; }
+  constructor(privateDepth = 0, source?: Pick<ImageSource, 'entryId' | 'message'>, options: ProjectionOptions = {}) {
+    this.depth = privateDepth; this.source = source; this.options = options; this.budget = options.budget ?? structuredBudget();
+  }
   private readonly depth: number;
-  private part(raw: unknown): PartView {
+  private readonly source?: Pick<ImageSource, 'entryId' | 'message'>;
+  private readonly options: ProjectionOptions;
+  private readonly budget: StructuredBudget;
+  private structuredText = false;
+  private readonly sidecars: {part: Extract<PartView, {type: 'text'}>; value: unknown; truncated: boolean}[] = [];
+  private part(raw: unknown, index: number): PartView {
     const part = object(raw);
-    if (part.type === 'text' || part.type === 'thinking') return this.textPart(part);
+    if (part.type === 'text' || part.type === 'thinking') return this.textPart(part, index);
+    if (part.type === 'image') {
+      const projected = imagePart(part);
+      if (projected.type === 'omitted') this.omitted++;
+      if (projected.type === 'image' && !projected.source && this.source && index < 100) projected.source = imageSource({...this.source, part: index});
+      return projected;
+    }
     if (part.type === 'toolCall') {
       const args = displayData(part.arguments, Math.max(128, Math.floor(this.remaining / 2))); this.changed ||= args.truncated;
       return {type: 'toolCall', callId: safeText(part.id ?? part.callId, 256), name: safeText(part.name, 256), arguments: args};
     }
     if (part.type === 'toolResult' && this.depth < 8) {
-      const nested = new MessageProjector(this.depth + 1).message({role: 'toolResult', content: part.parts, toolCallId: part.callId, toolName: part.name, isError: part.isError}, 'nested', 'final');
+      const nested = new MessageProjector(this.depth + 1, undefined, {trustedStructured: this.options.trustedStructured, budget: this.budget, deferred: this.options.deferred}).message({role: 'toolResult', content: part.parts, toolCallId: part.callId, toolName: part.name, isError: part.isError, details: part.output}, 'nested', 'final');
       this.changed ||= nested.coverage.truncated; return nested.parts[0] ?? {type: 'omitted', label: 'Tool result omitted'};
     }
     if (part.type === 'omitted') { this.changed = true; return {type: 'omitted', label: safeText(part.label, 256)}; }
     this.omitted++;
-    const label = part.type === 'image' ? 'Image omitted' : 'Unsupported content omitted';
-    return {type: 'omitted', label};
+    return {type: 'omitted', label: 'Unsupported content omitted'};
   }
-  private textPart(part: Record<string, unknown>): PartView {
+  private textPart(part: Record<string, unknown>, index: number): PartView {
     const text = part.type === 'text' ? part.text : part.thinking ?? part.text;
     const display = part.redacted === true ? '[redacted thinking]' : safeText(text, Math.min(TEXT_BYTES, this.remaining - 128));
     this.changed ||= display !== text;
-    return {type: part.type === 'text' ? 'text' : 'thinking', text: display, ...(part.redacted === true ? {redacted: true} : {})};
+    const result: PartView = {type: part.type === 'text' ? 'text' : 'thinking', text: display, ...(part.redacted === true ? {redacted: true} : {})};
+    if (result.type === 'text' && part.redacted !== true && this.structuredText) this.structuredPart(part, result, index);
+    if (this.options.trustedStructured && part.redacted !== true && display === text) this.continuation(part, result);
+    return result;
+  }
+  private continuation(part: Record<string, unknown>, result: PartView): void {
+    const more = object(part.more);
+    if ((result.type !== 'text' && result.type !== 'thinking') || typeof more.entryId !== 'string' || more.entryId.length > 256 || !Number.isSafeInteger(more.part) || Number(more.part) < 0 || Number(more.part) >= 100 || !Number.isSafeInteger(more.offset) || Number(more.offset) < 0) return;
+    result.more = {entryId: safeText(more.entryId, 256), part: Number(more.part), offset: Number(more.offset)};
+  }
+  private structuredPart(raw: Record<string, unknown>, part: Extract<PartView, {type: 'text'}>, index: number): void {
+    const prior = object(raw.structured);
+    if (this.options.trustedStructured) {
+      if (typeof prior.truncated === 'boolean' && Object.hasOwn(prior, 'value')) this.sidecars.push({part, value: prior.value, truncated: prior.truncated});
+      return;
+    }
+    const text = this.options.retainedText?.get(index) ?? raw.text;
+    if (typeof text !== 'string') return;
+    const decoded = decodeRetained(text, this.budget);
+    if (decoded) this.sidecars.push({part, value: decoded.value, truncated: false});
+  }
+  private attachStructured(parts: PartView[]): void {
+    const candidates = this.sidecars.filter(item => parts.includes(item.part));
+    candidates.sort((a, b) => structuredValuePriority(a.value) - structuredValuePriority(b.value));
+    for (const candidate of candidates) {
+      const allowance = Math.min(this.remaining, this.budget.output) - 64;
+      if (allowance < 256) break;
+      const structured = jsonDisplay(candidate.value, allowance, this.budget);
+      structured.truncated ||= candidate.truncated;
+      const cost = sizeOf({...candidate.part, structured}) - sizeOf(candidate.part);
+      if (cost > this.remaining || cost > this.budget.output) continue;
+      candidate.part.structured = structured; this.remaining -= cost; this.budget.output -= cost;
+      this.changed ||= structured.truncated;
+    }
   }
   private parts(source: Record<string, unknown>): PartView[] {
     const content = messageContent(source); const parts: PartView[] = [];
     const limit = Array.isArray(source.parts) ? 101 : 100;
     this.omitted += Math.max(0, content.length - limit);
-    for (const item of content.slice(0, limit)) {
+    for (const [index, item] of content.slice(0, limit).entries()) {
       if (this.remaining < 256 && object(item).type !== 'omitted') { this.omitted++; continue; }
-      const projected = this.part(item); let bytes = sizeOf(projected);
+      const projected = this.part(item, index); let bytes = sizeOf(projected);
       if (bytes > this.remaining && (projected.type === 'text' || projected.type === 'thinking')) {
         projected.text = safeText(projected.text, Math.max(64, Math.floor((this.remaining - 128) / 6))); bytes = sizeOf(projected); this.changed = true;
       }
@@ -130,11 +273,14 @@ class MessageProjector {
   }
   message(raw: unknown, id: string, state: 'partial' | 'final'): MessageView {
     const source = object(raw);
+    this.structuredText = this.acceptsStructured(source);
     const hidden = source.role === 'custom' && source.display === false;
     const parts = hidden ? [] : this.parts(source);
+    const contentParts = [...parts];
     if (typeof source.role !== 'string') this.omitted++;
     if (source.role === 'toolResult' && !parts.some(part => part.type === 'toolResult')) {
-      const result: PartView = {type: 'toolResult', callId: safeText(source.toolCallId, 256), name: safeText(source.toolName, 256), parts: [...parts], isError: source.isError === true};
+      const result: Extract<PartView, {type: 'toolResult'}> = {type: 'toolResult', callId: safeText(source.toolCallId, 256), name: safeText(source.toolName, 256), parts: [...parts], isError: source.isError === true};
+      const output = toolOutputInfo(result.name, source.details); if (output) result.output = output;
       parts.splice(0, parts.length, result);
     }
     if (this.omitted) parts.push({type: 'omitted', label: `${this.omitted} content parts omitted`});
@@ -144,19 +290,40 @@ class MessageProjector {
     if (prior.complete === false) result.coverage.complete = false;
     if (this.omitted === 0 && typeof prior.reason === 'string') result.coverage.reason = safeText(prior.reason, 256);
     messageDetails(source, result);
+    this.structuredResult(contentParts, result);
     return result;
   }
+  private acceptsStructured(source: Record<string, unknown>): boolean {
+    return this.options.trustedStructured === true || (source.role === 'toolResult' || this.options.structuredText === true) && object(source.coverage).truncated !== true;
+  }
+  private structuredResult(parts: PartView[], result: MessageView): void {
+    const attach = () => {
+      this.attachStructured(parts);
+      if (structuredCut(parts)) { result.coverage.complete = false; result.coverage.truncated = true; result.coverage.reason ??= 'Display limits or protected content'; }
+    };
+    if (this.options.deferred) this.options.deferred.push(attach); else attach();
+  }
+}
+function structuredCut(parts: PartView[]): boolean {
+  return parts.some(part => part.type === 'text' && part.structured?.truncated || part.type === 'toolResult' && structuredCut(part.parts));
+}
+function tokenCount(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
+function assistantUsage(raw: unknown): MessageView['usage'] {
+  const usage = object(raw); const {input, cacheRead, cacheWrite} = usage;
+  return tokenCount(input) && tokenCount(cacheRead) && tokenCount(cacheWrite) ? {input, cacheRead, cacheWrite} : undefined;
 }
 function messageDetails(source: Record<string, unknown>, result: MessageView): void {
+  if (result.role === 'assistant') { const usage = assistantUsage(source.usage); if (usage) result.usage = usage; }
   if (typeof source.timestamp === 'number' && Number.isFinite(source.timestamp)) result.timestamp = source.timestamp;
   if (typeof source.stopReason === 'string') result.stopReason = safeText(source.stopReason, 256);
   if (typeof (source.errorMessage ?? source.error) === 'string') result.error = safeText(source.errorMessage ?? source.error, 1024);
 }
-export function projectMessage(raw: unknown, id: string, state: 'partial' | 'final' = 'final'): MessageView {
-  try { return new MessageProjector().message(raw, id, state); }
+export function projectMessage(raw: unknown, id: string, state: 'partial' | 'final' = 'final', source?: Pick<ImageSource, 'entryId' | 'message'>, options: ProjectionOptions = {}): MessageView {
+  try { return new MessageProjector(0, source, options).message(raw, id, state); }
   catch { return {id: safeText(id, 256), role: 'unknown', state, parts: [{type: 'omitted', label: 'Malformed message omitted'}], coverage: coverage(true, 1)}; }
 }
 function entryMessages(source: Record<string, unknown>): unknown[] | undefined {
+  if (source.type === 'custom_message') return [{role: 'custom', content: source.content, display: source.display, timestamp: source.timestamp}];
   if (source.message !== undefined) return [source.message];
   if (Array.isArray(source.messages)) return source.messages;
   if (Array.isArray(source.model)) return source.model;
@@ -167,24 +334,37 @@ function entryHeading(source: Record<string, unknown>, kind: string): string | u
   if ((kind === 'custom' || kind === 'custom_message') && typeof source.customType === 'string') return safeText(source.customType, 256);
   return typeof source.head === 'string' ? safeText(source.head, 256) : undefined;
 }
-function displayEntry(raw: unknown, fallbackId: string): EntryView {
+function entryImageSource(id: string, message: number, raw: unknown): Pick<ImageSource, 'entryId' | 'message'> | undefined {
+  const entry = object(raw);
+  if ((typeof entry.id !== 'string' && typeof entry.id !== 'number') || String(entry.id) !== id || id.startsWith('live:')) return undefined;
+  try { const source = imageSource({entryId: id, message, part: 0}); return {entryId: source.entryId, message: source.message}; }
+  catch { return undefined; }
+}
+function displayEntry(raw: unknown, fallbackId: string, options: ProjectionOptions = {}): EntryView {
   const source = object(raw);
   const id = safeText(typeof source.id === 'string' || typeof source.id === 'number' ? String(source.id) : fallbackId, 256);
   const kind = safeText(source.type ?? source.kind, 256) || 'unknown'; const result: EntryView = {id, kind};
   const hiddenCustom = kind === 'custom_message' && source.display === false;
   const messages = hiddenCustom ? [{...source, role: 'custom', content: []}] : entryMessages(source);
+  const budget = options.budget ?? structuredBudget(), deferred: (() => void)[] = [];
   if (messages) {
     result.messages = messages.slice(0, 8).map((item, index) => {
       const message = object(item); const messageId = Array.isArray(message.parts) && typeof message.id === 'string' ? message.id : `${id}:message:${index}`;
-      return projectMessage(item, messageId);
+      const source = entryImageSource(id, index, raw);
+      return projectMessage(item, messageId, 'final', source, {...options, budget, deferred});
     });
     if (messages.length > 8) result.data = {value: 'Additional messages omitted', truncated: true};
   } else result.data = displayData(source.data ?? source);
   const head = entryHeading(source, kind); if (head !== undefined) result.head = head;
-  return sizeOf(result) <= DISPLAY_BYTES ? result : {id, kind, ...(head !== undefined ? {head} : {}), data: {value: '[entry display byte limit; content omitted]', truncated: true}};
+  return finishEntry(result, budget, deferred);
 }
-export function projectEntry(raw: unknown, id: string = randomUUID()): EntryView {
-  try { return displayEntry(raw, id); }
+function finishEntry(result: EntryView, budget: StructuredBudget, deferred: (() => void)[]): EntryView {
+  budget.output = Math.min(budget.output, Math.max(0, DISPLAY_BYTES - sizeOf(result) - 1024));
+  for (const attach of deferred) attach();
+  return sizeOf(result) <= DISPLAY_BYTES ? result : {id: result.id, kind: result.kind, ...(result.head !== undefined ? {head: result.head} : {}), data: {value: '[entry display byte limit; content omitted]', truncated: true}};
+}
+export function projectEntry(raw: unknown, id: string = randomUUID(), options: ProjectionOptions = {}): EntryView {
+  try { return displayEntry(raw, id, options); }
   catch { return {id: safeText(id, 256), kind: 'unknown', data: {value: '[malformed entry omitted]', truncated: true}}; }
 }
 const OUTPUT_BYTES = 8192;
@@ -210,14 +390,16 @@ export function projectSavedEntry(raw: unknown): EntryView {
   const message = object(source.message);
   if (message.role === 'custom' && message.display === false) return projectEntry(raw);
   const content = messageContent(message);
+  const retainedText = new Map<number, string>();
   const previews = content.map((rawPart, index) => {
     const part = object(rawPart);
     const value = part.type === 'text' ? part.text : part.type === 'thinking' ? part.thinking ?? part.text : undefined;
     if (typeof value !== 'string' || part.redacted === true) return {part, index};
+    if (part.type === 'text') retainedText.set(index, value);
     const preview = protectedTextPage(value, 0);
     return {part: {...part, ...(part.type === 'text' ? {text: preview.text} : {thinking: preview.text, text: preview.text})}, index, preview};
   });
-  const entry = projectEntry({...source, message: {...message, content: previews.map(item => item.part)}});
+  const entry = projectEntry({...source, message: {...message, content: previews.map(item => item.part)}}, source.id, {retainedText});
   const displayed = entry.messages?.[0];
   if (!displayed) return entry;
   const parts = message.role === 'toolResult' && displayed.parts[0]?.type === 'toolResult' ? displayed.parts[0].parts : displayed.parts;
@@ -255,6 +437,12 @@ function frameStatus(raw: unknown): ProjectedFrame['status'] {
   if (tasks) status.tasks = tasks; if (submissions) status.submissions = submissions;
   return status;
 }
+function unavailableLiveImages(parts: PartView[]): void {
+  for (const part of parts) {
+    if (part.type === 'image') delete part.source;
+    else if (part.type === 'toolResult') unavailableLiveImages(part.parts);
+  }
+}
 class FrameProjector {
   private bytes = 4096;
   omitted = 0;
@@ -265,7 +453,7 @@ class FrameProjector {
     for (let index = value.length - 1; index >= 0; index--) {
       if (rows.length >= 100 || this.bytes >= 230 * 1024) { this.omitted += index + 1; break; }
       const entry = projectEntry(value[index]);
-      if (partial) entry.messages?.forEach(message => { message.state = 'partial'; });
+      if (partial) entry.messages?.forEach(message => { message.state = 'partial'; unavailableLiveImages(message.parts); });
       const size = sizeOf(entry);
       if (this.bytes + size > 230 * 1024) { this.omitted += index + 1; break; }
       this.bytes += size; rows.push(entry);

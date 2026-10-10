@@ -416,35 +416,39 @@ test('selected, focused and retained rows remain in scope as the clock and retai
   assert.equal(f.node.children.length, 1); assert.equal(f.node.query('roster-older').textContent, '4 older');
   roster.resume('hidden', true); f.flush(); assert.equal(f.node.children[0]?.dataset.identity, 'hidden'); assert.equal(f.node.children[0]?.dataset.action, 'resume');
 });
-test('printable roster keys reveal the filter, search older rows, and Escape restores row focus', t => {
+test('printable roster keys focus the visible filter, search older rows, and Escape returns to the roster', t => {
   t.mock.method(Date, 'now', () => 3 * 86400000);
   const f = setup(); const roster = new Roster(() => {}, () => {});
   roster.set([row('live', {name: 'Live'}), row('older', {name: 'Needle', availability: 'stored', state: 'done'})], page([])); f.flush();
-  assert.equal(f.search.hidden, true);
+  assert.equal(f.search.hidden, false);
   const select = required(f.node.children[0]).query('row-select'); select.focus();
   let prevented = 0; const key = (value: string, extra: Record<string, unknown> = {}) => f.node.dispatch('keydown', {key: value, preventDefault: () => { prevented++; }, ...extra});
   for (const extra of [{ctrlKey: true}, {metaKey: true}, {altKey: true}, {isComposing: true}, {defaultPrevented: true}]) key('n', extra);
-  key('ArrowDown'); assert.equal(f.search.hidden, true); assert.equal(prevented, 0);
+  key('ArrowDown'); assert.equal(f.search.hidden, false); assert.equal(prevented, 0);
   key('n'); assert.equal(prevented, 1); assert.equal(f.search.hidden, false); assert.equal(f.search.value, 'n'); assert.equal(f.document.activeElement, f.search);
   assert.equal(f.node.children[0]?.dataset.identity, 'older'); assert.throws(() => f.node.query('roster-older'));
   let stopped = false; f.search.dispatch('keydown', {key: 'Escape', preventDefault: () => { prevented++; }, stopPropagation: () => { stopped = true; }}); f.flush();
-  assert.equal(stopped, true); assert.equal(f.search.value, ''); assert.equal(f.search.hidden, true); assert.equal(f.document.activeElement, select);
-  select.focus(); key('L'); f.search.value = ''; f.search.dispatch('input'); assert.equal(f.search.hidden, false);
-  f.search.dispatch('blur'); f.flush(); assert.equal(f.search.hidden, true);
+  assert.equal(stopped, true); assert.equal(f.search.value, ''); assert.equal(f.search.hidden, false); assert.equal(f.document.activeElement, f.node);
+  f.search.value = 'Li'; f.search.dispatch('input'); select.focus(); key('v');
+  assert.equal(f.search.value, 'Liv'); assert.equal(f.document.activeElement, f.search); assert.equal(f.node.children[0]?.dataset.identity, 'live');
+  f.search.value = ''; f.search.dispatch('input'); assert.equal(f.search.hidden, false);
+  f.search.dispatch('blur'); f.flush(); assert.equal(f.search.hidden, false);
   f.node.focus(); key('x'); roster.set([], page([])); f.flush();
   f.search.dispatch('keydown', {key: 'Escape', preventDefault: () => {}, stopPropagation: () => {}}); assert.equal(f.document.activeElement, f.node);
 });
-test('Escape restores an old focused row after the filter removes it', t => {
+test('filter visibility never changes and Escape restores the recent scope without an obsolete focus pin', t => {
   const now = 3 * 86400000; t.mock.method(Date, 'now', () => now);
-  const f = setup(); const roster = new Roster(() => {}, () => {});
+  const f = setup();
+  Object.defineProperty(f.search, 'hidden', {get: () => false, set: () => { throw new Error('Roster must not change filter visibility'); }});
+  const roster = new Roster(() => {}, () => {});
   roster.set([row('old', {name: 'Old', availability: 'stored', state: 'done'}), row('live', {name: 'Live'})], page([])); f.flush();
   f.node.query('roster-older').click(); const old = required(f.node.children.find(child => child.dataset.identity === 'old')); old.query('row-select').focus();
   f.node.query('roster-older').click();
   f.node.dispatch('keydown', {key: 'x', preventDefault: () => {}}); assert.equal(old.parentNode, null);
-  let hidden = f.search.hidden;
-  Object.defineProperty(f.search, 'hidden', {get: () => hidden, set: value => { const changed = hidden !== value; hidden = value; if (changed && value) f.search.dispatch('blur'); }});
   f.search.dispatch('keydown', {key: 'Escape', preventDefault: () => {}, stopPropagation: () => {}}); f.flush();
-  assert.equal(old.parentNode, f.node); assert.equal(f.document.activeElement, old.query('row-select'));
+  assert.equal(f.document.activeElement, f.node); assert.equal(f.search.value, ''); assert.equal(f.search.hidden, false);
+  assert.equal(old.parentNode, null); assert.equal(f.node.query('roster-older').textContent, '1 older');
+  f.search.dispatch('blur'); assert.equal(f.search.hidden, false);
 });
 test('the visible scoped list uses a 20 pixel estimate and preserves selected virtual pins', t => {
   const now = 3 * 86400000; t.mock.method(Date, 'now', () => now);

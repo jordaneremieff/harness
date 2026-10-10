@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises';
 import { request, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,7 +22,7 @@ function agents() {
   let detached!: () => void; const disconnected = new Promise<void>(resolve => { detached = resolve; });
   const forbidden = async (): Promise<never> => { throw new Error('No native agent work belongs in this fixture'); };
   const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, refresh: async () => { counts.refresh++; return empty.scan; },
-    prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, inspect: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
+    prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
     configure: () => { throw new Error('No native agent configuration'); }, hide: async () => {},
     disconnectWorkspace: async () => { counts.disconnect++; detached(); }, close: async () => { counts.close++; }};
   return {adapter, counts, disconnected};
@@ -162,16 +162,36 @@ test('logout closes SSE and releases observations without stopping a busy primar
   assert.doesNotThrow(() => process.kill(pid, 0)); assert.equal((await app.call('/api/bootstrap')).status, 401);
 });
 
-test('saved-session open and resume require manual writer release; stale epochs never dispatch', {timeout: 15000}, async context => {
+test('saved-session open and resume are direct and idempotent; obsolete fields and stale epochs refuse', {timeout: 15000}, async context => {
   const app = await fixture(context); await app.login(); const saved = join(app.cwd, 'saved.jsonl'); await writeFile(saved, `${JSON.stringify({type:'session',version:3,id:'fixture',timestamp:new Date(0).toISOString(),cwd:app.cwd})}\n`);
-  const id = await app.reserve('primary.open'); const missing = await app.call('/api/primaries', 'POST', {cwd: app.cwd, sessionFile: saved}, {'Idempotency-Key': id});
-  assert.equal(missing.status, 400); assert.equal(app.registry.sessions.size, 0);
+  const id = await app.reserve('primary.open'); const obsolete = await app.call('/api/primaries', 'POST', {cwd: app.cwd, sessionFile: saved, writerReleased: true}, {'Idempotency-Key': id});
+  assert.equal(obsolete.status, 400); assert.equal(app.registry.sessions.size, 0);
+  for (const sessionFile of ['relative.jsonl', '/invalid\u0000session', app.cwd, `${app.cwd}/missing.jsonl`]) {
+    assert.equal((await app.call('/api/primaries', 'POST', {cwd: app.cwd, sessionFile}, {'Idempotency-Key': id})).status, 400);
+  }
+  assert.equal(app.registry.sessions.size, 0);
   const boot = data<Bootstrap>(await app.call('/api/bootstrap')); const events = await stream(context, app, boot);
-  const body = {cwd: app.cwd, sessionFile: saved, writerReleased: true}; const opened = await openPrimary(app, events, body);
+  const body = {cwd: app.cwd, sessionFile: saved}; const opened = await openPrimary(app, events, body);
   const repeated = await app.call('/api/primaries', 'POST', body, {'Idempotency-Key': opened.id}); assert.equal(data<{primaryKey: string}>(repeated).primaryKey, opened.target.key); assert.equal(app.registry.sessions.size, 1);
   const resume = await app.reserve('primary.session', opened.target); const route = `/api/primaries/${opened.target.key}/session`;
-  assert.equal((await app.call(route, 'POST', {epoch: 1, action: 'resume', sessionFile: saved}, {'Idempotency-Key': resume})).status, 400);
-  const accepted = await app.call(route, 'POST', {epoch: 1, action: 'resume', sessionFile: saved, writerReleased: true}, {'Idempotency-Key': resume}); assert.equal(data<OperationView>(accepted).state, 'completed');
+  assert.equal((await app.call(route, 'POST', {epoch: 1, action: 'resume', sessionFile: saved, writerReleased: true}, {'Idempotency-Key': resume})).status, 400);
+  const resumeBody = {epoch: 1, action: 'resume', sessionFile: saved};
+  const accepted = await app.call(route, 'POST', resumeBody, {'Idempotency-Key': resume}); assert.equal(data<OperationView>(accepted).state, 'completed');
+  const replay = await app.call(route, 'POST', resumeBody, {'Idempotency-Key': resume}); assert.deepEqual(data<OperationView>(replay), data<OperationView>(accepted));
+  const duplicate = await app.reserve('primary.open');
+  const conflict = data<{operation: OperationView}>(await app.call('/api/primaries', 'POST', {cwd: app.cwd, sessionFile: `${app.cwd}/./saved.jsonl`}, {'Idempotency-Key': duplicate}));
+  assert.equal(conflict.operation.state, 'rejected'); assert.equal(conflict.operation.error?.code, 'operation_conflict');
+  assert.equal(app.registry.sessions.size, 1);
+  const otherFile = join(app.cwd, 'other.jsonl'); await writeFile(otherFile, `${JSON.stringify({type:'session',version:3,id:'other',timestamp:new Date(0).toISOString(),cwd:app.cwd})}\n`);
+  const other = await openPrimary(app, events, {cwd: app.cwd, sessionFile: otherFile});
+  const otherResume = await app.reserve('primary.session', other.target);
+  const refused = data<OperationView>(await app.call(`/api/primaries/${other.target.key}/session`, 'POST', {epoch: other.target.epoch, action: 'resume', sessionFile: `${app.cwd}/./saved.jsonl`}, {'Idempotency-Key': otherResume}));
+  assert.equal(refused.state, 'rejected'); assert.equal(refused.error?.code, 'operation_conflict');
+  assert.equal(app.registry.primary(other.target.key).view.epoch, other.target.epoch);
+  assert.equal(app.registry.primary(other.target.key).view.sessionFile, await realpath(otherFile));
+  const staleResume = await app.reserve('primary.session', opened.target);
+  const staleTransition = data<OperationView>(await app.call(route, 'POST', resumeBody, {'Idempotency-Key': staleResume}));
+  assert.equal(staleTransition.error?.code, 'stale_epoch');
   const stale = await app.reserve('primary.control', opened.target);
   const rejected = data<OperationView>(await app.call(`/api/primaries/${opened.target.key}/control`, 'POST', {epoch: 1, action: 'stats'}, {'Idempotency-Key': stale}));
   assert.equal(rejected.state, 'rejected'); assert.equal(rejected.error?.code, 'stale_epoch'); assert.equal(app.registry.primary(opened.target.key).view.epoch, 2);

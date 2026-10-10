@@ -1,6 +1,7 @@
 import { parseMarkdown } from './markdown.ts';
 import type { MarkdownBlock, MarkdownInline } from './markdown.ts';
 import { button, copy, element } from './dom.ts';
+import { highlight } from './highlight.ts';
 
 function inlineNode(node: MarkdownInline): Node {
   if (node.type === 'text') return document.createTextNode(node.text);
@@ -21,7 +22,8 @@ function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
   return list;
 }
 function codeBlock(node: Extract<MarkdownBlock, {type: 'code'}>): HTMLElement {
-  const wrap = element('div', 'code-block'); const pre = element('pre'); const code = element('code', undefined, node.text);
+  const wrap = element('div', 'code-block'); const pre = element('pre'); const code = element('code');
+  code.append(highlight(node.text, node.language));
   if (node.language) code.dataset.language = node.language;
   pre.append(code); wrap.append(button('copy', () => { void copy(node.text, wrap); }, 'copy'), pre); return wrap;
 }
@@ -42,6 +44,7 @@ function block(node: MarkdownBlock): HTMLElement {
   switch (node.type) {
     case 'paragraph': { const p = element('p'); p.append(inline(node.children)); return p; }
     case 'heading': { const h = element(`h${Math.min(6, Math.max(1, node.level))}` as 'h1'); h.append(inline(node.children)); return h; }
+    case 'rule': return element('hr');
     case 'quote': { const quote = element('blockquote'); quote.append(...node.children.map(block)); return quote; }
     case 'list': return listBlock(node);
     case 'code': return codeBlock(node);

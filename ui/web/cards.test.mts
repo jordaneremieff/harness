@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { presentTool } from './cards.ts';
+import { presentTool, presentToolPreview, readRange, compactRead } from './cards.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 
 class Node extends EventTarget {
   children: Node[] = []; private text = ''; className = ''; open = false;
   get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
   set textContent(value: string) { this.text = value; this.children = []; }
-  append(...nodes: Node[]): void { this.children.push(...nodes); }
+  append(...nodes: Node[]): void { for (const node of nodes) this.children.push(...(node.tag === '#fragment' ? node.children : [node])); }
   readonly tag: string;
   constructor(tag: string) { super(); this.tag = tag; }
   set innerHTML(_value: string) { throw new Error('Unsafe HTML'); }
@@ -15,7 +15,7 @@ class Node extends EventTarget {
 const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
 afterEach(() => { if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document'); });
 function setup(): {context: PresentationContext; inspections: {title: string; source: () => string}[]} {
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new Node(tag), createTextNode: (text: string) => { const node = new Node('#text'); node.textContent = text; return node; }}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new Node(tag), createDocumentFragment: () => new Node('#fragment'), createTextNode: (text: string) => { const node = new Node('#text'); node.textContent = text; return node; }}});
   const inspections: {title: string; source: () => string}[] = [];
   const context: PresentationContext = {bounded: (text, limit = 65536) => text.slice(0, limit), rawText: value => JSON.stringify(value), structured: () => new Node('div') as unknown as HTMLElement,
     inspection: (title, source) => { inspections.push({title, source}); const node = new Node('details'); node.textContent = title; return node as unknown as HTMLDetailsElement; }};
@@ -76,11 +76,63 @@ test('long replacements and written content have bounded previews and lazy retai
   assert.equal(unicode.textContent.isWellFormed(), true);
   assert.ok(unicode.children.filter(child => child.tag === 'pre').reduce((total, child) => total + child.textContent.length, 0) <= 16384);
 });
-test('public legacy replacements work; unfamiliar or malformed calls keep the generic fallback', () => {
+test('public single replacements work; unfamiliar or malformed calls keep the generic fallback', () => {
   const {context} = setup();
   assert.match(node(presentTool(source('edit', {oldText: 'old', newText: 'new'}), context)).textContent, /- old\n\+ new/);
   for (const [name, args] of [['other', {edits: [{oldText: 'old', newText: 'new'}]}], ['edit', {edits: [{oldText: 'old'}]}], ['edit', {edits: []}], ['write', {content: 5}], ['edit', null]] as const) assert.equal(presentTool(source(name, args), context), undefined);
   assert.equal(presentTool({callId: 'tool', name: 'edit', status: 'working', argumentText: '{"edits":'}, context), undefined);
+});
+test('compact reads classify exact skill and resource names using supplied paths only', () => {
+  assert.deepEqual(compactRead({path: '/skills/audit/SKILL.md'}), {name: '[skill]', target: 'audit'});
+  assert.deepEqual(compactRead({path: '/skills/audit/child/../SKILL.md'}), {name: '[skill]', target: 'audit'});
+  assert.deepEqual(compactRead({path: 'SKILL.md'}), {name: '[skill]', target: 'SKILL.md'});
+  assert.deepEqual(compactRead({path: 'wrong', file_path: '/skills/audit/SKILL.md'}), {name: '[skill]', target: 'audit'});
+  for (const file of ['AGENTS.override.md', 'AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD']) assert.deepEqual(compactRead({path: `dir/${file}`}), {name: 'read resource', target: `dir/${file}`});
+  for (const path of ['docs/readme.md', 'README.md', '/package/docs/api.md', '/skills/audit/skill.md', 'AGENTS.OVERRIDE.md', 'CLAUDE.mD']) assert.equal(compactRead({path}), undefined);
+  assert.equal(compactRead({path: 7}), undefined);
+});
+test('read ranges use supplied offset and limit, not inferred output lines', () => {
+  assert.equal(readRange({offset: 7, limit: 4}), 'lines 7–10');
+  assert.equal(readRange({limit: 2}), 'lines 1–2');
+  assert.equal(readRange({offset: 7}), 'lines 7 onward');
+  assert.equal(readRange({offset: null, limit: 4}), 'lines 1–4');
+  assert.equal(readRange({offset: 7, limit: null}), 'lines 7 onward');
+  assert.equal(readRange({offset: null, limit: null}), '');
+  for (const args of [{}, {offset: 0}, {limit: 0}, {offset: '7'}, {limit: -1}, {offset: Infinity}, {offset: Number.MAX_SAFE_INTEGER, limit: 2}]) assert.equal(readRange(args), '');
+});
+test('bash command uses inert supplied text and preserves multiline commands on expansion', () => {
+  const {context} = setup();
+  const card = node(presentTool(source('bash', {command: 'printf "<script>"\nprintf done'}), context));
+  assert.equal(card.children[0]?.className, 'tool-command');
+  assert.equal(card.textContent, '$ printf "<script>"\nprintf done');
+  assert.equal(presentTool(source('bash', {command: 7}), context), undefined);
+});
+test('collapsed write and edit previews expose supplied content with diff classes', () => {
+  setup();
+  const edit = node(presentToolPreview(source('edit', {edits: [{oldText: '<script>\nold', newText: 'new\ntext'}, {oldText: 'x', newText: 'y'}]})));
+  assert.deepEqual(edit.children.filter(child => child.tag === 'span').map(child => child.className), ['diff-del', 'diff-del', 'diff-add', 'diff-add']);
+  assert.match(edit.textContent, /- <script>\n- old\n\+ new\n\+ text\n…/);
+  assert.equal(edit.className, 'tool-content-preview');
+  const write = node(presentToolPreview(source('write', {content: 'one\ntwo\nthree'})));
+  assert.equal(write.textContent, 'one\ntwo\n…');
+  assert.equal(node(presentToolPreview(source('write', {content: ''}))).textContent, '(empty content)');
+  assert.equal(presentToolPreview(source('write', {content: 'file text'}, 'error')), undefined);
+  assert.equal(presentToolPreview(source('unknown', {content: 'text'})), undefined);
+  const long = node(presentToolPreview(source('edit', {oldText: '😀'.repeat(5000), newText: '😀'.repeat(5000)})));
+  assert.equal(long.textContent.isWellFormed(), true); assert.ok(long.textContent.length < 1800);
+});
+test('write previews highlight by extension and preserve exact supplied text and edit colors', () => {
+  const {context} = setup(); const content = 'const value: number = 42;';
+  const call = source('write', {path: 'source.ts', content});
+  for (const preview of [node(presentToolPreview(call)), node(presentTool(call, context)).children.find(child => child.tag === 'pre')]) {
+    assert.ok(preview); assert.equal(preview.textContent, content);
+    assert.ok(preview.children.some(child => child.className === 'syn-keyword'));
+    assert.ok(preview.children.some(child => child.className === 'syn-number'));
+  }
+  const edit = node(presentTool(source('edit', {path: 'source.ts', oldText: content, newText: 'return 2;'}), context));
+  const lines = edit.children.filter(child => child.tag === 'pre').flatMap(child => child.children).filter(child => child.tag === 'span');
+  assert.equal(lines.every(child => child.className === 'diff-del' || child.className === 'diff-add'), true);
+  assert.equal(lines.every(child => child.children.length === 0), true);
 });
 test('incomplete retained arguments have a visible omission warning', () => {
   const {context} = setup(); const value = source('edit', {edits: [{oldText: '[omitted]', newText: 'new'}]}); assert.ok(value.args); value.args = {...value.args, truncated: true};

@@ -1,16 +1,30 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
-import type { OperationView, PrimaryControl, PrimaryView } from '../shared/api.ts';
+import { afterEach, beforeEach, test } from 'node:test';
+import type { Appearance, OperationView, PrimaryControl, PrimaryView, Snapshot } from '../shared/api.ts';
 import { Actions, COMMAND_INVENTORY_PAGE_LIMIT, rankPalette } from './actions.ts';
 import { Modal } from './modal.ts';
 import { rankCommands } from './command-menu-state.ts';
 import type { ActionContext } from './actions.ts';
 const originalFetch = globalThis.fetch;
-afterEach(() => {globalThis.fetch = originalFetch;});
+const originalResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
+class FakeResizeObserver {
+  static instances: FakeResizeObserver[] = [];
+  observed = new Set<Element>(); disconnected = false;
+  private callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {this.callback = callback; FakeResizeObserver.instances.push(this);}
+  observe(node: Element): void {this.observed.add(node);}
+  disconnect(): void {this.disconnected = true; this.observed.clear();}
+  fire(): void {this.callback([], this as unknown as ResizeObserver);}
+}
+beforeEach(() => {FakeResizeObserver.instances = []; Object.defineProperty(globalThis, 'ResizeObserver', {configurable: true, value: FakeResizeObserver});});
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  if (originalResizeObserver) Object.defineProperty(globalThis, 'ResizeObserver', originalResizeObserver); else Reflect.deleteProperty(globalThis, 'ResizeObserver');
+});
 const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/project', lifecycle: 'ready', activity: 'idle', pendingDialogs: [], pendingOperationIds: [], capabilities: {control: true}};
 const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'completed', target: {kind: 'primary', key: 'p', epoch: 1}, createdAt: '2026-10-08T12:00:00Z', updatedAt: '2026-10-08T12:00:00Z'};
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
-  return {snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, selectAgent: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
+  return {snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
 }
 test('model and thinking choices bind the displayed primary rather than a later selection', async () => {
   const seen: string[] = []; const emitted: OperationView[] = [];
@@ -36,18 +50,29 @@ class FakeNode extends EventTarget {
   title = ''; tagName = ''; children: FakeNode[] = []; textContent = ''; className = ''; type = ''; id = ''; value = ''; disabled = false; hidden = false; tabIndex = 0; dataset: Record<string, string> = {}; attributes = new Map<string, string>();
   append(...nodes: FakeNode[]): void {this.children.push(...nodes);}
   replaceChildren(...nodes: FakeNode[]): void {this.children = nodes;}
-  open = false; isConnected = true;
-  querySelector(): null {return null;}
-  querySelectorAll(): FakeNode[] {return this.children.filter(node => node.tagName === 'button');}
+  open = false; isConnected = true; clientHeight = 0; offsetHeight = 0; scrollHeight = 0; clientTop = 0; scrollTop = 0; rowSize = 32;
+  box = {top: 0, bottom: 0}; properties = new Map<string, string>(); styleWrites = 0;
+  style = {getPropertyValue: (name: string) => this.properties.get(name) ?? '', setProperty: (name: string, value: string) => {this.properties.set(name, value); this.styleWrites++;}};
+  get ownerDocument(): Document {return globalThis.document;}
+  getBoundingClientRect(): {top: number; bottom: number} {return this.box;}
+  querySelector(selector: string): FakeNode | null {return this.querySelectorAll(selector)[0] ?? null;}
+  querySelectorAll(selector = ''): FakeNode[] {
+    if (selector.startsWith('#')) return this.children.filter(node => node.id === selector.slice(1));
+    return this.children.filter(node => node.tagName === 'button' && (!selector.includes(':disabled') || !node.disabled) && (!selector.includes('[hidden]') || !node.hidden));
+  }
   showModal(): void {this.open = true;}
   close(): void {this.open = false; this.dispatchEvent(new Event('close'));}
   setAttribute(name: string, value: string): void {this.attributes.set(name, value);}
   removeAttribute(name: string): void {this.attributes.delete(name);}
-  scrollIntoView(): void {}
+  scrollIntoView(): void {throw new Error('Palette selection must scroll only its owned containers.');}
   focus(): void {focused = this;}
 }
 let focused: FakeNode | undefined;
-function fakeDocument() {return {createElement: (tagName: string) => {const node = new FakeNode(); node.tagName = tagName; return node;}, getElementById: () => new FakeNode()};}
+class FakeView extends EventTarget {
+  limit = 630;
+  getComputedStyle(node: FakeNode) {return {maxHeight: `${this.limit}px`, getPropertyValue: (name: string) => name === '--palette-row-size' ? `${node.rowSize}px` : ''};}
+}
+function fakeDocument() {return {defaultView: new FakeView(), get activeElement() {return focused;}, createElement: (tagName: string) => {const node = new FakeNode(); node.tagName = tagName; return node;}, getElementById: () => new FakeNode()};}
 function textOf(node: FakeNode): string {return node.textContent + node.children.map(textOf).join('');}
 test('journal and HTTP copies of one handoff completion open its result once', () => {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -232,11 +257,12 @@ test('a failed later page retains incomplete items and retry reuses confirmed ea
 
 function paletteFixture(overrides: Partial<ActionContext> = {}) {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: fakeDocument()});
-  const body = new FakeNode(); const node = new FakeNode(); let open = true;
-  const modal = {node, body, token: 1, open: () => body, owns: () => open, close: () => {open = false;}, error: () => {}} as unknown as ActionContext['modal'];
+  const document = fakeDocument(); Object.defineProperty(globalThis, 'document', {configurable: true, value: document});
+  const body = new FakeNode(); const node = new FakeNode(); const error = new FakeNode(); error.id = 'modal-error'; node.append(body, error);
+  let open = true; let token = 0; let closed: (() => void) | undefined;
+  const modal = {node, body, get token() {return token;}, open: (_title: string, _cancel?: () => void, close?: () => void) => {open = true; token++; closed = close; body.replaceChildren(); return body;}, owns: (value: number) => open && value === token, close: () => {open = false; closed?.(); closed = undefined;}, run: async (action: () => Promise<unknown>) => {await action(); open = false; closed?.(); closed = undefined;}, error: () => {}} as unknown as ActionContext['modal'];
   globalThis.fetch = async () => commandResponse([], null);
-  return {actions: new Actions(context({modal, ...overrides})), body, node, isOpen: () => open, restore: () => {
+  return {actions: new Actions(context({modal, ...overrides})), body, node, error, modal, view: document.defaultView, isOpen: () => open, restore: () => {
     if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');
   }};
 }
@@ -287,6 +313,69 @@ test('palette uses ranked rows, marked names and input-owned keyboard selection'
     assert.equal(key(field, 'ArrowDown').defaultPrevented, true); assert.equal(focused, field);
     assert.equal(list.children[1]?.attributes.get('aria-selected'), 'true'); key(field, 'ArrowUp'); key(field, 'Enter');
     assert.equal(selected, 'exact'); assert.equal(f.isOpen(), false);
+  } finally {f.restore();}
+});
+test('palette keyboard selection scrolls only the nearest list edge and keeps input focus', () => {
+  const f = paletteFixture(); try {
+    f.actions.gotoEntries = () => Array.from({length: 5}, (_, index) => ({name: String(index), description: '', source: 'agent', enabled: true, run() {}}));
+    f.actions.palette('goto'); const field = f.body.children[0]?.children[2]; const list = f.body.children[1]; assert.ok(field && list);
+    f.node.clientHeight = 500; f.node.scrollHeight = 500;
+    list.box = {top: 100, bottom: 172}; list.clientTop = 4; list.clientHeight = 64; list.offsetHeight = 72; list.scrollHeight = 160;
+    list.children.forEach((row, index) => {row.getBoundingClientRect = () => ({top: 104 + index * 32 - list.scrollTop, bottom: 136 + index * 32 - list.scrollTop});});
+    key(field, 'ArrowDown'); assert.equal(list.scrollTop, 0);
+    key(field, 'ArrowDown'); assert.equal(list.scrollTop, 32); assert.equal(f.node.scrollTop, 0);
+    assert.equal(list.children[2]?.getBoundingClientRect().bottom, 168); assert.equal(focused, field);
+    assert.equal(field.attributes.get('aria-activedescendant'), list.children[2]?.id);
+    key(field, 'ArrowUp'); assert.equal(list.scrollTop, 32);
+    key(field, 'ArrowUp'); assert.equal(list.scrollTop, 0);
+    for (let index = 0; index < 6; index++) key(field, 'ArrowDown');
+    assert.equal(list.scrollTop, 96); assert.equal(list.children[4]?.getBoundingClientRect().bottom, 168);
+  } finally {f.restore();}
+});
+test('palette height reserves actual input, footer, error and dialog border space with a one-row minimum', () => {
+  const f = paletteFixture(); try {
+    f.actions.palette('goto'); const list = f.body.children[1]; const observer = FakeResizeObserver.instances[0]; assert.ok(list && observer);
+    assert.ok(observer.observed.has(f.body as unknown as Element)); assert.ok(observer.observed.has(f.error as unknown as Element));
+    list.offsetHeight = 568; list.clientHeight = 560;
+    f.node.offsetHeight = 630; f.node.clientHeight = 628; f.node.scrollHeight = 628;
+    observer.fire(); assert.equal(list.properties.get('--palette-available-height'), '568px');
+    const more = new FakeNode(); more.textContent = 'More discovered commands'; f.body.append(more); f.node.scrollHeight += 44;
+    observer.fire(); assert.equal(list.properties.get('--palette-available-height'), '524px');
+    f.error.textContent = 'Resource request failed'; f.node.scrollHeight += 24;
+    observer.fire(); assert.equal(list.properties.get('--palette-available-height'), '500px');
+    list.offsetHeight = 488; list.clientHeight = 480; f.node.scrollHeight = 616; f.node.offsetHeight = 618; f.node.clientHeight = 616;
+    const writes = list.styleWrites; observer.fire(); assert.equal(list.styleWrites, writes, 'rounded layout does not create a resize-write loop');
+    f.view.limit = 500; f.node.offsetHeight = 500; f.node.clientHeight = 498; f.view.dispatchEvent(new Event('resize'));
+    assert.equal(list.properties.get('--palette-available-height'), '370px');
+    f.view.limit = 100;
+    for (const size of [32, 44, 56]) {list.rowSize = size; observer.fire(); assert.equal(list.properties.get('--palette-available-height'), `${size + 8}px`);}
+  } finally {f.restore();}
+});
+test('an overflowing palette dialog reveals the selected row after list-local adjustment', () => {
+  const f = paletteFixture(); try {
+    f.actions.gotoEntries = () => Array.from({length: 5}, (_, index) => ({name: String(index), description: '', source: 'agent', enabled: true, run() {}}));
+    f.actions.palette('goto'); const field = f.body.children[0]?.children[2]; const list = f.body.children[1]; assert.ok(field && list);
+    f.view.limit = 82; f.node.clientTop = 1; f.node.clientHeight = 80; f.node.offsetHeight = 82; f.node.scrollHeight = 180;
+    list.clientTop = 4; list.clientHeight = 32; list.offsetHeight = 40; list.scrollHeight = 160;
+    list.getBoundingClientRect = () => ({top: 100 - f.node.scrollTop, bottom: 140 - f.node.scrollTop});
+    list.children.forEach((row, index) => {row.getBoundingClientRect = () => ({top: 104 + index * 32 - list.scrollTop - f.node.scrollTop, bottom: 136 + index * 32 - list.scrollTop - f.node.scrollTop});});
+    FakeResizeObserver.instances[0]?.fire(); assert.equal(list.properties.get('--palette-available-height'), '40px');
+    assert.equal(f.node.scrollTop, 55); assert.equal(list.children[0]?.getBoundingClientRect().bottom, 81);
+    for (let index = 0; index < 4; index++) key(field, 'ArrowDown');
+    assert.equal(list.scrollTop, 128); assert.equal(f.node.scrollTop, 55);
+    assert.equal(list.children[4]?.getBoundingClientRect().top, 49); assert.equal(list.children[4]?.getBoundingClientRect().bottom, 81);
+    assert.equal(focused, field);
+  } finally {f.restore();}
+});
+test('palette geometry callbacks release observers on close and reject replacement tokens', () => {
+  const f = paletteFixture(); try {
+    f.actions.palette('goto'); const first = FakeResizeObserver.instances[0]; const oldList = f.body.children[1]; assert.ok(first && oldList);
+    f.modal.close(); assert.equal(first.disconnected, true);
+    const writes = oldList.styleWrites; f.view.limit = 200; f.view.dispatchEvent(new Event('resize')); first.fire(); assert.equal(oldList.styleWrites, writes);
+    f.actions.palette('goto'); const second = FakeResizeObserver.instances[1]; const nextList = f.body.children[1]; assert.ok(second && nextList);
+    f.modal.open('Another dialog'); f.view.limit = 100; const nextWrites = nextList.styleWrites;
+    second.fire(); assert.equal(second.disconnected, true); assert.equal(nextList.styleWrites, nextWrites);
+    f.view.dispatchEvent(new Event('resize')); assert.equal(nextList.styleWrites, nextWrites);
   } finally {f.restore();}
 });
 test('palette blocks disabled Enter and click, and ignores composition keys', () => {
@@ -443,4 +532,131 @@ test('duplicate palette rows render dim-tail spans and retain exact keyboard sel
     field.value = 'conversation-b'; field.dispatchEvent(new Event('input')); assert.equal(list.children.length, 1); assert.equal(list.children[0]?.title, 'store:conversation-b');
     key(field, 'Enter'); assert.equal(selected, 'store:conversation-b');
   } finally {f.restore();}
+});
+
+test('session menus reuse palette availability and preserve primary-only actions', () => {
+  const actions = new Actions(context({primary: () => undefined})); const palette = actions.paletteEntries();
+  for (const item of actions.sessionMenuEntries()) {
+    assert.equal(item.source, 'app'); assert.equal(item.enabled, palette.find(row => row.name === item.name)?.enabled);
+  }
+  assert.equal(actions.sessionMenuEntries().find(item => item.name === 'New session')?.enabled, false);
+  assert.equal(actions.sessionMenuEntries().find(item => item.name === 'Resume saved session')?.enabled, true);
+  assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Refresh agent roster'), false);
+  assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Copy agent identity'), false);
+  const selected = new Actions(context({selectedAgent: () => ({identity: 'selected-agent'})}));
+  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Copy agent identity'), true);
+  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Inspect agent activity'), false);
+  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'New session'), false);
+  const capable = new Actions(context({selectedAgent: () => ({identity: 'selected-agent', capabilities: {history: true, observe: true, input: true, abort: true, configure: false, inspect: true}})}));
+  assert.equal(capable.sessionMenuEntries(true).some(item => item.name === 'Inspect agent activity'), true);
+});
+test('session menu clicks dispatch named actions and disabled rows reject dispatch', () => {
+  const f = paletteFixture(); try {
+    let sessions = 0; let palettes = 0; f.actions.newSession = () => {sessions++;}; f.actions.palette = () => {palettes++;};
+    f.actions.sessionMenu(); const list = f.body.children[0]; assert.ok(list);
+    assert.equal(list.className, 'options session-menu');
+    list.children.find(row => row.textContent === 'New session')?.dispatchEvent(new Event('click')); assert.equal(sessions, 1);
+    list.children.find(row => row.textContent === 'Commands…')?.dispatchEvent(new Event('click')); assert.equal(palettes, 1);
+  } finally {f.restore();}
+  const unavailable = paletteFixture({primary: () => undefined}); try {
+    let sessions = 0; unavailable.actions.newSession = () => {sessions++;}; unavailable.actions.sessionMenu();
+    const row = unavailable.body.children[0]?.children.find(row => row.textContent === 'New session'); assert.ok(row);
+    assert.equal(row.disabled, true); row.dispatchEvent(new Event('click')); assert.equal(sessions, 0);
+  } finally {unavailable.restore();}
+});
+
+test('session menu keyboard navigation skips disabled rows and reaches the full palette', () => {
+  const f = paletteFixture({primary: () => undefined}); try {
+    f.actions.sessionMenu(); const list = f.body.children[0]; assert.ok(list);
+    assert.equal(focused?.textContent, 'Resume saved session');
+    assert.equal(key(list, 'ArrowDown').defaultPrevented, true); assert.equal(focused?.textContent, 'Saved drafts and input copies');
+    key(list, 'End'); assert.equal(focused?.textContent, 'Commands…');
+    key(list, 'Home'); assert.equal(focused?.textContent, 'Resume saved session');
+  } finally {f.restore();}
+});
+
+const themes: [Appearance, string][] = [['dark', 'Dark'], ['light', 'Light'], ['system', 'System'], ['latte', 'Catppuccin Latte'], ['frappe', 'Catppuccin Frappé'], ['macchiato', 'Catppuccin Macchiato'], ['mocha', 'Catppuccin Mocha']];
+test('Appearance lists every theme in order and checks the current workspace choice', () => {
+  for (const current of [...themes.map(([value]) => value), undefined]) {
+    const f = paletteFixture({snapshot: () => current ? {workspace: {appearance: current}} as Snapshot : undefined}); try {
+      f.actions.appearance(); const rows = f.body.children[0]; assert.ok(rows);
+      assert.equal(rows.attributes.get('role'), 'menu'); assert.equal(rows.attributes.get('aria-label'), 'Appearance');
+      assert.deepEqual(rows.children.map(row => row.textContent), themes.map(([, label]) => label));
+      for (const [index, [value]] of themes.entries()) {
+        assert.equal(rows.children[index]?.attributes.get('role'), 'menuitemradio');
+        assert.equal(rows.children[index]?.attributes.get('aria-checked'), String(value === (current ?? 'dark')));
+      }
+      assert.equal(focused?.textContent, themes.find(([value]) => value === (current ?? 'dark'))?.[1]);
+    } finally {f.restore();}
+  }
+});
+test('Appearance saves each exact theme value through the existing selection path', async () => {
+  let current: Appearance = 'dark'; const selected: Appearance[] = [];
+  const f = paletteFixture({snapshot: () => ({workspace: {appearance: current}} as Snapshot), selection: async change => {assert.ok(change.appearance); selected.push(change.appearance); current = change.appearance;}}); try {
+    for (const [index, [value]] of themes.entries()) {
+      f.actions.appearance(); f.body.children[0]?.children[index]?.dispatchEvent(new Event('click')); await Promise.resolve();
+      assert.equal(current, value); assert.equal(f.isOpen(), false);
+      f.actions.appearance(); assert.equal(f.body.children[0]?.children[index]?.attributes.get('aria-checked'), 'true');
+    }
+    assert.deepEqual(selected, themes.map(([value]) => value));
+  } finally {f.restore();}
+});
+test('Appearance keyboard navigation reaches the other themes without changing the choice', () => {
+  const f = paletteFixture({snapshot: () => ({workspace: {appearance: 'latte'}} as Snapshot)}); try {
+    f.actions.appearance(); const rows = f.body.children[0]; assert.ok(rows);
+    key(rows, 'ArrowDown'); assert.equal(focused?.textContent, 'Catppuccin Frappé');
+    key(rows, 'End'); assert.equal(focused?.textContent, 'Catppuccin Mocha');
+    key(rows, 'Home'); assert.equal(focused?.textContent, 'Dark');
+    assert.equal(rows.children[3]?.attributes.get('aria-checked'), 'true');
+  } finally {f.restore();}
+});
+test('theme names discover the single Appearance palette action', () => {
+  const actions = new Actions(context()); const entries = actions.paletteEntries();
+  const appearance = entries.find(item => item.name === 'Appearance'); assert.ok(appearance);
+  assert.equal(appearance.description, 'Choose a theme'); assert.equal(appearance.enabled, true);
+  assert.equal(entries.filter(item => item.name === 'Appearance').length, 1); assert.equal(entries.some(item => item.name.startsWith('Theme:')), false);
+  for (const query of ['theme', 'catppuccin', 'Catppuccin Frappe', ...themes.flat()]) {
+    assert.ok(rankPalette(entries, query).some(match => match.item === appearance), query);
+  }
+  let opened = false; actions.appearance = () => {opened = true;}; appearance.run(); assert.equal(opened, true);
+});
+
+test('Goto lists only the primary and loaded agents and preserves identity-based selection', () => {
+  const base = {storageId: 'store', cwd: '/project', modifiedAt: Date.now(), state: 'idle', owner: 'unknown' as const, availability: 'live' as const, partial: false};
+  const rows = [{...base, identity: 'agent-first', name: 'Same name'}, {...base, identity: 'agent-second', name: 'Same name'}]; let selected = ''; let primaries = 0;
+  const actions = new Actions(context({primary: () => ({...primary, sessionName: 'Primary project'}), agents: () => rows, selectAgent: row => {selected = row.identity;}, selectPrimary: () => {primaries++;}}));
+  const entries = actions.gotoEntries(); assert.deepEqual(entries.map(row => row.source), ['primary', 'agent', 'agent']);
+  assert.deepEqual(entries.filter(row => row.source === 'agent').map(row => row.tail), ['irst', 'cond']);
+  entries[0]?.run(); assert.equal(primaries, 1); entries[2]?.run(); assert.equal(selected, 'agent-second');
+  assert.equal(new Actions(context({primary: () => undefined, agents: () => rows})).gotoEntries().some(row => row.source === 'primary'), false);
+});
+test('Goto uses the shared fuzzy palette and Enter selects without fetching commands', () => {
+  let primaries = 0; let calls = 0;
+  const f = paletteFixture({primary: () => ({...primary, sessionName: 'Primary project'}), selectPrimary: () => {primaries++;}}); try {
+    globalThis.fetch = async () => {calls++; return commandResponse([], null);}; f.actions.palette('goto');
+    assert.equal(f.node.dataset.variant, 'palette'); assert.equal(f.node.dataset.mode, 'goto');
+    const field = f.body.children[0]?.children[2]; const list = f.body.children[1]; assert.ok(field); assert.ok(list);
+    field.value = 'Pj'; field.dispatchEvent(new Event('input'));
+    const name = list.children[0]?.children[0]; assert.ok(name); assert.equal(textOf(name), 'Primary project');
+    assert.deepEqual(name.children.filter(node => node.tagName === 'mark').map(node => node.textContent), ['P', 'j']);
+    assert.equal(key(field, 'Enter').defaultPrevented, true); assert.equal(primaries, 1); assert.equal(f.isOpen(), false); assert.equal(calls, 0);
+  } finally {f.restore();}
+});
+test('the command palette highlights each fuzzy name character and keeps command rank order', () => {
+  const f = paletteFixture(); try {
+    f.actions.palette(); const field = f.body.children[0]?.children[2]; const list = f.body.children[1]; assert.ok(field); assert.ok(list);
+    field.value = 'Nss'; field.dispatchEvent(new Event('input'));
+    const row = list.children.find(row => textOf(row.children[0] ?? new FakeNode()) === 'New session'); const name = row?.children[0]; assert.ok(name);
+    assert.deepEqual(name.children.filter(node => node.tagName === 'mark').map(node => node.textContent), ['N', 's', 's']);
+    assert.deepEqual(list.children.map(row => textOf(row.children[0] ?? new FakeNode())), rankPalette(f.actions.paletteEntries(), 'Nss').map(match => match.item.name));
+  } finally {f.restore();}
+});
+
+test('tab palette actions retain sessions and expose safe browser keyboard paths', () => {
+  const calls: string[] = [];
+  const actions = new Actions(context({tabs: {close: () => calls.push('close'), switch: direction => calls.push(String(direction)), split: () => calls.push('split'), canSplit: () => false}}));
+  const entries = actions.paletteEntries();
+  for (const label of ['Close conversation tab', 'Next conversation tab', 'Previous conversation tab']) { const entry = entries.find(item => item.name === label); assert.ok(entry); assert.equal(entry.enabled, true); entry.run(); }
+  assert.equal(entries.find(item => item.name === 'Toggle split with Primary')?.enabled, false);
+  assert.deepEqual(calls, ['close', '1', '-1']);
 });

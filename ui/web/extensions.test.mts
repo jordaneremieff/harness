@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import type { DialogView, PrimaryView } from '../shared/api.ts';
 import { enqueueDialog } from './dialog-state.ts';
-import { ExtensionDialogs } from './extensions.ts';
+import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import type { Modal } from './modal.ts';
 import { createState } from './state.ts';
 const originalFetch = globalThis.fetch;
@@ -12,8 +12,16 @@ const target = {kind: 'primary' as const, key: 'p', epoch: 1};
 const primary: PrimaryView = {...target, cwd: '/project', lifecycle: 'ready', activity: 'idle', pendingDialogs: [], pendingOperationIds: [], capabilities: {}};
 function gate<T>() {let resolve: (value: T) => void = () => undefined; const promise = new Promise<T>(done => {resolve = done;}); return {promise, resolve};}
 class FakeNode extends EventTarget {
-  children: FakeNode[] = []; className = ''; textContent = ''; type = ''; disabled = false;
+  children: FakeNode[] = []; className = ''; type = ''; disabled = false; open = false;
+  readonly tag: string; private text = ''; attributes = new Map<string, string>();
+  constructor(tag = 'div') {super(); this.tag = tag;}
+  get childNodes(): FakeNode[] {return this.children;}
+  get textContent(): string {return this.text + this.children.map(node => node.textContent).join('');}
+  set textContent(value: string) {this.text = value; this.children = [];}
+  set innerHTML(_value: string) {throw new Error('Unsafe HTML');}
   append(...nodes: FakeNode[]): void {this.children.push(...nodes);}
+  replaceChildren(...nodes: FakeNode[]): void {this.text = ''; this.children = nodes;}
+  setAttribute(name: string, value: string): void {this.attributes.set(name, value);}
   focus(): void {}
   querySelectorAll(): FakeNode[] {return this.children.flatMap(node => [...(node.type === 'button' ? [node] : []), ...node.querySelectorAll()]);}
 }
@@ -32,6 +40,35 @@ function fixture(dialog: DialogView) {
 }
 function response(data: unknown): Response {return {json: async () => ({ok: true, data})} as Response;}
 const select: DialogView = {id: 'd', method: 'select', title: 'Pick', options: ['Safe label'], optionKeys: ['option:0']};
+function statusFixture() {
+  const roots = new Map(['extension-status', 'primary-widgets-above', 'primary-widgets-below'].map(id => [id, new FakeNode()]));
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new FakeNode(tag), getElementById: (id: string) => roots.get(id)}});
+  return roots.get('extension-status') as FakeNode;
+}
+test('compact extension status counts hidden cells and native expansion retains every full keyed fact', () => {
+  const root = statusFixture(); const statuses = {one: 'first', two: 'x'.repeat(60), three: '<script>inert</script>'};
+  extensionStatus({...primary, extension: {statuses, widgets: {}}});
+  const disclosure = root.children[0]; assert.ok(disclosure); assert.equal(disclosure.tag, 'details');
+  const summary = disclosure.children[0]; const list = disclosure.children[1]; assert.ok(summary && list);
+  assert.equal(summary.tag, 'summary'); assert.equal(summary.textContent, 'first · +2');
+  assert.match(summary.attributes.get('aria-label') ?? '', /Expand all 3 extension statuses/);
+  assert.equal(list.children.length, 0);
+  disclosure.open = true; disclosure.dispatchEvent(new Event('toggle'));
+  assert.deepEqual(list.children.map(node => node.textContent), Object.entries(statuses).flat());
+  extensionStatus({...primary, extension: {statuses, widgets: {}}});
+  assert.equal(root.children[0], disclosure); assert.equal(disclosure.open, true); assert.equal(disclosure.children[0], summary);
+  extensionStatus({...primary, extension: {statuses: {...statuses, one: 'changed'}, widgets: {}}});
+  assert.equal(root.children[0], disclosure); assert.equal(disclosure.open, true); assert.equal(list.children[1]?.textContent, 'changed');
+});
+test('one long Unicode status keeps its full text accessible without inventing another hidden cell', () => {
+  const root = statusFixture(); const value = `\x1b[31m${'😀'.repeat(70)}\x1b[0m`;
+  extensionStatus({...primary, extension: {statuses: {key: value, empty: ''}, widgets: {}}});
+  const disclosure = root.children[0]; assert.ok(disclosure); const summary = disclosure.children[0]; assert.ok(summary);
+  assert.equal(summary.textContent, `${'😀'.repeat(55)}…`); assert.doesNotMatch(summary.textContent, /\ufffd|\+1/);
+  disclosure.open = true; disclosure.dispatchEvent(new Event('toggle'));
+  assert.deepEqual(disclosure.children[1]?.children.map(node => node.textContent), ['key', '😀'.repeat(70)]);
+  extensionStatus(primary); assert.equal(root.children.length, 0);
+});
 test('select displays a safe label but dispatches its exact opaque option key once', async () => {
   const f = fixture(select); const reserved = gate<Response>(); const calls: {path: string; body: unknown}[] = [];
   globalThis.fetch = async (path, init) => {

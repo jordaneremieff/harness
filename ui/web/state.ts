@@ -1,6 +1,6 @@
 import type {
   AgentRow, CachedRoster, EntryView, EventData, EventName, JsonDisplay, MessageView,
-  PartView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace, OperationView, TargetIndex, NoticeView,
+  PartView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace, OperationView, TargetIndex, NoticeView, ToolOutputInfo,
 } from '../shared/api.ts';
 import { createDialogs, enqueueDialog, expireDialog, expirePrimaryDialogs, reconcileDialogs } from './dialog-state.ts';
 import type { DialogState } from './dialog-state.ts';
@@ -9,7 +9,7 @@ import { mergeOperationMap } from './operation-state.ts';
 export type UiEvent = { [N in EventName]: { name: N; id?: string; target?: Target; workspaceId?: string; data: EventData[N] } }[EventName];
 export interface ToolState {
   callId: string; name: string; phase: 'start' | 'update' | 'end'; arguments?: JsonDisplay;
-  argumentText?: string; parts?: PartView[]; isError?: boolean; durationMs?: number;
+  argumentText?: string; parts?: PartView[]; isError?: boolean; durationMs?: number; output?: ToolOutputInfo;
 }
 export interface Conversation {
   target: Target; entries: ReadonlyMap<string, EntryView>; entryOrder: string[];
@@ -318,7 +318,8 @@ export function replaceSnapshot(state: UiState, snapshot: Snapshot, buffered: Ui
 }
 function addToolResult(parts: PartView[], tool: ToolState): void {
   if (!tool.parts) return;
-  const result: PartView = { type: 'toolResult', callId: tool.callId, name: tool.name, parts: tool.parts, isError: tool.isError ?? false };
+  const result: PartView = { type: 'toolResult', callId: tool.callId, name: tool.name, parts: tool.parts, isError: tool.isError ?? false,
+    ...(tool.output !== undefined ? { output: tool.output } : {}) };
   const index = parts.findIndex(item => item.type === 'toolResult' && item.callId === tool.callId);
   if (index < 0) parts.push(result); else parts[index] = result;
 }
@@ -342,7 +343,7 @@ function applyMessage(conversation: Conversation, message: MessageView): Convers
     if (part.type === 'toolCall') tools.set(part.callId, { ...tools.get(part.callId), callId: part.callId,
       name: part.name, arguments: part.arguments, phase: tools.get(part.callId)?.phase ?? 'start' });
     if (part.type === 'toolResult') tools.set(part.callId, { ...tools.get(part.callId), callId: part.callId,
-      name: part.name, parts: part.parts, isError: part.isError, phase: message.state === 'final' ? 'end' : 'update' });
+      name: part.name, parts: part.parts, isError: part.isError, output: part.output, phase: message.state === 'final' ? 'end' : 'update' });
   }
   const messageBlocks = new Map(conversation.messageBlocks); messageBlocks.set(message.id, messageBlock(message, tools));
   return { ...conversation, messages, tools, messageBlocks,

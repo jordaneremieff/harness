@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { calibratedSpan, copySession, distribution, hashChanges, isPromptInput, options, richSyntheticSession, servedAssets, sourceHashes, stdoutSummary, syntheticOutputText, syntheticSession } from './large-session.mts';
+import { calibratedSpan, copySession, distribution, hashChanges, isPromptInput, options, resume, richSyntheticSession, servedAssets, sourceHashes, stdoutSummary, syntheticOutputText, syntheticSession } from './large-session.mts';
 
 const project = '/disposable-project';
 test('stdout summary keeps scalar measures and a report pointer without report payloads', () => {
@@ -44,6 +44,23 @@ test('stdout summary preserves the report failure verdict', () => {
     {sourceUnchanged: false}, {runtimeHashesUnchanged: false},
     {servedAssetsBefore: {allMatched: false}}, {servedAssetsAfter: {allMatched: false}}, {output: {passed: false}},
   ]) assert.equal(stdoutSummary(failure, '/measurements').passed, false);
+});
+test('large-session resume starts its measurement before one direct saved-session click', async () => {
+  const calls: string[] = []; const measured = {clickToUsableComposerMs: 1};
+  const page = {
+    async evaluate<T = unknown>(expression: string): Promise<T> { calls.push(`evaluate:${expression}`); return (expression.startsWith('new Promise') ? measured : undefined) as T; },
+    async waitFor(expression: string): Promise<void> { calls.push(`wait:${expression}`); },
+  };
+  assert.equal(await resume(page, project, '/disposable-session.jsonl'), measured);
+  assert.equal(calls.length, 6);
+  assert.match(calls[0], /#project-button/);
+  assert.match(calls[1], /#picker-project, #modal\[open\] #picker-search/);
+  assert.match(calls[2], /Open saved session path…/); assert.match(calls[3], /#picker-session-path/);
+  assert.match(calls[4], /fields\[0\].value="\/disposable-project"/); assert.match(calls[4], /fields\[1\].value="\/disposable-session.jsonl"/);
+  assert.match(calls[5], /state.started=performance.now\(\);state.resumeMode='direct saved-session open'/);
+  assert.match(calls[5], /n.textContent.trim\(\)==='Resume saved session'/);
+  assert.ok(calls[5].indexOf('state.started=') < calls[5].indexOf('button.click()'));
+  assert.doesNotMatch(calls.join('\n'), /checkbox|writerReleased|No other writer/);
 });
 test('prompt guard matches only actual plural primary and agent input routes including queries', () => {
   for (const path of ['/api/primaries/key/inputs', '/api/primaries/key/inputs?workspace=x', '/api/agents/key/inputs', '/api/agents/key%3A1/inputs?workspace=x']) {

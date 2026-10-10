@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { LIMITS, ROUTES } from '../shared/api.ts';
 import { Auth, securityHeaders } from './auth.mts';
 import { ApiError, errorView } from './errors.mts';
+import { IMAGE_BYTES, ImageResponse } from './images.mts';
+import { isImageRoute } from './image-request.mts';
 import type { Journal } from './journal.mts';
 import { SessionStore, validateSessionProject } from './sessions.mts';
 
@@ -126,6 +128,7 @@ export class LocalHttp {
   readonly auth = new Auth();
   private stopped = false;
   private active = 0;
+  private imageReads = 0;
   private buckets = new Map<string, {tokens: number; at: number}>();
   readonly backend: HttpBackend;
   private assets: Map<string, Asset>;
@@ -185,8 +188,21 @@ export class LocalHttp {
     if (await this.savedMetadata(url, response)) return;
     await this.validateResume(method, url, body);
     const header = operationKey(request);
-    const data = await this.backend.dispatch({method, parts, url, body, session, operationId: header, workspace: url.searchParams.get('workspace') ?? undefined});
+    const context = {method, parts, url, body, session, operationId: header, workspace: url.searchParams.get('workspace') ?? undefined};
+    if (isImageRoute(method,parts)) return this.image(context,response);
+    const data = await this.backend.dispatch(context);
     respond(response, data, method === 'POST' && url.pathname === '/api/primaries' ? 202 : 200);
+  }
+  private async image(context: RequestContext, response: ServerResponse): Promise<void> {
+    if (this.imageReads >= 2) throw new ApiError('capacity', 'Two image reads are already active; retry this image.', 429, 'read');
+    this.imageReads++;
+    try {
+      const result = await this.backend.dispatch(context);
+      if (!(result instanceof ImageResponse) || !(result.image.data instanceof Uint8Array) || result.image.data.byteLength > IMAGE_BYTES || !['image/png','image/jpeg'].includes(result.image.mimeType)) throw new ApiError('invalid_request', 'The image response is invalid.', 422);
+      if (response.destroyed) return;
+      response.writeHead(200, {'Content-Type': result.image.mimeType, 'Content-Length': result.image.data.byteLength, 'Content-Disposition': 'inline', 'Cross-Origin-Resource-Policy': 'same-origin'});
+      await new Promise<void>(resolve => { response.once('close',resolve); response.end(result.image.data,resolve); });
+    } finally { this.imageReads--; }
   }
   private async savedMetadata(url: URL, response: ServerResponse): Promise<boolean> {
     if (url.pathname === '/api/projects') { respond(response, await this.sessions.projects(url.searchParams.get('cursor'))); return true; }

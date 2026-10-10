@@ -2,7 +2,9 @@
 
 This document defines the current local consumer boundary for retained Durable agents. The Agent extension owns execution, storage, admission, and publication. It may change this contract. Consumers compare supported operation identities with each connected host and refuse mismatched operations; they do not require the extension to preserve older behavior.
 
-The source references below use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`. Paths are relative to the repository root. References describe implementation, not runtime acceptance or the loaded version of an arbitrary running host. The companion [Durable harness track](pi-durable-harness.md) describes lifecycle context.
+The `submit`, `receipts`, `configure`, and `task-submit` identities, `H-inspect`, `H-status`, provider-block fields, and task-submit payload references use defining revision `0468691ac2c7bdf8a85d3aa8560f2e5d87dfce26`. Other source references use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`. This scoped attribution is not a whole-document revalidation.
+
+Paths are relative to the repository root. References describe implementation, not runtime acceptance or the loaded version of an arbitrary running host. The companion [Durable harness track](pi-durable-harness.md) describes lifecycle context.
 
 ## Scope and identity
 
@@ -142,18 +144,18 @@ Overrides and remaining members:
 | Member | Request | Response | Durable |
 |---|---|---|---|
 | recovery-state | recovery-state/1.0.0 | recovery-state/1.1.0 | absent |
-| submit | submit/1.1.0 | submit/1.1.0 | absent |
+| submit | submit/1.2.0 | submit/1.1.0 | absent |
 | spawn | spawn/2.0.0 | spawn/2.0.0 | absent |
 | place | place/2.0.0 | place/2.0.0 | absent |
 | resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.0.0 | absent |
-| receipts | receipts/1.1.0 | receipts/1.1.0 | D |
+| receipts | receipts/1.1.0 | receipts/1.2.0 | D |
 | inspect | inspect/1.0.0 | H-inspect | D |
 | status | status/1.0.0 | H-status | D |
 | list | list/1.0.0 | H-list | absent |
 | fork | fork/1.0.0 | fork/1.0.0 | D |
 | rewind | rewind/1.1.0 | rewind/1.0.0 | D |
 | compact | compact/1.0.0 | compact/1.0.0 | D |
-| configure | configure/1.2.0 | configure/1.2.0 | absent |
+| configure | configure/1.3.0 | configure/1.3.0 | absent |
 | command | command/1.1.0 | command/1.0.0 | D |
 | timer-schedule | timer-schedule/1.1.0 | timer-schedule/1.0.0 | absent |
 | dashboard | dashboard/1.0.0 | H-dashboard | absent |
@@ -163,14 +165,14 @@ Overrides and remaining members:
 | profile-read | profile-read/1.0.0 | H-profile-read | absent |
 | profile-update | profile-update/1.0.0 | H-profile-update | absent |
 | profile-list | profile-list/1.0.0 | H-profile-list | absent |
-| task-submit | task-submit/1.0.0 | task-submit/1.1.0 | absent |
+| task-submit | task-submit/1.0.0 | task-submit/1.2.0 | absent |
 | await-state | await-state/1.1.0 | await-state/1.1.0 | absent |
 
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       98cbec841b6626155420cf582d77e318ea0c8e7607f113dffe04d94bf1b99736
-H-status        5df139e808900bee9bf561760b4f7da690df743f336609ec26ab0a7a11957dc1
+H-inspect       3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863
+H-status        5e66c5049686a2f023b036947ddc9329d483d1833f4f6f6ced17377799fea071
 H-list          76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600
 H-dashboard     46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241
 H-profile-read  b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889
@@ -260,7 +262,9 @@ Output is discriminated by `view`:
 | activity | `{view:"activity",format:"compact",sessionId,conversationId,turns:[{entries:CompactEntry[]}],nextCursor,metadata,coverage,detail}` |
 | exact | `{view:"exact",sessionId,conversationId,entryId,offset,text,nextOffset:number|null,truncated,omissions?}`; text is retained redacted JSON, not an unredacted archive. |
 | search | `{view:"search",sessionId,conversationId,matches,nextCursor,coverage:{scannedEntries,scannedBytes,complete},detail}` |
-| result | `{view:"result",sessionId,conversationId,submissionId,status,requestId?,operationId?,entryId?,answerEntryId?,reason?,answer?,usage}`; status is queued, placed, done, or unanswered. |
+| result | `{view:"result",sessionId,conversationId,submissionId,status,requestId?,operationId?,entryId?,answerEntryId?,reason?,answer?,usage,providerBlock?,recoveryOf?}`; status is queued, placed, done, or unanswered. |
+
+`providerBlock` is an optional retained fact in result inspection and conversation status. Its closed shape is `{blockId,conversationId,providerSessionId,epoch,model:{provider,modelId},error,errorRedacted,errorTruncated,source:"provider"|"host-block",timestamp,originalResults,omittedOriginalResults}`. `originalResults` contains at most 16 closed references `{sessionId,submissionId,requestId?}`; error text is bounded to 4,096 characters. `recoveryOf` is an optional string in a result. These fields do not add a result status or authorize automatic replay. Source: `extensions/agent/observation-schema.ts:143-144,413-431`; `extensions/agent/provider-block.ts:18-26`; `extensions/agent/result-reference.ts:6-10`.
 
 `CompactEntry` has `{id:number,kind,source,role?,text,truncated,format:"compact",nextOffset:null,omissions?,toolCalls?,toolResults?,omittedParts?}`. Tool call summaries carry `{callId?,name,arguments,truncated}`; tool result summaries carry `{callId?,name,text,isError,truncated}`. Raw rows omit the compact discriminator and may carry `preview:{text,truncated}` plus `nextOffset`. Omission counters are `{providerSignatures,imagePayloads,redactedThinking}`. Search matches carry `{entryId,kind,source,matchOffset,excerpt,excerptText,truncated}` and their cursor is `{cursor:object|null,skip,scannedBytes}`. Source: `extensions/agent/observation-schema.ts:306-377`.
 
@@ -307,7 +311,7 @@ A conversation frame is:
 
 `entries` are committed visible entries; `live` is uncommitted assistant/tool output. Live IDs include `live:generation` and `live:tool:<callId>`. They must not become committed history. The frame is coalesced current state, not an append-only event stream. Revision ordering applies within the current observation lifetime; a new connection/token starts a new baseline. Source: `extensions/agent/live-frames.ts:15-30,74-140`; `extensions/agent/host-client.ts:697-741`.
 
-`ConversationStatus` includes `{conversationId,identity,busy,lastText,live,inbox,agent,tasks,submissions}` and optional `name`, `owner`, `firstMessage`, `forkSource`, `ownerTaskId`, `awaiting`, `cwd`, `lastTextRole`, `usage`, `timers`. `agent` carries `{model?:{provider,modelId},thinkingLevel,extensions:string[],tools:string[],cwd?,instructions?}`. Tasks carry `{id,kind,status,background,owner?,abortRequested}`; submissions carry `{id,type:"input"|"write",status,requestId?,entryId?,answerEntryId?,reason?}`. Native `live`, `inbox`, usage, and task statuses belong to the exact declared Durable representation. Source: `extensions/agent/durable-observation.ts:99-156`.
+`ConversationStatus` includes `{conversationId,identity,busy,lastText,live,inbox,agent,tasks,submissions}` and optional `name`, `owner`, `firstMessage`, `forkSource`, `ownerTaskId`, `awaiting`, `cwd`, `lastTextRole`, `usage`, `timers`, `providerBlock`. `agent` carries `{model?:{provider,modelId},thinkingLevel,extensions:string[],tools:string[],cwd?,instructions?}`. Tasks carry `{id,kind,status,background,owner?,abortRequested}`; submissions carry `{id,type:"input"|"write",status,requestId?,entryId?,answerEntryId?,reason?}`. Native `live`, `inbox`, usage, and task statuses belong to the exact declared Durable representation. Source: `extensions/agent/durable-observation.ts:99-156`; `providerBlock`: `extensions/agent/observation-schema.ts:143-144`.
 
 A tasks frame is `{scope:"tasks",storageId,revision,observedAt,tasks,labels,coverage:{complete,live}}`. Task rows contain `{id,kind,conversationId,owner?,background,abortRequested,status,phase,waitsOn,policy?,outcome?,conversations}`; labels contain `{conversationId,identity,name?,firstMessage?}`. Source: `extensions/agent/live-frames.ts:33-70`.
 
@@ -332,9 +336,9 @@ Text input params:
 }
 ```
 
-The broader native input also accepts content-part arrays; a text-only consumer need not implement them. Origin and requester are required. `replyTo` defaults to requester, so a consumer seeking a self-owned result must explicitly set `replyTo` to the target conversation. The server supplies senderIdentity from that conversation; do not impersonate a native sender to create work. Source: `extensions/agent/durable-host.ts:126-138,403-414`; `extensions/agent/durable-controls.ts:216-240`.
+The broader native input also accepts content-part arrays; a text-only consumer need not implement them. Origin and requester are required. `replyTo` defaults to requester, so a consumer seeking a self-owned result must explicitly set `replyTo` to the target conversation. The server supplies senderIdentity from that conversation; do not impersonate a native sender to create work. Source: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-controls.ts:221-238`.
 
-The result is `{submissionId:number,conversationId:number,deduped:boolean,identity:string,result:{sessionId:string,submissionId:number,requestId?:string}}`. The request above produces a result reference with its requestId. It confirms admitted/already-admitted work, not execution, placement mode, final answer, or operator acceptance. Steer waits for a native boundary; it does not interrupt a running tool. Follow-up waits for the current run. Held-result state can affect placement. Source: `extensions/agent/durable-host.ts:403-414`; `extensions/agent/durable-controls.ts:235-240,350-423`; `extensions/agent/result-reference.ts:32-60`.
+The result is `{submissionId:number,conversationId:number,deduped:boolean,identity:string,result:{sessionId:string,submissionId:number,requestId?:string}}`. The request above produces a result reference with its requestId. It confirms admitted/already-admitted work, not execution, placement mode, final answer, or operator acceptance. Steer waits for a native boundary; it does not interrupt a running tool. Follow-up waits for the current run. Held-result state can affect placement. Source: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-controls.ts:235-245,401-447`; `extensions/agent/result-reference.ts:53-61`.
 
 The ordinary manager's `control("submit")` maps to `task-submit`; raw host `submit` is a different base operation. Match the documented wire member, not a manager method name. The standalone terminal uses operator origin and self-owned replyTo. Source: `extensions/agent/manager.ts:469-514`; `extensions/agent/terminal-client.ts:123-131`.
 
@@ -399,7 +403,7 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ### Fixture: operator-input
 
 ```json
-{"serviceId":"pi.agent.host","member":"task-submit","args":[{"sessionId":"00000000-0000-4000-8000-000000000001","message":"Describe the current state.","origin":"operator","requester":"consumer:example","replyTo":"00000000-0000-4000-8000-000000000001","requestId":"input-example","whenBusy":"steer"},"input-example",{"request":"task-submit/1.0.0","response":"task-submit/1.1.0"}]}
+{"serviceId":"pi.agent.host","member":"task-submit","args":[{"sessionId":"00000000-0000-4000-8000-000000000001","message":"Describe the current state.","origin":"operator","requester":"consumer:example","replyTo":"00000000-0000-4000-8000-000000000001","requestId":"input-example","whenBusy":"steer"},"input-example",{"request":"task-submit/1.0.0","response":"task-submit/1.2.0"}]}
 ```
 
 ### Fixture: admitted-input
@@ -426,4 +430,4 @@ These examples contain fabricated identities and data. They are valid-shape exam
 {"type":"state","member":"change","sequence":1,"ops":[["r",{"revision":1}]]}
 ```
 
-Fixture shape sources: `extensions/agent/durable-host.ts:403-414`; `extensions/agent/durable-observation.ts:1133-1143`; `extensions/agent/catalog-view.ts:48-65`; `extensions/agent/host-process.ts:387-399`.
+Fixture shape sources: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-observation.ts:1133-1143`; `extensions/agent/catalog-view.ts:48-65`; `extensions/agent/host-process.ts:387-399`.

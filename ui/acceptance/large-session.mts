@@ -237,7 +237,7 @@ async function stopBackend(child: ChildProcess, done: Promise<void>): Promise<vo
   }
 }
 const literal = (value: unknown) => JSON.stringify(value);
-async function clickText(page: Page, text: string): Promise<void> {
+async function clickText(page: Pick<Page, 'evaluate'>, text: string): Promise<void> {
   await page.evaluate(`(()=>{const n=[...document.querySelectorAll('#modal button')].find(n=>n.textContent.trim()===${literal(text)});if(!n||n.disabled)throw Error('Unavailable '+${literal(text)});n.click();})()`);
 }
 // Capture browser-local receive times, never compare them to backend clocks.
@@ -265,21 +265,14 @@ const instrumentation = `(()=>{
   };
 })()`;
 
-async function resume(page: Page, cwd: string, session: string): Promise<unknown> {
+export async function resume(page: Pick<Page, 'evaluate' | 'waitFor'>, cwd: string, session: string): Promise<unknown> {
   await page.evaluate(`document.querySelector('#project-button').click()`);
-  await page.waitFor(`document.querySelector('#modal[open] input')`);
-  if (await page.evaluate<boolean>(`Boolean(document.querySelector('#picker-project'))`)) {
-    await clickText(page, 'Open saved session path…');
-    await page.waitFor(`document.querySelector('#picker-session-path')`);
-  }
-  await page.evaluate(`(()=>{const fields=[...document.querySelectorAll('#modal input')].filter(n=>n.type!=='checkbox');fields[0].value=${literal(cwd)};fields[0].dispatchEvent(new Event('input',{bubbles:true}));fields[1].value=${literal(session)};fields[1].dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  let checkbox = await page.evaluate<boolean>(`Boolean(document.querySelector('#modal input[type=checkbox]'))`);
-  if (!checkbox) await clickText(page, 'Resume saved session');
-  checkbox = await page.evaluate<boolean>(`Boolean(document.querySelector('#modal input[type=checkbox]'))`);
-  if (checkbox) await page.evaluate(`document.querySelector('#modal input[type=checkbox]').click()`);
-  const resumeLabel = await page.evaluate<string>(`[...document.querySelectorAll('#modal button')].find(n=>['Resume saved session','No other writer · Resume','Resume'].includes(n.textContent.trim()))?.textContent.trim()`);
+  await page.waitFor(`document.querySelector('#modal[open] #picker-project, #modal[open] #picker-search')`);
+  await clickText(page, 'Open saved session path…');
+  await page.waitFor(`document.querySelector('#picker-session-path')`);
+  await page.evaluate(`(()=>{const fields=[...document.querySelectorAll('#modal input')];fields[0].value=${literal(cwd)};fields[0].dispatchEvent(new Event('input',{bubbles:true}));fields[1].value=${literal(session)};fields[1].dispatchEvent(new Event('input',{bubbles:true}));})()`);
   return page.evaluate(`new Promise((resolve,reject)=>{
-    const state=window.__large;state.started=performance.now();state.resumeMode=${literal(checkbox ? 'writerReleased checkbox' : 'writer-release confirmation')};
+    const state=window.__large;state.started=performance.now();state.resumeMode='direct saved-session open';
     let transcriptPaint=null,composerUsable=null,finished=false;
     const cleanup=()=>{observer.disconnect();clearTimeout(timer);};
     const check=()=>{
@@ -304,7 +297,7 @@ async function resume(page: Page, cwd: string, session: string): Promise<unknown
       clickToUsableComposerMs:composerUsable===null?null:composerUsable-state.started,deadlineMs:10000,
       failure:'No transcript paint before deadline',entries:document.querySelectorAll('#primary-transcript [data-entry-id]').length,
       modal:document.querySelector('#modal')?.open,error:document.querySelector('#modal-error')?.textContent,states:state.states});},10000);
-    const button=[...document.querySelectorAll('#modal button')].find(n=>n.textContent.trim()===${literal(resumeLabel)});
+    const button=[...document.querySelectorAll('#modal button')].find(n=>n.textContent.trim()==='Resume saved session');
     if(!button||button.disabled){cleanup();reject(Error('Resume unavailable'));return;}button.click();check();
   })`, 122000);
 }

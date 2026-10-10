@@ -49,13 +49,18 @@ export class Composer {
     this.editor.addEventListener('compositionend', () => { this.composing = false; });
     if (prefix === 'primary' && hooks.commands) this.commandMenu = new CommandMenu(this.editor, byId('primary-command-menu'), hooks.commands, text => this.change(text));
     this.editor.addEventListener('pointerup', () => {
-      if (this.editor.offsetHeight !== this.sizedHeight) this.manualHeight = this.editor.offsetHeight;
+      if (this.editor.offsetHeight !== this.sizedHeight) this.setManualHeight(this.editor.offsetHeight);
     });
     byId<HTMLFormElement>(`${prefix}-composer`).addEventListener('submit', event => { event.preventDefault(); void this.send(); });
     for (const node of this.modes()) node.addEventListener('click', () => this.change(this.editor.value, node.dataset.mode === 'steer' ? 'steer' : 'followUp'));
   }
   placement(sidebar: boolean): void { this.sidebar = sidebar; this.resize(); this.renderControls(); }
   commandsChanged(): void { this.commandMenu?.update(); }
+  /** Undefined restores automatic growth; explicit sizes retain their preferred pixel height. */
+  setManualHeight(px: number | undefined): void {
+    if (px !== undefined && (!Number.isFinite(px) || px < 0)) throw new RangeError('Invalid composer height');
+    this.manualHeight = px === undefined ? undefined : Math.round(px); this.resize();
+  }
   attach(workspace: string, state?: TargetState): void {
     const previousTarget = this.current?.state.target;
     if (!state) { this.commandMenu?.reset(); }
@@ -147,8 +152,9 @@ export class Composer {
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
       const short = matchMedia('(max-height: 599px)').matches;
       const baseline = line + extra;
-      const available = this.editor.closest<HTMLElement>('.conversation')?.clientHeight ?? innerHeight;
-      const cap = Math.max(baseline, Math.min(10 * line + extra, available * (short ? 0.25 : 0.3)));
+      const available = this.editor.closest<HTMLElement>('.conversation, .agent-message-panel')?.clientHeight ?? innerHeight;
+      const autoCap = Math.min(10 * line + extra, available * (short ? 0.25 : 0.3));
+      const cap = Math.max(baseline, this.manualHeight === undefined ? autoCap : available * 0.6);
       this.editor.style.maxHeight = `${cap}px`;
       this.editor.style.height = this.manualHeight === undefined ? '0px' : `${Math.min(cap, Math.max(baseline, this.manualHeight))}px`;
       if (this.manualHeight === undefined) this.editor.style.height = `${Math.min(cap, Math.max(baseline, this.editor.scrollHeight + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth)))}px`;

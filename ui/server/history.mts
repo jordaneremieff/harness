@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import type { ProjectedSnapshot } from '../rpc/events.mts';
-import type { OutputPage } from '../shared/api.ts';
+import type { ImageSource, OutputPage } from '../shared/api.ts';
+import type { ImageBytes } from './images.mts';
 import { LIMITS } from '../shared/api.ts';
 import type { DisplayCoverage, EntryView, HistoryPage, Target } from '../shared/api.ts';
 import { projectEntry } from './projection.mts';
@@ -41,6 +42,7 @@ export class FileHistory {
   index(path: string): Promise<{lastId: string | null; partial: boolean}> { return this.query(path, 'index'); }
   page(path: string, leaf: string | null, before?: string): Promise<ProjectedSnapshot> { return this.query(path, 'page', {leaf, before}); }
   output(path: string, leaf: string | null, entryId: string, part: number, offset: number): Promise<OutputPage> { return this.query(path, 'output', {leaf, entryId, part, offset}); }
+  image(path: string, leaf: string | null, source: ImageSource, digest: string): Promise<ImageBytes> { return this.query(path, 'image', {leaf, source, digest}); }
   async close(): Promise<void> { this.fail(); this.closing ??= this.worker.terminate(); await this.closing; }
 }
 
@@ -73,7 +75,7 @@ function slicePage(entries: EntryView[], end: number, limit: number): {start: nu
   while (start > 0 && items.length < limit) {
     let entry = required(entries[start - 1]);
     let size = Buffer.byteLength(JSON.stringify(entry));
-    if (items.length === 0 && size + bytes > LIMITS.displayBytes) { entry = projectEntry(entry); size = Buffer.byteLength(JSON.stringify(entry)); }
+    if (items.length === 0 && size + bytes > LIMITS.displayBytes) { entry = projectEntry(entry, entry.id, {trustedStructured: true}); size = Buffer.byteLength(JSON.stringify(entry)); }
     if (items.length > 0 && bytes + size > LIMITS.pageBytes) break;
     if (bytes + size > LIMITS.displayBytes) throw new StateError('history_limit', 'Entry exceeds the display safety limit', 409);
     items.unshift(structuredClone(entry)); bytes += size; start--;

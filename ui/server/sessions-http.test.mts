@@ -41,7 +41,7 @@ test('manual saved paths validate their header project before runtime dispatch',
   const url = new URL(await http.listen(0)); context.after(() => http.close());
   const login = await fetch(`${url.origin}/api/auth/launch`, {method: 'POST', headers: {Origin: url.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: new URLSearchParams(url.hash.slice(1)).get('launch')})});
   const cookie = login.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
-  const open = (cwd: string) => fetch(`${url.origin}/api/primaries`, {method: 'POST', headers: {Cookie: cookie, Origin: url.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({cwd, sessionFile: file, writerReleased: true})});
+  const open = (cwd: string) => fetch(`${url.origin}/api/primaries`, {method: 'POST', headers: {Cookie: cookie, Origin: url.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({cwd, sessionFile: file})});
   const mismatch = await open(other); assert.equal(mismatch.status, 400); assert.equal(dispatched, 0);
   const matching = await open(project); assert.equal(matching.status, 202); assert.equal(dispatched, 1);
 });

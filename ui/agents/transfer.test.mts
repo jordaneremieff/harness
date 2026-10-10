@@ -61,7 +61,7 @@ test("safe projected text and tool arguments retain their IDs and display throug
   assert.equal(projectEntry(result.entries[0]).messages?.[0].id, "11:message:0");
 });
 
-test("frame transfer omits raw instructions, inbox payloads, signatures and images", () => {
+test("frame transfer omits raw instructions, inbox payloads, signatures and malformed image payloads", () => {
   const source: ConversationFrame = { ...(frame(9) as ConversationFrame), nextBefore: 10, coverage: { ...sourceCoverage },
     entries: [{ id: "11", kind: "model", model: [{ role: "assistant", signature: "signature-secret", content: [
       { type: "thinking", thinking: "private-thinking", redacted: true, signature: "thinking-signature" },
@@ -74,7 +74,7 @@ test("frame transfer omits raw instructions, inbox payloads, signatures and imag
   for (const hidden of ["signature-secret", "thinking-signature", "private-thinking", "image-bytes", "inbox-secret", "instructions-secret", "environment-secret", "extra-secret"]) {
     assert.equal(encoded.includes(hidden), false, hidden);
   }
-  assert.equal(encoded.includes("Image omitted"), true);
+  assert.equal(encoded.includes("Image base64 is invalid."), true);
   assert.equal(encoded.includes("[redacted thinking]"), true);
   assert.deepEqual(projectEntry(result.entries[0]), projectEntry(source.entries[0]));
   assert.equal(result.revision, 9);

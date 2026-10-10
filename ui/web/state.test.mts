@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { OperationView, CachedRoster, NoticeView, AgentRow, EntryView, EventData, EventName, MessageView, PrimaryView, ProjectedFrame, Snapshot, TargetState } from '../shared/api.ts';
+import type { OperationView, CachedRoster, NoticeView, AgentRow, EntryView, EventData, EventName, MessageView, PrimaryView, ProjectedFrame, Snapshot, TargetState, ToolOutputInfo } from '../shared/api.ts';
 import { dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, agentBlocks, conversationBlocks, createState, mergeAgentPage, mergePrimaryPage, parseCursor, primaryBlocks, reduceEvent, replaceSnapshot, selectAgent, targetIdentity } from './state.ts';
 import type { UiEvent, UiState } from './state.ts';
 const target = {kind: 'primary' as const, key: 'p', epoch: 1};
@@ -77,6 +77,38 @@ test('tool events update one keyed card without consuming a native delta index',
   assert.equal(conversationBlocks(conversation)[0]?.messages?.[0]?.parts.filter(part => part.type === 'toolResult').length, 1);
   state = reduceEvent(state, event(4, 'primary.tool', {callId: 'call', name: 'read', phase: 'end', parts: [{type: 'text', text: 'done'}], isError: false, durationMs: 10}, {target}));
   assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('call')?.phase, 'end');
+});
+test('tool events retain supplied output metadata in state and derived results', () => {
+  const output: ToolOutputInfo = {truncation: {truncated: true, truncatedBy: 'bytes', totalLines: 10, outputLines: 2,
+    totalBytes: 4096, outputBytes: 1024, maxLines: 2000, maxBytes: 1024, lastLinePartial: true}, fullOutputPath: '/output/bash-output.txt'};
+  const call: MessageView = {id: 'm', role: 'assistant', state: 'partial', coverage,
+    parts: [{type: 'toolCall', callId: 'c', name: 'bash', arguments: {value: {}, truncated: false}}]};
+  const initial = reduceEvent(baseline(), event(1, 'primary.message', {message: call}, {target}));
+  const state = reduceEvent(initial, event(2, 'primary.tool', {callId: 'c', name: 'bash', phase: 'end',
+    parts: [{type: 'text', text: 'tail'}], output}, {target}));
+  assert.deepEqual(state.conversations.get(targetIdentity(target))?.tools.get('c')?.output, output);
+  const result = primaryBlocks(state, 'p')[0]?.messages?.[0]?.parts.find(part => part.type === 'toolResult');
+  assert.deepEqual(result?.output, output);
+  assert.equal(call.parts.length, 1);
+  assert.equal(initial.conversations.get(targetIdentity(target))?.tools.get('c')?.output, undefined);
+});
+test('authoritative tool results copy supplied metadata and preserve unknown fields', () => {
+  const output: ToolOutputInfo = {truncation: {truncated: true, totalLines: 1, outputLines: 0, firstLineExceedsLimit: true}};
+  const raw: MessageView = {id: 'result', role: 'toolResult', state: 'final', coverage,
+    parts: [{type: 'toolResult', callId: 'c', name: 'read', parts: [], isError: false, output}]};
+  let state = reduceEvent(baseline(), event(1, 'primary.message', {message: raw}, {target}));
+  assert.deepEqual(state.conversations.get(targetIdentity(target))?.tools.get('c')?.output, output);
+  const call: MessageView = {id: 'call', role: 'assistant', state: 'final', coverage,
+    parts: [{type: 'toolCall', callId: 'c', name: 'read', arguments: {value: {}, truncated: false}}]};
+  state = reduceEvent(state, event(2, 'primary.message', {message: call}, {target}));
+  const result = state.conversations.get(targetIdentity(target))?.messageBlocks.get('call')?.messages?.[0]?.parts.find(part => part.type === 'toolResult');
+  assert.deepEqual(result?.output, output);
+  assert.equal(result?.output?.truncation?.outputLines, 0);
+  assert.equal(result?.output?.truncation?.totalBytes, undefined);
+  assert.equal(result?.output?.fullOutputPath, undefined);
+  const replacement: MessageView = {...raw, parts: [{type: 'toolResult', callId: 'c', name: 'read', parts: [], isError: false}]};
+  state = reduceEvent(state, event(3, 'primary.message', {message: replacement}, {target}));
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('c')?.output, undefined);
 });
 test('tool arguments remain raw until authoritative message replacement', () => {
   let state = reduceEvent(baseline(), event(1, 'primary.delta', {messageId: 'm', index: 0, kind: 'toolArguments', callId: 'c', toolName: 'read', delta: '{"path":'}, {target}));

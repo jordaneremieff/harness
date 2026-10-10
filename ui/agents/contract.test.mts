@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { blockedResult } from "./fake-host.mts";
 import {
 	assertOperation, ContractError, decodeDescriptor, decodeFrame, decodeInput, decodeOperatorInput,
 	decodePublication, decodeResponse, type JsonObject, type OperationName, supportedOperations,
@@ -26,14 +27,14 @@ function descriptor(): JsonObject {
 		requires: { codingAgent: "1.0.0", durable: "1.0.0" }, operations: {
 			dashboard: { request: "dashboard/1.0.0", response: "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241" },
 			snapshot: { request: "snapshot/1.0.0", response: "snapshot/1.0.0", durable: D },
-			inspect: { request: "inspect/1.0.0", response: "98cbec841b6626155420cf582d77e318ea0c8e7607f113dffe04d94bf1b99736", durable: D },
+			inspect: { request: "inspect/1.0.0", response: "3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", durable: D },
 			"observe-open": { request: "observe-open/1.0.0", response: "observe-open/1.0.0", durable: D },
 			"observe-frame": { request: "observe-frame/1.0.0", response: "observe-frame/1.0.0", durable: D },
 			"observe-close": { request: "observe-close/1.0.0", response: "observe-close/1.0.0" },
 			changes: { request: "changes/1.0.0", response: "changes/1.0.0" },
-			"task-submit": { request: "task-submit/1.0.0", response: "task-submit/1.1.0" },
+			"task-submit": { request: "task-submit/1.0.0", response: "task-submit/1.2.0" },
 			abort: { request: "abort/1.0.0", response: "abort/1.0.0" },
-			configure: { request: "configure/1.2.0", response: "configure/1.2.0" },
+			configure: { request: "configure/1.3.0", response: "configure/1.3.0" },
 		},
 	};
 }
@@ -118,7 +119,7 @@ test("unknown members never inherit an operation from object prototypes", () => 
 	}
 });
 
-test("operator-input documentation fixture validates as a text request", () => {
+test("current operator-input fixture validates as a text request", () => {
 	const envelope = fixture("operator-input"); const args = envelope.args as JsonObject[];
 	assert.equal(envelope.member, "task-submit"); assert.equal(envelope.serviceId, "pi.agent.host");
 	assert.deepEqual(decodeOperatorInput(args[0]), args[0]);
@@ -289,4 +290,49 @@ test("native dashboard text bounds differ from bounded publication text", () => 
 	assert.deepEqual(decodeResponse("dashboard", [value]), [value]);
 	refusal(() => decodePublication({ ...fixture("empty-publication"), rows: [value] }, storageId));
 	refusal(() => decodePublication({ ...fixture("empty-publication"), profiles: "x".repeat(24 * 1024) }, storageId));
+});
+
+
+test("task-submit requires the current response identity without version tolerance", () => {
+	const current = descriptor();
+	assertOperation(decodeDescriptor(current), "task-submit");
+	(current.operations as JsonObject)["task-submit"] = { request: "task-submit/1.0.0", response: "task-submit/1.1.0" };
+	refusal(() => assertOperation(decodeDescriptor(current), "task-submit"), "incompatible");
+	assertOperation(decodeDescriptor(current), "inspect");
+});
+
+test("current admissions retain deduped and bind child and root result references", () => {
+	for (const identity of [storageId, `${storageId}:2`]) {
+		for (const deduped of [false, true]) {
+			const value = { identity, conversationId: identity === storageId ? 1 : 2, submissionId: 7, deduped,
+				result: { sessionId: identity, submissionId: 7, requestId } };
+			assert.deepEqual(decodeResponse("task-submit", value, { identity, requestId }), value);
+			refusal(() => decodeResponse("task-submit", { ...value, deduped: "false" }));
+			refusal(() => decodeResponse("task-submit", { ...value, result: { ...value.result, requestId: "different" } }, { identity, requestId }));
+		}
+	}
+	refusal(() => decodeResponse("task-submit", { suppressed: true }));
+});
+
+test("current inspect result validates optional provider facts and recovery references", () => {
+	const value = blockedResult(storageId, requestId);
+	assert.deepEqual(decodeResponse("inspect", value, { identity: storageId, requestId }), value);
+	const block = value.providerBlock as JsonObject;
+	for (const [key, changed] of Object.entries({ blockId: "", conversationId: 0, providerSessionId: "", epoch: -1,
+		model: { provider: "fixture", modelId: 7 }, error: "x".repeat(4097), errorRedacted: "false", errorTruncated: null,
+		source: "unknown", timestamp: 0.5, originalResults: [{ sessionId: storageId, submissionId: 0 }], omittedOriginalResults: -1 })) {
+		refusal(() => decodeResponse("inspect", { ...value, providerBlock: { ...block, [key]: changed } }));
+	}
+	for (const key of Object.keys(block)) {
+		const changed = { ...block }; delete changed[key];
+		refusal(() => decodeResponse("inspect", { ...value, providerBlock: changed }));
+	}
+	for (const reference of [{ sessionId: "@fixture", submissionId: 7 }, { sessionId: storageId, submissionId: 7, requestId: "" },
+		{ sessionId: storageId, submissionId: 7, extra: true }]) {
+		refusal(() => decodeResponse("inspect", { ...value, providerBlock: { ...block, originalResults: [reference] } }));
+	}
+	refusal(() => decodeResponse("inspect", { ...value, providerBlock: { ...block, originalResults: Array(17).fill({ sessionId: storageId, submissionId: 7 }) } }));
+	refusal(() => decodeResponse("inspect", { ...value, recoveryOf: 7 }));
+	const absent = { ...value }; delete absent.providerBlock; delete absent.recoveryOf;
+	assert.deepEqual(decodeResponse("inspect", absent), absent);
 });

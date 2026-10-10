@@ -12,11 +12,13 @@ import { PrimarySession, type PrimarySessionOptions } from '../rpc/session.mts';
 import { LIMITS, type PrimaryView, type TargetPreparation } from '../shared/api.ts';
 import { Registry, type AgentAdapter, type RegistryOptions } from './registry.mts';
 import { StateStore } from './state.mts';
+import { assertOperation, decodeDescriptor, supportedOperations, type OperationName } from '../agents/contract.mts';
+import { activity, descriptor } from '../agents/fake-host.mts';
 
 const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
 function fakeAgents() {
   const forbidden = async (): Promise<never> => { throw new Error('No native work in a registry fixture'); };
-  const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, refresh: forbidden, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, inspect: forbidden,
+  const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, refresh: forbidden, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden,
     submit: forbidden, retrySubmit: forbidden, abort: forbidden, configure: () => { throw new Error('No native configuration'); },
     hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
   return () => adapter;
@@ -317,4 +319,24 @@ test('registry validates path kind and refuses stale epochs without a primary ef
   assert.throws(() => registry.primary(key, primary.view.epoch + 1, true), {code: 'stale_epoch', status: 409});
   assert.deepEqual(primary.view, before); assert.equal(setup.counts.started, 1);
   await registry.close(); await assert.rejects(registry.openPrimary(setup.cwd), {code: 'not_ready'}); assert.equal(setup.counts.started, 1);
+});
+
+
+test('current host identities enable input and activity inspection but never configuration', async context => {
+  const remote = decodeDescriptor(await descriptor());
+  const supported = Object.fromEntries((Object.keys(supportedOperations) as OperationName[]).map(member => {
+    try { assertOperation(remote, member); return [member, true]; } catch { return [member, false]; }
+  }));
+  const setup = await fixture(context); const inert = fakeAgents()(); const calls: unknown[] = [];
+  setup.options.agents = () => ({...inert, prepare: async () => supported,
+    inspect: async (identity, options) => { calls.push({identity, options}); return activity(identity) as Awaited<ReturnType<AgentAdapter['inspect']>>; }});
+  const registry = await setup.open(); const workspace = await registry.store.workspace(); const identity = 'storage:2';
+  const prepared = await prepareRoute(registry, workspace.id, {target:{kind:'agent',identity}});
+  assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,abort:true,configure:false,inspect:true});
+  const inspected = await registry.dispatch({parts:['api','agents',identity,'inspect'],body:{view:'activity',limit:20},method:'POST',
+    url:new URL('http://localhost/api/agents/storage:2/inspect'),session:'fixture'}) as {projection:{value:unknown}};
+  assert.deepEqual(JSON.parse(JSON.stringify(inspected.projection.value)), activity(identity));
+  assert.deepEqual(calls,[{identity,options:{view:'activity',limit:20}}]);
+  assert.equal(registry.frames.size,0); assert.equal(setup.counts.started,0);
+  assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
 });

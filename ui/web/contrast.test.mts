@@ -9,23 +9,49 @@ const cssPath = process.env.CONTRAST_CSS
 	? resolve(process.env.CONTRAST_CSS)
 	: fileURLToPath(new URL("./style.css", import.meta.url));
 const css = readFileSync(cssPath, "utf8");
-const foregrounds = ["fg", "dim", "red", "green"];
-// The canvas is the only surface: no tints, fills, or raised panels.
-const surfaces = ["canvas"];
+const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link"];
+// Every painted surface, including tool-status tints and diff rows, carries any foreground.
+const surfaces = ["canvas", "side", "raised", "code", "user", "run-bg", "ok-bg", "err-bg", "add-bg", "del-bg"];
 // No inverted fills exist; the list stays explicit so a new one needs a deliberate model.
 const inverseFills: string[] = [];
-const required = [...foregrounds, ...surfaces, "rule"];
+// The edge token marks controls, status rules and neutral selections; the accent marks focus.
+const graphics = ["edge", "accent"];
+const required = [...foregrounds, ...surfaces, ...graphics, "rule"];
+// Catppuccin flavors are complete alternative palettes with the same tokens.
+const flavors = ["latte", "frappe", "macchiato", "mocha"];
 // Rule hairlines decorate content already identified by text or position.
 // Any new use of the low-contrast rule needs a deliberate classification.
 const decorativeHairlines = new Set([
 	".sidebar|border-right",
+	".sidebar-footer|border-top",
+	".tab-bar|border-bottom",
+	".conversation-tab|border-right",
+	".statusbar|border-top",
+	".extension-status-list|border",
 	".agent-message-panel|border-top",
-	".message-body thead th|border-bottom",
+	".message-body th, .message-body td|border-bottom",
 	".message-body hr|border-top",
-	".composer|border-top",
+	".code-block > .copy|border",
+	".thinking > .stream-text|border-left",
+	".thinking-content|border-left",
+	".tool-copy|border",
+	".output-pages button|border",
+	".receipt-details pre|border",
+	".modes|border",
+	".command-menu|border",
+	"dialog|border",
+	".notification|border-bottom",
+	".palette-input-row|border-bottom",
 ]);
-// Non-content paint: the dialog backdrop dims the page behind a dialog.
-const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)"]);
+// Non-content paint: the dialog backdrop dims the page behind a dialog, and the context meter
+// fill repeats the percentage that the statusline states in text beside it.
+const decorativeBackgrounds = new Set([
+	"dialog::backdrop|var(--backdrop)",
+	".context-bar::-webkit-meter-optimum-value|var(--success)",
+	".context-bar::-webkit-meter-suboptimum-value|var(--warning)",
+	".context-bar::-webkit-meter-even-less-good-value|var(--error)",
+	".context-bar::-moz-meter-bar|var(--success)",
+]);
 type RGB = [number, number, number];
 type Rule = { selector: string; contexts: string[]; declarations: { property: string; value: string }[] };
 type Measurement = {
@@ -190,7 +216,14 @@ function themeValues(rules: Rule[]): Record<string, Palette> {
 			["@media (prefers-color-scheme: light)"],
 			"System override must use the light preference",
 		);
-	const knownRoots = new Set([...base, ...light, ...system]);
+	const flavorRules = Object.fromEntries(
+		flavors.map((name) => [
+			name,
+			rules.filter((r) => r.selector === `:root[data-appearance=${name}]` && r.contexts.length === 0),
+		]),
+	);
+	for (const name of flavors) assert.ok(flavorRules[name].length > 0, `Missing ${name} theme`);
+	const knownRoots = new Set([...base, ...light, ...system, ...Object.values(flavorRules).flat()]);
 	for (const rule of rules.filter((r) => r.selector.startsWith(":root")))
 		assert.ok(knownRoots.has(rule), `Unmodeled theme selector: ${rule.selector}`);
 	const values = (selected: Rule[]) =>
@@ -204,7 +237,14 @@ function themeValues(rules: Rule[]): Record<string, Palette> {
 	);
 	assert.equal(darkValues["color-scheme"], "dark");
 	assert.equal(lightOverrides["color-scheme"], "light");
-	return { dark: darkValues, light: { ...darkValues, ...lightOverrides } };
+	const themes: Record<string, Palette> = { dark: darkValues, light: { ...darkValues, ...lightOverrides } };
+	for (const name of flavors) {
+		const overrides = values(flavorRules[name]);
+		assert.deepEqual(Object.keys(overrides).sort(), Object.keys(lightOverrides).sort(), `${name} must override every themed token`);
+		assert.equal(overrides["color-scheme"], name === "latte" ? "light" : "dark");
+		themes[name] = { ...darkValues, ...overrides };
+	}
+	return themes;
 }
 function matrix(palette: Palette, theme: string, measure: Measure) {
 	for (const name of required) {
@@ -213,8 +253,8 @@ function matrix(palette: Palette, theme: string, measure: Measure) {
 	}
 	for (const fg of foregrounds) for (const bg of surfaces) measure("text-matrix", `--${fg} / --${bg}`, fg, bg, 4.5);
 	for (const fill of inverseFills) measure("inverse-text", `--canvas / --${fill}`, "canvas", fill, 4.5);
-	for (const bg of surfaces) measure("border-matrix", `--dim / --${bg}`, "dim", bg, 3);
-	for (const bg of surfaces) measure("focus-matrix", `--fg / --${bg}`, "fg", bg, 3);
+	for (const bg of surfaces) measure("border-matrix", `--edge / --${bg}`, "edge", bg, 3);
+	for (const bg of surfaces) measure("focus-matrix", `--accent / --${bg}`, "accent", bg, 3);
 }
 function textDeclaration(context: Context, property: string, value: string) {
 	const { theme, source, exclusions, issues, measure, decl } = context;
@@ -254,7 +294,7 @@ function backgroundDeclaration(context: Context, value: string) {
 		return;
 	}
 	if (inverseFills.includes(name)) inverseBackground(context, name);
-	else if (!surfaces.includes(name)) issues.push(`${theme}: non-canvas surface ${source}: ${value}`);
+	else if (!surfaces.includes(name)) issues.push(`${theme}: non-surface background ${source}: ${value}`);
 	else for (const fg of foregrounds) measure("background-declaration", `${source} --${fg} / --${name}`, fg, name, 4.5);
 }
 function decorativeEdge(context: Context, property: string, edge: string, name: string | undefined): boolean {
@@ -379,23 +419,37 @@ test("CSS parser preserves nested media, strings, and functions", () => {
 	assert.equal(parse("@container t (min-width: 9rem) { .x { color: var(--text); } }")[0].contexts[0], "@container t (min-width: 9rem)");
 	assert.throws(() => parse("@import 'external.css';"), /Unparsed/);
 });
-test("every required matrix pair is measured in both themes", () => {
+test("every required matrix pair is measured in all six themes", () => {
 	assert.equal(
 		result.measurements.filter((m) => m.kind === "text-matrix").length,
-		foregrounds.length * surfaces.length * 2,
+		foregrounds.length * surfaces.length * (2 + flavors.length),
 	);
-	assert.equal(result.measurements.filter((m) => m.kind === "inverse-text").length, inverseFills.length * 2);
-	assert.equal(result.measurements.filter((m) => m.kind === "border-matrix").length, surfaces.length * 2);
-	assert.equal(result.measurements.filter((m) => m.kind === "focus-matrix").length, surfaces.length * 2);
+	assert.equal(result.measurements.filter((m) => m.kind === "inverse-text").length, inverseFills.length * (2 + flavors.length));
+	assert.equal(result.measurements.filter((m) => m.kind === "border-matrix").length, surfaces.length * (2 + flavors.length));
+	assert.equal(result.measurements.filter((m) => m.kind === "focus-matrix").length, surfaces.length * (2 + flavors.length));
 });
 test("normal text meets 4.5:1; meaningful borders and focus meet 3:1", (context) => {
-	for (const theme of ["dark", "light"]) {
+	for (const theme of ["dark", "light", ...flavors]) {
 		const rows = result.measurements.filter((m) => m.theme === theme);
 		context.diagnostic(
 			`${theme}: text minimum ${minimum(rows.filter((m) => m.threshold === 4.5)).toFixed(6)}; border minimum ${minimum(rows.filter((m) => m.kind.startsWith("border"))).toFixed(6)}; focus minimum ${minimum(rows.filter((m) => m.kind.startsWith("focus"))).toFixed(6)}.`,
 		);
 	}
 	assert.deepEqual(failures, [], failures.map((m) => `${m.theme} ${m.source}: ${m.ratio}`).join("\n"));
+});
+test("regular user prose retains normal-text contrast and the left rule retains graphical contrast in every theme", () => {
+	const user = parse(css).find((rule) => rule.selector === ".message.user > .message-body");
+	assert.ok(user);
+	const declarations = Object.fromEntries(user.declarations.map(({ property, value }) => [property, value]));
+	assert.equal(declarations["font-weight"], "400");
+	assert.equal(declarations.background, "transparent");
+	assert.equal(declarations.color, undefined, "User prose inherits the primary foreground");
+	for (const [theme, palette] of Object.entries(result.themes)) {
+		assert.ok(ratio(palette["--fg"], palette["--canvas"]) >= 4.5, `${theme}: regular prose requires normal-text AA`);
+		const borders = result.measurements.filter((row) => row.theme === theme && row.kind === "border-declaration" && row.source.startsWith(".message.user > .message-body::before "));
+		assert.equal(borders.length, surfaces.length, `${theme}: left rule needs every modeled surface`);
+		assert.ok(borders.every((row) => row.threshold === 3 && row.ratio >= 3));
+	}
 });
 test("all color declarations use modeled semantic tokens", () => assert.deepEqual(result.issues, []));
 test("hardcoded and unknown text colors, extra pairs, and alpha effects are detected", () => {
@@ -412,7 +466,7 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 		);
 	}
 	assert.ok(
-		audit(`${css}\n.probe { color: var(--dim); background: var(--canvas); }`).measurements.some(
+		audit(`${css}\n.probe { color: var(--dim); background: var(--raised); }`).measurements.some(
 			(m) => m.source.includes(".probe") && m.kind === "local-pair",
 		),
 	);
@@ -433,9 +487,10 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 			i.includes("non-token text color"),
 		),
 	);
-	assert.ok(audit(`${css}\n.probe { background: var(--fg); }`).issues.some((i) => i.includes("non-canvas surface")));
+	assert.ok(audit(`${css}\n.probe { background: var(--fg); }`).issues.some((i) => i.includes("non-surface background")));
 	assert.ok(audit(`${css}\ndialog::backdrop { background: #000000cc; }`).issues.some((i) => i.includes("unmodeled background")));
-	assert.ok(audit(`${css}\n.probe { background: var(--backdrop); }`).issues.some((i) => i.includes("non-canvas surface")), "the translucent backdrop token is not a content surface");
+	assert.ok(audit(`${css}\n.probe { background: var(--backdrop); }`).issues.some((i) => i.includes("non-surface background")), "the translucent backdrop token is not a content surface");
+	assert.ok(audit(`${css}\n.transcript-region::before { background: linear-gradient(to bottom,var(--canvas),transparent); }`).issues.some((i) => i.includes("unmodeled background")), "transcript edges have no gradient exception");
 	assert.ok(audit(`${css}\n.probe { --dim: #000000; }`).issues.some((i) => i.includes("Component-local variable")));
 	assert.deepEqual(audit(`${css}\n.probe { --edge: 12px; }`).issues, []);
 });

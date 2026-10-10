@@ -138,11 +138,11 @@ function contract(member: string, version = "1.0.0", response = `${member}/${ver
 export const supportedOperations: Readonly<Record<OperationName, OperationContract>> = Object.freeze({
 	dashboard: contract("dashboard", "1.0.0", "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241"),
 	snapshot: contract("snapshot", "1.0.0", undefined, true),
-	inspect: contract("inspect", "1.0.0", "98cbec841b6626155420cf582d77e318ea0c8e7607f113dffe04d94bf1b99736", true),
+	inspect: contract("inspect", "1.0.0", "3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", true),
 	"observe-open": contract("observe-open", "1.0.0", undefined, true),
 	"observe-frame": contract("observe-frame", "1.0.0", undefined, true),
 	"observe-close": contract("observe-close"), changes: contract("changes"),
-	"task-submit": contract("task-submit", "1.0.0", "task-submit/1.1.0"), abort: contract("abort"),
+	"task-submit": contract("task-submit", "1.0.0", "task-submit/1.2.0"), abort: contract("abort"),
 	configure: contract("configure", "1.2.0"),
 });
 function operation(value: JsonValue): OperationContract {
@@ -301,12 +301,29 @@ function inspectExact(o: JsonObject): void {
 	if (o.nextOffset !== null) { integer(o.nextOffset); requireValue(o.nextOffset > o.offset, "Invalid exact continuation"); }
 }
 function inspectResult(o: JsonObject, context: Context): void {
+	optional(o, ["providerBlock"], providerBlock);
+	optional(o, ["recoveryOf"], v => string(v, 16 * 1024 * 1024, true));
 	integer(o.submissionId, 1); choice(o.status, ["queued", "placed", "done", "unanswered"]);
 	optional(o, ["requestId", "operationId", "reason"], v => string(v, 2000, true));
 	optional(o, ["entryId", "answerEntryId"], v => integer(v, 1));
 	optional(o, ["answer"], v => string(v, 16 * 1024 * 1024, true));
 	if (context.requestId !== undefined) requireValue(o.requestId === context.requestId, "Wrong result request ID");
 	const usage = object(o.usage); fields(usage, ["models", "tools"], object);
+}
+function resultReference(value: JsonValue): void {
+	const o = object(value); only(o, ["sessionId", "submissionId", "requestId"]);
+	string(o.sessionId, 256); requireValue(!/[\s@]/.test(o.sessionId), "Invalid result identity");
+	integer(o.submissionId, 1); optional(o, ["requestId"], v => string(v, 1024));
+}
+function providerBlock(value: JsonValue): void {
+	const o = object(value); only(o, ["blockId", "conversationId", "providerSessionId", "epoch", "model", "error",
+		"errorRedacted", "errorTruncated", "source", "timestamp", "originalResults", "omittedOriginalResults"]);
+	string(o.blockId, 128); integer(o.conversationId, 1); string(o.providerSessionId, 256);
+	fields(o, ["epoch", "timestamp", "omittedOriginalResults"], v => integer(v));
+	const selected = object(o.model); only(selected, ["provider", "modelId"]);
+	fields(selected, ["provider", "modelId"], v => string(v, 256, true)); string(o.error, 4096, true);
+	fields(o, ["errorRedacted", "errorTruncated"], boolean); choice(o.source, ["provider", "host-block"]);
+	array(o.originalResults, resultReference, 16);
 }
 function inspectPage(o: JsonObject): void {
 	if (o.nextCursor !== null) object(o.nextCursor); string(o.detail, 2000, true);

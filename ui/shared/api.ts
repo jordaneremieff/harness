@@ -6,6 +6,7 @@ export const LIMITS = {
   rosterRows: 2048, agentCacheBytes: 1024 * 1024, primaries: 4, workspaces: 16,
   targets: 128, rpcPending: 64, hostPending: 32, workspaceReservations: 16,
   operations: 2048, unconfirmed: 128, journalEvents: 4096,
+  sidebarWidthMin: 200, sidebarWidthMax: 480, conversationTabs: 16,
   journalBytes: 8 * 1024 * 1024, clientQueueBytes: 512 * 1024,
   reservationMs: 10 * 60 * 1000, jsonDepth: 8, jsonNodes: 2048,
 } as const;
@@ -25,13 +26,24 @@ export type ApiResult<T> = Success<T> | Failure;
 export type DisplayCoverage = {complete: boolean; truncated: boolean; omitted: number; reason?: string};
 export type OutputContinuation = {entryId: string; part: number; offset: number};
 export type OutputPage = {entryId: string; part: number; text: string; nextOffset: number | null; totalBytes: number};
-export type PartView = {type: 'text' | 'thinking'; text: string; redacted?: boolean; more?: OutputContinuation} |
+export type ImageSource = {entryId: string; message: number; part: number};
+/** Raster metadata only; the authenticated image route supplies bytes on demand. */
+export type ImageView = {type: 'image'; mimeType: 'image/png' | 'image/jpeg'; digest: string;
+  bytes: number; width: number; height: number; alt: string; source?: ImageSource};
+/** Supplied output metadata only; a full-output path is inert text, not an access link. */
+export type ToolOutputInfo = {truncation?: {truncated: true; truncatedBy?: 'lines' | 'bytes';
+  totalLines?: number; outputLines?: number; totalBytes?: number; outputBytes?: number;
+  maxLines?: number; maxBytes?: number; lastLinePartial?: true; firstLineExceedsLimit?: true}; fullOutputPath?: string};
+export type PartView = {type: 'text'; text: string; redacted?: boolean; more?: OutputContinuation; structured?: JsonDisplay} |
+  {type: 'thinking'; text: string; redacted?: boolean; more?: OutputContinuation} |
   {type: 'toolCall'; callId: string; name: string; arguments: JsonDisplay} |
-  {type: 'toolResult'; callId: string; name: string; parts: PartView[]; isError: boolean} |
-  {type: 'omitted'; label: string};
+  {type: 'toolResult'; callId: string; name: string; parts: PartView[]; isError: boolean; output?: ToolOutputInfo} |
+  ImageView | {type: 'omitted'; label: string};
+/** Supplied input-token counts for one assistant message; absent usage is unknown. */
+export type AssistantUsage = {input: number; cacheRead: number; cacheWrite: number};
 /** Stable adapter ID, not an array index. Final messages replace partial messages. */
 export type MessageView = {id: string; role: string; timestamp?: number; parts: PartView[];
-  state: 'partial' | 'final'; stopReason?: string; error?: string; coverage: DisplayCoverage};
+  state: 'partial' | 'final'; stopReason?: string; error?: string; coverage: DisplayCoverage; usage?: AssistantUsage};
 export type EntryView = {id: string; kind: string; messages?: MessageView[]; data?: JsonDisplay; head?: string};
 export type ModelChoice = {provider: string; id: string; name: string; reasoning: boolean; input: string[]; thinkingLevels?: string[]};
 export type CommandView = {name: string; description: string; source: 'extension' | 'skill' | 'prompt'};
@@ -52,10 +64,14 @@ export type PrimaryView = {key: string; epoch: number; cwd: string;
   pendingDialogs: DialogView[]; lastError?: ErrorView; capabilities: Record<string, boolean>;
   extension?: {title?: string; statuses: Record<string, string>; widgets: Record<string, {lines: string[]; placement?: string}>};
 };
-export type Appearance = 'dark' | 'light' | 'system';
+export type Appearance = 'dark' | 'light' | 'system' | 'latte' | 'frappe' | 'macchiato' | 'mocha';
+/** Primary tabs follow the workspace primary; closing a tab never stops its conversation. */
+export type ConversationTab = {kind: 'primary'} | {kind: 'agent'; identity: string; split: boolean};
+export type ConversationLayout = {tabs: ConversationTab[]; active: number | null; splitRatio: number};
 /** Shared tabs use compare-and-set revisions for view state. */
 export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
-  panelVisible?: boolean; sidebarVisible?: boolean; appearance?: Appearance};
+  panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance;
+  conversationLayout?: ConversationLayout};
 export type DraftView = {revision: number; text: string; mode: string; persisted: true};
 export type ReadingView = {revision: number; anchorId: string | null; offsetPx: number; followTail: boolean};
 export type PresentationView = {revision: number; expanded: string[]; showThinking: boolean};
@@ -93,7 +109,7 @@ export type PrimaryControl = {epoch: number} & ({action: 'model'; provider: stri
   {action: 'thinking'; level: string} | {action: 'compact'; customInstructions?: string} |
   {action: 'autoCompaction' | 'autoRetry'; enabled: boolean} | {action: 'abortRetry'} |
   {action: 'name'; name: string} | {action: 'stats'} | {action: 'export'} | {action: 'resync'});
-export type SessionAction = {epoch: number} & ({action: 'new'} | {action: 'resume'; sessionFile: string; writerReleased: true} | {action: 'fork'; entryId: string});
+export type SessionAction = {epoch: number} & ({action: 'new'} | {action: 'resume'; sessionFile: string} | {action: 'fork'; entryId: string});
 export type DialogResponse = {epoch: number} & ({value: string} | {confirmed: boolean} | {cancelled: true});
 export type HandoffRequest = {epoch: number; mode: 'settle' | 'abort'; clearQueue: boolean};
 export type HandoffView = {cwd: string; sessionFile: string; executable: string; argv: string[]; command: string};
@@ -112,7 +128,7 @@ export type EventData = {
   'primary.state': PrimaryView;
   'primary.message': {message: MessageView};
   'primary.delta': {messageId: string; index: number; kind: 'text' | 'thinking' | 'toolArguments'; delta: string; callId?: string; toolName?: string};
-  'primary.tool': {callId: string; name: string; phase: 'start' | 'update' | 'end'; arguments?: JsonDisplay; parts?: PartView[]; isError?: boolean; durationMs?: number};
+  'primary.tool': {callId: string; name: string; phase: 'start' | 'update' | 'end'; arguments?: JsonDisplay; parts?: PartView[]; isError?: boolean; durationMs?: number; output?: ToolOutputInfo};
   'primary.entry': {entry: EntryView};
   'primary.queue': {pending: number; steering?: string[]; followUp?: string[]};
   'primary.recovery': {kind: 'compaction' | 'retry' | 'summarizationRetry'; phase: 'start' | 'scheduled' | 'attempt' | 'end';
@@ -135,10 +151,10 @@ export type EventEnvelope<N extends EventName = EventName> = {at: string; worksp
 export const ROUTES = [
   'GET /', 'POST /api/auth/launch', 'POST /api/auth/logout', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
   'POST /api/workspaces', 'POST /api/operations', 'GET /api/operations/:id', 'POST /api/operations/:id/reconcile', 'DELETE /api/operations/:id',
-  'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/history/output', 'GET /api/primaries/:key/resources/:kind',
+  'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/history/output', 'GET /api/primaries/:key/history/image', 'GET /api/primaries/:key/resources/:kind',
   'GET /api/primaries/:key/diagnostics', 'POST /api/primaries/:key/inputs', 'POST /api/primaries/:key/stop',
   'POST /api/primaries/:key/session', 'POST /api/primaries/:key/control', 'POST /api/primaries/:key/dialogs/:dialogId', 'POST /api/primaries/:key/handoff',
-  'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'POST /api/agents/:identity/inspect',
+  'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'GET /api/agents/:identity/history/image', 'POST /api/agents/:identity/inspect',
   'POST /api/agents/:identity/inputs', 'POST /api/agents/:identity/abort', 'POST /api/agents/:identity/configure',
   'POST /api/workspaces/:id/targets', 'PUT /api/workspaces/:id/selection', 'GET /api/workspaces/:id/targets/:targetKey', 'PUT /api/workspaces/:id/targets/:targetKey/draft',
   'PUT /api/workspaces/:id/targets/:targetKey/reading', 'PUT /api/workspaces/:id/targets/:targetKey/presentation',

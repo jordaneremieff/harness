@@ -6,6 +6,8 @@ import { execute } from './dispatch.mts';
 import { projectJson } from './projection.mts';
 import { decodeHistoryCursor, pageEntries } from './history.mts';
 import { StateError } from './state.mts';
+import { ImageResponse } from './images.mts';
+import { imageRequest } from './image-request.mts';
 import * as v from './validate.mts';
 
 export async function dispatchPrimary(registry: Registry, context: RequestContext) {
@@ -44,10 +46,9 @@ async function control(session: ReturnType<Registry['primary']>, body: PrimaryCo
   return session.control(body);
 }
 async function open(registry: Registry, context: RequestContext, workspace: string) {
-  const {body} = context; v.fields(body,['cwd','sessionFile','writerReleased'],['cwd']);
+  const {body} = context; v.fields(body,['cwd','sessionFile'],['cwd']);
   const cwd = await registry.validatePath(v.string(body.cwd,'project path',4096),true);
   const sessionFile = body.sessionFile === undefined ? undefined : await registry.validatePath(v.string(body.sessionFile,'session file',4096),false);
-  if(sessionFile && body.writerReleased !== true) throw new ApiError('invalid_request','Confirm that no terminal or other writer owns this saved session.');
   const operation = await execute(registry,context.operationId,{workspaceId:workspace,kind:'primary.open',body},async()=> {
     const primaryKey = await registry.openPrimary(cwd,sessionFile,workspace);
     const current = await registry.store.workspace(workspace);
@@ -65,18 +66,24 @@ function read(registry: Registry,key: string,parts: string[],url: URL) {
   if(!view) throw new ApiError('invalid_request','The primary does not exist.',404);
   if(parts.length === 3) return structuredClone(view);
   const session = registry.primary(key);
-  if(parts[3] === 'history') {
-    if(parts.length === 4) return readHistory(session,url);
-    if(parts.length !== 5 || parts[4] !== 'output') throw new ApiError('invalid_request','The history read route does not exist.',404);
-    if ([...url.searchParams.keys()].some(name => !['epoch','entry','part','offset','workspace'].includes(name))) throw new ApiError('invalid_request','The output request fields are invalid.');
-    const integer = (name: string) => { const value = url.searchParams.get(name); if (value === null || !/^\d+$/.test(value)) throw new ApiError('invalid_request',`The ${name} is invalid.`); return v.integer(Number(value),name); };
-    registry.primary(key,integer('epoch'),true);
-    const part = integer('part'); if (part >= 100) throw new ApiError('invalid_request','The output part is invalid.');
-    return session.historyOutput(v.string(url.searchParams.get('entry'),'entry'),part,integer('offset'));
-  }
+  if(parts[3] === 'history') return readHistoryContent(registry,key,parts,url);
   if(parts[3] === 'diagnostics') return {stderr:projectJson(session.stderrTail),error:session.view.lastError};
   if(parts[3] !== 'resources') throw new ApiError('invalid_request','The primary read route does not exist.',404);
   return readResources(session,key,parts,url);
+}
+function readHistoryContent(registry: Registry,key: string,parts: string[],url: URL) {
+  const session = registry.primary(key);
+  if(parts.length === 4) return readHistory(session,url);
+  if(parts.length === 5 && parts[4] === 'image') {
+    const request = imageRequest(url,true); registry.primary(key,request.epoch,true);
+    return session.historyImage(request.source,request.digest).then(image => new ImageResponse(image));
+  }
+  if(parts.length !== 5 || parts[4] !== 'output') throw new ApiError('invalid_request','The history read route does not exist.',404);
+  if ([...url.searchParams.keys()].some(name => !['epoch','entry','part','offset','workspace'].includes(name))) throw new ApiError('invalid_request','The output request fields are invalid.');
+  const integer = (name: string) => { const value = url.searchParams.get(name); if (value === null || !/^\d+$/.test(value)) throw new ApiError('invalid_request',`The ${name} is invalid.`); return v.integer(Number(value),name); };
+  registry.primary(key,integer('epoch'),true);
+  const part = integer('part'); if (part >= 100) throw new ApiError('invalid_request','The output part is invalid.');
+  return session.historyOutput(v.string(url.searchParams.get('entry'),'entry'),part,integer('offset'));
 }
 async function readHistory(session: ReturnType<Registry['primary']>,url: URL) {
   const cursor=v.cursor(url.searchParams.get('cursor')); const limit=v.limit(url); const target=session.target;
@@ -122,8 +129,7 @@ function validateMutation(action: string | undefined,body: Record<string,unknown
 }
 function validateSession(body: Record<string,unknown>) {
   const selected=v.choice(body.action,['new','resume','fork'],'session action');
-  v.fields(body,['epoch','action',...(selected==='resume'?['sessionFile','writerReleased']:selected==='fork'?['entryId']:[])],['epoch','action']);
-  if(selected==='resume' && body.writerReleased!==true) throw new ApiError('invalid_request','Confirm that no other writer owns this saved session.');
+  v.fields(body,['epoch','action',...(selected==='resume'?['sessionFile']:selected==='fork'?['entryId']:[])],['epoch','action']);
   if(selected==='resume') v.string(body.sessionFile,'session file',4096);
   if(selected==='fork') v.string(body.entryId,'entry ID');
 }

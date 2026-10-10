@@ -3,7 +3,6 @@ export type ConnectionClock = {now: () => number; set: (callback: () => void, de
 export type ConnectionHooks = {attempt: () => Promise<void>; paint: (phase: ConnectionPhase, error?: unknown) => void; unauthorized: (error: unknown) => boolean};
 const ATTEMPTS = [250, 1000, 3000, 6000];
 export type ConnectionSurface = {owner: 'connection' | 'workspace-alert'; visible: boolean};
-/** One surface explains a visible recovery or failure: the sidebar footer when shown, otherwise the main pane. */
 export function connectionSurface(phase: ConnectionPhase, sidebarVisible: boolean): ConnectionSurface {
   return {owner: sidebarVisible ? 'connection' : 'workspace-alert', visible: phase === 'reconnecting' || phase === 'offline' || phase === 'auth'};
 }

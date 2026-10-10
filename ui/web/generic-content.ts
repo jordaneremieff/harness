@@ -1,0 +1,577 @@
+import type { JsonDisplay } from '../shared/api.ts';
+import { element } from './dom.ts';
+import { highlight, languageFromPath } from './highlight.ts';
+import { markdownDom } from './safe-markdown.ts';
+import type { PresentationContext } from './transcript-presentation.ts';
+
+const SCAN = 2048;
+const DEPTH = 8;
+const NODES = 128;
+const FIELDS = 24;
+const ROWS = 12;
+const COLS = 6;
+const DOC_CHARS = 8192;
+const DOC_LINES = 80;
+const TEXT_CHARS = 16384;
+const DOM_NODES = 512;
+const NOTICE_CHARS = 112;
+type PreviewOmission = 'text' | 'fields' | 'rows' | 'nested values';
+const sourceKey = /(?:^|[_-])(command|program|code|script)$/i;
+const payloadKey = /^(?:payload|content|body|text|document|data|records|results|items|entries|value)$/i;
+type Entry = [string, unknown];
+type Metadata = {path: string; value: unknown; depth: number; hint?: string; pathOnly?: boolean};
+type Scan = {entries: Entry[]; complete: boolean};
+type Field = {key: string; value: unknown; path: string; depth: number; rank: number; order: number[]; promoted: boolean};
+const previews = new WeakMap<HTMLElement, Preview>();
+
+function ordered(a: Field, b: Field): number {
+  for (let i = 0; i < Math.min(a.order.length, b.order.length); i++) {
+    const difference = (a.order[i] ?? 0) - (b.order[i] ?? 0); if (difference) return difference;
+  }
+  return a.order.length - b.order.length;
+}
+function container(value: unknown): value is Record<string, unknown> | unknown[] { return record(value) || Array.isArray(value); }
+function record(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function own(value: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+function words(key: string): string { return key.slice(0, 240).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase(); }
+function explicitKey(key: string): boolean {
+  return /(?:^|[_.-])(?:errors?|warnings?|truncated|omitted|omissions?)(?:$|[_.-])/.test(words(key));
+}
+function metadataKey(key: string): boolean {
+  return !explicitKey(key) && /(?:^|[_-])(?:cursor|digest|coverage|limits?|provenance|metadata|transport|usage|quer(?:y|ies)|scans?|counters?|stats|statistics|consistency|representation|offsets?|(?:excerpt_?)?(?:start|end)|field)(?:$|[_-])/.test(words(key));
+}
+function pathFor(parent: string, key: string): string { return prefix(parent ? `${parent}.${key}` : key, 240, 1); }
+/** Dot boundaries preserve readable path segments and exact key text. */
+export function appendKey(node: HTMLElement, key: string): void {
+  node.className = `${node.className ? `${node.className} ` : ''}field-key${key.length > 24 ? ' field-key-wide' : ''}`;
+  const segments = key.split('.');
+  segments.forEach((segment, index) => {
+    node.append(document.createTextNode(`${segment}${index < segments.length - 1 ? '.' : ''}`));
+    if (index < segments.length - 1) node.append(element('wbr'));
+  });
+}
+function multiline(value: string): boolean { return /[\r\n]/.test(value); }
+function prefix(text: string, chars: number, lines = DOC_LINES): string {
+  let end = Math.min(text.length, Math.max(0, chars)); let count = 1;
+  for (let i = 0; i < end; i++) {
+    if ((text[i] === '\n' || (text[i] === '\r' && text[i + 1] !== '\n')) && ++count > lines) { end = i; break; }
+  }
+  const cut = end < text.length;
+  if (cut && end === chars) end = Math.max(0, end - 1);
+  if (end && /[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
+  return text.slice(0, end) + (cut && chars > 0 ? '…' : '');
+}
+function countNodes(node: Node, limit = DOM_NODES): number {
+  let count = 0; const pending = [node];
+  while (pending.length && count <= limit) {
+    const current = pending.pop(); if (!current) break;
+    count++;
+    for (const child of current.childNodes) pending.push(child);
+  }
+  return count;
+}
+function preFrame(pre: HTMLElement): HTMLElement {
+  const content = Array.from(pre.childNodes); const frame = element('span', 'pre-text-frame');
+  pre.textContent = ''; frame.append(...content); pre.append(frame); return frame;
+}
+function framedPre(className?: string, text?: string): {pre: HTMLPreElement; frame: HTMLElement} {
+  const pre = element('pre', className); const frame = preFrame(pre);
+  if (text !== undefined) frame.textContent = text;
+  return {pre, frame};
+}
+function scalar(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return '…';
+}
+function shortScalar(value: unknown): boolean {
+  return value === null || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) ||
+    (typeof value === 'string' && !multiline(value) && value.length <= 80);
+}
+function language(args: Record<string, unknown>): string | undefined {
+  for (const key of ['language', 'lang']) {
+    const value = own(args, key);
+    if (typeof value === 'string') return value.slice(0, 40);
+  }
+  for (const key of ['path', 'file_path', 'filename']) {
+    const value = own(args, key);
+    if (typeof value === 'string') return languageFromPath(value.slice(0, 4096));
+  }
+  return undefined;
+}
+
+/** Share one instance across a tool's arguments, result previews and deferred metadata. */
+export class PreviewBudget {
+  text = TEXT_CHARS - NOTICE_CHARS;
+  visits = 0;
+  scanned = 0;
+  private readonly roots = new Set<HTMLElement>();
+  private notice?: HTMLElement;
+  private noticeRoot?: HTMLElement;
+  private readonly omissions = new Set<PreviewOmission>();
+  private hostOmitted = false;
+  /** Transfer only a helper-owned root, before fresh result previews are created. */
+  adopt(root: HTMLElement): boolean {
+    if (this.roots.has(root)) return true;
+    return previews.get(root)?.transfer(this) ?? false;
+  }
+  retainedCost(root: HTMLElement): {text: number; nodes: number} {
+    let text = (root.textContent ?? '').length; let nodes = countNodes(root);
+    if (this.notice && Array.from(root.childNodes).includes(this.notice)) {
+      text -= (this.notice.textContent ?? '').length; nodes -= countNodes(this.notice);
+    }
+    return {text, nodes};
+  }
+  retain(root: HTMLElement, cost: {text: number; nodes: number}, visits: number, scanned: number): boolean {
+    if (cost.text > this.text || cost.nodes > this.room() || this.visits + visits > NODES || this.scanned + scanned > SCAN) {
+      this.limit(); return false;
+    }
+    this.roots.add(root); this.text -= cost.text; this.visits += visits; this.scanned += scanned; return true;
+  }
+  detach(root: HTMLElement): void {
+    this.roots.delete(root);
+    if (this.noticeRoot === root) this.noticeRoot = undefined;
+    if (this.notice && Array.from(root.childNodes).includes(this.notice)) { this.notice.remove(); this.notice = undefined; }
+  }
+  acquire(root: HTMLElement): boolean {
+    if (this.room() < 1 || !this.text || this.visits >= NODES) { this.limit(); return false; }
+    this.roots.add(root); return true;
+  }
+  releaseEmpty(root: HTMLElement): void { if (!root.childNodes.length) this.roots.delete(root); }
+  finish(root: HTMLElement): void {
+    if (!Array.from(root.childNodes).some(child => child !== this.notice)) return;
+    this.noticeRoot = root;
+    if (this.omissions.size || this.hostOmitted) this.updateNotice();
+  }
+  room(): number {
+    let nodes = 0;
+    for (const root of this.roots) {
+      nodes += countNodes(root, DOM_NODES - nodes);
+      if (nodes >= DOM_NODES) break;
+    }
+    return DOM_NODES - nodes - (this.notice ? 0 : 2);
+  }
+  limit(reason: PreviewOmission = 'fields'): void { this.omissions.add(reason); this.updateNotice(); }
+  truncate(): void { this.hostOmitted = true; this.updateNotice(); }
+  private updateNotice(): void {
+    const root = this.noticeRoot ?? this.roots.values().next().value; if (!root) return;
+    if (!this.notice) this.notice = element('p', 'secondary tool-caption preview-omission');
+    this.notice.textContent = this.omissions.size ? 'Preview shortened. Inspect raw output or Copy for retained content.' :
+      'Structured preview incomplete. Inspect raw output or Copy for retained content.';
+    this.notice.remove(); root.append(this.notice);
+  }
+}
+
+class Preview {
+  readonly root = element('section', 'tool-content');
+  private budget: PreviewBudget;
+  private readonly admitted: boolean;
+  private readonly truncated: boolean;
+  private readonly omissions = new Set<PreviewOmission>();
+  private spentVisits = 0;
+  private spentScans = 0;
+  private readonly scans = new WeakMap<object, Scan>();
+  private readonly metadata: Metadata[] = [];
+  private readonly promotedPaths = new Set<string>();
+  private readonly classifiedMetadata = new Set<string>();
+  private readonly metadataSeen = new WeakSet<object>();
+  private readonly prepared = new WeakSet<object>();
+  private readonly documentCounts = new WeakMap<object, number>();
+  private readonly sectionPaths = new Set<string>();
+  private readonly scalarBranches = new WeakSet<object>();
+  private readonly ancestors = new WeakSet<object>();
+  private metadataBuilt = false;
+  private readonly context: PresentationContext;
+  private readonly argumentsMode: boolean;
+  constructor(context: PresentationContext, argumentsMode: boolean, truncated: boolean, budget: PreviewBudget) {
+    this.context = context; this.argumentsMode = argumentsMode; this.budget = budget; this.truncated = truncated;
+    this.admitted = budget.acquire(this.root);
+    if (this.admitted) previews.set(this.root, this);
+    if (truncated) budget.truncate();
+  }
+  transfer(budget: PreviewBudget): boolean {
+    const previous = this.budget;
+    if (!budget.retain(this.root, previous.retainedCost(this.root), this.spentVisits, this.spentScans)) return false;
+    previous.detach(this.root); this.budget = budget;
+    for (const reason of this.omissions) budget.limit(reason);
+    if (this.truncated) budget.truncate();
+    budget.finish(this.root);
+    return true;
+  }
+  private limit(reason: PreviewOmission = 'fields'): void { this.omissions.add(reason); this.budget.limit(reason); }
+  private room(): number { return this.budget.room(); }
+  private scan(value: Record<string, unknown> | unknown[]): Scan {
+    const cached = this.scans.get(value); if (cached) return cached;
+    const entries: Entry[] = []; let complete = true;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      if (this.budget.scanned >= SCAN) { complete = false; this.limit(); break; }
+      this.budget.scanned++; this.spentScans++;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor && 'value' in descriptor) entries.push([key, descriptor.value]);
+      else { complete = false; this.limit(); }
+    }
+    const result = {entries, complete}; this.scans.set(value, result); return result;
+  }
+  private documentString(value: unknown): value is string {
+    return typeof value === 'string' && (multiline(value) || value.length >= (this.argumentsMode ? 512 : 81));
+  }
+  private documentCount(value: unknown): number {
+    if (this.documentString(value)) return 1;
+    return container(value) ? this.documentCounts.get(value) ?? 0 : 0;
+  }
+  private documentValue(value: unknown): boolean { return this.documentCount(value) > 0; }
+  private shapedMetadata(value: unknown): boolean {
+    return value === null || (record(value) && this.scalarBranches.has(value));
+  }
+  private rank([key, value]: Entry): number {
+    if (metadataKey(key)) return 4;
+    if (!this.argumentsMode && this.documentValue(value)) return 0;
+    if (explicitKey(key)) return this.meaningfulFlag(value) ? 1 : 4;
+    if (this.argumentsMode && (sourceKey.test(key) || key === 'edits')) return 1;
+    if (this.documentString(value) || (payloadKey.test(key) && this.usefulType(value))) return 1;
+    if (container(value)) return 2;
+    return 3;
+  }
+  private usefulType(value: unknown): boolean { return (typeof value === 'string' && value.length > 0) || container(value); }
+  private meaningfulFlag(value: unknown): boolean {
+    return value === true || (typeof value === 'number' && value > 0) || (typeof value === 'string' && Boolean(value.trim())) || container(value);
+  }
+  private scanRank([key, value]: Entry): number {
+    if (explicitKey(key)) return 0;
+    if (this.documentString(value)) return 1;
+    if (payloadKey.test(key) && this.usefulType(value)) return 2;
+    return container(value) ? 3 : 4;
+  }
+  private prepare(value: unknown, depth: number): void {
+    if (!container(value) || this.prepared.has(value)) return;
+    if (depth > DEPTH) { this.limit(); return; }
+    this.prepared.add(value);
+    const entries = [...this.scan(value).entries];
+    const selected = Array.isArray(value) ? entries.slice(0, ROWS) : entries.filter(([key]) => !metadataKey(key));
+    selected.sort((a, b) => this.rank(a) - this.rank(b));
+    const shown = selected.slice(0, FIELDS);
+    for (const [key, child] of shown) {
+      if (!(this.argumentsMode && key === 'edits')) this.prepare(child, depth + 1);
+    }
+    const documents = Math.min(2, shown.reduce((count, [, child]) => count + this.documentCount(child), 0));
+    const complete = this.scan(value).complete && selected.length <= FIELDS;
+    this.documentCounts.set(value, documents === 1 && !complete ? 2 : documents);
+    if (this.scan(value).complete && entries.every(([, child]) => shortScalar(child) || (container(child) && this.scalarBranches.has(child)))) this.scalarBranches.add(value);
+  }
+  private prepareFields(entries: Entry[], depth: number): void {
+    for (const [key, child] of [...entries].sort((a, b) => this.rank(a) - this.rank(b))) {
+      if (!metadataKey(key) && !(this.argumentsMode && key === 'edits')) this.prepare(child, depth + 1);
+    }
+  }
+  private fields(value: Record<string, unknown>, path: string, depth: number, collectMetadata: boolean): Field[] {
+    // Classify payloads before metadata, without consuming display visits or text.
+    const entries = this.scan(value).entries;
+    if (collectMetadata) this.prepareFields(entries, depth);
+    const documentRecord = !this.argumentsMode && entries.some(([, child]) => this.documentValue(child));
+    const fields: Field[] = [];
+    for (const [index, [key, child]] of entries.entries()) {
+      const childPath = this.path(path, key);
+      const shapedMetadata = documentRecord && !explicitKey(key) && this.shapedMetadata(child);
+      fields.push({key, value: child, path: childPath, depth: depth + 1, rank: shapedMetadata ? 4 : this.rank([key, child]), order: [index], promoted: false});
+      if (collectMetadata && (metadataKey(key) || shapedMetadata)) fields.push(...this.promote(child, key, childPath, depth + 1, [index]));
+    }
+    fields.sort((a, b) => a.rank - b.rank || ordered(a, b));
+    if (fields.length > FIELDS) this.limit();
+    return fields.slice(0, FIELDS);
+  }
+  private promotionRank(key: string, value: unknown, entries: Entry[]): number | undefined {
+    if (explicitKey(key)) return this.meaningfulFlag(value) ? 1 : undefined;
+    if (typeof value === 'string' && multiline(value)) return this.argumentsMode ? 1 : 0;
+    if (!payloadKey.test(key)) return undefined;
+    if ((typeof value === 'string' && value.length > 0) || (container(value) && entries.length > 0)) return 2;
+    return undefined;
+  }
+  private promote(value: unknown, key: string, path: string, depth: number, order: number[]): Field[] {
+    if (this.classifiedMetadata.has(path)) return [];
+    this.classifiedMetadata.add(path);
+    if (depth > DEPTH) { this.limit(); return []; }
+    const entries = this.metadataEntries(value);
+    if (entries === undefined) return [];
+    const fields: Field[] = []; const rank = this.promotionRank(key, value, entries);
+    if (rank !== undefined) {
+      fields.push({key, value, path, depth, rank, order, promoted: true}); this.promotedPaths.add(path);
+    }
+    const children = entries.map((entry, index) => ({entry, index}));
+    children.sort((a, b) => this.scanRank(a.entry) - this.scanRank(b.entry));
+    for (const {entry: [childKey, child], index} of children) {
+      const label = Array.isArray(value) && /^\d+$/.test(childKey) ? String(Number(childKey) + 1) : childKey;
+      fields.push(...this.promote(child, childKey, this.path(path, label), depth + 1, [...order, index]));
+    }
+    return fields;
+  }
+  private metadataEntries(value: unknown): Entry[] | undefined {
+    if (!container(value)) return [];
+    if (this.metadataSeen.has(value)) { this.limit(); return undefined; }
+    this.metadataSeen.add(value); return this.scan(value).entries;
+  }
+  private covered(path: string): boolean {
+    let scope = '';
+    for (const entry of this.metadata) {
+      if ((path === entry.path || path.startsWith(`${entry.path}.`)) && entry.path.length > scope.length) scope = entry.path;
+    }
+    for (const promoted of this.promotedPaths) {
+      if (scope !== promoted && scope.startsWith(`${promoted}.`)) continue;
+      if (path === promoted || path.startsWith(`${promoted}.`)) return true;
+    }
+    return false;
+  }
+  private take(text: string, limit = DOC_CHARS, lines = DOC_LINES): string {
+    const bound = Math.min(limit, this.budget.text);
+    const shown = prefix(this.context.bounded(prefix(text, bound, lines), bound), bound, lines);
+    this.budget.text -= shown.length;
+    if (shown.length < text.length) this.limit('text');
+    return shown;
+  }
+  private append(parent: HTMLElement, child: Node): boolean {
+    if (countNodes(child, this.room()) > this.room()) { this.limit('nested values'); return false; }
+    parent.append(child); return true;
+  }
+  private caption(parent: HTMLElement, text: string): void {
+    if (this.budget.text) {
+      const caption = element('p', 'secondary tool-caption'); appendKey(caption, this.take(text, 240, 1)); this.append(parent, caption);
+    } else this.limit('text');
+  }
+  private document(parent: HTMLElement, key: string, value: string): void {
+    if (key) this.caption(parent, key);
+    const text = this.take(value); if (!text) return;
+    const doc = element('div', 'tool-document message-body'); doc.append(markdownDom(text));
+    // Raw inspection and copy belong to the containing tool, not to previews.
+    for (const control of doc.querySelectorAll('button')) control.remove();
+    for (const pre of doc.querySelectorAll('pre')) preFrame(pre);
+    const rendered = doc.textContent ?? '';
+    if (rendered.length > text.length || rendered.split(/\r\n|\r|\n/).length > DOC_LINES || countNodes(doc, DOM_NODES) > this.room()) {
+      this.append(parent, framedPre('tool-document message-body', text).pre);
+    } else this.append(parent, doc);
+  }
+  private suppliedPre(parent: HTMLElement, value: string, className: string, hint?: string): void {
+    const text = this.take(value); if (!text) return;
+    const {pre, frame} = framedPre(className); frame.append(highlight(text, hint));
+    if (countNodes(pre, DOM_NODES) > this.room()) frame.textContent = text;
+    this.append(parent, pre);
+  }
+  private source(parent: HTMLElement, key: string, value: string, hint?: string): void {
+    const details = element('details', 'tool-source'); details.open = true;
+    const summary = element('summary'); appendKey(summary, this.take(key, 240, 1)); details.append(summary);
+    if (this.append(parent, details)) this.suppliedPre(details, value, 'tool-command', hint);
+  }
+  private pair(parent: HTMLElement, key: string, value: unknown): void {
+    if (!this.budget.text) { this.limit(); return; }
+    const dl = element('dl', 'kv');
+    const term = element('dt'); appendKey(term, this.take(key, 240, 1));
+    dl.append(term, element('dd', undefined, this.take(scalar(value), 240, 3)));
+    this.append(parent, dl);
+  }
+  private tableShape(values: unknown[]): Entry[][] | undefined {
+    if (!values.length) return undefined;
+    const rows: Entry[][] = [];
+    for (let i = 0; i < Math.min(values.length, ROWS); i++) {
+      const value = own(values, String(i)); if (!record(value)) return undefined;
+      const scanned = this.scan(value); const row = scanned.entries;
+      if (!scanned.complete || !row.length || row.length > COLS) return undefined;
+      if (row.some(([key, child]) => metadataKey(key) || key.length > 32 || multiline(key) || !shortScalar(child))) return undefined;
+      if (rows[0] && row.some(([key], index) => key !== rows[0]?.[index]?.[0])) return undefined;
+      if (rows[0] && row.length !== rows[0].length) return undefined;
+      rows.push(row);
+    }
+    return rows;
+  }
+  private table(parent: HTMLElement, key: string, rows: Entry[][], depth: number): void {
+    if (depth + 2 > DEPTH) { this.limit(); return; }
+    this.caption(parent, key);
+    const table = element('table', 'tool-rows'); if (!this.append(parent, table)) return;
+    const head = element('thead'); const tr = element('tr');
+    for (const [column] of rows[0] ?? []) { const th = element('th', undefined, this.take(column, 32, 1)); th.scope = 'col'; tr.append(th); }
+    head.append(tr); if (!this.append(table, head)) return;
+    const body = element('tbody'); if (!this.append(table, body)) return;
+    for (const row of rows) {
+      if (this.budget.visits + 1 + row.length > NODES || !this.budget.text) { this.limit(); break; }
+      this.budget.visits += 1 + row.length; this.spentVisits += 1 + row.length;
+      const tr = element('tr');
+      for (const [, child] of row) tr.append(element('td', undefined, this.take(scalar(child), 80, 1)));
+      if (!this.append(body, tr)) break;
+    }
+  }
+  private editSide(frame: HTMLElement, value: string, sign: string, className: string): void {
+    if (!this.budget.text) { this.limit(); return; }
+    const shown = prefix(value, Math.min(DOC_CHARS, Math.max(0, this.budget.text - 240)));
+    if (shown.length < value.length) this.limit('text');
+    const signed = shown.split(/\r\n|\r|\n/).map(line => `${sign} ${line}`).join('\n');
+    const text = this.take(signed, DOC_CHARS);
+    if (text) frame.append(element('span', className, text), document.createTextNode(this.take('\n', 1)));
+  }
+  private edits(parent: HTMLElement, values: unknown[]): void {
+    this.caption(parent, 'Supplied old and new text, not an inferred diff');
+    for (let i = 0; i < Math.min(values.length, 8) && this.budget.text; i++) {
+      if (this.budget.visits + 3 > NODES) { this.limit(); break; }
+      this.budget.visits += 3; this.spentVisits += 3;
+      const edit = own(values, String(i)); if (!record(edit)) { this.limit(); continue; }
+      const old = own(edit, 'oldText'); const next = own(edit, 'newText');
+      if (typeof old !== 'string' || typeof next !== 'string') { this.limit(); continue; }
+      const {pre, frame} = framedPre(); this.editSide(frame, old, '-', 'diff-del'); this.editSide(frame, next, '+', 'diff-add');
+      if (countNodes(pre) > this.room()) frame.textContent = pre.textContent;
+      if (!this.append(parent, pre)) break;
+    }
+    if (values.length > 8) this.limit();
+  }
+  private path(parent: string, key: string): string {
+    if (key.length + parent.length + (parent ? 1 : 0) > 240 || multiline(key)) this.limit();
+    return pathFor(parent, key);
+  }
+  private transparent(fields: Field[]): boolean {
+    if (this.argumentsMode) return false;
+    const documents = fields.filter(field => this.documentValue(field.value));
+    if (documents.length !== 1 || this.documentCount(documents[0]?.value) !== 1) return false;
+    return fields.every(field => field === documents[0] || field.rank >= 3 || explicitKey(field.key) || this.shapedMetadata(field.value));
+  }
+  private defer(entry: Metadata): void {
+    if (this.metadata.length < FIELDS) this.metadata.push(entry);
+    else this.limit();
+  }
+  private object(parent: HTMLElement, value: Record<string, unknown>, depth: number, path: string, hint: string | undefined, collectMetadata: boolean, fullLabels = false, supplied?: Field[]): void {
+    const fields = supplied ?? this.fields(value, path, depth, collectMetadata);
+    const transparent = collectMetadata && this.transparent(fields);
+    for (const field of fields) {
+      if (this.skipField(field, collectMetadata, fullLabels)) continue;
+      this.objectField(parent, field, hint, collectMetadata, fullLabels, transparent);
+    }
+  }
+  private skipField(field: Field, collectMetadata: boolean, fullLabels: boolean): boolean {
+    if (!collectMetadata) return this.covered(field.path);
+    return fullLabels && !field.promoted && this.promotedPaths.has(field.path);
+  }
+  private metadataField(field: Field, transparent: boolean): boolean {
+    if (field.promoted) return false;
+    if (transparent && shortScalar(field.value) && !explicitKey(field.key)) return true;
+    return field.rank === 4 || metadataKey(field.key) || (explicitKey(field.key) && !this.meaningfulFlag(field.value));
+  }
+  private objectField(parent: HTMLElement, field: Field, hint: string | undefined, collectMetadata: boolean, fullLabels: boolean, transparent: boolean): void {
+    if (collectMetadata && this.metadataField(field, transparent)) {
+      this.defer({path: field.path, value: field.value, depth: field.depth, hint}); return;
+    }
+    const labels = fullLabels || field.promoted || !collectMetadata;
+    let label = labels ? field.path : field.key;
+    if (transparent && this.documentString(field.value) && !explicitKey(field.key)) {
+      this.defer({path: field.path, value: undefined, depth: field.depth, pathOnly: true}); label = '';
+    }
+    if (collectMetadata && explicitKey(field.key) && container(field.value)) {
+      this.fact(parent, label, field.value, field.depth, field.path, hint); return;
+    }
+    this.field(parent, label, field.value, field.depth, field.path, hint, collectMetadata, labels);
+  }
+  private fact(parent: HTMLElement, label: string, value: Record<string, unknown> | unknown[], depth: number, path: string, hint?: string): void {
+    const details = element('details', 'tool-fact'); const summary = element('summary');
+    const facts = this.scan(value).entries.filter(([, child]) => !container(child) && this.meaningfulFlag(child)).slice(0, 3);
+    const text = `${label}${facts.length ? ` · ${facts.map(([key, child]) => `${key} ${scalar(child)}`).join(', ')}` : ' · details'}`;
+    appendKey(summary, this.take(text, 160, 1)); details.append(summary);
+    if (!this.append(parent, details)) return;
+    let built = false;
+    details.addEventListener('toggle', () => {
+      if (!details.open || built) return; built = true;
+      for (const [key, child] of this.scan(value).entries) {
+        this.field(details, `${label}.${key}`, child, depth + 1, this.path(path, key), hint, true);
+      }
+    });
+  }
+  private field(parent: HTMLElement, label: string, value: unknown, depth: number, path: string, hint?: string, collectMetadata = true, fullLabels = false): void {
+    if (!collectMetadata && this.covered(path)) return;
+    if (this.budget.visits >= NODES || depth > DEPTH || !this.budget.text || this.room() < 2) { this.limit(); return; }
+    this.budget.visits++; this.spentVisits++;
+    this.content(parent, label, value, depth, path, hint, collectMetadata, fullLabels);
+  }
+  private content(parent: HTMLElement, label: string, value: unknown, depth: number, path: string, hint: string | undefined, collectMetadata: boolean, fullLabels: boolean): void {
+    if (this.argumentsMode && sourceKey.test(label) && typeof value === 'string') this.source(parent, label, value, hint);
+    else if (this.argumentsMode && label === 'edits' && Array.isArray(value)) this.edits(parent, value);
+    else if (this.documentString(value)) this.textField(parent, label, value, hint);
+    else if (container(value)) this.nested(parent, label, value, depth, path, hint, collectMetadata, fullLabels);
+    else { if (!shortScalar(value) && typeof value !== 'string') this.limit(); this.pair(parent, label, value); }
+  }
+  private scaffold(entries: Entry[]): boolean {
+    return entries.length === 1 && container(entries[0]?.[1]) && !metadataKey(entries[0]?.[0] ?? '') && !explicitKey(entries[0]?.[0] ?? '');
+  }
+  private nested(parent: HTMLElement, label: string, value: Record<string, unknown> | unknown[], depth: number, path: string, hint: string | undefined, collectMetadata: boolean, fullLabels: boolean): void {
+    if (this.ancestors.has(value)) { this.limit(); return; }
+    this.ancestors.add(value);
+    try {
+      if (record(value)) {
+        const entries = this.scan(value).entries;
+        const fields = this.fields(value, path, depth, collectMetadata);
+        const scaffold = this.scaffold(entries);
+        const transparent = collectMetadata && this.transparent(fields) && !this.sectionPaths.has(path);
+        if ((scaffold || transparent) && !this.sectionPaths.has(path)) this.object(parent, value, depth, path, hint, collectMetadata, true, fields);
+        else {
+          const section = element('section', 'tool-record'); if (!this.append(parent, section)) return;
+          this.caption(section, label); this.object(section, value, depth, path, hint, collectMetadata, fullLabels, fields);
+        }
+      } else this.array(parent, label, value, depth, path, hint, collectMetadata, fullLabels);
+    } finally { this.ancestors.delete(value); }
+  }
+  private textField(parent: HTMLElement, label: string, value: string, hint: string | undefined): void {
+    if (!this.argumentsMode) this.document(parent, label, value);
+    else { this.caption(parent, label); this.suppliedPre(parent, value, 'tool-document message-body', hint); }
+  }
+  private array(parent: HTMLElement, label: string, value: unknown[], depth: number, path: string, hint: string | undefined, collectMetadata: boolean, fullLabels: boolean): void {
+    if (value.length > ROWS) this.limit('rows');
+    const promoted = fullLabels && [...this.promotedPaths].some(child => child.startsWith(`${path}.`));
+    const rows = promoted ? undefined : this.tableShape(value);
+    if (rows) this.table(parent, label, rows, depth);
+    else for (let i = 0; i < Math.min(value.length, ROWS); i++) {
+      const itemPath = pathFor(path, String(i + 1));
+      if (!this.argumentsMode && this.documentCount(value) > 1) this.sectionPaths.add(itemPath);
+      this.field(parent, `${label}.${i + 1}`, own(value, String(i)), depth + 1, itemPath, hint, collectMetadata, fullLabels);
+    }
+  }
+  render(value: unknown): HTMLElement | undefined {
+    if (!this.admitted) return undefined;
+    if (record(value)) {
+      this.ancestors.add(value);
+      this.object(this.root, value, 0, '', this.argumentsMode ? language(value) : undefined, true);
+      this.ancestors.delete(value);
+    } else this.field(this.root, 'Result', value, 0, 'Result');
+    this.revealMetadata();
+    this.budget.finish(this.root); this.budget.releaseEmpty(this.root);
+    return this.root.childNodes.length ? this.root : undefined;
+  }
+  private revealMetadata(): void {
+    if (!this.metadata.length) return;
+    if (this.budget.text < 'Metadata'.length) { this.limit(); return; }
+    const details = element('details', 'tool-metadata'); details.append(element('summary', undefined, this.take('Metadata', 8, 1)));
+    if (!this.append(this.root, details)) return;
+    details.addEventListener('toggle', () => {
+      if (!details.open || this.metadataBuilt) return;
+      this.metadataBuilt = true;
+      for (const entry of this.metadata) {
+        if (entry.pathOnly) this.caption(details, entry.path);
+        else this.field(details, entry.path, entry.value, entry.depth, entry.path, entry.hint, false, true);
+      }
+    });
+  }
+}
+
+/** Projected values are already sanitized and decoded. Raw output belongs to its renderer. */
+export function presentResult(display: JsonDisplay | undefined, context: PresentationContext, budget?: PreviewBudget): HTMLElement | undefined {
+  if (!record(display)) return undefined;
+  const value = own(display, 'value');
+  if (value === undefined) return undefined;
+  return new Preview(context, false, own(display, 'truncated') === true, budget ?? new PreviewBudget()).render(value);
+}
+
+/** Supplied argument previews have their own collapse controls, without extra raw inspection. */
+export function presentArguments(args: JsonDisplay | undefined, context: PresentationContext, budget?: PreviewBudget): HTMLElement | undefined {
+  if (!record(args)) return undefined;
+  const value = own(args, 'value'); if (!record(value)) return undefined;
+  return new Preview(context, true, own(args, 'truncated') === true, budget ?? new PreviewBudget()).render(value);
+}

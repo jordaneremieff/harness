@@ -72,7 +72,6 @@ export class Roster {
   private message?: (identity: string) => void;
   private resumes = new Set<string>();
   private expanded = false;
-  private filterFocus?: {identity?: string; node: HTMLElement};
   private older = button('', () => { this.expanded = !this.expanded; this.paint(); }, 'roster-older');
   private paging = button('', () => { if (this.query() && this.search) void this.searchCached(true); else this.more('more'); }, 'roster-more');
   private pending = false;
@@ -90,25 +89,17 @@ export class Roster {
   constructor(select: (row: AgentRow) => void, more: (action?: 'refresh' | 'more') => void, search?: CachedPageSearch, message?: (identity: string) => void) {
     this.select = select; this.more = more; this.search = search; this.message = message;
     const searchField = byId<HTMLInputElement>('agent-search');
-    searchField.hidden = !searchField.value;
     searchField.addEventListener('input', () => { this.node.scrollTop = 0; this.paint(); void this.searchCached(); });
     searchField.addEventListener('keydown', event => {
       if (event.key !== 'Escape') return;
-      event.preventDefault(); event.stopPropagation(); const previous = this.filterFocus?.node;
-      searchField.value = ''; this.node.scrollTop = 0; this.paint(); void this.searchCached();
-      searchField.hidden = true;
-      if (previous && this.node.contains(previous)) previous.focus(); else this.node.focus();
-      this.filterFocus = undefined;
+      event.preventDefault(); event.stopPropagation();
+      searchField.value = ''; this.node.scrollTop = 0; this.node.focus(); this.paint(); void this.searchCached();
     });
-    searchField.addEventListener('blur', () => { if (!searchField.value) { searchField.hidden = true; this.filterFocus = undefined; this.schedule(); } });
     this.node.tabIndex = 0;
     this.node.addEventListener('keydown', event => {
       if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || Array.from(event.key).length !== 1) return;
       if (!this.node.contains(document.activeElement)) return;
-      const focused = document.activeElement as HTMLElement;
-      const identity = [...this.cache].find(([, row]) => row.node.contains(focused))?.[0];
-      this.filterFocus = {identity, node: focused};
-      event.preventDefault(); searchField.hidden = false; searchField.focus(); searchField.value += event.key;
+      event.preventDefault(); searchField.focus(); searchField.value += event.key;
       this.node.scrollTop = 0; this.paint(); void this.searchCached();
     });
     this.node.addEventListener('scroll', () => this.schedule(), {passive: true});
@@ -221,7 +212,6 @@ export class Roster {
   }
   private pins(): Set<string> {
     const pins = new Set<string>(); if (this.selected) pins.add(this.selected);
-    if (this.filterFocus?.identity) pins.add(this.filterFocus.identity);
     for (const [id, row] of this.cache) if (row.node.contains(document.activeElement)) pins.add(id);
     return pins;
   }

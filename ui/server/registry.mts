@@ -16,7 +16,7 @@ import { dispatchPrimary } from './routes-primary.mts';
 import { dispatchAgent } from './routes-agent.mts';
 import { dispatchView } from './routes-view.mts';
 
-export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'>;
+export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'>;
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
   agents?: (options: AgentServiceOptions) => AgentAdapter; primary?: (options: PrimarySessionOptions) => PrimarySession; measure?: Measure};
 const live = (view: PrimaryView) => !['stopped','failed'].includes(view.lifecycle);

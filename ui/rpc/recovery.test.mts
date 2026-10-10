@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PrimarySession } from './session.mts';
 import { FakeChild } from './fake-child.mts';
-import type { SessionAction } from '../shared/api.ts';
 
 function create(extra: Partial<ConstructorParameters<typeof PrimarySession>[0]> = {}) {
   const child = new FakeChild(); child.onCommand = (record) => child.defaults(record);
@@ -60,10 +59,14 @@ test('empty backend lifecycle never creates a process on construction or observa
   const { child, session } = create(); assert.equal(session.entries.length, 0); assert.equal(session.messages.length, 0);
   assert.equal(session.view.lifecycle, 'starting'); assert.equal(child.spawnArgs, undefined);
 });
-test('resume requires explicit writer-release attestation', async () => {
+test('resume directly dispatches the exact saved path and rejects stale epochs', async () => {
   const { child, session } = create(); await session.start();
-  await assert.rejects(session.transition({ epoch: 1, action: 'resume', sessionFile: import.meta.filename } as unknown as SessionAction), { code: 'invalid_request' });
-  assert.equal(child.writes.some((record) => record.type === 'switch_session'), false);
-  await session.transition({ epoch: 1, action: 'resume', sessionFile: import.meta.filename, writerReleased: true });
-  assert.equal(session.view.epoch, 2); await session.close();
+  await assert.rejects(session.transition({ epoch: 1, action: 'resume', sessionFile: 'relative.jsonl' }), { code: 'invalid_request' });
+  assert.equal(child.writes.some(record => record.type === 'switch_session'), false);
+  await session.transition({ epoch: 1, action: 'resume', sessionFile: import.meta.filename });
+  assert.equal(child.writes.find(record => record.type === 'switch_session')?.sessionPath, import.meta.filename);
+  assert.equal(session.view.epoch, 2); assert.equal(session.view.capabilities.input, true);
+  await assert.rejects(session.transition({ epoch: 1, action: 'resume', sessionFile: import.meta.filename }), { code: 'stale_epoch' });
+  assert.equal(child.writes.filter(record => record.type === 'switch_session').length, 1);
+  await session.close();
 });

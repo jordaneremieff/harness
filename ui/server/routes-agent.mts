@@ -5,6 +5,8 @@ import { execute } from './dispatch.mts';
 import { ApiError } from './errors.mts';
 import { projectFrame, projectJson, projectRoster } from './projection.mts';
 import * as v from './validate.mts';
+import { ImageResponse } from './images.mts';
+import { imageRequest, isImageRoute } from './image-request.mts';
 
 export async function dispatchAgent(registry: Registry,context: RequestContext) {
   const {parts,body,method,url}=context;
@@ -19,6 +21,10 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     return registry.agents.refresh(body.scanId as string | undefined);
   }
   const identity=v.string(parts[2],'agent identity'); const target:Target={kind:'agent',identity};
+  if(isImageRoute(method,parts)) {
+    const request=imageRequest(url,false);
+    return new ImageResponse(await registry.agents.image(identity,request.source,request.digest));
+  }
   if(method==='GET') return history(registry,identity,target,url);
   if(parts[3]==='inspect') return inspect(registry,identity,body);
   const workspace=await registry.workspace(context.workspace);

@@ -75,7 +75,7 @@ test('loading and empty states are not options and consume Enter without edits',
   assert.equal(f.menu.children[0]?.textContent, 'Loading commands…'); assert.equal(f.menu.children[0]?.attrs.has('role'), false);
   assert.equal(f.key('Enter').handled, true); assert.equal(f.changed.length, 0);
   f.inventory({state: 'ready', items: []}); f.text('/nothing');
-  assert.equal(f.menu.children[0]?.textContent, 'No commands match /nothing · Esc to keep typing'); assert.equal(f.key('Enter').event.defaultPrevented, true);
+  assert.equal(f.menu.children[0]?.textContent, 'No commands match /nothing'); assert.equal(f.key('Enter').event.defaultPrevented, true);
   f.inventory({state: 'unavailable', items: []}); assert.equal(f.menu.hidden, true); assert.equal(f.editor.attrs.has('aria-activedescendant'), false);
 });
 test('Escape persists across inventory updates; ShiftEnter, blur and composition clear active references', () => {
@@ -96,10 +96,10 @@ test('each settled query announces at most once and never announces each arrow o
 });
 test('incomplete inventories explain their limit instead of claiming no command matches', () => {
   const f = fixture(); f.inventory({state: 'ready', items: [], incomplete: true}); f.text('/missing');
-  assert.equal(f.menu.children[0]?.textContent, 'Command list is incomplete · Open Commands (⌘K) to discover more');
+  assert.equal(f.menu.children[0]?.textContent, 'Command list is incomplete. Open Commands to discover more.');
   assert.doesNotMatch(f.menu.children[0]?.textContent ?? '', /No commands match/);
   assert.equal(f.menu.children[0]?.attrs.has('role'), false); assert.equal(f.key('Enter').handled, true);
-  f.inventory({state: 'ready', items: []}); assert.equal(f.menu.children[0]?.textContent, 'No commands match /missing · Esc to keep typing');
+  f.inventory({state: 'ready', items: []}); assert.equal(f.menu.children[0]?.textContent, 'No commands match /missing');
 });
 test('a shorter list after a viewport resize scrolls the active row back above the hint', () => {
   const f = fixture(); f.menu.clientHeight = 160; f.text('/'); f.key('ArrowDown'); f.key('ArrowDown'); const active = f.menu.children[2]; const footer = f.menu.children.at(-1); assert.ok(active); assert.ok(footer);
@@ -115,10 +115,10 @@ test('rendered list padding cannot leave the active row partly behind the sticky
   f.controller.keepActiveVisible();
   assert.ok(active.getBoundingClientRect().bottom <= hint.getBoundingClientRect().top, `${active.getBoundingClientRect().bottom} > ${hint.getBoundingClientRect().top}`);
 });
-test('each open menu has a non-option key hint and active scrolling reserves its measured height', () => {
+test('each open menu has a non-option count and active scrolling reserves its measured height', () => {
   const f = fixture(); f.text('/'); const hint = f.menu.children.at(-1); assert.ok(hint);
   assert.equal(hint.className, 'command-hint'); assert.equal(hint.attrs.get('aria-hidden'), 'true'); assert.equal(hint.attrs.has('role'), false);
-  assert.equal(hint.textContent, '↑↓ to choose · Enter or Tab to insert · Esc to close');
+  assert.equal(hint.textContent, '3 commands');
   f.key('ArrowDown'); f.key('ArrowDown'); const active = f.menu.children[2]; const footer = f.menu.children.at(-1); assert.ok(active); assert.ok(footer);
   assert.ok(active.offsetTop + active.offsetHeight <= f.menu.scrollTop + f.menu.clientHeight - footer.offsetHeight);
   f.key('Escape'); assert.equal(f.menu.children.length, 0); assert.equal(f.menu.hidden, true);

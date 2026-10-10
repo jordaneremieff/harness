@@ -3,6 +3,8 @@ import { isAbsolute } from 'node:path';
 import type { CommandView, DialogResponse, HandoffRequest, HandoffView, ModelChoice, PrimaryControl, PrimaryView, SessionAction } from '../shared/api.ts';
 import { safeText } from '../server/projection.mts';
 import { FileHistory } from '../server/history.mts';
+import { imageSource, imageDigest } from '../server/images.mts';
+import type { ImageSource } from '../shared/api.ts';
 import { StateError } from '../server/state.mts';
 import { RpcClient, RpcError, type RpcRecord, type SpawnChild } from './client.mts';
 import { Dialogs } from './dialogs.mts';
@@ -165,6 +167,15 @@ export class PrimarySession {
     if (this.view.sessionFile !== path) throw new RpcError('stale_epoch', 'The saved history source changed.');
     return {history, path, leaf: state.leafId as string | null};
   }
+  async historyImage(sourcePart: ImageSource, digest: string) {
+    if (this.view.lifecycle !== 'ready') throw new RpcError('not_ready', 'Primary history is unavailable.');
+    imageSource(sourcePart); imageDigest(digest);
+    const epoch = this.view.epoch; const source = await this.savedSource();
+    if (!source) throw new RpcError('history_limit', 'This image has no saved source yet.');
+    const image = await source.history.image(source.path, source.leaf, sourcePart, digest); this.epoch(epoch);
+    if (this.view.sessionFile !== source.path) throw new RpcError('stale_epoch', 'The saved image source changed.');
+    return image;
+  }
   async historyOutput(entryId: string, part: number, offset: number) {
     if (this.view.lifecycle !== 'ready') throw new RpcError('not_ready', 'Primary history is unavailable.');
     if (typeof entryId !== 'string' || !entryId || entryId.length > 256 || !Number.isSafeInteger(part) || part < 0 || part >= 100 || !Number.isSafeInteger(offset) || offset < 0) throw new RpcError('invalid_request', 'Invalid output request.');
@@ -249,7 +260,6 @@ export class PrimarySession {
       switch (body.action) {
         case 'new': result = object(await this.client.request('new_session')); break;
         case 'resume':
-          if (body.writerReleased !== true) throw new RpcError('invalid_request', 'Confirm the previous writer released this session.');
           result = object(await this.client.request('switch_session', { sessionPath: await this.sessionPath(body.sessionFile) })); break;
         case 'fork': result = object(await this.client.request('fork', { entryId: text(body.entryId) })); break;
         default: throw new RpcError('unsupported', 'Unsupported session transition.');

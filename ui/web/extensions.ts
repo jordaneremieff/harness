@@ -95,9 +95,49 @@ export class ExtensionDialogs {
     }, false); }), button('Close without another response', () => { this.shown = undefined; this.modal.close(); }));
   }
 }
+type StatusRows = Array<[string, string]>;
+type StatusDisclosure = {node: HTMLDetailsElement; summary: HTMLElement; preview: HTMLElement; count: HTMLElement; list: HTMLElement; rows: StatusRows; signature: string};
+const statusDisclosures = new WeakMap<HTMLElement, StatusDisclosure>();
+function statusPreview(rows: StatusRows): {text: string; omitted: number} {
+  const visible: string[] = []; let length = 0;
+  for (const [, value] of rows) {
+    const points = Array.from(value); const added = points.length + (visible.length ? 3 : 0);
+    if (length + added > 56) {
+      if (!visible.length) visible.push(`${points.slice(0, 55).join('')}…`);
+      break;
+    }
+    visible.push(value); length += added;
+  }
+  const omitted = rows.length - visible.length;
+  return {text: visible.join(' · '), omitted};
+}
+function statusList(disclosure: StatusDisclosure): void {
+  disclosure.list.replaceChildren(...disclosure.rows.flatMap(([key, value]) => [element('dt', undefined, key), element('dd', undefined, value)]));
+}
+function renderStatuses(root: HTMLElement, statuses: Record<string, string>): void {
+  const rows: StatusRows = Object.entries(statuses).map(([key, value]) => [stripControls(key), stripControls(value)]);
+  const visible = rows.filter(([, value]) => value.length > 0); const signature = JSON.stringify(visible);
+  if (!visible.length) { if (root.childNodes.length) root.replaceChildren(); statusDisclosures.delete(root); return; }
+  let disclosure = statusDisclosures.get(root);
+  if (disclosure?.signature === signature) return;
+  if (!disclosure) {
+    const node = element('details', 'extension-status-details'); const summary = element('summary'); const list = element('dl', 'extension-status-list');
+    const preview = element('span', 'extension-status-preview'); const count = element('span', 'extension-status-count');
+    summary.append(preview, count); list.tabIndex = 0; list.setAttribute('aria-label', 'All extension statuses');
+    disclosure = {node, summary, preview, count, list, rows: [], signature: ''}; const retained = disclosure;
+    node.append(summary, list); node.addEventListener('toggle', () => { if (node.open) statusList(retained); });
+    root.replaceChildren(node); statusDisclosures.set(root, disclosure);
+  }
+  disclosure.rows = visible; disclosure.signature = signature;
+  const compact = statusPreview(visible);
+  setText(disclosure.preview, compact.text); setText(disclosure.count, compact.omitted ? ` · +${compact.omitted}` : '');
+  disclosure.count.hidden = compact.omitted === 0;
+  disclosure.summary.setAttribute('aria-label', `${visible.map(([key, value]) => `${key}: ${value}`).join('; ')}. Expand all ${visible.length} extension statuses.`);
+  if (disclosure.node.open) statusList(disclosure);
+}
 export function extensionStatus(primary?: PrimaryView): void {
   const extension = primary?.extension;
-  setText(byId('extension-status'), Object.values(extension?.statuses ?? {}).map(stripControls).join(' · '));
+  renderStatuses(byId('extension-status'), extension?.statuses ?? {});
   renderWidgets(extension?.widgets ?? {});
   if (extension?.title) document.title = `Pi · ${stripControls(extension.title)}`;
 }

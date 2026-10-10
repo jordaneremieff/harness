@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { setImmediate as turn } from "node:timers/promises";
 import type { JsonValue } from "@earendil-works/chord";
 import { type AgentError, HostLink } from "./client.mts";
-import { CHILD, deferred, descriptor, FakeHost, frame, receipt, STORAGE } from "./fake-host.mts";
+import { activity, blockedResult, CHILD, deferred, descriptor, FakeHost, frame, receipt, STORAGE } from "./fake-host.mts";
 
 const code =
 	(expected: string, uncertain?: boolean) =>
@@ -260,4 +260,45 @@ test("injected endpoint retains caller directory ownership", async (t) => {
 	await host.close();
 	assert.equal((await stat(directory)).isDirectory(), true);
 	await assert.rejects(stat(host.directory), { code: "ENOENT" });
+});
+
+
+test("current task-submit response preserves native deduped receipts and exact wire identity", async t => {
+	const host = await FakeHost.start({ handler: call => call.member === "task-submit"
+		? { ...receipt(CHILD, "ui:input-example"), deduped: true } : undefined });
+	t.after(() => host.close()); const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+	assert.equal(link.supports("task-submit"), true);
+	const admitted = await link.submit(CHILD, input, "fixture");
+	assert.equal(admitted.deduped, true); assert.equal(admitted.result.requestId, "ui:input-example");
+	assert.deepEqual(host.calls[0].expected, { request: "task-submit/1.0.0", response: "task-submit/1.2.0" });
+});
+
+test("retired task-submit identity refuses input before any mutation", async t => {
+	const remote = await descriptor();
+	(remote.operations as Record<string, Record<string, JsonValue>>)["task-submit"].response = "task-submit/1.1.0";
+	const host = await FakeHost.start({ descriptor: remote }); t.after(() => host.close());
+	const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+	assert.equal(link.supports("task-submit"), false); assert.equal(link.supports("inspect"), true);
+	await assert.rejects(link.submit(CHILD, input, "fixture"), code("contract_mismatch"));
+	assert.equal(host.calls.length, 0);
+});
+
+test("current inspect activity and result facts pass the negotiated transport", async t => {
+	const host = await FakeHost.start({ handler: call => call.member === "inspect"
+		? call.params?.view === "result" ? blockedResult(CHILD) : activity(CHILD) : undefined });
+	t.after(() => host.close()); const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+	assert.equal(link.supports("inspect"), true);
+	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "activity" }, { identity: CHILD }), activity(CHILD));
+	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "result", submissionId: 7 }, { identity: CHILD }), blockedResult(CHILD));
+	assert.deepEqual(host.calls[0].expected, { request: "inspect/1.0.0",
+		response: "3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", durable: link.descriptor.upstream.durable });
+});
+
+test("malformed current result facts disable inspect without disabling input", async t => {
+	const host = await FakeHost.start({ handler: call => call.member === "inspect" ? { ...blockedResult(CHILD), recoveryOf: 7 } : undefined });
+	t.after(() => host.close()); const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+	await assert.rejects(link.request("inspect", { sessionId: CHILD, view: "result", submissionId: 7 }, { identity: CHILD }), code("protocol_error", false));
+	assert.equal(link.supports("inspect"), false); assert.equal(link.supports("task-submit"), true);
+	await assert.rejects(link.request("inspect", { sessionId: CHILD, view: "activity" }, { identity: CHILD }), code("protocol_error", false));
+	assert.equal(host.calls.length, 1);
 });

@@ -13,13 +13,14 @@ function pageBytes(page: OutputPage, more: OutputContinuation, offset: number): 
 export function outputPages(more: OutputContinuation, load: OutputLoader | undefined, current: () => boolean, changed: () => void): HTMLElement {
   const node = element('section', 'output-pages');
   const content = element('pre', 'output-page'); content.hidden = true;
+  const text = element('span', 'pre-text-frame'); content.append(text);
   const status = element('p', 'secondary');
   let offsets = [more.offset]; let pageIndex = -1; let nextOffset: number | null = more.offset; let busy = false; let version = 0;
   function displayPage(page: OutputPage, offset: number, index: number): void {
     const bytes = pageBytes(page, more, offset);
     pageIndex = index; nextOffset = page.nextOffset; offsets[index] = offset;
     if (offsets.length > 64) { offsets = offsets.slice(-64); pageIndex = offsets.length - 1; }
-    setText(content, page.text); content.hidden = false;
+    setText(text, page.text); content.hidden = false;
     setText(status, `retained output · ${offset}–${offset + bytes} of ${page.totalBytes} bytes`);
   }
   const active = (request: number) => request === version && current();
@@ -42,7 +43,7 @@ export function outputPages(more: OutputContinuation, load: OutputLoader | undef
   const restart = button('start over', () => {
     if (busy) return;
     version++; offsets = [more.offset]; pageIndex = -1; nextOffset = more.offset;
-    content.hidden = true; setText(content, ''); setText(status, ''); controls(); changed();
+    content.hidden = true; setText(text, ''); setText(status, ''); controls(); changed();
   });
   const copyPage = button('copy page', () => { void copy(content.textContent ?? '', node); });
   function controls(): void {

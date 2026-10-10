@@ -7,6 +7,7 @@ export type MarkdownBlock =
   | { type: 'heading'; level: number; children: MarkdownInline[] }
   | { type: 'list'; ordered: boolean; start: number; items: MarkdownBlock[][] }
   | { type: 'quote'; children: MarkdownBlock[] }
+  | { type: 'rule' }
   | { type: 'code'; text: string; language: string }
   | { type: 'table'; header: MarkdownInline[][]; rows: MarkdownInline[][][]; align: Alignment[] };
 type Alignment = 'left' | 'center' | 'right' | null;
@@ -164,8 +165,9 @@ function tableAlignment(line: string): Alignment[] | null {
   return cells.length && cells.every(cell => /^:?-{3,}:?$/.test(cell)) ? cells.map(cellAlignment) : null;
 }
 function lineAt(lines: string[], i: number): string { return lines[i] ?? ''; }
+function horizontalRule(line: string): boolean { return /^ {0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/.test(line); }
 function startsBlock(line: string): boolean {
-  return /^\s*$/.test(line) || /^ {0,3}(?:#{1,6}\s|>|`{3,}|~{3,})/.test(line) || !!listMarker(line);
+  return horizontalRule(line) || /^\s*$/.test(line) || /^ {0,3}(?:#{1,6}\s|>|`{3,}|~{3,})/.test(line) || !!listMarker(line);
 }
 function readFence(lines: string[], i: number): BlockRead | null {
   const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(lineAt(lines, i));
@@ -176,6 +178,20 @@ function readFence(lines: string[], i: number): BlockRead | null {
   const body: string[] = []; let end = i + 1;
   while (end < lines.length && !close.test(lineAt(lines, end))) body.push(lineAt(lines, end++));
   return { block: { type: 'code', text: body.join('\n'), language }, end: end < lines.length ? end + 1 : end };
+}
+/** Opening delimiter pairs with a mapping key are metadata, not two horizontal rules. */
+function readFrontmatter(lines: string[]): BlockRead | null {
+  const delimiter = /^---[ \t]*$/;
+  if (!delimiter.test(lineAt(lines, 0))) return null;
+  let end = 1;
+  while (end < lines.length && !delimiter.test(lineAt(lines, end))) end++;
+  if (end === lines.length) return null;
+  const first = lines.slice(1, end).find(line => !/^\s*(?:#.*)?$/.test(line));
+  if (!first || !/^[^:\s#][^:]*:(?:[ \t]|$)/.test(first)) return null;
+  return {block: {type: 'code', text: lines.slice(0, end + 1).join('\n'), language: 'yaml'}, end: end + 1};
+}
+function readRule(lines: string[], i: number): BlockRead | null {
+  return horizontalRule(lineAt(lines, i)) ? {block: {type: 'rule'}, end: i + 1} : null;
 }
 function readHeading(lines: string[], i: number): BlockRead | null {
   const heading = /^ {0,3}(#{1,6})\s+(.*)$/.exec(lineAt(lines, i));
@@ -248,10 +264,12 @@ function readParagraph(lines: string[], i: number): BlockRead {
 export function parseMarkdown(source: string, depth = 0): MarkdownBlock[] {
   if (depth >= 16) return [{ type: 'paragraph', children: [{ type: 'text', text: source }] }];
   const lines = source.replace(/\r\n?/g, '\n').split('\n'); const blocks: MarkdownBlock[] = [];
-  let i = 0;
+  const frontmatter = depth === 0 ? readFrontmatter(lines) : null;
+  let i = frontmatter?.end ?? 0;
+  if (frontmatter) blocks.push(frontmatter.block);
   while (i < lines.length) {
     if (!lineAt(lines, i).trim()) { i++; continue; }
-    const read = readFence(lines, i) ?? readQuote(lines, i, depth) ?? readList(lines, i, depth) ?? readTable(lines, i) ?? readHeading(lines, i) ?? readParagraph(lines, i);
+    const read = readFence(lines, i) ?? readRule(lines, i) ?? readQuote(lines, i, depth) ?? readList(lines, i, depth) ?? readTable(lines, i) ?? readHeading(lines, i) ?? readParagraph(lines, i);
     blocks.push(read.block); i = read.end;
   }
   return blocks;

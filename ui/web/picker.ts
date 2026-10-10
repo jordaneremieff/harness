@@ -33,6 +33,14 @@ export class ProjectPicker {
     return {body, token: this.ctx.modal.token, signal: this.pending.signal};
   }
   open(): void {
+    const project = this.ctx.primary()?.cwd ?? (this.ctx.snapshot() as Bootstrap | undefined)?.launchCwd;
+    if (!project) { this.selectProject(); return; }
+    const {body, token} = this.begin('Open a session');
+    body.append(element('p', 'secondary', 'Loading saved sessions'));
+    this.ctx.modal.actions(button('Projects…', () => this.selectProject()));
+    void this.sessions(project).catch(cause => { if (this.ctx.modal.owns(token)) this.ctx.modal.error(cause); });
+  }
+  private selectProject(): void {
     const {modal} = this.ctx; const {body, token, signal} = this.begin('Open a project');
     const snapshot = this.ctx.snapshot();
     const directory = input('Project directory', this.ctx.primary()?.cwd ?? (snapshot as Bootstrap | undefined)?.launchCwd ?? '');
@@ -90,10 +98,10 @@ export class ProjectPicker {
     if (!snapshot?.primaries.length && !snapshot?.primaryIndex?.length) return;
     body.append(element('h2', 'picker-heading', 'Open in this workspace'));
     for (const item of snapshot?.primaries ?? []) body.append(button(`${item.sessionName ?? item.sessionId ?? 'Session'} · ${item.cwd} · ${item.lifecycle}`, () => {
-      void this.ctx.modal.run(() => this.ctx.selection({primaryKey: item.key, selectedTarget: null}));
+      void this.ctx.modal.run(() => this.select({primaryKey: item.key, selectedTarget: null}));
     }));
     for (const index of snapshot?.primaryIndex ?? []) if (!snapshot?.primaries.some(item => item.key === index.key)) body.append(button(`Backend session ${index.key} · ${index.lifecycle}`, () => {
-      void this.ctx.modal.run(() => this.ctx.selection({primaryKey: index.key, selectedTarget: null}));
+      void this.ctx.modal.run(() => this.select({primaryKey: index.key, selectedTarget: null}));
     }));
   }
   private async sessions(project: string): Promise<void> {
@@ -112,8 +120,8 @@ export class ProjectPicker {
     const projectDetails = element('details', 'picker-path');
     projectDetails.append(element('summary', 'secondary', 'Project directory'), element('p', 'identity', project));
     body.append(projectDetails);
-    modal.actions(button('Back to projects', () => this.open()), button('Start new session', () => { void modal.run(() => this.start(project)); }, 'main-action'));
-    body.append(element('h2', 'picker-heading', 'Resume a saved session'));
+    modal.actions(button('Projects…', () => this.selectProject()), button('New session', () => { void modal.run(() => this.start(project)); }, 'main-action'));
+    body.append(element('h2', 'picker-heading', 'Resume a saved session'), element('p', 'secondary', 'Close this session in your terminal before opening it here.'));
     const search = input('Search saved sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search loaded sessions…';
     body.append(promptLine(search));
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
@@ -197,11 +205,7 @@ export class ProjectPicker {
   private row(item: SavedSession): HTMLElement {
     const row = element('div', 'picker-session');
     const opened = sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path);
-    const select = button('', () => {
-      const current = sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path);
-      if (current) { void this.ctx.modal.run(() => this.ctx.selection({primaryKey: current.key, selectedTarget: {kind: 'primary', key: current.key, epoch: current.epoch}})); return; }
-      this.confirm(item.project, item.path);
-    }, 'picker-select');
+    const select = button('', () => this.enter(item.project, item.path), 'picker-select');
     select.dataset.sessionPath = item.path;
     select.append(element('strong', 'picker-session-title', item.titleState === 'pending' ? 'Loading title…' : item.title), element('span', 'secondary identity', `${item.id} · ${sessionSize(item.size)}`));
     if (opened) select.append(element('span', 'info', 'Open in this workspace'));
@@ -224,17 +228,23 @@ export class ProjectPicker {
   private manual(project: string): void {
     const {modal} = this.ctx; const {body} = this.begin('Open saved session path');
     const directory = input('Project directory', project); const session = input('Saved session path'); session.field.id = 'picker-session-path'; session.label.htmlFor = session.field.id;
-    body.append(directory.label, directory.field, session.label, session.field);
-    modal.actions(button('Back to projects', () => this.open()), button('Resume saved session', () => this.confirm(directory.field.value, session.field.value), 'main-action'));
+    body.append(directory.label, directory.field, session.label, session.field, element('p', 'secondary', 'Close this session in your terminal before opening it here.'));
+    modal.actions(button('Projects…', () => this.selectProject()), button('Resume saved session', () => this.enter(directory.field.value, session.field.value), 'main-action'));
     session.field.focus();
   }
-  private confirm(project: string, path: string): void {
+  private enter(project: string, path: string): void {
     if (!savedPathValid(path)) { this.ctx.modal.error(new Error('Enter an absolute saved session path.')); return; }
-    this.pending.abort();
-    this.ctx.modal.confirm('Confirm saved session resume', `${path}\nConfirm that this exact file is not open in a terminal or another Pi writer. Pi exposes no external writer lock query.`, () => this.start(project, path), 'No other writer · Resume');
+    const current = sessionOwner(this.ctx.snapshot()?.primaries ?? [], path);
+    void this.ctx.modal.run(() => current
+      ? this.select({primaryKey: current.key, selectedTarget: {kind: 'primary', key: current.key, epoch: current.epoch}})
+      : this.start(project, path));
+  }
+  private async select(change: SelectionChange): Promise<void> {
+    await this.ctx.selection(change);
+    await this.ctx.reload();
   }
   private async start(project: string, path?: string): Promise<void> {
-    const result = await operation('primary.open', '/api/primaries', {cwd: project, ...(path !== undefined ? {sessionFile: path, writerReleased: true} : {})});
+    const result = await operation('primary.open', '/api/primaries', {cwd: project, ...(path !== undefined ? {sessionFile: path} : {})});
     const opened = result as unknown as {primaryKey?: string; operation?: OperationView};
     if (opened.operation?.error) throw new Error(opened.operation.error.message);
     if (!opened.primaryKey) throw new Error('Pi did not open the primary. Your project choice stays unchanged.');

@@ -1,0 +1,44 @@
+import type { ImageView, Target } from '../shared/api.ts';
+import { button, element, setText } from './dom.ts';
+
+/** URLs carry only an exact transcript identity, never source bytes or filesystem paths. */
+export function imageUrl(part: ImageView, target: Target, workspace?: string): string | undefined {
+  if (!part.source || !/^[a-f0-9]{64}$/.test(part.digest)) return undefined;
+  const query = new URLSearchParams({entry: part.source.entryId, message: String(part.source.message), part: String(part.source.part), digest: part.digest});
+  if (workspace) query.set('workspace', workspace);
+  if (target.kind === 'primary') query.set('epoch', String(target.epoch));
+  const identity = target.kind === 'primary' ? target.key : target.identity;
+  return `/api/${target.kind === 'primary' ? 'primaries' : 'agents'}/${encodeURIComponent(identity)}/history/image?${query}`;
+}
+function safeUrl(url: string | undefined): url is string {
+  return typeof url === 'string' && /^\/api\/(?:primaries|agents)\/[^/?#]+\/history\/image\?[^#]*$/.test(url) && !/[\\\x00-\x20\x7f]/.test(url);
+}
+type ImageSlot = {release: () => void};
+const slots: WeakRef<ImageSlot>[] = [];
+function reserve(slot: ImageSlot): void {
+  for (let index = slots.length - 1; index >= 0; index--) if (!slots[index]?.deref() || slots[index]?.deref() === slot) slots.splice(index, 1);
+  while (slots.length >= 4) slots.shift()?.deref()?.release();
+  slots.push(new WeakRef(slot));
+}
+/** Native lazy loading leaves offscreen bytes with the server; only four elements hold image URLs. */
+export function transcriptImage(part: ImageView, url?: string, changed: () => void = () => {}): HTMLElement {
+  const figure = element('figure', 'transcript-image');
+  const caption = element('figcaption', 'transcript-image-caption', `${part.mimeType === 'image/png' ? 'PNG' : 'JPEG'} · ${part.width} × ${part.height} · ${Math.ceil(part.bytes / 1024)} KiB`);
+  const status = element('p', 'transcript-image-status');
+  figure.append(caption, status);
+  if (!safeUrl(url)) { setText(status, 'Image unavailable: this view has no retained source. Reload history after the message is saved.'); return figure; }
+  const image = element('img', 'transcript-image-content');
+  image.alt = part.alt; image.width = part.width; image.height = part.height;
+  image.loading = 'lazy'; image.decoding = 'async'; image.referrerPolicy = 'no-referrer';
+  let active = false;
+  const slot: ImageSlot = {release: () => {
+    active = false; image.removeAttribute('src'); image.hidden = true; retry.hidden = false;
+    setText(status, 'Image released to limit memory. Reload the image to view it.'); changed();
+  }};
+  const activate = () => { reserve(slot); active = true; image.hidden = false; retry.hidden = true; setText(status, 'Image loads when visible.'); image.src = url; changed(); };
+  const retry = button('Reload image', activate);
+  retry.hidden = true;
+  image.addEventListener('load', () => { if (!active) return; setText(status, ''); retry.hidden = true; changed(); });
+  image.addEventListener('error', () => { if (!active) return; active = false; image.removeAttribute('src'); image.hidden = true; setText(status, 'Image unavailable: the source changed, exceeded its limit, or failed to decode.'); retry.hidden = false; changed(); });
+  figure.append(image, retry); activate(); return figure;
+}

@@ -95,14 +95,19 @@ export function assertFixturePresentation(value: { emptyToolResultHeaders: numbe
   assert(!value.inputReceipt.includes("Send not confirmed"), "Admitted fixture input has an unconfirmed send notice");
   assert(!value.controlReceipt?.includes("Target exited before a receipt arrived"), "Completed fixture control retained a provisional error");
 }
-async function fixturePresentation(page: Page): Promise<void> {
-  const value = await page.evaluate<{ emptyToolResultHeaders: number; inputReceipt: string; controlReceipt: string }>(`(()=>({
-    emptyToolResultHeaders:Array.from(document.querySelectorAll('#primary-transcript .message')).filter(node=>
-      node.querySelector('.message-header span')?.textContent==='toolResult' &&
-      node.querySelector('.message-body')?.childElementCount===0 && node.querySelector('.message-error')?.hidden).length,
+export type PresentationMessage = {getAttribute: (name: string) => string | null;
+  querySelector: (selector: string) => {childElementCount: number; hidden?: boolean} | null};
+/** A toolResult message with an empty body and a hidden error state reads as an empty header row. */
+export const emptyToolResultHeader: (node: PresentationMessage) => boolean = node =>
+  node.getAttribute("aria-label") === "toolResult message" &&
+  node.querySelector(".message-body")?.childElementCount === 0 && !!node.querySelector(".message-error")?.hidden;
+export async function fixturePresentation(page: Pick<Page, "evaluate">): Promise<void> {
+  // The browser page receives the same predicate source the tests import, so both paths check identical logic.
+  const value = await page.evaluate<{ emptyToolResultHeaders: number; inputReceipt: string; controlReceipt: string }>(`(()=>{const emptyToolResultHeader=${emptyToolResultHeader.toString()};return {
+    emptyToolResultHeaders:Array.from(document.querySelectorAll('#primary-transcript .message')).filter(emptyToolResultHeader).length,
     inputReceipt:document.querySelector('#primary-receipt')?.textContent??'',
     controlReceipt:document.querySelector('#primary-receipt')?.textContent??''
-  }))()`);
+  };})()`);
   assertFixturePresentation(value);
 }
 /** Routine draft persistence is silent; only exceptions may occupy the save status. */
@@ -156,7 +161,11 @@ export async function openProject(page: PickerPage, config: Options, check: RunC
   if (!config.fake || !config.cwd) return;
   await check("7.1 explicit disposable project/session open", async () => {
     await click(page, "#project-button");
-    await page.waitFor(`document.querySelector('#modal[open] #picker-project')`);
+    await page.waitFor(`document.querySelector('#modal[open] #picker-project, #modal[open] #picker-search')`);
+    if (await page.evaluate<boolean>(`Boolean(document.querySelector('#modal[open] #picker-search'))`)) {
+      await button(page, "Projects…");
+      await page.waitFor(`document.querySelector('#modal[open] #picker-project')`);
+    }
     await text(page, "#picker-project", config.cwd ?? "");
     await button(page, "Continue");
     await page.waitFor(`document.querySelector('#modal[open] #picker-search')`);
@@ -166,8 +175,7 @@ export async function openProject(page: PickerPage, config: Options, check: RunC
       await field(page, "Project directory", config.cwd ?? "");
       await field(page, "Saved session path", config.session);
       await button(page, "Resume saved session");
-      await button(page, "No other writer · Resume");
-    } else await button(page, "Start new session");
+    } else await button(page, "New session");
     await page.waitFor(`!document.querySelector('#model-button')?.disabled`);
     requireFake(await snapshot(page));
   }, "fixture");

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DisplayCoverage, EntryView, EventData, EventName, MessageView, PrimaryView, Target } from '../shared/api.ts';
-import { projectEntry, jsonDisplay as projectJson, projectMessage, safeText } from '../server/projection.mts';
+import { projectEntry, jsonDisplay as projectJson, projectMessage, safeText, toolOutputInfo } from '../server/projection.mts';
 import { RpcError, type RpcRecord } from './client.mts';
 
 export type Publish = (name: EventName, target: Target | undefined, data: EventData[EventName]) => void;
@@ -179,13 +179,15 @@ export class EventProjection {
         const phase = event.type === 'tool_execution_start' ? 'start' : event.type === 'tool_execution_update' ? 'update' : 'end';
         if (phase !== 'end') this.activity('running'); else this.activityRevision++;
         const result = event.result ?? event.partialResult;
+        const output = result === undefined ? undefined : toolOutputInfo(text(event.toolName), object(result).details);
         if (result !== undefined) {
           const message = projectMessage({ role: 'toolResult', toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError, ...object(result) }, `tool:${text(event.toolCallId)}`, phase === 'end' ? 'final' : 'partial');
           this.save(message);
         }
         this.emit('primary.tool', { callId: text(event.toolCallId), name: text(event.toolName), phase,
           ...(event.args === undefined ? {} : { arguments: projectJson(event.args) }),
-          ...(result === undefined ? {} : { parts: projectMessage({ ...object(result), role: 'user' }, 'tool', 'final').parts }),
+          ...(result === undefined ? {} : { parts: projectMessage({ ...object(result), role: 'user' }, 'tool', 'final', undefined, {structuredText: true}).parts }),
+          ...(output ? {output} : {}),
           ...(typeof event.isError === 'boolean' ? { isError: event.isError } : {}),
           ...(typeof event.durationMs === 'number' ? { durationMs: event.durationMs } : {}) }); return;
   }
@@ -221,7 +223,7 @@ export class EventProjection {
     while (message.parts.length <= i) message.parts.push({ type: 'omitted', label: 'Pending content' });
     this.content(message, i, kind, update);
     if (Buffer.byteLength(JSON.stringify(message)) > 60 * 1024) {
-      const bounded = projectMessage({ role: message.role, timestamp: message.timestamp, content: message.parts.map((part) => part.type === 'toolCall' ? { type: 'toolCall', id: part.callId, name: part.name, arguments: part.arguments.value } : part) }, message.id, 'partial');
+      const bounded = projectMessage({ role: message.role, timestamp: message.timestamp, content: message.parts.map((part) => part.type === 'toolCall' ? { type: 'toolCall', id: part.callId, name: part.name, arguments: part.arguments.value } : part) }, message.id, 'partial', undefined, {trustedStructured: true});
       message.parts = bounded.parts; message.coverage = { complete: false, truncated: true, omitted: message.coverage.omitted + bounded.coverage.omitted, reason: 'message-limit' };
     }
     this.save(message);
