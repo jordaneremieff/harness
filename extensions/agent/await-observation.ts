@@ -1,6 +1,6 @@
 /** Read and release only the selected native run; producer facts never recurse. */
 import { AgentDoc, InboxDoc, LiveDoc, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
-import { AwaitDoc, referenceKey, releaseCohort, type AwaitDeclaration } from "./awaited-results.ts";
+import { AwaitDoc, referenceKey, releaseCohort, claimProviderRetryVisibility, olderProviderRetry, sameRetryResult, type AwaitState, type AwaitDeclaration } from "./awaited-results.ts";
 import { canonicalIdentity } from "./identity.ts";
 import type { AwaitFact, OwnAwaitFact, ProducerAwaitFact, ProducerRetry } from "./await-facts.ts";
 import type { ResultReference } from "./result-reference.ts";
@@ -71,7 +71,15 @@ function referenceState(fact: ProducerAwaitFact, result: ResultReference): strin
 }
 
 function newestObservation(observations: { result: ResultReference; fact: ProducerAwaitFact }[]): typeof observations[number] | undefined {
-	return observations.reduce<typeof observations[number] | undefined>((prior, item) => prior === undefined || item.fact.observedAt > prior.fact.observedAt ? item : prior, undefined);
+	return observations.reduce<typeof observations[number] | undefined>((prior, item) => {
+		if (prior === undefined) return item;
+		const incoming = item.fact.execution; const retained = prior.fact.execution;
+		if (incoming !== undefined && retained !== undefined) {
+			if (olderProviderRetry(incoming, retained)) return prior;
+			if (olderProviderRetry(retained, incoming)) return item;
+		}
+		return item.fact.observedAt > prior.fact.observedAt ? item : prior;
+	}, undefined);
 }
 
 function partialObservationLoss(losses: { result: ResultReference; fact: ProducerAwaitFact }[]): string {
@@ -112,6 +120,7 @@ function mergedProducers(active: AwaitDeclaration[], results: OwnAwaitFact["resu
 		for (const result of declaration.results.filter((result) => result.sessionId === fact.sessionId)) {
 			const key = exactReferenceKey(result); const prior = group.references.get(key);
 			const retries = (value: ProducerAwaitFact) => value.unavailable === undefined && value.execution?.results.some((item) => matchesReference(result, item));
+			if (staleProducerObservation(prior?.fact, fact)) continue;
 			if (prior === undefined || fact.observedAt > prior.fact.observedAt || (fact.observedAt === prior.fact.observedAt && !retries(fact))) group.references.set(key, { result, fact });
 		}
 	}
@@ -172,13 +181,26 @@ function trimAwaitDetail(fact: AwaitFact): void {
 	fact.producers.pop(); fact.omittedProducers++;
 }
 
+function staleAcknowledgedRetry(state: AwaitState, declaration: AwaitDeclaration, fact: ProducerAwaitFact): boolean {
+	const retry = fact.execution;
+	if (retry === undefined) return false;
+	const relevant = retry.results.filter((observed) => declaration.results.some((expected) => matchesReference(expected, observed)));
+	return relevant.length > 0 && relevant.every((result) => declaration.inputs.every((input) => state.retryVisibility?.some((claim) => claim.conversationId === declaration.conversationId && claim.input === input && sameRetryResult(claim.result, result) && olderProviderRetry(retry, claim))));
+}
+function staleProducerObservation(prior: ProducerAwaitFact | undefined, fact: ProducerAwaitFact): boolean {
+	if (prior === undefined) return false;
+	return fact.observedAt < prior.observedAt || (fact.execution !== undefined && prior.execution !== undefined && olderProviderRetry(fact.execution, prior.execution));
+}
+
 export async function recordProducerAwait(tx: Tx, taskId: TaskId, fact: ProducerAwaitFact): Promise<void> {
 	const error = fact.execution === undefined ? undefined : safeFactText(fact.execution.error);
 	fact = { ...fact, ...(fact.unavailable === undefined ? {} : { unavailable: safeFactText(fact.unavailable).text }), ...(fact.execution === undefined || error === undefined ? {} : { execution: { ...fact.execution, error: error.text, errorTruncated: fact.execution.errorTruncated || error.truncated } }) };
-	const declaration = (await tx.doc(AwaitDoc)).declarations.find((item) => item.taskId === taskId && item.decision === "awaiting");
+	const state = await tx.doc(AwaitDoc);
+	const declaration = state.declarations.find((item) => item.taskId === taskId && item.decision === "awaiting");
 	if (declaration === undefined || !declaration.results.some((result) => result.sessionId === fact.sessionId)) return;
+	if (staleAcknowledgedRetry(state, declaration, fact)) return;
 	const prior = declaration.producers?.find((item) => item.sessionId === fact.sessionId);
-	if (prior !== undefined && fact.observedAt < prior.observedAt) return;
+	if (staleProducerObservation(prior, fact)) return;
 	const semantic = (item: ProducerAwaitFact) => JSON.stringify({ awaiting: item.awaiting, execution: item.execution, unavailable: item.unavailable });
 	if (prior !== undefined && semantic(prior) === semantic(fact)) {
 		// A repeated read still clears a newer conflicting observation of the same input.
@@ -193,9 +215,10 @@ export async function recordProducerAwait(tx: Tx, taskId: TaskId, fact: Producer
 
 async function releaseForProducerRetry(tx: Tx, declaration: AwaitDeclaration, fact: ProducerAwaitFact): Promise<void> {
 	const retry = fact.execution;
-	if (declaration.releaseOnProviderRetry === undefined || fact.unavailable !== undefined || retry === undefined || retry.attempt < (declaration.releaseOnProviderRetry.minAttempt ?? 1)) return;
+	if (fact.unavailable !== undefined || retry === undefined || retry.attempt < (declaration.releaseOnProviderRetry?.minAttempt ?? 1)) return;
 	const results = retry.results.filter((observed) => observed.sessionId === fact.sessionId && declaration.results.some((expected) => matchesReference(expected, observed) && !declaration.outcomes.some((outcome) => matchesReference(expected, outcome.result))));
 	if (results.length === 0 || !(await activeDeclarations(tx, declaration.conversationId as ConversationId)).some((item) => item.taskId === declaration.taskId)) return;
+	if (!await claimProviderRetryVisibility(tx, declaration.conversationId as ConversationId, declaration.inputs, { ...retry, results })) return;
 	releaseCohort(await tx.doc(AwaitDoc), declaration, "provider retry", { sessionId: fact.sessionId, observedAt: fact.observedAt, source: fact.source, execution: { ...retry, results } });
 }
 

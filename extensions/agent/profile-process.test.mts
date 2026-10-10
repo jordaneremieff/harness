@@ -244,7 +244,7 @@ it("concurrent independent requesters resolve one handle without replacing creat
 	await creator.call("release", { sessionId: winner.sessionId });
 });
 
-it("keeps base operations usable across a feature-capability process boundary", { timeout: 120000 }, async (t) => {
+it("preserves unchanged operations and refuses changed contracts across a feature-capability process boundary", { timeout: 120000 }, async (t) => {
 	const f = await profileFixture(t);
 	const a = await f.requester();
 	const expert = await a.call<Spawned>("spawn", { handle: "contract-expert", name: "Contract expert", role: "Preserve base controls.", trust: true });
@@ -252,22 +252,33 @@ it("keeps base operations usable across a feature-capability process boundary", 
 	const paths = hostPaths(metadata);
 	const observation = await a.raw<{ token: string }>(expert.sessionId, "observe-open", { scope: "conversation", token: randomUUID() });
 	assert.deepEqual(Object.keys(BASE_OPERATIONS), ["status", "submit", "reset", "list", "dashboard"]);
-	for (const [method, contract] of Object.entries(BASE_OPERATIONS)) assert.deepEqual(HOST_CONTRACT.operations[method], contract, `${method} keeps its declared base contract`);
+	const unchangedOperations = ["reset", "list", "dashboard"];
+	const changedOperations = ["status", "submit"];
+	for (const method of unchangedOperations) assert.deepEqual(HOST_CONTRACT.operations[method], BASE_OPERATIONS[method], `${method} keeps its declared base contract`);
+	for (const method of changedOperations) assert.notDeepEqual(HOST_CONTRACT.operations[method], BASE_OPERATIONS[method], `${method} requires its changed contract`);
+	assert.equal(HOST_CONTRACT.operations.status.request, BASE_OPERATIONS.status.request);
+	assert.notEqual(HOST_CONTRACT.operations.status.response, BASE_OPERATIONS.status.response);
+	assert.notEqual(HOST_CONTRACT.operations.submit.request, BASE_OPERATIONS.submit.request);
+	assert.equal(HOST_CONTRACT.operations.submit.response, BASE_OPERATIONS.submit.response);
 	const oldClient = await Client.connect({ serverId: paths.serverId, transportFactory: createUnixTransportFactory({ path: paths.socket }) });
 	t.after(() => oldClient.dispose());
 	const base = async (member: string, params: Record<string, unknown> = {}, contract = BASE_OPERATIONS[member]) => oldClient.request({ serverId: paths.serverId }, {
 		serviceId: HOST_SERVICE_ID, member, args: [{ sessionId: expert.sessionId, ...params } as JsonValue, randomUUID(), contract as unknown as JsonValue],
 	});
-	await assert.rejects(base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }), /configure request contract configure\/1\.0\.0 differs from configure\/1\.2\.0.*no operation was admitted/u);
+	await assert.rejects(base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }), /configure request contract configure\/1\.0\.0 differs from configure\/1\.3\.0.*no operation was admitted/u);
 	const unchanged = await a.control<AgentProfile>("profile-read", { sessionId: expert.sessionId });
 	assert.equal(unchanged.name, "Contract expert", "the refused base configure never changes native storage");
-	const status = await base("status") as { conversation: { identity: string } };
+	await assert.rejects(base("status"), /status response contract .* differs from .*no operation was admitted/u);
+	await assert.rejects(base("submit", { message: "Rejected base task", requestId: "rejected-base-admission", ownerId: a.identity, origin: "operator" }), /submit request contract .* differs from .*no operation was admitted/u);
+	const status = await a.raw<{ conversation: { identity: string; busy: boolean } }>(expert.sessionId, "status");
 	assert.equal(status.conversation.identity, expert.sessionId);
-	await base("submit", { message: "Base task", requestId: "base-admission", ownerId: a.identity, origin: "operator" });
+	assert.equal(status.conversation.busy, false, "refused contracts leave native work idle");
+	assert.equal(f.requests.length, 0, "refused contracts start no provider request");
+	await send(a, expert.sessionId, "current-admission");
 	let request = await f.next();
 	assert.ok(instructions(request).includes(`"requester":"${a.identity}"`));
 	assert.ok(instructions(request).includes(`"replyTo":"${a.identity}"`));
-	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Base task"));
+	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Question current-admission"));
 	request.tool("agent_send", { sessionId: a.identity, message: "BASE_PROGRESS", mode: "report" });
 	request = await f.next();
 	assert.equal(lastTool(request, "agent_send").isError, false);
@@ -296,19 +307,20 @@ it("keeps base operations usable across a feature-capability process boundary", 
 	}), "base contract process readiness");
 	const newClient = await connectHost(proxyMetadata, { retryAttempts: 0 });
 	t.after(() => newClient.close());
-	await newClient.request("status", { sessionId: expert.sessionId });
+	for (const method of changedOperations) await assert.rejects(newClient.request(method, { sessionId: expert.sessionId }), new RegExp(`${method} (?:request|response) contract .* differs from`, "u"));
 	for (const method of ["profile-read", "profile-update", "task-submit"]) await assert.rejects(newClient.request(method, { sessionId: expert.sessionId }), new RegExp(`does not advertise ${method}`, "u"));
 	await assert.rejects(newClient.request("configure", { sessionId: expert.sessionId, name: "Rejected proxy rename" }), /does not advertise configure/u);
-	assert.deepEqual(forwarded, ["status"], "unavailable feature requests, including configure, never dispatch to storage");
-	await newClient.request("submit", { sessionId: expert.sessionId, message: "Unchanged client task", requestId: "base-only-admission", ownerId: a.identity, origin: "operator" });
-	request = await f.next();
-	assert.ok(instructions(request).includes("Renamed contract expert"), "current configure refreshes the next native self instructions across the base submit path");
-	request.answer("BASE_ONLY_RESULT");
-	await notice(a, "BASE_ONLY_RESULT");
+	assert.deepEqual(forwarded, [], "changed and unavailable operations never dispatch to the peer");
 	await newClient.request("reset", { sessionId: expert.sessionId, requestId: "base-only-reset" });
 	await newClient.request("list");
 	await newClient.request("dashboard");
-	await newClient.request("status", { sessionId: expert.sessionId });
+	await forwarded.waitFor((methods) => methods.length === unchangedOperations.length, 15000);
+	assert.deepEqual(forwarded, unchangedOperations, "only unchanged operations reach native storage");
+	await send(a, expert.sessionId, "current-only-admission");
+	request = await f.next();
+	assert.ok(instructions(request).includes("Renamed contract expert"), "current configuration refreshes native instructions after unchanged base controls");
+	request.answer("BASE_ONLY_RESULT");
+	await notice(a, "BASE_ONLY_RESULT");
 	await newClient.close();
 	proxy.disconnect();
 	await waitForProcessExit(proxy);

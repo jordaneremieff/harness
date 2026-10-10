@@ -86,17 +86,30 @@ async function publishedAwait(client: HostConnection, sessionId: string, predica
 
 for (const locality of ["local", "foreign"] as const) it(`propagates native retry facts for a ${locality} producer and clears them on abort`, { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true, retry: true });
-	const source = await acquireHost(f.metadata, { env: f.env(locality === "local" ? "await-local" : "retry") }); trackHost(t, source.pid);
+	const retry = markerFixture(t, f.testDir);
+	const releaseRetry = retry.hold("retry-requested");
+	const source = await acquireHost(f.metadata, { env: { ...f.env(locality === "local" ? "await-local" : "retry"), DURABLE_TEST_NOTIFY: retry.notifyPath, DURABLE_TEST_AWAIT_MIN_ATTEMPT: "21" } }); trackHost(t, source.pid);
 	let consumer: HostConnection | undefined;
 	try {
 		if (locality === "local") {
+			const declared = publishedAwait(source, f.metadata.storageId, () => true);
 			const ready = publishedAwait(source, f.metadata.storageId, (fact) => fact.producers.some((producer) => producer.execution !== undefined));
 			await source.request("submit", { message: "START_AWAIT_LOCAL", requestId: "retry-owner", ownerId: f.ownerId, origin: "operator" });
-			const fact = await ready;
+			const held = await declared;
+			assert.equal(held.results[0].status, "pending");
+			await retry.marker("retry-requested");
+			assert.equal(existsSync(join(f.testDir, "await-return.json")), false, "the exact await holds before retry exposure");
+			releaseRetry();
+			const fact = await ready.catch((error: unknown) => {
+				const returned = join(f.testDir, "await-return.json");
+				throw new Error(`${String(error)}; returned await=${existsSync(returned) ? readFileSync(returned, "utf8") : "absent"}`);
+			});
 			const execution = fact.producers.find((producer) => producer.execution)?.execution; assert.ok(execution);
+			assert.equal(fact.runId, held.runId); assert.deepEqual(fact.heldInputs, held.heldInputs);
+			assert.equal(existsSync(join(f.testDir, "await-return.json")), false, "attempt 1 does not release the threshold-21 await");
 			assert.deepEqual(execution.results, fact.results.map((item) => item.result));
 			assert.equal(fact.results[0].status, "pending"); assert.equal(execution.attempt, 1); assert.equal(execution.maxAttempts, 21);
-			assert.match(execution.error, /429.*Weekly\/Monthly Limit Exhausted/u);
+			assert.match(execution.error, /429.*Temporary request throttling/u);
 			const producer = execution.results[0].sessionId;
 			await source.request("abort", { sessionId: producer });
 			await waitForReceipt(source, f.ownerId, fact.heldInputs[0], 5000);
@@ -105,12 +118,20 @@ for (const locality of ["local", "foreign"] as const) it(`propagates native retr
 			assert.equal(status.conversation.awaiting, undefined);
 		} else {
 			const record = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off", name: "retry consumer", trust: true, ownerId: f.ownerId }, "retry-consumer");
-			consumer = await acquireHost(hostMetadata(record), { env: f.env("await-reference") }); trackHost(t, consumer.pid);
+			consumer = await acquireHost(hostMetadata(record), { env: { ...f.env("await-reference"), DURABLE_TEST_AWAIT_MIN_ATTEMPT: "21" } }); trackHost(t, consumer.pid);
 			const admitted = await source.request("submit", { message: "HELD", requestId: "retry-source", ownerId: record.storageId, origin: "operator" }) as SubmitResult;
 			const reference = { sessionId: f.metadata.storageId, submissionId: Number(admitted.submissionId), requestId: "retry-source" };
+			const declared = publishedAwait(consumer, record.storageId, () => true);
 			const ready = publishedAwait(consumer, record.storageId, (fact) => fact.producers.some((producer) => producer.execution !== undefined));
 			const requested = await consumer.request("submit", { message: `AWAIT_REFERENCE:${JSON.stringify(reference)}`, requestId: "retry-consumer", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+			const held = await declared;
+			assert.equal(held.results[0].status, "pending");
+			await retry.marker("retry-requested");
+			assert.equal(existsSync(join(f.testDir, "await-return.json")), false, "the exact await holds before retry exposure");
+			releaseRetry();
 			const fact = await ready; const producer = fact.producers[0]; assert.ok(producer.execution);
+			assert.equal(fact.runId, held.runId); assert.deepEqual(fact.heldInputs, held.heldInputs);
+			assert.equal(existsSync(join(f.testDir, "await-return.json")), false, "attempt 1 does not release the threshold-21 await");
 			assert.deepEqual(producer.execution.results, [reference]); assert.equal(fact.results[0].status, "pending");
 			assert.equal(producer.execution.model?.provider, f.metadata.model.provider); assert.ok(producer.observedAt > 0);
 			const queued = await source.request("submit", { message: "QUEUED", requestId: "queued-source", ownerId: record.storageId, origin: "operator", whenBusy: "followUp" }) as SubmitResult;
@@ -122,7 +143,7 @@ for (const locality of ["local", "foreign"] as const) it(`propagates native retr
 			const status = await consumer.request("status", { sessionId: record.storageId }) as { conversation: { awaiting?: AwaitFact } };
 			assert.equal(status.conversation.awaiting, undefined);
 		}
-	} finally { await consumer?.close().catch(() => {}); await source.close().catch(() => {}); }
+	} finally { releaseRetry(); await consumer?.close().catch(() => {}); await source.close().catch(() => {}); }
 });
 
 it("observes a foreign native await in one hop and releases the selected source request through RPC", { timeout: 120000 }, async (t) => {

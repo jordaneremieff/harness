@@ -2,7 +2,7 @@
  * agent/durable-observation: bounded read projections and cold snapshots over a
  * Pi Durable storage.
  *
- * The projections read only public Harness surfaces: conversation entries,
+ * The projections read public Harness and Storage surfaces: conversation entries,
  * documents, submissions, and task inspections. Entry serialization omits
  * provider signatures, image payloads, and redacted thinking with markers and
  * counts, and exposes offsets and cursors for continuation. Nothing here decodes
@@ -28,6 +28,7 @@ import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversati
 import { AgentDeliveryDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readAwaitFact } from "./await-observation.ts";
+import { PROVIDER_BLOCK_ERROR, readProviderBlock, readInputProviderBlock, readInputRecovery, type ProviderBlockFact } from "./provider-block.ts";
 import type { AwaitFact } from "./await-facts.ts";
 
 /** Byte/unit bounds used by every projection in this module. */
@@ -113,6 +114,7 @@ export type DurableTextRole = "user" | "assistant" | "toolResult" | "system";
 
 export interface ConversationStatus extends ConversationSummary {
 	readonly awaiting?: AwaitFact;
+	readonly providerBlock?: ProviderBlockFact;
 	readonly cwd?: string;
 	readonly lastText: string | null;
 	/** Author role of `lastText`, so a card can label the retained tail accurately. */
@@ -674,7 +676,9 @@ export async function readConversationStatus(
 	]);
 	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
 	const awaiting = await harness.commit((tx) => readAwaitFact(tx, storageId, conversationId), context);
+	const providerBlock = await harness.commit((tx) => readProviderBlock(tx, conversationId), context);
 	return {
+		...(providerBlock === undefined ? {} : { providerBlock }),
 		...(awaiting === undefined ? {} : { awaiting }),
 		...summary,
 		cwd: agent.cwd ?? options.cwd,
@@ -803,6 +807,8 @@ export interface DurableDashboardParams {
 }
 
 export interface DurableDashboardOptions {
+	/** Public record reads from the live source or the owned cold snapshot; never a wire field. */
+	readonly storage?: Pick<Storage, "scanSubmissions">;
 	/** In-process publication collector; never part of a host request or row. */
 	readonly modelEvidence?: ModelEvidenceCollector;
 	/** Working directory used when a conversation records none. */
@@ -934,6 +940,31 @@ async function terminalError(harness: Harness, receipt: DeliveryReceipt | undefi
 	return receipt?.reason ?? undefined;
 }
 
+/** Exact terminal input lookup is bounded; absence and scan exhaustion remain distinct. */
+async function dashboardInput(storage: Pick<Storage, "scanSubmissions"> | undefined, conversationId: ConversationId, entryId: EntryId | undefined, context: Context): Promise<{ submissionId?: SubmissionId; limited: boolean }> {
+	if (storage === undefined || entryId === undefined) return { limited: false };
+	let cursor: Cursor | undefined;
+	for (let page = 0; page < 64; page++) {
+		const records = await storage.scanSubmissions({ conversationId, status: "unanswered" }, 64, cursor, context);
+		const input = records.items.find((record) => record.type === "input" && record.entry === entryId && record.reason === "model_error");
+		if (input !== undefined) return { submissionId: input.id, limited: false };
+		if (records.next === undefined) return { limited: false };
+		cursor = records.next;
+	}
+	return { limited: true };
+}
+
+/** Native quota text is classification-safe; the display cause belongs to the exact failed input, even after recovery. */
+async function dashboardError(harness: Harness, conversationId: ConversationId, state: AgentConversationState, receipt: DeliveryReceipt | undefined, entries: readonly EntryRecord[], storage: Pick<Storage, "scanSubmissions"> | undefined, context: Context): Promise<string | undefined> {
+	if (state !== "failed" && state !== "stopped") return undefined;
+	const error = await terminalError(harness, receipt, entries, context);
+	if (state !== "failed" || error !== PROVIDER_BLOCK_ERROR) return error;
+	const input = receipt === undefined ? await dashboardInput(storage, conversationId, [...entries].reverse().find((entry) => entry.kind === "pi.user")?.id, context) : { submissionId: receipt.submissionId, limited: false };
+	const block = input.submissionId === undefined ? undefined : await harness.commit((tx) => readInputProviderBlock(tx, input.submissionId as SubmissionId), context);
+	if (block === undefined) return `${error}\n[provider evidence ${input.limited ? "lookup limited" : "unavailable"}]`;
+	return `${block.error}${block.errorRedacted ? "\n[provider error redacted]" : ""}${block.errorTruncated ? "\n[provider error truncated]" : ""}`;
+}
+
 /** Live-only dashboard fields: recovery health, current tool, and turn duration. */
 async function dashboardLiveExtras(
 	harness: Harness,
@@ -973,7 +1004,7 @@ async function dashboardSummary(
 	const firstMessage = firstMessageOf(meta, entries);
 	const replyText = latestReplyOf(entries);
 	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
-	const error = state === "failed" || state === "stopped" ? await terminalError(harness, receipt, entries, context) : undefined;
+	const error = await dashboardError(harness, record.id, state, receipt, entries, options.storage, context);
 	const awaiting = await harness.commit((tx) => readAwaitFact(tx, storageId, record.id), context);
 	const row: AgentConversationSummary = {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
@@ -1812,6 +1843,8 @@ interface ResultPage {
 	readonly answerEntryId?: EntryId;
 	readonly reason?: string;
 	readonly answer?: string;
+	readonly providerBlock?: ProviderBlockFact;
+	readonly recoveryOf?: string;
 	readonly usage: UsageState;
 }
 
@@ -1838,7 +1871,9 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 	const record = await submission.status(context);
 	if (record.conversationId !== conversation.id) throw new Error(`durable submission ${target.submissionId} belongs to conversation ${record.conversationId}`);
 	const usage = await harness.usage(context);
+	const recoveryOf = await harness.commit((tx) => readInputRecovery(tx, record.id), context);
 	const base = {
+		...(recoveryOf === undefined ? {} : { recoveryOf }),
 		view: "result" as const,
 		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
 		conversationId: conversation.id,
@@ -1850,7 +1885,10 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 	};
 	if (record.type !== "input") return base;
 	if (record.status === "done") return { ...base, entryId: record.entry, answerEntryId: record.answer, ...(await resultAnswer(harness, record.answer, context)) };
-	if (record.status === "unanswered") return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: record.reason };
+	if (record.status === "unanswered") {
+		const providerBlock = await harness.commit((tx) => readInputProviderBlock(tx, record.id), context);
+		return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: record.reason, ...(providerBlock === undefined ? {} : { providerBlock }) };
+	}
 	return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }) };
 }
 
@@ -1943,12 +1981,14 @@ async function copySnapshot(backupFrom: string, maxSourceBytes: number, backupTi
 export class DurableObservation {
 	readonly harness: Harness;
 	readonly storageId: string;
+	private readonly storage: Storage;
 	private readonly release: () => Promise<void>;
 	private readonly absent: boolean;
 	private readonly classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string };
 
-	private constructor(harness: Harness, storageId: string, release: () => Promise<void>, classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string }, absent: boolean) {
+	private constructor(harness: Harness, storage: Storage, storageId: string, release: () => Promise<void>, classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string }, absent: boolean) {
 		this.harness = harness;
+		this.storage = storage;
 		this.absent = absent;
 		this.storageId = storageId;
 		this.release = release;
@@ -1992,6 +2032,7 @@ export class DurableObservation {
 		const extra = cleanup;
 		return new DurableObservation(
 			harness,
+			storage,
 			options.storageId,
 			async () => {
 				try {
@@ -2031,7 +2072,7 @@ export class DurableObservation {
 	}
 
 	async dashboard(params: DurableDashboardParams = {}, options: DurableDashboardOptions = {}, context: Context = BACKGROUND_CONTEXT): Promise<readonly AgentConversationSummary[]> {
-		return readDashboard(this.harness, this.storageId, params, options, context);
+		return readDashboard(this.harness, this.storageId, params, { ...options, storage: this.storage }, context);
 	}
 
 	async snapshot(conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<ConversationSnapshotPage> {
@@ -2086,7 +2127,7 @@ export class DurableObservation {
 			this.harness,
 			this.storageId,
 			conversationId === undefined ? {} : { conversationId: conversationId as ConversationId },
-			{ owner: owner.owner, ...(owner.label === undefined ? {} : { ownerLabel: owner.label }), ...optionalParam("cwd", requestString(params, "cwd")) },
+			{ storage: this.storage, owner: owner.owner, ...(owner.label === undefined ? {} : { ownerLabel: owner.label }), ...optionalParam("cwd", requestString(params, "cwd")) },
 			context,
 		);
 	}

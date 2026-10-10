@@ -577,6 +577,12 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 		forkSource: { conversationId: 1, at: 22 },
 		awaiting,
 		ownerTaskId: 23,
+		providerBlock: {
+			blockId: "block-1", conversationId: 2, providerSessionId: "provider-session-2", epoch: 0,
+			model: { provider: "test", modelId: "model" }, error: fullText.slice(0, 4096),
+			errorRedacted: false, errorTruncated: true, source: "provider", timestamp: 2,
+			originalResults: [{ sessionId: "storage:2", submissionId: 17, requestId: "request-1" }], omittedOriginalResults: 0,
+		},
 	};
 	const inventory = {
 		contributions: [
@@ -587,6 +593,7 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 	};
 	for (const [fixture, schema] of [
 		[conversation, ConversationStatusSchema],
+		[conversation.providerBlock, ConversationStatusSchema.properties.providerBlock],
 		[conversation.live, LiveStateSchema],
 		[conversation.inbox, InboxStateSchema],
 		[conversation.usage, UsageStateSchema],

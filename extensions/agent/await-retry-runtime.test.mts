@@ -18,6 +18,7 @@ import { AwaitDoc, AwaitOutputSchema, type AwaitInput, type AwaitState } from ".
 import type { ProducerAwaitFact } from "./await-facts.ts";
 import type { AwaitReply } from "./await-execution.ts";
 import type { ResultReference } from "./result-reference.ts";
+import { associateProviderBlock, type ProviderBlockFact } from "./provider-block.ts";
 
 const preferenceOverride = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;
@@ -32,7 +33,7 @@ function messageText(message: Message | undefined): string {
 }
 function retryError(): AssistantMessage { return fauxAssistantMessage("", { stopReason: "error", errorMessage: "429 rate limit; provider claims reset tomorrow" }); }
 
-async function setup(t: TestContext, producerAnswer: (text: string) => AssistantMessage | Promise<AssistantMessage>, baseDelayMs = 60000) {
+async function setup(t: TestContext, producerAnswer: (text: string) => AssistantMessage | Promise<AssistantMessage>, baseDelayMs = 60000, awaitRounds = 1) {
 	const agentDir = mkdtempSync(join(tmpdir(), "retry-agent-config-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	let args: AwaitInput = { results: [{ sessionId: "unused", submissionId: 1 }] };
@@ -46,7 +47,7 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 		const text = messageText(last);
 		if (last?.role === "user" && text.startsWith("PRODUCER")) return producerAnswer(text);
 		callerCalls++;
-		return last?.role === "user" ? fauxAssistantMessage([fauxToolCall("agent_await", args)], { stopReason: "toolUse" }) : fauxAssistantMessage("CALLER RECOVERED");
+		return callerCalls <= awaitRounds ? fauxAssistantMessage([fauxToolCall("agent_await", args)], { stopReason: "toolUse" }) : fauxAssistantMessage("CALLER RECOVERED");
 	}));
 	const dispatch: AgentControlDispatch = async (method, params, ctx = context) => {
 		if (method === "await-native") return readOutcome(harness, (params.result as ResultReference).submissionId as Durable.SubmissionId, ctx);
@@ -72,9 +73,9 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 		return { conversation, input, result: { sessionId: `${storageId}:${conversation.id}`, submissionId: input.id, requestId: text } };
 	};
 	const start = async (value: AwaitInput) => { args = value; return root.submit({ type: "input", content: "Await exact work" }, context); };
-	const output = async () => {
+	const output = async (index = 0) => {
 		const entries = await harness.commit((tx) => tx.scanEntries({ conversationId: root.id }, 30), context);
-		const message = entries.items.flatMap((entry) => entry.model ?? []).find((item) => item.role === "toolResult" && item.toolName === "agent_await");
+		const message = entries.items.flatMap((entry) => entry.model ?? []).filter((item) => item.role === "toolResult" && item.toolName === "agent_await").at(index);
 		assert.ok(message?.role === "toolResult"); assert.equal(message.isError, false, messageText(message));
 		const result = JSON.parse(messageText(message)) as AwaitReply;
 		assert.equal(Value.Check(AwaitOutputSchema, result), true);
@@ -127,7 +128,7 @@ it("releases an exact retry with partial long-answer continuation and leaves the
 	t.after(() => finish(fauxAssistantMessage("FINISHED")));
 	const partial = await f.submitProducer("PRODUCER PARTIAL"); await partial.input.wait(context);
 	const retry = await f.submitProducer("PRODUCER RETRY");
-	const original = await f.start({ results: [partial.result, retry.result], releaseOnProviderRetry: {} });
+	const original = await f.start({ results: [partial.result, retry.result] });
 	await waitForState(f.harness, (state) => state.declarations.some((item) => item.outcomes.length === 1));
 	assert.equal((await original.status(context)).status, "placed"); assert.equal(f.calls(), 1);
 	finish(retryError());
@@ -145,7 +146,8 @@ it("releases an exact retry with partial long-answer continuation and leaves the
 	await retry.conversation.abort(context);
 });
 
-for (const policy of [undefined, { minAttempt: 2 }]) it(`keeps a retry blocked with ${policy === undefined ? "no opt-in" : "an unmet attempt threshold"}`, { timeout: 10000 }, async (t) => {
+it("keeps a retry blocked with an explicit unmet attempt threshold", { timeout: 10000 }, async (t) => {
+	const policy = { minAttempt: 2 };
 	const f = await setup(t, () => retryError());
 	const retry = await f.submitProducer("PRODUCER RETRY");
 	const original = await f.start({ results: [retry.result], ...(policy === undefined ? {} : { releaseOnProviderRetry: policy }) });
@@ -156,7 +158,7 @@ for (const policy of [undefined, { minAttempt: 2 }]) it(`keeps a retry blocked w
 	assert.equal((await f.output()).decision, "failed");
 });
 
-it("releases only after the opted-in attempt threshold", { timeout: 10000 }, async (t) => {
+it("releases only after the explicit attempt threshold", { timeout: 10000 }, async (t) => {
 	const f = await setup(t, () => retryError(), 1);
 	const retry = await f.submitProducer("PRODUCER RETRY");
 	const original = await f.start({ results: [retry.result], releaseOnProviderRetry: { minAttempt: 3 } });
@@ -171,7 +173,7 @@ it("does not release for the producer's different active input while the exact r
 	const retry = await f.submitProducer("PRODUCER RETRY");
 	const queued = await retry.conversation.submit({ type: "input", content: "PRODUCER QUEUED", requestId: "queued", whenBusy: "followUp" }, context);
 	const result = { sessionId: retry.result.sessionId, submissionId: queued.id, requestId: "queued" };
-	const original = await f.start({ results: [result], releaseOnProviderRetry: {} });
+	const original = await f.start({ results: [result] });
 	await waitForState(f.harness, (state) => state.declarations.some((item) => (item.producers?.length ?? 0) > 0));
 	assert.equal((await original.status(context)).status, "placed"); assert.equal(f.calls(), 1);
 	const state = await f.harness.snapshot(AwaitDoc, context); const declaration = state?.declarations[0]; assert.ok(declaration);
@@ -180,6 +182,39 @@ it("does not release for the producer's different active input while the exact r
 	await original.wait(context);
 	assert.equal((await f.output()).producerRetries, undefined);
 	await queued.abort(context); await retry.conversation.abort(context);
+});
+
+it("returns native unanswered model_error with its structured provider block", { timeout: 10000 }, async (t) => {
+	let finish!: (value: AssistantMessage) => void;
+	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
+	const f = await setup(t, () => held); t.after(() => finish(fauxAssistantMessage("FINISHED")));
+	const producer = await f.submitProducer("PRODUCER BLOCKED");
+	const block: ProviderBlockFact = { blockId: "block", conversationId: producer.conversation.id, providerSessionId: "provider-session", epoch: 0, model, error: "account exhausted; reset is a provider claim", errorRedacted: false, errorTruncated: false, source: "provider", timestamp: 1, originalResults: [producer.result], omittedOriginalResults: 0 };
+	await f.harness.commit((tx) => associateProviderBlock(tx, [producer.input.id], block), context);
+	const original = await f.start({ results: [producer.result] });
+	finish(fauxAssistantMessage("", { stopReason: "error", errorMessage: "permanent account exhaustion" }));
+	await original.wait(context);
+	const output = await f.output(); assert.equal(output.decision, "failed");
+	assert.equal(output.results[0].status, "unanswered", JSON.stringify(output)); assert.equal(output.results[0].reason, "model_error");
+	assert.deepEqual(output.results[0].providerBlock, block); assert.deepEqual(output.unresolved, []);
+	assert.equal(output.results[0].answer, undefined);
+});
+
+it("holds a new await on the same retained retry across native generation handover and exposes a new attempt", { timeout: 10000 }, async (t) => {
+	const f = await setup(t, () => retryError(), 60000, 2);
+	const producer = await f.submitProducer("PRODUCER RETRY");
+	const original = await f.start({ results: [producer.result] });
+	await waitForState(f.harness, (state) => f.calls() === 2 && state.declarations.some((item) => item.decision === "awaiting" && item.producers?.some((fact) => fact.execution !== undefined)));
+	const state = await f.harness.snapshot(AwaitDoc, context); const current = state?.declarations.find((item) => item.decision === "awaiting"); assert.ok(current);
+	const first = await f.output(); assert.notEqual(current.runId, first.queueSnapshot.runId);
+	assert.deepEqual(current.inputs, first.originalInputs); assert.equal((await original.status(context)).status, "placed");
+	await f.harness.commit(async (tx) => {
+		const fact = current.producers?.[0]; assert.ok(fact?.execution);
+		await recordProducerAwait(tx, current.taskId as Durable.TaskId, { ...fact, observedAt: fact.observedAt + 1, execution: { ...fact.execution, attempt: 2, nextRetryAt: fact.execution.nextRetryAt + 1 } });
+	}, context);
+	assert.equal((await original.wait(context)).status, "done"); assert.equal(f.calls(), 3);
+	assert.equal((await f.output()).producerRetries?.[0].execution?.attempt, 2);
+	assert.equal((await producer.input.status(context)).status, "placed"); await producer.conversation.abort(context);
 });
 
 it("ignores a delayed stale retry after a newer no-retry observation", { timeout: 10000 }, async (t) => {

@@ -39,7 +39,7 @@ export interface RuntimeFixture {
 }
 
 /** Build an isolated agent home for one durable runtime test. */
-export function runtimeFixture(t: { after(fn: () => void): void }, options: { withAgentExtension?: boolean; transport?: "sse" | "auto"; retry?: boolean } = {}): RuntimeFixture {
+export function runtimeFixture(t: { after(fn: () => void): void }, options: { withAgentExtension?: boolean; transport?: "sse" | "auto"; retry?: boolean; packageDir?: string; httpEndpoint?: string; retryDelayMs?: number } = {}): RuntimeFixture {
 	const root = mkdtempSync(join(tmpdir(), "durable-runtime-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const cwd = join(root, "work");
@@ -53,13 +53,23 @@ export function runtimeFixture(t: { after(fn: () => void): void }, options: { wi
 	const extensionPath = fileURLToPath(new URL("./testdata/durable-runtime/index.ts", import.meta.url));
 	const extensions = [extensionPath];
 	if (options.withAgentExtension === true) extensions.push(fileURLToPath(new URL("./index.ts", import.meta.url)));
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, transport: options.transport ?? "auto", cacheWarming: { mode: "off" }, retry: { enabled: options.retry === true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, transport: options.transport ?? "auto", cacheWarming: { mode: "off" }, retry: { enabled: options.retry === true, maxRetries: 20, baseDelayMs: options.retryDelayMs ?? 300000, maxAgentDelayMs: 300000 } }));
+	if (options.httpEndpoint !== undefined) {
+		const endpoint = new URL(options.httpEndpoint);
+		if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1") throw new Error("provider fixture requires an isolated loopback HTTP endpoint");
+		writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
+			"durable-runtime-http": {
+				api: "openai-completions", baseUrl: endpoint.href, apiKey: "synthetic-runtime-fixture",
+				models: [{ id: "fixture-http-model", name: "HTTP fixture model", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+			},
+		} }));
+	}
 	const ownerId = "primary-owner";
 	const record = new AgentCatalog(root).create({
 		cwd,
 		agentDir,
-		packageDir: getPackageDir(),
-		model: { provider: "durable-runtime-fixture", modelId: "fixture-model" },
+		packageDir: options.packageDir ?? getPackageDir(),
+		model: options.httpEndpoint === undefined ? { provider: "durable-runtime-fixture", modelId: "fixture-model" } : { provider: "durable-runtime-http", modelId: "fixture-http-model" },
 		thinkingLevel: "off",
 		name: "Durable runtime kill fixture",
 		trust: true,
@@ -84,6 +94,7 @@ export function runtimeFixture(t: { after(fn: () => void): void }, options: { wi
 			DURABLE_TEST_MODE: mode,
 			...(options.retry === true ? { DURABLE_TEST_RETRY: "1" } : {}),
 			DURABLE_TEST_NOTIFY: markers.notifyPath,
+			...(options.httpEndpoint === undefined ? {} : { DURABLE_TEST_HTTP: "1" }),
 			PI_AGENT_IDLE_MINUTES: "0.05",
 		}),
 		marker: markers.marker,

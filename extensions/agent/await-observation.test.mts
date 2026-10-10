@@ -12,7 +12,7 @@ import { producerRetryFact, readAwaitFact, recordProducerAwait, releaseAwait } f
 
 function fixture() {
 	const results = Array.from({ length: 16 }, (_, index) => ({ sessionId: `peer-${index}`, submissionId: index + 10, requestId: "😀".repeat(512) }));
-	const state: AwaitState = { declarations: [{ taskId: 3, callId: "await", conversationId: 1, runId: 2, cohort: [3], inputs: [4], results, outcomes: [], decision: "awaiting" }], provenance: [] };
+	const state: AwaitState = { declarations: [{ taskId: 3, callId: "await", conversationId: 1, runId: 2, cohort: [3], inputs: [4], results, outcomes: [], decision: "awaiting", releaseOnProviderRetry: { minAttempt: Number.MAX_SAFE_INTEGER } }], provenance: [] };
 	const inbox = { items: [{ id: 5, mode: "followUp" }, { id: 6, mode: "write" }, { id: 7, mode: "followUp" }] }; let terminal = false;
 	const tx = { doc: async (token: unknown) => token === AwaitDoc ? state : token === InboxDoc ? inbox : token === LiveDoc ? { run: { taskId: 2 } } : undefined, task: async () => ({ abortRequested: false, state: { status: terminal ? "terminal" : "ready" } }) } as unknown as Tx;
 	return { state, tx, results, end: () => { terminal = true; } };
@@ -43,6 +43,14 @@ it("releases parallel await tools together with an immutable exact retry snapsho
 	assert.deepEqual(peer.producerRetries?.[0].execution?.results, [result]);
 	fact.execution.attempt = 99;
 	assert.equal(peer.producerRetries?.[0].execution?.attempt, 3);
+});
+
+it("releases by default for arbitrary native retry evidence without an error-code filter", async () => {
+	const f = fixture(); const declaration = f.state.declarations[0]; delete declaration.releaseOnProviderRetry;
+	const result = f.results[0];
+	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: result.sessionId, source: "producer await-state", observedAt: 1,
+		execution: { state: "provider-retry", runId: 9, results: [result], attempt: 1, nextRetryAt: 100, error: "provider-specific transient disposition with no status code", errorTruncated: false } });
+	assert.equal(declaration.decision, "released"); assert.deepEqual(declaration.producerRetries?.[0].execution?.results, [result]);
 });
 
 it("correlates retries with current run inputs and clears on exit, settlement, or abort", async () => {
@@ -118,6 +126,16 @@ it("merges parallel inputs in the same producer run and clears only matching set
 	assert.equal((await readAwaitFact(f.tx, "consumer", conversation))?.producers[0].execution, undefined);
 });
 
+it("does not let a later observation of an older native attempt supersede parallel retry evidence", async () => {
+	const f = parallelFixture(); f.state.declarations[1].results = [f.first];
+	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: "producer", observedAt: 1, source: "producer await-state", execution: f.retry([f.first], 19) });
+	await recordProducerAwait(f.tx, 4 as TaskId, { sessionId: "producer", observedAt: 2, source: "producer await-state", execution: f.retry([f.first], 18) });
+	assert.equal((await readAwaitFact(f.tx, "consumer", conversation))?.producers[0].execution?.attempt, 19);
+	const before = JSON.stringify(f.state);
+	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: "producer", observedAt: 3, source: "producer await-state", execution: f.retry([f.first], 18) });
+	assert.equal(JSON.stringify(f.state), before);
+});
+
 it("uses exact-reference freshness for repeated empty reads without notification feedback", async () => {
 	const f = parallelFixture(); f.state.declarations[1].results = [f.first];
 	const empty = { sessionId: "producer", observedAt: 1, source: "producer await-state" as const };
@@ -150,7 +168,7 @@ it("deduplicates overlapping reference sets through the real local commit feed w
 		const second = await tx.createTask(CheckInTask, { ...input, requestId: "second" }, { ownership: { kind: "conversation" }, conversationId: root.id, background: true });
 		(await tx.doc(LiveDoc, root.id)).run = { taskId: owner, inputs: [5 as SubmissionId] };
 		const scopes: [TaskId, typeof a[]][] = [[first, [a]], [second, [a, b]]];
-		(await tx.doc(AwaitDoc)).declarations = scopes.map(([taskId, results]) => ({ taskId, callId: `await-${taskId}`, conversationId: root.id, runId: owner, cohort: [first, second], inputs: [5], results, outcomes: [], decision: "awaiting" }));
+		(await tx.doc(AwaitDoc)).declarations = scopes.map(([taskId, results]) => ({ taskId, callId: `await-${taskId}`, conversationId: root.id, runId: owner, cohort: [first, second], inputs: [5], results, outcomes: [], decision: "awaiting", releaseOnProviderRetry: { minAttempt: Number.MAX_SAFE_INTEGER } }));
 		return [first, second];
 	}, BACKGROUND_CONTEXT);
 	let clock = Date.now(); t.mock.method(Date, "now", () => ++clock);

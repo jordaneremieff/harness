@@ -8,6 +8,8 @@ import type { ProducerAwaitFact } from "./await-facts.ts";
 import { safeFactText } from "./primary-observation.ts";
 import { recordProducerAwait, queuedAwaitInputCount } from "./await-observation.ts";
 import type { AgentControlDispatch } from "./durable-agents.ts";
+import { Value } from "typebox/value";
+import { ProviderBlockFactSchema, type ProviderBlockFact } from "./provider-block.ts";
 
 export type AwaitReply = { decision: AwaitDeclaration["decision"]; results: AwaitOutcome[]; unresolved: ResultReference[]; originalInputs: number[]; queuedInputCount: number; queueSnapshot: { source: "committed InboxDoc"; conversationId: number; runId: number }; releaseReason?: string; producerRetries?: ProducerAwaitFact[] };
 function declaration(value: { declarations: AwaitDeclaration[] } | null | undefined, taskId: TaskId): AwaitDeclaration | undefined { return value?.declarations.find((item) => item.taskId === taskId); }
@@ -15,13 +17,18 @@ function observedReference(reference: ResultReference, row: Record<string, unkno
 	const requestId = typeof row.requestId === "string" ? row.requestId : reference.requestId;
 	return { ...reference, ...(requestId === undefined ? {} : { requestId }) };
 }
+function providerBlockOutcome(row: Record<string, unknown>): { providerBlock?: ProviderBlockFact } {
+	if (row.providerBlock === undefined) return {};
+	if (row.status !== "unanswered" || !Value.Check(ProviderBlockFactSchema, row.providerBlock)) throw new Error("The result source returned an invalid provider block outcome");
+	return { providerBlock: row.providerBlock };
+}
 function outcomeOf(reference: ResultReference, value: unknown): AwaitOutcome {
 	if (value === null || typeof value !== "object") throw new Error("The result source returned no native outcome");
 	const row = value as Record<string, unknown>;
 	if (row.submissionId !== reference.submissionId || (reference.requestId !== undefined && row.requestId !== reference.requestId)) throw new Error("Observed result identifiers disagree with the reference");
 	if (row.status !== "done" && row.status !== "unanswered") throw new Error("The result source returned no terminal native input");
 	const answer = typeof row.answer === "string" ? row.answer : undefined;
-	return { result: observedReference(reference, row), status: row.status, ...(answer === undefined ? {} : boundedAwaitAnswer(reference, answer, typeof row.answerEntryId === "number" ? row.answerEntryId : undefined)), ...(typeof row.answerEntryId === "number" ? { answerEntryId: row.answerEntryId } : {}), ...(typeof row.entryId === "number" ? { entryId: row.entryId } : {}), ...(typeof row.reason === "string" ? { reason: row.reason } : {}) };
+	return { result: observedReference(reference, row), status: row.status, ...(answer === undefined ? {} : boundedAwaitAnswer(reference, answer, typeof row.answerEntryId === "number" ? row.answerEntryId : undefined)), ...(typeof row.answerEntryId === "number" ? { answerEntryId: row.answerEntryId } : {}), ...(typeof row.entryId === "number" ? { entryId: row.entryId } : {}), ...(typeof row.reason === "string" ? { reason: row.reason } : {}), ...providerBlockOutcome(row) };
 }
 async function observeNativeResult(dispatch: AgentControlDispatch, storageId: string, owner: string, reference: ResultReference, context: Context): Promise<{ outcome: AwaitOutcome; delivery?: AwaitDelivery }> {
 	if (localProducer(storageId, reference) !== undefined) {

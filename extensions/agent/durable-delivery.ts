@@ -24,6 +24,7 @@
 import { createHash } from "node:crypto";
 import type { InputProvenance } from "./awaited-results.ts";
 import { canonicalIdentity } from "./identity.ts";
+import { providerBlockText } from "./provider-block.ts";
 import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
@@ -37,6 +38,7 @@ import {
 	type DeliveryReceipt,
 	type DeliveryReport,
 	settleDeliveries,
+	providerRetryReportSettled,
 } from "./durable-controls.ts";
 import type { DurableHost } from "./durable-host.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
@@ -301,15 +303,27 @@ function receiptContinuationText(metadata: HostMetadata, receipt: DeliveryReceip
 }
 
 /** Catalog follow-up text; the peer body is bounded. */
+function receiptFailureText(receipt: DeliveryReceipt): string {
+	return `No answer: ${receipt.reason ?? "the submission settled unanswered"}${receipt.providerBlock === undefined ? "" : `\n${providerBlockText(receipt.providerBlock)}`}`;
+}
 function receiptFollowText(metadata: HostMetadata, row: ReceiptRow): string {
 	const receipt = row.receipt;
 	const result =
 		receipt.status === "done"
 			? (receipt.answer ?? "No assistant text.")
-			: `No answer: ${receipt.reason ?? "the submission settled unanswered"}`;
+			: receiptFailureText(receipt);
 	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}). Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, receipt)}`;
 }
 
+function reportOptionalDetails(report: DeliveryReport) {
+	return {
+		...(report.checkIn === undefined ? {} : { checkIn: report.checkIn }),
+		...(report.providerRetry === undefined ? {} : { providerRetry: report.providerRetry }),
+		...(report.threadId === undefined ? {} : { threadId: report.threadId }),
+		...(report.threadTitle === undefined ? {} : { threadTitle: report.threadTitle }),
+		...(report.operatorMessage === undefined ? {} : { operatorMessage: boundedPeerText(report.operatorMessage).text }),
+	};
+}
 function checkInSummary(checkIn: NonNullable<DeliveryReport["checkIn"]>): string {
 	const seconds = Math.floor(checkIn.elapsedMs / 1000);
 	const elapsed = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}m`;
@@ -335,7 +349,7 @@ function channelText(metadata: HostMetadata, row: DeliveryRow, label: string, or
 		const result =
 			row.receipt.status === "done"
 				? (row.receipt.answer ?? "No assistant text.")
-				: `No answer: ${row.receipt.reason ?? "the submission settled unanswered"}`;
+				: receiptFailureText(row.receipt);
 		return `Agent “${label}” ${receiptOutcome(row.receipt)}.${fallbackLabel} Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, row.receipt)}\n\nUse agent_inspect for retained source evidence.`;
 	}
 	if (row.report.checkIn !== undefined)
@@ -440,16 +454,21 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
-	/** Drop check-ins replaced or settled during asynchronous route preparation. */
-	const checkInCurrent = async (row: DeliveryRow): Promise<boolean> => {
-		if (row.kind !== "report" || row.report.checkIn === undefined) return true;
-		const checkIn = row.report.checkIn;
+	/** Automatic notices recheck exact source settlement after asynchronous route preparation. */
+	const reportCurrent = async (row: DeliveryRow): Promise<boolean> => {
+		if (row.kind !== "report" || (row.report.checkIn === undefined && row.report.providerRetry === undefined)) return true;
 		const report = row.report;
 		return host.harness.commit(async (tx) => {
 			const state = await tx.doc(AgentDeliveryDoc);
 			const index = state.reports.findIndex((current) => current.sourceId === report.sourceId && current.ownerId === report.ownerId);
-			if (index < 0) return false;
-			const submission = await tx.submissionByRequest(checkIn.conversationId as ConversationId, checkIn.requestId);
+			const current = state.reports[index];
+			if (current === undefined || current.acknowledged) return false;
+			if (await providerRetryReportSettled(tx, current)) {
+				state.reports[index] = { ...current, acknowledged: true };
+				return false;
+			}
+			if (current.checkIn === undefined) return true;
+			const submission = await tx.submissionByRequest(current.checkIn.conversationId as ConversationId, current.checkIn.requestId);
 			if (submission?.status !== "done" && submission?.status !== "unanswered") return true;
 			state.reports.splice(index, 1);
 			return false;
@@ -463,9 +482,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row), requestId, provenance: { classification: "automatic" }, whenBusy: "followUp" });
 			return;
 		}
-		if (!await checkInCurrent(row)) return;
+		if (!await reportCurrent(row)) return;
 		const requestId = reportRequestId(metadata, row.report);
-		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, provenance: reportProvenance(row.report), whenBusy: row.report.steer ? "steer" : "followUp" });
+		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" });
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
@@ -572,6 +591,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				answer: body.text,
 				...receiptContinuationDetails(metadata, receipt),
 				reason: receipt.reason,
+				...(receipt.providerBlock === undefined ? {} : { providerBlock: receipt.providerBlock }),
 				acknowledged: row.receipts.every((member) => member.acknowledged),
 			} as unknown as JsonValue;
 		}
@@ -582,10 +602,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			requestId: report.requestId,
 			senderIdentity: report.senderIdentity,
 			message: body.text,
-			...(report.checkIn === undefined ? {} : { checkIn: report.checkIn }),
-			...(report.threadId === undefined ? {} : { threadId: report.threadId }),
-			...(report.threadTitle === undefined ? {} : { threadTitle: report.threadTitle }),
-			...(report.operatorMessage === undefined ? {} : { operatorMessage: boundedPeerText(report.operatorMessage).text }),
+			...reportOptionalDetails(report),
 			replyTo: report.replyTo,
 			acknowledged: report.acknowledged,
 			createdAt: report.createdAt,
@@ -608,7 +625,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			text: channelText(metadata, row, displayName(status, identity), originalOwnerId, fallback),
 			details: await rowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status),
 		};
-		if (!await checkInCurrent(row)) return false;
+		if (!await reportCurrent(row)) return false;
 		await connection.deliver(message);
 		row.deliveredTo.add(`primary:${deliveryRecipient}`);
 		return true;
@@ -743,7 +760,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const candidates = await fallbackCandidates(owner, row);
 		preflightFallback(candidates, owner);
 		const { delivered, unavailable, incompatible } = await broadcastFallback(candidates, row, identity, owner);
-		if (delivered === 0 && !await checkInCurrent(row)) return;
+		if (delivered === 0 && !await reportCurrent(row)) return;
 		if (incompatible !== undefined) throw incompatibleFallbackError(incompatible.id, incompatible.version, owner);
 		if (unavailable !== undefined)
 			throw new Error(
@@ -796,18 +813,18 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				{ requestId, signal },
 			);
 		} else {
-			if (!await checkInCurrent(row)) return;
+			if (!await reportCurrent(row)) return;
 			const requestId = reportRequestId(metadata, row.report);
 			await connection.request(
 				row.report.passive ? "passive-submit" : "submit",
-				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, provenance: reportProvenance(row.report), whenBusy: row.report.steer ? "steer" : "followUp" },
+				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" },
 				{ requestId, signal },
 			);
 		}
 	};
 
 	const routeOwner = async (row: DeliveryRow, owner: string): Promise<boolean> => {
-		if (!await checkInCurrent(row)) return false;
+		if (!await reportCurrent(row)) return false;
 		if (ownerStorageId(owner) === metadata.storageId) {
 			// The producing conversation already retains its outcome; another input would restart it.
 			if (row.kind === "receipt" && resolveSessionConversationId(metadata.storageId, owner, undefined) === row.receipt.conversationId) return true;

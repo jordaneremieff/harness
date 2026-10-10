@@ -9,9 +9,10 @@ import type { Message } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DurableHost } from "./durable-host.ts";
 import { settleDeliveries } from "./durable-controls.ts";
+import { PROVIDER_BLOCK_ERROR } from "./provider-block.ts";
 import { InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
-import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
-import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
+import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, readDashboard, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
+import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, fixtureProvider, fixtureModelId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "durable-observation-"));
@@ -891,6 +892,66 @@ it("dashboard failure causes use retained model error text in live and cold read
 		assert.equal(rows[0]?.state, "failed");
 		assert.equal(rows[0]?.error, "Insufficient credits for this request");
 	} finally { await observation.close(); }
+});
+
+for (const owned of [true, false]) for (const bounded of [true, false]) {
+	it(`dashboard preserves the exact ${owned ? "owned" : "unowned"} quota cause${bounded ? " with omission markers" : ""} after recovery and supersedes it with newer outcomes`, async (t) => {
+		const storagePath = join(fixtureRoot(t), "quota-cause.sqlite");
+		const credential = "sk-abcdefghijklmnopqrstuv";
+		const cause = `Insufficient credits for this request${bounded ? `; api_key=${credential}; ${"x".repeat(5000)}` : ""}`;
+		const failure = (errorMessage: string) => ({ ...answerMessage(), content: [], stopReason: "error" as const, errorMessage });
+		const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([failure(cause), failure("New connection failure"), answerMessage("Recovered successfully")]), fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+		const check = async (state: string, error?: string) => {
+			const live = await host.request("dashboard") as Array<{ state: string; error?: string }>;
+			assert.equal(live[0]?.state, state); assert.equal(live[0]?.error, error);
+			const observation = await observationFor(storagePath);
+			try {
+				const cold = await observation.request("dashboard") as Array<{ state: string; error?: string }>;
+				assert.equal(cold[0]?.state, state); assert.equal(cold[0]?.error, error);
+			} finally { await observation.close(); }
+		};
+		try {
+			const admitted = await host.submit({ message: "quota task", requestId: "quota", ...(owned ? { ownerId: "owner", origin: "operator" as const } : {}) });
+			const original = await host.wait(admitted.submissionId);
+			assert.equal(original.status, "unanswered"); assert.equal(original.reason, "model_error");
+			assert.ok(original.providerBlock); assert.equal(original.providerBlock.errorRedacted, bounded); assert.equal(original.providerBlock.errorTruncated, bounded);
+			const expected = `${original.providerBlock.error}${bounded ? "\n[provider error redacted]\n[provider error truncated]" : ""}`;
+			assert.ok(expected.length <= 4200); assert.ok(!expected.includes(credential));
+			const tail = await host.root().entries({}, 1, undefined, BACKGROUND_CONTEXT);
+			assert.equal(tail.items[0]?.model?.[0]?.role === "assistant" ? tail.items[0].model[0].errorMessage : undefined, PROVIDER_BLOCK_ERROR, "native error stays classification-safe");
+			await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
+			await check("failed", expected);
+			await host.request("configure", { model: { provider: fixtureProvider, modelId: fixtureModelId } });
+			assert.equal((await host.request("status", { conversationId: 1 }) as { providerBlock?: unknown }).providerBlock, undefined);
+			await check("failed", expected);
+			assert.deepEqual(await host.wait(admitted.submissionId), original, "recovery does not relabel the original result");
+			const newer = await host.submit({ message: "new failure", requestId: "new-failure" }); await host.wait(newer.submissionId);
+			await settleDeliveries(host.harness, BACKGROUND_CONTEXT); await check("failed", "New connection failure");
+			const success = await host.submit({ message: "new success", requestId: "new-success" }); await host.wait(success.submissionId);
+			await settleDeliveries(host.harness, BACKGROUND_CONTEXT); await check("done");
+		} finally { await host.close(); }
+	});
+}
+
+it("dashboard exact input lookup continues pages and marks limited or absent evidence without using the active block", async (t) => {
+	const storagePath = join(fixtureRoot(t), "cause-scan.sqlite");
+	const cause = "Insufficient credits for this request";
+	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([{ ...answerMessage(), content: [], stopReason: "error", errorMessage: cause }]), fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+	try {
+		const submitted = await host.submit({ message: "task", requestId: "cause-scan" }); await host.wait(submitted.submissionId);
+		const native = await host.harness.submission(submitted.submissionId, BACKGROUND_CONTEXT); assert.ok(native); const record = await native.status(BACKGROUND_CONTEXT);
+		let pages = 0;
+		const continued = await readDashboard(host.harness, fixtureStorageId, {}, { storage: { scanSubmissions: async (query, limit, cursor) => {
+			assert.equal(query.conversationId, 1); assert.equal(query.status, "unanswered"); assert.equal(limit, 64); pages++;
+			return cursor === undefined ? { items: [], next: { page: 1 } } : { items: [record] };
+		} } }, BACKGROUND_CONTEXT);
+		assert.equal(pages, 2); assert.equal(continued[0]?.error, cause);
+		pages = 0;
+		const limited = await readDashboard(host.harness, fixtureStorageId, {}, { storage: { scanSubmissions: async () => ({ items: [], next: { page: ++pages } }) } }, BACKGROUND_CONTEXT);
+		assert.equal(pages, 64); assert.equal(limited[0]?.error, `${PROVIDER_BLOCK_ERROR}\n[provider evidence lookup limited]`);
+		const missing = await readDashboard(host.harness, fixtureStorageId, {}, { storage: { scanSubmissions: async () => ({ items: [] }) } }, BACKGROUND_CONTEXT);
+		assert.equal(missing[0]?.error, `${PROVIDER_BLOCK_ERROR}\n[provider evidence unavailable]`);
+	} finally { await host.close(); }
 });
 
 for (const ownedFails of [true, false]) {

@@ -92,7 +92,7 @@ const wait = (host: DurableHost, submissionId: SubmissionId) => host.wait(submis
 it("clears a native retry after the next attempt settles the same exact input", { timeout: 15000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "retry.sqlite");
 	let now = Date.now();
-	const error = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "429 Weekly/Monthly Limit Exhausted" };
+	const error = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "429 rate limit: too many requests" };
 	const models = await scriptedRuntime([error, answerMessage("recovered")]);
 	const options = { ...hostOptions(storagePath, models, fixtureRegistry()), now: () => now, settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } }, retryMaxAttempts: 21 };
 	let host = await DurableHost.open(options, BACKGROUND_CONTEXT);
@@ -114,7 +114,7 @@ it("clears a native retry after the next attempt settles the same exact input", 
 
 it("recovers through explicit abort, idle configuration, and a new exact input without changing the old result", { timeout: 15000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "manual-recovery.sqlite");
-	const error = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "429 Weekly/Monthly Limit Exhausted" };
+	const error = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "429 rate limit: too many requests" };
 	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([error, answerMessage("continued task")]), fixtureRegistry()), settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } } }, BACKGROUND_CONTEXT);
 	try {
 		let ready!: () => void; const retryReady = new Promise<void>((resolve) => { ready = resolve; });

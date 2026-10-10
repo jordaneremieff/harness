@@ -886,7 +886,8 @@ Creation-only calls, reports, scheduled inputs, names, and thread posts are not
 result references. Ordinary primary sessions keep background delivery and never
 block on this tool.
 
-To regain control when an exact producer enters native provider retry, opt in:
+An exact producer's first native provider retry releases the await by default.
+To deliberately wait for a later attempt, set a threshold:
 
 ```ts
 agent_await({
@@ -895,13 +896,15 @@ agent_await({
 });
 ```
 
-An empty `releaseOnProviderRetry` object uses attempt 1; omission disables retry
-release. A matching current retry releases parallel waits in that tool round,
-retaining partial results and unresolved references. `producerRetries` carries
-the exact references and observed retry facts. Producers continue their work.
-Inspect the facts, then use authorized abort/configure/send controls to replace
-a stalled producer, or await the unresolved references again. This is not a
-quota diagnosis and does not parse provider reset text.
+Omission and an empty `releaseOnProviderRetry` object both use attempt 1.
+A matching current retry releases parallel waits in that tool round, retaining
+partial results and unresolved references. `producerRetries` carries the exact
+references and observed retry facts. Producers continue their work. A retained
+acknowledgment prevents repeated awaits for the same held request from releasing
+again on unchanged retry evidence. A new retry attempt remains visible.
+Inspect the facts, then use authorized abort/configure/send controls to recover,
+or await the unresolved references again. Generic retry visibility does not
+assert quota exhaustion and does not parse provider reset text.
 
 Explicit send or steer, direct operator input, and a report from an awaited
 agent release the wait after input admission. The input reaches the original
@@ -974,10 +977,42 @@ cadence, native suspension, named-result suppression, result routing, or control
 authority.
 
 Use existing controls to recover when authorized: inspect the provider claim,
-abort active work before configuration, configure the idle conversation, then
-send a continuation and await its new exact result. Preserve an explicit model
-requirement. The extension does not substitute a model or abort automatically.
-Retry release occurs only through the explicit await option.
+abort active work before configuration if necessary, configure the idle
+conversation, then send a continuation and await its new exact result. Preserve
+an explicit model requirement. The extension never selects another provider or
+model automatically.
+
+### Exhausted provider limits
+
+The host distinguishes explicit quota, usage, balance, and billing exhaustion
+from ordinary short-lived throttling. It retains bounded provider evidence,
+including redaction and truncation flags, before returning a canonical host
+error to Durable. That error prevents another native retry or an incorrect
+context-compaction attempt. Native submissions settle as `unanswered` with
+`model_error`, not as successful answers. Existing result delivery carries the
+blocked cause; no second terminal result replaces the original reference.
+
+An active provider block survives host reopen. Further requests in that
+conversation return an explicit host error without a provider call. Native
+queue recovery retains each input and its own terminal outcome; it does not
+silently reroute work. If no permitted route is available, the block remains
+with its evidence and recovery instructions.
+
+Explicit, validated model configuration clears the matching block. Naming or
+reasoning-level changes do not clear it, and failed model selection leaves it
+intact. Explicit configuration of the same model permits a deliberate retry
+after capacity returns. A subsequent send creates a new result reference; the
+original failed request remains inspectable with its original identity.
+
+Unknown provider-limit wording does not depend on the exhaustion classifier:
+the first exact native retry still reaches the requester. A retry notice is not
+proof of exhaustion. Provider reset strings remain uninterpreted evidence;
+missing timezones are not guessed, and reset text never schedules recovery.
+
+The timing boundary starts when the provider adapter exposes its error or
+Durable commits a native retry. Provider transport settings remain unchanged.
+Retries hidden inside an SDK, gateway, or provider adapter before that boundary
+are not a universal whole-request deadline supplied by this extension.
 
 The selected pane appends current dependency facts to its scrollable display,
 not to retained history. PgUp/PgDn reveals long dependency lists. Native frames
@@ -1677,8 +1712,8 @@ and show restart instructions. Live-frame readers accept the
 additive nested facts; an older renderer does not show their retry details.
 Unchanged operations and existing controls remain available. Restart the caller
 and let an idle host retire before retrying affected reads. The retained manager,
-native control binding, primary delivery, and source-release identities do not
-change for these observation fields.
+native control binding, and source-release identities do not change for these
+observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
@@ -1688,16 +1723,20 @@ thinking from catalog validation, ordinary retained observation, first-input
 origin, independent command admission, exact result references, and
 parked-delivery recovery. Spawn, resolve-agent, and place requests and responses
 use 2.0.0 for creation without parent inheritance and receipts with preset names
-and selection origins. Configure requests and responses use 1.2.0 for machine
-preference snapshots and selection receipts; target retention remains unchanged.
+and selection origins. Configure requests and responses use 1.3.0 for explicit
+provider-block recovery alongside machine preference snapshots and selection
+receipts; target retention remains unchanged. Task-submit responses use 1.2.0
+for recovery links. Submit requests use 1.2.0 for structured retry notices;
+submit responses remain at 1.1.0. Receipts responses use 1.2.0 for retained
+provider-block facts; their request identity remains at 1.1.0.
 `native-controls/2.0.0` binds the preset-first dispatch behavior to the loaded
-Durable release. Primary delivery keeps its existing opaque details contract
-for exact continuations.
+Durable release. `primary-delivery/1.1.0` carries retry notices and blocked
+causes alongside exact continuations.
 Restart Pi windows to load the changed manager.
 Let idle Durable hosts retire, then attach to load the changed runtime routing
 and native tool bindings in a fresh host. An extension reload alone does not
 replace the running host module. Keep active work intact.
-The recovery-state request and primary-delivery contracts are unchanged.
+The recovery-state request contract remains at 1.0.0.
 
 `version-contract.ts` separates source release, actual loaded upstream releases,
 and operation contracts. A host advertises its descriptor in readiness and

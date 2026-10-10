@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { Value } from "typebox/value";
-import { AwaitParams, AwaitDoc, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, boundedAwaitAnswer, forgetFailedAdmission, type AwaitState } from "./awaited-results.ts";
+import { AwaitParams, AwaitDoc, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, boundedAwaitAnswer, forgetFailedAdmission, acknowledgeProviderRetry, claimProviderRetryVisibility, providerRetryRevision, type AwaitState } from "./awaited-results.ts";
 import { LiveDoc, InboxDoc, type Tx, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 
 /** A serialized native transaction's read set, with controlled request placement. */
@@ -134,7 +134,7 @@ it("does not exhaust active slots across repeated aborts and failed admissions",
 	assert.equal(f.state.declarations.length, 0); assert.equal(f.state.provenance.length, 0);
 });
 
-it("admits retry release only by an explicit object with a positive attempt threshold", () => {
+it("accepts default retry release and an explicit positive attempt threshold", () => {
 	const results = [{ sessionId: "producer", submissionId: 1 }];
 	assert.equal(Value.Check(AwaitParams, { results }), true);
 	assert.equal(Value.Check(AwaitParams, { results, releaseOnProviderRetry: {} }), true);
@@ -147,6 +147,61 @@ it("retains the original retry release policy on safe replay", async () => {
 	await declareAwait(f.tx, "store", owner, [result], { minAttempt: 3 });
 	const replay = await declareAwait(f.tx, "store", owner, [result], { minAttempt: 1 });
 	assert.deepEqual(replay.releaseOnProviderRetry, { minAttempt: 3 });
+});
+
+it("defaults to first retry release and keeps the policy on replay", async () => {
+	const f = fixture(); const owner = f.owner(1); const result = f.result(2);
+	assert.deepEqual((await declareAwait(f.tx, "store", owner, [result])).releaseOnProviderRetry, { minAttempt: 1 });
+	assert.deepEqual((await declareAwait(f.tx, "store", owner, [result], { minAttempt: 9 })).releaseOnProviderRetry, { minAttempt: 1 });
+});
+
+it("shares exact retry acknowledgment with notices across generation handovers", async () => {
+	const f = fixture(); const owner = f.owner(1); const result = f.result(2);
+	const retry = { state: "provider-retry" as const, runId: 200, results: [result], attempt: 1, nextRetryAt: 100, error: "arbitrary native retry", errorTruncated: false };
+	const notice = { fact: { sessionId: result.sessionId, observedAt: 1, source: "producer await-state" as const, execution: retry } };
+	await declareAwait(f.tx, "store", owner, [result], { minAttempt: 9 });
+	assert.deepEqual(await acknowledgeProviderRetry(f.tx, owner.conversationId, notice), { acknowledged: false, activeAwait: true });
+	assert.equal(f.state.retryVisibility, undefined, "notice suppression does not consume threshold policy");
+	f.state.declarations[0].decision = "released";
+	assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [1000], retry), true);
+	const live = f.live.get(1); assert.ok(live); live.run.taskId = 101;
+	f.state.declarations = [];
+	assert.deepEqual(await acknowledgeProviderRetry(f.tx, owner.conversationId, { ...notice, fact: { ...notice.fact, observedAt: 999 } }), { acknowledged: true, activeAwait: false });
+	assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [1000], { ...retry, results: [result, { ...result }] }), false);
+	assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [1000], { ...retry, attempt: 2, nextRetryAt: 200 }), true);
+	const state = JSON.stringify(f.state);
+	assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [1000], { ...retry, attempt: 1, nextRetryAt: 300 }), false);
+	assert.equal(JSON.stringify(f.state), state, "a stale attempt never supersedes the acknowledged retry");
+	assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [1001], retry), true, "an unrelated original input retains its own evidence");
+	assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [1000], { ...retry, results: [{ ...result, requestId: "different" }] }), true);
+	assert.equal(providerRetryRevision(retry), providerRetryRevision({ ...retry, results: [] }), "reference coverage is not a retry revision");
+});
+
+it("leaves idle notice deduplication to stable report IDs without retaining synthetic input claims", async () => {
+	const f = fixture(); const owner = f.owner(1); const result = f.result(3);
+	const retry = { state: "provider-retry" as const, runId: 300, results: [result], attempt: 1, nextRetryAt: 100, error: "native retry", errorTruncated: false };
+	await claimProviderRetryVisibility(f.tx, owner.conversationId, [1000], retry);
+	const before = JSON.stringify(f.state.retryVisibility);
+	for (let index = 0; index < 1100; index++) {
+		const fact = { sessionId: "producer", observedAt: index, source: "producer await-state" as const, execution: { ...retry, results: [{ sessionId: "producer", submissionId: index + 1 }] } };
+		assert.deepEqual(await acknowledgeProviderRetry(f.tx, 2 as ConversationId, { fact }), { acknowledged: false, activeAwait: false });
+	}
+	assert.equal(JSON.stringify(f.state.retryVisibility), before, "idle notices neither grow the claim table nor retire unrelated active claims");
+	assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [1000], retry), false);
+});
+
+it("retires ended requester claims at the bound and preserves unrelated active claims", async () => {
+	const f = fixture(); const owner = f.owner(1); const other = f.owner(2); const result = f.result(3);
+	const retry = { state: "provider-retry" as const, runId: 300, results: [result], attempt: 1, nextRetryAt: 100, error: "native retry", errorTruncated: false };
+	await claimProviderRetryVisibility(f.tx, other.conversationId, [2000], retry);
+	const live = f.live.get(1); assert.ok(live);
+	for (let input = 3000; input < 4100; input++) {
+		live.run.inputs = [input];
+		assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [input], retry), true);
+	}
+	assert.ok((f.state.retryVisibility?.length ?? 0) < 1024);
+	assert.equal(await claimProviderRetryVisibility(f.tx, other.conversationId, [2000], retry), false);
+	assert.equal(await claimProviderRetryVisibility(f.tx, owner.conversationId, [4099], retry), false);
 });
 
 it("provides an exact native continuation for capped and excerpt answers", () => {

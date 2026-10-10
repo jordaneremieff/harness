@@ -24,13 +24,13 @@
  * "unsafe"`, so an interrupted execution is reported as interrupted and never
  * rerun.
  */
-import { appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishFixtureMarker } from "./signal.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type TranscriptContext } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getPackageDir, ModelRuntime, VERSION, type AgentSessionServices, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const providerId = "durable-runtime-fixture";
@@ -135,29 +135,42 @@ function spawn(context: TranscriptContext) {
 
 /** Native result waits use real controls; only provider answers are deterministic. */
 function awaited(context: TranscriptContext, mode: string, signal?: AbortSignal) {
+	const minAttempt = process.env.DURABLE_TEST_AWAIT_MIN_ATTEMPT;
+	const release: Record<string, { minAttempt: number }> = minAttempt === undefined ? {} : { releaseOnProviderRetry: { minAttempt: Number(minAttempt) } };
 	const last = context.messages.findLast((item) => item.role === "toolResult");
 	const latestCall = context.messages.findLast((item) => item.role === "assistant" && item.content.some((part) => part.type === "toolCall"));
 	const toolName = latestCall?.role === "assistant" ? latestCall.content.find((part) => part.type === "toolCall")?.name : undefined;
 	const text = userText(context);
 	if (text.includes("HELD_AWAIT_SOURCE")) return process.env.DURABLE_TEST_RETRY === "1" ? retryError() : pending(signal);
-	if (last?.role === "toolResult" && toolName === "agent_await") return completed([{ type: "text", text: "AWAIT_FINISHED" }], "stop");
+	if (last?.role === "toolResult" && toolName === "agent_await") {
+		writeFileSync(join(controlDir(), "await-return.json"), JSON.stringify({ at: Date.now(), result: last }));
+		mark("await-return");
+		return completed([{ type: "text", text: "AWAIT_FINISHED" }], "stop");
+	}
 	if (last?.role === "toolResult" && toolName === "agent_spawn") {
 		const body = typeof last.content === "string" ? last.content : last.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
 		const result = JSON.parse(body.split("\nResult: ")[1].split("\n")[0]);
-		return completed([{ type: "toolCall", id: "await-local-result", name: "agent_await", arguments: { results: [result] } }], "toolUse");
+		return completed([{ type: "toolCall", id: "await-local-result", name: "agent_await", arguments: { results: [result], ...release } }], "toolUse");
 	}
 	if (mode === "await-local") return completed([{ type: "toolCall", id: "spawn-await-source", name: "agent_spawn", arguments: { prompt: "HELD_AWAIT_SOURCE", name: "await source", checkInMinutes: 0 } }], "toolUse");
 	const result = JSON.parse(text.split("AWAIT_REFERENCE:")[1]);
-	return completed([{ type: "toolCall", id: "await-foreign-result", name: "agent_await", arguments: { results: [result] } }], "toolUse");
+	return completed([{ type: "toolCall", id: "await-foreign-result", name: "agent_await", arguments: { results: [result], ...release } }], "toolUse");
 }
 
-/** The native retry scheduler, not this provider fixture, owns the delay. */
+/** Marker acknowledgment controls exposure; the native retry scheduler owns the retry delay. */
 function retryError() {
-	mark("retry-requested");
-	const error = { ...message([], "error"), errorMessage: '429 {"code":1310,"message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-07 20:14:57"}' };
+	const socketPath = process.env.DURABLE_TEST_NOTIFY;
+	if (!socketPath) throw new Error("DURABLE_TEST_NOTIFY is required for the durable runtime fixture");
+	const error = { ...message([], "error"), errorMessage: '429 {"code":"temporary_overload","message":"Temporary request throttling; retry this request"}' };
 	const events = createAssistantMessageEventStream();
-	events.push({ type: "error", reason: "error", error });
-	events.end(error);
+	void publishFixtureMarker(socketPath, "retry-requested").then(() => {
+		events.push({ type: "error", reason: "error", error });
+		events.end(error);
+	}, (cause: unknown) => {
+		const failed = { ...error, errorMessage: `Fixture retry marker failed: ${String(cause)}` };
+		events.push({ type: "error", reason: "error", error: failed });
+		events.end(failed);
+	});
 	return events;
 }
 
@@ -178,6 +191,25 @@ function stream(_model: unknown, context: TranscriptContext, options?: RequestOp
 	return answer();
 }
 
+/** Relevant public commit publications, recorded without another storage reader. */
+function nativeCheckpoint(change: Durable.CommitChange): object | undefined {
+	if (change.type === "submission") {
+		if (change.value.status !== "done" && change.value.status !== "unanswered") return undefined;
+		return { type: "terminal", submission: change.value };
+	}
+	if (change.type === "entry" && change.value.kind === "pi.assistant") return { type: "assistant", entry: change.value };
+	if (change.type !== "document" || change.record.kind !== "pi.live" || change.value === null) return undefined;
+	const generation = change.value.generation as { attempt?: number; retry?: { at: number; error: string } } | undefined;
+	if (generation?.retry === undefined) return undefined;
+	return { type: "retry", conversationId: change.conversationId, generation };
+}
+function recordNativeCommit(publication: Durable.CommitPublication): void {
+	for (const change of publication.changes) {
+		const checkpoint = nativeCheckpoint(change);
+		if (checkpoint !== undefined) appendFileSync(join(controlDir(), "native-checkpoints.jsonl"), `${JSON.stringify({ at: Date.now(), seq: publication.seq, ...checkpoint })}\n`);
+	}
+}
+
 export default function registerDurableRuntimeFixture(pi: ExtensionAPI): void {
 	pi.registerProvider({
 		id: providerId,
@@ -190,7 +222,39 @@ export default function registerDurableRuntimeFixture(pi: ExtensionAPI): void {
 	pi.events.emit("durable:contribution", {
 		name: "fixture.effect",
 		source: fileURLToPath(import.meta.url),
-		create(host: { readonly durable: typeof Durable }): Durable.Extension {
+		create(host: { readonly durable: typeof Durable; readonly services: AgentSessionServices; readonly harness: Durable.Harness; onClose(dispose: () => void): void }): Durable.Extension {
+			if (process.env.DURABLE_TEST_HTTP === "1") {
+				const version = (entry: string): string => JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")).version;
+				const aiEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"));
+				const durableEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-durable"));
+				writeFileSync(join(controlDir(), `load-proof-${process.pid}.json`), JSON.stringify({ codingAgent: VERSION, packageDir: getPackageDir(), piAi: version(aiEntry), piAiEntry: aiEntry, durable: version(durableEntry), durableEntry, modelRuntime: host.services.modelRuntime instanceof ModelRuntime, providerRetry: host.services.settingsManager.getProviderRetrySettings(), httpIdleTimeoutMs: host.services.settingsManager.getHttpIdleTimeoutMs() }));
+				mark("load-proof");
+				host.onClose(host.harness.subscribeCommits(recordNativeCommit));
+				const runtime = host.services.modelRuntime;
+				const upstream = runtime.streamSimple.bind(runtime);
+				runtime.streamSimple = (...args) => {
+					if (args[0].provider === "durable-runtime-http") {
+						appendFileSync(join(controlDir(), "http-options.jsonl"), `${JSON.stringify({ transport: args[2]?.transport ?? null, maxRetries: args[2]?.maxRetries ?? null, timeoutMs: args[2]?.timeoutMs ?? null, maxRetryDelayMs: args[2]?.maxRetryDelayMs ?? null })}\n`);
+					}
+					const stream = upstream(...args);
+					const observed = createAssistantMessageEventStream();
+					void (async () => {
+						for await (const event of stream) {
+							if (event.type === "error") {
+								appendFileSync(join(controlDir(), "exposed-errors.jsonl"), `${JSON.stringify({ at: Date.now(), error: event.error.errorMessage, provider: args[0].provider })}\n`);
+								mark("error-exposed");
+							}
+							observed.push(event);
+						}
+						observed.end(await stream.result());
+					})().catch((error: unknown) => {
+						const failed = { ...message([], "error"), errorMessage: String(error) };
+						observed.push({ type: "error", reason: "error", error: failed });
+						observed.end(failed);
+					});
+					return observed;
+				};
+			}
 			const marker = process.env.DURABLE_TEST_CREATE_MARKER;
 			if (marker) appendFileSync(marker, `${process.pid}\n`);
 			return host.durable.defineExtension({

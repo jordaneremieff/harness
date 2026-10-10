@@ -35,13 +35,13 @@ for (const method of ["close", "recovery-state", "submit", "passive-submit", "sp
 	operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 }
 for (const method of ["profile-read", "profile-update", "profile-list", "resolve-agent", "task-submit"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
-operations["task-submit"] = { ...operations["task-submit"], response: "task-submit/1.1.0" };
+operations["task-submit"] = { ...operations["task-submit"], response: "task-submit/1.2.0" };
 for (const method of ["spawn", "resolve-agent", "place"]) operations[method] = { request: `${method}/2.0.0`, response: `${method}/2.0.0` };
-operations.configure = { request: "configure/1.2.0", response: "configure/1.2.0" };
-operations.submit = { request: "submit/1.1.0", response: "submit/1.1.0" };
+operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
+operations.submit = { request: "submit/1.2.0", response: "submit/1.1.0" };
 operations.command = { request: "command/1.1.0", response: "command/1.0.0" };
 for (const method of ["rewind", "timer-schedule"]) operations[method] = { ...operations[method], request: `${method}/1.1.0` };
-operations.receipts = { request: "receipts/1.1.0", response: "receipts/1.1.0" };
+operations.receipts = { request: "receipts/1.1.0", response: "receipts/1.2.0" };
 for (const method of ["await-state", "await-release"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations["await-state"] = { request: "await-state/1.1.0", response: "await-state/1.1.0" };
 operations["profile-list"] = { ...operations["profile-list"], response: schemaId(ProfiledListOutputSchema) };
@@ -67,7 +67,7 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 /** Separate interfaces refuse reload only when their own current contract changes. */
 export const MANAGER_CONTRACT = "manager/2.0.0";
 export const CONTROL_BINDING_CONTRACT = `native-controls/2.0.0;durable=${durableVersion}`;
-export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.0.0";
+export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.1.0";
 
 function record(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);

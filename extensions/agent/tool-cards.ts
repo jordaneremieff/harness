@@ -8,6 +8,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { awaitFactLines, AwaitFactSchema } from "./await-facts.ts";
+import { ProviderBlockFactSchema, providerBlockText } from "./provider-block.ts";
 import { Value } from "typebox/value";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, keyText } from "@earendil-works/pi-coding-agent";
@@ -652,7 +653,11 @@ function newestTextLabel(working: boolean, role: string | undefined): string {
 	return working ? "Working on the task" : "Latest message";
 }
 
+function providerBlockLines(block: unknown, theme: Theme): string[] {
+	return Value.Check(ProviderBlockFactSchema, block) ? [theme.fg("warning", displayText(providerBlockText(block)))] : [muted(theme, "Provider block unavailable: invalid native fact")];
+}
 function activityLines(status: Record<string, unknown>, readOnly: boolean, theme: Theme): string[] {
+	if (status.providerBlock !== undefined) return providerBlockLines(status.providerBlock, theme);
 	if (status.awaiting !== undefined) return Value.Check(AwaitFactSchema, status.awaiting) ? awaitFactLines(status.awaiting).map((line) => muted(theme, displayText(line))) : [muted(theme, "Await state unavailable: invalid native fact")];
 	const live = record(status.live);
 	const working = status.busy === true || Object.keys(record(live.run)).length > 0;

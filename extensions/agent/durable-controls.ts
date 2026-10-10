@@ -15,7 +15,8 @@
  * defining a second copy.
  */
 import { randomUUID } from "node:crypto";
-import { classifyAwaitInput, forgetFailedAdmission, reconcileInputRelease } from "./awaited-results.ts";
+import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
+import { acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, reconcileInputRelease } from "./awaited-results.ts";
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, type RequestContext } from "./request-context.ts";
 import { refreshManagedInstructions } from "./profile.ts";
@@ -119,6 +120,8 @@ export type DeliveryReceipt = {
 	readonly answer: string | null;
 	/** Terminal reason for an unanswered submission. */
 	readonly reason: string | null;
+	readonly providerBlock?: ProviderBlockFact;
+	readonly recoveryOf?: string;
 	/** Informational primary copies accepted before owner delivery; retained across host reopen. */
 	readonly fallbackRecipients?: string[];
 	readonly acknowledged: boolean;
@@ -149,6 +152,7 @@ export type DeliveryReport = {
 	readonly fallbackRecipients?: string[];
 	readonly acknowledged: boolean;
 	readonly createdAt: number;
+	readonly providerRetry?: ProviderRetryNotice;
 	readonly checkIn?: { readonly origin: DeliveryOrigin; readonly elapsedMs: number; readonly cost: number | null; readonly conversationId: number; readonly requestId: string; readonly fallbackBroadcast?: boolean };
 };
 
@@ -211,6 +215,7 @@ export interface DurableSubmitParams {
 	readonly senderIdentity?: string;
 	/** Host-authored metadata; base submit callers need not supply it. */
 	readonly requestContext?: RequestContext;
+	readonly providerRetry?: ProviderRetryNotice;
 }
 
 export interface RichSubmitParams {
@@ -379,8 +384,27 @@ export async function submitConversation(
 	}
 }
 
+const ProviderNoticeAdmissionDoc = defineDocFamily<{ authorized: boolean }, null>({ kind: "agent.provider-notice-admission", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ authorized: false }) });
+
+/** Authorization and visibility claims share a commit; replay completes an authorized native admission. */
+async function authorizeProviderNotice(tx: Tx, conversationId: ConversationId, requestId: string, notice: ProviderRetryNotice): Promise<{ suppressed: boolean; existing?: SubmissionId }> {
+	const existing = await tx.submissionByRequest(conversationId, requestId);
+	if (existing?.type === "input") return { suppressed: false, existing: existing.id };
+	const intent = await tx.doc(ProviderNoticeAdmissionDoc, conversationId, requestId, null);
+	if (intent.authorized) return { suppressed: false };
+	const decision = await acknowledgeProviderRetry(tx, conversationId, notice);
+	if (decision.acknowledged || decision.activeAwait) return { suppressed: true };
+	intent.authorized = true;
+	return { suppressed: false };
+}
+
 async function admitConversation(conversation: Conversation, params: DurableSubmitParams, context: Context, now: () => number): Promise<DurableSubmitResult> {
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
+	if (params.providerRetry !== undefined) {
+		const decision = await conversation.commit((tx) => authorizeProviderNotice(tx, conversation.id, requestId, params.providerRetry as ProviderRetryNotice), context);
+		if (decision.suppressed) throw new AwaitInputSuppressed();
+		if (decision.existing !== undefined) return { submissionId: decision.existing, conversationId: conversation.id, deduped: true };
+	}
 	await conversation.commit((tx) => refreshManagedInstructions(tx, conversation.id), context);
 	const provenance = admissionProvenance(conversation.id, params);
 	const classification = await conversation.commit((tx) => classifyAwaitInput(tx, provenance), context);
@@ -400,6 +424,7 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 			await recordAdmissionMeta(tx, conversation.id, message);
 		}, context);
 	}
+	const recoveryOf = await conversation.commit((tx) => captureProviderRecovery(tx, conversation.id, requestId), context);
 	const submission = await conversation.submit(
 		{
 			type: "input",
@@ -410,7 +435,10 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 		context,
 	);
 	await suppressAdmittedCheckIn(conversation, submission, provenance, context);
-	await conversation.commit((tx) => reconcileInputRelease(tx, conversation.id, requestId), context);
+	await conversation.commit(async (tx) => {
+		await reconcileInputRelease(tx, conversation.id, requestId);
+		await linkProviderRecovery(tx, submission.id, recoveryOf);
+	}, context);
 	if (ownerId !== undefined) {
 		const relinked = await conversation.commit((tx) => linkDeliveryIntent(tx, conversation.id, requestId, submission.id), context);
 		if (relinked) deduped = true;
@@ -439,6 +467,8 @@ export interface DurableRunOutcome {
 	readonly entryId?: EntryId;
 	readonly answerEntryId?: EntryId;
 	readonly reason?: string;
+	readonly providerBlock?: ProviderBlockFact;
+	readonly recoveryOf?: string;
 	readonly answer?: string;
 	readonly usage: UsageState;
 }
@@ -448,12 +478,18 @@ export interface DurableRunOutcome {
  * settled submission whose answer entry is absent reports `unanswered`.
  */
 export async function readOutcome(harness: Harness, submissionId: SubmissionId, context: Context): Promise<DurableRunOutcome> {
+	const outcome = await readNativeOutcome(harness, submissionId, context);
+	const recoveryOf = await harness.commit((tx) => readInputRecovery(tx, submissionId), context);
+	return { ...outcome, ...(recoveryOf === undefined ? {} : { recoveryOf }) };
+}
+async function readNativeOutcome(harness: Harness, submissionId: SubmissionId, context: Context): Promise<DurableRunOutcome> {
 	const submission = await harness.submission(submissionId, context);
 	if (!submission) throw new Error(`durable submission ${submissionId} is not retained`);
 	const settled = await submission.wait(context);
 	const usage = await harness.usage(context);
 	if (settled.type !== "input") return { submissionId: settled.id, conversationId: settled.conversationId, status: "unanswered", ...(settled.requestId === undefined ? {} : { requestId: settled.requestId }), reason: "durable submit retained a write submission", usage };
 	if (settled.status === "unanswered") {
+		const providerBlock = await harness.commit((tx) => readInputProviderBlock(tx, settled.id), context);
 		return {
 			submissionId: settled.id,
 			conversationId: settled.conversationId,
@@ -461,6 +497,7 @@ export async function readOutcome(harness: Harness, submissionId: SubmissionId, 
 			...(settled.requestId === undefined ? {} : { requestId: settled.requestId }),
 			...(settled.entry === undefined ? {} : { entryId: settled.entry }),
 			reason: settled.reason,
+			...(providerBlock === undefined ? {} : { providerBlock }),
 			usage,
 		};
 	}
@@ -788,7 +825,7 @@ interface AppliedConfiguration {
 }
 
 /** Commit the selected agent change and then the name; each commit is atomic on its own. */
-async function applyConfiguration(conversation: Conversation, patch: ConfigurationPatch, effectiveLevel: ModelThinkingLevel | undefined, context: Context): Promise<AppliedConfiguration> {
+async function applyConfiguration(conversation: Conversation, patch: ConfigurationPatch, effectiveLevel: ModelThinkingLevel | undefined, expectedBlockId: string | undefined, context: Context): Promise<AppliedConfiguration> {
 	const change: { model?: ModelRef; thinkingLevel?: ModelThinkingLevel } = {};
 	if (patch.model !== undefined) change.model = configurationModel(patch.model);
 	if (effectiveLevel !== undefined) change.thinkingLevel = effectiveLevel;
@@ -796,7 +833,7 @@ async function applyConfiguration(conversation: Conversation, patch: Configurati
 	if (Object.keys(change).length > 0) {
 		writes = true;
 		try {
-			await conversation.configure(change as AgentChange, context);
+			await conversation.commit((tx) => configureProviderRecovery(tx, conversation.id, change as AgentChange, expectedBlockId), context);
 		} catch {
 			return { writes, error: patch.model === undefined ? "The reasoning update was not retained." : "The model update was not retained." };
 		}
@@ -859,7 +896,8 @@ export async function configureConversation(
 	const fileExists = options.storagePath !== undefined && existsSync(options.storagePath);
 	const resolved = resolveConfiguration(patch, before, options.models);
 	if (resolved.error !== undefined) return configurationResult(options.sessionId, before, patch, before, resolved, undefined, fileExists);
-	const applied = await applyConfiguration(conversation, patch, resolved.effectiveLevel, context);
+	const expectedBlock = await conversation.commit((tx) => readProviderBlock(tx, conversation.id), context);
+	const applied = await applyConfiguration(conversation, patch, resolved.effectiveLevel, expectedBlock?.blockId, context);
 	const after = await readConfigurationState(harness, conversation, context);
 	return configurationResult(options.sessionId, before, patch, after, resolved, applied, fileExists);
 }
@@ -969,7 +1007,9 @@ async function finalizeReceipt(tx: Tx, state: AgentDeliveryState, intent: Delive
 		const text = assistantTextOf(entry?.model);
 		answer = text === "" ? null : text.slice(0, 1200);
 	}
-	state.receipts[String(record.id)] = receiptRow(intent, record, answer);
+	const providerBlock = record.status === "unanswered" ? await readInputProviderBlock(tx, record.id) : undefined;
+	const recoveryOf = await readInputRecovery(tx, record.id);
+	state.receipts[String(record.id)] = { ...receiptRow(intent, record, answer), ...(providerBlock === undefined ? {} : { providerBlock }), ...(recoveryOf === undefined ? {} : { recoveryOf }) };
 }
 
 /**
@@ -977,17 +1017,39 @@ async function finalizeReceipt(tx: Tx, state: AgentDeliveryState, intent: Delive
  * answer to all run inputs atomically, so no observer sees a partial answer
  * group. Request lookup covers admission before its intent link is written.
  */
+/** Absence is not terminal evidence; every native result and request ID must still match. */
+export async function providerRetryReportSettled(tx: Tx, report: DeliveryReport): Promise<boolean> {
+	const execution = report.providerRetry?.fact.execution;
+	if (execution === undefined || execution.results.length === 0 || report.providerRetry?.fact.sessionId !== report.senderIdentity) return false;
+	const run = await tx.task(execution.runId as TaskId);
+	if (run === undefined) return false;
+	for (const result of execution.results) {
+		if (result.sessionId !== report.senderIdentity || result.requestId === undefined) return false;
+		const input = await tx.submissionByRequest(run.conversationId, result.requestId);
+		if (input?.type !== "input" || input.id !== result.submissionId || (input.status !== "done" && input.status !== "unanswered")) return false;
+	}
+	return true;
+}
+async function retireAutomaticReports(tx: Tx, state: AgentDeliveryState): Promise<void> {
+	for (let index = state.reports.length - 1; index >= 0; index -= 1) {
+		const report = state.reports[index];
+		if (report?.providerRetry !== undefined && !report.acknowledged && await providerRetryReportSettled(tx, report)) {
+			state.reports[index] = { ...report, acknowledged: true };
+			continue;
+		}
+		if (report?.checkIn === undefined) continue;
+		const watched = await tx.submissionByRequest(report.checkIn.conversationId as ConversationId, report.checkIn.requestId);
+		if (watched?.status === "done" || watched?.status === "unanswered") state.reports.splice(index, 1);
+	}
+}
+
+/** Materialize terminal receipts and retire obsolete automatic notices in the same native commit. */
 export async function settleDeliveries(harness: Harness, context: Context): Promise<void> {
 	await harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
 		for (const [index, intent] of state.intents.entries()) await finalizeReceipt(tx, state, intent, index);
 		for (const conversationId of new Set(state.intents.map((intent) => intent.conversationId))) await cleanupRequestContexts(tx, conversationId);
-		for (let index = state.reports.length - 1; index >= 0; index -= 1) {
-			const report = state.reports[index];
-			if (report?.checkIn === undefined) continue;
-			const watched = await tx.submissionByRequest(report.checkIn.conversationId as ConversationId, report.checkIn.requestId);
-			if (watched?.status === "done" || watched?.status === "unanswered") state.reports.splice(index, 1);
-		}
+		await retireAutomaticReports(tx, state);
 	}, context);
 }
 

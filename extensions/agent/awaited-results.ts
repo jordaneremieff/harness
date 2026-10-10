@@ -1,9 +1,11 @@
 /** Native await ownership, exact outcomes, and control-provenance release. */
+import { createHash } from "node:crypto";
 import { Type, type Static } from "typebox";
 import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { canonicalIdentity } from "./identity.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
-import { ProducerAwaitFactSchema, type ProducerAwaitFact } from "./await-facts.ts";
+import { ProducerAwaitFactSchema, type ProducerAwaitFact, type ProducerRetry } from "./await-facts.ts";
+import { ProviderBlockFactSchema, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
 
 export const AwaitParams = Type.Object({
 	results: Type.Array(ResultReferenceSchema, { minItems: 1, maxItems: 16, uniqueItems: true }),
@@ -17,6 +19,7 @@ export const AwaitOutcomeSchema = Type.Object({
 	answerEntryId: Type.Optional(Type.Integer({ minimum: 1 })),
 	entryId: Type.Optional(Type.Integer({ minimum: 1 })),
 	reason: Type.Optional(Type.String()),
+	providerBlock: Type.Optional(ProviderBlockFactSchema),
 	truncated: Type.Optional(Type.Boolean()),
 	excerpt: Type.Optional(Type.Boolean()),
 	continuation: Type.Optional(Type.Object({ tool: Type.Literal("agent_inspect"), sessionId: Type.String({ minLength: 1, maxLength: 256 }), view: Type.Literal("exact"), entryId: Type.Integer({ minimum: 1 }), offset: Type.Literal(0) }, { additionalProperties: false })),
@@ -31,12 +34,13 @@ export const AwaitOutputSchema = Type.Object({
 	releaseReason: Type.Optional(Type.String()),
 	producerRetries: Type.Optional(Type.Array(ProducerAwaitFactSchema, { maxItems: 16 })),
 }, { additionalProperties: false });
-export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
+export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; providerBlock?: ProviderBlockFact; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
 export type AwaitDecision = "awaiting" | "settled" | "released" | "failed";
 export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[]; producers?: ProducerAwaitFact[]; releaseOnProviderRetry?: AwaitInput["releaseOnProviderRetry"]; producerRetries?: ProducerAwaitFact[] };
 export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number };
 export type AwaitDelivery = { requestId: string; results: ResultReference[]; complete: boolean };
-export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[] };
+type RetryVisibility = { conversationId: number; input: number; result: ResultReference; runId: number; attempt: number; nextRetryAt: number; revision: string };
+export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[]; retryVisibility?: RetryVisibility[] };
 export const AwaitDoc = defineDoc<AwaitState>({ kind: "agent.awaited-results", version: 1, scope: "session", initial: () => ({ declarations: [], provenance: [] }) });
 export const AWAIT_DECLARATION_LIMIT = 64;
 export const AWAIT_PROVENANCE_LIMIT = 128;
@@ -50,6 +54,76 @@ export function boundedAwaitAnswer(result: ResultReference, answer: string, answ
 }
 
 export function referenceKey(reference: ResultReference): string { return `${reference.sessionId}/${reference.submissionId}`; }
+
+/** Observation time and requester generation tasks do not identify provider retry evidence. */
+export function providerRetryRevision(retry: ProducerRetry): string {
+	return createHash("sha256").update(JSON.stringify([retry.runId, retry.attempt, retry.nextRetryAt, retry.error])).digest("hex");
+}
+export function sameRetryResult(left: ResultReference, right: ResultReference): boolean {
+	return referenceKey(left) === referenceKey(right) && (left.requestId === undefined || right.requestId === undefined || left.requestId === right.requestId);
+}
+export function olderProviderRetry(incoming: Pick<ProducerRetry, "runId" | "attempt" | "nextRetryAt">, prior: Pick<ProducerRetry, "runId" | "attempt" | "nextRetryAt">): boolean {
+	return incoming.runId < prior.runId || (incoming.runId === prior.runId && (incoming.attempt < prior.attempt || (incoming.attempt === prior.attempt && incoming.nextRetryAt < prior.nextRetryAt)));
+}
+
+function retryVisibilityAdditions(claims: RetryVisibility[], conversationId: ConversationId, inputs: readonly number[], retry: ProducerRetry): RetryVisibility[] {
+	const revision = providerRetryRevision(retry);
+	const additions: RetryVisibility[] = [];
+	for (const input of inputs) for (const result of retry.results) {
+		const prior = [...claims, ...additions].find((item) => item.conversationId === conversationId && item.input === input && sameRetryResult(item.result, result));
+		if (prior !== undefined && (prior.revision === revision || olderProviderRetry(retry, prior))) continue;
+		additions.push({ conversationId, input, result: { ...result }, runId: retry.runId, attempt: retry.attempt, nextRetryAt: retry.nextRetryAt, revision });
+	}
+	return additions;
+}
+async function pruneRetryVisibility(tx: Tx, claims: RetryVisibility[]): Promise<void> {
+	const retained: RetryVisibility[] = [];
+	for (const claim of claims) {
+		const live = await tx.doc(LiveDoc, claim.conversationId as ConversationId);
+		const inbox = await tx.doc(InboxDoc, claim.conversationId as ConversationId);
+		if (live.run?.inputs.includes(claim.input as SubmissionId) || inbox.items.some((item) => item.id === claim.input)) retained.push(claim);
+	}
+	claims.splice(0, claims.length, ...retained);
+}
+
+/** Acknowledgments outlive tool rounds but remain scoped to the requester's original submissions. */
+export async function claimProviderRetryVisibility(tx: Tx, conversationId: ConversationId, inputs: readonly number[], retry: ProducerRetry): Promise<boolean> {
+	const state = await tx.doc(AwaitDoc);
+	const claims = state.retryVisibility ?? [];
+	const additions = retryVisibilityAdditions(claims, conversationId, inputs, retry);
+	if (additions.length === 0) return false;
+	if (claims.length + additions.length > 1024) await pruneRetryVisibility(tx, claims);
+	for (const claim of additions) {
+		const index = claims.findIndex((item) => item.conversationId === claim.conversationId && item.input === claim.input && sameRetryResult(item.result, claim.result));
+		if (index < 0) { if (claims.length >= 1024) throw new Error("Provider retry visibility bound is full"); claims.push(claim); }
+		else claims[index] = claim;
+	}
+	state.retryVisibility = claims;
+	return true;
+}
+
+function noticeAwaitMatches(declaration: AwaitDeclaration, conversationId: ConversationId, runId: TaskId | undefined, inputs: readonly number[], notice: ProviderRetryNotice): boolean {
+	if (declaration.conversationId !== conversationId || declaration.runId !== runId || declaration.decision !== "awaiting" || !declaration.inputs.some((input) => inputs.includes(input))) return false;
+	return notice.fact.execution?.results.some((result) => result.sessionId === notice.fact.sessionId && declaration.results.some((expected) => sameRetryResult(expected, result) && !declaration.outcomes.some((outcome) => sameRetryResult(outcome.result, expected)))) ?? false;
+}
+
+/** Exact native awaits own release policy; reports must not independently wake the same evidence. */
+export async function acknowledgeProviderRetry(tx: Tx, conversationId: ConversationId, notice: ProviderRetryNotice): Promise<{ acknowledged: boolean; activeAwait: boolean }> {
+	const retry = notice.fact.execution;
+	if (retry === undefined || notice.fact.unavailable !== undefined) return { acknowledged: true, activeAwait: false };
+	const live = await tx.doc(LiveDoc, conversationId);
+	const inputs = notice.requesterSubmissionId === undefined ? live.run?.inputs ?? [] : [notice.requesterSubmissionId];
+	if (notice.requesterSubmissionId !== undefined && !live.run?.inputs.includes(notice.requesterSubmissionId as SubmissionId)) return { acknowledged: true, activeAwait: false };
+	// Idle admission uses the source's stable native report request ID, not an invented held input.
+	if (inputs.length === 0) return { acknowledged: false, activeAwait: false };
+	const state = await tx.doc(AwaitDoc);
+	for (const declaration of state.declarations) {
+		if (!noticeAwaitMatches(declaration, conversationId, live.run?.taskId, inputs, notice)) continue;
+		const task = await tx.task(declaration.taskId as TaskId);
+		if (task !== undefined && !task.abortRequested && task.state.status !== "terminal") return { acknowledged: false, activeAwait: true };
+	}
+	return { acknowledged: !await claimProviderRetryVisibility(tx, conversationId, inputs, retry), activeAwait: false };
+}
 export function localProducer(storageId: string, reference: ResultReference): ConversationId | undefined {
 	if (reference.sessionId === storageId) return ROOT_CONVERSATION_ID;
 	if (!reference.sessionId.startsWith(`${storageId}:`)) return undefined;
@@ -174,7 +248,7 @@ export async function declareAwait(tx: Tx, storageId: string, owner: { conversat
 	if (state.declarations.length >= AWAIT_DECLARATION_LIMIT) throw new Error("The native await declaration bound is full");
 	const self = results.find((reference) => localProducer(storageId, reference) === owner.conversationId);
 	if (self !== undefined) throw new Error(`Await refuses self, current-run, and queued-self results: ${self.sessionId}, submission ${self.submissionId}${self.requestId === undefined ? "" : `, request ${self.requestId}`}`);
-	let declaration: AwaitDeclaration = { ...owner, runId: live.run.taskId, cohort: (live.tools ?? []).flatMap((slot) => slot.taskId === undefined ? [] : [slot.taskId]), inputs: [...live.run.inputs], results: results.map((reference) => ({ ...reference })), outcomes: [], decision: "awaiting", ...(releaseOnProviderRetry === undefined ? {} : { releaseOnProviderRetry: { ...releaseOnProviderRetry } }) };
+	let declaration: AwaitDeclaration = { ...owner, runId: live.run.taskId, cohort: (live.tools ?? []).flatMap((slot) => slot.taskId === undefined ? [] : [slot.taskId]), inputs: [...live.run.inputs], results: results.map((reference) => ({ ...reference })), outcomes: [], decision: "awaiting", releaseOnProviderRetry: { minAttempt: releaseOnProviderRetry?.minAttempt ?? 1 } };
 	const released = state.declarations.find((item) => item.runId === declaration.runId && item.cohort.join(",") === declaration.cohort.join(",") && item.decision !== "awaiting" && item.decision !== "settled");
 	if (released !== undefined) { declaration.decision = "released"; declaration.releaseReason = released.releaseReason ?? "parallel await returned control"; if (released.producerRetries !== undefined) declaration.producerRetries = JSON.parse(JSON.stringify(released.producerRetries)) as ProducerAwaitFact[]; }
 	await rejectCycle(tx, state, storageId, declaration);

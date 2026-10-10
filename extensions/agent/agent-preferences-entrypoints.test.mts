@@ -312,6 +312,8 @@ it("advertises preset-aware process interfaces without changing message admissio
 	assert.equal(MANAGER_CONTRACT, "manager/2.0.0");
 	assert.match(CONTROL_BINDING_CONTRACT, /^native-controls\/2\.0\.0;durable=/u);
 	for (const method of ["spawn", "resolve-agent", "place"]) assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/2.0.0`, response: `${method}/2.0.0` });
-	assert.deepEqual(HOST_CONTRACT.operations.configure, { request: "configure/1.2.0", response: "configure/1.2.0" });
-	assert.equal(HOST_CONTRACT.operations["task-submit"].request, "task-submit/1.0.0");
+	assert.deepEqual(HOST_CONTRACT.operations.configure, { request: "configure/1.3.0", response: "configure/1.3.0" });
+	assert.deepEqual(HOST_CONTRACT.operations["task-submit"], { request: "task-submit/1.0.0", response: "task-submit/1.2.0" });
+	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.2.0", response: "submit/1.1.0" });
+	assert.deepEqual(HOST_CONTRACT.operations.receipts, { request: "receipts/1.1.0", response: "receipts/1.2.0", durable: HOST_CONTRACT.upstream.durable });
 });

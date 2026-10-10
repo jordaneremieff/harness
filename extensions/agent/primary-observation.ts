@@ -167,6 +167,12 @@ export function safeFactText(value: string, maxBytes = 512): { text: string; tru
 	const text = safe(value, result, maxBytes);
 	return { text: text ?? "[text unavailable: scan budget exceeded]", truncated: text === undefined || result.coverage.reasons.includes("text-output-budget") };
 }
+/** Bounded provider evidence with explicit credential and size omissions. */
+export function safeProviderError(value: string, maxBytes = 4096): { text: string; redacted: boolean; truncated: boolean } {
+	const result: TextObservation = { coverage: { complete: true, reasons: [], bytesRead: 0, linesVisited: 0, parentVisits: 0, textScanBytes: 0, omissions: { credentials: 0, fields: 0, text: 0 } } };
+	const text = safe(value, result, maxBytes);
+	return { text: text ?? "[text unavailable: scan budget exceeded]", redacted: result.coverage.omissions.credentials > 0, truncated: text === undefined || result.coverage.reasons.includes("text-output-budget") };
+}
 function safe(value: unknown, result: TextObservation, maxBytes = 512): string | undefined {
 	if (typeof value !== "string") return undefined;
 	// Oversized fields are omitted intact so a credential is never cut before recognition.

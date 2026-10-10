@@ -14,6 +14,10 @@
  * writer claim.
  */
 import { randomUUID } from "node:crypto";
+import { ProviderModels } from "./provider-models.ts";
+import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-notices.ts";
+import type { ProviderRetryNotice } from "./provider-block.ts";
+import { initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
 import { canonicalIdentity } from "./identity.ts";
 import { Value } from "typebox/value";
 import { StrandedInputRecovery } from "./stranded-inputs.ts";
@@ -28,7 +32,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
-import { Harness, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
+import { Harness, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
@@ -197,6 +201,9 @@ export class DurableHost {
 	private readonly commands: ReadonlyMap<string, DurableHostCommand>;
 	private readonly contributionHost: DurableContributionHost | undefined;
 	private readonly models: Models;
+	private providerModels?: ProviderModels;
+	private providerNotices?: ProviderRetryNotices;
+	private readonly storage: Storage;
 	private readonly storagePath: string;
 	private readonly lifecycle = new AbortController();
 	private closed = false;
@@ -213,8 +220,9 @@ export class DurableHost {
 	private resumeWork: Promise<void> | undefined;
 	private recoveryError: ((error: unknown) => void) | undefined;
 
-	private constructor(harness: Harness, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, settings: HarnessOptions["settings"], now: () => number) {
+	private constructor(harness: Harness, storage: Storage, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, settings: HarnessOptions["settings"], now: () => number) {
 		this.harness = harness;
+		this.storage = storage;
 		this.storageId = storageId;
 		this.rootConversation = root;
 		this.models = models;
@@ -280,16 +288,20 @@ export class DurableHost {
 		const storage = await openNodeSqliteStorage(options.storagePath);
 		const now = options.now ?? Date.now;
 		let harness: Harness;
+		const providerModels = new ProviderModels(options.models, () => harness, options.storageId, now);
 		try {
 			harness = await Harness.open(
 				storage,
 				{
-					models: options.models,
+					models: providerModels.models,
 					registry: options.registry,
 					...(options.settings === undefined ? {} : { settings: options.settings }),
 					...(options.env === undefined ? {} : { env: options.env }),
 					now,
-					conversationCreated: (tx, record) => initializeProfile(tx, record.id, options.storageId),
+					conversationCreated: async (tx, record) => {
+						await initializeProfile(tx, record.id, options.storageId);
+						await initializeProviderControl(tx, record.id);
+					},
 					...(options.onReport === undefined ? {} : { onReport: options.onReport }),
 				},
 				context,
@@ -313,7 +325,12 @@ export class DurableHost {
 				},
 			});
 			await reconcileProfiles(harness, options.storageId, context, options.onReport);
-			const host = new DurableHost(harness, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, options.settings, now);
+			await reconcileProviderControls(harness, context);
+			providerModels.bind();
+			const host = new DurableHost(harness, storage, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, options.settings, now);
+			host.providerModels = providerModels;
+			host.providerNotices = new ProviderRetryNotices(harness, options.storageId, options.settings, (error) => { host.deliveryError = `Provider retry notice failed: ${error instanceof Error ? error.message : String(error)}`; options.onReport?.(error); }, now);
+			await host.providerNotices.initialize();
 			host.recoveryError = (error) => {
 				host.deliveryError = `Queued-input recovery failed: ${error instanceof Error ? error.message : String(error)}`;
 				options.onReport?.(error);
@@ -481,6 +498,7 @@ export class DurableHost {
 	private dashboardOptions(params: RequestParams | undefined): DurableDashboardOptions {
 		const cwd = requestString(params, "cwd");
 		return {
+			storage: this.storage,
 			owner: "here",
 			live: true,
 			...(this.retryMaxAttempts === undefined ? {} : { retryMaxAttempts: this.retryMaxAttempts }),
@@ -508,12 +526,15 @@ export class DurableHost {
 		const conversation = await this.target(params, context);
 		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
 		const provenance = params?.provenance as Omit<InputProvenance, "conversationId" | "requestId" | "submissionId"> | undefined;
+		const providerRetry = params?.providerRetry;
+		if (providerRetry !== undefined && (!Value.Check(ProviderRetryNoticeSchema, providerRetry) || providerRetry.fact.execution === undefined)) throw new TypeError("Invalid provider retry notice evidence");
 		const submitted = await submitConversation(
 			conversation,
 			{
 				message: messageFrom(params?.message),
 				requestId: requestRequiredString(params, "requestId"),
 				...(provenance === undefined ? {} : { provenance }),
+				...(providerRetry === undefined ? {} : { providerRetry: providerRetry as ProviderRetryNotice }),
 				...optionalParam("ownerId", requestString(params, "ownerId")),
 				...optionalParam("whenBusy", this.busyMode(params)),
 				...optionalParam("operationId", requestString(params, "operationId")),
@@ -912,6 +933,8 @@ export class DurableHost {
 		this.closed = true;
 		this.lifecycle.abort(new DurableHostClosedError());
 		await this.recovery?.close();
+		await this.providerNotices?.close();
+		this.providerModels?.close();
 		await this.harness.close(BACKGROUND_CONTEXT);
 	}
 }

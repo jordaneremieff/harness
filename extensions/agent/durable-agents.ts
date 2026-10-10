@@ -19,6 +19,7 @@
  */
 
 import { realpathSync } from "node:fs";
+import { readInputProviderBlock, providerBlockText, captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
@@ -769,7 +770,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	): Promise<ReporterState> => {
 		const next = (report?: string): ReporterState => ({ phase: "report", report });
 		if (settled.status === "unanswered") {
-			return next(`[agent ${name} stopped without an answer: ${settled.reason}]`);
+			const block = await readInputProviderBlock(tx, settled.id);
+			return next(`[agent ${name} stopped without an answer: ${settled.reason}]${block === undefined ? "" : `\n${providerBlockText(block)}`}`);
 		}
 		if (settled.type !== "input") return next(`[agent ${name} failed: unexpected settlement]`);
 		const registry = await tx.doc(Children, ownerConversationId);
@@ -794,7 +796,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (conversation === undefined) throw new Error("The result producer conversation is missing");
 		const request = { requestId: `agent-deliver:${reporterTaskId}`, requester: identity(api.conversationId), replyTo: identity(input.reportTo ?? api.conversationId), origin: "model" as const };
 		await reconcileProfile(api, input.conversationId, context, report, host.storageId);
+		let recoveryOf: string | undefined;
 		await api.commit(async (tx) => {
+			recoveryOf = await captureProviderRecovery(tx, input.conversationId, request.requestId);
 			const admission = await tx.doc(LocalAdmission, reporterTaskId);
 			await recordRequestContext(tx, input.conversationId, request, "retained");
 			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
@@ -808,7 +812,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			await api.commit(async (tx) => { await forgetFailedAdmission(tx, input.conversationId, request.requestId); return undefined; }, BACKGROUND_CONTEXT);
 			throw error;
 		});
-		await api.commit(async (tx) => { await reconcileInputRelease(tx, input.conversationId, request.requestId); return undefined; }, context);
+		await api.commit(async (tx) => { await reconcileInputRelease(tx, input.conversationId, request.requestId); await linkProviderRecovery(tx, submission.id, recoveryOf); return undefined; }, context);
 		const status = await submission.status(context);
 		if (status.id !== submission.id || status.requestId !== request.requestId || status.conversationId !== input.conversationId) throw new Error("Native admission identifiers disagree");
 		return { submission, result: admittedResult(identity(input.conversationId), { submissionId: submission.id, conversationId: status.conversationId, requestId: status.requestId }, request.requestId) };
@@ -1701,7 +1705,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const awaitTool = durable.defineTool({
 		name: "agent_await",
-		description: "Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. Opt-in releaseOnProviderRetry returns partial outcomes, unresolved references and observed retry facts for an exact producer run; minAttempt defaults to 1 only when opted in. Explicit input or release also returns control on this same request. Release does not stop producers. Abort stops the original request, not its producers.",
+		description: "Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. The first exact producer retry releases by default with partial outcomes, unresolved references and retry facts; releaseOnProviderRetry.minAttempt deliberately selects a later attempt. Unchanged retry evidence does not repeatedly release the same held request. Explicit input or release also returns control on this same request. Release does not stop producers. Abort stops the original request, not its producers.",
 		parameters: AwaitParams,
 		replay: "safe",
 		execute: async (args, api, context) => {

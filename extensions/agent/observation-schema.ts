@@ -21,6 +21,7 @@ import { OrdinaryPrimaryObservationSchema } from "./primary-observation.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
 import { CreatedAgentsSchema } from "./agent-lineage.ts";
 import { AwaitFactSchema } from "./await-facts.ts";
+import { ProviderBlockFactSchema } from "./provider-block.ts";
 
 const object = <T extends Record<string, TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const string = Type.String();
@@ -140,6 +141,7 @@ const timerStatusRow = object({
 
 /** One conversation's observation status, as returned by every status variant. */
 export const ConversationStatusSchema = object({
+	providerBlock: Type.Optional(ProviderBlockFactSchema),
 	conversationId: id,
 	identity: string,
 	name: Type.Optional(string),
@@ -409,6 +411,8 @@ export const ActivityOutputSchema = object({
 });
 
 export const ResultOutputSchema = object({
+	providerBlock: Type.Optional(ProviderBlockFactSchema),
+	recoveryOf: Type.Optional(string),
 	view: literal("result"),
 	sessionId: string,
 	conversationId: id,
