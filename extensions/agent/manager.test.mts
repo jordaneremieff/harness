@@ -2,7 +2,7 @@ import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, it } from "node:test";
@@ -10,7 +10,7 @@ import { after, it } from "node:test";
 const preferenceOverride = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;
 after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
-import { hostMetadata, type CatalogRecord } from "./catalog.ts";
+import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { dashboardText } from "./dashboard-roster.ts";
 import { connectHost, type HostConnection } from "./host-client.ts";
 import { runHost } from "./host-process.ts";
@@ -640,6 +640,118 @@ it("refreshes the durable footer from published views at startup and after a hos
 		await primary.statuses.waitFor((items) => items.includes("agents: 0/1 active"));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
 	} finally { manager.close(); }
+});
+
+for (const scope of ["creation", "sent-work"] as const) it(`refreshes ${scope} footer counts from external catalog publications without a dashboard or host connection`, { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async () => { throw new Error("Footer observation must not acquire a host"); },
+		connect: async () => { throw new Error("Footer observation must not connect to a host"); },
+		observe: async () => { throw new Error("Footer observation must not read native state"); },
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root, scope === "creation" ? "primary" : "other-primary");
+	writeClaim(record, claimFor(record, process.pid));
+	const unrelated = createRecord(manager, root, "unrelated-primary");
+	writeClaim(unrelated, claimFor(unrelated, process.pid));
+	const writer = new AgentCatalog(root);
+	const publish = (state: "idle" | "working") => writer.updateView(record.storageId, {
+		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
+		rows: [
+			{ id: record.storageId, storageId: record.storageId, cwd: root, owner: "here", state: "idle", modifiedAt: 1, cost: 0.25, partial: false },
+			{ id: `${record.storageId}:2`, storageId: record.storageId, cwd: root, owner: "here", state, modifiedAt: 1, cost: 0.5, partial: false },
+		],
+	});
+	writer.updateView(unrelated.storageId, {
+		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
+		rows: [{ id: unrelated.storageId, storageId: unrelated.storageId, cwd: root, owner: "here", state: "working", modifiedAt: 1, cost: 50, partial: false }],
+	});
+	publish("idle");
+	const primary = fakePrimary(new AbortController().signal);
+	await manager.registerPrimary("primary", { ...primary.client, ...(scope === "sent-work" ? { sentWork: new Set([record.storageId]) } : {}) });
+	const idle = scope === "creation" ? "agents: 0/2 active · ~$0.75" : "agents: 0/1 active";
+	const working = scope === "creation" ? "agents: 1/2 active · ~$0.75" : "agents: 1/2 active";
+	assert.equal(primary.statuses.at(-1), idle);
+	for (const [state, expected] of [["working", working], ["idle", idle]] as const) {
+		const before = primary.statuses.length;
+		publish(state);
+		await primary.statuses.waitFor((items) => items.length > before && items.at(-1) === expected);
+	}
+	assert.deepEqual(manager.connectedStorageIds(), []);
+});
+
+it("shares catalog observation across primary reload, replacement, and roster teardown", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root, "primary");
+	writeClaim(record, claimFor(record, process.pid));
+	const writer = new AgentCatalog(root);
+	const publish = (state: "idle" | "working") => writer.updateView(record.storageId, {
+		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
+		rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, owner: "here", state, modifiedAt: 1, cost: 0, partial: false }],
+	});
+	publish("idle");
+	const registrations = () => readdirSync(join(manager.catalog.root, ".observers"));
+	const oldAbort = new AbortController();
+	const old = fakePrimary(oldAbort.signal);
+	await manager.registerPrimary("primary", old.client);
+	assert.equal(registrations().length, 1);
+	const off = manager.subscribeRoster(() => {});
+	off();
+	assert.equal(registrations().length, 1, "closing the dashboard keeps primary observation");
+	const replacementAbort = new AbortController();
+	const replacement = fakePrimary(replacementAbort.signal);
+	await manager.registerPrimary("primary", replacement.client);
+	const oldCount = old.statuses.length;
+	oldAbort.abort();
+	assert.equal(registrations().length, 1, "a replaced primary cannot stop its replacement's observer");
+	publish("working");
+	await replacement.statuses.waitFor((items) => items.at(-1) === "agents: 1/1 active");
+	assert.equal(old.statuses.length, oldCount, "the replaced callback receives no further status");
+	replacementAbort.abort();
+	assert.equal(replacement.statuses.at(-1), undefined);
+	assert.deepEqual(registrations(), [], "the last primary releases observation without a dashboard");
+	const reloadAbort = new AbortController();
+	const reload = fakePrimary(reloadAbort.signal);
+	await manager.registerPrimary("primary", reload.client);
+	assert.equal(reload.statuses.at(-1), "agents: 1/1 active", "reload reads the current published state");
+	assert.equal(registrations().length, 1);
+	const before = reload.statuses.length;
+	publish("idle");
+	await reload.statuses.waitFor((items) => items.length > before && items.at(-1) === "agents: 0/1 active");
+	const roster = eventLog<void>();
+	const offRoster = manager.subscribeRoster(() => roster.push(undefined));
+	reloadAbort.abort();
+	assert.equal(registrations().length, 1, "an open dashboard retains observation after the last primary stops");
+	const stoppedCount = reload.statuses.length;
+	const notices = roster.length;
+	publish("working");
+	await roster.waitForCount(notices + 1);
+	assert.equal(reload.statuses.length, stoppedCount, "an aborted primary receives no late publication");
+	offRoster();
+	assert.deepEqual(registrations(), []);
+	manager.close();
+	offRoster();
+	assert.deepEqual(registrations(), [], "repeated teardown leaves no observation registration");
+});
+
+it("clears a catalog observation startup failure after a successful subscription", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory }));
+	t.after(() => manager.close());
+	createRecord(manager, root, "primary");
+	const observers = join(manager.catalog.root, ".observers");
+	writeFileSync(observers, "blocked");
+	await manager.registerPrimary("primary", fakePrimary(new AbortController().signal).client);
+	const failures = async () => (await manager.status() as { failures: Array<{ storageId: string; error: string }> }).failures;
+	assert.ok((await failures()).some((failure) => failure.storageId === "catalog-observation" && failure.error.includes("Catalog updates are unavailable")));
+	rmSync(observers);
+	const off = manager.subscribeRoster(() => {});
+	t.after(off);
+	assert.equal(readdirSync(observers).length, 1, "a later consumer retries subscription after the blocked path clears");
+	assert.equal((await failures()).some((failure) => failure.storageId === "catalog-observation"), false, "successful observation clears the stale failure without releasing its primary");
 });
 
 it("resolves ordinary presets once for creation and preserves replay after file edits", async (t) => {

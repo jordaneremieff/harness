@@ -763,7 +763,8 @@ Exact handle resolution does not depend on roster or list completeness.
 Host notifications coalesce roster refreshes. A bounded metadata reconciliation
 while the dashboard is visible discovers hosts created elsewhere and dead
 claims. Neither path repeatedly reads transcripts. Streaming paints coalesce;
-local input paints immediately. Closing releases observers and UI timers.
+local input paints immediately. Closing the dashboard releases its listeners and
+UI timers. A registered primary keeps the shared catalog observer active.
 A failed refresh keeps the last good roster. A transient failure stays quiet
 when rows remain available; repeated failures or an empty roster show a notice
 on the roster’s last line. A successful refresh clears that notice.
@@ -806,7 +807,11 @@ that every request settled. No catalog schema or host protocol carries this scop
 The status says `agents: <working>/<total> active · ~$<cost>` and disappears when
 no session-scoped rows are found. The numerator counts only `working` rows;
 the denominator includes every scoped row. Each registered primary receives its
-own figures. The dashboard reuses its scanned roster page for these figures
+own figures. Catalog publication notices refresh these figures even when the
+dashboard is closed and the primary has no connection to the publishing host.
+The primary and dashboard share one catalog observer; it closes after the last
+primary and dashboard listener leave. This observation starts no host and adds no
+polling timer. The dashboard reuses its scanned roster page for these figures
 without another catalog scan or native profile read. Cost includes only creation
 lineage. Sent-work-only targets and their delegates contribute no cost because
 Durable lifetime usage is not attributable to this session's request. Repeated

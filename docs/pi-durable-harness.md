@@ -1158,9 +1158,13 @@ task and changes no global model defaults.
 Pi Durable retains conversation usage; the agent host publishes bounded native
 observations for the dashboard and footer. Neither surface reconstructs usage
 from ordinary JSONL or writes ordinary footer checkpoints. The footer applies
-the current primary's creating-owner scope, not the whole discovered roster.
-See [roster and coverage](../extensions/agent/README.md#roster-and-coverage)
-for session figures, cost markers, clearing, and refresh behavior.
+the current primary's creation lineage and retained sent-work scope, not the
+whole discovered roster. Cost remains limited to creation lineage. See
+[roster and coverage](../extensions/agent/README.md#roster-and-coverage) for
+session figures, activity scope, cost markers, clearing, and refresh behavior.
+The count and cost scopes were source-checked 2026-10-10 against
+`extensions/agent/{footer,session-work,manager}.ts`. This scope check does not
+refresh the surrounding host-version claims.
 
 Catalog-backed discovery is bounded rather than a frozen inventory. Continuations
 resume after a visited filename; ordinary catalog updates do not invalidate them.

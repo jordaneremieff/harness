@@ -183,22 +183,28 @@ export class AgentManager {
 	private observeToolCardRows(page: AgentConversationPage): void { this.toolCardRows = page.rows; }
 	private readonly rosterListeners = new Set<() => void>();
 	private stopCatalogObservation?: () => void;
+	private observeCatalogChanges(): void {
+		if (this.stopCatalogObservation) return;
+		const changed = () => { void this.refreshFooter().catch((error) => this.failures.set("footer", errorText(error))); };
+		this.stopCatalogObservation = subscribeCatalogChanges(this.catalog.root, changed, (error) => {
+			this.failures.set("catalog-observation", `Catalog updates are unavailable: ${error.message}. Restart this Pi process.`);
+			changed();
+		});
+		this.failures.delete("catalog-observation");
+	}
+	private releaseCatalogObservation(): void {
+		if (this.primaries.size || this.rosterListeners.size) return;
+		this.stopCatalogObservation?.();
+		this.stopCatalogObservation = undefined;
+		this.failures.delete("catalog-observation");
+	}
 	subscribeRoster(listener: () => void): () => void {
 		if (this.shuttingDown) throw new Error("Agent manager is closed");
-		if (!this.stopCatalogObservation) {
-			this.stopCatalogObservation = subscribeCatalogChanges(this.catalog.root, () => this.rosterChanged(), (error) => {
-				this.failures.set("catalog-observation", `Catalog updates are unavailable: ${error.message}. Restart this Pi process.`);
-				this.rosterChanged();
-			});
-		}
+		this.observeCatalogChanges();
 		this.rosterListeners.add(listener);
 		return () => {
 			this.rosterListeners.delete(listener);
-			if (this.rosterListeners.size === 0) {
-				this.stopCatalogObservation?.();
-				this.stopCatalogObservation = undefined;
-				this.failures.delete("catalog-observation");
-			}
+			this.releaseCatalogObservation();
 		};
 	}
 	private rosterChanged(): void { for (const listener of this.rosterListeners) listener(); }
@@ -815,7 +821,10 @@ export class AgentManager {
 			});
 			this.closingPrimaries.set(ownerId, closing);
 			if (!this.primaries.size) this.releaseClients();
+			this.releaseCatalogObservation();
 		}, { once: true });
+		try { this.observeCatalogChanges(); }
+		catch (error) { this.failures.set("catalog-observation", `Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`); }
 		this.rosterChanged();
 		await this.refreshFooter();
 		const due: CatalogRecord[] = [];
