@@ -57,6 +57,7 @@ This heuristic does not require a new registry, a fixed polling interval, contac
 ## Relationship to Pillars
 
 - **[Phantom Stewardship](heuristic-phantom-stewardship.md):** handles encountered dirty state and uncertain return continuity; discovery here can be needed before any residue appears.
+- **[Live Substrate Exposure](heuristic-live-substrate-exposure.md):** isolates changes to a substrate that processes load at launch; discovery here finds which efforts depend on those processes.
 - **[Coordination Phantom](heuristic-coordination-phantom.md):** tests the parties required by an imported convention; this heuristic starts from a consequential shared action whose relevant activity is unknown.
 - **[Governing Context](heuristic-governing-context.md):** preserves the frame needed when discovered efforts become interdependent.
 - **[System Autonomy](principle-system-autonomy.md):** places mechanical discovery and freshness below the autonomy boundary while leaving relevance and coordination choices to agent judgment.

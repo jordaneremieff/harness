@@ -41,6 +41,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Harness Over Architecture](heuristic-harness-over-architecture.md) | Infrastructure lacks an observed incident, measured omission, or binding requirement → start at the lowest sufficient harness layer. |
 | [Governing Context](heuristic-governing-context.md) | Understanding is decomposed or independent efforts become interdependent → preserve the frame needed to evaluate outputs and dependent decisions. |
 | [Concurrent Work Discovery](heuristic-concurrent-work-discovery.md) | A consequential action affects a shared substrate while relevant concurrent activity is unknown → use bounded discovery before acting. |
+| [Live Substrate Exposure](heuristic-live-substrate-exposure.md) | An in-place edit targets a substrate that processes load at launch → change an isolated copy and switch only when old and new versions cannot meet incompatibly. |
 | [Comprehension Checkpoint](heuristic-comprehension-checkpoint.md) | Reading expands without synthesis → stop, articulate the model, and target remaining gaps. |
 | [Verification Reach](heuristic-verification-reach.md) | Tool output is about to support a claim → verify that the evidence reached the claim's actual subject. |
 | [External Verification](heuristic-external-verification.md) | A claim concerns an external dependency's behavior → verify externally, qualify, or omit. |

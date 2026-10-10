@@ -160,6 +160,7 @@ A recorded application that contradicts a pillar's stated prediction is evidence
 2. **Survival Selection** identifies which structures remain load-bearing after transition.
 3. **Governing Context** preserves the frame needed by later workers.
 4. **Failure Cost Calibration** takes a cheap restore point before risky changes to state that cannot be regenerated.
+5. **Live Substrate Exposure** changes an isolated copy of a substrate that processes load at launch, then switches only when old and new versions cannot meet incompatibly.
 
 ## Mutation Rules
 
