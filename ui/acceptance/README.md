@@ -5,6 +5,8 @@ driver and a browser smoke command. It uses Node's built-in WebSocket and starts
 Brave with a fresh temporary profile. Readiness comes from the DevTools URL on
 stderr, not an HTTP probe or delay. Shutdown removes the profile after the owned
 browser exits. Browser profiles do not share launch cookies.
+Fresh profiles must not touch the macOS keychain; the launcher always uses
+`--use-mock-keychain` and `--password-store=basic`.
 
 Run the colocated deterministic tests:
 

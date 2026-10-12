@@ -232,15 +232,20 @@ export class Page {
   }
 }
 
+export function braveLaunchArgs(profile: string, port: number): string[] {
+  return [
+    "--headless=new", "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check",
+    "--use-mock-keychain", "--password-store=basic", "about:blank",
+  ];
+}
+
 export type Browser = { cdp: CDP; page: Page; version: Json; profile: string; close(): Promise<void> };
 export async function launchBrave(options: { executable?: string; port?: number; timeoutMs?: number } = {}): Promise<Browser> {
   const port = options.port ?? 0;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid debugging port");
   const profile = await mkdtemp(join(tmpdir(), "brave-cdp-"));
-  const child = spawn(options.executable ?? "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", [
-    "--headless=new", "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "about:blank",
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+  const child = spawn(options.executable ?? "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", braveLaunchArgs(profile, port), { stdio: ["ignore", "ignore", "pipe"] });
   const exited = new Promise<void>((resolve) => { child.once("exit", () => resolve()); child.once("error", () => resolve()); });
   let cdp: CDP | undefined;
   let closePromise: Promise<void> | undefined;

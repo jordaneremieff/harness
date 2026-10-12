@@ -6,7 +6,17 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { test } from "node:test";
-import { CDP, Page, awaitDevTools, type Socket, type SocketEvent } from "./cdp.mts";
+import { CDP, Page, awaitDevTools, braveLaunchArgs, type Socket, type SocketEvent } from "./cdp.mts";
+
+test("fresh Brave profiles isolate password storage from the macOS keychain", () => {
+  for (const port of [0, 4319]) {
+    assert.deepEqual(braveLaunchArgs("profile with spaces", port), [
+      "--headless=new", "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`,
+      "--user-data-dir=profile with spaces", "--no-first-run", "--no-default-browser-check",
+      "--use-mock-keychain", "--password-store=basic", "about:blank",
+    ]);
+  }
+});
 
 class MockSocket implements Socket {
   readyState = 1;
