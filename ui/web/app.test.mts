@@ -368,7 +368,7 @@ async function settle(): Promise<void> { for (let round = 0; round < 4; round++)
 function controls(composer: Composer): (key: string) => HostNode {
   const editor = composer.editor as unknown as HostNode, form = editor.closest('form'); assert.ok(form);
   const root = form.closest('.conversation');
-  const selectors: Record<string, string> = {queued: '.queued-list', 'start-command': '.agent-start-help details pre', 'start-disclosure': '.agent-start-help details'};
+  const selectors: Record<string, string> = {queued: '.queued-list'};
   return key => {
     if (key === 'editor') return editor;
     if (key === 'composer') return form;
@@ -1396,7 +1396,7 @@ test('a connected agent without input retains a draft without a false disconnect
   const row = agentFixture('no-input', {availability: 'live', capabilities: {input: false}});
   await arrive({workspace: {id: 'w', revision: 1, selectedTarget: {kind: 'agent', identity: row.identity}, panelVisible: true}, primaries: [], roster: [row], targets: [targetFixture('no-input', {kind: 'agent', identity: row.identity})]});
   assert.match(hostDocument.title, /Connected$/); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('send').disabled, true);
-  assert.equal(agentControl('send').attributes.get('aria-description'), 'Messages are unavailable for this agent.'); assert.doesNotMatch(agentControl('empty').textContent, /not connected/);
+  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('agent-state-line').id); assert.match(agentControl('agent-state-line').textContent, /Messages are read-only/); assert.doesNotMatch(agentControl('agent-state-line').textContent, /not connected/);
 });
 
 test('the sidebar avoids a duplicate Primary destination and retains its closed-tab return action', async () => {
@@ -1413,7 +1413,7 @@ test('stored connection checks keep both drafts and use only exact-target prepar
   const primaryTarget = {kind: 'primary' as const, key: 'p', epoch: 2};
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target, panelVisible: true}, primaries: [primaryFixture({epoch: 2})], roster: [agentFixture(target.identity, {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('check-primary', primaryTarget, {draft: {revision: 7, text: 'Primary keep', mode: 'prompt', persisted: true}}), targetFixture('check-agent', target, {draft: {revision: 7, text: 'Agent keep', mode: 'followUp', persisted: true}})]});
   const primaryEditor = primaryControl('editor'); const agentEditor = agentControl('editor');
-  assert.equal(agentControl('start-help').hidden, false); assert.match(agentControl('start-command').textContent, /\/agent attach stored-check/);
+  assert.equal(agentControl('agent-state').hidden, false); agentControl('start-in-pi').click(); assert.match(byId('modal-body').textContent, /agent attach stored-check/); byId('modal-close').click();
   assert.equal(byId('agent-usage-details').hidden, false); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('send').disabled, true);
   assert.match(byId('agent-usage').textContent, /Cache usage is not reported/); assert.equal(byId('agent-usage-summary').textContent, '');
   const start = transportLog.length; await app.checkAgentConnection('w', target.identity); await settle();
@@ -1442,12 +1442,12 @@ test('old Check settlement repaints current stored controls without old-target s
   const before = transportLog.length; const pending = app.checkAgentConnection('w', oldTarget.identity); assert.ok(complete);
   const primaryEditor = primaryControl('editor'); const oldEditor = agentControl('editor');
   await app.selectAgent(newRow); await settle(); const agentEditor = agentControl('editor'); assert.notEqual(agentEditor, oldEditor); primaryEditor.setSelectionRange(2, 8); agentEditor.setSelectionRange(1, 6); agentEditor.focus();
-  assert.equal(agentControl('start').disabled, true); assert.equal(agentControl('connect').disabled, true);
-  const status = agentControl('connect-status').textContent; const afterNavigation = transportLog.length;
+  assert.equal(agentControl('start').disabled, true); assert.equal(agentControl('history-retry').disabled, true);
+  const status = agentControl('agent-state-line').textContent; const afterNavigation = transportLog.length;
   complete(Response.json({ok: true, data: {targetState: targetFixture('old-late', oldTarget), availability: 'live', capabilities: {input: true}}}));
   await pending; await settle();
-  assert.equal(agentControl('start').disabled, false); assert.equal(agentControl('connect').disabled, false);
-  assert.deepEqual(app.state.workspace?.selectedTarget, newTarget); assert.equal(agentControl('connect-status').textContent, status);
+  assert.equal(agentControl('start').disabled, false); assert.equal(agentControl('history-retry').disabled, false);
+  assert.deepEqual(app.state.workspace?.selectedTarget, newTarget); assert.equal(agentControl('agent-state-line').textContent, status);
   assert.equal(primaryControl('editor'), primaryEditor); assert.equal(agentControl('editor'), agentEditor);
   assert.equal(primaryEditor.value, 'Primary exact draft'); assert.equal(agentEditor.value, 'New exact draft'); assert.equal(oldEditor.value, 'Old exact draft');
   assert.deepEqual([primaryEditor.selectionStart, primaryEditor.selectionEnd], [2, 8]); assert.deepEqual([agentEditor.selectionStart, agentEditor.selectionEnd], [1, 6]);
@@ -1476,7 +1476,7 @@ test('stored Start is explicit, uses fresh keys and retains both drafts, caret, 
   await app.startStoredAgent('w', identity); await settle();
   const first = transportLog.slice(before).find(call => call.path.endsWith('/start')); assert.ok(first);
   assert.equal(first.path, '/api/agents/explicit-start/start'); assert.equal(first.workspace, 'w'); assert.deepEqual(first.body, {});
-  assert.match(first.key ?? '', /^[0-9a-f-]{36}$/); assert.equal(agentControl('start-help').hidden, true); assert.equal(agentControl('send').disabled, false);
+  assert.match(first.key ?? '', /^[0-9a-f-]{36}$/); assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('send').disabled, false);
   assert.equal(primaryEditor.value, 'Primary launch keep'); assert.equal(agentEditor.value, 'Agent launch keep');
   assert.equal(primaryControl('editor'), primaryEditor); assert.equal(agentControl('editor'), agentEditor);
   assert.deepEqual([primaryEditor.selectionStart, primaryEditor.selectionEnd], [2, 7]); assert.deepEqual([agentEditor.selectionStart, agentEditor.selectionEnd], [3, 8]);
@@ -1493,18 +1493,21 @@ test('uncertain stored Start remains attach-only across navigation and keeps the
   const editor = agentControl('editor'); editor.focus(); editor.setSelectionRange(2, 7); const before = transportLog.length;
   startPreparation = async () => Response.json({ok: false, error: {code: 'not_ready', message: 'Readiness was not confirmed.', retry: 'manual'}});
   await app.startStoredAgent('w', identity); await settle();
-  assert.match(agentControl('connect-status').textContent, /^Start not confirmed\./); assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('start-disclosure').hidden, true);
-  assert.equal(agentControl('connect').disabled, false); assert.equal(editor.value, 'Agent launch keep'); assert.equal(editor.disabled, false);
-  assert.equal(agentControl('send').attributes.get('aria-description'), 'Use Check connection before you send a message.');
+  assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed\./); assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('start-in-pi').hidden, true);
+  assert.equal(agentControl('history-retry').disabled, false); assert.equal(editor.value, 'Agent launch keep'); assert.equal(editor.disabled, false);
+  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('agent-state-line').id);
   assert.equal(hostDocument.activeElement, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
   await app.startStoredAgent('w', identity); await storedLaunchFixture('other-start'); await storedLaunchFixture(identity); await app.startStoredAgent('w', identity);
-  assert.equal(agentControl('start').hidden, true); assert.match(agentControl('connect-status').textContent, /^Start not confirmed\./);
-  assert.equal(agentControl('send').attributes.get('aria-description'), 'Use Check connection before you send a message.');
+  assert.equal(agentControl('start').hidden, true); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed\./);
+  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('agent-state-line').id);
   const starts = transportLog.slice(before).filter(call => call.path.endsWith('/start')); assert.equal(starts.length, 1);
+  const retryCalls = transportLog.length; agentControl('history-retry').click(); await settle();
+  assert.deepEqual(transportLog.slice(retryCalls).map(call => [call.method, call.path]), [['GET', '/api/agents/uncertain-start/history']]);
+  assert.equal(agentControl('start').hidden, true); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed/);
   confirmLaunch(identity); await app.checkAgentConnection('w', identity); await settle();
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1);
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/targets')).length, 1);
-  assert.equal(agentControl('send').disabled, false); assert.equal(agentControl('start-help').hidden, true);
+  assert.equal(agentControl('send').disabled, false); assert.equal(agentControl('start').hidden, true);
   assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs')).length, 0);
 });
 
@@ -1518,8 +1521,8 @@ test('connection checks retain uncertainty until the selected observation confir
     return original(input, init);
   });
   const before = transportLog.length; await app.checkAgentConnection('w', identity); await settle();
-  assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('start-disclosure').hidden, true);
-  assert.match(agentControl('connect-status').textContent, /^Start not confirmed\./); assert.equal(agentControl('send').disabled, true);
+  assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('start-in-pi').hidden, true);
+  assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed\./); assert.equal(agentControl('send').disabled, true);
   assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity}); assert.equal(editor.value, 'Agent launch keep');
   assert.equal(hostDocument.activeElement, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
   const selections = transportLog.slice(before).filter(call => call.path.endsWith('/selection')); assert.equal(selections.length, 1);
@@ -1533,7 +1536,7 @@ test('pending stored Start deduplicates clicks and a stale completion never chan
   let complete: ((response: Response) => void) | undefined;
   startPreparation = () => new Promise(resolve => { complete = resolve; }); const before = transportLog.length;
   const pending = app.startStoredAgent('w', identity); await app.startStoredAgent('w', identity);
-  assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('connect').disabled, true);
+  assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('history-retry').disabled, true);
   await storedLaunchFixture('new-recipient'); const editor = agentControl('editor'); editor.focus(); editor.setSelectionRange(1, 6);
   assert.ok(complete); complete(Response.json({ok: true, data: {targetState: targetFixture('late-target', {kind: 'agent', identity}), availability: 'live', capabilities: {input: true}}})); await pending; await settle();
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1);
@@ -1547,7 +1550,7 @@ test('stored Start refuses a wrong prepared recipient or missing input and stale
   for (const invalid of ['wrong-recipient', 'no-input']) {
     const identity = `invalid-start-${invalid}`; await storedLaunchFixture(identity); const before = transportLog.length;
     startPreparation = async () => Response.json({ok: true, data: {targetState: targetFixture('invalid-preparation', {kind: 'agent', identity: invalid === 'wrong-recipient' ? 'different' : identity}), availability: 'live', capabilities: {input: invalid !== 'no-input'}}});
-    await app.startStoredAgent('w', identity); await settle(); assert.match(agentControl('connect-status').textContent, /^Start not confirmed\./);
+    await app.startStoredAgent('w', identity); await settle(); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed\./);
     assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('start').hidden, true);
     await app.startStoredAgent('wrong-workspace', identity); await app.startStoredAgent('w', 'different');
     assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1);

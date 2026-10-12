@@ -18,18 +18,66 @@ test('initial focused draft hydration restores focus, while rerenders preserve a
   assert.deepEqual([composer.editor.selectionStart, composer.editor.selectionEnd, composer.editor.selectionDirection], [2, 7, 'backward']);
   assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading, saved.reading);
 });
-test('agent history shows source loading and negotiated refusal before a confirmed empty response', {timeout: 10000}, async () => {
+test('agent view combines pending read, source refusal and confirmed empty in one composition', {timeout: 10000}, async () => {
   const original = globalThis.fetch; let complete: (response: Response) => void = () => {}; const held = new Promise<Response>(resolve => {complete = resolve;}); let pending = true;
-  const reason = 'Host operation snapshot is unavailable. Required: snapshot/1.0.0, response snapshot/2.0.0, Durable 1.0.3. Host: snapshot/1.0.0, response snapshot/1.0.0, Durable 1.1.0.';
+  const reason = 'Required Durable 1.1.0; reader Durable 1.0.3.';
   globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === '/api/agents/history-state/history' ? pending ? held.then(response => response.clone()) : Response.json({ok: true, data: {target: {kind: 'agent', identity: 'history-state'}, entries: [], nextBefore: null, coverage, revision: 'empty'}}) : original(input, init);
   try {
-    const arrival = arrive({workspace: {id: 'history-state', revision: 1, selectedTarget: {kind: 'agent', identity: 'history-state'}}, primaries: [], roster: [agentFixture('history-state')], targets: [targetFixture('history-state-target', {kind: 'agent', identity: 'history-state'})]});
-    await settle(); assert.match(agentControl('empty-heading').textContent, /Loading agent history/); assert.doesNotMatch(agentControl('empty-heading').textContent, /no messages|No transcript/);
+    const arrival = arrive({workspace: {id: 'history-state', revision: 1, selectedTarget: {kind: 'agent', identity: 'history-state'}}, primaries: [], roster: [agentFixture('history-state', {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('history-state-target', {kind: 'agent', identity: 'history-state'})]});
+    await settle(); assert.equal(agentControl('agent-state-line').textContent, 'Loading messages… · Agent is not connected.'); assert.equal(agentControl('history-retry').disabled, true); assertAgentComposition();
     complete(Response.json({ok: false, error: {code: 'contract_mismatch', message: reason, retry: 'none'}})); await arrival; await settle();
-    assert.equal(agentControl('empty-heading').textContent, 'Agent history is unavailable.'); assert.equal(agentControl('empty-caption').textContent, reason);
-    pending = false; const retry = agentControl('view-notice').querySelector('button'); assert.ok(retry); retry.dispatch('click'); await settle();
-    assert.equal(agentControl('empty-heading').textContent, 'This agent has no messages yet.'); assert.equal(agentControl('empty-caption').textContent, ''); assert.equal(agentControl('view-notice').textContent, '');
+    assert.equal(agentControl('agent-state-line').textContent, 'History unavailable: the reader does not support this history format. · Agent is not connected.'); assert.equal(agentControl('agent-state-line').title, reason); assertAgentComposition();
+    pending = false; agentControl('history-retry').dispatch('click'); await settle();
+    assert.equal(agentControl('agent-state-line').textContent, 'No messages yet. · Agent is not connected.'); assertAgentComposition();
+    assert.equal(transportLog.filter(call => call.path.includes('/history-state/start') || call.path.includes('/inputs')).length, 0);
   } finally {pending = false; complete(Response.json({ok: true, data: {entries: [], nextBefore: null, coverage}})); globalThis.fetch = original;}
+});
+function visibleText(node: ReturnType<typeof agentControl>): string {return node.hidden ? '' : node.text + node.children.map(visibleText).join(' ');}
+function assertAgentComposition(): void {
+  const root = agentControl('root'), status = agentControl('agent-state'), row = agentControl('agent-state-actions');
+  assert.equal(root.querySelectorAll('.agent-state').length, 1); assert.equal(status.children.length, 2); assert.equal(status.children[0].tagName, 'p'); assert.equal(status.children[0].attributes.get('role'), 'status');
+  assert.equal(status.children[1], row); assert.equal(row.querySelectorAll('svg').length, 0); assert.equal(status.querySelectorAll('details').length, 0); assert.equal(status.querySelectorAll('h2').length, 0);
+  assert.equal(root.querySelectorAll('.agent-start-help').length, 0); assert.equal(agentControl('view-notice').textContent, ''); assert.equal(agentControl('empty').hidden, true);
+  assert.doesNotMatch(visibleText(root), /Stored metadata|History is disconnected|History could not be loaded|A start can resume|Check connection/);
+  assert.deepEqual(row.children.map(button => button.textContent), ['Retry', 'Start agent', 'Start in Pi']); assert.match(agentControl('start').title, /resume unfinished work/);
+}
+test('whole agent views retain messages independently of running, idle and incompatible hosts in both themes', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const theme of ['dark', 'light']) for (const availability of ['live', 'stored', 'incompatible'] as const) {
+      hostDocument.documentElement.dataset.appearance = theme;
+      const identity = `history-${theme}-${availability}`, target = {kind: 'agent', identity} as const;
+      const entry = entryFixture('retained-message', [messageFixture('retained-source', [textPart('Exact retained conversation text')])]); let failed = false;
+      globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === `/api/agents/${identity}/history` ? failed ? Response.json({ok: false, error: {code: 'host_unavailable', message: 'The saved history read failed.', retry: 'read'}}) : Response.json({ok: true, data: {target, entries: [entry], nextBefore: null, coverage, revision: 'retained'}}) : original(input, init);
+      const saved = targetFixture(`saved-${identity}`, target, {draft: {revision: 4, text: 'Exact editable draft', mode: 'followUp', persisted: true}});
+      const row = agentFixture(identity, {availability, capabilities: {input: availability === 'live'}});
+      await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [row], targets: [saved], observations: availability === 'live' ? [observation(identity, {revision: 1, observedAt: '', status: {busy: true}, live: [], entries: [entry], nextBefore: null, coverage})] : []});
+      assertAgentComposition(); assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal(app.agentComposer().state?.draft.text, 'Exact editable draft');
+      assert.equal(agentControl('send').disabled, availability !== 'live'); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, availability !== 'stored');
+      assert.equal(agentControl('agent-state').hidden, availability === 'live');
+      const editor = app.agentComposer().editor, message = agentControl('root').querySelector('[data-entry-id=retained-message]'); assert.ok(message); editor.setSelectionRange(2, 7, 'backward'); editor.focus();
+      const before = transportLog.length; failed = true; agentControl('history-retry').dispatch('click'); await settle(); assertAgentComposition();
+      assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal((visibleText(agentControl('root')).match(/The saved history read failed/g) ?? []).length, 1); assert.equal(agentControl('root').querySelector('[data-entry-id=retained-message]'), message);
+      failed = false; agentControl('history-retry').dispatch('click'); await settle(); assertAgentComposition(); assert.doesNotMatch(visibleText(agentControl('root')), /read failed/);
+      assert.equal(app.agentComposer().editor, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']); assert.equal(hostDocument.activeElement, editor);
+      assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+    }
+  } finally {globalThis.fetch = original;}
+});
+test('whole idle and incompatible views show one real read error with retained draft and read-only retry', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const theme of ['dark', 'light']) for (const availability of ['stored', 'incompatible'] as const) {
+      hostDocument.documentElement.dataset.appearance = theme; const identity = `unreadable-${theme}-${availability}`, target = {kind: 'agent', identity} as const; let failed = true;
+      globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === `/api/agents/${identity}/history` ? failed ? Response.json({ok: false, error: {code: 'storage_unavailable', message: 'Permission denied for saved messages.', retry: 'read'}}) : Response.json({ok: true, data: {target, entries: [], nextBefore: null, coverage, revision: 'empty'}}) : original(input, init);
+      await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(identity, {availability, capabilities: {input: false}})], targets: [targetFixture(identity, target)]});
+      assertAgentComposition(); const rendered = visibleText(agentControl('root')); assert.equal((rendered.match(/Permission denied for saved messages/g) ?? []).length, 1); assert.equal(agentControl('send').disabled, true);
+      const editor = app.agentComposer().editor, before = transportLog.length; editor.setSelectionRange(1, 3); editor.focus(); failed = false; agentControl('history-retry').dispatch('click'); await settle();
+      assertAgentComposition(); assert.match(agentControl('agent-state-line').textContent, /^No messages yet/); assert.doesNotMatch(visibleText(agentControl('root')), /Permission denied/);
+      assert.equal(app.agentComposer().editor, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [1, 3]); assert.equal(hostDocument.activeElement, editor); assert.equal(agentControl('send').disabled, true);
+      assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+    }
+  } finally {globalThis.fetch = original;}
 });
 test('agent settings retain model and thinking text from the exact frame without replacing global Primary facts', async () => {
   const row = agentFixture('selected', {model: {provider: 'other', modelId: 'roster-model'}, thinkingLevel: 'low'});

@@ -1,17 +1,28 @@
 import type { AgentRow, EventData, PrimaryView, ProjectedFrame, Target } from '../shared/api.ts';
 
-export type AgentHistoryState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; availability?: AgentRow['availability']; reason?: string; error?: {code?: string; message: string}};
-/** Zero rendered entries do not establish absence until the history source confirms coverage. */
-export function agentHistoryEmpty(source: AgentHistoryState): {heading: string; caption: string} | undefined {
-  if (source.hasEntries) return;
-  if (!source.connected) return {heading: 'History is disconnected.', caption: 'Reconnect to load this agent’s history.'};
-  if (source.loading) return {heading: 'Loading agent history…', caption: ''};
-  if (source.error) return {heading: source.error.code === 'host_unavailable' || source.error.code === 'stored' ? 'History is disconnected.' : 'Agent history is unavailable.', caption: source.error.message};
-  if (source.availability === 'stored' || source.availability === 'unavailable') return {heading: 'History is disconnected.', caption: source.reason ?? 'Check the connection to load this agent’s history.'};
-  if (source.availability === 'incompatible') return {heading: 'Agent history is unavailable.', caption: source.reason ?? 'The host does not support the needed history operation.'};
-  if (!source.ready) return {heading: 'Loading agent history…', caption: ''};
-  if (source.complete !== true) return {heading: 'Agent history is unavailable.', caption: 'The host did not confirm complete history coverage.'};
-  return {heading: 'This agent has no messages yet.', caption: ''};
+export type AgentViewState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; availability?: AgentRow['availability']; input?: boolean; reason?: string; error?: {code?: string; message: string}; startAttempt?: {pending: boolean; reason?: string}; connectionError?: string};
+/** Reading retained messages and admitting new work have independent outcomes. */
+export function agentViewStatus(source: AgentViewState): {text: string; detail: string; start: boolean} {
+  const history = agentHistoryStatus(source), connection = agentConnectionStatus(source.connectionError === source.error?.message ? {...source, connectionError: undefined} : source);
+  const text = (source.startAttempt ? [connection, history] : [history, connection]).filter(Boolean).join(' · ');
+  return {text, detail: [source.error?.message, source.startAttempt?.reason, source.connectionError, source.reason].filter(Boolean).join('\n'), start: source.availability === 'stored' && !source.startAttempt};
+}
+function agentHistoryStatus(source: AgentViewState): string {
+  if (source.error) return ['contract_mismatch', 'incompatible'].includes(source.error.code ?? '') ? 'History unavailable: the reader does not support this history format.' : `History unavailable: ${source.error.message}`;
+  if (source.loading) return source.hasEntries ? 'Updating messages…' : 'Loading messages…';
+  if (source.hasEntries) return '';
+  if (!source.connected) return 'History unavailable: the browser is disconnected.';
+  if (!source.ready) return 'Loading messages…';
+  return source.complete ? 'No messages yet.' : 'History unavailable: the read did not confirm complete coverage.';
+}
+function agentConnectionStatus(source: AgentViewState): string {
+  if (source.startAttempt) return source.startAttempt.pending ? 'Starting agent…' : 'Start not confirmed. Retry only reads saved messages.';
+  if (source.connectionError) return `Connection unavailable: ${source.connectionError}`;
+  if (!source.connected && source.hasEntries) return 'The browser is disconnected.';
+  if (source.availability === 'live' && source.input === false) return 'Messages are read-only.';
+  if (source.availability === 'incompatible') return 'This host is incompatible; messages remain read-only.';
+  if (source.availability === 'stored' || source.availability === 'unavailable') return 'Agent is not connected.';
+  return '';
 }
 export type ConversationPresentation = {
   name: string; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;

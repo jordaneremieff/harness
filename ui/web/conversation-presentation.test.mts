@@ -1,25 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView } from '../shared/api.ts';
-import { composerFolder, conversationPresentation, presentationGlyph, projectIdentity, projectLabels, agentHistoryEmpty } from './conversation-presentation.ts';
+import { composerFolder, conversationPresentation, presentationGlyph, projectIdentity, projectLabels, agentViewStatus } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
 const frame = (busy: boolean): ProjectedFrame => ({revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null,
   status: {busy}, coverage: {complete: true, truncated: false, omitted: 0}});
 const target = {kind: 'agent' as const, identity: row.identity};
-test('agent zero-entry presentation separates loading, negotiation failure, disconnect and confirmed empty', () => {
+test('one status combines read truth with independent connection and admission state', () => {
   const source = {hasEntries: false, connected: true, loading: false, ready: false};
-  assert.match(agentHistoryEmpty(source)?.heading ?? '', /Loading/);
-  const message = 'Host operation snapshot is unavailable. Required: snapshot/2.0.0, Durable 1.0.3. Host: snapshot/1.0.0, Durable 1.1.0.';
-  const failed = agentHistoryEmpty({...source, error: {code: 'contract_mismatch', message}});
-  assert.equal(failed?.heading, 'Agent history is unavailable.'); assert.equal(failed?.caption, message);
-  assert.equal(agentHistoryEmpty({...source, connected: false})?.heading, 'History is disconnected.');
-  assert.equal(agentHistoryEmpty({...source, availability: 'stored'})?.heading, 'History is disconnected.');
-  assert.equal(agentHistoryEmpty({...source, ready: true, complete: false})?.heading, 'Agent history is unavailable.');
-  assert.equal(agentHistoryEmpty({...source, ready: true, complete: true})?.heading, 'This agent has no messages yet.');
-  assert.equal(agentHistoryEmpty({...source, hasEntries: true, connected: false}), undefined);
-  assert.match(agentHistoryEmpty({...source, loading: true, ready: true, complete: true})?.heading ?? '', /Loading/);
+  assert.equal(agentViewStatus(source).text, 'Loading messages…');
+  const message = 'Required Durable 1.1.0; reader Durable 1.0.3.';
+  const failed = agentViewStatus({...source, availability: 'incompatible', error: {code: 'contract_mismatch', message}});
+  assert.equal(failed.text, 'History unavailable: the reader does not support this history format. · This host is incompatible; messages remain read-only.'); assert.equal(failed.detail, message); assert.equal(failed.start, false);
+  assert.equal(agentViewStatus({...source, connected: false}).text, 'History unavailable: the browser is disconnected.');
+  assert.equal(agentViewStatus({...source, availability: 'stored', ready: true, complete: true}).text, 'No messages yet. · Agent is not connected.');
+  assert.equal(agentViewStatus({...source, ready: true, complete: false}).text, 'History unavailable: the read did not confirm complete coverage.');
+  assert.equal(agentViewStatus({...source, ready: true, complete: true}).text, 'No messages yet.');
+  assert.equal(agentViewStatus({...source, hasEntries: true, connected: false}).text, 'The browser is disconnected.');
+  assert.equal(agentViewStatus({...source, hasEntries: true, availability: 'stored'}).text, 'Agent is not connected.');
+  assert.equal(agentViewStatus({...source, loading: true, hasEntries: true}).text, 'Updating messages…');
+  const uncertain = agentViewStatus({...source, hasEntries: true, availability: 'stored', startAttempt: {pending: false, reason: 'Readiness timed out.'}});
+  assert.equal(uncertain.start, false); assert.match(uncertain.text, /^Start not confirmed/); assert.equal(uncertain.detail, 'Readiness timed out.');
 });
 test('live negotiated input overrides unavailable catalog claims without inventing idle', () => {
   const connected = conversationPresentation({target, row, connected: true});

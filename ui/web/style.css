@@ -393,13 +393,12 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .conversation { container: conversation / inline-size; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; padding: 0 var(--gutter); }
 .conversation > :not(.transcript-region), .transcript > .entry, .transcript > button { width: 100%; }
 .last-observed { color: var(--muted); font-size: 12px; }
-.agent-start-help { flex: none; margin-top: 12px; color: var(--muted); font-size: 13px; }
-.agent-start-help > * + *, .agent-start-help details > :not(summary) { margin-top: 8px; }
-.agent-start-help pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.agent-start-help button { padding: 2px 8px; border: 1px solid var(--edge); }
-.conversation.agent-absent > .transcript-region { flex: none; display: block; }
-.conversation.agent-absent > .transcript-region > .empty-state { position: static; padding: 8px var(--gutter); font-size: 14px; }
-.conversation.agent-absent .transcript { padding-block: 0; }
+.agent-state { flex: none; padding-block: 12px 8px; color: var(--muted); font-size: 13px; }
+.agent-state > p { margin: 0; font-size: inherit; font-weight: 400; overflow-wrap: anywhere; }
+.agent-state-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 4px; }
+.agent-state-actions > button { padding: 4px 0; border: 0; border-radius: 0; }
+.conversation.agent-empty > .transcript-region { flex: none; display: block; }
+.conversation.agent-empty .transcript { padding-block: 0; }
 .last-observed { padding-top: 8px; }
 .inline-session-chooser { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; padding: 24px var(--gutter); }
 .composer-recipient { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }

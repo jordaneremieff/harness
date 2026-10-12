@@ -622,9 +622,12 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
   assert.doesNotMatch(css, /\.tab-overflow\s*\{|\.tab-actions\s*\{/);
 });
 
-test('an absent-agent explanation remains in normal flow above its connection controls', () => {
-  assert.match(rule('.conversation.agent-absent > .transcript-region'), /flex: none; display: block/);
-  assert.match(rule('.conversation.agent-absent > .transcript-region > .empty-state'), /position: static/);
+test('agent status uses one plain line and a flat action row in normal flow', () => {
+  assert.match(rule('.agent-state'), /flex: none/); assert.match(rule('.agent-state > p'), /font-weight: 400/);
+  assert.match(rule('.agent-state-actions'), /display: flex; flex-wrap: wrap; align-items: center; gap: 16px/);
+  assert.match(rule('.agent-state-actions > button'), /border: 0; border-radius: 0/);
+  assert.doesNotMatch(rule('.agent-state-actions > button'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent/);
+  assert.match(rule('.conversation.agent-empty > .transcript-region'), /flex: none; display: block/);
   assert.match(rule('.transcript-region > .empty-state'), /position: absolute/);
 });
 
