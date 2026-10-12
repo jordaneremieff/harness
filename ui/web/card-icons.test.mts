@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cardAction, cardActionLabel, cardDisclosure, cardIcon } from './card-icons.ts';
+import { cardAction, cardActionLabel, cardDisclosure, cardIcon, controlIcon } from './card-icons.ts';
 
 class Node {
   children: Node[] = []; attributes: Record<string, string> = {}; className = ''; textContent = ''; title = '';
   classList = {add: (name: string) => { this.className += ` ${name}`; }};
+  get ownerDocument(): Document {return document;}
+  replaceChildren(...nodes: Node[]): void {this.children = nodes; this.textContent = '';}
   append(...nodes: Node[]): void { this.children.push(...nodes); }
   prepend(...nodes: Node[]): void { this.children.unshift(...nodes); }
   setAttribute(name: string, value: string): void { this.attributes[name] = value; }
@@ -17,7 +19,7 @@ function withDocument(action: () => void): void {
   try { action(); } finally { Reflect.set(globalThis, 'document', original); }
 }
 test('card icons keep one SVG size and stroke without executable markup', () => withDocument(() => {
-  for (const name of ['copy', 'wrap', 'chevron', 'success', 'error', 'working', 'unknown', 'previous', 'next', 'restart', 'close', 'menu'] as const) {
+  for (const name of ['copy', 'wrap', 'chevron', 'success', 'error', 'working', 'unknown', 'previous', 'next', 'restart', 'close', 'menu', 'plus', 'search', 'info', 'folder', 'navigation', 'agent', 'latest', 'earlier', 'message', 'more'] as const) {
     const icon = cardIcon(name) as unknown as Node;
     assert.equal(icon.attributes.viewBox, '0 0 16 16'); assert.equal(icon.attributes.stroke, 'currentColor');
     assert.equal(icon.attributes['stroke-width'], '1.5'); assert.equal(icon.attributes['aria-hidden'], 'true');
@@ -36,4 +38,11 @@ test('a disclosure keeps its label and uses a separate chevron', () => withDocum
   const summary = new Node(); summary.textContent = 'Arguments'; cardDisclosure(summary as unknown as HTMLElement);
   assert.equal(summary.textContent, 'Arguments'); assert.equal(summary.children.length, 1);
   assert.equal(summary.children[0]?.attributes.class, 'card-icon card-icon-chevron');
+}));
+
+test('shell controls reuse the vocabulary with an accessible name and tooltip', () => withDocument(() => {
+  const node = new Node(); const action = node as unknown as HTMLElement; controlIcon(action, 'plus', 'New conversation or split');
+  assert.equal(node.children[0]?.attributes.class, 'card-icon card-icon-plus');
+  assert.equal(node.children[1]?.textContent, 'New conversation or split');
+  assert.equal(node.attributes['aria-label'], 'New conversation or split'); assert.equal(node.title, 'New conversation or split');
 }));

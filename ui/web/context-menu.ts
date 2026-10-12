@@ -1,8 +1,10 @@
+import {cardIcon} from './card-icons.ts';
 import { announce, button, element } from './dom.ts';
 import { tabKey } from './tabs.ts';
 import { canSplitPane, closePane, MAX_PANES, movePaneTab, paneById, paneLeaves, type PaneAxis, type PaneLayout, type PaneSpace, type PaneView } from './pane-layout.ts';
 
-export type ContextItem = {key?: string; label: string; run: () => void; enabled?: boolean; checked?: boolean; description?: string; disabledReason?: string; separatorBefore?: boolean; heading?: string};
+export type ContextItem = {key?: string; label: string; run: () => void; enabled?: boolean; checked?: boolean; checkbox?: boolean; description?: string; disabledReason?: string; separatorBefore?: boolean; heading?: string};
+function itemRole(item: ContextItem): string { return item.checked === undefined ? 'menuitem' : item.checkbox ? 'menuitemcheckbox' : 'menuitemradio'; }
 export type MenuPoint = {x: number; y: number};
 export function menuPosition(point: MenuPoint, size: {width: number; height: number}, viewport: {width: number; height: number}): MenuPoint {
   return {x: Math.max(4, Math.min(point.x, viewport.width - size.width - 4)), y: Math.max(4, Math.min(point.y, viewport.height - size.height - 4))};
@@ -38,8 +40,8 @@ export class ContextMenu {
         if (current) item.run(); else announce('This item changed. Choose the action again.');
       });
       row.className = 'context-menu-item';
-      row.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemradio');
-      if (item.checked !== undefined) row.setAttribute('aria-checked', String(item.checked));
+      row.setAttribute('role', itemRole(item));
+      if (item.checked !== undefined) {row.setAttribute('aria-checked', String(item.checked)); const check = cardIcon('success'); check.classList.add('choice-check'); row.prepend(check);}
       if (item.description) {row.setAttribute('aria-description', item.description); row.title = item.description;}
       row.setAttribute('aria-disabled', String(item.enabled === false)); row.tabIndex = -1;
       if (item.disabledReason && item.enabled === false) { const note = element('span', 'context-menu-note'); note.textContent = item.disabledReason; row.append(note); }
@@ -87,7 +89,7 @@ export type PaneMenuHooks = {layout: () => PaneLayout; valid: () => boolean; spa
   label: (key: string) => string; change: (layout: PaneLayout) => void; newTab: (pane: string) => void;
   split: (pane: string, axis: PaneAxis, key: string | null) => void; closeTab: (key: string) => void;
   activate: (pane: string, key: string) => void; view: (key: string) => PaneView; setView: (key: string, view: PaneView) => void;
-  overflow?: boolean; sessionItems?: ContextItem[]};
+  overflow?: boolean; sessionItems?: ContextItem[]; purpose?: 'add' | 'context'};
 type Guard = (run: () => void) => () => void;
 function moveChoices(layout: PaneLayout, paneId: string, key: string | null, hooks: PaneMenuHooks, guard: Guard): ContextItem[] {
   const leaves = paneLeaves(layout.root); const destinations = leaves.filter(leaf => leaf.id !== paneId);
@@ -108,7 +110,7 @@ function tabChoices(layout: PaneLayout, hooks: PaneMenuHooks, guard: Guard): Con
     return {label: `${hooks.label(key)} (pane ${index + 1})`, heading: first ? 'Tabs' : undefined, separatorBefore: first, run: guard(() => hooks.activate(leaf.id, key))};
   }));
 }
-/** Both entry points use this builder; callbacks retain the captured pane and target. */
+/** Entry points share captured targets, while the plus owns only conversation creation and splits. */
 export function paneMenuItems(target: PaneMenuTarget, hooks: PaneMenuHooks): ContextItem[] {
   const layout = hooks.layout(); const pane = paneById(layout, target.paneId); if (!pane) return [];
   const key = target.tabKey ?? pane.active;
@@ -120,6 +122,7 @@ export function paneMenuItems(target: PaneMenuTarget, hooks: PaneMenuHooks): Con
   const split = (axis: PaneAxis): ContextItem => ({label: axis === 'x' ? 'Split right' : 'Split down', enabled: canSplitPane(layout, pane.id, axis, space),
     disabledReason: leaves.length >= MAX_PANES ? 'Four panes maximum' : 'Not enough space', run: guard(() => hooks.split(pane.id, axis, key))});
   const items: ContextItem[] = [{label: 'New tab…', run: guard(() => hooks.newTab(pane.id))}, split('x'), split('y')];
+  if (hooks.purpose === 'add') return items;
   items.push(...moveChoices(layout, pane.id, key, hooks, guard));
   items.push({label: 'Close tab', enabled: !!key, run: guard(() => {if (key) hooks.closeTab(key);})},
     {label: 'Close pane', enabled: leaves.length > 1, run: guard(() => hooks.change(closePane(layout, pane.id)))});

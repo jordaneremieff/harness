@@ -46,6 +46,8 @@ class FakeNode {
   remove(): void { if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null; }
   replaceChildren(...nodes: FakeNode[]): void { for (const child of [...this.children]) child.remove(); this.text = ''; this.append(...nodes); }
   contains(node: FakeNode | null): boolean { return !!node && (node === this || this.children.some(child => child.contains(node))); }
+  classList = {add: (name: string) => {this.className = `${this.className} ${name}`.trim();}};
+  querySelector(selector: string): FakeNode | null {try {return this.query(selector.slice(1));} catch {return null;}}
   setAttribute(name: string, value: string): void { this.attributes[name] = value; }
   addEventListener(name: string, callback: (event: Record<string, unknown>) => void): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], callback]); }
   dispatch(name: string, event: Record<string, unknown> = {}): void { for (const callback of this.handlers.get(name) ?? []) callback(event); }
@@ -60,7 +62,7 @@ class FakeNode {
 function setup(withRefresh = true) {
   const ids = new Map(['roster', 'agent-search', 'roster-footer', ...(withRefresh ? ['agent-refresh'] : [])].map(id => [id, new FakeNode('div')]));
   const frames: Array<() => void> = [];
-  const document = {activeElement: null as FakeNode | null, createElement: (tag: string) => new FakeNode(tag), getElementById: (id: string) => ids.get(id)};
+  const document = {activeElement: null as FakeNode | null, createElementNS: (_namespace: string, tag: string) => new FakeNode(tag), createElement: (tag: string) => new FakeNode(tag), getElementById: (id: string) => ids.get(id)};
   Object.assign(globalThis, {document, requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length; }});
   return {document, node: required(ids.get('roster')), search: required(ids.get('agent-search')), footer: required(ids.get('roster-footer')), flush: () => { const pending = frames.splice(0); for (const callback of pending) callback(); }};
 }
@@ -134,7 +136,7 @@ test('exception footer actions preserve refresh and retry without routine paging
   assert.equal(f.footer.children[0]?.textContent, 'Saved agent list'); assert.equal(f.footer.children[1]?.textContent, 'Refresh agents'); required(f.footer.children[1]).click();
   roster.set([row('one')], {...page([]), scan: {...page([]).scan, state: 'failed'}}); f.flush();
   assert.match(f.footer.textContent, /Agents could not be loaded/); const retry = required(f.footer.children.find(child => child.tagName === 'button'));
-  assert.equal(retry.textContent, 'Try again'); retry.click(); assert.deepEqual(actions, ['refresh', 'refresh', 'refresh']);
+  assert.equal(retry.attributes['aria-label'], 'Refresh agents'); assert.equal(retry.title, 'Refresh agents'); assert.equal(retry.query('card-action-label').textContent, 'Refresh agents'); retry.click(); assert.deepEqual(actions, ['refresh', 'refresh', 'refresh']);
 });
 test('working roster rows replace the age with the current tool and keep the argument accessible', t => {
   t.mock.method(Date, 'now', () => 600000);
@@ -300,7 +302,7 @@ test('empty roster discovery failure keeps the reason in the list and retry in t
   assert.match(required(fixture.footer.children.find(child => child.tagName === 'details')).textContent, /Catalog could not be read/);
   assert.equal(fixture.footer.children.some(child => child.tagName === 'p' && child.textContent === failure.textContent), false);
   assert.equal(failure.children.some(child => child.tagName === 'button'), false);
-  const retry = required(fixture.footer.children.find(child => child.tagName === 'button')); assert.equal(retry.textContent, 'Try again');
+  const retry = required(fixture.footer.children.find(child => child.tagName === 'button')); assert.equal(retry.attributes['aria-label'], 'Refresh agents'); assert.equal(retry.children[0]?.attributes.class, 'card-icon card-icon-restart'); assert.equal(retry.children[0]?.attributes['aria-hidden'], 'true');
   retry.click(); assert.deepEqual(actions, ['refresh']);
 });
 test('keyed wrappers, actions, order and focused timestamps survive roster updates', t => {

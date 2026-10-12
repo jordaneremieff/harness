@@ -1,3 +1,4 @@
+import {cardIcon} from './card-icons.ts';
 import type { ConversationTab } from '../shared/api.ts';
 import { duplicateIdentityTails, tabKey } from './tabs.ts';
 import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout.ts';
@@ -69,6 +70,7 @@ export class TabStrip {
         const row = this.conversationRow(tab, region.controls); row.dataset.paneId = pane.id; row.setAttribute('aria-current', String(pane.active === key && layout.focusedPane === pane.id));
         if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       });
+      host.dataset.sole = String(pane.tabs.length === 1);
       host.tabIndex = pane.tabs.length ? -1 : 0; host.dataset.focused = String(layout.focusedPane === pane.id);
     });
     this.fitStatuses(); if (reveal) this.revealActive();
@@ -96,15 +98,12 @@ export class TabStrip {
     }
   }
   private fitStatus(node: HTMLElement): void {
-    const state = node.querySelector<HTMLElement>('.tab-state'); const label = node.querySelector<HTMLElement>('.tab-label'); const close = node.querySelector<HTMLElement>('.tab-close');
-    if (!state || !label || !close) return;
-    // Hidden status has zero scrollWidth; measure the current text before each fit.
-    state.hidden = false;
-    const style = getComputedStyle(node); const identity = node.querySelector<HTMLElement>('.tab-identity');
-    const tail = identity && !identity.hidden ? identity.offsetWidth + Number.parseFloat(style.columnGap) : 0;
+    const identity = node.querySelector<HTMLElement>('.tab-identity');
+    const tail = identity && !identity.hidden ? identity.offsetWidth + Number.parseFloat(getComputedStyle(node).columnGap) : 0;
     node.style.setProperty('--tab-identity-width', `${tail}px`);
-    const chrome = tail + Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight) + close.offsetWidth + 2 * Number.parseFloat(style.columnGap);
-    state.hidden = !state.textContent || node.clientWidth < chrome + Number.parseFloat(getComputedStyle(label).minWidth) + state.scrollWidth;
+    const state = node.querySelector<HTMLElement>('.tab-state');
+    const stateWidth = state && !state.hidden ? state.scrollWidth + Number.parseFloat(getComputedStyle(node).columnGap) : 0;
+    node.style.setProperty('--tab-state-width', `${stateWidth}px`);
   }
   private paintTab(node: HTMLElement, tab: ConversationTab, selected: boolean): void {
     const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'agent' ? tab.identity : 'primary'); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
@@ -112,8 +111,8 @@ export class TabStrip {
     node.setAttribute('aria-label', `${accessible}${status.label ? `, ${status.label}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
     const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = label;
     const identity = node.querySelector<HTMLElement>('.tab-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail;}
-    const state = node.querySelector<HTMLElement>('.tab-state'); if (state) {state.textContent = selected ? status.label : status.glyph; state.hidden = !state.textContent; state.dataset.state = status.label.toLocaleLowerCase(); state.setAttribute('aria-hidden', 'true');}
-    node.querySelector('.tab-close')?.setAttribute('aria-label', `Close ${accessible} tab`);
+    const state = node.querySelector<HTMLElement>('.tab-state'); if (state) {state.textContent = status.label === 'Ready' ? '' : status.label; state.hidden = !state.textContent; state.dataset.state = status.label.toLocaleLowerCase(); state.setAttribute('aria-hidden', 'true');}
+    const close = node.querySelector<HTMLElement>('.tab-close'); if (close) {close.setAttribute('aria-label', `Close ${accessible} tab`); close.title = `Close ${accessible} tab`;}
   }
   private navigate(key: string, event: KeyboardEvent): void {
     const pane = paneForTab(this.hooks.layout(), key); if (!pane) return;
@@ -126,7 +125,7 @@ export class TabStrip {
   private create(key: string): HTMLElement {
     const doc = this.regions.conversations.ownerDocument; const node = doc.createElement('div'); node.className = 'conversation-tab'; node.setAttribute('role', 'tab'); node.draggable = true; node.dataset.tabKey = key;
     const label = doc.createElement('span'); label.className = 'tab-label'; const identity = doc.createElement('span'); identity.className = 'tab-identity'; const state = doc.createElement('span'); state.className = 'tab-state';
-    const close = doc.createElement('button'); close.className = 'tab-close'; close.type = 'button'; close.textContent = '×'; close.tabIndex = -1;
+    const close = doc.createElement('button'); close.className = 'tab-close'; close.type = 'button'; close.append(cardIcon('close', doc)); close.tabIndex = -1;
     const remove = () => {if (this.owner(key)) this.hooks.close(key);};
     close.addEventListener('click', event => {event.stopPropagation(); remove();}); node.addEventListener('click', () => this.activate(key));
     node.addEventListener('auxclick', event => {if (event.button === 1) {event.preventDefault(); remove();}});

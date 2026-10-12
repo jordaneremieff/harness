@@ -58,7 +58,7 @@ const graphicBackgrounds = new Map([
   [".pane-split > .pane-divider::after", "edge"],
   [".pane-split > .pane-divider:hover::after", "edge"],
   [".pane-split > .pane-divider:focus-visible::after", "accent"],
-  [".context-menu-item[role=menuitemradio][aria-checked=true]::before", "muted"],
+
 ]);
 type RGB = [number, number, number];
 type Rule = { selector: string; contexts: string[]; declarations: { property: string; value: string }[] };
@@ -469,6 +469,9 @@ test("graphic paint measures selected marks and divider hover/focus without open
   const rows = result.measurements.filter(row => row.kind === "graphic-paint");
   assert.equal(rows.length, graphicBackgrounds.size * surfaces.length * (2 + flavors.length));
   assert.ok(rows.every(row => row.threshold === 3 && row.ratio >= 3));
+  const checks = result.measurements.filter(row => row.kind === "text-declaration" && row.source.startsWith(".context-menu-item > .choice-check "));
+  assert.equal(checks.length, surfaces.length * (2 + flavors.length));
+  assert.ok(checks.every(row => row.threshold === 4.5 && row.ratio >= 4.5));
   assert.ok(audit(`${css}\n.probe { background: var(--muted); }`).issues.some(issue => issue.includes("non-surface background")));
   assert.ok(audit(`${css}\n.pane-split > .pane-divider:hover::after { background: var(--rule); }`).issues.some(issue => issue.includes("non-surface background")));
   const weakened = audit(css.replace("--edge: #6b7378", "--edge: #16181b"));

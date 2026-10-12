@@ -31,6 +31,11 @@ test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headin
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== 'inherit'), []);
 });
+test('saved drafts and message choices retain full-width readable rows with separated values', () => {
+  assert.match(rule('.recovery-target'), /display: grid; grid-template-columns: minmax\(0,1fr\) minmax\(12ch,20ch\);[^}]*gap: 12px/);
+  assert.match(rule('.recovery-name, .recovery-count'), /min-width: 0; overflow-wrap: anywhere/);
+  assert.match(rule('.message-choice'), /white-space: pre-wrap; overflow-wrap: anywhere/);
+});
 test('blue marks focus while selected rows and tabs use neutral rules and surfaces', () => {
   const values = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{([^{}]+)\}/g)].flatMap(match =>
     ['background', 'background-color', 'color', 'fill'].flatMap(property =>
@@ -41,8 +46,9 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
     {selector: '.pane-split > .pane-divider::after', property: 'background', value: 'var(--edge)'},
     {selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'},
   ]);
-  for (const item of fills.filter(item => !item.value.includes('--edge') && item.selector !== '.context-menu-item[role=menuitemradio][aria-checked=true]::before')) assert.doesNotMatch(item.value, /--(?:fg|muted|dim|link)\b/, `ink used as a fill: ${item.value}`);
-  assert.match(rule('.context-menu-item[role=menuitemradio][aria-checked=true]::before'), /background: var\(--muted\)/);
+  for (const item of fills.filter(item => !item.value.includes('--edge'))) assert.doesNotMatch(item.value, /--(?:fg|muted|dim|link)\b/, `ink used as a fill: ${item.value}`);
+  assert.match(rule('.context-menu-item > .choice-check'), /color: var\(--muted\)/);
+  assert.match(rule('.context-menu-item[aria-checked=false] > .choice-check'), /visibility: hidden/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
   assert.match(rule('.nav-row[aria-current=page], .row-select[aria-current=page]'), /border-left-color: var\(--edge\)/);
   assert.match(rule('.command-option[aria-selected=true], .palette-row[aria-selected=true]'), /border-left-color: var\(--edge\)/);
@@ -195,10 +201,10 @@ test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and 
   assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--edge\)/);
   assert.doesNotMatch(css, /content: "You"/);
   const circles = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*border-radius: 50%;/g)].map(match => match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim());
-  assert.deepEqual(circles, ['.communication-unverified::before', '.context-menu-item[role=menuitemradio]::before']);
+  assert.deepEqual(circles, ['.communication-unverified::before']);
   for (const value of declarations('border-radius')) if (value !== '50%') assert.doesNotMatch(value, /999|50%|9999/);
   assert.match(rule('.communication-unverified::before'), /width: 14px; height: 14px; border: 1px solid currentColor; border-radius: 50%/);
-  assert.match(rule('.context-menu-item[role=menuitemradio]::before'), /width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%/);
+  assert.match(rule('.context-menu-item > .choice-check'), /top: 50%; left: 10px; margin-top: -8px/);
   assert.match(rule('.nav-row, .row-select'), /height: 26px;[^}]*white-space: nowrap/);
   assert.match(rule('.row-age, .row-message'), /position: absolute; top: 1px; right: 8px/);
   assert.match(rule('.row-message'), /opacity: 0; pointer-events: none/);
@@ -239,11 +245,11 @@ test('narrow composer controls wrap only as needed and retain right alignment wi
 });
 test('the app menu retains a visible icon and an accessible name without an unread badge', () => {
   const trigger = html.match(/<button id="app-menu"[\s\S]*?<\/button>/)?.[0]; assert.ok(trigger);
-  assert.match(trigger, /aria-label="App menu"[^>]*aria-haspopup="menu"/);
-  assert.match(trigger, /<svg class="ui-icon"[^>]*width="16" height="16"[^>]*aria-hidden="true"/);
+  assert.match(trigger, /aria-label="App menu"/); assert.match(trigger, /aria-haspopup="menu"/);
+  assert.match(trigger, /data-control-icon="more"/);
   assert.match(trigger, /id="notices-count"[^>]*\shidden/);
   assert.match(rule('.ui-icon'), /display: block;[^}]*width: 16px; height: 16px/);
-  assert.match(rule('.icon-button'), /display: inline-flex;[^}]*min-width: 24px; height: 24px/);
+  assert.match(rule('.icon-button'), /display: inline-flex;[^}]*min-width: 28px; height: 28px/);
   assert.doesNotMatch(css, /\.sidebar-footer \.ui-icon\s*\{/);
 });
 test('card actions and expanded content share fixed geometry without label-width drift', () => {
@@ -264,12 +270,11 @@ test('partial output qualification shares the tool summary content column rather
   assert.doesNotMatch(rule('.tool-preview-qualification'), /display: none|visibility: hidden/);
 });
 test('visible controls carry labels and one icon stroke style', async () => {
-  const icons = [...html.matchAll(/<svg [^>]*>/g)].map(match => match[0]);
-  assert.ok(icons.length > 0);
-  for (const icon of icons) {
-    assert.match(icon, /width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"/);
-    assert.match(icon, /aria-hidden="true"/);
-  }
+  const icons = [...html.matchAll(/data-control-icon="([^"]+)"/g)].map(match => match[1]);
+  assert.ok(icons.includes('close') && icons.includes('more') && icons.includes('restart'));
+  const vocabulary = await readFile(new URL('./card-icons.ts', import.meta.url), 'utf8');
+  assert.match(vocabulary, /setAttribute\('stroke', 'currentColor'\)/); assert.match(vocabulary, /setAttribute\('stroke-width', '1.5'\)/);
+  assert.match(vocabulary, /setAttribute\('aria-hidden', 'true'\)/); assert.match(vocabulary, /setAttribute\('viewBox', '0 0 16 16'\)/);
   for (const button of html.match(/<button [^>]*class="icon-button[^"]*"[^>]*>/g) ?? []) assert.match(button, /aria-label="[^"]+"/, button);
   for (const id of ['project-button', 'session-new', 'agent-refresh', 'agent-new', 'app-menu', 'conversation-panes', 'agent-search']) assert.match(html, new RegExp(`id="${id}"`), id);
   const composer = await readFile(new URL('./composer.ts', import.meta.url), 'utf8');
@@ -279,7 +284,7 @@ test('visible controls carry labels and one icon stroke style', async () => {
   assert.match(factory, /const send = element\('button', 'send', 'Send'\); send\.id = `\$\{id\}-send`; send\.type = 'submit'/);
   assert.match(factory, /send\.setAttribute\('aria-label', 'Send'\)/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
-  assert.match(app, /plus\.setAttribute\('aria-label', 'Tab and pane actions'\); plus\.setAttribute\('aria-haspopup', 'menu'\)/);
+  assert.match(app, /cardAction\('plus', 'New conversation or split'/); assert.match(app, /plus\.setAttribute\('aria-haspopup', 'menu'\)/);
   assert.doesNotMatch(html, /id="session-actions"|id="primary-send"|id="primary-stop"|id="notices-button"|window-actions/);
   assert.match(html, /id="app-menu"[^>]*aria-haspopup="menu"/);
   assert.doesNotMatch(html.match(/<input id="agent-search"[^>]*>/)?.[0] ?? '', /\shidden/);
@@ -362,11 +367,13 @@ test('editor text and prose share the pane gutter without horizontal correction 
     assert.doesNotMatch(rule(selector), /margin-left: -|translateX|left: -/);
   }
 });
-test('tab status shrinks and clips inside its tab without taking the useful name width', () => {
-  assert.match(rule('.tab-state'), /flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis/);
+test('exceptional tab state remains readable and a sole tab fills its available width', () => {
+  assert.match(rule('.tab-state'), /flex: none; min-width: 0/);
+  assert.doesNotMatch(rule('.tab-state'), /overflow: hidden|text-overflow:/);
+  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 1 1 auto; max-width: none/);
   assert.match(rule('.conversation-tab'), /overflow: hidden/);
   assert.match(rule('.tab-label'), /min-width: 8ch; overflow: hidden; text-overflow: ellipsis/);
-  assert.match(rule('.tab-close'), /flex: none; width: 22px/);
+  assert.match(rule('.tab-close'), /flex: none; width: 28px/);
 });
 test('neutral tabs and split panes retain 320px tracks with divider-aware equal-width defaults', async () => {
   const layout = await readFile(new URL('./pane-layout.ts', import.meta.url), 'utf8');
@@ -402,11 +409,11 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
 test('short tab names remain intrinsic while long tabs respect fair shares and every name keeps an eight-ch minimum', () => {
   const tab = rule('.conversation-tab');
   assert.match(tab, /flex: 0 1 auto/);
-  assert.match(tab, /min-width: calc\(8ch \+ var\(--tab-chrome,66px\) \+ var\(--tab-identity-width,0px\)\)/);
-  assert.match(tab, /max-width: min\(40ch,max\(calc\(8ch \+ var\(--tab-chrome,66px\) \+ var\(--tab-identity-width,0px\)\),var\(--tab-share,100%\)\)\)/);
+  assert.match(tab, /min-width: calc\(8ch \+ var\(--tab-chrome,74px\) \+ var\(--tab-identity-width,0px\) \+ var\(--tab-state-width,0px\)\)/);
+  assert.match(tab, /max-width: min\(40ch,max\(calc\(8ch \+ var\(--tab-chrome,74px\) \+ var\(--tab-identity-width,0px\) \+ var\(--tab-state-width,0px\)\),var\(--tab-share,100%\)\)\)/);
   assert.match(rule('.tab-label'), /flex: 1 1 auto; min-width: 8ch; overflow: hidden; text-overflow: ellipsis/);
-  assert.match(media('@media (pointer:coarse)'), /\.conversation-tab \{ --tab-chrome: 88px; \}/);
-  assert.match(rule('.tab-state'), /flex: 0 1 auto; min-width: 0/);
+  assert.match(media('@media (pointer:coarse)'), /\.conversation-tab \{ --tab-chrome: 90px; \}/);
+  assert.match(rule('.tab-state'), /flex: none; min-width: 0/);
   assert.match(rule('.tab-close'), /flex: none/);
   assert.match(rule('.conversation-tabs'), /overflow-x: auto/);
   assert.match(rule('.conversation-tab:hover .tab-close, .conversation-tab:focus-within .tab-close'), /opacity: 1/);
@@ -572,15 +579,14 @@ test('the document selects the same-origin SVG favicon', () => {
 });
 
 test('drawer and overflow controls share accessible inline stroke icons', async () => {
-  const button = html.match(/<button id="sidebar-close"[^>]*>([\s\S]*?)<\/button>/)?.[1] ?? '';
-  const svg = button.match(/<svg\b([^>]*)>([\s\S]*?)<\/svg>/); assert.ok(svg);
-  for (const [name, value] of [['class','ui-icon'],['width','16'],['height','16'],['viewBox','0 0 16 16'],['fill','none'],['stroke','currentColor'],['stroke-width','1.5'],['aria-hidden','true'],['focusable','false']]) assert.match(svg[1] ?? '', new RegExp(`\\b${name}="${value}"`));
-  assert.match(svg[2] ?? '', /<path\b[^>]*d="M4 4l8 8M12 4l-8 8"/);
+  const button = html.match(/<button id="sidebar-close"[^>]*>[\s\S]*?<\/button>/)?.[0] ?? '';
+  assert.match(button, /data-control-icon="close"/); assert.match(button, /aria-label="Hide navigation"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
-  assert.equal([...app.matchAll(/const plus = button\('\+'/g)].length, 1);
-  assert.match(app, /const plus = button\('\+', \(\) => openPaneMenu\(leaf\.id\)\); plus\.className = 'icon-button pane-actions'/);
-  assert.match(app, /plus\.setAttribute\('aria-label', 'Tab and pane actions'\); plus\.setAttribute\('aria-haspopup', 'menu'\)/);
-  assert.match(app, /bar\.append\(tabs, plus\); node\.append\(bar, content\)/);
+  assert.equal([...app.matchAll(/const plus = cardAction\('plus'/g)].length, 1);
+  assert.match(app, /cardAction\('plus', 'New conversation or split', \(\) => openPaneMenu\(leaf\.id, undefined, undefined, 'add'\)/);
+  assert.match(app, /plus\.setAttribute\('aria-haspopup', 'menu'\)/);
+  assert.match(app, /cardAction\('more', 'Conversation and view actions'/);
+  assert.match(app, /bar\.append\(tabs, plus, menu\); node\.append\(bar, content\)/);
   assert.match(rule('.pane-actions'), /align-items: center; justify-content: center; min-width: 28px; min-height: 28px/);
   assert.match(media('@media (pointer:coarse)'), /\.message-menu, \.communication-unverified, \.message-source-close, \.pane-actions, \.context-menu > \.context-menu-item \{ min-height: 44px; min-width: 44px; \}/);
   assert.doesNotMatch(html, /id="tabs-list"|id="tabs-split"/);
@@ -600,10 +606,10 @@ test('the sidebar footer uses one separated action row and a visible edge', () =
 
 test('the visible sidebar owns its close control and inherits coarse pointer targets', () => {
   assert.match(rule('.sidebar-close'), /display: inline-flex/);
+  assert.match(html, /id="sidebar-close" class="icon-button sidebar-close"[^>]+aria-label="Hide navigation"/);
   assert.match(media('@media (max-width:899px)'), /\.sidebar-close \{ display: inline-flex/);
-  assert.match(rule('.icon-button'), /width: 24px; height: 24px/);
+  assert.match(rule('.icon-button'), /width: 28px; height: 28px/);
   assert.match(media('@media (pointer:coarse)'), /min-height: 44px; min-width: 44px/);
-  assert.match(html, /id="sidebar-close" class="icon-button sidebar-close"[^>]+aria-label="Close sidebar"/);
 });
 
 test('source headers reserve controls outside local wrap scrollports and preserve diff line flow', () => {

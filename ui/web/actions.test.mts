@@ -77,11 +77,12 @@ test('a refused control retains its typed outcome and raises its actual error', 
 });
 class FakeNode extends EventTarget {
   title = ''; tagName = ''; children: FakeNode[] = []; textContent = ''; className = ''; type = ''; id = ''; value = ''; disabled = false; hidden = false; tabIndex = 0; dataset: Record<string, string> = {}; attributes = new Map<string, string>();
+  classList = {add: (name: string) => {this.className = `${this.className} ${name}`.trim();}};
   append(...nodes: FakeNode[]): void {this.children.push(...nodes);}
   replaceChildren(...nodes: FakeNode[]): void {this.children = nodes;}
   open = false; isConnected = true; clientHeight = 0; offsetHeight = 0; scrollHeight = 0; clientTop = 0; scrollTop = 0; rowSize = 32;
   box = {top: 0, bottom: 0}; properties = new Map<string, string>(); styleWrites = 0;
-  style = {getPropertyValue: (name: string) => this.properties.get(name) ?? '', setProperty: (name: string, value: string) => {this.properties.set(name, value); this.styleWrites++;}};
+  style = {visibility: '', getPropertyValue: (name: string) => this.properties.get(name) ?? '', setProperty: (name: string, value: string) => {this.properties.set(name, value); this.styleWrites++;}};
   get ownerDocument(): Document {return globalThis.document;}
   getBoundingClientRect(): {top: number; bottom: number} {return this.box;}
   querySelector(selector: string): FakeNode | null {return this.querySelectorAll(selector)[0] ?? null;}
@@ -101,7 +102,7 @@ class FakeView extends EventTarget {
   limit = 630;
   getComputedStyle(node: FakeNode) {return {maxHeight: `${this.limit}px`, getPropertyValue: (name: string) => name === '--palette-row-size' ? `${node.rowSize}px` : ''};}
 }
-function fakeDocument() {return {defaultView: new FakeView(), get activeElement() {return focused;}, createElement: (tagName: string) => {const node = new FakeNode(); node.tagName = tagName; return node;}, getElementById: () => new FakeNode()};}
+function fakeDocument() {return {createElementNS: (_ns: string, tagName: string) => {const node = new FakeNode(); node.tagName = tagName; return node;}, defaultView: new FakeView(), get activeElement() {return focused;}, createElement: (tagName: string) => {const node = new FakeNode(); node.tagName = tagName; return node;}, getElementById: () => new FakeNode()};}
 function textOf(node: FakeNode): string {return node.textContent + node.children.map(textOf).join('');}
 test('journal and HTTP copies of one handoff completion open its result once', () => {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -169,7 +170,7 @@ test('text insertion without a ready Primary shows its prerequisite without chan
     actions.projectPicker = () => {opened++;}; actions.prepareText('/fixture argument');
     assert.equal(opened, 0); assert.equal(edits, 0); assert.match(body.children[1]?.textContent ?? '', /fixture argument/);
     assert.match(body.children[0]?.textContent ?? '', /Select a session for Primary/);
-    assert.ok(body.children.find(node => node.textContent === 'Copy command'));
+    assert.ok(body.children.find(node => node.attributes.get('aria-label') === 'Copy command'));
     body.children.find(node => node.textContent === 'Sessions')?.dispatchEvent(new Event('click'));
     assert.equal(opened, 1); assert.equal(edits, 0);
   } finally {if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');}
@@ -419,7 +420,7 @@ test('palette uses ranked rows, marked names and input-owned keyboard selection'
     f.actions.palette(); await f.actions.load('commands'); await Promise.resolve();
     assert.equal(f.node.dataset.variant, 'palette');
     const line = f.body.children[0]; const list = f.body.children[1]; assert.ok(line && list);
-    assert.equal(line.className, 'palette-input-row'); assert.equal(line.children[0]?.textContent, '›');
+    assert.equal(line.className, 'palette-input-row'); assert.equal(line.children[0]?.children[0]?.attributes.get('class'), 'card-icon card-icon-search');
     const field = line.children[2]; assert.ok(field); field.value = 'xy'; field.dispatchEvent(new Event('input'));
     assert.deepEqual(list.children.map(row => textOf(row.children[0] as FakeNode)), ['xy', 'xy-long', 'tool:xy', 'zxyz', 'other']);
     assert.equal(list.attributes.get('role'), 'listbox'); assert.equal(list.children[0]?.attributes.get('aria-selected'), 'true');
@@ -700,12 +701,12 @@ test('Appearance lists every theme in order and checks the current workspace cho
     const f = paletteFixture({snapshot: () => current ? {workspace: {appearance: current}} as Snapshot : undefined}); try {
       f.actions.appearance(); const rows = f.body.children[0]; assert.ok(rows);
       assert.equal(rows.attributes.get('role'), 'menu'); assert.equal(rows.attributes.get('aria-label'), 'Appearance');
-      assert.deepEqual(rows.children.map(row => row.textContent), themes.map(([, label]) => label));
+      assert.deepEqual(rows.children.map(row => textOf(row)), themes.map(([, label]) => label));
       for (const [index, [value]] of themes.entries()) {
         assert.equal(rows.children[index]?.attributes.get('role'), 'menuitemradio');
         assert.equal(rows.children[index]?.attributes.get('aria-checked'), String(value === (current ?? 'dark')));
       }
-      assert.equal(focused?.textContent, themes.find(([value]) => value === (current ?? 'dark'))?.[1]);
+      assert.equal(focused && textOf(focused), themes.find(([value]) => value === (current ?? 'dark'))?.[1]);
     } finally {f.restore();}
   }
 });
@@ -723,9 +724,9 @@ test('Appearance saves each exact theme value through the existing selection pat
 test('Appearance keyboard navigation reaches the other themes without changing the choice', () => {
   const f = paletteFixture({snapshot: () => ({workspace: {appearance: 'latte'}} as Snapshot)}); try {
     f.actions.appearance(); const rows = f.body.children[0]; assert.ok(rows);
-    key(rows, 'ArrowDown'); assert.equal(focused?.textContent, 'Catppuccin Frappé');
-    key(rows, 'End'); assert.equal(focused?.textContent, 'Catppuccin Mocha');
-    key(rows, 'Home'); assert.equal(focused?.textContent, 'Dark');
+    key(rows, 'ArrowDown'); assert.equal(focused && textOf(focused), 'Catppuccin Frappé');
+    key(rows, 'End'); assert.equal(focused && textOf(focused), 'Catppuccin Mocha');
+    key(rows, 'Home'); assert.equal(focused && textOf(focused), 'Dark');
     assert.equal(rows.children[3]?.attributes.get('aria-checked'), 'true');
   } finally {f.restore();}
 });

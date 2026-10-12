@@ -1,10 +1,21 @@
 import type { Snapshot, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
+import {cardAction} from './card-icons.ts';
+import {navigateOptions} from './list-navigation.ts';
 import { button, copy, element, setText } from './dom.ts';
 import type { Modal } from './modal.ts';
 import { request } from './transport.ts';
 export type RecoveryContext = {snapshot: () => Snapshot | undefined; reload: () => Promise<void>; modal: Modal};
-function label(index: TargetIndex): string {
+function identity(index: TargetIndex): string {
   return index.target.kind === 'primary' ? `Primary session ${index.target.key} · conversation ${index.target.epoch}` : `Agent ${index.target.identity}`;
+}
+export function recoveryName(index: TargetIndex, snapshot?: Snapshot): string {
+  const target = index.target;
+  if (target.kind === 'primary') {
+    const primary = snapshot?.primaries.find(item => item.key === target.key && item.epoch === target.epoch);
+    return primary?.extension?.title ?? primary?.sessionName ?? `Primary conversation ${target.epoch}`;
+  }
+  const row = snapshot?.roster?.rows.find(item => item.identity === target.identity);
+  return row?.name ?? row?.handle ?? 'Agent';
 }
 export async function exactInput(workspace: string, item: UnconfirmedInput): Promise<UnconfirmedInput> {
   return item.textTruncated ? request<UnconfirmedInput>(`/api/workspaces/${encodeURIComponent(workspace)}/unconfirmed/${encodeURIComponent(item.operationId)}`) : item;
@@ -22,24 +33,28 @@ export class Recovery {
     modal.open('Saved drafts and messages');
     const rows = snapshot?.targetIndex?.filter(item => item.hasDraft || item.unconfirmedOperationIds.length) ?? [];
     if (!rows.length) modal.body.append(element('p', 'secondary', 'No saved drafts or unconfirmed messages.'));
+    const list = element('div', 'options recovery-targets');
     for (const row of rows) {
-      const node = button(label(row), () => { void modal.run(() => this.target(row), false); });
-      node.append(element('span', 'secondary', `${row.hasDraft ? 'Saved draft' : ''}${row.unconfirmedOperationIds.length ? ' · Unconfirmed messages' : ''}`)); modal.body.append(node);
+      const name = recoveryName(row, snapshot); const node = button('', () => { void modal.run(() => this.target(row), false); }, 'recovery-target');
+      const counts = [row.hasDraft ? 'Saved draft' : '', row.unconfirmedOperationIds.length ? `${row.unconfirmedOperationIds.length} unconfirmed ${row.unconfirmedOperationIds.length === 1 ? 'message' : 'messages'}` : ''].filter(Boolean).join(' · ');
+      node.append(element('span', 'recovery-name', name), element('span', 'recovery-count secondary', counts));
+      node.title = identity(row); node.setAttribute('aria-label', `${name}, ${counts}`); node.setAttribute('aria-description', identity(row)); list.append(node);
     }
+    list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list);
   }
   private async target(index: TargetIndex): Promise<void> {
     const workspace = this.ctx.snapshot()?.workspace.id; if (!workspace) return;
     const modal = this.ctx.modal; const token = modal.token;
     const saved = await request<TargetState>(`/api/workspaces/${encodeURIComponent(workspace)}/targets/${encodeURIComponent(index.targetKey)}`);
-    if (!modal.owns(token)) return; modal.open(label(index));
-    if (saved.draft.text) modal.body.append(element('h2', undefined, 'Saved draft'), element('pre', undefined, saved.draft.text), button('Copy draft', () => { void copy(saved.draft.text, modal.body); }));
+    if (!modal.owns(token)) return; modal.open(recoveryName(index, this.ctx.snapshot())); modal.body.append(element('p', 'identity', identity(index)));
+    if (saved.draft.text) modal.body.append(element('h2', undefined, 'Saved draft'), element('pre', undefined, saved.draft.text), cardAction('copy', 'Copy draft', () => { void copy(saved.draft.text, modal.body); }));
     for (const item of saved.unconfirmed) this.input(saved, item, workspace);
   }
   private input(saved: TargetState, item: UnconfirmedInput, workspace: string): void {
     const modal = this.ctx.modal; const row = element('section', 'notification');
     row.append(element('h2', undefined, 'Send not confirmed'), element('p', undefined, 'Check before you send again.'), element('pre', undefined, item.text));
     if (item.textTruncated) row.append(element('p', 'secondary', 'Preview shortened. Copy the full message.'));
-    row.append(button('Copy full message', () => { void modal.run(async () => { const exact = await exactInput(workspace, item); await copy(exact.text, row); }, false); }), button('Check delivery', () => { void modal.run(async () => {
+    row.append(cardAction('copy', 'Copy full message', () => { void modal.run(async () => { const exact = await exactInput(workspace, item); await copy(exact.text, row); }, false); }), cardAction('restart', 'Check delivery', () => { void modal.run(async () => {
       const receipt = await request(`/api/operations/${encodeURIComponent(item.operationId)}/reconcile`, 'POST', {});
       const details = element('details', 'receipt-disclosure'); details.append(element('summary', undefined, 'Delivery details'), element('pre', undefined, JSON.stringify(receipt, null, 2))); row.append(details);
     }, false); }), button('Restore to this draft', () => { void modal.run(async () => {

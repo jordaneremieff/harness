@@ -20,7 +20,7 @@ class Node extends EventTarget {
   getBoundingClientRect(): {left: number} {return {left: (this.parent?.getBoundingClientRect().left ?? 0) + this.offsetLeft - (this.parent?.scrollLeft ?? 0)};}
   focus(): void {this.ownerDocument.activeElement = this;}
 }
-class Doc {activeElement?: Node; createElement(): Node {return new Node(this);}}
+class Doc {activeElement?: Node; createElementNS(): Node {return new Node(this);} createElement(): Node {return new Node(this);}}
 class Observer {
   static instances: Observer[] = []; observed = new Set<unknown>(); callback: () => void;
   constructor(callback: () => void) {this.callback = callback; Observer.instances.push(this);}
@@ -49,7 +49,7 @@ function fixture(tabs: ConversationTab[] = [{kind:'primary'}, {kind:'agent',iden
 test('retained tabs preserve identity, accessible target controls and selected state through repaint', () => {
   const f=fixture(); const nodes=[...f.root().children]; nodes[0]?.focus(); f.strip.render(); assert.deepEqual(f.root().children,nodes); assert.equal(f.doc.activeElement,nodes[0]);
   assert.equal(nodes[0]?.attributes.get('role'),'tab'); assert.equal(nodes[0]?.attributes.get('aria-controls'),'content-pane-1'); assert.equal(nodes[0]?.attributes.get('aria-selected'),'true');
-  assert.equal(nodes[1]?.tabIndex,-1); assert.equal(nodes[1]?.querySelector('.tab-state')?.textContent,'✓'); assert.equal(nodes[1]?.querySelector('.tab-close')?.attributes.get('aria-label'),'Close agent:a tab');
+  assert.equal(nodes[1]?.tabIndex,-1); assert.equal(nodes[1]?.querySelector('.tab-state')?.textContent,''); assert.equal(nodes[1]?.querySelector('.tab-state')?.hidden,true); assert.equal(nodes[1]?.querySelector('.tab-close')?.attributes.get('aria-label'),'Close agent:a tab');
 });
 test('mixed split axes move the same keyed nodes into any target-independent group', () => {
   const f=fixture(); const original=[...f.root().children]; f.split('pane-1','x','agent:b'); f.split('pane-1','y','primary');
@@ -112,25 +112,25 @@ test('each group fits its own status/width and overflow; narrowness does not rem
   for (const node of f.root().children) node.clientWidth=130; f.strip.render();
   assert.equal(f.root().styleValues.get('--tab-share'),`${335/3}px`); assert.equal(f.root('pane-2').styleValues.get('--tab-share'),'440px');
   assert.equal(f.overflow.get('pane-1'),true); assert.equal(f.overflow.get('pane-2'),false);
-  for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state')?.hidden,true); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
+  for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state')?.hidden,false); assert.equal(node.querySelector('.tab-state')?.textContent,'Custom activity'); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
 });
-test('repeated resize fits measure a previously hidden status before deciding visibility', () => {
+test('repeated resize retains full exceptional status instead of erasing it', () => {
   const f=fixture([{kind:'primary'},{kind:'agent',identity:'a'}], {label:tab=>tab.kind==='primary'?'Primary':'Parser',status:()=>({label:'Working · bash',glyph:'○'})});
   const node=f.root().children[0]; const state=node?.querySelector('.tab-state'); assert.ok(node); assert.ok(state);
   Object.defineProperty(state,'scrollWidth',{get:()=>state.hidden?0:100});
   node.clientWidth=280; const observer=Observer.instances.at(-1); assert.ok(observer);
-  for (let i=0;i<3;i++) {observer.resize(); assert.equal(state.hidden,true);}
+  for (let i=0;i<3;i++) {observer.resize(); assert.equal(state.hidden,false); assert.equal(state.textContent,'Working · bash');}
   assert.equal(node.querySelector('.tab-label')?.textContent,'Primary');
   assert.equal(f.root().children[1]?.querySelector('.tab-label')?.textContent,'Parser');
   assert.equal(node.attributes.get('aria-label'),'Primary, Working · bash'); assert.match(node.title,/Working · bash/);
   assert.equal(state.attributes.get('aria-hidden'),'true');
   node.clientWidth=400; observer.resize(); assert.equal(state.hidden,false);
-  node.clientWidth=280; observer.resize(); observer.resize(); assert.equal(state.hidden,true);
+  node.clientWidth=280; observer.resize(); observer.resize(); assert.equal(state.hidden,false);
 });
-test('canonical glyph callback stays authoritative and status repaint preserves retained focus', () => {
+test('full status labels stay authoritative and status repaint preserves retained focus', () => {
   let status={label:'Custom',glyph:'●'}; const f=fixture(undefined,{status:()=>status}); const node=f.root().children[1]; assert.ok(node); node.focus();
-  assert.equal(node.querySelector('.tab-state')?.textContent,'●'); status={label:'Working',glyph:'○'}; f.strip.render();
-  assert.equal(node.querySelector('.tab-state')?.textContent,'○'); assert.equal(f.doc.activeElement,node); assert.match(node.attributes.get('aria-label')??'',/Working/);
+  assert.equal(node.querySelector('.tab-state')?.textContent,'Custom'); status={label:'Working',glyph:'○'}; f.strip.render();
+  assert.equal(node.querySelector('.tab-state')?.textContent,'Working'); assert.equal(f.doc.activeElement,node); assert.match(node.attributes.get('aria-label')??'',/Working/);
 });
 test('active reveal scrolls only its local host and repaint preserves manual strip position and draft selection', () => {
   const f=fixture(Array.from({length:11},(_,i)=>({kind:'agent',identity:String(i)}))); f.set(activatePaneTab(f.layout(),'pane-1','agent:10'));
@@ -152,4 +152,12 @@ test('destroy releases observer and strip drop handlers exactly once and never c
 });
 test('strip reveal uses only the nearest hidden edge', () => {
   assert.equal(revealTabScroll(200,500,300,130),200); assert.equal(revealTabScroll(200,500,100,130),100); assert.equal(revealTabScroll(0,500,1300,130),930);
+});
+
+test('a sole tab fills the strip and Ready never competes with its name', () => {
+  const f = fixture([{kind:'primary'}], {label:()=> 'Long named conversation'});
+  const node = f.root().children[0]; assert.ok(node); assert.equal(f.root().dataset.sole,'true');
+  assert.equal(node.querySelector('.tab-label')?.textContent,'Long named conversation'); assert.equal(node.querySelector('.tab-state')?.hidden,true);
+  assert.match(node.attributes.get('aria-label') ?? '', /Long named conversation, Ready/);
+  assert.equal(node.querySelector('.tab-close')?.children[0]?.attributes.get('class'),'card-icon card-icon-close');
 });

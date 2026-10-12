@@ -1,4 +1,5 @@
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
+import {cardAction, cardActionLabel} from './card-icons.ts';
 import { byId, button, details, element, setText } from './dom.ts';
 import { captureAnchor, layoutItems, restoreAnchor, visibleWindow } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
@@ -69,7 +70,7 @@ export class Roster {
   private resumes = new Set<string>();
   private expanded = false;
   private older = button('', () => { this.expanded = !this.expanded; this.paint(); }, 'roster-older');
-  private paging = button('', () => { if (this.query() && this.search) void this.searchCached(true); else this.more('more'); }, 'roster-more');
+  private paging = cardAction('next', 'More agents', () => { if (this.query() && this.search) void this.searchCached(true); else this.more('more'); }, 'roster-more');
   private pending = false;
   private meta?: Omit<CachedRoster, 'rows'>;
   private footerCount = -1;
@@ -125,7 +126,7 @@ export class Roster {
   private messageAction(cached: RowNode): void {
     cached.message.hidden = !!this.selected || !this.message;
     const resume = this.resumes.has(cached.source.identity);
-    setText(cached.message, resume ? 'Resume' : 'Message'); cached.node.dataset.action = cached.message.hidden ? '' : resume ? 'resume' : 'message';
+    cardActionLabel(cached.message, resume ? 'Resume' : 'Message', `${resume ? 'Resume message to' : 'Message'} ${rowName(cached.source)} · ${cached.source.identity}`); cached.node.dataset.action = cached.message.hidden ? '' : resume ? 'resume' : 'message';
     cached.message.setAttribute('aria-label', `${this.resumes.has(cached.source.identity) ? 'Resume message to' : 'Message'} ${rowName(cached.source)} · ${cached.source.identity}`);
   }
   private query(): string { return byId<HTMLInputElement>('agent-search').value.trim().toLocaleLowerCase(); }
@@ -179,12 +180,12 @@ export class Roster {
   }
   private footerAction(footer: HTMLElement, meta?: Omit<CachedRoster, 'rows'>): void {
     const state = meta?.scan.state ?? 'not-started';
-    if (meta?.error || state === 'failed') footer.append(button('Try again', () => this.more('refresh')));
-    else if (state === 'not-started' || meta?.stale) footer.append(button('Refresh agents', () => this.more('refresh')));
+    if (meta?.error || state === 'failed') footer.append(cardAction('restart', 'Refresh agents', () => this.more('refresh')));
+    else if (state === 'not-started' || meta?.stale) footer.append(cardAction('restart', 'Refresh agents', () => this.more('refresh')));
     if (this.query() && this.search && this.searchNotice) this.cachedSearchAction(footer, meta);
   }
   private cachedSearchAction(footer: HTMLElement, meta?: Omit<CachedRoster, 'rows'>): void {
-    if (meta?.nextCursor && !this.searchController) footer.append(button('More agents', () => { void this.searchCached(true); }));
+    if (meta?.nextCursor && !this.searchController) footer.append(cardAction('next', 'More agents', () => { void this.searchCached(true); }));
   }
   private emptyState(): HTMLElement {
     let text: string;
@@ -229,7 +230,7 @@ export class Roster {
     const label = this.pagingLabel();
     const searchMore = query && this.search && this.meta?.nextCursor && !this.searchController && !this.searchNotice;
     const pageMore = !query && label && (this.expanded || !olderCount);
-    if (searchMore || pageMore) { setText(this.paging, query ? 'More agents' : label); controls.push(this.paging); }
+    if (searchMore || pageMore) { cardActionLabel(this.paging, query ? 'More agents' : label); controls.push(this.paging); }
     return controls;
   }
   private paint(): void {
@@ -290,7 +291,7 @@ export class Roster {
     const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'); heading.append(state, name, identity);
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); }, 'row-age'); ageButton.append(age);
-    const message = button('Message', () => this.message?.(row.identity), 'row-message');
+    const message = cardAction('message', 'Message', () => this.message?.(row.identity), 'row-message');
     select.append(heading); node.append(select, ageButton, message);
     const cached = {node, select, state, name, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;

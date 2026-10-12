@@ -4,6 +4,7 @@ import type { ConversationLayout, ConversationTab } from '../shared/api.ts';
 import { activeTab, closeTab, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
+import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
@@ -105,11 +106,11 @@ function conversationController(target: Target): ConversationController {
   };
   const observed = add('observed', 'div', 'last-observed'); observed.textContent = 'Last observed'; observed.hidden = true;
   const notice = add('view-notice', 'div', 'availability'); notice.setAttribute('role', 'status');
-  const earlier = add('earlier', 'button') as HTMLButtonElement; earlier.type = 'button'; earlier.textContent = '↑ earlier'; earlier.hidden = true;
+  const earlier = add('earlier', 'button') as HTMLButtonElement; earlier.type = 'button'; controlIcon(earlier, 'earlier', 'Earlier messages'); earlier.hidden = true;
   const region = element('div', 'transcript-region'); const absent = add('empty', 'div', 'empty-state'); absent.hidden = true;
   absent.append(add('empty-heading', 'h2'), add('empty-caption', 'p'));
   const scroller = add('transcript', 'div', 'transcript'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', 'Conversation messages');
-  const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.textContent = '↓ latest'; latest.hidden = true;
+  const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; controlIcon(latest, 'latest', 'Latest message'); latest.hidden = true;
   region.append(absent, scroller, latest); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
@@ -119,11 +120,11 @@ function conversationController(target: Target): ConversationController {
   root.append(observed, notice, region, above, elements.root, below);
   if (target.kind === 'agent') {
     const help = add('start-help', 'div', 'agent-start-help'); help.hidden = true; help.setAttribute('aria-label', 'Agent connection');
-    const start = add('start', 'button') as HTMLButtonElement, check = add('connect', 'button') as HTMLButtonElement; start.type = check.type = 'button'; start.textContent = 'Start agent'; check.textContent = 'Check connection';
+    const start = add('start', 'button') as HTMLButtonElement, check = add('connect', 'button') as HTMLButtonElement; start.type = check.type = 'button'; start.textContent = 'Start agent'; controlIcon(check, 'restart', 'Check connection');
     const status = add('connect-status', 'p'); status.setAttribute('role', 'status');
     const disclosure = element('details'); nodes.set('start-disclosure', disclosure); disclosure.append(element('summary', undefined, 'Start in Pi'), element('p', undefined, 'This command can resume unfinished work.'));
-    const command = element('pre'), copyCommand = add('copy-command', 'button') as HTMLButtonElement; copyCommand.type = 'button'; copyCommand.textContent = 'Copy command'; nodes.set('start-command', command); disclosure.append(command, copyCommand);
-    help.append(element('p', undefined, 'A start can resume unfinished work before the agent is ready.'), start, check, status, disclosure); root.insertBefore(help, elements.root);
+    const command = element('pre'), copyCommand = add('copy-command', 'button') as HTMLButtonElement; copyCommand.type = 'button'; controlIcon(copyCommand, 'copy', 'Copy command'); nodes.set('start-command', command); disclosure.append(command, copyCommand);
+    help.append(element('p', undefined, 'A start can resume unfinished work before the agent is ready.'), start, check, status, disclosure); root.insertBefore(help, region);
   }
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, historyReady: false, initialized: false} as ConversationController;
   controller.composer = new Composer(elements, {timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
@@ -163,7 +164,7 @@ const references = new ReferenceResolver(resolveReference, destination => { void
 const actions: Actions = new Actions({snapshot: currentSnapshot, primary, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, find: query => focusedTranscript()?.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
-const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement}>();
+const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   move: (key, pane, index) => applyLayout(movePaneTab(currentLayout(), key, pane, index)), label: tabLabel,
@@ -338,8 +339,9 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
     const node = element('section', 'pane-leaf'); node.dataset.paneId = leaf.id;
     const bar = element('div', 'tab-bar'), tabs = element('div', 'conversation-tabs'), content = element('div', 'pane-content'); content.id = `pane-content-${leaf.id}`;
     tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Conversations');
-    const plus = button('+', () => openPaneMenu(leaf.id)); plus.className = 'icon-button pane-actions'; plus.setAttribute('aria-label', 'Tab and pane actions'); plus.setAttribute('aria-haspopup', 'menu');
-    bar.append(tabs, plus); node.append(bar, content); pane = {node, tabs, content, plus}; paneRegions.set(leaf.id, pane);
+    const plus = cardAction('plus', 'New conversation or split', () => openPaneMenu(leaf.id, undefined, undefined, 'add'), 'icon-button pane-actions'); plus.setAttribute('aria-haspopup', 'menu');
+    const menu = cardAction('more', 'Conversation and view actions', () => openPaneMenu(leaf.id), 'icon-button pane-menu'); menu.setAttribute('aria-haspopup', 'menu');
+    bar.append(tabs, plus, menu); node.append(bar, content); pane = {node, tabs, content, plus, menu}; paneRegions.set(leaf.id, pane);
     node.addEventListener('contextmenu', event => {
       if (event.defaultPrevented || !(event.target instanceof HTMLElement) || nativeEditingTarget(event.target) || event.target.closest('.transcript')) return;
       event.preventDefault(); openPaneMenu(leaf.id, event, event.target.closest<HTMLElement>('.conversation-tab')?.dataset.tabKey);
@@ -650,9 +652,9 @@ export function primaryChrome(item?: PrimaryView): void {
   renderIdentity();
   primaryNavigation(item);
   renderTabActions();
-  const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(model, item?.model ? `Model ${item.model.id}` : 'Model'); model.title = item?.model ? `${item.model.provider}/${item.model.id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', item?.model ? `Model for Primary: ${item.model.provider}/${item.model.id}` : 'Choose Primary model');
+  const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(model, item?.model ? item.model.id : 'Choose model'); model.title = item?.model ? `${item.model.provider}/${item.model.id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', item?.model ? `Model for Primary: ${item.model.provider}/${item.model.id}` : 'Choose Primary model');
   renderPrimaryUsage(item);
-  const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; thinking.disabled = item?.lifecycle !== 'ready'; setText(thinking, item?.thinkingLevel ? `Thinking ${item.thinkingLevel}` : ''); thinking.setAttribute('aria-label', item?.thinkingLevel ? `Thinking level for Primary: ${item.thinkingLevel}` : 'Choose Primary thinking level');
+  const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; thinking.disabled = item?.lifecycle !== 'ready'; setText(thinking, item?.thinkingLevel ?? ''); thinking.title = item?.thinkingLevel ? `Thinking level: ${item.thinkingLevel}` : 'Choose thinking level'; thinking.setAttribute('aria-label', item?.thinkingLevel ? `Thinking level for Primary: ${item.thinkingLevel}` : 'Choose Primary thinking level');
 }
 function renderPrimaryUsage(item?: PrimaryView): void {
   const usage = usageFacts(item, item ? primaryBlocks(state, item.key) : undefined);
@@ -686,7 +688,7 @@ function primaryNavigation(item?: PrimaryView): void {
   const status = byId('primary-row-state'); setText(status, glyph);
   status.dataset.state = view.busy ? 'running' : glyph === '!' ? 'failed' : view.input ? 'idle' : 'none';
   setText(byId('primary-row-title'), item?.extension?.title ?? item?.sessionName ?? item?.sessionId ?? 'no session');
-  setText(byId('primary-row-meta'), item ? primaryState(item) : '');
+  setText(byId('primary-row-meta'), item && view.activity !== 'Ready' ? primaryState(item) : '');
 }
 function primaryActivity(item?: PrimaryView, target?: Target): void {
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
@@ -904,11 +906,15 @@ async function runControllerHistory(controller: ConversationController, earlier 
   try {
     const page = await request<HistoryPage | AgentHistoryPage>(historyPath(controller, earlier), 'GET', undefined, undefined, AbortSignal.any([abort.signal, controller.abort.signal, AbortSignal.timeout(15_000)]));
     if (!historyCurrent(controller, abort)) return; mergeControllerHistory(controller, page, earlier); loaded = true; historyLoadedFeedback(earlier, restoring);
-  } catch (error) {if (!abort.signal.aborted) controllerNode(controller, 'view-notice').replaceChildren(element('p', undefined, 'History could not be loaded.'), details('Details', errorMessage(error)), button('Try again', () => {void loadControllerHistory(controller);}));}
-  finally {if (controller.historyAbort === abort) {controller.loading = false; control.disabled = false; setText(control, '↑ earlier');}}
+  } catch (error) {if (!abort.signal.aborted) controllerNode(controller, 'view-notice').replaceChildren(element('p', undefined, 'History could not be loaded.'), historyDetails(error), cardAction('restart', 'Retry history', () => {void loadControllerHistory(controller);}));}
+  finally {if (controller.historyAbort === abort) {controller.loading = false; control.disabled = false; control.setAttribute('aria-label', 'Earlier messages'); control.title = 'Earlier messages'; control.removeAttribute('aria-busy');}}
   if (loaded && !earlier && !restoring && reading && !reading.followTail) await restoreControllerHistory(controller, reading);
 }
-function historyLoadingFeedback(control: HTMLButtonElement, earlier: boolean): void {control.disabled = true; if (earlier) setText(control, '↑ earlier…');}
+function historyDetails(error: unknown): HTMLElement {
+  const disclosure = details('History error details', errorMessage(error)); disclosure.classList.add('history-details');
+  const summary = disclosure.querySelector<HTMLElement>('summary'); if (summary) controlIcon(summary, 'info', 'History error details'); return disclosure;
+}
+function historyLoadingFeedback(control: HTMLButtonElement, earlier: boolean): void {control.disabled = true; if (earlier) {control.setAttribute('aria-label', 'Loading earlier messages'); control.title = 'Loading earlier messages'; control.setAttribute('aria-busy', 'true');}}
 function historyLoadedFeedback(earlier: boolean, restoring: boolean): void {if (earlier && !restoring) announce('Earlier entries loaded.');}
 async function restoreControllerHistory(controller: ConversationController, reading: TargetState['reading']): Promise<void> {
   const result = await pageToReadingAnchor(reading, {hasEntry: id => state.conversations.get(targetIdentity(controller.target))?.entries.has(id) ?? false,
@@ -996,13 +1002,13 @@ function noticesBadge(): void {
 function notices(): void {
   state = markReadNotices(state); noticesBadge(); modal.open('Notifications'); if (!state.notices.length) modal.body.append(empty('No notifications'));
   for (const notice of state.notices) {
-    const row = element('div', `notification ${notice.level}`); row.append(button('Dismiss', () => { state = dismissNotice(state, notice.id); notices(); noticesBadge(); }), element('p', undefined, notice.message));
+    const row = element('div', `notification ${notice.level}`); row.append(cardAction('close', 'Dismiss notification', () => { state = dismissNotice(state, notice.id); notices(); noticesBadge(); }), element('p', undefined, notice.message));
     if (notice.target) row.append(element('p', 'target-label', presentation(notice.target).name), details('Details', rawText(notice.target)));
     modal.body.append(row); references.decorate(row, () => state.noticeShelf.get(notice.id) === notice && !state.dismissedNotices.has(notice.id));
   }
 }
 function showError(error: unknown): void { const message = errorMessage(error); announce(message); if (footerController && footerController.workspaceId === state.workspace?.id) setText(footerController.elements.receipt, message); }
-function showRosterError(error: unknown): void { const message = errorMessage(error); announce(message); byId('roster-footer').replaceChildren(element('p', 'error', message), button('Try again', () => { void reload().catch(showRosterError); })); }
+function showRosterError(error: unknown): void { const message = errorMessage(error); announce(message); byId('roster-footer').replaceChildren(element('p', 'error', message), cardAction('restart', 'Refresh agent roster', () => { void reload().catch(showRosterError); })); }
 function refreshRoster(): void { void request('/api/agents/refresh', 'POST', {}).catch(showRosterError); }
 function moreRoster(): void {
   const cursor = state.rosterMeta?.nextCursor;
@@ -1061,8 +1067,10 @@ function inspectAgent(identity = selectedAgent()): void {
   }, false);
 }
 function primaryMenuItems(): ContextItem[] {
-  return actions.sessionMenuEntries().filter(item => !['Sessions', 'Appearance', 'Help', 'Saved drafts and input copies'].includes(item.name))
-    .map(item => ({label: item.name, enabled: item.enabled, run: item.run}));
+  const entries = actions.sessionMenuEntries(); const shown = targetState(primaryTarget())?.presentation?.showThinking ?? false;
+  const toggle = entries.find(item => item.name === (shown ? 'Hide thinking' : 'Show thinking'));
+  return entries.filter(item => !['Sessions', 'Appearance', 'Help', 'Hide thinking'].includes(item.name))
+    .map(item => item.name === 'Show thinking' ? {label: 'Show thinking', checked: shown, checkbox: true, enabled: item.enabled, run: toggle?.run ?? item.run} : {label: item.name, enabled: item.enabled, run: item.run});
 }
 function agentMenuItems(identity: string): ContextItem[] {
   const row = agentRow(identity); if (!row) return [];
@@ -1077,7 +1085,7 @@ function agentMenuItems(identity: string): ContextItem[] {
   return items;
 }
 function paneSpace(id: string): {width: number; height: number; divider: number} { const box = paneRegions.get(id)?.node.getBoundingClientRect(); return {width: box?.width ?? 0, height: box?.height ?? 0, divider: 4}; }
-function openPaneMenu(paneId: string, event?: MouseEvent, key?: string): void {
+function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose: 'add' | 'context' = 'context'): void {
   const region = paneRegions.get(paneId), workspace = state.workspace; if (!region || !workspace) return;
   const layout = currentLayout(), leaf = paneById(layout, paneId), tab = leaf?.tabs.find(tab => tabKey(tab) === (key ?? leaf.active));
   const target = tab ? controllerTarget(tab) : undefined, owner = target ? conversationController(target) : undefined;
@@ -1091,8 +1099,8 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string): void {
     }, closeTab: key => applyLayout(closeTab(currentLayout(), key)), activate: activateConversationTab,
     view: key => {const tab = paneLeaves(currentLayout().root).flatMap(pane => pane.tabs).find(tab => tabKey(tab) === key); const target = tab ? controllerTarget(tab) : undefined; return target ? conversationController(target).transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological' : 'chronological';},
     setView: (key, view) => {const tab = paneLeaves(currentLayout().root).flatMap(pane => pane.tabs).find(tab => tabKey(tab) === key); const target = tab ? controllerTarget(tab) : undefined; if (target) conversationController(target).transcript.setView(view);},
-    overflow: region.plus.dataset.overflow === 'true', sessionItems: tab?.kind === 'primary' ? primaryMenuItems() : tab?.kind === 'agent' ? agentMenuItems(tab.identity) : []});
-  const box = region.plus.getBoundingClientRect(); contextMenu.open(region.plus, event ? {x: event.clientX, y: event.clientY} : {x: box.right, y: box.bottom}, 'Tab and pane actions', items, () => valid() && (!owner || owner.workspaceId === state.workspace?.id));
+    purpose, overflow: region.plus.dataset.overflow === 'true', sessionItems: tab?.kind === 'primary' ? primaryMenuItems() : tab?.kind === 'agent' ? agentMenuItems(tab.identity) : []});
+  const trigger = purpose === 'add' ? region.plus : region.menu; const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, event ? {x: event.clientX, y: event.clientY} : {x: box.right, y: box.bottom}, purpose === 'add' ? 'New conversation or split' : 'Conversation and view actions', items, () => valid() && (!owner || owner.workspaceId === state.workspace?.id));
 }
 function choosePaneTarget(pane: string, axis?: 'x' | 'y'): void {
   const workspace = state.workspace, layout = currentLayout(); if (!workspace || !paneById(layout, pane)) return;
@@ -1142,6 +1150,12 @@ export function appKey(event: KeyboardEvent): void {
   event.preventDefault(); if (!event.repeat && !modal.openNow) actions.palette(mode);
 }
 function bind(): void {
+  for (const node of document.querySelectorAll<HTMLElement>('[data-control-icon]')) {
+    const count = node.querySelector<HTMLElement>('#notices-count');
+    controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
+    if (count) node.append(count);
+  }
+  for (const id of ['primary-heading', 'agents-heading']) byId(id).prepend(cardIcon('chevron'));
   for (const name of ['input', 'change', 'keydown', 'pointerdown', 'select', 'scroll', 'compositionstart', 'compositionend'] as const) document.addEventListener(name, event => {if (event.isTrusted) devInteractionRevision++;}, {capture: true, passive: true});
   window.addEventListener('pagehide', event => {if (!event.persisted && !devNavigating) devReload?.destroy();});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});

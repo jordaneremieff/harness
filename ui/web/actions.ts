@@ -1,3 +1,4 @@
+import {cardAction, cardIcon} from './card-icons.ts';
 import { ProjectPicker } from './picker.ts';
 import { renderFacts, type ReportedFact } from './facts.ts';
 import type { AgentRow, Appearance, CommandView, ConversationLayout, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
@@ -26,6 +27,12 @@ const appCommands: CommandOption[] = [
 ];
 
 export type PaletteEntry = CommandOption & {enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string};
+function choice(label: string, selected: boolean, run: () => void): HTMLButtonElement {
+  const node = button('', run, 'option-choice');
+  const check = cardIcon('success'); check.classList.add('choice-check'); check.style.visibility = selected ? 'visible' : 'hidden';
+  node.append(check, element('span', 'choice-value', label));
+  node.setAttribute('role', 'menuitemradio'); node.setAttribute('aria-checked', String(selected)); node.setAttribute('aria-label', label); return node;
+}
 function commandSource(source: string): string { return ({app: 'App', primary: 'Primary', agent: 'Agent'} as Record<string, string>)[source] ?? source; }
 function paletteName(item: PaletteEntry, marks: number[], conversation: boolean): HTMLElement {
   const name = element('span', 'palette-name');
@@ -198,9 +205,11 @@ export class Actions {
   forkPicker(): void {
     const modal = this.ctx.modal; modal.open('Fork from a user message');
     const entries = this.ctx.primaryEntries().filter(entry => entry.kind === 'message' && !/^(message:|live:)/.test(entry.id));
+    const list = element('div', 'options message-choices');
     for (const entry of entries) for (const message of entry.messages ?? []) if (message.role === 'user' && message.state === 'final') {
-      const excerpt = message.parts.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n'); modal.body.append(button(excerpt.slice(0, 200), () => this.fork(entry.id, excerpt)));
+      const excerpt = message.parts.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n'); list.append(button(excerpt.slice(0, 200), () => this.fork(entry.id, excerpt), 'message-choice'));
     }
+    list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list);
     modal.body.append(element('p', 'secondary', 'Only loaded messages appear here.'));
   }
   compact(): void {
@@ -219,7 +228,7 @@ export class Actions {
   sessionDetails(primary = this.ctx.primary()): void {
     if (!primary) return;
     const modal = this.ctx.modal; modal.open('Conversation details'); const token = modal.token;
-    modal.body.append(element('p', 'identity', primary.sessionId ?? primary.key), button('Copy session ID', () => { void copy(primary.sessionId ?? primary.key, modal.body); }), details('Reported session state', rawText(primary)));
+    modal.body.append(element('p', 'identity', primary.sessionId ?? primary.key), cardAction('copy', 'Copy session ID', () => { void copy(primary.sessionId ?? primary.key, modal.body); }), details('Reported session state', rawText(primary)));
     modal.body.append(button('Diagnostics', () => { void modal.run(async () => { const data = await request(this.path(primary, 'diagnostics')); if (modal.owns(token)) modal.body.append(details('Diagnostics', rawText(data))); }, false); }));
   }
   conversationDetails(identity?: string): void {
@@ -227,7 +236,7 @@ export class Actions {
     if (!captured) { this.sessionDetails(); return; }
     const row = this.ctx.agents().find(item => item.identity === captured);
     const body = this.ctx.modal.open('Conversation details');
-    body.append(element('p', 'identity', captured), button('Copy agent ID', () => { void copy(captured, body); }));
+    body.append(element('p', 'identity', captured), cardAction('copy', 'Copy agent ID', () => { void copy(captured, body); }));
     if (row) body.append(details('Reported agent metadata', rawText(row)));
     const facts = element('div', 'conversation-facts'); renderFacts(facts, this.ctx.conversationFacts?.(captured) ?? []); body.append(facts);
   }
@@ -236,17 +245,18 @@ export class Actions {
     const modal = this.ctx.modal; modal.open('Choose model for Primary'); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading models…'));
     void modal.run(async () => {
       const page = await this.load('models'); if (!modal.owns(token)) return;
-      modal.body.replaceChildren(); const search = input('Search models'); const list = element('div', 'options'); modal.body.append(search.label, search.field, list);
+      modal.body.replaceChildren(); const search = input('Search models'); const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Models'); modal.body.append(search.label, search.field, list);
       const paint = () => {
         list.replaceChildren();
         for (const model of page.items as ModelChoice[]) if (`${model.provider}/${model.id}`.toLocaleLowerCase().includes(search.field.value.toLocaleLowerCase())) {
-          const label = `${primary.model?.provider === model.provider && primary.model.id === model.id ? '✓ ' : ''}${model.provider}/${model.id}`;
-          const node = button(label, () => {
-            node.disabled = true; node.textContent = 'Applying…';
-            void modal.run(async () => { try { await this.control({action: 'model', provider: model.provider, modelId: model.id} as PrimaryControl, primary); this.resources.delete(`${primary.key}:${primary.epoch}:thinking`); } finally {node.disabled = false; node.textContent = label;} });
+          const label = `${model.provider}/${model.id}`;
+          const node = choice(label, primary.model?.provider === model.provider && primary.model.id === model.id, () => {
+            node.disabled = true; node.setAttribute('aria-busy', 'true');
+            void modal.run(async () => { try { await this.control({action: 'model', provider: model.provider, modelId: model.id} as PrimaryControl, primary); this.resources.delete(`${primary.key}:${primary.epoch}:thinking`); } finally {node.disabled = false; node.removeAttribute('aria-busy');} });
           }); list.append(node);
         }
       };
+      list.addEventListener('keydown', event => navigateOptions(event, list));
       search.field.addEventListener('input', paint); paint(); search.field.focus();
       if (page.nextCursor) {
         const more = button('More models', () => { more.disabled = true; void modal.run(async () => {
@@ -261,7 +271,9 @@ export class Actions {
     const modal = this.ctx.modal; modal.open('Thinking level for Primary'); const token = modal.token;
     void modal.run(async () => {
       const page = await this.load('thinking'); if (!modal.owns(token)) return;
-      const list = element('div', 'options'); for (const level of page.items as string[]) list.append(button(level, () => { void modal.run(() => this.control({action: 'thinking', level} as PrimaryControl, primary)); })); modal.body.append(list);
+      const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Thinking levels');
+      for (const level of page.items as string[]) list.append(choice(level, primary.thinkingLevel === level, () => { void modal.run(() => this.control({action: 'thinking', level} as PrimaryControl, primary)); }));
+      list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list); list.querySelector<HTMLButtonElement>('button')?.focus();
     }, false, 'Thinking levels could not be loaded.');
   }
   paletteEntries(): PaletteEntry[] {
@@ -345,7 +357,7 @@ export class Actions {
     modal.node.dataset.variant = 'palette'; modal.node.dataset.mode = mode;
     const search = input(mode === 'goto' ? 'Search conversations' : 'Search commands and agents'); search.label.className = 'sr-only';
     search.field.setAttribute('role', 'combobox'); search.field.setAttribute('aria-autocomplete', 'list'); search.field.setAttribute('aria-expanded', 'true'); search.field.setAttribute('aria-controls', 'palette-list');
-    const prompt = element('span', 'palette-prompt', '›'); prompt.setAttribute('aria-hidden', 'true');
+    const prompt = element('span', 'palette-prompt'); prompt.append(cardIcon('search')); prompt.setAttribute('aria-hidden', 'true');
     search.field.className = 'palette-input'; search.field.placeholder = mode === 'goto' ? 'Search conversations' : 'Search commands and agents';
     const line = element('div', 'palette-input-row'); line.append(prompt, search.label, search.field);
     const list = element('div', 'palette-list'); list.id = 'palette-list'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', mode === 'goto' ? 'Conversations' : 'Commands and agents'); modal.body.append(line, list);
@@ -434,7 +446,7 @@ export class Actions {
       const modal = this.ctx.modal;
       modal.open('Primary session required');
       modal.body.append(element('p', 'secondary', 'Select a session for Primary to insert this command. Your drafts are unchanged.'), element('pre', undefined, text));
-      modal.actions(button('Sessions', () => this.projectPicker()), button('Copy command', () => { void copy(text, modal.body); })); return;
+      modal.actions(button('Sessions', () => this.projectPicker()), cardAction('copy', 'Copy command', () => { void copy(text, modal.body); })); return;
     }
     const target = {...composer.target}; const previousText = composer.editor.value;
     const apply = async () => {
@@ -444,7 +456,7 @@ export class Actions {
     };
     if (!composer.editor.value) { void this.ctx.modal.run(apply, false); return; }
     this.ctx.modal.confirm('Replace Primary draft?', 'This replaces your Primary draft. Copy it first to keep both texts.', apply, 'Replace draft');
-    this.ctx.modal.body.append(element('pre', undefined, composer.editor.value), button('Copy draft', () => { void copy(composer.editor.value, this.ctx.modal.body); }));
+    this.ctx.modal.body.append(element('pre', undefined, composer.editor.value), cardAction('copy', 'Copy draft', () => { void copy(composer.editor.value, this.ctx.modal.body); }));
   }
   private terminalOnly(name: string): void {
     const modal = this.ctx.modal; modal.open('Terminal-only panel'); modal.body.append(element('p', undefined, `The bare /${name} panel requires the terminal. Text actions remain available through the primary.`));
@@ -456,15 +468,16 @@ export class Actions {
     const current = this.ctx.snapshot()?.workspace.appearance ?? 'dark'; let selected: HTMLButtonElement | undefined;
     rows.setAttribute('role', 'menu'); rows.setAttribute('aria-label', 'Appearance');
     for (const [appearance, label] of appearanceChoices) {
-      const choice = button(label, () => { void modal.run(() => this.ctx.selection({appearance})); });
-      choice.setAttribute('role', 'menuitemradio'); choice.setAttribute('aria-checked', String(appearance === current)); rows.append(choice);
-      if (appearance === current) selected = choice;
+      const row = choice(label, appearance === current, () => { void modal.run(() => this.ctx.selection({appearance})); }); rows.append(row);
+      if (appearance === current) selected = row;
     }
     rows.addEventListener('keydown', event => navigateOptions(event, rows)); modal.body.append(rows); selected?.focus();
   }
   find(): void {
     const modal = this.ctx.modal; modal.open('Find text'); const query = input('Text'); modal.body.append(query.label, query.field);
-    modal.actions(button('Find', () => { this.ctx.find(query.field.value); modal.close(); }));
+    const find = () => { this.ctx.find(query.field.value); modal.close(); };
+    query.field.addEventListener('keydown', raw => {const event = raw as KeyboardEvent; if (event.key === 'Enter' && !event.isComposing) {event.preventDefault(); find();}});
+    modal.actions(cardAction('search', 'Find text', find)); query.field.focus();
   }
   help(): void {
     const modal = this.ctx.modal; modal.open('Help');
@@ -493,6 +506,6 @@ export class Actions {
     const data = result.receipt.result?.value as HandoffView | undefined; if (!data?.command || this.displayedHandoffs.has(result.id)) return;
     this.displayedHandoffs.add(result.id); if (this.displayedHandoffs.size > 64) this.displayedHandoffs.delete(this.displayedHandoffs.values().next().value as string);
     const modal = this.ctx.modal; modal.open('Ready for terminal');
-    modal.body.append(element('pre', undefined, data.command), button('Copy command', () => { void copy(data.command, modal.body); }), element('p', undefined, 'Browser control is stopped. Other Durable agents continue.'), button('Open session…', () => this.projectPicker()));
+    modal.body.append(element('pre', undefined, data.command), cardAction('copy', 'Copy command', () => { void copy(data.command, modal.body); }), element('p', undefined, 'Browser control is stopped. Other Durable agents continue.'), button('Open session…', () => this.projectPicker()));
   }
 }

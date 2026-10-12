@@ -1,6 +1,6 @@
 import { button, element, setText } from './dom.ts';
 
-export type CardIcon = 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu';
+export type CardIcon = 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more';
 const paths: Record<CardIcon, string> = {
   copy: 'M6 5V2h8v9h-3 M2 5h8v9H2Z',
   wrap: 'M2 3h12 M2 7h9a3 3 0 0 1 0 6H7 M9 11l-2 2 2 2 M2 11h2',
@@ -14,14 +14,30 @@ const paths: Record<CardIcon, string> = {
   restart: 'M3 6a5 5 0 1 1 0 5 M3 2v4h4',
   close: 'M4 4l8 8 M12 4l-8 8',
   menu: 'M3 8h.01 M8 8h.01 M13 8h.01',
+  more: 'M8 3h.01 M8 8h.01 M8 13h.01',
+  plus: 'M8 3v10 M3 8h10',
+  search: 'M10.5 10.5L14 14 M12 7a5 5 0 1 1-10 0 5 5 0 0 1 10 0',
+  info: 'M8 7v5 M8 4h.01 M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0',
+  folder: 'M2 4h5l2 2h5v7H2Z M2 4V3h5l2 3',
+  navigation: 'M2 3h12v10H2Z M6 3v10',
+  agent: 'M8.5 5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0 M2 13v-1a4 4 0 0 1 8 0v1 M13 5v6 M10 8h6',
+  latest: 'M8 2v9 M4 7l4 4 4-4 M3 14h10',
+  earlier: 'M8 14V5 M4 9l4-4 4 4 M3 2h10',
+  message: 'M2 3h12v8H6l-4 3Z M5 6h6 M5 8h4',
 };
-export function cardIcon(name: CardIcon): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+export function cardIcon(name: CardIcon, doc: Document = document): SVGSVGElement {
+  const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 16 16'); svg.setAttribute('width', '16'); svg.setAttribute('height', '16');
   svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.5');
   svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
   svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('focusable', 'false'); svg.setAttribute('class', `card-icon card-icon-${name}`);
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', paths[name]); svg.append(path); return svg;
+  const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', paths[name]); svg.append(path); return svg;
+}
+/** Apply the shared action geometry without replacing the control or its listeners. */
+export function controlIcon(node: HTMLElement, name: CardIcon, label: string): void {
+  node.classList.add('icon-button');
+  node.replaceChildren(cardIcon(name, node.ownerDocument), element('span', 'sr-only', label));
+  node.setAttribute('aria-label', label); node.title = label;
 }
 /** Accessible action text stays separate from the fixed-size glyph. */
 export function cardAction(name: CardIcon, label: string, action: () => void, className = ''): HTMLButtonElement {
