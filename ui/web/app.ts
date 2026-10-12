@@ -80,7 +80,7 @@ let devNavigating = false;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>;
-  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; historyReady: boolean; initialized: boolean; historyWork?: Promise<void>; resizer?: Resizer};
+  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; historyReady: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; resizer?: Resizer};
 const controllers = new Map<string, ConversationController>();
 let controllerSerial = 0;
 function controllerKey(workspace: string, target: Target): string { return JSON.stringify([workspace, targetIdentity(target)]); }
@@ -126,12 +126,12 @@ function conversationController(target: Target): ConversationController {
     const command = element('pre'), copyCommand = add('copy-command', 'button') as HTMLButtonElement; copyCommand.type = 'button'; controlIcon(copyCommand, 'copy', 'Copy command'); nodes.set('start-command', command); disclosure.append(command, copyCommand);
     help.append(element('p', undefined, 'A start can resume unfinished work before the agent is ready.'), start, check, status, disclosure); root.insertBefore(help, region);
   }
-  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, historyReady: false, initialized: false} as ConversationController;
+  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, historyReady: false, initialized: false, showThinking: false} as ConversationController;
   controller.composer = new Composer(elements, {timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
-    presentation: (expanded, thinking, view) => { void savePresentation(controllerCapture(controller), expanded, thinking, view); },
+    presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
     image: part => imageUrl(part, controller.target, controller.workspaceId)});
@@ -624,7 +624,7 @@ function renderPrimaryExtensions(item = primary()): void {
 function renderController(controller: ConversationController, deferred = false, receivedAt?: number): void {
   const saved = targetState(controller.target); controller.saved = saved; controller.resizer ??= composerResizer(controller);
   if (saved) {
-    if (!controller.initialized) {controller.initialized = true; controller.transcript.configure(saved.presentation, saved.reading);}
+    if (!controller.initialized) {controller.initialized = true; controller.showThinking = saved.presentation?.showThinking ?? false; controller.transcript.configure(saved.presentation, saved.reading);}
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
@@ -976,7 +976,7 @@ async function saveView(captured: TranscriptTarget | undefined, kind: 'reading' 
       void reload().then(() => {
       if (!currentTranscriptTarget(captured)) return;
       const latest = state.targets.get(saved.targetKey); const transcript = controller.transcript;
-      transcript.configure(latest?.presentation, latest?.reading); notice.replaceChildren();
+      controller.showThinking = latest?.presentation?.showThinking ?? false; transcript.configure(latest?.presentation, latest?.reading); notice.replaceChildren();
     }).catch(showError); }));
   }
 }
@@ -1070,7 +1070,8 @@ function inspectAgent(identity = selectedAgent()): void {
   }, false);
 }
 function primaryMenuItems(): ContextItem[] {
-  const entries = actions.sessionMenuEntries(); const shown = targetState(primaryTarget())?.presentation?.showThinking ?? false;
+  const target = primaryTarget(); const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
+  const entries = actions.sessionMenuEntries(); const shown = controller?.showThinking ?? false;
   const toggle = entries.find(item => item.name === (shown ? 'Hide thinking' : 'Show thinking'));
   return entries.filter(item => !['Sessions', 'Appearance', 'Help', 'Hide thinking'].includes(item.name))
     .map(item => item.name === 'Show thinking' ? {label: 'Show thinking', checked: shown, checkbox: true, enabled: item.enabled, run: toggle?.run ?? item.run} : {label: item.name, enabled: item.enabled, run: item.run});

@@ -801,6 +801,70 @@ test('preference completions keep their captured request and leave a newer targe
   assert.match(primaryControl('view-notice').textContent, /View preferences not saved/);
   assert.match(primaryControl('view-notice').textContent, /Restore saved view/);
 });
+async function thinkingFixture(epoch: number, shown = false): Promise<TargetState> {
+  const target = {kind: 'primary' as const, key: 'p', epoch};
+  const saved = targetFixture(`thinking-${epoch}`, target, {presentation: {revision: 1, expanded: [], showThinking: shown}});
+  const history = [entryFixture(`thinking-entry-${epoch}`, [messageFixture(`thinking-message-${epoch}`, [{type: 'thinking', text: 'Retained reasoning'}])])];
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch})], roster: [], targets: [saved], history});
+  return saved;
+}
+function thinkingChoice(): HostNode {
+  app.openTabActions(); const choice = menuNode().children.find(node => node.textContent === 'Show thinking'); assert.ok(choice); return choice;
+}
+function thinkingDisclosure(): HostNode {
+  const node = primaryControl('transcript').querySelector('.thinking'); assert.ok(node); return node;
+}
+test('thinking menu follows local changes while preference writes are pending and acknowledgments lag', async context => {
+  const pending: Array<{body: Record<string, unknown>; resolve: (response: Response) => void}> = [];
+  context.after(() => {preferenceSave = undefined; contextMenu.close(); for (const item of pending) item.resolve(Response.json({ok: false, error: {code: 'capacity', message: 'Closed pending write', retry: 'manual'}}));});
+  const saved = await thinkingFixture(8401);
+  preferenceSave = (_path, body) => new Promise(resolve => pending.push({body, resolve}));
+  assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false'); thinkingChoice().click(); await settle();
+  assert.equal(thinkingDisclosure().open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
+  assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, false); assert.equal(pending.length, 1);
+  thinkingChoice().click(); await settle(); assert.equal(thinkingDisclosure().open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
+  assert.equal(pending[0]?.body.showThinking, true);
+  pending[0]?.resolve(Response.json({ok: true, data: {revision: 2, expanded: [], showThinking: true}})); await settle();
+  assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
+  assert.equal(thinkingDisclosure().open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
+  assert.equal(pending[1]?.body.showThinking, false);
+  pending[1]?.resolve(Response.json({ok: true, data: {revision: 3, expanded: [], showThinking: false}})); await settle();
+  assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, false);
+});
+test('failed thinking saves retain local checked state and Restore saved view explicitly restores it', async context => {
+  context.after(() => {preferenceSave = undefined; contextMenu.close();});
+  const saved = await thinkingFixture(8402, true);
+  assert.equal(thinkingDisclosure().open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
+  preferenceSave = async () => Response.json({ok: false, error: {code: 'capacity', message: 'Thinking preference refused', retry: 'manual'}});
+  thinkingChoice().click(); await settle();
+  assert.equal(thinkingDisclosure().open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
+  assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
+  const notice = primaryControl('view-notice'); assert.match(notice.textContent, /View preferences not saved.*Thinking preference refused/);
+  thinkingChoice().click(); await settle(); assert.equal(thinkingDisclosure().open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
+  thinkingChoice().click(); await settle(); assert.equal(thinkingDisclosure().open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
+  contextMenu.close(); const restore = notice.querySelector('button'); assert.ok(restore); assert.equal(restore.textContent, 'Restore saved view'); restore.click(); await settle();
+  assert.equal(thinkingDisclosure().open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true'); assert.equal(notice.textContent, '');
+  assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
+});
+test('individual thinking collapse clears the local all-thinking check before a failed save', async context => {
+  context.after(() => {preferenceSave = undefined; contextMenu.close();});
+  const saved = await thinkingFixture(8404, true);
+  preferenceSave = async () => Response.json({ok: false, error: {code: 'capacity', message: 'Collapsed preference refused', retry: 'manual'}});
+  const disclosure = thinkingDisclosure(); disclosure.open = false; disclosure.dispatch('toggle'); await settle();
+  assert.equal(disclosure.open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
+  assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
+  assert.match(primaryControl('view-notice').textContent, /View preferences not saved/);
+  thinkingChoice().click(); await settle(); assert.equal(disclosure.open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
+});
+test('disconnected thinking changes alternate locally without claiming a saved preference', async context => {
+  context.after(async () => {contextMenu.close(); pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();});
+  const saved = await thinkingFixture(8403); pageHidden(true); await settle(); assert.equal(primaryControl('send').disabled, true);
+  const before = transportLog.length;
+  thinkingChoice().click(); await settle(); assert.equal(thinkingDisclosure().open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
+  thinkingChoice().click(); await settle(); assert.equal(thinkingDisclosure().open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
+  assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, false);
+  assert.equal(transportLog.slice(before).filter(call => call.method === 'PUT' && call.path.endsWith('/presentation')).length, 0);
+});
 test('close and Escape retain buffers, return focus by identity, and hide unsafe controls', async () => {
   const row=agentFixture('escape-recipient'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:707})],roster:[row]});
   const message=byId('roster').querySelector('[data-identity="escape-recipient"]')?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
