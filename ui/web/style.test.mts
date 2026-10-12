@@ -261,6 +261,17 @@ test('card actions and expanded content share fixed geometry without label-width
   assert.match(rule('.tool-expanded .source-disclosure > summary.source-header'), /padding: 2px 32px 2px 0/);
   assert.match(rule('.tool-copy'), /border: 0; background: transparent/);
 });
+test('multiline tool targets retain a first-line header and centered one-line controls', () => {
+  const tier = rule('.tool-tier');
+  assert.match(tier, /align-items: flex-start/);
+  assert.doesNotMatch(tier, /align-items: center/);
+  assert.match(rule('.tool-name, .tool-target'), /padding-top: 4px/);
+  assert.match(rule('.tool-secondary'), /padding-top: 5px/);
+  assert.match(rule('.tool-status'), /align-items: center; min-height: 28px/);
+  assert.match(rule('.tool-card > summary > .card-icon-chevron'), /margin: 6px 0 0/);
+  assert.match(rule('.tool-target'), /white-space: normal; overflow-wrap: anywhere/);
+  assert.doesNotMatch(rule('.tool-target'), /line-clamp|text-overflow: ellipsis|overflow: hidden/);
+});
 test('partial output qualification shares the tool summary content column rather than its marker column', () => {
   assert.match(rule('.tool-card > summary'), /grid-template-columns: 16px minmax\(0,1fr\)/);
   const content = rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification');
