@@ -165,7 +165,7 @@ export function decodeDescriptor(value: unknown): RuntimeDescriptor {
 	}
 	return o as unknown as RuntimeDescriptor;
 }
-export function assertOperation(descriptor: RuntimeDescriptor, member: OperationName): OperationContract {
+export function assertOperation(descriptor: Pick<RuntimeDescriptor, "operations">, member: OperationName): OperationContract {
 	if (member === "configure") unavailable("Configure is unavailable: execution selection is not decoded");
 	if (opaque.has(member) && !durable) unavailable("Durable package metadata is unavailable");
 	const local = Object.hasOwn(supportedOperations, member) ? supportedOperations[member] : undefined;
@@ -173,6 +173,66 @@ export function assertOperation(descriptor: RuntimeDescriptor, member: Operation
 	if (!local || !remote || local.request !== remote.request || local.response !== remote.response || local.durable !== remote.durable)
 		throw new ContractError(`Incompatible operation: ${member}`, "incompatible");
 	return local;
+}
+export type RetainedMethod = "snapshot" | "inspect";
+export type RetainedDescriptor = {version: "retained-read/1.0.0"; upstream: RuntimeDescriptor["upstream"];
+	operations: Record<RetainedMethod, OperationContract>};
+export type RetainedFailure = {ok: false; error: {code: string; message: string; retryable: boolean}};
+const retainedErrors: Readonly<Record<string, boolean>> = Object.freeze({invalid_request:false, incompatible:false,
+	not_found:false, source_changed:true, source_unreadable:false, limit_exceeded:false, timeout:true, cancelled:false, internal:false});
+export function decodeRetainedDescriptor(value: unknown): RetainedDescriptor {
+	const o = object(json(value)); only(o, ["version", "upstream", "operations"]);
+	if (o.version !== "retained-read/1.0.0") throw new ContractError("Incompatible retained reader version", "incompatible");
+	const upstream = object(o.upstream); only(upstream, ["codingAgent", "durable"]);
+	fields(upstream, ["codingAgent", "durable"], v => semver(v));
+	const operations = object(o.operations); only(operations, ["snapshot", "inspect"]);
+	for (const member of ["snapshot", "inspect"] as const) {
+		const parsed = operation(operations[member]);
+		requireValue(parsed.durable === upstream.durable, "Reader Durable identity disagrees with its operation");
+	}
+	return o as unknown as RetainedDescriptor;
+}
+export function retainedTarget(value: unknown): {storageId: string; conversationId: number} {
+	string(value, 256);
+	requireValue(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?::[1-9]\d*)?$/.test(value), "Invalid retained target");
+	return identity(value);
+}
+export function decodeRetainedParams(member: RetainedMethod, value: unknown, targetIdentity: string): JsonObject {
+	retainedTarget(targetIdentity);
+	requireValue(member === "snapshot" || member === "inspect", "Unsupported retained method");
+	const params = object(json(value));
+	requireValue(params.sessionId === undefined && params.conversationId === undefined, "Target belongs in the retained envelope");
+	decodeInput(member, {...params, sessionId: targetIdentity}, {identity: targetIdentity});
+	optional(params, ["limit"], v => integer(v, 1, 100));
+	if (member === "inspect") retainedInspectParams(params);
+	return params;
+}
+function retainedInspectParams(params: JsonObject): void {
+	choice(params.view, ["history", "branch", "activity", "exact", "search", "result"]);
+	if (params.cursor !== undefined) requireValue(Buffer.byteLength(JSON.stringify(params.cursor)) <= 4096, "Cursor exceeds its byte bound");
+	optional(params, ["query"], v => string(v, 256));
+	optional(params, ["requestId", "operationId"], v => {
+		string(v, 1024); requireValue(!/[\x00-\x1f\x7f-\x9f]/.test(v), "Invalid retained selector");
+	});
+	if (params.view === "exact") integer(params.entryId, 1);
+	if (params.view === "search") string(params.query, 256);
+}
+export function decodeRetainedResponse<M extends RetainedMethod>(member: M, value: unknown, id: string, targetIdentity: string, params: JsonObject = {}): {ok: true; result: Responses[M]} | RetainedFailure {
+	const o = object(json(value));
+	requireValue(o.version === "retained-read/1.0.0" && o.id === id, "Wrong retained response correlation");
+	boolean(o.ok);
+	if (!o.ok) {
+		only(o, ["version", "id", "ok", "error"]);
+		const error = object(o.error); only(error, ["code", "message", "retryable"]);
+		string(error.code, 64); string(error.message, 2000); boolean(error.retryable);
+		requireValue(Object.hasOwn(retainedErrors, error.code) && retainedErrors[error.code] === error.retryable, "Invalid retained failure policy");
+		return {ok: false, error: error as RetainedFailure["error"]};
+	}
+	only(o, ["version", "id", "ok", "method", "sessionId", "storageId", "conversationId", "result"]);
+	const parsed = retainedTarget(targetIdentity);
+	requireValue(o.method === member && o.sessionId === targetIdentity && o.storageId === parsed.storageId && o.conversationId === parsed.conversationId, "Wrong retained response target");
+	if (member === "inspect" && params.view !== undefined) requireValue(object(o.result).view === params.view, "Wrong retained inspection view");
+	return {ok: true, result: decodeResponse(member, o.result, {identity: targetIdentity, ...(typeof params.requestId === "string" ? {requestId:params.requestId} : {})})};
 }
 function identity(value: unknown): { storageId: string; conversationId: number } {
 	string(value, 512); requireValue(!/[\s\x00-\x1f\x7f]/.test(value), "Invalid identity");

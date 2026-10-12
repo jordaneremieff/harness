@@ -72,7 +72,7 @@ async function stored(t: { after(fn: () => Promise<void>): void }) {
     storagePath: join(directory, "durable", `${storageId}.sqlite`),
     model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off", createdAt: "2026-01-01T00:00:00.000Z" };
   await writeFile(join(directory, "durable", `${storageId}.json`), JSON.stringify(record));
-  const service = createAgentService({ store: directory, installationId: "fixture-installation" });
+  const service = createAgentService({ store: directory, installationId: "fixture-installation", agentDir: directory });
   t.after(async () => { await service.close(); await rm(directory, { recursive: true, force: true }); });
   return { service, directory };
 }
@@ -88,11 +88,11 @@ test("catalog refresh is explicit and cached roster stays readable after close",
   assert.throws(() => service.refresh(), hasCode("not_ready"));
 });
 
-test("offline selection and history refuse without host acquisition", async t => {
+test("offline observation and missing retained reader refuse without host acquisition", async t => {
   const { service } = await stored(t);
   await service.refresh();
   await assert.rejects(service.select("workspace", storageId), hasCode("stored"));
-  await assert.rejects(service.history(storageId), hasCode("stored"));
+  await assert.rejects(service.history(storageId), hasCode("host_unavailable"));
   await assert.rejects(service.abort(storageId), hasCode("stored"));
   assert.equal(service.roster().rows[0].state, "unavailable");
 });

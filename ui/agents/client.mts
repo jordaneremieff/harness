@@ -10,8 +10,9 @@ export interface LinkOptions { handshakeTimeoutMs?: number; maxPending?: number;
 export class AgentError extends Error {
   readonly code: string;
   readonly uncertain: boolean;
-  constructor(code: string, message: string, uncertain = false) {
-    super(message); this.name = "AgentError"; this.code = code; this.uncertain = uncertain;
+  readonly retryable: boolean;
+  constructor(code: string, message: string, uncertain = false, retryable = false) {
+    super(message); this.name = "AgentError"; this.code = code; this.uncertain = uncertain; this.retryable = retryable;
   }
 }
 export interface RequestContext { wireRequestId?: string; identity?: string; requestId?: string; token?: string }

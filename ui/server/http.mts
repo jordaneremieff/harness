@@ -15,7 +15,7 @@ import type { DiagnosticSink } from './diagnostics.mts';
 export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
-  operationId?: string; workspace?: string; session: string};
+  operationId?: string; workspace?: string; session: string; signal?: AbortSignal};
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
   workspace(id?: string): Promise<string>; observe(workspace: string): Promise<void>; detached(workspace: string): void};
 export type Asset = {type: string; data: Buffer};
@@ -205,7 +205,11 @@ export class LocalHttp {
   private async dispatchRequest(request:IncomingMessage,response:ServerResponse,url:URL,method:string,parts:string[],body:Record<string,unknown>,session:string) {
     const context={method,parts,url,body,session,operationId:operationKey(request),workspace:url.searchParams.get('workspace')??undefined};
     if(isImageRoute(method,parts)) return this.image(context,response);
-    const data=await this.backend.dispatch(context);respond(response,data,method==='POST'&&url.pathname==='/api/primaries'?202:200);
+    const controller=new AbortController();
+    const cancel=()=>{if(!response.writableEnded) controller.abort();};
+    request.once('aborted',cancel);response.once('close',cancel);
+    try {const data=await this.backend.dispatch({...context,signal:controller.signal});if(!controller.signal.aborted) respond(response,data,method==='POST'&&url.pathname==='/api/primaries'?202:200);}
+    finally {request.off('aborted',cancel);response.off('close',cancel);}
   }
   private async developmentRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string):Promise<boolean> {
     const generations=this.development.generations;

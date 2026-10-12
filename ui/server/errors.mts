@@ -15,6 +15,6 @@ export class ApiError extends Error {
 export function errorView(error: unknown): ErrorView {
   if (error instanceof ApiError) return error.view();
   if(error instanceof StateError) return {code:error.code,message:safeText(error.message,512),retry:error.retry,...(error.details?{details:projectJson(error.details)}:{})};
-  if(error instanceof RpcError || error instanceof AgentError) return {code:error.code,message:safeText(error.message,512),retry:error.uncertain?'manual':'none'};
+  if(error instanceof RpcError || error instanceof AgentError) return {code:error.code,message:safeText(error.message,512),retry:error.uncertain?'manual':error instanceof AgentError && error.retryable?'read':'none'};
   return {code: 'internal', message: 'The local operation failed.', retry: 'manual'};
 }

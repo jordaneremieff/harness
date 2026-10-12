@@ -57,7 +57,7 @@ export class Registry {
   private constructor(store: StateStore, options: RegistryOptions, journal: Journal) {
     this.store=store;this.options=options;this.journal = journal; this.operations = new Operations(store);
     this.starter = new StoredAgentStarter({store:options.agentStore,executable:options.executable,...options.agentStart});
-    this.agents = (options.agents ?? createAgentService)({store: options.agentStore, installationId: store.instanceId,
+    this.agents = (options.agents ?? createAgentService)({store: options.agentStore, installationId: store.instanceId, agentDir: options.agentStart?.agentDir,
       onRoster: page => {
         const roster = projectRoster({...page,rows:page.changed??page.rows});
         this.rosterRevision++;

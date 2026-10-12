@@ -72,6 +72,26 @@ function code(expected: string, uncertain = false) {
 	};
 }
 
+test("retained failures keep explicit read retry policy through the worker", async t => {
+  const {worker,service}=fixture(t);
+  const read=service.history("00000000-0000-4000-8000-000000000001");
+  const request=worker.requests.at(-1);assert.ok(request);
+  worker.emit("message",{id:request.id,error:{code:"source_changed",message:"Source changed",uncertain:false,retryable:true}});
+  await assert.rejects(read,{code:"source_changed",uncertain:false,retryable:true});
+  assert.equal(worker.requests.length,1);
+});
+test("read cancellation reaches only its worker request and ignores late results", async t => {
+  const {worker,service}=fixture(t);const controller=new AbortController();
+  const read=service.history("00000000-0000-4000-8000-000000000001",{},controller.signal);
+  const request=worker.requests.at(-1);assert.ok(request);
+  const rejected=assert.rejects(read,{code:"cancelled",uncertain:false});controller.abort();await rejected;
+  assert.deepEqual(worker.requests.at(-1),{id:request.id,member:"cancel",args:[]});
+  worker.respond(request.id,{entries:[]});
+  const already=new AbortController();already.abort();
+  await assert.rejects(service.history("00000000-0000-4000-8000-000000000001",{},already.signal),{code:"cancelled"});
+  assert.equal(worker.requests.length,2);
+});
+
 test("proxy has no startup scan and synchronous roster uses only callback deltas", async (t) => {
 	const changes: CatalogPage[] = [];
 	const { worker, service } = fixture(t, { onRoster: (item) => changes.push(item) });

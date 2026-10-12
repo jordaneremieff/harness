@@ -2,6 +2,8 @@ import { AgentCatalog, deriveEndpoint, readClaim, type CatalogPage, type Catalog
 import { AgentError, HostLink, validateSubmitInput, type SubmitInput } from "./client.mts";
 import { decodeInput, type AbortReceipt, type Admission, type ConversationFrame, type InspectResult, type JsonObject, type Snapshot } from "./contract.mts";
 import { ObservationManager, type AvailabilityListener } from "./observation.mts";
+import { RetainedReader } from "./retained-read.mts";
+import { retainedReaderPath } from "../server/agent-start.mts";
 export { AgentError, HostLink } from "./client.mts";
 export { AgentCatalog, deriveEndpoint, readClaim } from "./catalog.mts";
 export type { CatalogPage, CatalogRecord, CatalogScan, CatalogRow } from "./catalog.mts";
@@ -12,6 +14,7 @@ export type { AvailabilityListener, AvailabilityState } from "./observation.mts"
 export interface AgentServiceOptions {
   store: string;
   installationId: string;
+  agentDir?: string;
   onRoster?: (page: CatalogPage) => void;
   onFrame?: (workspaceId: string, identity: string, connectionEpoch: number, frame: ConversationFrame) => void;
   onAvailability?: AvailabilityListener;
@@ -47,18 +50,20 @@ function inspectionParams(identity: string, options: InspectOptions): JsonObject
   return params;
 }
 
-/** No host acquisition: only retained known records with a current live writer claim are attachable. */
+/** Live links attach only. Independent retained reads never acquire an execution owner. */
 export class AgentService {
   readonly #catalog: AgentCatalog;
   readonly #installationId: string;
   readonly #observations: ObservationManager;
+  readonly #reader: RetainedReader;
   readonly #links = new Map<string, Promise<HostLink>>();
   readonly #inputs = new Map<string, InputRecord>();
   #closed = false;
   #closing?: Promise<void>;
-  constructor(options: AgentServiceOptions, catalogFactory: (options: ConstructorParameters<typeof AgentCatalog>[0]) => AgentCatalog = options => new AgentCatalog(options)) {
+  constructor(options: AgentServiceOptions, catalogFactory: (options: ConstructorParameters<typeof AgentCatalog>[0]) => AgentCatalog = options => new AgentCatalog(options), readerFactory: (options: ConstructorParameters<typeof RetainedReader>[0]) => RetainedReader = options => new RetainedReader(options)) {
     if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(options.installationId)) throw new AgentError("invalid_request", "Invalid UI installation identity.");
     this.#installationId = options.installationId;
+    this.#reader = readerFactory({store:options.store,reader:() => retainedReaderPath(options.agentDir)});
     this.#catalog = catalogFactory({ store: options.store, onChange: options.onRoster });
     this.#observations = new ObservationManager({ getLink: identity => this.#link(identity, true, true), onFrame: options.onFrame ?? (() => {}), onAvailability: options.onAvailability, projectFrame: options.frameProjection });
   }
@@ -76,19 +81,35 @@ export class AgentService {
     if (!link.connected) throw new AgentError("host_unavailable", "Host connection is unavailable. Reconnect explicitly.");
     return link.capabilities();
   }
-  async history(identity: string, options: HistoryOptions = {}): Promise<Snapshot> {
+  async history(identity: string, options: HistoryOptions = {}, signal?: AbortSignal): Promise<Snapshot> {
     this.#ready();
     const params: JsonObject = { sessionId: identity, limit: 50, maxBytes: 65536 };
     if (options.before !== undefined) { positive(options.before, "History boundary"); params.before = options.before; }
     if (options.limit !== undefined) { bounded(options.limit, 1, 100, "History limit"); params.limit = options.limit; }
     if (options.maxBytes !== undefined) { bounded(options.maxBytes, 1, 1048576, "History byte target"); params.maxBytes = options.maxBytes; }
-    return (await (await this.#link(identity)).request("snapshot", params, { identity })) as Snapshot;
+    signal?.throwIfAborted();
+    let link: HostLink | undefined;
+    try { link = await this.#link(identity); return (await link.request("snapshot", params, { identity })) as Snapshot; }
+    catch (error) {
+      if (!retainedEligible(error, link !== undefined)) throw error;
+      this.#ready();
+      const {sessionId: _target, ...readParams} = params;
+      return this.#reader.request("snapshot", identity, readParams, signal);
+    }
   }
-  async inspect(identity: string, options: InspectOptions): Promise<InspectResult> {
+  async inspect(identity: string, options: InspectOptions, signal?: AbortSignal): Promise<InspectResult> {
     this.#ready();
     const params = inspectionParams(identity, options);
     validateInspectParams(params, identity);
-    return (await (await this.#link(identity)).request("inspect", params, { identity, ...(options.requestId === undefined ? {} : {requestId: options.requestId}) })) as InspectResult;
+    signal?.throwIfAborted();
+    let link: HostLink | undefined;
+    try { link = await this.#link(identity); return (await link.request("inspect", params, { identity, ...(options.requestId === undefined ? {} : {requestId: options.requestId}) })) as InspectResult; }
+    catch (error) {
+      if (!retainedEligible(error, link !== undefined)) throw error;
+      this.#ready();
+      const {sessionId: _target, ...readParams} = params;
+      return this.#reader.request("inspect", identity, readParams, signal);
+    }
   }
   submit(identity: string, input: SubmitInput): Promise<Admission> {
     this.#ready();
@@ -201,12 +222,15 @@ export class AgentService {
     if (this.#closing) return this.#closing;
     this.#closed = true;
     this.#closing = (async () => {
-      await Promise.all([this.#observations.close(),
+      await Promise.all([this.#observations.close(), this.#reader.close(),
         ...[...this.#links.values()].map(pending => pending.then(link => link.close(), () => {}))]);
       this.#links.clear(); await this.#catalog.close();
     })();
     return this.#closing;
   }
+}
+function retainedEligible(error: unknown, linked: boolean): boolean {
+  return error instanceof AgentError && (["stored", "host_unavailable", "contract_mismatch"].includes(error.code) || !linked && error.code === "protocol_error");
 }
 function validateInspectParams(params: JsonObject, identity: string): void {
   try { decodeInput("inspect", params, { identity }); }

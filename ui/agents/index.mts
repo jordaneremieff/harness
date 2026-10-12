@@ -33,7 +33,7 @@ type WorkerFactory = (url: URL, options: WorkerOptions) => WorkerPort;
 type Response = {
 	id?: number;
 	result?: unknown;
-	error?: { code: string; message: string; uncertain?: boolean };
+	error?: { code: string; message: string; uncertain?: boolean; retryable?: boolean };
 	event?: string;
 	args?: unknown[];
 };
@@ -41,6 +41,7 @@ interface Pending {
 	resolve: (value: unknown) => void;
 	reject: (error: Error) => void;
 	mutation: boolean;
+	cleanup?: () => void;
 }
 interface InputReceipt {
 	digest: string;
@@ -91,7 +92,7 @@ export class AgentService {
 			throw new AgentError("invalid_request", "Catalog store is required.");
 		this.#options = options;
 		this.#worker = factory(new URL("./service-worker.mts", import.meta.url), {
-			workerData: { store: options.store, installationId: options.installationId },
+			workerData: { store: options.store, installationId: options.installationId, agentDir: options.agentDir },
 		});
 		this.#worker.on("message", (message: Response) => this.#message(message));
 		this.#worker.on("error", () => this.#failure("Agent worker failed."));
@@ -104,8 +105,9 @@ export class AgentService {
 		if (message.id !== undefined) {
 			const request = this.#pending.get(message.id);
 			this.#pending.delete(message.id);
+			request?.cleanup?.();
 			if (message.error)
-				request?.reject(new AgentError(message.error.code, message.error.message, message.error.uncertain ?? false));
+				request?.reject(new AgentError(message.error.code, message.error.message, message.error.uncertain ?? false, message.error.retryable ?? false));
 			else request?.resolve(message.result);
 			return;
 		}
@@ -176,8 +178,10 @@ export class AgentService {
 	#failure(message: string): void {
 		const first = !this.#failed;
 		this.#failed = true;
-		for (const request of this.#pending.values())
+		for (const request of this.#pending.values()) {
+			request.cleanup?.();
 			request.reject(new AgentError("host_unavailable", message, request.mutation));
+		}
 		this.#pending.clear();
 		if (!this.#closed && first) {
 			for (const [workspaceId, targets] of this.#selections)
@@ -196,19 +200,28 @@ export class AgentService {
 	#ready(): void {
 		if (this.#closed || this.#failed || this.#exited) throw new AgentError("not_ready", "Agent service is closed.");
 	}
-	#request<T>(member: string, args: unknown[]): Promise<T> {
+	#request<T>(member: string, args: unknown[], signal?: AbortSignal): Promise<T> {
 		if (this.#pending.size >= 64)
 			return Promise.reject(new AgentError("capacity", "Agent worker request capacity reached."));
+		if (signal?.aborted) return Promise.reject(new AgentError("cancelled", "The agent read was cancelled."));
 		const id = ++this.#serial;
 		return new Promise<T>((resolve, reject) => {
 			const request: Pending = { resolve: (value) => resolve(value as T), reject, mutation: mutations.has(member) };
 			this.#pending.set(id, request);
+			const cancel = () => {
+				if (!this.#pending.delete(id)) return;
+				request.cleanup?.();
+				this.#worker.postMessage({id, member:"cancel", args:[]});
+				reject(new AgentError("cancelled", "The agent read was cancelled."));
+			};
+			if (signal) {signal.addEventListener("abort",cancel,{once:true});request.cleanup = () => signal.removeEventListener("abort",cancel);}
 			try {
 				if (Buffer.byteLength(JSON.stringify(args)) > 128 * 1024)
 					throw new AgentError("invalid_request", "Agent request exceeds its byte bound.");
 				this.#worker.postMessage({ id, member, args });
 			} catch (error) {
 				this.#pending.delete(id);
+				request.cleanup?.();
 				reject(
 					error instanceof AgentError ? error : new AgentError("invalid_request", "Agent request is not serializable."),
 				);
@@ -305,17 +318,17 @@ export class AgentService {
 		this.#ready();
 		return this.#request("prepare", [identity]);
 	}
-	async history(identity: string, options: HistoryOptions = {}): Promise<Snapshot> {
+	async history(identity: string, options: HistoryOptions = {}, signal?: AbortSignal): Promise<Snapshot> {
 		this.#ready();
-		return this.#request("history", [identity, options]);
+		return this.#request("history", [identity, options], signal);
 	}
 	async image(identity: string, source: ImageSource, digest: string): Promise<ImageBytes> {
 		this.#ready();
 		return this.#request("image", [identity, source, digest]);
 	}
-	async inspect(identity: string, options: InspectOptions): Promise<InspectResult> {
+	async inspect(identity: string, options: InspectOptions, signal?: AbortSignal): Promise<InspectResult> {
 		this.#ready();
-		return this.#request("inspect", [identity, options]);
+		return this.#request("inspect", [identity, options], signal);
 	}
 	#input(identity: string, input: SubmitInput): { digest: string; prior?: InputReceipt; captured: SubmitInput } {
 		validateSubmitInput(input);

@@ -1,4 +1,5 @@
 import type { AgentHistoryPage, Target } from '../shared/api.ts';
+import { retainedTarget } from '../agents/contract.mts';
 import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { execute } from './dispatch.mts';
@@ -21,8 +22,8 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     const request=imageRequest(url,false);
     return new ImageResponse(await registry.agents.image(identity,request.source,request.digest));
   }
-  if(method==='GET') return history(registry,identity,target,url);
-  if(parts[3]==='inspect') return inspect(registry,identity,body);
+  if(method==='GET') return history(registry,identity,target,url,context.signal);
+  if(parts[3]==='inspect') return inspect(registry,identity,body,context.signal);
   const workspace=await registry.workspace(context.workspace);
   if(parts[3]==='start') {
     v.fields(body,[]);
@@ -57,14 +58,16 @@ async function refresh(registry:Registry,body:Record<string,unknown>) {
   if(body.scanId!==undefined) {v.string(body.scanId,'scan ID');if(body.continue!==true) throw new ApiError('invalid_request','Confirm catalog continuation.');}
   return registry.agents.refresh(body.scanId as string | undefined);
 }
-async function history(registry:Registry,identity:string,target:Target,url:URL) {
+async function history(registry:Registry,identity:string,target:Target,url:URL,signal?:AbortSignal) {
+  let binding: ReturnType<typeof retainedTarget>;
+  try {binding=retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
   const before=url.searchParams.get('before');
-  const source=await registry.agents.history(identity,{limit:v.limit(url),...(before?{before:v.integer(Number(before),'history boundary',1)}:{})});
-  const frame=projectFrame({...source,observedAt:new Date().toISOString(),revision:0,live:[],status:{busy:false}});
+  const source=await registry.agents.history(identity,{limit:v.limit(url),...(before?{before:v.integer(Number(before),'history boundary',1)}:{})},signal);
+  const frame=projectFrame({...source,...binding,observedAt:new Date().toISOString(),revision:0,live:[],status:{busy:false}});
   const page:AgentHistoryPage={target,entries:frame.entries,nextBefore:source.nextBefore,coverage:frame.coverage,revision:source.revision};
   return page;
 }
-async function inspect(registry:Registry,identity:string,body:Record<string,unknown>) {
+async function inspect(registry:Registry,identity:string,body:Record<string,unknown>,signal?:AbortSignal) {
   v.fields(body,['view','cursor','entryId','offset','submissionId','requestId','operationId','limit'],['view']);
   const view=v.choice(body.view,['history','activity','exact','result'],'inspect view');
   const source=await registry.agents.inspect(identity,{view,
@@ -74,7 +77,7 @@ async function inspect(registry:Registry,identity:string,body:Record<string,unkn
     ...(body.submissionId!==undefined?{submissionId:v.integer(body.submissionId,'submission ID',1)}:{}),
     ...(body.requestId!==undefined?{requestId:v.string(body.requestId,'native request ID',1024)}:{}),
     ...(body.operationId!==undefined?{operationId:v.string(body.operationId,'native operation ID',1024)}:{}),
-    ...(body.limit!==undefined?{limit:v.integer(body.limit,'page limit',1)}:{})});
+    ...(body.limit!==undefined?{limit:v.integer(body.limit,'page limit',1)}:{})},signal);
   const display=projectJson(source);
   return {projection:display};
 }
