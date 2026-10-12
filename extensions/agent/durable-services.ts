@@ -342,9 +342,9 @@ function localDate(now = new Date()): string {
 }
 
 /** Build the durable read tool from the selected installation's public read tool, which returns images. */
-function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal): Durable.ToolRegistration {
+function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal) {
 	const piRead = pi.createReadTool(cwd);
-	return Durable.defineTool({
+	const tool = Durable.defineTool({
 		name: piRead.name,
 		description: piRead.description,
 		parameters: piRead.parameters,
@@ -353,14 +353,18 @@ function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal): D
 			const signal = context.abortSignal === undefined ? hostSignal : AbortSignal.any([hostSignal, context.abortSignal]);
 			const result = await piRead.execute(api.callId, args, signal);
 			const truncation = (result.details as { truncation?: object } | undefined)?.truncation;
-			const details: JsonValue | undefined = truncation === undefined ? undefined : { ...truncation };
+			const details: Record<string, JsonValue> = {
+				...truncation,
+				...(result.structuredContent === undefined ? {} : { structuredContent: result.structuredContent as JsonValue }),
+			};
 			return {
 				content: result.content,
-				...(details === undefined ? {} : { details }),
+				...(Object.keys(details).length === 0 ? {} : { details }),
 				...(result.isError === undefined ? {} : { isError: result.isError }),
 			};
 		},
 	});
+	return { ...tool, outputSchema: piRead.outputSchema };
 }
 
 /** The host built-in extension: coding tools and resource-derived prompt sections. */

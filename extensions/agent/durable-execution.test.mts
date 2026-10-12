@@ -110,6 +110,154 @@ it("hands a structured result to the script through details.structuredContent", 
 	assert.match(text, /"answer":"42"/u);
 });
 
+it("returns text and structured images from native nested read", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `const textFile = await tools.read({ path: "sample.txt" });
+			const picture = await tools.read({ path: "sample.png" });
+			image(picture);
+			return { textFile, type: picture.type, mimeType: picture.mimeType, data: picture.data, note: picture.note };`,
+	});
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+	writeFileSync(join(f.cwd, "sample.txt"), "plain text\n");
+	writeFileSync(join(f.cwd, "sample.png"), Buffer.from(png, "base64"));
+	const result = await f.submit("read text and show the image");
+	const toolResult = result.toolResults.at(-1);
+	assert.ok(toolResult);
+	assert.notEqual(toolResult.isError, true, toolResultText(toolResult));
+	const output = JSON.parse(toolResultBody(toolResult)) as { textFile: string; type: string; mimeType: string; data: string; note: string };
+	assert.equal(output.textFile, "plain text\n");
+	assert.equal(output.type, "image");
+	assert.equal(output.mimeType, "image/png");
+	assert.equal(typeof output.note, "string");
+	assert.ok(output.data.length > 0);
+	assert.deepEqual(toolResult.content.filter((block) => block.type === "image"), [{ type: "image", data: output.data, mimeType: output.mimeType }]);
+	const details = toolResult.details as unknown as CodemodeToolDetails;
+	assert.ok(details);
+	assert.equal(details.calls.every((call) => call.status === "ok"), true);
+});
+
+it("preserves read truncation details beside the structured text result", { timeout: 30000 }, async (t) => {
+	let captured: ToolExecutionResult | undefined;
+	const f = await executionFixture(t, {
+		code: `const value = await tools.read({ path: "long.txt" }); return { length: value.length, continuation: value.includes("Use offset=2001 to continue") };`,
+		builtinExtensions: (host) => [host.durable.defineExtension({
+			name: "fixture.read-result",
+			hooks: [host.durable.hook(host.durable.ToolTask, { afterTool(call, result) {
+				if (call.name === "read") captured = result;
+				return undefined;
+			} })],
+		})],
+	});
+	writeFileSync(join(f.cwd, "long.txt"), Array.from({ length: 2101 }, (_, index) => `line ${index}`).join("\n"));
+	const result = await f.submit("read a file with truncated text");
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { length: number; continuation: boolean };
+	const details = captured?.details as { truncated?: boolean; outputLines?: number; totalLines?: number; structuredContent?: unknown } | undefined;
+	assert.ok(details);
+	assert.equal(details.truncated, true);
+	assert.equal(details.outputLines, 2000);
+	assert.equal(details.totalLines, 2101);
+	assert.ok(typeof details.structuredContent === "string");
+	assert.equal(details.structuredContent.length, output.length);
+	assert.equal(details.structuredContent, toolResultText(captured));
+	assert.equal(output.continuation, true);
+});
+
+it("rejects a missing nested read without a structured success value", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { code: `try { return { value: await tools.read({ path: "missing.txt" }) }; } catch (error) { return { error: error.message }; }` });
+	const result = await f.submit("read a missing file");
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { value?: unknown; error?: string };
+	assert.equal(output.value, undefined);
+	assert.match(output.error ?? "", /ENOENT|not found|does not exist/u);
+	const toolResult = result.toolResults.at(-1);
+	assert.ok(toolResult);
+	const details = toolResult.details as unknown as CodemodeToolDetails;
+	assert.ok(details);
+	assert.equal(details.calls[0].status, "error");
+});
+
+it("describes asynchronous discovery and awaits native tool descriptions", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `const pending = describeTool("structured");
+			return { listed: ALL_TOOLS.find((tool) => tool.name === "structured"),
+			found: (await searchTools("structured"))[0], described: await pending, asynchronous: typeof pending.then === "function",
+			missing: (await describeTool("missing")) === undefined, missingNamespace: (await describeNamespace("missing")) === undefined };`,
+	});
+	const result = await f.submit("discover a native tool");
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { listed: { description: string }; found: { name: string; description: string }; described: string; asynchronous: boolean; missing: boolean; missingNamespace: boolean };
+	assert.equal(output.asynchronous, true);
+	assert.equal(output.missingNamespace, true);
+	assert.match(output.described, /structured\(args:.*Promise</u);
+	assert.equal(output.listed.description, output.described);
+	assert.equal(output.found.name, "structured");
+	assert.equal(output.found.description, output.described);
+	assert.equal(output.missing, true);
+	const description = declaredTool(f.requests[0], "codemode")?.description ?? "";
+	for (const helper of ["searchTools", "describeTool", "describeNamespace"]) assert.ok(description.includes(`await ${helper}(`));
+});
+
+it("separates script text and the returned value from grouped console lines", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { code: `console.log("first log"); text("alpha"); console.warn("second log"); text({ value: 2 }); return "omega";` });
+	const result = await f.submit("produce separate output items");
+	assert.equal(toolResultBody(result.toolResults.at(-1)), "==> text 1/3 <==\nalpha\n==> text 2/3 <==\n{\"value\":2}\n==> text 3/3 <==\nomega\n<console_output>\nfirst log\nsecond log\n</console_output>");
+});
+
+it("leaves one script text item unnumbered and groups console-only output", { timeout: 30000 }, async (t) => {
+	for (const [code, expected] of [
+		[`text("one\\n"); console.log("log");`, "one\n<console_output>\nlog\n</console_output>"],
+		[`console.log("one"); console.error("two");`, "<console_output>\none\ntwo\n</console_output>"],
+	]) {
+		const f = await executionFixture(t, { code });
+		const result = await f.submit("produce a single output group");
+		assert.equal(toolResultBody(result.toolResults.at(-1)), expected);
+	}
+});
+
+it("keeps numbered text on each side of an image and console output last", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { code: `text("before"); console.log("log"); image({ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }); text("after");` });
+	const result = await f.submit("produce an image between text items");
+	assert.deepEqual(result.toolResults.at(-1)?.content.slice(1), [
+		{ type: "text", text: "==> text 1/2 <==\nbefore" },
+		{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+		{ type: "text", text: "==> text 2/2 <==\nafter\n<console_output>\nlog\n</console_output>" },
+	]);
+});
+
+it("retains separated partial output and grouped console lines before a script error", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { code: `text("before"); console.log("log"); text("second"); throw new Error("stop here");` });
+	const result = await f.submit("fail after partial output");
+	const output = toolResultBody(result.toolResults.at(-1));
+	assert.ok(output.startsWith("==> text 1/2 <==\nbefore\n==> text 2/2 <==\nsecond\n<console_output>\nlog\n</console_output>\nScript error:\n"));
+	assert.match(output, /stop here/u);
+	assert.equal(result.toolResults.at(-1)?.isError, true);
+});
+
+it("spills the full separated output before text truncation", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { code: `// @options: {"max_output_tokens": 20}\ntext("a".repeat(100)); console.log("log"); return "z".repeat(100);` });
+	const result = await f.submit("truncate separated output");
+	const toolResult = result.toolResults.at(-1);
+	const path = (toolResult?.details as { fullOutputPath?: string } | undefined)?.fullOutputPath;
+	assert.ok(path);
+	t.after(() => rmSync(path, { force: true }));
+	assert.equal(readFileSync(path, "utf8"), `==> text 1/2 <==\n${"a".repeat(100)}\n==> text 2/2 <==\n${"z".repeat(100)}\n<console_output>\nlog\n</console_output>`);
+	assert.match(toolResultBody(toolResult), /Output was truncated/u);
+});
+
+it("ignores undeclared structured results and rejects their error text", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `const value = await tools.text_only({ fail: false });
+			try { await tools.text_only({ fail: true }); } catch (error) { return { value, error: error.message }; }`,
+		builtinExtensions: (host) => [host.durable.defineExtension({
+			name: "fixture.text-only",
+			tools: [host.durable.defineTool({
+				name: "text_only", description: "Return text without an output schema.", parameters: Type.Object({ fail: Type.Boolean() }), replay: "safe",
+				execute: async ({ fail }) => ({ content: [{ type: "text" as const, text: fail ? "text error" : "text value" }], isError: fail, details: { structuredContent: { ignored: true } } }),
+			})],
+		})],
+	});
+	const result = await f.submit("check the output schema boundary");
+	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))), { value: "text value", error: "text error" });
+});
+
 it("returns admitted spawn and send references as native codemode objects", { timeout: 30000 }, async (t) => {
 	const f = await executionFixture(t, {
 		code: `const created = await tools.agent_spawn({ name: "idle-agent", model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)} });

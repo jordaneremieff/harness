@@ -40,7 +40,7 @@ import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
-import type { CodemodeJsonSchema, CodemodeResult, CodemodeTool } from "@earendil-works/pi-codemode";
+import type { CodemodeJsonSchema, CodemodeOutputItem, CodemodeResult, CodemodeTool } from "@earendil-works/pi-codemode";
 import { CodemodeSandbox, loadQuickJSWasm, parseCodemodeSource, renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode";
 import type { AuthProvider, CallToolResult, ContentBlock, ListResourcesResult, ReadResourceResult, Resource, ResourceTemplate, Tool as McpTool } from "@earendil-works/pi-mcp";
 import { JSON_RPC_ERROR_CODES, McpClient, McpError, StdioTransport, StreamableHttpTransport, toLlmContent } from "@earendil-works/pi-mcp";
@@ -1269,9 +1269,9 @@ function codemodeDescription(models: boolean): string {
 	const lines = [
 		CODEMODE_HEADER,
 		"Available globals:",
-		"- Output: `text(value)`, `image(dataUrlOrImageBlock)`, `console.log(...)`, and a top-level `return`; `exit()` stops the script successfully.",
+		"- Output: `text(value)`, `image(dataUrlOrImageBlock)`, `console.log(...)`, and a top-level `return`; `exit()` stops the script successfully. Multiple text items start with `==> text N/M <==`; console lines follow other output in one `<console_output>` block.",
 		"- State: `store(key, value)` and `load(key)` keep a JSON value for later scripts.",
-		"- Discovery: `ALL_TOOLS`, `searchTools(query, { limit?, namespace? })`, `describeTool(name)`, `describeNamespace(name)` reach tools that are not declared, such as MCP tools.",
+		"- Discovery: `ALL_TOOLS`, `await searchTools(query, { limit?, namespace? })`, `await describeTool(name)`, `await describeNamespace(name)` reach tools that are not declared, such as MCP tools.",
 	];
 	if (models) lines.push("- Models: `models` lists and runs classifiers and image models.");
 	return lines.join("\n");
@@ -1363,6 +1363,37 @@ function addUsage(run: ScriptRun, usage: Usage | undefined): void {
 
 function valueText(value: unknown): string {
 	return typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
+}
+
+/** Keep script text items distinct and move console lines into one final block. */
+function formatScriptOutput(output: readonly CodemodeOutputItem[]): (TextContent | ImageContent)[] {
+	const total = output.filter((item) => item.type === "text" && !item.console).length;
+	const items: (TextContent | ImageContent)[] = [];
+	const consoleLines: string[] = [];
+	let index = 0;
+	for (const item of output) {
+		if (item.type === "image") items.push(item);
+		else if (item.console) consoleLines.push(item.text);
+		else {
+			index++;
+			items.push({ type: "text", text: total > 1 ? `==> text ${index}/${total} <==\n${item.text}` : item.text });
+		}
+	}
+	if (consoleLines.length > 0) items.push({ type: "text", text: `<console_output>\n${consoleLines.join("\n")}\n</console_output>` });
+	return items;
+}
+
+/** Put adjacent text on separate lines without moving text across images. */
+function joinScriptText(items: readonly (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
+	const joined: (TextContent | ImageContent)[] = [];
+	for (const item of items) {
+		const last = joined.at(-1);
+		if (item.type === "text" && last?.type === "text") {
+			const separator = last.text === "" || last.text.endsWith("\n") ? "" : "\n";
+			joined[joined.length - 1] = { type: "text", text: `${last.text}${separator}${item.text}` };
+		} else joined.push(item);
+	}
+	return joined;
 }
 
 /** The failure text of a script, with the calls it made before failing. */
@@ -2028,7 +2059,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	/** Turn the sandbox result into the tool result the model sees. */
 	private async scriptResult(result: CodemodeResult, run: ScriptRun, maxOutputTokens: number | undefined, startedAt: number): Promise<Durable.ToolExecutionResult<JsonValue>> {
 		const items = this.scriptItems(result, run);
-		const bounded = await this.boundOutput(items, maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS);
+		const bounded = await this.boundOutput(joinScriptText(items), maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS);
 		const details: Record<string, JsonValue> = scriptDetails(run);
 		if (bounded.fullOutputPath !== undefined) details.fullOutputPath = bounded.fullOutputPath;
 		const wallTime = ((performance.now() - startedAt) / 1000).toFixed(1);
@@ -2042,12 +2073,10 @@ class DurableExecutionRuntime implements DurableExecution {
 
 	/** Script output items, including the returned value, the failure, and an unshown-image note. */
 	private scriptItems(result: CodemodeResult, run: ScriptRun): (TextContent | ImageContent)[] {
-		const items: (TextContent | ImageContent)[] = result.output.map((item) => (item.type === "text" ? { type: "text", text: item.text } : { type: "image", data: item.data, mimeType: item.mimeType }));
-		if (result.ok) {
-			if (result.value !== undefined) items.push({ type: "text", text: valueText(result.value) });
-		} else {
-			items.push({ type: "text", text: scriptErrorText(result, run) });
-		}
+		const output: CodemodeOutputItem[] = [...result.output];
+		if (result.ok && result.value !== undefined) output.push({ type: "text", text: valueText(result.value) });
+		const items = formatScriptOutput(output);
+		if (!result.ok) items.push({ type: "text", text: scriptErrorText(result, run) });
 		if (run.generatedImages > 0 && !items.some((item) => item.type === "image")) {
 			items.push({
 				type: "text",
