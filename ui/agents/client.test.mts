@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { setImmediate as turn } from "node:timers/promises";
 import type { JsonValue } from "@earendil-works/chord";
 import { type AgentError, HostLink } from "./client.mts";
+import { supportedOperations } from "./contract.mts";
 import { activity, blockedResult, CHILD, deferred, descriptor, FakeHost, frame, receipt, STORAGE } from "./fake-host.mts";
 
 const code =
@@ -325,7 +326,7 @@ test("history refusal names both negotiated contract identities without inventin
   assert.equal(link.capabilities().snapshot, false);
   await assert.rejects(link.request("snapshot", {sessionId: CHILD}, {identity: CHILD}), error => {
     code("contract_mismatch")(error); const message = (error as Error).message;
-    assert.match(message, /snapshot/); assert.match(message, /Required: snapshot\/1.0.0, response snapshot\/2.0.0, Durable 1.0.3/);
+    assert.match(message, /snapshot/); assert.ok(message.includes(`Required: snapshot/1.0.0, response snapshot/2.0.0, Durable ${supportedOperations.snapshot.durable}`));
     assert.match(message, /Host: snapshot\/1.0.0, response snapshot\/1.0.0, Durable 1.1.0/); return true;
   });
   assert.equal(host.calls.length, 0); assert.equal(link.supports("task-submit"), true);

@@ -96,8 +96,16 @@ test("literal consumer identities match the documented contract and reject super
 test("supported native identity comes from declared public metadata", () => {
 	const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 	assert.ok(pkg.dependencies["@earendil-works/pi-durable"]);
-	assert.equal(supportedOperations.snapshot.durable, D);
-	assert.ok(Object.isFrozen(supportedOperations)); assert.ok(Object.isFrozen(supportedOperations.snapshot));
+	for (const member of ["snapshot", "inspect", "observe-open", "observe-frame"] as const) {
+		assert.equal(supportedOperations[member].durable, D);
+		assert.ok(Object.isFrozen(supportedOperations[member]));
+		const value = descriptor();
+		((value.operations as JsonObject)[member] as JsonObject).durable = D === "1.0.3" ? "1.1.0" : "1.0.3";
+		const remote = decodeDescriptor(value);
+		refusal(() => assertOperation(remote, member), "incompatible");
+		assertOperation(remote, "task-submit");
+	}
+	assert.ok(Object.isFrozen(supportedOperations));
 });
 
 test("operation mutations refuse only the affected operation", () => {
