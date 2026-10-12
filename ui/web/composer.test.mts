@@ -371,6 +371,35 @@ test('truncated recovery Copy fetches exact text for the captured workspace and 
   f.composer.attach('w', a); f.click('Restore to draft'); await turn(); assert.equal(f.composer.editor.value, 'newer');
   f.click('Replace draft with original'); assert.equal(f.composer.editor.value, ' exact\n original '); assert.equal(f.pick('PUT', '/draft').body.expectedRevision, 3);
 });
+test('delayed draft restoration returns focus only to the original action owner', async () => {
+  for (const nextFocus of ['delivery', 'external', 'restore'] as const) {
+    const f = fixture(); const a = state('a', draft(3, '', 'steer'));
+    const item = {operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
+    f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('modes').hidden, false);
+    const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
+    const fetch = f.pick('GET', '/retained'); assert.equal(fetch.path, '/api/workspaces/w/unconfirmed/retained');
+    const origin = nextFocus === 'delivery' ? f.node('modes').children[0] : nextFocus === 'external' ? new NodeFake() : restore; assert.ok(origin); origin.focus();
+    f.ok(fetch, {...item, text: 'full original', textTruncated: undefined}); await turn();
+    assert.equal(f.composer.editor.value, 'full original'); assert.equal(f.pick('PUT', '/draft').body.expectedRevision, 3);
+    assert.equal(document.activeElement === (nextFocus === 'restore' ? f.composer.editor : origin), true, `focus owner: ${nextFocus}`);
+    f.saved('full original', 4, 'steer'); await turn(); assert.equal(document.activeElement === (nextFocus === 'restore' ? f.composer.editor : origin), true, `saved focus owner: ${nextFocus}`);
+    assert.equal(f.calls.length, 0);
+  }
+});
+test('explicit replacement starts a fresh focus intent after delayed restoration review', async () => {
+  const f = fixture(); const a = state('a', draft(3, 'newer', 'steer'));
+  const item = {operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
+  f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('modes').hidden, false);
+  f.node('editor').setSelectionRange(1, 4, 'backward'); f.node('editor').fire('select');
+  const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
+  const delivery = f.node('modes').children[0]; assert.ok(delivery); delivery.focus();
+  f.ok(f.pick('GET', '/retained'), {...item, text: 'full original', textTruncated: undefined}); await turn();
+  assert.equal(f.composer.editor.value, 'newer'); assert.equal(document.activeElement, delivery); assert.equal(f.calls.length, 0);
+  const replace = f.node('receipt').find('Replace draft with original'); assert.ok(replace); replace.focus(); replace.fire('click');
+  assert.equal(document.activeElement, f.composer.editor); assert.equal(f.composer.editor.value, 'full original');
+  assert.deepEqual([f.node('editor').selectionStart, f.node('editor').selectionEnd, f.node('editor').selectionDirection], [1, 4, 'backward']);
+  assert.equal(f.pick('PUT', '/draft').body.expectedRevision, 3); f.saved('full original', 4, 'steer'); await turn(); assert.equal(f.calls.length, 0);
+});
 test('failed exact recovery fetch never copies or restores the preview', async () => {
   const f = fixture(); const a = state('a', draft(3, 'newer'));
   a.unconfirmed.push({operationId: 'retained', target: a.target, text: 'preview', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true});

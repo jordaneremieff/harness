@@ -461,9 +461,10 @@ export class Composer {
       this.details(`${JSON.stringify(captured.target)}\n${captured.operationId}\n${captured.mode} · revision ${captured.draftRevision}`), this.details(captured.text, 'Review message'));
     if (pending.original?.textTruncated) row.append(element('p', 'secondary', 'Preview shortened. Copy or restore the full message.'));
     row.append(cardAction('restart', 'Check delivery', () => { void this.check(buffer, pending); }), cardAction('copy', 'Copy original message', () => { void this.exact(buffer, pending).then(item => copy(item.text, row)).catch(error => this.recoveryError(buffer, error)); }), button('Restore to draft', () => {
+      const origin = document.activeElement;
       void this.exact(buffer, pending).then(item => {
-        if (buffer.data.text && buffer.data.text !== item.text) row.append(element('p', undefined, 'Your newer draft is unchanged. Copy the original message or replace this draft.'), button('Replace draft with original', () => this.restore(buffer, item)));
-        else this.restore(buffer, item);
+        if (buffer.data.text && buffer.data.text !== item.text) row.append(element('p', undefined, 'Your newer draft is unchanged. Copy the original message or replace this draft.'), button('Replace draft with original', () => this.restore(buffer, item, document.activeElement)));
+        else this.restore(buffer, item, origin);
       }).catch(error => this.recoveryError(buffer, error));
     }));
     if (!pending.authorized && captured.target.kind === 'primary') row.append(button('Send again…', () => {
@@ -486,8 +487,8 @@ export class Composer {
     if (buffer.data.submissions.get(previous.operationId) === previous) buffer.data = {...buffer.data, submissions: new Map(buffer.data.submissions).set(previous.operationId, pending.submission)};
     return pending.submission;
   }
-  private restore(buffer: Buffer, captured: Submission): void {
-    const origin = document.activeElement; if (this.current === buffer) this.rememberSelection(); const previous = buffer.data;
+  private restore(buffer: Buffer, captured: Submission, origin: Element | null): void {
+    if (this.current === buffer) this.rememberSelection(); const previous = buffer.data;
     buffer.data = editDraft(buffer.data, captured.text, captured.mode); this.rebaseSelection(buffer, previous, true); this.paint(buffer); this.flush(buffer); this.returnFocus(buffer, origin);
   }
   private async check(buffer: Buffer, pending: Pending): Promise<void> {
