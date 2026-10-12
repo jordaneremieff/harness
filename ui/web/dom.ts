@@ -34,7 +34,7 @@ export function statusGlyph(node: HTMLElement, glyph: string): void {
   if (name) node.replaceChildren(cardIcon(name, node.ownerDocument)); else node.textContent = glyph;
 }
 export function announce(text: string): void { setText(byId('announcements'), text); }
-export async function copy(text: string, into?: HTMLElement): Promise<boolean> {
+export async function copy(text: string, into?: HTMLElement | (() => HTMLElement)): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
     announce('Copied'); return true;
@@ -43,7 +43,8 @@ export async function copy(text: string, into?: HTMLElement): Promise<boolean> {
     area.value = text;
     area.readOnly = true;
     area.setAttribute('aria-label', 'Select and copy text');
-    (into ?? byId('modal-body')).append(area);
+    const target = typeof into === 'function' ? into() : into ?? byId('modal-body');
+    target.append(area);
     area.focus(); area.select();
     announce('Copy failed. Select and copy the text.'); return false;
   }

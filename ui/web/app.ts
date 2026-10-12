@@ -74,7 +74,7 @@ const snapshotBuffers = new Set<{events: UiEvent[]; bytes: number; overflow: boo
 const modal = new Modal(focusEditor);
 const preferences = new PreferenceQueue();
 const diagnostics = new BrowserDiagnostics();
-new VersionStatus();
+new VersionStatus(() => modal.open('Copy UI version identity'));
 let diagnosticsActive = false;
 let devReload: DevReload | undefined;
 let devInteractionRevision = 0;
