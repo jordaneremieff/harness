@@ -1,5 +1,6 @@
 import type { OutputContinuation, OutputPage } from '../shared/api.ts';
-import { button, copy, element, setText } from './dom.ts';
+import { copy, element, setText } from './dom.ts';
+import { cardAction, cardActionLabel } from './card-icons.ts';
 
 export type OutputLoader = (more: OutputContinuation) => Promise<OutputPage>;
 function outputError(error: unknown): string { return error instanceof Error ? error.message : 'Output could not be loaded.'; }
@@ -38,16 +39,16 @@ export function outputPages(more: OutputContinuation, load: OutputLoader | undef
       if (active(request)) { busy = false; controls(); changed(); }
     }
   };
-  const next = button('More output', () => { if (nextOffset !== null) void requestPage(nextOffset, pageIndex + 1); });
-  const previous = button('Previous output', () => { const index = pageIndex - 1; const offset = offsets[index]; if (offset !== undefined) void requestPage(offset, index); });
-  const restart = button('Start over', () => {
+  const next = cardAction('next', 'More output', () => { if (nextOffset !== null) void requestPage(nextOffset, pageIndex + 1); });
+  const previous = cardAction('previous', 'Previous output', () => { const index = pageIndex - 1; const offset = offsets[index]; if (offset !== undefined) void requestPage(offset, index); });
+  const restart = cardAction('restart', 'Start over', () => {
     if (busy) return;
     version++; offsets = [more.offset]; pageIndex = -1; nextOffset = more.offset;
     content.hidden = true; setText(text, ''); setText(status, ''); controls(); changed();
   });
-  const copyPage = button('Copy page', () => { void copy(content.textContent ?? '', node); });
+  const copyPage = cardAction('copy', 'Copy page', () => { void copy(content.textContent ?? '', node); });
   function controls(): void {
-    next.disabled = busy || !load || nextOffset === null; setText(next, pageIndex < 0 ? 'More output' : 'Next output');
+    next.disabled = busy || !load || nextOffset === null; cardActionLabel(next, pageIndex < 0 ? 'More output' : 'Next output');
     previous.hidden = pageIndex <= 0; previous.disabled = busy; restart.disabled = busy; restart.hidden = pageIndex < 0 && !busy;
     copyPage.hidden = content.hidden;
     if (!load) setText(status, 'More output is unavailable here.');

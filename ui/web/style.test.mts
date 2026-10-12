@@ -37,8 +37,12 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
       [...match[2].matchAll(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;}]+)`, 'g'))].map(value => ({selector: match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), property, value: value[1].trim()}))));
   assert.deepEqual(values.filter(item => item.value.includes('--accent')), [{selector: '.pane-split > .pane-divider:focus-visible::after', property: 'background', value: 'var(--accent)'}]);
   const fills = values.filter(item => item.property === 'background' || item.property === 'background-color');
-  assert.deepEqual(fills.filter(item => item.value.includes('--edge')), [{selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'}]);
-  for (const item of fills.filter(item => !item.value.includes('--edge'))) assert.doesNotMatch(item.value, /--(?:fg|muted|dim|link)\b/, `ink used as a fill: ${item.value}`);
+  assert.deepEqual(fills.filter(item => item.value.includes('--edge')), [
+    {selector: '.pane-split > .pane-divider::after', property: 'background', value: 'var(--edge)'},
+    {selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'},
+  ]);
+  for (const item of fills.filter(item => !item.value.includes('--edge') && item.selector !== '.context-menu-item[role=menuitemradio][aria-checked=true]::before')) assert.doesNotMatch(item.value, /--(?:fg|muted|dim|link)\b/, `ink used as a fill: ${item.value}`);
+  assert.match(rule('.context-menu-item[role=menuitemradio][aria-checked=true]::before'), /background: var\(--muted\)/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
   assert.match(rule('.nav-row[aria-current=page], .row-select[aria-current=page]'), /border-left-color: var\(--edge\)/);
   assert.match(rule('.command-option[aria-selected=true], .palette-row[aria-selected=true]'), /border-left-color: var\(--edge\)/);
@@ -67,7 +71,7 @@ test('small radius, one floating shadow and no gradients or motion', () => {
   assert.doesNotMatch(css, /animation:|transition:|scroll-behavior:\s*smooth|backdrop-filter|filter:|text-shadow|gradient/);
 });
 test('neutral tools keep lifecycle accents in marks and errors while source diffs retain colors', () => {
-  assert.match(rule('.tool-shell'), /border-left: 2px solid var\(--rule\);[^}]*background: var\(--run-bg\)/);
+  assert.match(rule('.tool-shell'), /border-left: 2px solid var\(--rule\);[^}]*background: var\(--canvas\)/);
   assert.doesNotMatch(css, /\.tool-shell\[data-status=success\]/);
   assert.match(rule('.tool-status.success'), /color: var\(--success\)/);
   assert.match(rule('.tool-shell[data-status=error]'), /border-left-color: var\(--error\)/);
@@ -80,11 +84,12 @@ test('neutral tools keep lifecycle accents in marks and errors while source diff
   assert.match(rule('.stop'), /color: var\(--error\)/);
 });
 test('tool status labels have natural width and disclosure chevrons stay separate from status', () => {
-  assert.match(rule('.tool-status'), /flex: none; min-width: 12px; width: auto/);
+  assert.match(rule('.tool-status'), /flex: none; min-width: 16px; width: auto/);
   assert.doesNotMatch(rule('.tool-status'), /(?:^|;\s*)width: 12px/);
-  assert.match(rule('.tool-card > summary'), /display: grid; grid-template-columns: 8px minmax\(0,1fr\)/);
-  assert.match(rule('.tool-card > summary::before'), /content: "";[^}]*transform: rotate\(-45deg\)/);
-  assert.match(rule('.tool-card[open] > summary::before'), /transform: rotate\(45deg\)/);
+  assert.match(rule('.tool-card > summary'), /display: grid; grid-template-columns: 16px minmax\(0,1fr\)/);
+  assert.match(rule('.card-disclosure::before'), /content: none/);
+  assert.match(rule('.card-disclosure > .card-icon-chevron'), /transform: rotate\(0deg\)/);
+  assert.match(rule('details[open] > .card-disclosure > .card-icon-chevron'), /transform: rotate\(90deg\)/);
   assert.match(rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification'), /grid-column: 2/);
   assert.match(rule('.tool-preview'), /color: var\(--fg\)/);
   assert.match(rule('.tool-secondary'), /color: var\(--muted\)/);
@@ -130,7 +135,7 @@ test('compact message headers retain keyboard actions above content without targ
   assert.match(header, /position: absolute; top: 0; right: 0/); assert.match(header, /transform: translateY\(-100%\)/);
   assert.doesNotMatch(header, /display: none|overflow: hidden|bottom:/);
   assert.match(rule('.message:is(.thinking-only, .tool-only) > .message-body'), /margin-top: 0/);
-  assert.match(rule('.tool-copy'), /top: 4px; right: 4px/);
+  assert.match(rule('.tool-copy'), /top: 8px; right: 8px/);
   assert.doesNotMatch(css, /padding-right: 184px|padding-top: 34px|padding-top: 54px/);
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.message:is\(\.thinking-only, \.tool-only\) > \.message-header \{ position: static; transform: none; min-height: 44px/);
@@ -241,11 +246,20 @@ test('the app menu retains a visible icon and an accessible name without an unre
   assert.match(rule('.icon-button'), /display: inline-flex;[^}]*min-width: 24px; height: 24px/);
   assert.doesNotMatch(css, /\.sidebar-footer \.ui-icon\s*\{/);
 });
+test('card actions and expanded content share fixed geometry without label-width drift', () => {
+  assert.match(rule('.card-action'), /width: 28px; height: 28px; min-width: 28px; min-height: 28px/);
+  assert.match(rule('.card-icon'), /width: 16px; height: 16px/);
+  assert.match(rule('.tool-tier'), /padding-right: 32px/);
+  assert.match(rule('.tool-expanded'), /margin-left: 24px/);
+  assert.match(rule('.tool-expanded .card-disclosure > .card-icon-chevron'), /left: -24px; margin: -8px 0 0/);
+  assert.match(rule('.tool-expanded .source-disclosure > summary.source-header'), /padding: 2px 32px 2px 0/);
+  assert.match(rule('.tool-copy'), /border: 0; background: transparent/);
+});
 test('partial output qualification shares the tool summary content column rather than its marker column', () => {
-  assert.match(rule('.tool-card > summary'), /grid-template-columns: 8px minmax\(0,1fr\)/);
+  assert.match(rule('.tool-card > summary'), /grid-template-columns: 16px minmax\(0,1fr\)/);
   const content = rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification');
   assert.match(content, /grid-column: 2; min-width: 0/);
-  assert.match(rule('.tool-card > summary::before'), /grid-column: 1/);
+  assert.match(rule('.tool-card > summary > .card-icon-chevron'), /grid-column: 1/);
   assert.match(rule('.tool-preview-qualification'), /color: var\(--muted\);[^}]*font-size: 12px/);
   assert.doesNotMatch(rule('.tool-preview-qualification'), /display: none|visibility: hidden/);
 });
@@ -286,8 +300,9 @@ test('code wraps, output scrolls inside its block, and disclosures stay reachabl
 test('expanded output retains bounded native scrollports with fixed gutters', () => {
   const output = rule('.tool-expanded pre');
   assert.match(output, /box-sizing: border-box; max-height: 480px/);
-  assert.match(output, /padding: 0 10px; border-block: 6px solid transparent/);
-  assert.match(output, /border-radius: 4px; background: var\(--code\)/);
+  assert.match(output, /padding: 0; border-block: 6px solid transparent/);
+  assert.match(output, /border-radius: 0; background: var\(--code\)/);
+  assert.match(rule('.tool-expanded'), /margin-left: 24px/);
   assert.match(rule('pre'), /line-height: 1\.5; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto/);
   assert.doesNotMatch(output, /(?:^|;\s*)(?:height|line-height):|padding-(?:top|bottom|block):|overflow(?:-y)?:|clip-path:|transform:|margin:/);
   assert.doesNotMatch(css, /\.tool-output-frame/);

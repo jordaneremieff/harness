@@ -105,7 +105,7 @@ class FakeNode {
     this.parentNode = null;
   }
   replaceChildren(...nodes: FakeNode[]): void { for (const child of [...this.children]) child.remove(); this.text = ''; this.append(...nodes); }
-  setAttribute(key: string, value: string): void { this.attributes[key] = value; }
+  setAttribute(key: string, value: string): void { this.attributes[key] = value; if (key === 'class') this.className = value; }
   removeAttribute(key: string): void { delete this.attributes[key]; }
   hasAttribute(key: string): boolean { return Object.hasOwn(this.attributes, key); }
   addEventListener(name: string, handler: Handler): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]); }
@@ -300,20 +300,41 @@ test('callId joins call and results across entries with one bounded disclosure a
   view.set(entries); flush(); const cards = node('primary-transcript').querySelectorAll('.tool-card'); assert.equal(cards.length, 1);
   const card = cards[0]; assert.ok(card); assert.equal(card.querySelector('.tool-name')?.textContent, 'read'); assert.equal(card.querySelector('.tool-target')?.textContent, '/full/path');
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 1–10');
-  assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[0], card.querySelector('.tool-status'));
+  assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[0], card.querySelector('.tool-name'));
   assert.equal(card.querySelector('.tool-status')?.attributes.role, 'img'); assert.equal(card.querySelector('.tool-status')?.attributes['aria-label'], 'success');
   assert.doesNotMatch(card.textContent, /The tool completed without output\.|Working|Tool error/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) < 2000);
-  assert.match(card.querySelector('.tool-preview')?.textContent ?? '', /…$/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) <= 240);
+  assert.match(card.querySelector('.tool-preview')?.textContent ?? '', /…$/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) <= 1200);
   assert.equal(card.querySelector('.tool-preview')?.parentNode, card.querySelector('summary'));
   assert.equal(card.querySelectorAll('details').length, 0); card.open = true; card.dispatch('toggle'); flush();
   assert.equal(card.querySelector('pre')?.textContent, 'x'.repeat(5000));
   const raw = card.querySelectorAll('details').find(node => node.querySelector('summary')?.textContent === 'Raw output');
   assert.ok(raw); raw.open = true; raw.dispatch('toggle'); assert.equal(raw.querySelector('pre')?.textContent, 'x'.repeat(5000));
-  assert.equal(card.querySelectorAll('.tool-chevron').length, 0); assert.equal(card.parentNode?.querySelectorAll('.tool-copy').length, 1);
+  assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-chevron').length, 1); assert.equal(card.parentNode?.querySelectorAll('.tool-copy').length, 1);
   view.set(entries, new Map([['call-1', {callId: 'call-1', name: 'read', phase: 'end' as const, parts: [{type: 'text' as const, text: 'failure cause'}], isError: true}]])); flush();
   assert.equal(node('primary-transcript').querySelector('.tool-card'), card); assert.match(card.textContent, /failure cause/);
   assert.equal(card.querySelector('.tool-status')?.attributes['aria-label'], 'error');
   assert.equal(card.parentNode?.dataset.status, 'error'); assert.match(card.querySelector('.tool-status')?.textContent ?? '', /Error/);
+});
+test('collapsed cards prefer supplied structured summaries and keep exact raw copy, timing and arguments', async () => {
+  setup(); const view = transcript(); const raw = '{\n  "count": 2,\n  "valid": false\n}';
+  const source = contentEntry('summary', {path: 'result.txt', offset: 40, limit: 8}, raw);
+  const parts = source.messages[0]?.parts; assert.ok(parts);
+  const call = parts.find(part => part.type === 'toolCall'); const result = parts.find(part => part.type === 'toolResult');
+  assert.ok(call && result); call.name = 'read'; result.name = 'read';
+  result.parts = [{type: 'text', text: raw, structured: {value: {count: 2, valid: false}, truncated: false}}];
+  view.set([source], new Map([[call.callId, {callId: call.callId, name: 'read', phase: 'end', durationMs: 37}]])); flush();
+  const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  assert.equal(card.querySelector('.tool-preview')?.textContent, 'count: 2 · valid: false');
+  assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 40–47 · 37 ms');
+  assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-chevron').length, 1);
+  const action = card.parentNode?.querySelector('.tool-copy'); assert.ok(action); const icon = action.querySelector('svg'); assert.ok(icon);
+  let copied = ''; const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => { copied = text; }}}});
+  try { action.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); await Promise.resolve(); assert.equal(copied, raw); assert.equal(action.querySelector('svg'), icon); }
+  finally { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator'); }
+  card.open = true; card.dispatch('toggle'); flush();
+  assert.equal(card.querySelector('.tool-output-info')?.textContent, '');
+  assert.ok(card.querySelector('.tool-arguments')); assert.ok(card.querySelector('.tool-raw-output')); view.reset();
 });
 test('a result before its call moves the same card to its call owner and removed parts disappear', () => {
   setup(); const view = transcript(); const result = {type: 'toolResult' as const, callId: 'x', name: 'custom', parts: [{type: 'text' as const, text: 'result'}], isError: false};
@@ -1663,7 +1684,7 @@ test('expanded source disclosures avoid the raw inspection scroll cap', () => {
   limits.open = true; limits.dispatch('toggle');
   assert.match(limits.querySelector('pre')?.textContent ?? '', /8192 characters/);
   assert.match(limits.querySelector('pre')?.textContent ?? '', /65536 characters/);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'custom'); assert.equal(card.querySelector('.tool-status')?.textContent, '✓ Done');
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'custom'); assert.equal(card.querySelector('.tool-status')?.textContent, 'Done');
 });
 test('tool subjects mark known character and line cuts without changing complete unknown endings', () => {
   const targetFor = (name: string, key: string, value: string): FakeNode => {
@@ -1768,8 +1789,10 @@ test('expanded tool captions share the wrap row and native source disclosures ke
   assert.equal(header.classList.contains('source-header'), true); assert.equal(header.children.length, 2);
   const outputControl = header.querySelector('.source-wrap'); assert.ok(outputControl);
   assert.equal(outputControl.attributes['aria-label'], 'Wrap source lines');
+  assert.equal(outputControl.attributes['aria-pressed'], 'true'); assert.equal(outputControl.title, 'Do not wrap source lines');
   const outputText = output.textContent; outputControl.dispatch('click'); flush(); assert.equal(output.textContent, outputText);
   assert.equal(output.dataset.wrap, 'false'); assert.equal(output.contains(header), false);
+  assert.equal(outputControl.attributes['aria-label'], 'Wrap source lines'); assert.equal(outputControl.attributes['aria-pressed'], 'false'); assert.equal(outputControl.title, 'Wrap source lines');
   view.set([source]); flush(); assert.equal(disclosure.querySelectorAll('.source-wrap').length, 1); view.reset();
 });
 
@@ -1866,7 +1889,7 @@ test('communication keeps sender and text at rest and opens one hidden Source fr
   assert.equal(card.querySelector('.message-error')?.textContent, 'Synthetic message error');
   for (const selector of ['.communication-kind', '.communication-time', '.communication-trust', '.communication-copy', '.timestamp']) assert.equal(card.querySelector(selector), null);
   assert.equal(region.tagName, 'section'); assert.equal(region.attributes.role, 'region'); assert.equal(region.attributes['aria-label'], 'Source'); assert.equal(region.hidden, true); assert.equal(Reflect.get(region, 'inert'), true); assert.equal(region.querySelector('summary'), null); assert.equal(region.querySelector('pre'), null);
-  assert.equal(menu.textContent, '…'); assert.equal(menu.attributes['aria-label'], 'Message actions');
+  assert.equal(menu.textContent, 'Message actions'); assert.equal(menu.attributes['aria-label'], 'Message actions');
   messageAction(card, 'Source').run?.(); assert.equal(region.hidden, false); assert.equal(Reflect.get(region, 'inert'), false); assert.match(region.textContent, /Original transport paragraph/);
   const close = region.querySelector('.message-source-close'); assert.ok(close); close.click(); assert.equal(region.hidden, true); assert.equal(Reflect.get(region, 'inert'), true); assert.equal(fakeDocument.activeElement, menu); view.reset();
 });
@@ -1876,7 +1899,7 @@ test('unverified marker opens Source without inventing a sender and Copy keeps l
   try {
     view.set([communicationEntry('unavailable')]); flush(); const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
     assert.equal(card.querySelector('.communication-sender')?.hidden, true); assert.equal(card.querySelector('.communication-sender')?.textContent, '');
-    const marker = card.querySelector('.communication-unverified'); assert.ok(marker); assert.equal(marker.hidden, false); assert.equal(marker.attributes['aria-label'], 'Source unverified');
+    const marker = card.querySelector('.communication-unverified'); assert.ok(marker); assert.equal(marker.hidden, false); assert.equal(marker.attributes['aria-label'], 'Source unverified'); assert.equal(marker.querySelectorAll('svg').length, 1);
     const copy = messageAction(card, 'Copy'); assert.match(copy.description ?? '', /source unverified/); copy.run?.(); await Promise.resolve(); assert.deepEqual(writes, ['Original transport paragraph']);
     marker.click(); const region = card.querySelector('.message-source'); assert.ok(region); assert.equal(region.hidden, false); assert.match(region.textContent, /Original transport paragraph/);
     region.querySelector('.message-source-close')?.click(); assert.equal(fakeDocument.activeElement, marker);
@@ -2043,7 +2066,7 @@ test('Source offers one original Copy with Wrap without duplicating the header m
 test('action hover cues remain neutral while actual links and keyboard focus remain visible', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8'); const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
   for (const [, selectors, body] of blocks) if (selectors?.includes(':hover')) assert.doesNotMatch(body ?? '', /text-decoration\s*:\s*underline/);
-  for (const selector of ['.row-message:hover', '.message-actions button:hover', '.source-header button:hover', '.tool-card > summary:hover']) {
+  for (const selector of ['.row-message:hover', '.message-actions button:hover', '.source-header button:hover', '.card-action:hover']) {
     const block = blocks.find(([, selectors]) => selectors?.split(',').some(value => value.trim() === selector)); assert.ok(block, selector); assert.match(block[2] ?? '', /background:\s*var\(--raised\)/);
   }
   assert.match(css, /a\s*\{[^}]*color:\s*var\(--link\)[^}]*text-underline-offset:\s*2px/); assert.match(css, /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);

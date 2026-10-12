@@ -102,6 +102,7 @@ export function readRange(args: Record<string, unknown>): string {
 /** A collapsed result describes supplied structured data or keeps a literal text prefix. */
 export function resultPreview(parts: readonly PartView[]): string {
   for (const part of parts) {
+    if (part.type === 'toolResult') { const nested = resultPreview(part.parts); if (nested) return nested; }
     if (part.type !== 'text') continue;
     const text = !part.redacted ? structuredResultPreview(part.structured) ?? part.text : part.text;
     if (!text) continue;

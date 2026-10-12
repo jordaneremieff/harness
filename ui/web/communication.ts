@@ -1,5 +1,6 @@
 import type { Communication, CommunicationPresentation, MessageView } from '../shared/api.ts';
-import { button, copy, element, rawText, setText } from './dom.ts';
+import { copy, element, rawText, setText } from './dom.ts';
+import { cardAction, cardActionLabel } from './card-icons.ts';
 import { markdownDom, sourceWrap } from './safe-markdown.ts';
 import { isValidTimestamp, previewText } from './format.ts';
 import { presentMessage } from './entry-presentation.ts';
@@ -110,9 +111,9 @@ export class CommunicationCard {
     this.shell = shell; this.hooks = hooks; this.key = keys[0];
     shell.node.classList.add('communication-card'); for (const name of ['user', 'tool-only', 'thinking-only']) shell.node.classList.remove(name);
     shell.header.classList.add('communication-header'); shell.heading.classList.add('communication-sender'); shell.body.classList.add('communication-body');
-    this.unverified = button('?', () => this.openSource(this.unverified), 'communication-unverified');
+    this.unverified = cardAction('unknown', 'Source unverified', () => this.openSource(this.unverified), 'communication-unverified');
     this.unverified.setAttribute('aria-label', 'Source unverified'); this.unverified.title = 'Source unverified'; shell.heading.after(this.unverified);
-    this.close = button('×', () => { if (hooks.active()) this.setSourceOpen(false, true); }, 'message-source-close');
+    this.close = cardAction('close', 'Close Source', () => { if (hooks.active()) this.setSourceOpen(false, true); }, 'message-source-close');
     this.close.setAttribute('aria-label', 'Close Source');
     const heading = element('div', 'message-source-header'); heading.append(element('h4', 'message-source-heading', 'Source'), this.close);
     this.inspection.append(heading); this.inspection.dataset.disclosure = this.key;
@@ -171,13 +172,13 @@ export class CommunicationCard {
     const retained = this.hooks.raw(source), text = bounded(retained, 65536);
     if (this.rawValue !== text && !this.hooks.protected(this.rawPre)) { this.rawValue = text; setText(this.rawFrame, text); }
     if (!this.original) {
-      this.originalCopy = button('Copy original', () => { const current = this.current(); if (current && !this.inspection.hidden) void copy(this.hooks.raw(current), this.shell.node); }, 'copy');
+      this.originalCopy = cardAction('copy', 'Copy original', () => { const current = this.current(); if (current && !this.inspection.hidden) void copy(this.hooks.raw(current), this.shell.node); }, 'copy');
       const toolbar = element('div', 'tool-source-header communication-original-toolbar'); toolbar.append(this.originalCopy, sourceWrap(this.rawPre));
       const heading = element('div', 'communication-original-heading'); heading.append(element('h4', undefined, 'Original text'), toolbar);
       this.original = element('section', 'communication-source-section'); this.original.append(heading, this.warning, this.rawPre); this.inspection.append(this.original);
     }
     const incomplete = !source.coverage.complete || source.coverage.truncated || source.coverage.omitted > 0;
-    if (this.originalCopy) this.originalCopy.title = incomplete ? 'Copy only available transport text' : 'Copy retained transport text';
+    if (this.originalCopy) cardActionLabel(this.originalCopy, 'Copy original', incomplete ? 'Copy only available transport text' : 'Copy retained transport text');
     const warnings = [incomplete ? 'Only available transport text is retained.' : '', retained.length > 65536 ? 'Display shortened; Copy original includes all retained text.' : ''];
     this.renderStructured(source, warnings);
     const warning = warnings.filter(Boolean).join(' '); setText(this.warning, warning); this.warning.hidden = !warning;

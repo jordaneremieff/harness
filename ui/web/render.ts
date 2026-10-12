@@ -1,5 +1,6 @@
 import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, TranscriptView } from '../shared/api.ts';
 import { button, copy, element, rawText, setText } from './dom.ts';
+import { cardAction, cardActionLabel, cardDisclosure, cardIcon } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
 import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
 import { highlight, languageFromPath } from './highlight.ts';
@@ -78,7 +79,6 @@ function subject(source: JoinedTool, limit = 4096, lines = 1): string {
 function metadata(source: JoinedTool): string {
   const args = record(source.args); const facts: string[] = [];
   const range = source.name === 'read' ? readRange(args) : '';
-  if (range) facts.push(range);
   if (source.name === 'bash' && typeof args.timeout === 'number' && Number.isFinite(args.timeout) && args.timeout >= 0) facts.push(`(timeout ${args.timeout}s)`);
   for (const key of range ? ['cwd'] : ['cwd', 'offset', 'limit']) {
     const value = args[key];
@@ -542,6 +542,8 @@ export class Transcript {
   private observeDisclosure(node: HTMLElement): void {
     if (this.disclosureListeners.has(node)) return;
     this.disclosureListeners.add(node);
+    const summary = node.querySelector<HTMLElement>('summary');
+    if (summary && !summary.classList.contains('card-disclosure')) cardDisclosure(summary);
     node.addEventListener('toggle', () => { if (!this.destroyed && this.node.contains(node)) { this.registerContent(node); this.schedule(); } });
   }
   private referenceCurrent(node: HTMLElement): boolean {
@@ -871,7 +873,7 @@ export class Transcript {
     const heading = element('span', 'message-role', bounded(presentMessage(message).label, 4096));
     const actions = element('div', 'message-actions'); const body = element('div', 'message-body'); const error = element('p', 'error message-error'); error.hidden = true;
     node.setAttribute('aria-label', message.role === 'user' ? 'Input message' : bounded(`${presentMessage(message).label} message`, 4096));
-    const menu = button('…', () => this.messageMenu(entry, message.id, menu), 'message-menu');
+    const menu = cardAction('menu', 'Message actions', () => this.messageMenu(entry, message.id, menu), 'message-menu');
     menu.setAttribute('aria-label', 'Message actions'); menu.title = 'Message actions'; menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');
     actions.append(menu); header.append(heading, actions); node.append(header, body, error);
     const cached = {node, header, heading, actions, body, error, menu, forkRevision: 0, parts: new Map<string, PartNode>(), source: message}; entry.messages.set(message.id, cached); return cached;
@@ -1011,7 +1013,7 @@ export class Transcript {
     if (!cached.inspection) {
       const region = element('section', 'message-source'); region.dataset.disclosure = key;
       region.setAttribute('role', 'region'); region.setAttribute('aria-label', 'Source');
-      const heading = element('div', 'message-source-header'); const close = button('×', () => {
+      const heading = element('div', 'message-source-header'); const close = cardAction('close', 'Close Source', () => {
         if (!this.currentMessage(entry, cached.source.id, cached.node, generation)) return;
         this.sourceLayout(entry.source?.id ?? ''); region.hidden = true; region.inert = true; this.sourcePreference(key, false);
         if (cached.sourceOpener?.isConnected) cached.sourceOpener.focus({preventScroll: true});
@@ -1028,7 +1030,7 @@ export class Transcript {
     const content = region.querySelector<HTMLElement>('.message-source-content'); if (!content) return;
     const pre = element('pre', 'raw'); pre.append(element('span', 'pre-text-frame', bounded(partText(message.parts))));
     const controls = element('div', 'tool-source-header'); const generation = this.generation;
-    controls.append(button('Copy original', () => {
+    controls.append(cardAction('copy', 'Copy original', () => {
       const entry = this.cache.get(cached.node.closest<HTMLElement>('.entry')?.dataset.entryId ?? '');
       const current = this.currentMessage(entry, message.id, cached.node, generation);
       if (current?.source === message && cached.inspectionSource === message && !region.hidden) void copy(partText(message.parts), controls);
@@ -1061,7 +1063,8 @@ export class Transcript {
     if (part.type !== 'thinking') return element('div');
     const node = element('details', 'thinking'); const id = `thinking:${entryId}:${messageId}:${index}`;
     node.dataset.disclosure = id; node.open = this.showThinking || this.expanded.has(id);
-    node.append(element('summary', undefined, 'Thinking'), element('div', 'thinking-content'));
+    const summary = element('summary', undefined, 'Thinking'); cardDisclosure(summary);
+    node.append(summary, element('div', 'thinking-content'));
     this.trackDisclosure(node, id); return node;
   }
   private partContent(node: HTMLElement, part: PartView, partial: boolean, previous?: PartNode): void {
@@ -1105,17 +1108,17 @@ export class Transcript {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
     const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status'); glyph.setAttribute('role', 'img');
     const title = element('span', 'tool-name'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
-    tier.append(glyph, title, target, meta); summary.append(tier);
+    tier.append(title, target, glyph, meta); cardDisclosure(summary); summary.append(tier);
     const preview = element('div', 'tool-preview'); const qualification = element('p', 'tool-preview-qualification', 'Partial output'); qualification.hidden = true;
     const expanded = element('div', 'tool-expanded'); const info = element('p', 'secondary tool-output-info'); expanded.append(info); summary.append(preview, qualification); node.append(summary, expanded);
     node.dataset.disclosure = `tool:${source.callId}`; node.open = this.expanded.has(`tool:${source.callId}`);
     const generation = this.generation;
-    const action = button('Copy output', () => {
+    const action = cardAction('copy', 'Copy output', () => {
       const captured = tool.source; if (!captured || !this.currentToolSource(tool, captured, generation)) return;
       const raw = tool.inspections?.output;
       if (raw?.open && tool.inspectionSources?.get(raw) !== captured) return;
       void copy(partText(captured.result ?? []), tool.card).then(copied => {
-        if (copied && this.currentToolSource(tool, captured, generation)) { setText(action, 'Copied'); action.title = 'Copied'; }
+        if (copied && this.currentToolSource(tool, captured, generation)) cardActionLabel(action, 'Copied');
       });
     }, 'tool-copy');
     action.setAttribute('aria-label', 'Copy tool output'); action.title = 'Copy tool output';
@@ -1131,7 +1134,7 @@ export class Transcript {
     if (previous === source) { if (tool.node.open && tool.documentSource !== source) this.expandTool(tool); return tool.card; }
     tool.card.dataset.status = source.status;
     this.toolHeading(tool, source);
-    setText(tool.glyph, this.toolStatusMark(source.status));
+    tool.glyph.replaceChildren(cardIcon(source.status === 'success' ? 'success' : source.status === 'error' ? 'error' : source.status === 'working' ? 'working' : 'unknown'), element('span', 'tool-status-label', this.toolStatusMark(source.status)));
     tool.glyph.className = `tool-status ${source.status}`; tool.glyph.setAttribute('aria-label', source.status === 'missing' ? 'No result recorded' : source.status);
     this.toolMetadata(tool, source);
     const explanation = [metadata(source), outputExplanation(source), source.args?.truncated ? 'Some arguments are not available.' : ''].filter(Boolean).join('\n');
@@ -1144,11 +1147,11 @@ export class Transcript {
   }
   private toolStatusMark(status: string): string {
     switch (status) {
-      case 'success': return '✓ Done';
-      case 'error': return '! Error';
-      case 'working': return '● Working';
-      case 'available': return '? Result available';
-      default: return '? No result recorded';
+      case 'success': return 'Done';
+      case 'error': return 'Error';
+      case 'working': return 'Working';
+      case 'available': return 'Result available';
+      default: return 'No result recorded';
     }
   }
   private partialToolOutput(source: JoinedTool): boolean {
@@ -1157,9 +1160,7 @@ export class Transcript {
   }
   private toolCopyLabel(tool: ToolNode, source: JoinedTool): void {
     const incomplete = this.partialToolOutput(source);
-    setText(tool.copy, incomplete ? 'Copy available output' : 'Copy output');
-    tool.copy.title = incomplete ? 'Copy retained output only. Some original output is unavailable or not loaded.' : 'Copy retained tool output';
-    tool.copy.setAttribute('aria-label', tool.copy.title);
+    cardActionLabel(tool.copy, incomplete ? 'Copy available output' : 'Copy output', incomplete ? 'Copy retained output only. Some original output is unavailable or not loaded.' : 'Copy retained tool output');
   }
   private toolMetadata(tool: ToolNode, source: JoinedTool): void {
     setText(tool.meta, [source.name === 'read' ? readRange(record(source.args)) : '', toolTime(source)].filter(Boolean).join(' · '));
@@ -1189,7 +1190,7 @@ export class Transcript {
     else if (image) { const node = element('div'); this.imageContent(node, image); this.replaceContent(tool.preview, node); }
     else {
       const text = partText(source.result ?? []);
-      this.releaseFrames(tool.preview); setText(tool.preview, bounded(text || resultPreview(source.result ?? []) || this.emptyToolResult(source.status), 240, 6));
+      this.releaseFrames(tool.preview); setText(tool.preview, bounded(resultPreview(source.result ?? []) || text || this.emptyToolResult(source.status), 1200, 6));
     }
     if (tool.node.open) this.expandTool(tool);
   }
@@ -1206,10 +1207,10 @@ export class Transcript {
   }
   private toolInspection(tool: ToolNode, label: string, source: () => string, id: string): HTMLDetailsElement {
     const node = element('details', 'raw-details'); const controls = element('div', 'source-header'); const generation = this.generation;
-    const pre = element('pre'); const frame = preTextFrame(pre); node.append(element('summary', undefined, label));
+    const pre = element('pre'); const frame = preTextFrame(pre); const summary = element('summary', undefined, label); cardDisclosure(summary); node.append(summary);
     const sources = tool.inspectionSources ?? new Map(); tool.inspectionSources = sources;
     if (tool.source) sources.set(node, tool.source);
-    if (label === 'Arguments') controls.append(button('Copy arguments', () => {
+    if (label === 'Arguments') controls.append(cardAction('copy', 'Copy arguments', () => {
       const captured = sources.get(node); if (!captured || !this.currentToolSource(tool, captured, generation)) return;
       void copy(source(), controls);
     }, 'copy'));

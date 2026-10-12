@@ -143,6 +143,12 @@ test('collapsed results summarize supplied structure without parsing literal tex
   assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', '[omitted]'], truncated: true}}]), 'Array preview limited');
   assert.equal(resultPreview([{type: 'text', text: '[protected text]', redacted: true, structured: {value: {hidden: 'never preview'}, truncated: false}}]), '[protected text]');
 });
+test('nested retained results use supplied structured summaries without changing the literal source', () => {
+  const parts: PartView[] = [{type: 'toolResult', callId: 'nested', name: 'query', isError: false, parts: [
+    {type: 'text', text: '{"count":2}', structured: {value: {count: 2}, truncated: false}},
+  ]}];
+  const before = JSON.stringify(parts); assert.equal(resultPreview(parts), 'count: 2'); assert.equal(JSON.stringify(parts), before);
+});
 test('collapsed literal results have a six-line and 1200-character limit without a source-loss promise', () => {
   for (const text of ['one\ntwo\nthree', 'one\rtwo\rthree', 'one\r\ntwo\r\nthree', 'x'.repeat(10000), '😀'.repeat(10000)]) {
     const parts: PartView[] = [{type: 'text', text}];

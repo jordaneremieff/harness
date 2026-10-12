@@ -23,6 +23,10 @@ const flavors = ["latte", "frappe", "macchiato", "mocha"];
 // Any new use of the low-contrast rule needs a deliberate classification.
 const decorativeHairlines = new Set([
   ".project-bar|border-bottom", ".connection-banner|border-bottom", ".pane-heading|border-bottom",
+  ".workbench-status|border-top", ".workbench-status .composer-detail-body|border",
+  ".transcript-group-header|border-top", ".message-source|border",
+  ".communication-source-section + .communication-source-section|border-top",
+  ".context-menu-separator|border-top",
 	".source-header|border-bottom",
 	".sidebar|border-right",
 	".sidebar-footer|border-top",
@@ -49,6 +53,13 @@ const decorativeHairlines = new Set([
 ]);
 // Non-content paint: the dialog backdrop dims the page behind a dialog.
 const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)"]);
+// Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
+const graphicBackgrounds = new Map([
+  [".pane-split > .pane-divider::after", "edge"],
+  [".pane-split > .pane-divider:hover::after", "edge"],
+  [".pane-split > .pane-divider:focus-visible::after", "accent"],
+  [".context-menu-item[role=menuitemradio][aria-checked=true]::before", "muted"],
+]);
 type RGB = [number, number, number];
 type Rule = { selector: string; contexts: string[]; declarations: { property: string; value: string }[] };
 type Measurement = {
@@ -290,6 +301,11 @@ function backgroundDeclaration(context: Context, value: string) {
 		issues.push(`${theme}: unmodeled background ${source}: ${value}`);
 		return;
 	}
+	const graphic = graphicBackgrounds.get(rule.selector);
+	if (graphic === name) {
+		for (const bg of surfaces) measure("graphic-paint", `${source} --${name} / --${bg}`, name, bg, 3);
+		return;
+	}
 	if (inverseFills.includes(name)) inverseBackground(context, name);
 	else if (!surfaces.includes(name)) issues.push(`${theme}: non-surface background ${source}: ${value}`);
 	else for (const fg of foregrounds) measure("background-declaration", `${source} --${fg} / --${name}`, fg, name, 4.5);
@@ -449,6 +465,15 @@ test("regular user prose retains normal-text contrast and the left rule retains 
 	}
 });
 test("all color declarations use modeled semantic tokens", () => assert.deepEqual(result.issues, []));
+test("graphic paint measures selected marks and divider hover/focus without opening a surface exception", () => {
+  const rows = result.measurements.filter(row => row.kind === "graphic-paint");
+  assert.equal(rows.length, graphicBackgrounds.size * surfaces.length * (2 + flavors.length));
+  assert.ok(rows.every(row => row.threshold === 3 && row.ratio >= 3));
+  assert.ok(audit(`${css}\n.probe { background: var(--muted); }`).issues.some(issue => issue.includes("non-surface background")));
+  assert.ok(audit(`${css}\n.pane-split > .pane-divider:hover::after { background: var(--rule); }`).issues.some(issue => issue.includes("non-surface background")));
+  const weakened = audit(css.replace("--edge: #6b7378", "--edge: #16181b"));
+  assert.ok(weakened.measurements.some(row => row.kind === "graphic-paint" && row.ratio < row.threshold));
+});
 test("hardcoded and unknown text colors, extra pairs, and alpha effects are detected", () => {
 	for (const declaration of [
 		"color: #fff",

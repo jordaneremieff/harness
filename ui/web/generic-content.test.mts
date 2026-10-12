@@ -23,7 +23,8 @@ class DomNode extends EventTarget {
   }
   remove(): void { if (this.parent) this.parent.childNodes = this.parent.childNodes.filter(child => child !== this); }
   querySelectorAll(selector: string): DomNode[] { return descendants(this).filter(child => selector.startsWith('.') ? child.className.split(' ').includes(selector.slice(1)) : child.tag === selector); }
-  setAttribute(key: string, value: string): void { this.dataset[key] = value; }
+  querySelector(selector: string): DomNode | null { return this.querySelectorAll(selector)[0] ?? null; }
+  setAttribute(key: string, value: string): void { this.dataset[key] = value; if (key === 'class') this.className = value; }
   set innerHTML(_value: string) { throw new Error('Unsafe HTML'); }
 }
 function descendants(node: DomNode): DomNode[] { return [node, ...node.childNodes.flatMap(descendants)]; }
@@ -50,6 +51,7 @@ afterEach(() => { if (previous) Object.defineProperty(globalThis, 'document', pr
 function setup(): PresentationContext {
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {
     createElement: (tag: string) => new DomNode(tag),
+    createElementNS: (_namespace: string, tag: string) => new DomNode(tag),
     createDocumentFragment: () => new DomNode('#fragment'),
     createTextNode: (text: string) => { const node = new DomNode('#text'); node.textContent = text; return node; },
   }});

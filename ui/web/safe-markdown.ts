@@ -1,6 +1,7 @@
 import { parseMarkdown } from './markdown.ts';
 import type { MarkdownBlock, MarkdownInline } from './markdown.ts';
-import { button, copy, element } from './dom.ts';
+import { copy, element } from './dom.ts';
+import { cardAction, cardActionLabel } from './card-icons.ts';
 import { highlight } from './highlight.ts';
 
 function inlineNode(node: MarkdownInline): Node {
@@ -24,12 +25,13 @@ function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
 /** Wrap changes only the scrollport's whitespace mode, not its text nodes. */
 export function sourceWrap(pre: HTMLElement): HTMLButtonElement {
   pre.dataset.wrap = 'true';
-  const wrap = button('Wrap', () => {
+  const wrap = cardAction('wrap', 'Wrap', () => {
     pre.dispatchEvent(new Event('source-wrap', {bubbles: true}));
     const wrapped = pre.dataset.wrap !== 'true';
     pre.dataset.wrap = String(wrapped); wrap.setAttribute('aria-pressed', String(wrapped));
+    wrap.title = wrapped ? 'Do not wrap source lines' : 'Wrap source lines';
   }, 'source-wrap');
-  wrap.setAttribute('aria-pressed', 'true'); wrap.setAttribute('aria-label', 'Wrap source lines');
+  wrap.setAttribute('aria-pressed', 'true'); cardActionLabel(wrap, 'Wrap', 'Wrap source lines'); wrap.title = 'Do not wrap source lines';
   return wrap;
 }
 /** Controls stay outside the source's scrollport and never replace its text nodes. */
@@ -38,7 +40,7 @@ export function sourceHeader(pre: HTMLElement, language: string | HTMLElement = 
   const label = typeof language === 'string' ? element('span', 'source-language', language) : language;
   if (typeof language !== 'string') label.classList.add('source-language');
   header.append(label);
-  if (source) header.append(button('Copy code', () => { void copy(source(), header); }, 'copy'));
+  if (source) header.append(cardAction('copy', 'Copy code', () => { void copy(source(), header); }, 'copy'));
   header.append(sourceWrap(pre)); return header;
 }
 function codeBlock(node: Extract<MarkdownBlock, {type: 'code'}>): HTMLElement {
