@@ -27,6 +27,7 @@ class ModuleFamily {
 
 /** Private buffers and a complete route identity are constructed before publication. */
 export class AssetGeneration {
+  readonly builtAt = new Date().toISOString();
   readonly id:string;
   readonly manifest:Readonly<Record<string,string>>;
   readonly bytes:number;
@@ -112,6 +113,7 @@ export class AssetGenerations {
   private observer?: (status:BuildStatus)=>void;
   constructor(initial:AssetGeneration) {this.active=initial;this.state={revision:0,generation:initial.id,previous:null,change:'reload',status:'ready',code:'none'};}
   status():BuildStatus {return {...this.state};}
+  identity(id = this.active.id) {const generation = this.find(id); return generation ? {digest: generation.id, builtAt: generation.builtAt} : undefined;}
   observe(observer:(status:BuildStatus)=>void) {this.observer=observer;observer(this.status());}
   counts() {
     const snapshots=[this.active,this.previous,this.candidate].filter((item):item is AssetGeneration=>!!item);

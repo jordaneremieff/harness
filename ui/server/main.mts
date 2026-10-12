@@ -7,6 +7,8 @@ import { LocalHttp, assetMap, type Asset } from './http.mts';
 import { ApiError } from './errors.mts';
 import { DevelopmentBuild } from './development-build.mts';
 import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
+import { collectIdentity } from './version.mts';
+import { identityLabel, type UiIdentity } from '../shared/version.ts';
 
 export type Options = {cwd: string; port: number; pi: string; stateDir?: string; open?: boolean; devReload?:boolean; devDiagnostics?:boolean};
 /** CLI flags select process boundaries, never environment or arbitrary commands. */
@@ -50,11 +52,13 @@ export function statePaths(environment:NodeJS.ProcessEnv=process.env) {
   return {agentDir,agentStore,stateDir:join(agentDir,'ui')};
 }
 /** Test injection changes adapters, not the public HTTP route or authentication surface. */
-export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'>> & {assets?:Map<string,Asset>; assetRoot?:string}={}) {
+export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'>> & {assets?:Map<string,Asset>; assetRoot?:string; identity?:UiIdentity}={}) {
+  const startedAt = new Date().toISOString();
   const paths=statePaths();
   if(!isAbsolute(options.cwd)) throw new ApiError('invalid_request','The project directory must be absolute.');
   const development=options.devReload?await DevelopmentBuild.open(injection.assetRoot):undefined;
   const assets=injection.assets??(development?new Map<string,Asset>():await assetMap(injection.assetRoot));
+  const identity = injection.identity ?? await collectIdentity(assets, {root: injection.assetRoot ? resolve(injection.assetRoot, '..') : undefined, assetRoot: injection.assetRoot, startedAt, build: development?.generations.identity()});
   const stateDir=options.stateDir??paths.stateDir;
   const registry=await Registry.open({stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,agents:injection.agents,primary:injection.primary,measure:injection.measure});
   let diagnostics:DiagnosticSink|undefined;
@@ -65,7 +69,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
   let startupHttp:LocalHttp|undefined;
   try {
     await registry.validatePath(options.cwd,true);
-    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics});startupHttp=http;
+    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics,identity});startupHttp=http;
     const launchUrl=await http.listen(options.port);
     development?.generations.observe(status=>{diagnostics?.emit({event:'reload',code:status.status==='failed'?'failed':status.status==='ready'?'applied':'deferred'},'build');});
     development?.build.start();diagnostics?.emit({event:'connection',code:'applied'});
@@ -76,13 +80,13 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       const result=await Promise.allSettled([registry.close(),http.close(),development?.build.close(),diagnostics?.close()]);
       const failed=result.find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
     })();
-    return {registry,http,launchUrl,close};
+    return {registry,http,launchUrl,identity,close};
   } catch(error) {await Promise.allSettled([registry.close(),startupHttp?.close(),development?.build.close(),diagnostics?.close()]);throw error;}
 }
 export async function main(args=process.argv.slice(2), opener: (url: string) => Promise<void> = openInBrowser, injection: Parameters<typeof startBackend>[1] = {}) {
   const options=parseArgs(args);
   const app=await startBackend(options, injection);
-  process.stdout.write(`${app.launchUrl}\n`);
+  process.stdout.write(`${app.launchUrl}\n${identityLabel(app.identity)}\n`);
   if(options.open) await opener(app.launchUrl).catch(()=>process.stderr.write('The browser did not open; use the printed launch URL.\n'));
   let closing=false;
   const shutdown=()=> {

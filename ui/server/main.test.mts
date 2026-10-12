@@ -8,6 +8,7 @@ import type { CatalogPage } from '../agents/index.mts';
 import type { ApiResult } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 import { main, parseArgs } from './main.mts';
+import { UI_ITERATION, identityLabel, readIdentity, type UiIdentity } from '../shared/version.ts';
 import type { AgentAdapter } from './registry.mts';
 
 const assets = new Map([['/', {type: 'text/html; charset=utf-8', data: Buffer.from('<title>Fixture</title>')}]]);
@@ -81,4 +82,18 @@ test('main keeps the backend running when the opener fails', {timeout: 15000}, a
   const {root, cwd, keep} = await project(context);
   const app = keep(await main([...flags(cwd, root, 'state-fail'), '--open'], async () => { throw new Error('no browser'); }, {agents: () => adapter, assets}));
   assert.match(app.launchUrl, /^http:\/\/127\.0\.0\.1:\d+\//);
+});
+
+test('startup prints the served page identity directly after the launch URL', {timeout: 15000}, async context => {
+  const {root, cwd, keep} = await project(context);
+  const identity: UiIdentity = {iteration: UI_ITERATION, git: {commit: 'a'.repeat(40), shortCommit: 'aaaaaaa', branch: 'feature/ui', modified: true, committedAt: '2026-10-12T00:00:00.000Z'},
+    assets: {digest: 'b'.repeat(64), builtAt: '2026-10-12T01:00:00.000Z'}, startedAt: '2026-10-12T02:00:00.000Z', pi: '1.1.0', durable: '1.1.0'};
+  const output: string[] = [];
+  context.mock.method(process.stdout, 'write', (value: string | Uint8Array) => {output.push(String(value)); return true;});
+  const app = keep(await main(flags(cwd, root, 'state-identity'), async () => {throw new Error('No browser');}, {agents: () => adapter, assets, identity}));
+  context.mock.restoreAll();
+  assert.deepEqual(output.join('').trimEnd().split('\n'), [app.launchUrl, identityLabel(identity)]);
+  const html = await (await fetch(new URL('/', app.launchUrl))).text();
+  const encoded = /name="ui-identity" content="([^"]*)"/.exec(html)?.[1]; assert.ok(encoded);
+  assert.deepEqual(readIdentity(encoded), identity); assert.equal(app.identity, identity);
 });

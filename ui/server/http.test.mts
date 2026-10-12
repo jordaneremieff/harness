@@ -17,10 +17,12 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { ApiResult, Bootstrap, EventData, EventEnvelope, EventName, OperationKind, OperationView, Target } from '../shared/api.ts';
 import { LIMITS } from '../shared/api.ts';
+import { UI_ITERATION, readIdentity, type UiIdentity } from '../shared/version.ts';
 import type { CatalogPage } from '../agents/index.mts';
 import { startBackend } from './main.mts';
 import { ASSET_ENTRY_LIMIT, ASSET_FILE_BYTES, ASSET_TOTAL_BYTES, assetMap, LocalHttp, type HttpBackend, type Asset } from './http.mts';
 import { ApiError } from './errors.mts';
+import { identityDocument } from './version.mts';
 import type { AgentAdapter } from './registry.mts';
 
 const executable = fileURLToPath(new URL('../rpc/fake-pi.mts', import.meta.url));
@@ -78,7 +80,7 @@ class MemoryResponse extends EventEmitter {
   write(data:string|Buffer) {this.text+=data.toString();return true;}
   end(data?:string|Buffer) {if(data) this.write(data);this.destroyed=true;this.emit('close');}
 }
-function inProcessHttp(context:TestContext) {
+function inProcessHttp(context:TestContext, identity?: UiIdentity) {
   const assets=new Map<string,Asset>([
     ['/',{type:'text/html',data:Buffer.from('<html><head><link href="/style.css" rel="stylesheet"><link href="/favicon.svg" rel="icon"></head><body><script src="/web/app.js"></script></body></html>')}],
     ['/style.css',{type:'text/css',data:Buffer.from('body {color:black;}')}],['/favicon.svg',{type:'image/svg+xml',data:Buffer.from('<svg/>')}],
@@ -89,7 +91,7 @@ function inProcessHttp(context:TestContext) {
   let now=0;const rows:string[]=[];const diagnostics=new DiagnosticSink({append:async row=>{rows.push(row);},close:async()=>{}},()=>now);
   const counts={dispatch:0,observe:0,detached:0};const journal=new Journal();
   const backend:HttpBackend={journal,dispatch:async()=>{counts.dispatch++;return {};},workspace:async()=> 'fake',observe:async()=>{counts.observe++;},detached:()=>{counts.detached++;}};
-  const http=new LocalHttp(backend,new Map(),undefined,{generations,diagnostics});http.auth.setPort(12345);
+  const http=new LocalHttp(backend,new Map(),undefined,{generations,diagnostics,identity});http.auth.setPort(12345);
   context.after(async()=>{await diagnostics.close();http.auth.close();http.server.removeAllListeners();});
   const authenticated=new MemoryResponse();http.auth.launch(http.auth.capability,authenticated as unknown as ServerResponse);
   const cookie=(authenticated.headers['Set-Cookie']??'').split(';')[0]??'';
@@ -101,6 +103,20 @@ function inProcessHttp(context:TestContext) {
   };
   return {http,backend,generations,diagnostics,rows,counts,invoke,advance:(value:number)=>{now=value;}};
 }
+
+test('leased documents carry their retained generation identity and matching HEAD lengths', async context => {
+  const identity: UiIdentity = {iteration: UI_ITERATION, git: {commit: 'a'.repeat(40), shortCommit: 'aaaaaaa', branch: 'feature/ui', modified: false, committedAt: '2026-10-12T00:00:00.000Z'},
+    assets: {digest: 'b'.repeat(64)}, startedAt: '2026-10-12T02:00:00.000Z', pi: '1.1.0', durable: '1.1.0'};
+  const fixture = inProcessHttp(context, identity);
+  const get = await fixture.invoke('/'); const head = await fixture.invoke('/', 'HEAD');
+  assert.equal(get.statusCode, 200); assert.equal(head.statusCode, 200);
+  const encoded = /name="ui-identity" content="([^"]*)"/.exec(get.text)?.[1]; assert.ok(encoded);
+  const served = readIdentity(encoded);
+  assert.ok(served.git); assert.ok(identity.git); assert.equal(served.git.commit, identity.git.commit);
+  assert.deepEqual(served.assets, fixture.generations.identity());
+  assert.equal(head.headers['Content-Length'], get.headers['Content-Length']);
+  assert.deepEqual(fixture.counts, {dispatch: 0, observe: 0, detached: 0});
+});
 
 test('pure development HTTP startup closes its admitted listener when watcher setup throws',async context=> {
   const fixture=inProcessHttp(context);const failure=new Error('watcher setup failed');const events:string[]=[];const closed:string[]=[];
@@ -338,7 +354,7 @@ test('request rate accounting rejects the next request at a deterministic fixed 
   assert.equal(app.fake.counts.refresh, 1); assert.equal(app.registry.sessions.size, 0);
 });
 
-const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js'];
+const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js'];
 async function browserBuild(context: TestContext, emptyFiles = false) {
   const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));
   const apps: Awaited<ReturnType<typeof startBackend>>[] = [];
@@ -371,13 +387,14 @@ async function verifyBrowserBytes(origin: string, assets: Map<string, Asset>) {
   for (const [route, asset] of assets) {
     const get = await send(origin, route); const head = await send(origin, route, 'HEAD');
     assert.equal(get.status, 200, route); assert.equal(head.status, 200, route);
-    assert.deepEqual(get.bytes, asset.data, route); assert.equal(head.bytes.length, 0, route);
+    const expected = route === '/' ? identityDocument(asset, {iteration: UI_ITERATION}, ASSET_FILE_BYTES) : asset;
+    assert.deepEqual(get.bytes, expected.data, route); assert.equal(head.bytes.length, 0, route);
     assert.equal(get.headers['content-type'], asset.type, route);
     if (route === '/favicon.svg') {
       assert.equal(asset.type, 'image/svg+xml');
       assert.match(String(get.headers['content-security-policy']), /img-src 'self'/);
     }
-    assert.equal(get.headers['content-length'], String(asset.data.length), route);
+    assert.equal(get.headers['content-length'], String(expected.data.length), route);
     assert.equal(get.headers['cache-control'], 'no-store'); assert.equal(get.headers['x-content-type-options'], 'nosniff');
     assert.equal(get.headers['referrer-policy'], 'no-referrer'); assert.match(String(get.headers['content-security-policy']), /default-src 'none'/);
     assert.deepEqual(assetHeaders(head), assetHeaders(get), route); headers.set(route, assetHeaders(get));
@@ -389,7 +406,7 @@ test('startup browser bytes survive overwrites and deletion; a fresh backend rea
   const {root, start} = await browserBuild(context); const extra = 'dist/web/extra-module.js';
   await writeFile(join(root, extra), Buffer.from([0, 255, 1, 127, 128]));
   const original = await assetMap(root);
-  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
+  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
   const app = await start(); const headers = await verifyBrowserBytes(app.origin, original);
   for (const path of [...requiredAssets, extra]) await writeFile(join(root, path), `Rebuilt ${path}`);
   assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
@@ -441,7 +458,7 @@ test('browser reads accept the exact total byte bound and stop at the next byte'
 test('browser traversal accepts the exact entry cap and rejects the next entry', async context => {
   const {root} = await browserBuild(context);
   for (let i = 1; i < ASSET_ENTRY_LIMIT; i++) await writeFile(join(root, `dist/web/ignored-${i}.txt`), '');
-  assert.equal((await assetMap(root)).size, 5);
+  assert.equal((await assetMap(root)).size, requiredAssets.length);
   await writeFile(join(root, 'dist/web/one-too-many.txt'), '');
   await assert.rejects(assetMap(root), buildError('dist/web', `${ASSET_ENTRY_LIMIT} entries`));
 });
@@ -451,7 +468,7 @@ test('browser traversal ignores non-matching names and does not recurse', async 
   for (const name of ['bad.name.js', '.hidden.js', 'space name.js', 'note.txt', 'app.js.map', '雪.js']) await writeFile(join(root, 'dist/web', name), 'ignored');
   await mkdir(join(root, 'dist/web/nested')); await writeFile(join(root, 'dist/web/nested/valid.js'), 'ignored');
   await writeFile(join(root, 'dist/web/Valid_0-module.js'), 'routed');
-  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
+  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
 });
 
 test('browser startup rejects special build files without waiting on them', async context => {

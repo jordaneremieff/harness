@@ -10,6 +10,7 @@ import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
 import { Composer, createComposerElements } from './composer.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
+import { VersionStatus } from './version-status.ts';
 import { ConnectionRecovery, accessViewVisible, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
 import { announce, byId, button, copy, details, element, empty, rawText, setText } from './dom.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
@@ -73,6 +74,7 @@ const snapshotBuffers = new Set<{events: UiEvent[]; bytes: number; overflow: boo
 const modal = new Modal(focusEditor);
 const preferences = new PreferenceQueue();
 const diagnostics = new BrowserDiagnostics();
+new VersionStatus();
 let diagnosticsActive = false;
 let devReload: DevReload | undefined;
 let devInteractionRevision = 0;

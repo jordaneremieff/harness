@@ -12,7 +12,9 @@ import type { Journal } from './journal.mts';
 import { SessionStore, validateSessionProject } from './sessions.mts';
 import type { AssetGenerations } from './asset-generations.mts';
 import type { DiagnosticSink } from './diagnostics.mts';
-export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink};
+import type { UiIdentity } from '../shared/version.ts';
+import { identityDocument } from './version.mts';
+export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; session: string; signal?: AbortSignal};
@@ -76,6 +78,7 @@ export async function assetMap(root = fileURLToPath(new URL('../', import.meta.u
   await add('/favicon.svg', 'web/favicon.svg', MIME['.svg']);
   for (const name of files) await add(`/web/${name}`, `dist/web/${name}`, MIME['.js']);
   await add('/shared/api.js', 'dist/shared/api.js', MIME['.js']);
+  await add('/shared/version.js', 'dist/shared/version.js', MIME['.js']);
   return assets;
 }
 function matchRoute(method: string, parts: string[]) {
@@ -191,7 +194,7 @@ export class LocalHttp {
     const method = request.method ?? 'GET'; const parts = pathParts(url.pathname);
     if(await this.developmentRoute(request,response,url,method)) return;
     const asset = this.assets.get(url.pathname);
-    if (asset) return this.staticAsset(method, asset, response);
+    if (asset) return this.staticAsset(method, url.pathname === '/' ? this.versionDocument(asset) : asset, response);
     matchRoute(method, parts);
     const body = method === 'GET' || method === 'DELETE' ? {} : await readBody(request);
     if (url.pathname === '/api/auth/launch') return this.launch(body, response);
@@ -236,9 +239,13 @@ export class LocalHttp {
   }
   private generationPage(generations:AssetGenerations,response:ServerResponse,url:URL,method:string) {
     const id=url.searchParams.get('generation')??generations.status().generation;
-    if(method==='HEAD') {const asset=generations.documentHead(id);if(!asset) throw new ApiError('not_ready','The browser generation is unavailable.',409);this.staticAsset(method,asset,response);return;}
-    try {const page=generations.document(id);response.setHeader('X-UI-Generation',page.generation);this.staticAsset(method,page.asset,response);}
+    if(method==='HEAD') {const asset=generations.documentHead(id);if(!asset) throw new ApiError('not_ready','The browser generation is unavailable.',409);this.staticAsset(method,this.versionDocument(asset,generations.identity(id)),response);return;}
+    try {const page=generations.document(id);response.setHeader('X-UI-Generation',page.generation);this.staticAsset(method,this.versionDocument(page.asset,generations.identity(id)),response);}
     catch {throw new ApiError('capacity','The browser generation or page capacity is unavailable.',409);}
+  }
+  private versionDocument(asset: Asset, build?: {digest: string; builtAt?: string}): Asset {
+    const identity = this.development.identity; if (!identity) return asset;
+    return identityDocument(asset, identity.git && build ? {...identity, assets: build} : identity, ASSET_FILE_BYTES);
   }
   private developmentEvents(generations:AssetGenerations,response:ServerResponse,url:URL,session:string) {
     const client=url.searchParams.get('client')??'';
