@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView } from '../shared/api.ts';
-import { composerFolder, conversationPresentation, presentationGlyph, projectIdentity } from './conversation-presentation.ts';
+import { composerFolder, conversationPresentation, presentationGlyph, projectIdentity, projectLabels } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
@@ -59,7 +59,7 @@ test('connection loss marks only last observation and preserves target facts', (
   assert.equal(view.activity, 'Working'); assert.equal(view.lastObserved, true);
   assert.equal(projectIdentity(view, '/launch/path').path, row.cwd);
   assert.deepEqual(projectIdentity({}, '/launch/path'), {path: '/launch/path', name: 'path'});
-  assert.deepEqual(projectIdentity({}), {path: undefined, name: 'Projects'});
+  assert.deepEqual(projectIdentity({}), {path: undefined, name: 'Working folder'});
 });
 test('Primary identity and lifecycle never supply facts to an agent', () => {
   const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/primary', lifecycle: 'ready', activity: 'running', pendingOperationIds: [], pendingDialogs: [], capabilities: {}, model: {provider: 'provider', id: 'primary-model'}};
@@ -71,4 +71,26 @@ test('Primary identity and lifecycle never supply facts to an agent', () => {
   assert.deepEqual(composerFolder(row, true), {text: 'Saved folder /projects/work', title: 'Retained agent folder: /projects/work'});
   assert.equal(composerFolder({}, true), undefined);
   assert.equal(conversationPresentation({target: {kind: 'primary', key: 'p', epoch: 2}, primary, connected: true}).input, false);
+});
+
+
+test('project labels use the shortest unique component suffix, not an ambiguous basename', () => {
+  const paths = ['/projects/one/checkout', '/projects/two/checkout', '/projects/notes'];
+  assert.deepEqual([...projectLabels(paths).values()], ['one/checkout', 'two/checkout', 'notes']);
+  for (const path of paths) assert.equal(projectIdentity({cwd: path}, '/launch', paths).path, path);
+  assert.equal(projectIdentity({cwd: paths[0]}, undefined, paths).name, 'one/checkout');
+  assert.equal(projectIdentity({}, '/projects/two/checkout', paths).name, 'two/checkout');
+});
+test('deep and suffix-of-path collisions retain enough path and a full-path marker', () => {
+  const paths = ['/a/team/work', '/b/team/work', '/team/work', '/work', '/'];
+  assert.deepEqual([...projectLabels(paths).values()], ['a/team/work', 'b/team/work', '/team/work', '/work', '/']);
+  assert.equal(new Set(projectLabels(paths).values()).size, paths.length);
+  assert.deepEqual([...projectLabels(['/a/work', '/a/mywork']).values()], ['work', 'mywork']);
+});
+test('multiple sessions in one directory and trailing separators share labels without changing path data', () => {
+  const paths = ['/projects/checkout', '/projects/checkout/', '/projects/checkout', '/other/checkout/'];
+  const labels = projectLabels(paths);
+  assert.deepEqual([...labels.entries()], [['/projects/checkout', 'projects/checkout'], ['/projects/checkout/', 'projects/checkout'], ['/other/checkout/', 'other/checkout']]);
+  assert.deepEqual(projectIdentity({cwd: '/projects/checkout/'}, undefined, paths), {path: '/projects/checkout/', name: 'projects/checkout'});
+  assert.equal(projectLabels(['/projects/checkout', '/projects/checkout/']).get('/projects/checkout/'), 'checkout');
 });

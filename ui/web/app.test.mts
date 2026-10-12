@@ -833,7 +833,35 @@ test('visible controls supplement the palette without a header band or title cli
 test('project identity names both direct controls with a launch-directory fallback', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
   assert.equal(byId('project-name').textContent, 'project'); assert.equal(byId('compact-project-name').textContent, 'project');
-  assert.equal(byId('project-button').title, '/fixture/project'); assert.match(html, /id="project-name">Projects/);
+  assert.equal(byId('project-button').title, 'Working folder: /fixture/project');
+  assert.equal(byId('project-name').title, '/fixture/project');
+  assert.equal(byId('project-button').getAttribute('aria-label'), 'Choose working folder');
+  assert.match(html, /id="project-name" class="project-context">Working folder/);
+});
+
+test('working-folder context disambiguates loaded primaries and late recent projects in both headers', async () => {
+  const first = primaryFixture({cwd: '/work/one/checkout', sessionName: 'Release notes'});
+  const second = primaryFixture({key: 'p2', cwd: '/work/two/checkout', sessionName: 'Other title'});
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [first, second], roster: []});
+  for (const prefix of ['', 'compact-']) {
+    assert.equal(byId(`${prefix}project-name`).textContent, 'one/checkout');
+    assert.equal(byId(`${prefix}project-name`).title, first.cwd);
+    assert.equal(byId(`${prefix}project-button`).getAttribute('aria-description'), first.cwd);
+  }
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, init) => String(url).includes('/api/projects')
+      ? Response.json({ok: true, data: {items: [{path: '/archive/one/checkout', name: 'checkout', modifiedAt: 'now'}], total: 1, omitted: 0, nextCursor: null, observedAt: 'now'}})
+      : originalFetch(url, init);
+    byId('project-button').click(); await settle();
+    assert.equal(byId('project-name').textContent, 'work/one/checkout');
+    assert.equal(byId('compact-project-name').textContent, 'work/one/checkout');
+    const rows = menuNode().children;
+    assert.ok(rows.find(row => row.textContent === 'archive/one/checkout'));
+    assert.ok(rows.find(row => row.textContent === 'work/one/checkout'));
+    assert.equal(app.state.primaries.get('p')?.sessionName, 'Release notes');
+    contextMenu.close();
+  } finally {globalThis.fetch = originalFetch;}
 });
 
 test('the missing Primary uses the shared unknown glyph rather than a connected mark', async () => {
@@ -890,7 +918,7 @@ test('Primary metadata exposes scoped text while project identity remains separa
   assert.ok(usage.includes("element('span', 'usage-fact', fact.text)")); assert.ok(usage.includes('node.dataset.key = fact.key'));
   assert.ok(usage.includes("element('p', 'usage-detail', fact.detail)")); assert.ok(usage.includes('if (!fact.summary) continue'));
   assert.doesNotMatch(usage, /element\('meter'|usage-separator|launchCwd/);
-  assert.match(source, /projectIdentity\(view, launchCwd\)/); assert.ok(html.includes('id="primary-context"'));
+  assert.match(source, /projectIdentity\(view, launchCwd, picker\.projectPaths\(\)\)/); assert.ok(html.includes('id="primary-context"'));
 });
 
 test('queued primary input renders labeled text, preserves full titles and clears when empty', () => {
@@ -951,7 +979,7 @@ test('the whole-workbench footer owns facts while composers retain direct delive
 test('a live agent with unavailable catalog metadata keeps title pane and composer coherent without a Primary', async () => {
   const row=agentFixture('a', {state:'unavailable', availability:'live', name:'Worker'});
   await arrive({workspace:{id:'w',revision:1,selectedTarget:{kind:'agent',identity:'a'},panelVisible:true},primaries:[],roster:[row],targets:[targetFixture('agent-a',{kind:'agent',identity:'a'})]});
-  assert.equal(hostDocument.title,'Pi · Worker · Connected'); assert.equal(byId('primary-row').hidden,true); assert.equal(byId('project-name').textContent,'project'); assert.equal(byId('project-button').title, '/fixture/project');
+  assert.equal(hostDocument.title,'Pi · Worker · Connected'); assert.equal(byId('primary-row').hidden,true); assert.equal(byId('project-name').textContent,'project'); assert.equal(byId('project-button').title, 'Working folder: /fixture/project');
   const active = tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true'); assert.ok(active); assert.equal(active.querySelector('.tab-state')?.textContent, 'Connected');
   assert.equal(agentControl('recipient').textContent,'Message Worker'); assert.equal(agentControl('send').disabled,true); assert.equal(agentControl('editor').disabled,false);
 });
@@ -1201,7 +1229,7 @@ test('unread notifications name the app menu and clear only after deliberate rev
 test('project navigation uses an anchored project-first menu and utility actions share one app menu', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({sessionId: 'named-project', sessionName: 'Release notes'})], roster: []});
   const project = byId('project-button'); project.click(); await settle(); const projects = menuNode();
-  assert.equal(projects.getAttribute('aria-label'), 'Projects'); assert.equal(project.getAttribute('aria-expanded'), 'true');
+  assert.equal(projects.getAttribute('aria-label'), 'Working folder'); assert.equal(project.getAttribute('aria-expanded'), 'true');
   assert.equal(byId('modal').open, false); assert.doesNotMatch(projects.textContent, /Release notes|In this window|List details|Cancel/);
   const choice = projects.children.find(node => node.textContent === 'project'); assert.ok(choice); assert.match(choice.getAttribute('aria-description') ?? '', /Release notes/);
   assert.equal(projects.style.left, `${Math.max(4, project.getBoundingClientRect().left)}px`);

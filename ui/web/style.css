@@ -212,7 +212,7 @@ a { color: var(--link); text-underline-offset: 2px; }
 .workbench { position: relative; display: grid; flex: 1; grid-template-columns: var(--sidebar-width,248px) minmax(0,1fr); min-height: 0; min-width: 0; }
 .workbench:has(> .sidebar[hidden]) { grid-template-columns: minmax(0,1fr); }
 .navigation-access { display: flex; flex: none; align-items: center; gap: 4px; min-width: 0; padding: 0 6px; background: var(--side); }
-.compact-project-button { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.compact-project-context { max-width: 24ch; font-size: 13px; }
 .navigation-access :focus-visible { outline-offset: -2px; }
 .navigation-toggle { flex: none; font-size: 13px; }
 .connection-banner { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 16px; border-bottom: 1px solid var(--rule); color: var(--fg); background: var(--run-bg); font-size: 13px; }
@@ -265,10 +265,8 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .conversation-identity { color: var(--muted); font-family: var(--mono); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
 .session-entry-actions { display: flex; align-items: center; gap: 2px; }
 .session-entry-actions > button { padding: 0 4px; }
-.project-button { display: flex; align-items: center; flex: 1; min-width: 0; height: 28px; padding: 0 6px; overflow: hidden; font-weight: 600; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
-.project-button:hover { background: var(--raised); }
-.project-button > span { overflow: hidden; text-overflow: ellipsis; }
-.project-button::after { content: "⌄"; flex: none; margin-left: 6px; color: var(--muted); font-weight: 400; }
+.project-context { flex: 1; min-width: 0; overflow: hidden; color: var(--fg); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.project-button, .compact-project-button { flex: none; }
 .nav-section { min-width: 0; margin-top: 12px; }
 .primary-section { margin-top: 8px; }
 .primary-section > .nav-heading { padding: 0 10px; }
@@ -823,6 +821,9 @@ dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset
 .picker-session-details[open] { grid-column: 1 / -1; grid-row: 2; padding: 0 10px 8px; }
 .picker-session-details p { overflow-wrap: anywhere; white-space: normal; }
 .picker-session-details > summary { color: var(--muted); font-size: 12px; }
+.picker-session-details > .icon-button::before { content: none; }
+.picker-session-details > .icon-button { min-width: 28px; padding: 0 4px; }
+.picker-search-row > .card-action { flex: none; }
 .picker-safety { margin-block: 12px; color: var(--muted); font-size: 13px; }
 dialog[data-variant=picker] { overflow-y: auto; }
 dialog[data-variant=picker] #modal-body { overflow: visible; }

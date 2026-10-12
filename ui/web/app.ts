@@ -171,7 +171,7 @@ const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversa
   status: tab => { const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view)}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.plus.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: pane.content.id})), conversations: byId('sidebar-conversations')});
-const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload: reloadSelection});
+const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload: reloadSelection, project: projectPath, projectsChanged: renderIdentity});
 actions.projectPicker = () => picker.open(projectPath());
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
@@ -283,10 +283,13 @@ function renderWorkbenchStatus(): void {
 }
 function renderIdentity(): void {
   renderWorkbenchStatus();
-  const view = activePresentation(); const project = projectIdentity(view, launchCwd);
+  const view = activePresentation(); const project = projectIdentity(view, launchCwd, picker.projectPaths());
   for (const prefix of ['', 'compact-']) {
-    setText(byId(`${prefix}project-name`), project.name); byId(`${prefix}project-button`).title = project.path ?? 'Projects';
-    byId(`${prefix}project-button`).setAttribute('aria-description', project.path ?? 'No project selected');
+    const name = byId(`${prefix}project-name`), control = byId(`${prefix}project-button`);
+    setText(name, project.name); name.title = project.path ?? 'No working folder selected';
+    control.title = project.path ? `Working folder: ${project.path}` : 'Choose working folder';
+    control.setAttribute('aria-label', 'Choose working folder');
+    control.setAttribute('aria-description', project.path ?? 'No working folder selected');
   }
   document.title = accessRequired ? 'Pi · Browser access required' : view.activity ? `Pi · ${view.name} · ${view.activity}` : `Pi · ${project.name}`;
   for (const controller of controllers.values()) controllerNode(controller, 'observed').hidden = connected || !presentation(controller.target).activity;

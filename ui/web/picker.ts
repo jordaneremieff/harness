@@ -1,6 +1,8 @@
 import type { Bootstrap, OperationView, PrimaryView, RecentProjectPage, SavedSession, SavedSessionPage, Snapshot } from '../shared/api.ts';
 import type { SelectionChange } from './actions.ts';
 import { button, details, element, input } from './dom.ts';
+import { cardAction, cardDisclosure, controlIcon } from './card-icons.ts';
+import { projectIdentity, projectLabels } from './conversation-presentation.ts';
 import { contextMenu, type ContextItem } from './context-menu.ts';
 import { duplicateIdentityTails } from './tabs.ts';
 import { absoluteTime, relativeTime } from './format.ts';
@@ -28,7 +30,7 @@ function projectPage(previous: RecentProjectPage | undefined, page: RecentProjec
 }
 
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
-  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>};
+  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; project?(): string | undefined; projectsChanged?(): void};
 
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
 export class ProjectPicker {
@@ -59,7 +61,13 @@ export class ProjectPicker {
     if (!this.inline) this.begin('Starting session…');
     void this.run(() => this.start(cwd));
   }
-  private project(): string | undefined { return this.ctx.primary()?.cwd ?? (this.ctx.snapshot() as Bootstrap | undefined)?.launchCwd; }
+  private project(): string | undefined { return this.ctx.project?.() ?? this.ctx.primary()?.cwd ?? (this.ctx.snapshot() as Bootstrap | undefined)?.launchCwd; }
+  projectPaths(): string[] {
+    const snapshot = this.ctx.snapshot();
+    return [...new Set([...(snapshot?.primaries.map(item => item.cwd) ?? []), ...(this.projects?.items.map(item => item.path) ?? []),
+      (snapshot as Bootstrap | undefined)?.launchCwd, this.project()].filter((path): path is string => !!path))];
+  }
+  private projectName(path: string): string { return projectIdentity({cwd: path}, undefined, this.projectPaths()).name; }
   private owns(token: number): boolean { return this.revision === token && (!!this.inline || this.modalToken !== undefined && this.ctx.modal.owns(this.modalToken)); }
   private actions(...buttons: HTMLButtonElement[]): void {
     if (!this.inline) { this.ctx.modal.actions(...buttons); return; }
@@ -109,14 +117,14 @@ export class ProjectPicker {
   openProject(origin?: HTMLElement): void { this.selectProject(origin); }
   private show(project?: string): void {
     if (!project) { this.selectProject(); return; }
-    const {body, token} = this.begin(`Sessions in ${project.split('/').filter(Boolean).at(-1) ?? project}`); this.shownProject = project;
+    const {body, token} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
     body.append(element('p', 'secondary', 'Loading sessions…'));
-    this.actions(button('Change project', () => this.selectProject()), button('New session', () => { void this.run(() => this.start(project)); }));
+    this.actions(cardAction('folder', 'Change working folder', () => this.selectProject()), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); }));
     void this.sessions(project).catch(cause => {
       if (!this.owns(token)) return;
-      body.replaceChildren(element('p', 'error', 'Sessions could not be loaded.'), button('Try again', () => this.show(project)));
+      body.replaceChildren(element('p', 'error', 'Sessions could not be loaded.'), cardAction('restart', 'Retry saved sessions', () => this.show(project)));
       if (this.inlineError && !this.inline) body.append(this.inlineError);
-      this.actions(button('Change project', () => this.selectProject())); this.error(cause, '');
+      this.actions(cardAction('folder', 'Change working folder', () => this.selectProject()), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); })); this.error(cause, '');
     });
   }
   private selectProject(origin?: HTMLElement, cursor?: string): void {
@@ -125,7 +133,7 @@ export class ProjectPicker {
     const control = origin ?? document.getElementById('project-button') ?? undefined;
     const snapshot = this.ctx.snapshot();
     let body: HTMLElement | undefined;
-    if (host) { body = this.begin('Choose a project').body; }
+    if (host) { body = this.begin('Working folder').body; }
     else { this.ctx.modal.close(false); this.modalToken = undefined; if (!control) return; }
     const revision = this.revision;
     let loading = true, failed = false;
@@ -133,18 +141,19 @@ export class ProjectPicker {
     const paint = () => {
       const items = [...this.projectItems(snapshot), ...this.projectStatus(control, loading, failed)];
       if (body) { body.replaceChildren(...items.map(item => { const row = button(item.label, item.run, 'picker-project-row'); row.disabled = item.enabled === false; if (item.description) {row.title = item.description; row.setAttribute('aria-description', item.description);} return row; })); }
-      else if (control) { const box = control.getBoundingClientRect(); contextMenu.open(control, {x: box.left, y: box.bottom}, 'Projects', items, () => this.revision === revision); }
+      else if (control) { const box = control.getBoundingClientRect(); contextMenu.open(control, {x: box.left, y: box.bottom}, 'Working folder', items, () => this.revision === revision); }
     };
     paint();
     const signal = this.pending.signal;
     void request<RecentProjectPage>(`/api/projects${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, 'GET', undefined, undefined, signal).then(page => {
       if (!current() || signal.aborted) return;
-      this.projects = projectPage(this.projects, page, !!cursor); loading = false; paint();
+      this.projects = projectPage(this.projects, page, !!cursor); this.ctx.projectsChanged?.(); loading = false; paint();
     }).catch(() => { if (current() && !signal.aborted) {loading = false; failed = true; paint();} });
   }
   private projectItems(snapshot?: Snapshot): ContextItem[] {
     const items: ContextItem[] = []; const paths = new Set<string>();
-    const name = (path: string) => path.split('/').filter(Boolean).at(-1) ?? path;
+    const labels = projectLabels(this.projectPaths());
+    const name = (path: string) => labels.get(path) ?? path;
     for (const primary of snapshot?.primaries ?? []) {
       paths.add(primary.cwd);
       items.push({key: `primary:${primary.key}`, label: name(primary.cwd), description: [primary.cwd, primary.sessionName ?? primary.sessionId ?? primary.key, primary.lifecycle].join(' · '),
@@ -154,9 +163,10 @@ export class ProjectPicker {
     }
     for (const primary of snapshot?.primaryIndex ?? []) if (!snapshot?.primaries.some(item => item.key === primary.key)) items.push({key: `primary:${primary.key}`, label: `Session ${primary.key.slice(0, 8)}`, description: primary.lifecycle,
       run: () => { void this.select({primaryKey: primary.key, selectedTarget: {kind: 'primary', key: primary.key, epoch: primary.epoch}}).catch(cause => {this.begin('Project could not be selected'); this.error(cause);}); }});
-    const launch = this.project();
-    if (launch && !paths.has(launch)) { paths.add(launch); items.push({key: `project:${launch}`, label: name(launch), description: launch, run: () => this.show(launch)}); }
-    for (const project of this.projects?.items ?? []) if (!paths.has(project.path)) { paths.add(project.path); items.push({key: `project:${project.path}`, label: project.name, description: project.path, run: () => this.show(project.path)}); }
+    for (const path of [(snapshot as Bootstrap | undefined)?.launchCwd, this.project()]) if (path && !paths.has(path)) {
+      paths.add(path); items.push({key: `project:${path}`, label: name(path), description: path, run: () => this.show(path)});
+    }
+    for (const project of this.projects?.items ?? []) if (!paths.has(project.path)) { paths.add(project.path); items.push({key: `project:${project.path}`, label: name(project.path), description: project.path, run: () => this.show(project.path)}); }
     return items;
   }
   private projectStatus(control: HTMLElement | undefined, loading: boolean, failed: boolean): ContextItem[] {
@@ -170,13 +180,13 @@ export class ProjectPicker {
     return items;
   }
   private selectFolder(): void {
-    const {body, token} = this.begin('Project folder');
-    const directory = input('Project directory', this.project() ?? ''); directory.field.id = 'picker-project'; directory.label.htmlFor = directory.field.id;
+    const {body, token} = this.begin('Working folder');
+    const directory = input('Working folder', this.project() ?? ''); directory.field.id = 'picker-project'; directory.label.htmlFor = directory.field.id;
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
     const next = () => {
-      if (!savedPathValid(directory.field.value)) {error.textContent = 'Enter a project directory that starts with /.'; directory.field.focus(); return;}
+      if (!savedPathValid(directory.field.value)) {error.textContent = 'Enter a working folder path that starts with /.'; directory.field.focus(); return;}
       error.textContent = '';
-      void this.sessions(directory.field.value).catch(cause => {if (this.owns(token)) {error.textContent = 'The project is unavailable.'; this.error(cause, '');}});
+      void this.sessions(directory.field.value).catch(cause => {if (this.owns(token)) {error.textContent = 'The working folder is unavailable.'; this.error(cause, '');}});
     };
     body.append(pickerField(directory, true), error); this.actions(button('Use folder', next));
     directory.field.addEventListener('keydown', event => {if (event instanceof KeyboardEvent && event.key === 'Enter') {event.preventDefault(); next();}});
@@ -193,11 +203,12 @@ export class ProjectPicker {
       first = await request<SavedSessionPage>(`/api/sessions?project=${encodeURIComponent(project)}`, 'GET', undefined, undefined, this.pending.signal);
       if (!this.owns(initialToken) || choosing !== this.choosing) return;
     }
-    const {body, token, signal} = this.begin(`Sessions in ${project.split('/').filter(Boolean).at(-1) ?? project}`); this.shownProject = project;
+    const {body, token, signal} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
     const projectDetails = element('details', 'picker-path');
-    projectDetails.append(element('summary', 'secondary', 'Project directory'), element('p', 'identity', project));
+    const folderSummary = element('summary', 'secondary', 'Working folder'); cardDisclosure(folderSummary);
+    projectDetails.append(folderSummary, element('p', 'identity', project));
     body.append(projectDetails);
-    this.actions(button('Change project', () => this.selectProject()), button('New session', () => { void this.run(() => this.start(project)); }, 'main-action'));
+    this.actions(cardAction('folder', 'Change working folder', () => this.selectProject()), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); }));
     const safety = element('p', 'secondary picker-safety', 'If a session is open in a terminal, close it there before opening it here.');
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow, safety);
@@ -205,9 +216,10 @@ export class ProjectPicker {
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
     let data = first ? mergeSessions(undefined, first) : existing;
     let render = 0; let loading = 0; const titleRequests = new Set<string>();
-    const more = button('More saved sessions', () => { void load(data?.nextCursor ?? undefined); }); more.id = 'picker-more';
+    const more = cardAction('next', 'More saved sessions', () => { void load(data?.nextCursor ?? undefined); }); more.id = 'picker-more';
     const freshness = element('details', 'picker-list-details');
-    const observed = element('p', 'secondary'); freshness.append(element('summary', undefined, 'List details'), observed);
+    const observed = element('p', 'secondary'); const listSummary = element('summary', undefined, 'List details'); cardDisclosure(listSummary);
+    freshness.append(listSummary, observed); freshness.hidden = true;
     const updateCoverage = (matches: number) => {
       if (!data) return;
       const incomplete = !!data.nextCursor || !!data.omitted || data.items.some(item => item.titleState !== 'ready');
@@ -244,14 +256,14 @@ export class ProjectPicker {
     };
     const load = async (cursor?: string) => {
       const generation = ++loading; const current = () => this.owns(token) && generation === loading;
-      more.disabled = true; error.textContent = '';
+      more.disabled = true; refresh.disabled = true; error.textContent = '';
       try {
         const page = await request<SavedSessionPage>(`/api/sessions?project=${encodeURIComponent(project)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, 'GET', undefined, undefined, signal);
         if (!this.owns(token)) return;
         if (generation !== loading) return;
         data = mergeSessions(data, page, !!cursor); save(); paint(); void fillTitles(page);
       } catch (cause) { if (!signal.aborted && current()) { error.textContent = 'The saved list did not refresh. Use Refresh to reload the first page.'; this.error(cause, ''); } }
-      finally { if (current()) more.disabled = false; }
+      finally { if (current()) {more.disabled = false; refresh.disabled = false;} }
     };
     const fillTitles = async (page: SavedSessionPage) => {
       if (!page.titleCursor || !page.items.some(item => item.titleState === 'pending') || titleRequests.has(page.titleCursor)) return;
@@ -266,8 +278,17 @@ export class ProjectPicker {
         }
       } catch (cause) { if (!signal.aborted && this.owns(token)) { error.textContent = 'Some session titles did not load. Use Refresh.'; this.error(cause, ''); } }
     };
-    searchRow.append(button('Refresh', () => { void load(); }));
-    const file = this.sessionFile(project, search.field);
+    const refresh = cardAction('restart', 'Refresh saved sessions', () => { void load(); }); searchRow.append(refresh);
+    const file = this.sessionFile(project, search.field); file.hidden = true;
+    const options = cardAction('more', 'Saved session options', () => {
+      const box = options.getBoundingClientRect();
+      contextMenu.open(options, {x: box.left, y: box.bottom}, 'Saved session options', [
+        {key: 'details', label: 'List details', run: () => { freshness.hidden = false; freshness.open = true; listSummary.focus(); }},
+        {key: 'file', label: 'Session file…', run: () => { file.hidden = false; file.open = true; file.querySelector<HTMLInputElement>('#picker-session-path')?.focus(); }},
+      ], () => this.owns(token));
+    });
+    options.setAttribute('aria-haspopup', 'menu'); options.setAttribute('aria-expanded', 'false');
+    searchRow.append(options);
     const utilities = element('div', 'picker-project-actions picker-footer');
     utilities.append(coverage, freshness, more);
     body.append(list, error, utilities, file);
@@ -306,7 +327,8 @@ export class ProjectPicker {
     const describeTime = () => age.setAttribute('aria-label', `Session time: ${formatted}. Show ${absolute ? 'relative' : 'absolute'} time.`);
     const age = button(relativeTime(item.modifiedAt, Date.now()), () => { absolute = !absolute; age.textContent = absolute ? formatted : relativeTime(item.modifiedAt, Date.now()); age.setAttribute('aria-pressed', String(absolute)); describeTime(); }, 'picker-age quiet');
     age.title = formatted; describeTime();
-    const details = element('details', 'picker-session-details'); details.append(element('summary', undefined, 'Details'), element('p', 'identity', item.id), element('p', 'identity', item.path), element('p', 'secondary', sessionSize(item.size)));
+    const details = element('details', 'picker-session-details'); const summary = element('summary'); controlIcon(summary, 'info', `Details for ${item.title}`);
+    details.append(summary, element('p', 'identity', item.id), element('p', 'identity', item.path), element('p', 'secondary', sessionSize(item.size)));
     if (!opened) details.append(element('p', 'secondary', 'If this session is active in a terminal, close it there first.'));
     row.append(select, age, details); return row;
   }
@@ -322,7 +344,7 @@ export class ProjectPicker {
     rows[index]?.focus();
   }
   private sessionFile(project: string, search: HTMLElement): HTMLDetailsElement {
-    const disclosure = element('details', 'picker-file'); disclosure.append(element('summary', 'secondary', 'Session file…'));
+    const disclosure = element('details', 'picker-file'); const summary = element('summary', 'secondary', 'Session file…'); cardDisclosure(summary); disclosure.append(summary);
     const session = input('Session file'); session.field.id = 'picker-session-path'; session.label.htmlFor = session.field.id;
     const error = element('p', 'error'); error.id = 'picker-file-error'; error.setAttribute('role', 'alert'); session.field.setAttribute('aria-describedby', error.id);
     const resume = () => {
@@ -331,7 +353,7 @@ export class ProjectPicker {
       this.enter(project, session.field.value, cause => { error.textContent = cause instanceof Error ? cause.message : String(cause); session.field.focus(); });
     };
     disclosure.append(pickerField(session, true), error, element('p', 'secondary', 'If this session is active in a terminal, close it there first.'), button('Resume session', resume, 'main-action'));
-    disclosure.addEventListener('toggle', () => { if (disclosure.open) session.field.focus(); else search.focus(); });
+    disclosure.addEventListener('toggle', () => { disclosure.hidden = !disclosure.open; if (disclosure.open) session.field.focus(); else search.focus(); });
     session.field.addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter') { event.preventDefault(); resume(); } });
     return disclosure;
   }

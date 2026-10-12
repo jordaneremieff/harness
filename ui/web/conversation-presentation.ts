@@ -66,7 +66,20 @@ export function composerFolder(view: Pick<ConversationPresentation, 'cwd'>, reta
   const path = view.cwd; if (!path) return undefined;
   return {text: `${retained ? 'Saved folder' : 'Folder'} ${path}`, title: `${retained ? 'Retained agent folder' : 'Reported Primary folder'}: ${path}`};
 }
-export function projectIdentity(view: Pick<ConversationPresentation, 'cwd'>, launchCwd?: string): {path?: string; name: string} {
+/** Duplicate directories share a label; a full-path slash distinguishes a suffix-of-path collision. */
+export function projectLabels(paths: readonly string[]): Map<string, string> {
+  const components = new Map(paths.map(path => [path, path.split('/').filter(Boolean)]));
+  const directories = new Map([...components.values()].map(parts => [parts.join('/'), parts]));
+  return new Map([...components].map(([path, parts]) => {
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const suffix = parts.slice(-depth).join('/');
+      const collision = [...directories.values()].some(other => other.join('/') !== parts.join('/') && other.length >= depth && other.slice(-depth).join('/') === suffix);
+      if (!collision) return [path, suffix];
+    }
+    return [path, `/${parts.join('/')}`];
+  }));
+}
+export function projectIdentity(view: Pick<ConversationPresentation, 'cwd'>, launchCwd?: string, listedPaths: readonly string[] = []): {path?: string; name: string} {
   const path = view.cwd || launchCwd;
-  return {path, name: path ? path.split('/').filter(Boolean).at(-1) ?? path : 'Projects'};
+  return {path, name: path ? projectLabels([...listedPaths, path]).get(path) ?? path : 'Working folder'};
 }

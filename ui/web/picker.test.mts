@@ -19,6 +19,7 @@ class Node {
   set textContent(value: string) { this.text = value; }
   set innerHTML(_value: string) { throw new Error('Unsafe HTML'); }
   append(...nodes: Node[]): void { this.children.push(...nodes); }
+  prepend(...nodes: Node[]): void { this.children.unshift(...nodes); }
   replaceChildren(...nodes: Node[]): void { this.children = nodes; this.text = ''; }
   setAttribute(name: string, value: string): void { this.attributes[name] = value; }
   addEventListener(name: string, callback: () => void): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], callback]); }
@@ -43,7 +44,7 @@ for (const [name, page, status] of [
   const oldElement = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
   const oldFetch = globalThis.fetch; const body = new Node('div');
   Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: Node});
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {activeElement: null, createElement: (tag: string) => new Node(tag), createDocumentFragment: () => new Node('fragment')}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {activeElement: null, createElement: (tag: string) => new Node(tag), createElementNS: (_ns: string, tag: string) => new Node(tag), createDocumentFragment: () => new Node('fragment')}});
   globalThis.fetch = async url => new Response(JSON.stringify({ok: true, data: String(url).includes('/api/projects') ? {items: [], total: 0, omitted: 0, nextCursor: null, observedAt: saved.observedAt} : page}), {status: 200, headers: {'content-type': 'application/json'}});
   const modal = {node: {dataset: {} as Record<string, string>}, token: 1, open: () => { body.replaceChildren(); return body; }, owns: (token: number) => token === 1, actions: (...buttons: Node[]) => body.append(...buttons), error: (error: unknown) => { throw error; }};
   try {
@@ -67,7 +68,7 @@ for (const [name, page, status] of [
     assert.equal(coverage.textContent, name === 'complete' ? '' : status.replace(' · Saved list · now', ''));
     assert.equal(coverage.hidden, name === 'complete');
     assert.equal(body.children.filter(node => node.textContent.includes('Saved list ·')).length, 1);
-    assert.ok(nodes.find(node => node.tag === 'button' && node.textContent === 'Refresh'));
+    assert.ok(nodes.find(node => node.tag === 'button' && node.attributes['aria-label'] === 'Refresh saved sessions'));
     search.value = 'no match'; search.dispatch('input');
     assert.equal(coverage.textContent, name === 'complete' ? '0 matches in loaded sessions' : `0 matches in loaded sessions · ${status.replace(' · Saved list · now', '')}`);
     const empty = nodes.find(node => node.className === 'picker-sessions')?.children.find(node => node.tag === 'p'); assert.ok(empty);
@@ -85,13 +86,13 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
   const previousFetch = globalThis.fetch; const body = new Node('div'); const origin = new Node('button');
   let popup = false;
   t.mock.method(contextMenu, 'open', (_origin, _point, label, items) => {
-    assert.equal(label, 'Projects'); assert.equal(_origin, origin); popup = true;
+    if (label === 'Working folder') assert.equal(_origin, origin); else assert.equal(label, 'Saved session options'); popup = true;
     body.replaceChildren(...items.map(item => {const row = new Node('button'); if (item.key) row.dataset.itemKey = item.key; row.textContent = item.label; row.disabled = item.enabled === false; if (item.description) {row.title = item.description; row.setAttribute('aria-description', item.description);} row.addEventListener('click', () => {popup = false; item.run();}); return row;}));
   });
   t.mock.method(contextMenu, 'owns', control => popup && control === origin as unknown as HTMLElement);
   t.mock.method(contextMenu, 'close', () => {popup = false;});
   Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: Node});
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {activeElement: null, getElementById: () => origin, createElement: (tag: string) => new Node(tag), createDocumentFragment: () => new Node('fragment')}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {activeElement: null, getElementById: () => origin, createElement: (tag: string) => new Node(tag), createElementNS: (_ns: string, tag: string) => new Node(tag), createDocumentFragment: () => new Node('fragment')}});
   t.after(() => {
     globalThis.fetch = previousFetch;
     if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument); else Reflect.deleteProperty(globalThis, 'document');
@@ -145,7 +146,7 @@ test('bootstrap without a primary lists launch-project sessions directly without
   assert.deepEqual(setup.calls.map(call => call.path), ['/api/sessions?project=%2Fproject']);
   assert.ok(descendants(setup.body).find(node => node.id === 'picker-search'));
   assert.ok(descendants(setup.body).find(node => node.textContent === 'New session'));
-  assert.ok(descendants(setup.body).find(node => node.textContent === 'Change project'));
+  assert.ok(descendants(setup.body).find(node => node.attributes['aria-label'] === 'Change working folder'));
   assert.equal(descendants(setup.body).some(node => node.textContent === 'Open project'), false);
   assert.equal(setup.reloads, 0); assert.equal(setup.state.primaries.length, 0);
 });
@@ -153,7 +154,7 @@ test('an unavailable launch project leaves a truthful error and explicit Project
   const setup = directPicker(t); setup.failList(); setup.picker.open(); await settle();
   assert.match(setup.error, /project directory does not exist/); assert.equal(setup.closed, false);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
-  setup.click('Change project'); setup.click('Other folder…'); assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
+  setup.click('Change working folder'); setup.click('Other folder…'); assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
   assert.ok(descendants(setup.body).find(node => node.textContent === 'Use folder'));
 });
 test('without a primary or launch project the picker retains explicit project selection', async t => {
@@ -178,7 +179,7 @@ test('a row whose owner changed opens the saved path and a known conflict retain
 });
 test('Projects remains deliberate and exact paths validate before direct open or owner reuse', async t => {
   const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
-  setup.click('Change project'); setup.click('Other folder…'); assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
+  setup.click('Change working folder'); setup.click('Other folder…'); assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
   setup.click('Use folder'); await settle(); const path = descendants(setup.body).find(node => node.id === 'picker-session-path'); assert.ok(path);
   path.value = 'relative.jsonl'; setup.click('Resume session'); await settle();
   assert.match(setup.error, /saved session path that starts with \//);
@@ -188,7 +189,7 @@ test('Projects remains deliberate and exact paths validate before direct open or
   assert.equal(setup.reloads, 1); assert.deepEqual(setup.steps, ['selection', 'reload']);
 });
 test('workspace session selection reloads after selection through the composer focus seam', async t => {
-  const setup = directPicker(t, active); setup.picker.open(); await settle(); setup.click('Change project');
+  const setup = directPicker(t, active); setup.picker.open(); await settle(); setup.click('Change working folder');
   setup.click('project'); await settle();
   assert.deepEqual(setup.selections, [{primaryKey: 'current', selectedTarget: {kind: 'primary', key: 'current', epoch: 1}}]);
   assert.deepEqual(setup.steps, ['selection', 'reload']); assert.equal(setup.closed, true);
@@ -216,7 +217,7 @@ test('project loading retains its menu surface and folder autofocus exposes the 
   assert.match(host.textContent, /Loading projects/); assert.equal(setup.modal.token, 0);
   const page: RecentProjectPage = {items: [{path: '/other', name: 'Other project'}], total: 1, omitted: 0, nextCursor: null, observedAt: saved.observedAt};
   release(Response.json({ok: true, data: page})); await settle();
-  assert.equal(setup.body, host); const row = descendants(host).find(node => node.textContent === 'Other project'); assert.ok(row);
+  assert.equal(setup.body, host); const row = descendants(host).find(node => node.textContent === 'other'); assert.ok(row);
   assert.equal(row.title, '/other'); assert.equal(row.attributes['aria-description'], '/other');
   assert.equal(descendants(host).some(node => node.textContent === 'List details'), false);
   const refresh = descendants(host).find(node => node.textContent === 'Refresh recent projects'); assert.ok(refresh); assert.match(refresh.title, /Saved list · now/);
@@ -236,7 +237,7 @@ test('a late project reply retains action identity when new project rows precede
   await settle();
   const rows = descendants(setup.body);
   assert.equal(rows.find(node => node.textContent === 'Other folder…')?.dataset.itemKey, folder.dataset.itemKey);
-  assert.deepEqual(rows.filter(node => node.textContent === 'project').map(node => node.dataset.itemKey), ['primary:current', 'project:/new/project']);
+  assert.deepEqual(rows.filter(node => node.dataset.itemKey?.startsWith('primary:') || node.dataset.itemKey?.startsWith('project:')).map(node => [node.textContent, node.dataset.itemKey]), [['/project', 'primary:current'], ['new/project', 'project:/new/project']]);
   assert.ok(rows.findIndex(node => node.dataset.itemKey === 'project:/new/project') < rows.findIndex(node => node.dataset.itemKey === 'folder'));
 });
 test('a late project reply never reopens a dismissed popup or replaces the folder dialog', async t => {
@@ -320,7 +321,7 @@ test('inline list failure gives a local retry and preserves New session without 
   const setup = directPicker(t); const root = new Node('main'); setup.failList();
   setup.picker.mount(root as unknown as HTMLElement, '/project'); await settle();
   assert.match(root.textContent, /Sessions could not be loaded/);
-  assert.ok(descendants(root).find(node => node.textContent === 'Try again'));
+  assert.ok(descendants(root).find(node => node.attributes['aria-label'] === 'Retry saved sessions'));
   assert.equal(setup.modal.token, 0); setup.picker.newSession('/project'); await settle();
   assert.deepEqual(setup.calls.find(call => call.path === '/api/primaries')?.body, {cwd: '/project'});
   assert.equal(setup.reloads, 1);
@@ -345,9 +346,10 @@ test('chooser controls stay with their title, search and list disclosure while r
   const header = root.children[0]; assert.ok(header); assert.equal(header.className, 'picker-header');
   assert.equal(header.children[0]?.tag, 'h1'); assert.match(header.children[0]?.textContent ?? '', /Sessions in project/);
   assert.equal(header.children[1]?.className, 'dialog-actions');
-  assert.deepEqual(header.children[1]?.children.map(node => node.textContent), ['Change project', 'New session']);
+  assert.deepEqual(header.children[1]?.children.map(node => node.attributes['aria-label']), ['Change working folder', 'New session']);
   const nodes = descendants(root); const searchRow = nodes.find(node => node.className === 'picker-search-row'); assert.ok(searchRow);
-  assert.equal(searchRow.children[0]?.className, 'picker-input-row'); assert.equal(searchRow.children[1]?.textContent, 'Refresh');
+  assert.equal(searchRow.children[0]?.className, 'picker-input-row'); assert.equal(searchRow.children[1]?.attributes['aria-label'], 'Refresh saved sessions');
+  assert.equal(searchRow.children[2]?.attributes['aria-label'], 'Saved session options');
   const footer = nodes.find(node => node.classList.contains('picker-footer')); assert.ok(footer);
   const listDetails = footer.children.find(node => node.className === 'picker-list-details'); assert.ok(listDetails);
   assert.equal(listDetails.children.some(node => node.textContent === 'Session file…'), false);
@@ -355,7 +357,7 @@ test('chooser controls stay with their title, search and list disclosure while r
   assert.equal(file.children[0]?.textContent, 'Session file…');
   const row = nodes.find(node => node.className === 'picker-session'); assert.ok(row);
   assert.equal(row.children[0]?.className, 'picker-select'); assert.equal(row.children[1]?.className, 'picker-age quiet');
-  const facts = row.children[2]; assert.ok(facts); assert.equal(facts.tag, 'details'); assert.equal(facts.children[0]?.textContent, 'Details');
+  const facts = row.children[2]; assert.ok(facts); assert.equal(facts.tag, 'details'); assert.equal(facts.children[0]?.attributes['aria-label'], 'Details for Saved title');
   assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['s', '/project/s.jsonl', '10 B', 'If this session is active in a terminal, close it there first.']);
   file.open = true; file.dispatch('toggle');
   assert.ok(descendants(root).find(node => node.id === 'picker-session-path')); assert.equal(setup.modal.token, 0);
@@ -369,9 +371,9 @@ test('first-use project selection keeps one inline host and recent rows directly
     ? Response.json({ok: true, data: {items: [{name: 'Other project', path: '/other'}], total: 1, omitted: 0, nextCursor: null, observedAt: saved.observedAt}})
     : originalFetch(url, init);
   descendants(root).find(node => node.textContent === 'Refresh recent projects')?.click(); await settle();
-  assert.equal(setup.modal.token, 0); assert.match(root.textContent, /^Choose a project/);
+  assert.equal(setup.modal.token, 0); assert.match(root.textContent, /^Working folder/);
   const body = root.children.find(node => node.className === 'session-picker-body'); assert.ok(body);
-  const recent = body.children.find(node => node.textContent === 'Other project'); assert.ok(recent);
+  const recent = body.children.find(node => node.textContent === 'other'); assert.ok(recent);
   const folder = body.children.find(node => node.textContent === 'Other folder…'); assert.ok(folder);
   assert.ok(body.children.indexOf(recent) < body.children.indexOf(folder)); recent.click(); await settle();
   assert.equal(setup.modal.token, 0); assert.match(root.textContent, /^Sessions in other/);
@@ -382,7 +384,7 @@ test('Use this project immediately shows its sessions and folder validation stay
   const setup = directPicker(t); setup.picker.openProject(); await settle(); setup.click('Other folder…');
   const field = descendants(setup.body).find(node => node.id === 'picker-project'); assert.ok(field);
   field.value = 'relative'; const before = setup.calls.length; setup.click('Use folder');
-  assert.equal(setup.calls.length, before); assert.match(setup.body.textContent, /project directory that starts with/);
+  assert.equal(setup.calls.length, before); assert.match(setup.body.textContent, /working folder path that starts with/);
   assert.equal(field.focused, true); field.value = '/project'; setup.click('Use folder'); await settle();
   assert.ok(descendants(setup.body).find(node => node.id === 'picker-search'));
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
@@ -403,7 +405,7 @@ test('Session file retains project, query, list nodes and caret and restores sea
   search.focused = false; file.open = false; file.dispatch('toggle');
   assert.equal(search.focused, true); assert.equal(search.value, 'Saved');
   assert.deepEqual([search.selectionStart, search.selectionEnd], [1, 3]); assert.deepEqual(list.children, rows);
-  assert.equal(descendants(root).find(node => node.className === 'picker-path')?.textContent, 'Project directory/project');
+  assert.equal(descendants(root).find(node => node.className === 'picker-path')?.textContent, 'Working folder/project');
   assert.equal(setup.modal.token, 0);
 });
 test('exact file conflict stays beside the field without dropping the selected project or saved list', async t => {
@@ -441,4 +443,39 @@ test('chooser style bindings keep closed facts on the title line and separate li
   assert.match(css, /\.picker-session-meta:empty \{ display: none; \}/);
   assert.match(css, /\.picker-footer \{[^}]*border-top: 1px solid var\(--edge\);/);
   assert.match(css, /\.agent-row \.row-identity \{ grid-column: 2; grid-row: 2; \}/);
+});
+
+
+test('picker SVG actions retain names and options reveal exact-file input without replacing the list', async t => {
+  const setup = directPicker(t); const root = new Node('main'); setup.picker.mount(root as unknown as HTMLElement, '/project'); await settle();
+  const nodes = descendants(root), list = nodes.find(node => node.className === 'picker-sessions'), search = nodes.find(node => node.id === 'picker-search');
+  assert.ok(list); assert.ok(search); search.value = 'Saved'; search.setSelectionRange(1, 3); search.dispatch('input');
+  const rows = [...list.children];
+  for (const label of ['Change working folder', 'New session', 'Refresh saved sessions', 'Saved session options']) {
+    const action = nodes.find(node => node.attributes['aria-label'] === label); assert.ok(action, label);
+    assert.equal(action.title, label); assert.equal(action.children[0]?.tag, 'svg');
+    assert.equal(action.children[1]?.className, 'sr-only card-action-label');
+  }
+  const file = nodes.find(node => node.className === 'picker-file'); assert.ok(file); assert.equal(file.hidden, true);
+  const options = nodes.find(node => node.attributes['aria-label'] === 'Saved session options'); assert.ok(options);
+  assert.equal(options.attributes['aria-haspopup'], 'menu'); options.click(); setup.click('Session file…');
+  assert.equal(file.hidden, false); assert.equal(file.open, true);
+  assert.equal(descendants(root).find(node => node.id === 'picker-session-path')?.focused, true);
+  assert.equal(descendants(root).find(node => node.className === 'picker-sessions'), list); assert.deepEqual(list.children, rows);
+  assert.equal(search.value, 'Saved'); assert.deepEqual([search.selectionStart, search.selectionEnd], [1, 3]);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
+});
+test('loaded project rows share shortest unique suffixes and preserve exact directory actions', async t => {
+  const setup = directPicker(t, {...active, cwd: '/projects/one/checkout', sessionName: 'Release notes'});
+  setup.state.launchCwd = '/projects/two/checkout';
+  globalThis.fetch = async () => Response.json({ok: true, data: {items: [
+    {path: '/archive/one/checkout', name: 'checkout'}, {path: '/projects/notes', name: 'notes'},
+  ], total: 2, omitted: 0, nextCursor: null, observedAt: saved.observedAt}});
+  setup.picker.openProject(); await settle();
+  const rows = descendants(setup.body).filter(node => node.dataset.itemKey?.startsWith('primary:') || node.dataset.itemKey?.startsWith('project:'));
+  assert.deepEqual(rows.map(node => node.textContent), ['projects/one/checkout', 'two/checkout', 'archive/one/checkout', 'notes']);
+  assert.equal(rows[2]?.title, '/archive/one/checkout'); assert.match(rows[0]?.title ?? '', /Release notes/);
+  rows[0]?.click(); await settle();
+  assert.deepEqual(setup.selections, [{primaryKey: 'current', selectedTarget: {kind: 'primary', key: 'current', epoch: 1}}]);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
 });
