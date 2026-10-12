@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createResizer, type ResizerOptions } from './resize.ts';
-import { splitGeometry } from './tabs.ts';
+import { createPaneLayout, paneSplitGeometry, splitPane } from './pane-layout.ts';
 
 class Handle {
   attrs = new Map<string, string>();
@@ -45,7 +45,9 @@ function setup(options: Partial<Omit<ResizerOptions, 'handle' | 'read' | 'write'
 
 test('split pointer and keyboard motion stop at both content minimums for fine and coarse dividers', () => {
   for (const divider of [5, 44]) for (const width of [640, 800, 1600]) {
-    const size = splitGeometry(width + divider, divider, 80); assert.ok(size);
+    const layout = splitPane(createPaneLayout([{kind: 'primary'}, {kind: 'agent', identity: 'other'}]), 'pane-1', 'x', {width: width + divider, height: 640, divider});
+    assert.equal(layout.root.kind, 'split'); if (layout.root.kind === 'split') layout.root.ratio = 80;
+    const size = paneSplitGeometry(layout.root, {width: width + divider, height: 640, divider}); assert.ok(size);
     const f = setup({min: size.min, max: size.max, defaultValue: Math.round(width / 2)}, width * .8); f.handle.frame();
     f.handle.emit('pointerdown', {clientX: 0}); f.handle.emit('pointermove', {clientX: -10000}); f.handle.frame();
     assert.equal(f.resizer.value, size.min); f.handle.emit('pointerup', {clientX: -10000});

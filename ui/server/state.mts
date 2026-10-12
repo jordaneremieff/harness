@@ -333,7 +333,7 @@ export class StateStore {
       if (record.workspaceId !== wid || !record.input || record.inputResolved) continue;
       const ids = links.get(record.input.targetKey) ?? []; ids.push(record.view.id); links.set(record.input.targetKey, ids);
     }
-    return [...this.targetRecords.values()].filter(value => value.workspaceId === wid).map(value => ({targetKey: value.targetKey, target: structuredClone(value.target), draftRevision: value.draft.revision, hasDraft: value.draft.text.length > 0, unconfirmedOperationIds: links.get(value.targetKey) ?? []}));
+    return [...this.targetRecords.values()].filter(value => value.workspaceId === wid).map(value => ({targetKey: value.targetKey, target: structuredClone(value.target), draftRevision: value.draft.revision, hasDraft: value.draft.text.length > 0, draftPreview: Array.from(value.draft.text).slice(0, LIMITS.draftPreviewChars).join(''), draftPreviewTruncated: Array.from(value.draft.text).length > LIMITS.draftPreviewChars, unconfirmedOperationIds: links.get(value.targetKey) ?? []}));
   }
   snapshot(wid: string, selectedTargets?: Target[]): {workspace: Workspace; targets: TargetState[]; targetIndex: TargetIndex[]} {
     const workspace = structuredClone(this.requireWorkspace(wid));

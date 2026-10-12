@@ -1,5 +1,18 @@
 import type { AgentRow, EventData, PrimaryView, ProjectedFrame, Target } from '../shared/api.ts';
 
+export type AgentHistoryState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; availability?: AgentRow['availability']; reason?: string; error?: {code?: string; message: string}};
+/** Zero rendered entries do not establish absence until the history source confirms coverage. */
+export function agentHistoryEmpty(source: AgentHistoryState): {heading: string; caption: string} | undefined {
+  if (source.hasEntries) return;
+  if (!source.connected) return {heading: 'History is disconnected.', caption: 'Reconnect to load this agent’s history.'};
+  if (source.loading) return {heading: 'Loading agent history…', caption: ''};
+  if (source.error) return {heading: source.error.code === 'host_unavailable' || source.error.code === 'stored' ? 'History is disconnected.' : 'Agent history is unavailable.', caption: source.error.message};
+  if (source.availability === 'stored' || source.availability === 'unavailable') return {heading: 'History is disconnected.', caption: source.reason ?? 'Check the connection to load this agent’s history.'};
+  if (source.availability === 'incompatible') return {heading: 'Agent history is unavailable.', caption: source.reason ?? 'The host does not support the needed history operation.'};
+  if (!source.ready) return {heading: 'Loading agent history…', caption: ''};
+  if (source.complete !== true) return {heading: 'Agent history is unavailable.', caption: 'The host did not confirm complete history coverage.'};
+  return {heading: 'This agent has no messages yet.', caption: ''};
+}
 export type ConversationPresentation = {
   name: string; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;
   model?: {provider: string; modelId: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;

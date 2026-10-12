@@ -207,6 +207,16 @@ test('sidebar width is optional, integer bounded and revisioned without changing
   assert.equal(store.snapshot(workspace.id).workspace.sidebarWidth, 480);
 });
 
+test('target index previews retain exact draft prefixes, revision and Unicode without leaking full text', async t => {
+  const {store, workspace, target} = await setup(t);
+  const short = ' exact\n  saved <script> '; await store.putDraft(workspace.id, target.targetKey, {expectedRevision: 0, text: short, mode: 'prompt'});
+  let row = store.targetIndex(workspace.id)[0]; assert.equal(row.draftPreview, short); assert.equal(row.draftPreviewTruncated, false); assert.equal(row.draftRevision, 1);
+  const text = '😀'.repeat(241); await store.putDraft(workspace.id, target.targetKey, {expectedRevision: 1, text, mode: 'prompt'});
+  row = store.targetIndex(workspace.id)[0]; assert.equal(row.draftPreview, '😀'.repeat(240)); assert.equal(row.draftPreviewTruncated, true); assert.equal(row.draftRevision, 2);
+  assert.equal((await store.getTarget(workspace.id, target.targetKey)).draft.text, text);
+  await store.putDraft(workspace.id, target.targetKey, {expectedRevision: 2, text: '', mode: 'prompt'});
+  row = store.targetIndex(workspace.id)[0]; assert.equal(row.hasDraft, false); assert.equal(row.draftPreview, ''); assert.equal(row.draftPreviewTruncated, false);
+});
 test('draft writes serialize compare-and-set, errors retain the acknowledged draft', async t => {
   const {root, store, workspace, target} = await setup(t);
   const replies = await Promise.allSettled(['one', 'two'].map(text => store.putDraft(workspace.id, target.targetKey, {expectedRevision: 0, text, mode: 'prompt'})));
@@ -247,14 +257,15 @@ test('workspace and target capacities never evict drafts; values are copies and 
   await assert.rejects(store.getTarget('unknown', target.targetKey), /workspace/);
 });
 
-test('selection clear preserves old targets, synchronous index avoids draft payloads, and unknown fields reject', async t => {
+test('selection clear preserves old targets, synchronous index bounds draft previews, and unknown fields reject', async t => {
   const {store, workspace, target} = await setup(t);
   await store.putDraft(workspace.id, target.targetKey, {expectedRevision: 0, text: 'x'.repeat(64 * 1024), mode: 'prompt'});
   const selected = await store.updateSelection(workspace.id, {expectedRevision: 0, primaryKey: 'primary', selectedTarget: target.target});
   const cut = store.snapshot(workspace.id, [target.target]);
   assert.equal(cut.targets.length, 1); assert.equal(cut.targetIndex[0]?.hasDraft, true);
   assert.ok(Buffer.byteLength(JSON.stringify(store.targetIndex(workspace.id))) < 1024);
-  assert.equal(JSON.stringify(cut.targetIndex).includes('xxxx'), false);
+  assert.equal(cut.targetIndex[0]?.draftPreview, 'x'.repeat(240)); assert.equal(cut.targetIndex[0]?.draftPreviewTruncated, true);
+  assert.equal(JSON.stringify(cut.targetIndex).includes('x'.repeat(241)), false);
   const cleared = await store.updateSelection(workspace.id, {expectedRevision: selected.revision, selectedTarget: null});
   assert.equal(cleared.selectedTarget, undefined); assert.equal((await store.getTarget(workspace.id, target.targetKey)).draft.text.length, 64 * 1024);
   const invalid = {expectedRevision: cleared.revision, unexpected: 'private field'};

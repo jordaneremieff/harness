@@ -27,6 +27,15 @@ export function createPaneLayout(tabs: ConversationTab[], active: string | null 
   if (!validPaneLayout(layout)) throw new Error('The pane layout is invalid or exceeds its tab limit.');
   return layout;
 }
+/** Allocation identity is not a revision: unsaved layouts are reconstructed on each read. */
+export function samePaneLayout(a: PaneLayout, b: PaneLayout): boolean {
+  const sameNode = (left: PaneNode, right: PaneNode): boolean => {
+    if (left.kind !== right.kind || left.id !== right.id) return false;
+    if (left.kind === 'pane' && right.kind === 'pane') return left.active === right.active && JSON.stringify(left.tabs) === JSON.stringify(right.tabs);
+    return left.kind === 'split' && right.kind === 'split' && left.axis === right.axis && left.ratio === right.ratio && sameNode(left.first, right.first) && sameNode(left.second, right.second);
+  };
+  return a.focusedPane === b.focusedPane && sameNode(a.root, b.root);
+}
 function mapPanes(node: PaneNode, update: (pane: PaneLeaf) => PaneLeaf): PaneNode {
   if (node.kind === 'pane') return update(node);
   const first = mapPanes(node.first, update); const second = mapPanes(node.second, update);

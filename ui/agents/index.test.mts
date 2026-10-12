@@ -200,7 +200,7 @@ test("uncertain input reconnects and retries only through the explicit original 
   await assert.rejects(service.retrySubmit(storageId, { ...input, message: "Edited text" }), hasCode("operation_conflict"));
 });
 
-test("target re-entry opens a fresh connection and a fresh frame epoch after disconnect", async t => {
+test("explicit target reconnect opens a fresh connection and epoch after idempotent re-entry", {timeout: 10000}, async t => {
   const epochs: number[] = [];
   const directory = await mkdtemp(join(tmpdir(), "ui-frame-service-"));
   const agentDir = await mkdtemp("/tmp/ui-agent-");
@@ -223,7 +223,9 @@ test("target re-entry opens a fresh connection and a fresh frame epoch after dis
   await service.refresh(); await service.select("workspace", storageId);
   await new Promise<void>(resolve => setImmediate(resolve));
   await host.disconnect(); await host.waitForRelease();
-  await service.select("workspace", storageId); await next.promise;
+  await service.select("workspace", storageId);
+  assert.deepEqual(epochs, [1]); assert.equal(host.connectionCount, 0);
+  await service.reconnect("workspace", storageId); await next.promise;
   assert.deepEqual(epochs, [1, 2]);
   assert.equal(host.lifecycle.filter(event => event.kind === "connect").length, 2);
 });
@@ -317,6 +319,8 @@ test("prepare preserves a connected observation and never reopens a disconnected
   assert.equal(host.connectionCount, 1); assert.equal(host.tokenCount, 0);
   assert.equal(host.calls.length, calls);
   await service.select("workspace", storageId);
+  assert.equal(host.tokenCount, 0);
+  await service.reconnect("workspace", storageId);
   assert.equal(host.connectionCount, 1); assert.equal(host.tokenCount, 1);
 });
 
@@ -349,7 +353,8 @@ test("prepare refuses changed endpoints while the storage has a connected observ
   assert.equal(replacement.connectionCount, 0); assert.equal(replacement.calls.length, 0);
   assert.equal(replacement.tokenCount, 0);
   assert.equal(host.lifecycle.filter(event => event.kind === "connect").length, 1);
-  await service.reconnect("workspace", storageId);
+  await assert.rejects(service.reconnect("workspace", storageId), hasCode("invalid_request"));
+  await service.reconnect("workspace", `${storageId}:2`);
   await host.waitForRelease();
   assert.equal(host.connectionCount, 0); assert.equal(host.tokenCount, 0);
   assert.equal(replacement.connectionCount, 1); assert.equal(replacement.tokenCount, 1);

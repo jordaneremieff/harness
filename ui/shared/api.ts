@@ -4,7 +4,7 @@ export const LIMITS = {
   pageBytes: 64 * 1024, pageItems: 100, pathChars: 4096, idChars: 256,
   cursorBytes: 4096, primaryBytes: 8 * 1024 * 1024, rosterBytes: 8 * 1024 * 1024,
   rosterRows: 2048, agentCacheBytes: 1024 * 1024, primaries: 4, workspaces: 16,
-  targets: 128, rpcPending: 64, hostPending: 32, workspaceReservations: 16,
+  targets: 128, draftPreviewChars: 240, rpcPending: 64, hostPending: 32, workspaceReservations: 16,
   operations: 2048, unconfirmed: 128, journalEvents: 4096,
   sidebarWidthMin: 200, sidebarWidthMax: 480, conversationTabs: 16,
   journalBytes: 8 * 1024 * 1024, clientQueueBytes: 512 * 1024,
@@ -96,7 +96,7 @@ export type TranscriptView = 'chronological' | 'grouped';
 export type PresentationView = {revision: number; expanded: string[]; showThinking: boolean; transcriptView?: TranscriptView};
 export type UnconfirmedInput = {operationId: string; target: Target; text: string; mode: string;
   submittedDraftRevision: number; createdAt: string; reason: string; textTruncated?: true};
-export type TargetIndex = {targetKey: string; target: Target; draftRevision: number; hasDraft: boolean; unconfirmedOperationIds: string[]};
+export type TargetIndex = {targetKey: string; target: Target; draftRevision: number; hasDraft: boolean; draftPreview?: string; draftPreviewTruncated?: boolean; unconfirmedOperationIds: string[]};
 export type TargetState = {targetKey: string; target: Target; draft: DraftView; reading: ReadingView;
   unconfirmed: UnconfirmedInput[]; presentation?: PresentationView};
 export type TargetPreparation = {targetState: TargetState; availability: 'live' | 'stored' | 'unavailable' | 'incompatible';

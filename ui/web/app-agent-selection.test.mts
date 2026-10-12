@@ -18,6 +18,19 @@ test('initial focused draft hydration restores focus, while rerenders preserve a
   assert.deepEqual([composer.editor.selectionStart, composer.editor.selectionEnd, composer.editor.selectionDirection], [2, 7, 'backward']);
   assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading, saved.reading);
 });
+test('agent history shows source loading and negotiated refusal before a confirmed empty response', {timeout: 10000}, async () => {
+  const original = globalThis.fetch; let complete: (response: Response) => void = () => {}; const held = new Promise<Response>(resolve => {complete = resolve;}); let pending = true;
+  const reason = 'Host operation snapshot is unavailable. Required: snapshot/1.0.0, response snapshot/2.0.0, Durable 1.0.3. Host: snapshot/1.0.0, response snapshot/1.0.0, Durable 1.1.0.';
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === '/api/agents/history-state/history' ? pending ? held.then(response => response.clone()) : Response.json({ok: true, data: {target: {kind: 'agent', identity: 'history-state'}, entries: [], nextBefore: null, coverage, revision: 'empty'}}) : original(input, init);
+  try {
+    const arrival = arrive({workspace: {id: 'history-state', revision: 1, selectedTarget: {kind: 'agent', identity: 'history-state'}}, primaries: [], roster: [agentFixture('history-state')], targets: [targetFixture('history-state-target', {kind: 'agent', identity: 'history-state'})]});
+    await settle(); assert.match(agentControl('empty-heading').textContent, /Loading agent history/); assert.doesNotMatch(agentControl('empty-heading').textContent, /no messages|No transcript/);
+    complete(Response.json({ok: false, error: {code: 'contract_mismatch', message: reason, retry: 'none'}})); await arrival; await settle();
+    assert.equal(agentControl('empty-heading').textContent, 'Agent history is unavailable.'); assert.equal(agentControl('empty-caption').textContent, reason);
+    pending = false; const retry = agentControl('view-notice').querySelector('button'); assert.ok(retry); retry.dispatch('click'); await settle();
+    assert.equal(agentControl('empty-heading').textContent, 'This agent has no messages yet.'); assert.equal(agentControl('empty-caption').textContent, ''); assert.equal(agentControl('view-notice').textContent, '');
+  } finally {pending = false; complete(Response.json({ok: true, data: {entries: [], nextBefore: null, coverage}})); globalThis.fetch = original;}
+});
 test('agent settings retain model and thinking text from the exact frame without replacing global Primary facts', async () => {
   const row = agentFixture('selected', {model: {provider: 'other', modelId: 'roster-model'}, thinkingLevel: 'low'});
   const frame: ProjectedFrame = {revision: 1, observedAt: '', live: [], entries: [], nextBefore: null, coverage,

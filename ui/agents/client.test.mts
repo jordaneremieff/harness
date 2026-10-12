@@ -314,8 +314,22 @@ test("conflicting combined result selectors fail response correlation", async t 
 	t.after(() => host.close()); const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
 	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "result", requestId: "exact-request", submissionId: 7 }), blockedResult(CHILD, "exact-request"));
 	await assert.rejects(link.request("inspect", { sessionId: CHILD, view: "result", requestId: "exact-request", submissionId: 8 }), code("protocol_error", false));
+
 });
 
+test("history refusal names both negotiated contract identities without inventing versions", async t => {
+  const remote = await descriptor(); const operations = remote.operations as Record<string, unknown>;
+  operations.snapshot = {request: "snapshot/1.0.0", response: "snapshot/1.0.0", durable: "1.1.0"};
+  const host = await FakeHost.start({descriptor: remote}); t.after(() => host.close());
+  const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+  assert.equal(link.capabilities().snapshot, false);
+  await assert.rejects(link.request("snapshot", {sessionId: CHILD}, {identity: CHILD}), error => {
+    code("contract_mismatch")(error); const message = (error as Error).message;
+    assert.match(message, /snapshot/); assert.match(message, /Required: snapshot\/1.0.0, response snapshot\/2.0.0, Durable 1.0.3/);
+    assert.match(message, /Host: snapshot\/1.0.0, response snapshot\/1.0.0, Durable 1.1.0/); return true;
+  });
+  assert.equal(host.calls.length, 0); assert.equal(link.supports("task-submit"), true);
+});
 test("malformed current result facts disable inspect without disabling input", async t => {
 	const host = await FakeHost.start({ handler: call => call.member === "inspect" ? { ...blockedResult(CHILD), recoveryOf: 7 } : undefined });
 	t.after(() => host.close()); const link = await HostLink.connect(host.endpoint); t.after(() => link.close());

@@ -60,7 +60,7 @@ class Budget {
 }
 function targetIndex(targets: readonly TargetState[]) {
   return targets.map(state => ({targetKey: state.targetKey, target: state.target, draftRevision: state.draft.revision,
-    hasDraft: state.draft.text.length > 0, unconfirmedOperationIds: state.unconfirmed.map(input => input.operationId)}));
+    hasDraft: state.draft.text.length > 0, draftPreview: Array.from(state.draft.text).slice(0, LIMITS.draftPreviewChars).join(''), draftPreviewTruncated: Array.from(state.draft.text).length > LIMITS.draftPreviewChars, unconfirmedOperationIds: state.unconfirmed.map(input => input.operationId)}));
 }
 function priorities(snapshot: Snapshot) {
   const active = snapshot.primaries.filter(view => view.key === snapshot.workspace.primaryKey);

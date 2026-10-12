@@ -36,7 +36,7 @@ test('small snapshots preserve the authoritative cut, workspace, indexes, and ex
   const before = JSON.stringify(source); freeze(source); const result = budgetSnapshot(source); bounded(result);
   assert.equal(JSON.stringify(source), before); assert.deepEqual(result.workspace, source.workspace); assert.equal(result.cursor, source.cursor);
   assert.deepEqual(result.primaryIndex, [{key: 'p', epoch: 1, lifecycle: 'ready'}]); assert.deepEqual(result.operationIndex, ['operation']);
-  assert.deepEqual(result.targetIndex, [{targetKey: 'p', target: source.targets[0]?.target, draftRevision: 2, hasDraft: true, unconfirmedOperationIds: []}]);
+  assert.deepEqual(result.targetIndex, [{targetKey: 'p', target: source.targets[0]?.target, draftRevision: 2, hasDraft: true, draftPreview: 'unchanged draft', draftPreviewTruncated: false, unconfirmedOperationIds: []}]);
   assert.deepEqual(result.targets, source.targets); assert.equal(result.omitted, undefined); assert.equal(result.roster.nextCursor, 'actual-cursor');
 });
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {activeTab} from './tabs.ts';
 import { createPaneLayout, splitPane } from './pane-layout.ts';
-import {app, arrive, settle, host, byId, paneNode, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, twoPanes, selectionSaves, failSelection} from './app-fixture.mts';
+import {app, arrive, settle, host, byId, paneNode, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, twoPanes, selectionSaves, failSelection, hostDocument} from './app-fixture.mts';
 async function fixture(width = 1200, ratio = 50, sidebar = true) {
   host.viewport = width; failSelection(undefined); const layout = twoPanes('a'); assert.equal(layout.root.kind, 'split'); if (layout.root.kind === 'split') layout.root.ratio = ratio;
   const primary = targetFixture('size-primary', {kind: 'primary', key: 'p', epoch: 1}), agent = targetFixture('size-agent', {kind: 'agent', identity: 'a'});
@@ -11,6 +11,27 @@ async function fixture(width = 1200, ratio = 50, sidebar = true) {
   selectionSaves.length = 0; const node = byId('conversation-panes').querySelector('.pane-split'); assert.ok(node); const handle = node.querySelector('.pane-divider'); assert.ok(handle);
   return {layout, node, handle, primary: primaryControl('root'), agent: agentControl('root'), editors: [app.primaryComposer().editor, app.agentComposer().editor], drafts: [app.primaryComposer().state?.draft, app.agentComposer().state?.draft]};
 }
+test('first split from a workspace without a saved layout admits its exact chooser target', async () => {
+  host.viewport = 1400; failSelection(undefined);
+  const saved = targetFixture('fresh-primary', {kind: 'primary', key: 'p', epoch: 1}); saved.draft.text = 'retained exact draft';
+  await arrive({workspace: {id: 'fresh-split', revision: 1, primaryKey: 'p', selectedTarget: saved.target}, primaries: [primaryFixture()], roster: [agentFixture('a', {name: 'Other agent'})], targets: [saved]}, true);
+  assert.equal(app.state.workspace?.conversationLayout, undefined); selectionSaves.length = 0;
+  const editor = app.primaryComposer().editor; app.openTabsList('pane-1');
+  const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu);
+  const split = menu.querySelectorAll('button').find(row => row.textContent === 'Split right'); assert.ok(split); split.dispatch('click'); await settle();
+  assert.doesNotMatch(byId('announcements').textContent, /This item changed|This pane changed/);
+  const row = byId('modal-body').querySelectorAll('.palette-row').find(row => row.title === 'a'); assert.ok(row); row.dispatch('click'); await settle();
+  assert.equal(app.splitActive(), true); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'a'});
+  assert.equal(app.primaryComposer().editor, editor); assert.equal(app.primaryComposer().state?.draft.text, 'retained exact draft'); assert.equal(selectionSaves.length, 1);
+});
+test('fresh pane menu rejects a real workspace revision change before dispatch', async () => {
+  await arrive({workspace: {id: 'fresh-stale', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []}, true);
+  app.openTabsList('pane-1'); const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu);
+  const split = menu.querySelectorAll('button').find(row => row.textContent === 'Split right'); assert.ok(split);
+  assert.ok(app.state.workspace); app.state.workspace = {...app.state.workspace, revision: app.state.workspace.revision + 1}; selectionSaves.length = 0;
+  split.dispatch('click'); await settle(); assert.equal(selectionSaves.length, 0); assert.equal(app.splitActive(), false);
+  assert.match(byId('announcements').textContent, /This item changed/);
+});
 test('split restoration clamps pixel tracks without replacing the saved ratio or retained conversation state', async () => {
   const f = await fixture(1200, 20); assert.equal(app.splitActive(), true); assert.equal(f.node.properties.get('--pane-first'), '320px');
   assert.deepEqual(app.state.workspace?.conversationLayout, f.layout); assert.equal(selectionSaves.length, 0); assert.equal(f.handle.getAttribute('aria-valuemin'), '320'); assert.equal(f.handle.getAttribute('aria-valuemax'), '604');

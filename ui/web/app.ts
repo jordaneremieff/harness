@@ -2,7 +2,7 @@ import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, Ope
 import { Actions } from './actions.ts';
 import type { ConversationLayout, ConversationTab } from '../shared/api.ts';
 import { activeTab, closeTab, duplicateIdentityTails, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
-import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, type PaneLeaf } from './pane-layout.ts';
+import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
 import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
@@ -32,7 +32,7 @@ import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
 import {DevReload, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold} from './dev-reload.ts';
-import { conversationPresentation, presentationGlyph, projectIdentity, composerFolder } from './conversation-presentation.ts';
+import { conversationPresentation, presentationGlyph, projectIdentity, composerFolder, agentHistoryEmpty } from './conversation-presentation.ts';
 import type { ConversationPresentation } from './conversation-presentation.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
 import { ApiError, authenticate, connect, errorMessage, operation, request, setUnauthorizedHandler, setRequestTiming } from './transport.ts';
@@ -80,7 +80,7 @@ let devNavigating = false;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>;
-  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; historyReady: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; resizer?: Resizer};
+  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; historyReady: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; resizer?: Resizer};
 const controllers = new Map<string, ConversationController>();
 let controllerSerial = 0;
 function controllerKey(workspace: string, target: Target): string { return JSON.stringify([workspace, targetIdentity(target)]); }
@@ -643,11 +643,16 @@ function renderController(controller: ConversationController, deferred = false, 
   const paint = () => {
     const conversation = state.conversations.get(targetIdentity(controller.target)); const entries = conversation ? conversationBlocks(conversation) : [];
     controller.transcript.set(entries, conversation?.tools); const hasEntries = entries.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry));
-    const emptyView = controller.target.kind === 'primary' ? primaryEmpty(state.primaries.get(controller.target.key), hasEntries, controller.historyReady) : hasEntries ? undefined : {heading: 'No transcript is available for this agent.', caption: ''};
-    controllerNode(controller, 'empty').hidden = !emptyView; setText(controllerNode(controller, 'empty-heading'), emptyView?.heading ?? ''); setText(controllerNode(controller, 'empty-caption'), emptyView?.caption ?? '');
+    controller.hasEntries = hasEntries; renderControllerEmpty(controller);
     if (controller.target.kind === 'agent') {controller.before = conversation?.frame?.nextBefore ?? controller.before; controller.transcript.historyAvailable(controller.before !== null);}
   };
   if (deferred) controller.transcript.defer(paint, receivedAt); else paint();
+}
+function renderControllerEmpty(controller: ConversationController): void {
+  const identity = controller.target.kind === 'agent' ? controller.target.identity : undefined;
+  const availability = identity ? state.agentAvailability.get(identity) : undefined;
+  const emptyView = controller.target.kind === 'primary' ? primaryEmpty(state.primaries.get(controller.target.key), !!controller.hasEntries, controller.historyReady) : agentHistoryEmpty({hasEntries: !!controller.hasEntries, connected, loading: controller.loading, ready: controller.historyReady, complete: controller.historyComplete, error: controller.historyError, availability: availability?.state ?? (identity ? agentRow(identity)?.availability : undefined), reason: availability?.reason});
+  controllerNode(controller, 'empty').hidden = !emptyView; setText(controllerNode(controller, 'empty-heading'), emptyView?.heading ?? ''); setText(controllerNode(controller, 'empty-caption'), emptyView?.caption ?? '');
 }
 function prepareController(controller: ConversationController): void {
   if (controller.preparing || controller.abort.signal.aborted) return; controller.preparing = true;
@@ -863,7 +868,7 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): {key: string; label
 function renderAvailability(): void {
   for (const controller of controllers.values()) {
     const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id; controller.composer.availability(connected && current, current && !!controller.saved && view.input, current && view.busy, selecting);
-    controllerNode(controller, 'stop').hidden = !canStopController(controller);
+    controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller);
   }
   if (messageTarget.current) renderMessagePanel(); renderIdentity();
 }
@@ -892,7 +897,7 @@ function mergeControllerHistory(controller: ConversationController, page: Histor
   }
   else if (target.kind === 'agent' && 'entries' in page) {state = mergeAgentPage(state, target.identity, page.entries); controller.before = page.nextBefore;}
   else throw new Error('History response does not match its target.');
-  controller.historyReady = true; controller.transcript.historyAvailable(target.kind === 'primary' ? controller.cursor !== null : controller.before !== null); renderController(controller);
+  controller.historyReady = true; controller.historyComplete = page.coverage.complete && !page.coverage.truncated && page.coverage.omitted === 0; controller.historyError = undefined; controller.transcript.historyAvailable(target.kind === 'primary' ? controller.cursor !== null : controller.before !== null); renderController(controller);
   if (target.kind === 'primary' && sameTarget(target, primaryTarget())) renderPrimaryUsage(primary());
 }
 function loadControllerHistory(controller: ConversationController, earlier = false, restoring = false): Promise<void> {
@@ -912,13 +917,21 @@ async function runControllerHistory(controller: ConversationController, earlier 
   const abort = controller.historyAbort, reading = controller.saved?.reading ?? targetState(controller.target)?.reading;
   const more = controller.target.kind === 'primary' ? controller.cursor !== null : controller.before !== null;
   if (earlier && !more) return;
-  controller.loading = true; const control = controllerNode(controller, 'earlier') as HTMLButtonElement; historyLoadingFeedback(control, earlier); let loaded = false;
+  startControllerHistory(controller); const control = controllerNode(controller, 'earlier') as HTMLButtonElement; historyLoadingFeedback(control, earlier); let loaded = false;
   try {
     const page = await request<HistoryPage | AgentHistoryPage>(historyPath(controller, earlier), 'GET', undefined, undefined, AbortSignal.any([abort.signal, controller.abort.signal, AbortSignal.timeout(15_000)]));
     if (!historyCurrent(controller, abort)) return; mergeControllerHistory(controller, page, earlier); loaded = true; historyLoadedFeedback(earlier, restoring);
-  } catch (error) {if (!abort.signal.aborted) controllerNode(controller, 'view-notice').replaceChildren(element('p', undefined, 'History could not be loaded.'), historyDetails(error), cardAction('restart', 'Retry history', () => {void loadControllerHistory(controller);}));}
-  finally {if (controller.historyAbort === abort) {controller.loading = false; control.disabled = false; control.setAttribute('aria-label', 'Earlier messages'); control.title = 'Earlier messages'; control.removeAttribute('aria-busy');}}
+  } catch (error) {controllerHistoryFailed(controller, abort, error);}
+  finally {if (controller.historyAbort === abort) {controller.loading = false; renderControllerEmpty(controller); control.disabled = false; control.setAttribute('aria-label', 'Earlier messages'); control.title = 'Earlier messages'; control.removeAttribute('aria-busy');}}
   if (loaded && !earlier && !restoring && reading && !reading.followTail) await restoreControllerHistory(controller, reading);
+}
+function startControllerHistory(controller: ConversationController): void {
+  controller.loading = true; if (controller.historyError) controllerNode(controller, 'view-notice').replaceChildren(); controller.historyError = undefined; renderControllerEmpty(controller);
+}
+function controllerHistoryFailed(controller: ConversationController, abort: AbortController, error: unknown): void {
+  if (!historyCurrent(controller, abort)) return;
+  controller.historyError = {message: errorMessage(error), ...(error instanceof ApiError ? {code: error.view.code} : {})};
+  controllerNode(controller, 'view-notice').replaceChildren(element('p', undefined, 'History could not be loaded.'), historyDetails(error), cardAction('restart', 'Retry history', () => {void loadControllerHistory(controller);}));
 }
 function historyDetails(error: unknown): HTMLElement {
   const disclosure = details('History error details', errorMessage(error)); disclosure.classList.add('history-details');
@@ -1108,7 +1121,7 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
   const region = paneRegions.get(paneId), workspace = state.workspace; if (!region || !workspace) return;
   const layout = currentLayout(), leaf = paneById(layout, paneId), tab = leaf?.tabs.find(tab => tabKey(tab) === (key ?? leaf.active));
   const target = tab ? controllerTarget(tab) : undefined, owner = target ? conversationController(target) : undefined;
-  const valid = () => state.workspace?.id === workspace.id && state.workspace.revision === workspace.revision && currentLayout().root === layout.root;
+  const valid = () => state.workspace?.id === workspace.id && state.workspace.revision === workspace.revision && samePaneLayout(currentLayout(), layout);
   const items = paneMenuItems({paneId, ...(key ? {tabKey: key} : {})}, {layout: currentLayout, valid,
     space: paneSpace,
     label: key => {const tab = paneLeaves(currentLayout().root).flatMap(pane => pane.tabs).find(tab => tabKey(tab) === key); return tab ? tabLabel(tab) : key;}, change: applyLayout,
@@ -1128,7 +1141,7 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
 function choosePaneTarget(pane: string, axis?: 'x' | 'y'): void {
   const workspace = state.workspace, layout = currentLayout(); if (!workspace || !paneById(layout, pane)) return;
   actions.palette('goto', target => {
-    if (state.workspace?.id !== workspace.id || state.workspace.revision !== workspace.revision || currentLayout().root !== layout.root) {announce('This pane changed. Choose the action again.'); return;}
+    if (state.workspace?.id !== workspace.id || state.workspace.revision !== workspace.revision || !samePaneLayout(currentLayout(), layout)) {announce('This pane changed. Choose the action again.'); return;}
     try {conversationController(target);} catch (error) {showError(error); return;}
     let next = {...layout, focusedPane: pane};
     if (axis) {

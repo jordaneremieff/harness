@@ -13,6 +13,7 @@ class MarkdownNode extends EventTarget {
   set textContent(value: string) { this.text = value; this.children = []; }
   append(...nodes: MarkdownNode[]): void { for (const node of nodes) this.children.push(...(node.tag === '#fragment' ? node.children : [node])); }
   setAttribute(key: string, value: string): void { this.attributes[key] = value; }
+  querySelector(selector: string): MarkdownNode | null { for (const child of this.children) {if (selector.startsWith('.') && child.className.split(' ').includes(selector.slice(1))) return child; const nested = child.querySelector(selector); if (nested) return nested;} return null; }
   set innerHTML(_value: string) { throw new Error('Unsafe HTML'); }
 }
 function mockDocument(context: {after: (callback: () => void) => void}): void {
@@ -20,7 +21,7 @@ function mockDocument(context: {after: (callback: () => void) => void}): void {
   context.after(() => { if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document'); });
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {
     getElementById: () => new MarkdownNode('span'),
-    createElement: (tag: string) => new MarkdownNode(tag), createDocumentFragment: () => new MarkdownNode('#fragment'),
+    createElement: (tag: string) => new MarkdownNode(tag), createElementNS: (_namespace: string, tag: string) => new MarkdownNode(tag), createDocumentFragment: () => new MarkdownNode('#fragment'),
     createTextNode: (text: string) => { const node = new MarkdownNode('#text'); node.textContent = text; return node; },
   }});
 }
@@ -65,7 +66,9 @@ test('frontmatter DOM uses a safe highlighted pre block and keeps body Markdown 
   assert.equal(wrap.className, 'code-block');
   assert.deepEqual(wrap.children.map(node => node.tag), ['div', 'pre']);
   assert.equal(wrap.children[0].className, 'source-header');
-  assert.deepEqual(wrap.children[0].children.map(node => node.textContent), ['yaml', 'Copy', 'Wrap']);
+  assert.equal(wrap.children[0].children[0].textContent, 'yaml');
+  assert.deepEqual(wrap.children[0].children.slice(1).map(node => node.attributes['aria-label']), ['Copy code', 'Wrap source lines']);
+  assert.equal(wrap.children[0].children[1].children[0].tag, 'svg');
   const code = wrap.children[1].children[0];
   assert.equal(code.tag, 'code');
   assert.equal(code.dataset.language, 'yaml');

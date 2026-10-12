@@ -97,7 +97,7 @@ test("hide prevents a delayed link acquisition from opening an observation", asy
 	assert.deepEqual(watch.manager.identities(), []);
 });
 
-test("replacement selection suppresses a delayed previous selection", async (t) => {
+test("hiding one target suppresses its delayed selection without replacing another pane", async (t) => {
 	const host = await FakeHost.start();
 	t.after(() => host.close());
 	const link = await HostLink.connect(host.endpoint);
@@ -108,6 +108,7 @@ test("replacement selection suppresses a delayed previous selection", async (t) 
 	const previous = watch.manager.select("workspace", STORAGE);
 	await watch.manager.select("workspace", CHILD);
 	await watch.wait((value) => value.identity === CHILD);
+	await watch.manager.hide("workspace", STORAGE);
 	held.resolve(link);
 	await previous;
 	await turn();

@@ -245,15 +245,20 @@ test("invalid input and serialization failures reject without uncertain admissio
 test("frame and availability callbacks pass through, without extra worker actions", async (t) => {
 	const frames: unknown[][] = [],
 		availability: unknown[][] = [];
-	const { worker } = fixture(t, {
+	const { worker, service } = fixture(t, {
 		onFrame: (...args) => frames.push(args),
 		onAvailability: (...args) => availability.push(args),
 	});
-	worker.callback("frame", "workspace", "fixture", 2, { revision: 3 });
-	worker.callback("availability", "workspace", "fixture", "live", undefined, { snapshot: true });
-	assert.deepEqual(frames, [["workspace", "fixture", 2, { revision: 3 }]]);
-	assert.equal(availability[0]?.[2], "live");
-	assert.equal(worker.requests.length, 0);
+	const selected = service.select("workspace", "fixture"); const request = worker.requests.at(-1); assert.ok(request);
+	worker.respond(request.id); await selected; const epoch = request.args[2];
+	worker.callback("frame", "workspace", "fixture", Number(epoch) + 1, { revision: 3 });
+	worker.callback("availability", "workspace", "fixture", "live");
+	assert.deepEqual(frames, []); assert.deepEqual(availability, []);
+	worker.callback("frame", "workspace", "fixture", epoch, { revision: 3 });
+	worker.callback("availability", "workspace", "fixture", epoch, "live", undefined, { snapshot: true });
+	assert.deepEqual(frames, [["workspace", "fixture", epoch, { revision: 3 }]]);
+	assert.equal(availability[0]?.[3], "live");
+	assert.equal(worker.requests.length, 1);
 });
 
 test("closed proxies suppress late roster, frame, and availability callbacks", async (t) => {
@@ -265,9 +270,11 @@ test("closed proxies suppress late roster, frame, and availability callbacks", a
 		onFrame: (...args) => frames.push(args),
 		onAvailability: (...args) => availability.push(args),
 	});
+	const selected = service.select("workspace", "fixture"); const request = worker.requests.at(-1); assert.ok(request);
+	worker.respond(request.id); await selected;
 	worker.callback("roster", page([row("fixture")]));
-	worker.callback("frame", "workspace", "fixture", 1, { revision: 1 });
-	worker.callback("availability", "workspace", "fixture", "live");
+	worker.callback("frame", "workspace", "fixture", request.args[2], { revision: 1 });
+	worker.callback("availability", "workspace", "fixture", request.args[2], "live");
 	await service.close();
 	worker.callback("roster", page([row("late")], ["fixture"]));
 	worker.callback("frame", "workspace", "fixture", 2, { revision: 2 });
@@ -288,13 +295,13 @@ test("worker failure marks each selected workspace unavailable exactly once", as
 	const selections = [service.select("one", "first"), service.select("two", "second")];
 	for (const request of worker.requests) worker.respond(request.id);
 	await Promise.all(selections);
-	worker.callback("availability", "one", "first", "live");
-	worker.callback("availability", "two", "second", "live");
+	worker.callback("availability", "one", "first", worker.requests[0]?.args[2], "live");
+	worker.callback("availability", "two", "second", worker.requests[1]?.args[2], "live");
 	const reading = assert.rejects(service.history("first"), code("host_unavailable"));
 	worker.emit("error", new Error("Failed"));
 	await reading;
 	worker.emit("exit", 1);
-	const failed = availability.filter((args) => args[2] === "unavailable");
+	const failed = availability.filter((args) => args[3] === "unavailable");
 	assert.equal(failed.length, 2);
 	assert.deepEqual(
 		failed.map((args) => args.slice(0, 2)),
@@ -304,7 +311,7 @@ test("worker failure marks each selected workspace unavailable exactly once", as
 		],
 	);
 	assert.deepEqual(
-		failed.map((args) => args[4]),
+		failed.map((args) => args[5]),
 		[{}, {}],
 	);
 	worker.callback("availability", "one", "first", "live");
@@ -316,7 +323,7 @@ test("worker failure marks each selected workspace unavailable exactly once", as
 	assert.equal(worker.requests.length, 3);
 });
 
-test("failed selection restores the old target unless a worker callback confirms the new target", async (t) => {
+test("failed extra selection retains the old pane and only a confirmed new target", async (t) => {
 	for (const confirmed of [false, true]) {
 		const availability: unknown[][] = [];
 		const { worker, service } = fixture(t, { onAvailability: (...args) => availability.push(args) });
@@ -324,7 +331,7 @@ test("failed selection restores the old target unless a worker callback confirms
 		worker.respond(worker.requests.at(-1)?.id ?? 0);
 		await old;
 		const next = assert.rejects(service.select("workspace", "new"), code(confirmed ? "stored" : "capacity"));
-		if (confirmed) worker.callback("availability", "workspace", "new", "stored");
+		if (confirmed) worker.callback("availability", "workspace", "new", worker.requests.at(-1)?.args[2], "stored");
 		worker.emit("message", {
 			id: worker.requests.at(-1)?.id,
 			error: { code: confirmed ? "stored" : "capacity", message: "Failed", uncertain: false },
@@ -332,22 +339,28 @@ test("failed selection restores the old target unless a worker callback confirms
 		await next;
 		worker.emit("exit", 1);
 		assert.equal(availability.at(-1)?.[1], confirmed ? "new" : "old");
-		assert.equal(availability.at(-1)?.[2], "unavailable");
+		assert.equal(availability.at(-1)?.[3], "unavailable");
+		const failed = availability.filter(args => args[3] === "unavailable");
+		assert.deepEqual(failed.map(args => args[1]), confirmed ? ["old", "new"] : ["old"]);
 	}
 });
 
 test("cleared and hidden workspaces ignore late callbacks and do not retain live availability", async (t) => {
 	const availability: unknown[][] = [];
 	const { worker, service } = fixture(t, { onAvailability: (...args) => availability.push(args) });
-	for (const workspace of ["cleared", "hidden", "detached"])
-		worker.callback("availability", workspace, "fixture", "live");
+	const epochs = new Map<string, unknown>();
+	for (const workspace of ["cleared", "hidden", "detached"]) {
+		const selected = service.select(workspace, "fixture"); const request = worker.requests.at(-1); assert.ok(request);
+		epochs.set(workspace, request.args[2]); worker.respond(request.id); await selected;
+		worker.callback("availability", workspace, "fixture", request.args[2], "live");
+	}
 	const cleared = service.select("cleared"),
 		hidden = service.hide("hidden"),
 		detached = service.disconnectWorkspace("detached");
 	for (const request of worker.requests) worker.respond(request.id);
 	await Promise.all([cleared, hidden, detached]);
 	for (const workspace of ["cleared", "hidden", "detached"])
-		worker.callback("availability", workspace, "fixture", "live");
+		worker.callback("availability", workspace, "fixture", epochs.get(workspace), "live");
 	worker.emit("exit", 1);
 	assert.equal(availability.length, 3);
 });

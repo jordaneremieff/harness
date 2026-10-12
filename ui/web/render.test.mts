@@ -460,7 +460,7 @@ test('roster empty states distinguish discovery, loading, failure and successful
   view.set([], {scan: {...scan, state: 'failed'}, stale: false, error: {code: 'catalog', message: 'Record unreadable', retry: 'read'}}); flush();
   assert.equal(node('roster').textContent, 'Agents could not be loaded.');
   assert.equal(node('roster-footer').querySelector('details')?.textContent, 'DetailsRecord unreadable');
-  const retry = node('roster-footer').querySelector('button'); assert.equal(retry?.textContent, 'Try again'); retry?.dispatch('click');
+  const retry = node('roster-footer').querySelector('button'); assert.equal(retry?.attributes['aria-label'], 'Refresh agents'); retry?.dispatch('click');
   view.set([], {scan: {...scan, state: 'ready', complete: true}, stale: false}); flush();
   assert.equal(node('roster').textContent, 'No agents in this view'); assert.equal(node('roster-footer').querySelector('button'), null);
   assert.equal(node('roster-footer').hidden, true); assert.equal(node('roster-footer').textContent, '');
@@ -476,7 +476,7 @@ test('roster more uses cached page cursors independently from scan completeness'
   const continuation = node('roster').querySelector('.roster-more'); assert.equal(continuation, more); assert.equal(continuation?.textContent, 'Load more agents'); continuation?.dispatch('click');
   view.set([], {scan: {...scan, complete: false}, stale: false}); flush(); assert.equal(node('roster-footer').querySelector('button'), null); assert.equal(node('roster').querySelector('.roster-more'), null);
   view.set([row('one')], {scan: {...scan, state: 'failed'}, stale: true, nextCursor: 'page-2'}); flush();
-  const buttons = node('roster-footer').querySelectorAll('button'); assert.deepEqual(buttons.map(button => button.textContent), ['Try again']);
+  const buttons = node('roster-footer').querySelectorAll('button'); assert.deepEqual(buttons.map(button => button.attributes['aria-label']), ['Refresh agents']);
   node('roster').querySelector('.roster-more')?.dispatch('click'); buttons[0]?.dispatch('click'); assert.deepEqual(actions, ['more', 'more', 'more', 'refresh']);
 });
 test('roster virtual rows retain selected/focused pins, internal gaps and measured heights', () => {
@@ -2228,7 +2228,7 @@ test('mode and reference CSS retain direct controls, coarse targets and honest l
   const menu = readFileSync(new URL('./context-menu.ts', import.meta.url), 'utf8');
   assert.match(menu, /\['chronological', 'View: Conversation'\], \['grouped', 'View: Grouped'\]/);
   assert.match(menu, /checked: view === mode, enabled: !!key/); assert.match(menu, /hooks\.setView\(key, mode\)/);
-  assert.match(menu, /item\.checked === undefined \? 'menuitem' : 'menuitemradio'/); assert.match(menu, /row\.setAttribute\('aria-checked', String\(item\.checked\)\)/);
+  assert.match(menu, /item\.checked === undefined \? 'menuitem' : item\.checkbox \? 'menuitemcheckbox' : 'menuitemradio'/); assert.match(menu, /row\.setAttribute\('aria-checked', String\(item\.checked\)\)/);
   assert.match(css, /a\.reference-link\[href\]\s*\{[^}]*text-decoration: underline/);
   assert.match(css, /\.reference-unresolved\s*\{[^}]*text-decoration: none; cursor: text/);
   assert.doesNotMatch(html, /id="(?:primary|agent)-transcript-view"|transcript-view-selector/); assert.doesNotMatch(css, /\.transcript-view-selector\s*\{/);

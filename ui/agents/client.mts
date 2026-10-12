@@ -80,7 +80,13 @@ export class HostLink {
   require(members: readonly OperationName[]): void {
     for (const member of members) {
       if (this.#disabled.has(member)) throw new AgentError("protocol_error", `Host returned malformed ${member} data.`);
-      try { assertOperation(this.descriptor, member); } catch (error) { throw contractFailure(error); }
+      try { assertOperation(this.descriptor, member); } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "incompatible") {
+          const describe = (value: RuntimeDescriptor["operations"][string] | undefined) => value ? `${value.request}, response ${value.response}${value.durable ? `, Durable ${value.durable}` : ""}` : "not advertised";
+          throw new AgentError("contract_mismatch", `Host operation ${member} is unavailable. Required: ${describe(supportedOperations[member])}. Host: ${describe(this.descriptor.operations[member])}.`);
+        }
+        throw contractFailure(error);
+      }
     }
   }
   onDisconnect(listener: (error: Error) => void): () => void {

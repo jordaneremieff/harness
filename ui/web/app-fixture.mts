@@ -368,13 +368,13 @@ function controls(composer: Composer): (key: string) => HostNode {
 const primaryControl = (key: string) => controls(app.primaryComposer())(key);
 const agentControl = (key: string) => controls(app.agentComposer())(key);
 function paneNode(id: string): HostNode { const node = byId('conversation-panes').querySelector(`[data-pane-id="${id}"]`); assert.ok(node); return node; }
-async function arrive(next: Fixture): Promise<void> {
+async function arrive(next: Fixture, preserveMissingLayout = false): Promise<void> {
   if (next.workspace.conversationLayout) assert.ok(validPaneLayout(next.workspace.conversationLayout));
   assert.ok((next.observations?.length ?? 0) <= 4);
   const selected = next.workspace.selectedTarget;
   const tabs: ConversationTab[] = [...(next.workspace.primaryKey ? [{kind: 'primary' as const}] : []), ...(selected?.kind === 'agent' ? [{kind: 'agent' as const, identity: selected.identity}] : [])];
   const conversationLayout = next.workspace.conversationLayout ?? singlePane(tabs, selected?.kind === 'agent' ? `agent:${selected.identity}` : tabs[0] ? tabKey(tabs[0]) : null);
-  fixture = {...next, workspace: {...next.workspace, conversationLayout, revision: Math.max(next.workspace.revision, (app.state.workspace?.revision ?? 0) + 1)}};
+  fixture = {...next, workspace: {...next.workspace, ...(preserveMissingLayout ? {} : {conversationLayout}), revision: Math.max(next.workspace.revision, (app.state.workspace?.revision ?? 0) + 1)}};
   await app.reload();
   await settle();
 }

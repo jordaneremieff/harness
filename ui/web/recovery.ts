@@ -17,6 +17,14 @@ export function recoveryName(index: TargetIndex, snapshot?: Snapshot): string {
   const row = snapshot?.roster?.rows.find(item => item.identity === target.identity);
   return row?.name ?? row?.handle ?? 'Agent';
 }
+function recoveryContent(row: TargetIndex, name: string): HTMLElement {
+  const content = element('span', 'recovery-content'); content.append(element('span', 'recovery-name', name));
+  if (row.hasDraft && row.draftPreview !== undefined) {
+    content.append(element('span', 'recovery-preview secondary', row.draftPreview));
+    if (row.draftPreviewTruncated) content.append(element('span', 'secondary', 'Preview shortened.'));
+  }
+  return content;
+}
 export async function exactInput(workspace: string, item: UnconfirmedInput): Promise<UnconfirmedInput> {
   return item.textTruncated ? request<UnconfirmedInput>(`/api/workspaces/${encodeURIComponent(workspace)}/unconfirmed/${encodeURIComponent(item.operationId)}`) : item;
 }
@@ -37,7 +45,7 @@ export class Recovery {
     for (const row of rows) {
       const name = recoveryName(row, snapshot); const node = button('', () => { void modal.run(() => this.target(row), false); }, 'recovery-target');
       const counts = [row.hasDraft ? 'Saved draft' : '', row.unconfirmedOperationIds.length ? `${row.unconfirmedOperationIds.length} unconfirmed ${row.unconfirmedOperationIds.length === 1 ? 'message' : 'messages'}` : ''].filter(Boolean).join(' · ');
-      node.append(element('span', 'recovery-name', name), element('span', 'recovery-count secondary', counts));
+      node.append(recoveryContent(row, name), element('span', 'recovery-count secondary', counts));
       node.title = identity(row); node.setAttribute('aria-label', `${name}, ${counts}`); node.setAttribute('aria-description', identity(row)); list.append(node);
     }
     list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list);

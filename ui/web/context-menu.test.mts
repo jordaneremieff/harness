@@ -185,6 +185,14 @@ test('plus and right-click use one action vocabulary, checked state, eligibility
   assert.deepEqual(f.calls,['split:pane-1:y:agent:b','view:agent:b:chronological']);
   assert.deepEqual(paneMenuItems({paneId:'missing'},f.hooks),[]); assert.deepEqual(paneMenuItems({paneId:'pane-1',tabKey:'missing'},f.hooks),[]);
 });
+test('fresh unsaved layouts admit pane actions while exact content changes remain stale', () => {
+  const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc});
+  const f = paneFixture(); const hooks = {...f.hooks, layout: () => structuredClone(f.layout())};
+  const items = paneMenuItems({paneId: 'pane-1'}, hooks); items.find(item => item.label === 'Split right')?.run();
+  assert.deepEqual(f.calls, ['split:pane-1:x:primary']);
+  const changed = structuredClone(f.layout()); if (changed.root.kind === 'pane') changed.root.active = 'agent:b'; f.set(changed);
+  items[0]?.run(); assert.deepEqual(f.calls, ['split:pane-1:x:primary']);
+});
 test('split refusal reasons appear only inside menus and never change topology', () => {
   const f = paneFixture(); f.small(); const original = f.layout(); const small = paneMenuItems({paneId:'pane-1'},f.hooks);
   assert.equal(small.find(item=>item.label==='Split right')?.enabled,false); assert.equal(small.find(item=>item.label==='Split down')?.disabledReason,'Not enough space'); assert.equal(f.layout(),original);

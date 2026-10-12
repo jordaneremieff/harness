@@ -2,12 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {ConversationTab, PaneNode} from '../shared/api.ts';
 import {MAX_TABS, tabKey} from './tabs.ts';
-import {activatePaneTab, canSplitPane, closePane, closePaneTab, createPaneLayout, focusPaneLayout, MAX_PANES, minimumPaneSize, movePaneTab, normalizePaneLayout, openPaneTab, paneById, paneForTab, paneLeaves, paneSplitGeometry, resizePaneSplit, splitPane, validPaneLayout} from './pane-layout.ts';
+import {activatePaneTab, canSplitPane, closePane, closePaneTab, createPaneLayout, focusPaneLayout, MAX_PANES, minimumPaneSize, movePaneTab, normalizePaneLayout, openPaneTab, paneById, paneForTab, paneLeaves, paneSplitGeometry, resizePaneSplit, splitPane, validPaneLayout, samePaneLayout} from './pane-layout.ts';
 const agent = (identity: string): ConversationTab => ({kind: 'agent', identity});
 const space = {width: 1400, height: 1000, divider: 4};
 const base = () => createPaneLayout([{kind: 'primary'}, agent('a'), agent('b'), agent('c')], 'agent:a');
 const keys = (root: PaneNode) => paneLeaves(root).flatMap(pane => pane.tabs.map(tabKey));
 
+test('layout equality compares exact content and geometry rather than allocation identity', () => {
+  const original = base(); assert.equal(samePaneLayout(original, structuredClone(original)), true);
+  const next = structuredClone(original); next.focusedPane = 'changed'; assert.equal(samePaneLayout(original, next), false);
+  const target = structuredClone(original); if (target.root.kind === 'pane') target.root.tabs[1] = agent('changed');
+  assert.equal(samePaneLayout(original, target), false);
+  const split = splitPane(original, 'pane-1', 'x', space); assert.equal(samePaneLayout(original, split), false);
+  assert.equal(samePaneLayout(split, resizePaneSplit(split, split.root.id, 60)), false);
+});
 test('right and down splits address exact tabs, preserve other selection and never duplicate a target', () => {
   const original = base(); const snapshot = JSON.stringify(original); const b = paneById(original, 'pane-1')?.tabs[2];
   const right = splitPane(original, 'pane-1', 'x', space, 'agent:b'); assert.equal(right.root.kind, 'split');

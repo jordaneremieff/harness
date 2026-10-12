@@ -1,7 +1,7 @@
 import {cardIcon} from './card-icons.ts';
 import { announce, button, element } from './dom.ts';
 import { tabKey } from './tabs.ts';
-import { canSplitPane, closePane, MAX_PANES, movePaneTab, paneById, paneLeaves, type PaneAxis, type PaneLayout, type PaneSpace, type PaneView } from './pane-layout.ts';
+import { canSplitPane, closePane, MAX_PANES, movePaneTab, paneById, paneLeaves, samePaneLayout, type PaneAxis, type PaneLayout, type PaneSpace, type PaneView } from './pane-layout.ts';
 
 export type ContextItem = {key?: string; label: string; run: () => void; enabled?: boolean; checked?: boolean; checkbox?: boolean; description?: string; disabledReason?: string; separatorBefore?: boolean; heading?: string};
 function itemRole(item: ContextItem): string { return item.checked === undefined ? 'menuitem' : item.checkbox ? 'menuitemcheckbox' : 'menuitemradio'; }
@@ -122,7 +122,7 @@ export function paneMenuItems(target: PaneMenuTarget, hooks: PaneMenuHooks): Con
   if (target.tabKey && !pane.tabs.some(tab => tabKey(tab) === target.tabKey)) return [];
   const leaves = paneLeaves(layout.root); const space = hooks.space(pane.id);
   const guard = (run: () => void): (() => void) => () => {
-    if (hooks.valid() && hooks.layout().root === layout.root) run(); else announce('This item changed. Choose the action again.');
+    if (hooks.valid() && samePaneLayout(hooks.layout(), layout)) run(); else announce('This item changed. Choose the action again.');
   };
   const split = (axis: PaneAxis): ContextItem => ({label: axis === 'x' ? 'Split right' : 'Split down', enabled: canSplitPane(layout, pane.id, axis, space),
     disabledReason: leaves.length >= MAX_PANES ? 'Four panes maximum' : 'Not enough space', run: guard(() => hooks.split(pane.id, axis, key))});
