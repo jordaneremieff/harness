@@ -201,7 +201,9 @@ function assertResponseContext(member: OperationName, value: unknown, params: Js
   if (member === "abort") equal("background", params.background ?? false);
   if (member === "inspect") {
     equal("view", params.view ?? "history");
-    if (params.view === "result") equal("submissionId", params.submissionId);
+    if (params.view === "result") {
+      for (const field of ["submissionId", "requestId", "operationId"]) equal(field, params[field]);
+    }
     if (params.view === "exact") { equal("entryId", params.entryId); equal("offset", params.offset ?? 0); }
   }
 }

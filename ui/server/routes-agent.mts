@@ -67,6 +67,7 @@ async function inspect(registry:Registry,identity:string,body:Record<string,unkn
     ...(body.entryId!==undefined?{entryId:v.integer(body.entryId,'entry ID',1)}:{}),
     ...(body.offset!==undefined?{offset:v.integer(body.offset,'offset')}:{}),
     ...(body.submissionId!==undefined?{submissionId:v.integer(body.submissionId,'submission ID',1)}:{}),
+    ...(body.requestId!==undefined?{requestId:v.string(body.requestId,'request ID',2000)}:{}),
     ...(body.limit!==undefined?{limit:v.integer(body.limit,'page limit',1)}:{})});
   const display=projectJson(source);
   return {projection:display};

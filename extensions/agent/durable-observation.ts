@@ -75,7 +75,7 @@ export interface DurableEntryRow {
 	readonly nextOffset: number | null;
 	readonly omissions?: EntryOmissions;
 	readonly toolCalls?: readonly { readonly callId?: string; readonly name: string; readonly arguments: string; readonly truncated: boolean }[];
-	readonly toolResults?: readonly { readonly callId?: string; readonly name: string; readonly text: string; readonly isError: boolean; readonly truncated: boolean }[];
+	readonly toolResults?: readonly { readonly callId?: string; readonly name: string; readonly text: string; readonly isError: boolean; readonly truncated: boolean; readonly durationMs?: number }[];
 	readonly omittedParts?: number;
 }
 
@@ -142,6 +142,9 @@ export interface ConversationStatus extends ConversationSummary {
 		readonly background: boolean;
 		readonly owner?: number;
 		readonly abortRequested: boolean;
+		/** Native wall-clock task lifecycle timestamps, not execution durations. */
+		readonly startedAt?: number;
+		readonly endedAt?: number;
 	}[];
 	readonly submissions: readonly {
 		readonly id: number;
@@ -390,6 +393,7 @@ function compactMessage(parts: CompactEntryParts, message: Message): void {
 			...(typeof message.toolCallId === "string" ? { callId: compactName(parts, message.toolCallId) } : {}),
 			name: compactName(parts, message.toolName), text: cut.text, isError: message.isError,
 			truncated: cut.truncated || message.toolName.length > 128,
+			...(message.durationMs === undefined ? {} : { durationMs: message.durationMs }),
 		});
 		return;
 	}
@@ -614,6 +618,8 @@ function trimTask(task: TaskInspection): ConversationStatus["tasks"][number] {
 		background: task.record.background,
 		...(task.record.owner === undefined ? {} : { owner: task.record.owner }),
 		abortRequested: task.record.abortRequested,
+		...(task.record.startedAt === undefined ? {} : { startedAt: task.record.startedAt }),
+		...(task.record.endedAt === undefined ? {} : { endedAt: task.record.endedAt }),
 	};
 }
 

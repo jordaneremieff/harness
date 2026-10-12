@@ -7,7 +7,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
 import { AgentManager } from "./manager.ts";
-import { AgentConversationSummarySchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { boundCatalogView } from "./catalog-view.ts";
 import { readConversationList, readConversationStatus, readDashboard, readInspection } from "./durable-observation.ts";
@@ -33,6 +33,23 @@ async function openRun(t: { after(fn: () => void): void }, message = "schema nee
 	assert.ok(assistant);
 	return { host, submissionId: submitted.submissionId, assistantId: assistant.id };
 }
+
+it("validates native response duration and optional task lifecycle timestamps", async (t) => {
+	const message = { ...answerMessage("timed response"), durationMs: 7 };
+	assert.equal((structuredObservation(AssistantMessageSchema, message) as { durationMs: number }).durationMs, 7);
+	structuredObservation(AssistantMessageSchema, { ...message, durationMs: 0 });
+	const { durationMs: _duration, ...untimed } = message;
+	assert.equal(Object.hasOwn(structuredObservation(AssistantMessageSchema, untimed) as object, "durationMs"), false);
+	assert.throws(() => structuredObservation(AssistantMessageSchema, { ...message, durationMs: -1 }), /durationMs/u);
+	const { host } = await openRun(t);
+	const status = await readConversationStatus(host.harness, fixtureStorageId, host.root().id, {}, BACKGROUND_CONTEXT);
+	assert.ok(status);
+	const task = { id: 9, kind: "fixture", status: "waiting", background: false, abortRequested: false };
+	for (const timing of [{}, { startedAt: 0 }, { startedAt: 100, endedAt: 900_000 }]) {
+		const projected = structuredObservation(ConversationStatusSchema, { ...status, tasks: [{ ...task, ...timing }] }) as { tasks: unknown[] };
+		assert.deepEqual(projected.tasks, [{ ...task, ...timing }]);
+	}
+});
 
 it("validates every inspect view and the empty and missing cases against a real Harness", async (t) => {
 	const { host, submissionId, assistantId } = await openRun(t);

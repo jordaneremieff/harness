@@ -6,6 +6,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { createAgentService, deriveEndpoint } from "./index.mts";
 import { activity, blockedResult, deferred, descriptor, FakeHost, frame, receipt } from "./fake-host.mts";
+import { dispatchAgent } from "../server/routes-agent.mts";
+import type { Registry } from "../server/registry.mts";
 
 const storageId = "00000000-0000-4000-8000-000000000001";
 const input = { operationId: "operation-example", message: "An exact retained input.", mode: "steer" as const };
@@ -379,6 +381,23 @@ test("configure reports an explicit unavailable control without a host", async t
   await service.close();
 });
 
+
+test("the agent result route preserves request selectors through the worker and native transport", async t => {
+  const identity = `${storageId}:2`; const requestId = "missing-native-request";
+  const unavailable = { view: "result", sessionId: identity, conversationId: 2, status: "unavailable", requestId,
+    reason: "No native submission matches the result selector in this conversation", usage: { models: {}, tools: {} } };
+  const { service, host } = await liveFixture(t, { handler: call => call.member === "inspect" ? unavailable : undefined });
+  const registry = { agents: service } as unknown as Registry;
+  const route = (body: Record<string, unknown>) => dispatchAgent(registry, { parts: ["api", "agents", identity, "inspect"], body,
+    method: "POST", url: new URL("http://localhost/api/agents/result/inspect"), session: "fixture" });
+  assert.deepEqual(JSON.parse(JSON.stringify(await route({ view: "result", requestId }))), { projection: { value: unavailable, truncated: false } });
+  assert.deepEqual(host.calls[0].params, { sessionId: identity, view: "result", requestId });
+  for (const body of [{ view: "result", requestId: "" }, { view: "result", requestId: 7 }, { view: "history", requestId },
+    { view: "result" }, { view: "result", requestId, submissionId: 0 }]) await assert.rejects(route(body), hasCode("invalid_request"));
+  assert.equal(host.calls.length, 1, "invalid selector shapes never reach the native host");
+  await assert.rejects(route({ view: "result", requestId, submissionId: 7 }), hasCode("protocol_error"));
+  assert.deepEqual(host.calls[1].params, { sessionId: identity, view: "result", submissionId: 7, requestId });
+});
 
 test("current native input and inspect cross the unchanged worker response interface", async t => {
   const identity = `${storageId}:2`;

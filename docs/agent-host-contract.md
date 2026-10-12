@@ -305,8 +305,8 @@ Overrides and remaining members:
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       d5921b17798451b298b92896cb9995c32df9402f2f4ddca7acc377639797a51f
-H-status        5e66c5049686a2f023b036947ddc9329d483d1833f4f6f6ced17377799fea071
+H-inspect       9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a
+H-status        7905de0a78289817e351720bd656eb45583a4eb854299f22a426d795cf0a1acf
 H-list          76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600
 H-dashboard     46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241
 H-profile-read  b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889
@@ -317,6 +317,8 @@ H-profile-list  0eb5c60290d491535a1dd158e5d5ed4432eb8f89fe26a496a395e08b58ff4db4
 Schema owners in table order are `InspectOutputSchema`, `StatusOutputSchema`, `ListRowSchema`, `AgentConversationSummarySchema`, `AgentProfileSchema`, `ProfileUpdateSchema`, and `ProfiledListOutputSchema`. `dashboard` returns an array despite its response identity hashing the row schema. Maintain these identities with the defining schemas; do not infer a complete result shape from the schema name alone. Source: `extensions/agent/version-contract.ts:30-56`; `extensions/agent/durable-host.ts:454-457`.
 
 The table lists advertised identities, not a claim that all members have the same target or side-effect policy. The consumer operations below define the relevant payloads. `changes` gates a service subscription; it is not an ordinary runtime request member.
+
+Source-checked 2026-10-12 against installed Pi/Durable 1.1.0 and `extensions/agent/{durable-observation,observation-schema,version-contract}.ts`: conversation status task rows permit optional native `startedAt` and `endedAt`. Durable stamps wall-clock milliseconds at first running and terminal state; the span includes waits and recovery, not only execution. These status rows contain live tasks, so their native `endedAt` remains absent. Missing timestamps remain absent. The status and inspect hashes above derive from the current schemas; list/dashboard hashes and snapshot/observe response versions remain unchanged.
 
 ## Native result inspection
 
@@ -339,6 +341,8 @@ A summary has required fields:
 ```
 
 Optional fields are `creatingOwnerId`, `name`, `firstMessage`, `model:{provider,modelId,thinkingLevel}`, `ownerLabel`, `latestReply`, `error`, `toolCalls`, `currentTool:{name,argument}`, `durationMs`, `health`, and `awaiting`. Manager-enriched rows can also include `profile`; it is not part of the base native row contract. `owner` is `here | unavailable | unknown`. `state` is `starting | working | idle | done | failed | stopped | interrupted | new | unavailable`. `health` carries optional `lastError`, `compactionFailure:{reason,at,errorMessage?}`, and `autoRetry:{attempt,maxAttempts,delayMs,errorMessage}`. `awaiting` is optional retained wait information; a consumer that does not display it leaves it opaque. Source: `extensions/agent/dashboard-types.ts:13-104`; `extensions/agent/version-contract.ts:54`; `extensions/agent/manager.ts:677-700`.
+
+Dashboard summary `durationMs` remains the wall-clock span of the latest user turn, ending at the live clock while busy or the final retained message when settled. It is not recorded tool execution time. Activity `runningTools.elapsedMs` remains elapsed time from the tool-call entry, qualified by `elapsedFrom:"tool-call-entry"`. Native task timestamps do not replace either quantity. Source-checked 2026-10-12 against `extensions/agent/durable-observation.ts` (`turnDuration`, `activityMetadata`).
 
 ### Catalog view and machine roster
 
@@ -389,6 +393,8 @@ Entry = {id:string,kind:string,communication:CommunicationView,model?:PiMessage[
 
 Entries are oldest first. System and communication bookkeeping entries are hidden. `revision` is an opaque display revision, not a durable replay cursor. Preserve `partial`, coverage, and `nextBefore`; an empty bounded scan with null continuation does not override `complete:false`. Earlier reads scan at most eight source pages of 64 entries. Source: `extensions/agent/dashboard-types.ts:107-135`; `extensions/agent/durable-observation.ts:1037-1057,1102-1200`.
 
+Native assistant and tool-result messages retain optional recorded `durationMs` through snapshot projection and existing terminal component handoff. Assistant duration times the final response stream; tool duration times its executed attempt, not task waits or recovery. Interrupted or unavailable results need not carry duration. The assistant schema permits the native field without a new timing view. Source-checked 2026-10-12 against `extensions/agent/{durable-observation,observation-schema,dashboard-conversation}.ts`, `pi-durable/dist/harness/tool.js`, `pi-ai/dist/utils/event-stream.js`, and coding-agent `dist/modes/interactive/components/tool-execution.js`.
+
 **Byte-bound exception:** selection admits the first visible entry even if that entry alone exceeds `maxBytes`. `coverage.bytes` measures source-entry selection, not a hard serialized response bound. Model messages, entry data, and live frames require separate consumer output/memory bounds. Source: `extensions/agent/durable-observation.ts:1063-1097`.
 
 ### Inspect
@@ -408,7 +414,7 @@ Output is discriminated by `view`:
 
 `providerBlock` is an optional retained fact in result inspection and conversation status. Its closed shape is `{blockId,conversationId,providerSessionId,epoch,model:{provider,modelId},error,errorRedacted,errorTruncated,source:"provider"|"host-block",timestamp,originalResults,omittedOriginalResults}`. `originalResults` contains at most 16 closed references `{sessionId,submissionId,requestId?}`; error text is bounded to 4,096 characters. `recoveryOf` is an optional string in a result. These fields do not add a result status or authorize automatic replay. Source: `extensions/agent/observation-schema.ts:143-144,413-431`; `extensions/agent/provider-block.ts:18-26`; `extensions/agent/result-reference.ts:6-10`.
 
-`CompactEntry` has `{id:number,kind,source,role?,text,truncated,communication:CommunicationView,format:"compact",nextOffset:null,omissions?,toolCalls?,toolResults?,omittedParts?}`. Tool call summaries carry `{callId?,name,arguments,truncated}`; tool result summaries carry `{callId?,name,text,isError,truncated}`. Raw rows omit the compact discriminator and may carry `preview:{text,truncated}` plus `nextOffset`. Omission counters are `{providerSignatures,imagePayloads,redactedThinking}`. Search matches carry `{entryId,kind,source,matchOffset,excerpt,excerptText,truncated}` and their cursor is `{cursor:object|null,skip,scannedBytes}`. Source: `extensions/agent/observation-schema.ts:306-377`.
+`CompactEntry` has `{id:number,kind,source,role?,text,truncated,communication:CommunicationView,format:"compact",nextOffset:null,omissions?,toolCalls?,toolResults?,omittedParts?}`. Tool call summaries carry `{callId?,name,arguments,truncated}`; tool result summaries carry `{callId?,name,text,isError,truncated,durationMs?}`. This optional duration is the native recorded execution duration; zero stays present and missing duration stays absent. It is not derived from entry timestamps or running-tool elapsed time. Raw rows omit the compact discriminator and may carry `preview:{text,truncated}` plus `nextOffset`. Omission counters are `{providerSignatures,imagePayloads,redactedThinking}`. Search matches carry `{entryId,kind,source,matchOffset,excerpt,excerptText,truncated}` and their cursor is `{cursor:object|null,skip,scannedBytes}`. Source: `extensions/agent/observation-schema.ts:306-377`.
 
 Activity metadata contains `{owner,live,operation:number|null,runningTools,pending:number|null,streamedText?,lastError?,compactionFailure?,autoRetry?}`. Running tools carry `{toolCallId,name,issuedAt?,elapsedMs?,elapsedFrom?}`. Activity coverage includes scanned entries/bytes, complete, entry/scan-byte/output-byte limit flags, output bytes, omittedEntries, and metadataTruncated. Usage is `{models:{[key]:Usage},tools:{[key]:Usage}}`, with Pi usage values; consumers need not display financial fields to read an answer. Source: `extensions/agent/observation-schema.ts:49-60,379-425`.
 

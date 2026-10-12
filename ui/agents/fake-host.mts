@@ -118,13 +118,13 @@ export async function descriptor(): Promise<JsonObject> {
 		operations[member] = { request: `${member}/1.0.0`, response: `${member}/1.0.0` };
 	}
 	for (const member of ["snapshot", "observe-open", "observe-frame"]) {
-		operations[member] = { request: `${member}/1.0.0`, response: `${member}/1.0.0`, durable };
+		operations[member] = { request: `${member}/1.0.0`, response: `${member}/2.0.0`, durable };
 	}
 	operations["task-submit"] = { request: "task-submit/1.0.0", response: "task-submit/1.2.0" };
 	operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
 	operations.inspect = {
-		request: "inspect/1.0.0",
-		response: "3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863",
+		request: "inspect/1.1.0",
+		response: "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a",
 		durable,
 	};
 	operations.dashboard = {
@@ -134,7 +134,7 @@ export async function descriptor(): Promise<JsonObject> {
 	return {
 		format: "pi.agent.contract/1",
 		release: "1.0.0",
-		upstream: { codingAgent: "1.0.3", durable },
+		upstream: { codingAgent: "1.1.0", durable },
 		requires: { codingAgent: "1.0.0", durable: "1.0.0" },
 		operations,
 	};

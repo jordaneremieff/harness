@@ -88,6 +88,7 @@ export const AssistantMessageSchema = object({
 	rawStopReason: Type.Optional(string),
 	endTurn: Type.Optional(boolean),
 	timestamp: number,
+	durationMs: Type.Optional(count),
 });
 
 const toolDiagnostic = object({ severity: union([literal("info"), literal("warn"), literal("error")]), message: string, code: Type.Optional(string) });
@@ -171,6 +172,8 @@ export const ConversationStatusSchema = object({
 			background: boolean,
 			owner: Type.Optional(id),
 			abortRequested: boolean,
+			startedAt: Type.Optional(number),
+			endedAt: Type.Optional(number),
 		}),
 	),
 	submissions: Type.Array(
@@ -331,7 +334,7 @@ export const CompactEntryRowSchema = object({
 	format: literal("compact"),
 	nextOffset: Type.Null(),
 	toolCalls: Type.Optional(Type.Array(object({ callId: Type.Optional(string), name: string, arguments: string, truncated: boolean }), { maxItems: 8 })),
-	toolResults: Type.Optional(Type.Array(object({ callId: Type.Optional(string), name: string, text: string, isError: boolean, truncated: boolean }), { maxItems: 8 })),
+	toolResults: Type.Optional(Type.Array(object({ callId: Type.Optional(string), name: string, text: string, isError: boolean, truncated: boolean, durationMs: Type.Optional(count) }), { maxItems: 8 })),
 	omittedParts: Type.Optional(count),
 });
 export const DurableEntryRowSchema = union([CompactEntryRowSchema, rawEntryRow]);

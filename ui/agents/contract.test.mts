@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { DurableHost } from "../../extensions/agent/durable-host.ts";
+import { answerMessage, fixtureRegistry, fixtureStorageId, hostOptions, scriptedRuntime } from "../../extensions/agent/durable-host-fixture.mts";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { blockedResult } from "./fake-host.mts";
+import { HOST_CONTRACT } from "../../extensions/agent/version-contract.ts";
 import {
 	assertOperation, ContractError, decodeDescriptor, decodeFrame, decodeInput, decodeOperatorInput,
 	decodePublication, decodeResponse, type JsonObject, type OperationName, supportedOperations,
@@ -23,13 +29,13 @@ const nativeMetadata = JSON.parse(readFileSync(createRequire(import.meta.url).re
 const D = nativeMetadata.version as string;
 function descriptor(): JsonObject {
 	return {
-		format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: "1.0.3", durable: D },
+		format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: "1.1.0", durable: D },
 		requires: { codingAgent: "1.0.0", durable: "1.0.0" }, operations: {
 			dashboard: { request: "dashboard/1.0.0", response: "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241" },
-			snapshot: { request: "snapshot/1.0.0", response: "snapshot/1.0.0", durable: D },
-			inspect: { request: "inspect/1.0.0", response: "3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", durable: D },
-			"observe-open": { request: "observe-open/1.0.0", response: "observe-open/1.0.0", durable: D },
-			"observe-frame": { request: "observe-frame/1.0.0", response: "observe-frame/1.0.0", durable: D },
+			snapshot: { request: "snapshot/1.0.0", response: "snapshot/2.0.0", durable: D },
+			inspect: { request: "inspect/1.1.0", response: "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a", durable: D },
+			"observe-open": { request: "observe-open/1.0.0", response: "observe-open/2.0.0", durable: D },
+			"observe-frame": { request: "observe-frame/1.0.0", response: "observe-frame/2.0.0", durable: D },
 			"observe-close": { request: "observe-close/1.0.0", response: "observe-close/1.0.0" },
 			changes: { request: "changes/1.0.0", response: "changes/1.0.0" },
 			"task-submit": { request: "task-submit/1.0.0", response: "task-submit/1.2.0" },
@@ -62,6 +68,20 @@ for (const member of Object.keys(supportedOperations) as OperationName[]) {
 		else assert.equal(assertOperation(remote, member), supportedOperations[member]);
 	});
 }
+
+test("literal consumer identities match the current native host and reject superseded contracts", () => {
+	const remote = decodeDescriptor(HOST_CONTRACT);
+	for (const member of Object.keys(supportedOperations) as OperationName[]) {
+		if (member !== "configure") assertOperation(remote, member);
+	}
+	for (const member of ["snapshot", "observe-open", "observe-frame", "inspect"] as OperationName[]) {
+		const value = descriptor(); const operation = (value.operations as JsonObject)[member] as JsonObject;
+		operation.response = member === "inspect"
+			? "d5921b17798451b298b92896cb9995c32df9402f2f4ddca7acc377639797a51f" : `${member}/1.0.0`;
+		refusal(() => assertOperation(decodeDescriptor(value), member), "incompatible");
+		assertOperation(decodeDescriptor(value), "task-submit");
+	}
+});
 
 test("supported native identity comes from declared public metadata", () => {
 	const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
@@ -205,6 +225,38 @@ test("conversation frames bind storage, conversation, token, and native status",
 	assert.deepEqual(decodeFrame(live), live);
 });
 
+test("native timing fields survive frame and inspect decoding without elapsed substitution", () => {
+	const value = frame();
+	const message = { role: "toolResult", toolCallId: "call", toolName: "read", content: [], isError: false, timestamp: 900_000, durationMs: 7 };
+	value.entries = [{ id: "1", kind: "pi.tool-result", model: [message] }];
+	const nativeTask = { id: 1, kind: "pi.tool", status: "running", background: false, abortRequested: false, startedAt: 100, endedAt: 900_000 };
+	(value.status as JsonObject).tasks = [nativeTask];
+	assert.deepEqual(decodeFrame(value), value);
+	for (const role of ["assistant", "toolResult"]) {
+		for (const durationMs of [0, 7]) {
+			value.entries = [{ id: "1", kind: "pi.assistant", model: [{ ...message, role, durationMs }] }];
+			assert.deepEqual(decodeFrame(value), value);
+		}
+		for (const durationMs of [-1, 0.5, "7"]) {
+			value.entries = [{ id: "1", kind: "pi.assistant", model: [{ ...message, role, durationMs }] }];
+			refusal(() => decodeFrame(value));
+		}
+	}
+	const { durationMs: _duration, ...untimed } = message;
+	value.entries = [{ id: "1", kind: "pi.tool-result", model: [untimed] }];
+	assert.deepEqual(decodeFrame(value), value);
+	(value.status as JsonObject).tasks = [{ ...nativeTask, startedAt: "100" }];
+	refusal(() => decodeFrame(value));
+	const result = { name: "read", text: "done", isError: false, truncated: false, durationMs: 7 };
+	const history = { ...inspectBase("history"), format: "compact", order: "newestFirst", nextCursor: null, detail: "",
+		entries: [{ id: 1, kind: "pi.tool-result", source: "toolResult", text: "", truncated: false, format: "compact", nextOffset: null, toolResults: [result] }] };
+	assert.deepEqual(decodeResponse("inspect", history), history);
+	for (const durationMs of [-1, 0.5, "7"]) {
+		const changed = { ...history, entries: [{ ...history.entries[0], toolResults: [{ ...result, durationMs }] }] };
+		refusal(() => decodeResponse("inspect", changed));
+	}
+});
+
 test("tasks frames preserve task graph and refuse conversation replacement", () => {
 	const value = { scope: "tasks", storageId, revision: 1, observedAt: "2026-01-01T00:00:00.000Z",
 		tasks: [{ id: 1, kind: "run", conversationId: 1, background: false, abortRequested: false,
@@ -312,6 +364,39 @@ test("current admissions retain deduped and bind child and root result reference
 		}
 	}
 	refusal(() => decodeResponse("task-submit", { suppressed: true }));
+});
+
+test("a native missing-request result decodes without a fabricated submission ID", async t => {
+	const root = mkdtempSync(join(tmpdir(), "ui-native-result-"));
+	const host = await DurableHost.open(hostOptions(join(root, "run.sqlite"), await scriptedRuntime([answerMessage("first"), answerMessage("second")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	t.after(async () => { await host.close(); rmSync(root, { recursive: true, force: true }); });
+	const params = { sessionId: fixtureStorageId, view: "result", requestId: "missing-native-request" };
+	assert.deepEqual(decodeInput("inspect", params), params);
+	const native = await host.request("inspect", params) as JsonObject;
+	assert.equal(native.status, "unavailable");
+	assert.equal(native.requestId, params.requestId);
+	assert.equal(Object.hasOwn(native, "submissionId"), false);
+	assert.deepEqual(decodeResponse("inspect", native, { identity: fixtureStorageId, requestId: params.requestId }), native);
+	for (const changed of [{ ...native, submissionId: 0 }, { ...native, status: "done" }, { ...native, answer: "fabricated" }]) refusal(() => decodeResponse("inspect", changed));
+	const { reason: _reason, ...withoutReason } = native;
+	refusal(() => decodeResponse("inspect", withoutReason));
+	refusal(() => decodeResponse("inspect", native, { requestId: "different" }));
+	const first = await host.submit({ message: "first input", requestId: "first-exact-request" });
+	await host.wait(first.submissionId, BACKGROUND_CONTEXT);
+	const second = await host.submit({ message: "second input", requestId: "second-exact-request" });
+	await host.wait(second.submissionId, BACKGROUND_CONTEXT);
+	const matching = { ...params, requestId: "first-exact-request", submissionId: first.submissionId };
+	decodeInput("inspect", matching);
+	const retained = await host.request("inspect", matching);
+	assert.deepEqual(decodeResponse("inspect", retained), retained);
+	await assert.rejects(host.request("inspect", { ...matching, submissionId: second.submissionId }), /select different native submissions/u);
+});
+
+test("result request selectors validate current shapes without forbidding matching combined selectors", () => {
+	const params = { sessionId: storageId, view: "result", requestId: "exact-request" };
+	for (const selectors of [{}, { submissionId: 7 }, { operationId: "exact-operation" }]) assert.deepEqual(decodeInput("inspect", { ...params, ...selectors }), { ...params, ...selectors });
+	for (const changed of [{ ...params, requestId: "" }, { ...params, requestId: 7 }, { ...params, view: "history" }, { ...params, submissionId: 0 }]) refusal(() => decodeInput("inspect", changed));
+	refusal(() => decodeInput("inspect", { sessionId: storageId, view: "result" }));
 });
 
 test("current inspect result validates optional provider facts and recovery references", () => {

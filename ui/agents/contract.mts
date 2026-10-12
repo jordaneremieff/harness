@@ -137,10 +137,10 @@ function contract(member: string, version = "1.0.0", response = `${member}/${ver
 }
 export const supportedOperations: Readonly<Record<OperationName, OperationContract>> = Object.freeze({
 	dashboard: contract("dashboard", "1.0.0", "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241"),
-	snapshot: contract("snapshot", "1.0.0", undefined, true),
-	inspect: contract("inspect", "1.0.0", "3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", true),
-	"observe-open": contract("observe-open", "1.0.0", undefined, true),
-	"observe-frame": contract("observe-frame", "1.0.0", undefined, true),
+	snapshot: contract("snapshot", "1.0.0", "snapshot/2.0.0", true),
+	inspect: contract("inspect", "1.1.0", "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a", true),
+	"observe-open": contract("observe-open", "1.0.0", "observe-open/2.0.0", true),
+	"observe-frame": contract("observe-frame", "1.0.0", "observe-frame/2.0.0", true),
 	"observe-close": contract("observe-close"), changes: contract("changes"),
 	"task-submit": contract("task-submit", "1.0.0", "task-submit/1.2.0"), abort: contract("abort"),
 	configure: contract("configure", "1.2.0"),
@@ -225,7 +225,10 @@ function entry(value: JsonValue, live = false): void {
 	if (live) requireValue(/^live:(generation|tool:.+)$/.test(o.id), "Invalid live entry ID");
 	else { requireValue(/^[1-9]\d*$/.test(o.id), "Invalid committed entry ID"); integer(Number(o.id), 1); }
 	requireValue(o.kind !== "system", "Hidden system entry"); optional(o, ["head"], v => string(v, 16 * 1024 * 1024, true));
-	if (o.model !== undefined) array(o.model, v => string(object(v).role, 128));
+	if (o.model !== undefined) array(o.model, v => {
+		const message = object(v); string(message.role, 128);
+		if (message.role === "assistant" || message.role === "toolResult") optional(message, ["durationMs"], v => integer(v));
+	});
 }
 function coverage(value: JsonValue): void {
 	const o = object(value); fields(o, ["complete", "entryLimitReached", "byteLimitReached"], boolean);
@@ -250,6 +253,7 @@ function status(value: JsonValue, expected: string): void {
 function task(value: JsonValue): void {
 	const o = object(value); integer(o.id, 1); fields(o, ["kind", "status"], v => string(v, 128));
 	fields(o, ["background", "abortRequested"], boolean); optional(o, ["owner"], v => integer(v, 1));
+	optional(o, ["startedAt", "endedAt"], v => requireValue(typeof v === "number" && Number.isFinite(v), "Invalid task timestamp"));
 }
 function submission(value: JsonValue): void {
 	const o = object(value); integer(o.id, 1); choice(o.type, ["input", "write"]); string(o.status, 128);
@@ -287,6 +291,11 @@ function compact(value: JsonValue, raw = false): void {
 	if (!raw) requireValue(o.format === "compact" && o.nextOffset === null, "Invalid compact entry");
 	else if (o.nextOffset !== null) integer(o.nextOffset);
 	if (o.omissions !== undefined) fields(object(o.omissions), ["providerSignatures", "imagePayloads", "redactedThinking"], v => integer(v));
+	if (o.toolResults !== undefined) array(o.toolResults, value => {
+		const result = object(value); fields(result, ["name", "text"], v => string(v, 16 * 1024 * 1024, true));
+		fields(result, ["isError", "truncated"], boolean); optional(result, ["callId"], v => string(v, 512));
+		optional(result, ["durationMs"], v => integer(v));
+	}, 8);
 }
 function inspect(value: JsonValue, context: Context): InspectResult {
 	const o = object(value); target(o, "sessionId", context);
@@ -303,7 +312,12 @@ function inspectExact(o: JsonObject): void {
 function inspectResult(o: JsonObject, context: Context): void {
 	optional(o, ["providerBlock"], providerBlock);
 	optional(o, ["recoveryOf"], v => string(v, 16 * 1024 * 1024, true));
-	integer(o.submissionId, 1); choice(o.status, ["queued", "placed", "done", "unanswered"]);
+	if (o.status === "unavailable") {
+		only(o, ["view", "sessionId", "conversationId", "status", "requestId", "submissionId", "operationId", "reason", "usage"]);
+		optional(o, ["submissionId"], v => integer(v, 1)); string(o.reason, 2000, true);
+	} else {
+		integer(o.submissionId, 1); choice(o.status, ["queued", "placed", "done", "unanswered"]);
+	}
 	optional(o, ["requestId", "operationId", "reason"], v => string(v, 2000, true));
 	optional(o, ["entryId", "answerEntryId"], v => integer(v, 1));
 	optional(o, ["answer"], v => string(v, 16 * 1024 * 1024, true));
@@ -419,10 +433,12 @@ function observeInput(o: JsonObject): void {
 	else requireValue(o.sessionId === undefined, "Task observation has no conversation target");
 }
 function inspectInput(o: JsonObject): void {
-	only(o, ["sessionId", "view", "limit", "cursor", "entryId", "fromId", "offset", "query", "source", "submissionId", "operationId"]);
+	only(o, ["sessionId", "view", "limit", "cursor", "entryId", "fromId", "offset", "query", "source", "submissionId", "requestId", "operationId"]);
 	identity(o.sessionId); optional(o, ["entryId", "fromId", "submissionId"], v => integer(v, 1));
 	optional(o, ["limit"], v => integer(v, 1)); optional(o, ["offset"], v => integer(v)); optional(o, ["cursor"], object);
-	optional(o, ["query", "operationId"], v => string(v, 2000));
+	optional(o, ["query", "operationId", "requestId"], v => string(v, 2000));
+	if (o.requestId !== undefined) requireValue(o.view === "result", "Request ID selects only the result view");
+	if (o.view === "result") requireValue(o.submissionId !== undefined || o.requestId !== undefined || o.operationId !== undefined, "Result inspection requires a selector");
 	if (o.view !== undefined) choice(o.view, ["activity", "history", "branch", "search", "exact", "result"]);
 	if (o.source !== undefined) choice(o.source, ["user", "assistant", "toolResult", "summary", "custom"]);
 }

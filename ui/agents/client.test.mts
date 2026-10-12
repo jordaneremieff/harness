@@ -290,8 +290,30 @@ test("current inspect activity and result facts pass the negotiated transport", 
 	assert.equal(link.supports("inspect"), true);
 	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "activity" }, { identity: CHILD }), activity(CHILD));
 	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "result", submissionId: 7 }, { identity: CHILD }), blockedResult(CHILD));
-	assert.deepEqual(host.calls[0].expected, { request: "inspect/1.0.0",
-		response: "3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", durable: link.descriptor.upstream.durable });
+	assert.deepEqual(host.calls[0].expected, { request: "inspect/1.1.0",
+		response: "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a", durable: link.descriptor.upstream.durable });
+});
+
+test("missing-request results preserve exact selectors and keep inspect available", async t => {
+	const requestId = "missing-native-request";
+	const unavailable = { view: "result", sessionId: CHILD, conversationId: 2, status: "unavailable", requestId,
+		reason: "No native submission matches the result selector in this conversation", usage: { models: {}, tools: {} } };
+	const host = await FakeHost.start({ handler: call => call.member === "inspect" ? unavailable : undefined });
+	t.after(() => host.close()); const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+	const params = { sessionId: CHILD, view: "result", requestId };
+	assert.deepEqual(await link.request("inspect", params, { identity: CHILD }), unavailable);
+	assert.deepEqual(host.calls[0].params, params);
+	assert.equal(link.supports("inspect"), true);
+	await assert.rejects(link.request("inspect", { ...params, requestId: "different" }, { identity: CHILD }), code("protocol_error", false));
+	assert.equal(link.supports("inspect"), false);
+	assert.equal(link.supports("task-submit"), true);
+});
+
+test("conflicting combined result selectors fail response correlation", async t => {
+	const host = await FakeHost.start({ handler: call => call.member === "inspect" ? blockedResult(CHILD, "exact-request") : undefined });
+	t.after(() => host.close()); const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "result", requestId: "exact-request", submissionId: 7 }), blockedResult(CHILD, "exact-request"));
+	await assert.rejects(link.request("inspect", { sessionId: CHILD, view: "result", requestId: "exact-request", submissionId: 8 }), code("protocol_error", false));
 });
 
 test("malformed current result facts disable inspect without disabling input", async t => {

@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, SystemEntry, UserEntry, type EntryRecord, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
+import { LiveDoc, SystemEntry, UserEntry, type EntryRecord, type EntryId, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DurableHost } from "./durable-host.ts";
 import { settleDeliveries } from "./durable-controls.ts";
 import { PROVIDER_BLOCK_ERROR } from "./provider-block.ts";
 import { InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
-import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, readDashboard, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
+import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, readConversationStatus, readDashboard, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
 import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, fixtureProvider, fixtureModelId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
@@ -31,6 +31,55 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 	});
 	return { promise, resolve };
 }
+
+it("preserves native message durations without deriving them from message timestamps", () => {
+	const timed = { role: "toolResult" as const, toolCallId: "call", toolName: "gate", content: [{ type: "text" as const, text: "done" }], isError: false, timestamp: 900_000, durationMs: 7 };
+	const entry: EntryRecord = { id: 1 as EntryId, conversationId: 1 as ConversationId, kind: "pi.tool-result", model: [timed] };
+	assert.equal(entryRow(entry).toolResults?.[0]?.durationMs, 7);
+	assert.equal(entryRow({ ...entry, model: [{ ...timed, timestamp: 9_000_000 }] }).toolResults?.[0]?.durationMs, 7);
+	assert.equal(entryRow({ ...entry, model: [{ ...timed, durationMs: 0 }] }).toolResults?.[0]?.durationMs, 0);
+	const { durationMs: _duration, ...untimed } = timed;
+	assert.equal(Object.hasOwn(entryRow({ ...entry, model: [untimed] }).toolResults?.[0] ?? {}, "durationMs"), false);
+	const assistant = { ...redactedAnswerMessage("answer"), timestamp: 12, durationMs: 23 };
+	const projected = projectEntry({ id: 2 as EntryId, conversationId: 1 as ConversationId, kind: "pi.assistant", model: [assistant] });
+	assert.equal((projected.value.model as Message[])[0]?.role, "assistant");
+	assert.equal((projected.value.model as Array<{ durationMs?: number }>)[0]?.durationMs, 23);
+	assert.ok(projected.omissions);
+});
+
+it("preserves upstream absence for tools that never execute", async (t) => {
+	const storagePath = join(fixtureRoot(t), "unexecuted.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("missing"), answerMessage("done")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	t.after(() => host.close());
+	const submitted = await host.submit({ message: "unavailable tool", requestId: "unexecuted" });
+	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+	const entries = await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT);
+	const result = entries.items.find((entry) => entry.kind === "pi.tool-result");
+	assert.ok(result);
+	const native = result.model?.find((message) => message.role === "toolResult");
+	assert.ok(native);
+	assert.equal(Object.hasOwn(native, "durationMs"), false);
+	assert.equal(Object.hasOwn(entryRow(result).toolResults?.[0] ?? {}, "durationMs"), false);
+});
+
+it("preserves upstream absence for an interrupted tool execution", async (t) => {
+	const storagePath = join(fixtureRoot(t), "interrupted.sqlite");
+	const started = defer();
+	const release = defer();
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate")]), fixtureRegistry([gateTool(release.promise, started.resolve)])), BACKGROUND_CONTEXT);
+	t.after(async () => { release.resolve(); await host.close(); });
+	const submitted = await host.submit({ message: "interrupt tool", requestId: "interrupted" });
+	await started.promise;
+	await host.request("abort", {});
+	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "unanswered");
+	const entries = await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT);
+	const result = entries.items.find((entry) => entry.kind === "pi.tool-result");
+	assert.ok(result);
+	const native = result.model?.find((message) => message.role === "toolResult");
+	assert.ok(native);
+	assert.equal(Object.hasOwn(native, "durationMs"), false);
+	assert.equal(Object.hasOwn(entryRow(result).toolResults?.[0] ?? {}, "durationMs"), false);
+});
 
 it("reads a cold snapshot with the live request surface and no writer", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
@@ -287,6 +336,16 @@ it("reports live activity metadata, current tool, and turn duration", async (t) 
 	try {
 		const submitted = await host.submit({ message: "live metadata", requestId: "live-1" });
 		await started.promise;
+		const status = await readConversationStatus(host.harness, fixtureStorageId, host.root().id, {}, BACKGROUND_CONTEXT);
+		assert.ok(status);
+		const nativeTasks = (await host.harness.inspect(BACKGROUND_CONTEXT)).tasks;
+		for (const task of status.tasks) {
+			const native = nativeTasks.find((candidate) => candidate.record.id === task.id);
+			assert.ok(native);
+			assert.equal(task.startedAt, native.record.startedAt);
+			assert.equal(Object.hasOwn(task, "endedAt"), false, "live tasks have no terminal timestamp");
+		}
+		assert.ok(status.tasks.some((task) => task.kind === "pi.tool" && typeof task.startedAt === "number"));
 		const activity = (await host.request("inspect", { view: "activity" })) as {
 			metadata: {
 				owner: string;
@@ -319,6 +378,13 @@ it("reports live activity metadata, current tool, and turn duration", async (t) 
 		assert.equal(row.health, undefined, "a healthy live host reports no recovery health");
 		release.resolve();
 		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+		const committed = await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT);
+		const result = committed.items.find((entry) => entry.kind === "pi.tool-result");
+		assert.ok(result);
+		const native = result.model?.find((message) => message.role === "toolResult");
+		assert.ok(native);
+		assert.equal(typeof native.durationMs, "number", "upstream records a completed execution duration");
+		assert.equal(entryRow(result).toolResults?.[0]?.durationMs, native.durationMs);
 	} finally {
 		release.resolve();
 		await host.close();

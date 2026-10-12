@@ -1,6 +1,6 @@
 import { AgentCatalog, deriveEndpoint, readClaim, type CatalogPage, type CatalogRecord, type CatalogScan } from "./catalog.mts";
 import { AgentError, HostLink, validateSubmitInput, type SubmitInput } from "./client.mts";
-import type { AbortReceipt, Admission, ConversationFrame, InspectResult, JsonObject, Snapshot } from "./contract.mts";
+import { decodeInput, type AbortReceipt, type Admission, type ConversationFrame, type InspectResult, type JsonObject, type Snapshot } from "./contract.mts";
 import { ObservationManager, type AvailabilityListener } from "./observation.mts";
 export { AgentError, HostLink } from "./client.mts";
 export { AgentCatalog, deriveEndpoint, readClaim } from "./catalog.mts";
@@ -20,7 +20,7 @@ export interface AgentServiceOptions {
 export interface HistoryOptions { before?: number; limit?: number; maxBytes?: number }
 export interface InspectOptions {
   view: "history" | "activity" | "exact" | "result";
-  cursor?: JsonObject; limit?: number; entryId?: number; offset?: number; submissionId?: number;
+  cursor?: JsonObject; limit?: number; entryId?: number; offset?: number; submissionId?: number; requestId?: string;
 }
 export interface UnavailableConfiguration { available: false; reason: string }
 interface InputRecord { identity: string; input: SubmitInput; digest: string; promise: Promise<Admission>; link?: HostLink }
@@ -78,8 +78,9 @@ export class AgentService {
       params.cursor = options.cursor;
     }
     if (options.view === "exact" && options.entryId === undefined) throw new AgentError("invalid_request", "Exact inspection requires an entry ID.");
-    if (options.view === "result" && options.submissionId === undefined) throw new AgentError("invalid_request", "Result inspection requires a submission ID.");
-    return (await (await this.#link(identity)).request("inspect", params, { identity })) as InspectResult;
+    if (options.requestId !== undefined) params.requestId = options.requestId;
+    validateInspectParams(params, identity);
+    return (await (await this.#link(identity)).request("inspect", params, { identity, requestId: options.requestId })) as InspectResult;
   }
   submit(identity: string, input: SubmitInput): Promise<Admission> {
     this.#ready();
@@ -198,6 +199,10 @@ export class AgentService {
     })();
     return this.#closing;
   }
+}
+function validateInspectParams(params: JsonObject, identity: string): void {
+  try { decodeInput("inspect", params, { identity }); }
+  catch (error) { throw new AgentError("invalid_request", error instanceof Error ? error.message : "Invalid result selector."); }
 }
 function bounded(value: number, min: number, max: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < min || value > max) throw new AgentError("invalid_request", `${name} is outside its bound.`);

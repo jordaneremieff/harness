@@ -64,6 +64,29 @@ const user = (id: string, content: string): AgentConversationEntry => ({
 const screen = (conversation: AgentConversation, width = 80) =>
 	stripVTControlCharacters(conversation.render(width).lines.join("\n"));
 
+it("passes native tool durations to terminal components without using transcript elapsed time", (t) => {
+	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
+	const call = assistant("call-entry", [{ type: "toolCall", id: "call", name: "timed-tool", arguments: {} }], 10);
+	const completed = result("result-entry", "call", "timed-tool", "done");
+	const message = completed.model?.[0];
+	assert.ok(message?.role === "toolResult");
+	message.timestamp = 900_000;
+	message.durationMs = 7;
+	const renderer: ToolRenderers = { renderResult: (_result, _options, _theme, context) => new Text(context.durationMs === undefined ? "Untimed result" : `Native execution: ${context.durationMs} ms`) };
+	const conversation = new AgentConversation([call, completed], "/work", tui, false, false, undefined, undefined, () => renderer);
+	const passed = updates.mock.calls.at(-1)?.arguments[0] as { durationMs?: number };
+	assert.equal(passed.durationMs, 7);
+	assert.match(screen(conversation), /Native execution: 7 ms/u);
+	message.durationMs = 0;
+	conversation.update([call, { ...completed, model: [{ ...message }] }]);
+	assert.match(screen(conversation), /Native execution: 0 ms/u);
+	const { durationMs: _duration, ...untimed } = message;
+	conversation.update([call, { ...completed, model: [untimed] }]);
+	assert.equal(Object.hasOwn(updates.mock.calls.at(-1)?.arguments[0] ?? {}, "durationMs"), false);
+	assert.match(screen(conversation), /Untimed result/u);
+	assert.doesNotMatch(screen(conversation), /Native execution:/u);
+});
+
 it("renders retry dependency facts before generic wait lines and removes them on the next native frame", () => {
 	const reference = { sessionId: "producer:2", submissionId: 23, requestId: "exact-request" };
 	const conversation = new AgentConversation([], "/work", tui, false, false);
