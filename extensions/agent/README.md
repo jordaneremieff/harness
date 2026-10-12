@@ -705,6 +705,20 @@ Compact rows set `nextOffset` to null because their excerpts are not raw JSON
 offsets. Branch remains a bounded raw JSON view. Exact and branch retain usage,
 structured arguments, and other retained entry fields rather than compact
 summaries. Search and result reads keep their existing evidence paths.
+
+Native timing stays separate from elapsed activity. Compact tool-result excerpts
+retain optional recorded `durationMs`, including zero, without deriving it from
+entry age. Snapshot assistant and tool-result messages retain their native
+recorded durations for existing Pi terminal components. Status task rows expose
+optional native `startedAt` and `endedAt`: wall-clock first-running and terminal
+timestamps whose span includes waits and recovery. These status rows contain
+live tasks, so `endedAt` is absent there. Unavailable or interrupted tools need
+not carry duration. Dashboard `durationMs` remains latest-user-turn wall-clock
+elapsed; activity `elapsedMs` remains qualified tool-call-entry age. Neither
+quantity replaces recorded execution time. See the
+[host timing contract](../../docs/agent-host-contract.md#current-operation-identities)
+for fields and current schema identities.
+
 Continue incomplete pages even without matches. Provider signatures, image
 payloads, and redacted thinking stay omitted with markers and counts on raw
 reads. Observation and task outcomes grant no control or acceptance authority.
@@ -1379,10 +1393,20 @@ The host supplies:
 Structured tool objects use `details.structuredContent` and an `outputSchema`
 registration. A tool with an output schema returns explicitly supplied structured
 data to scripts even when its result marks an error. A failed call without that
-data throws its diagnostic text to the script. Direct image reads retain image
-blocks. Script discovery uses
-`searchTools`, `describeTool`, `describeNamespace`, and `ALL_TOOLS`. Tool
-selection and MCP server configuration follow the current Pi settings.
+data throws its diagnostic text to the script. The native read adapter preserves
+Pi's output schema and structured result, alongside truncation and error details.
+Text reads resolve to strings; image reads resolve to an image block with its
+note. Use `image(await tools.read({ path }))` in a script. Direct image reads
+retain image blocks; missing-file errors still reject.
+
+Script discovery uses `ALL_TOOLS`, `await searchTools(...)`,
+`await describeTool(...)`, and `await describeNamespace(...)`. Multiple
+non-console text items, including a returned value, start with
+`==> text N/M <==`. Console lines follow other output in one
+`<console_output>` block. Adjacent text joins on separate lines without moving
+text across images, and full-text spill files retain that format. Native
+codemode does not automatically save displayed images as ordinary codemode
+does. Tool selection and MCP server configuration follow the current Pi settings.
 
 MCP configuration is read at host startup or native host reload. In a trusted
 project, an entry in `.pi/mcp.json` without `command`, `url`, or `type` overrides
