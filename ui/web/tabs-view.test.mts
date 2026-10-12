@@ -173,6 +173,17 @@ test('strip reveal uses only the nearest hidden edge', () => {
   assert.equal(revealTabScroll(200,500,300,130),200); assert.equal(revealTabScroll(200,500,100,130),100); assert.equal(revealTabScroll(0,500,1300,130),930);
 });
 
+test('a sole oversized tab exposes strip overflow without erasing its name or exceptional status', () => {
+  const name = 'Long named conversation with its complete caption retained';
+  const f = fixture([{kind: 'primary'}], {label: () => name, status: () => ({label: 'Failed', glyph: '!'})});
+  const host = f.root(), node = host.children[0]; assert.ok(node);
+  host.clientWidth = 200; host.scrollWidth = 1600; host.scrollLeft = 300; node.offsetWidth = 1600; node.offsetLeft = 0;
+  f.strip.requestReveal(); f.strip.render();
+  assert.equal(host.dataset.sole, 'true'); assert.equal(f.overflow.get('pane-1'), true); assert.equal(host.scrollLeft, 0);
+  assert.equal(node.querySelector('.tab-label')?.textContent, name); assert.equal(node.querySelector('.tab-state')?.textContent, 'Failed');
+  assert.equal(node.querySelector('.tab-state')?.hidden, false); assert.ok(node.querySelector('.tab-close'));
+  assert.match(node.attributes.get('aria-label') ?? '', /complete caption retained, Failed/);
+});
 test('a sole tab fills the strip and Ready never competes with its name', () => {
   const f = fixture([{kind:'primary'}], {label:()=> 'Long named conversation'});
   const node = f.root().children[0]; assert.ok(node); assert.equal(f.root().dataset.sole,'true');

@@ -1,7 +1,7 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import type { ConversationLayout, ConversationTab } from '../shared/api.ts';
-import { activeTab, closeTab, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
+import { activeTab, closeTab, duplicateIdentityTails, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
 import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
@@ -1096,6 +1096,14 @@ function agentMenuItems(identity: string): ContextItem[] {
   return items;
 }
 function paneSpace(id: string): {width: number; height: number; divider: number} { const box = paneRegions.get(id)?.node.getBoundingClientRect(); return {width: box?.width ?? 0, height: box?.height ?? 0, divider: 4}; }
+function paneTabChoices(leaf: PaneLeaf, layout: ConversationLayout): ContextItem[] {
+  const tabs = paneLeaves(layout.root).flatMap(pane => pane.tabs);
+  const tails = duplicateIdentityTails(tabs.map(tab => ({name: tabLabel(tab), identity: tab.kind === 'agent' ? tab.identity : 'primary'})));
+  return leaf.tabs.map(tab => {
+    const name = tabLabel(tab), tail = tails.get(tab.kind === 'agent' ? tab.identity : 'primary');
+    return {label: tail ? `${name} · ${tail}` : name, description: tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(leaf.id, tabKey(tab))};
+  });
+}
 function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose: 'list' | 'context' = 'context'): void {
   const region = paneRegions.get(paneId), workspace = state.workspace; if (!region || !workspace) return;
   const layout = currentLayout(), leaf = paneById(layout, paneId), tab = leaf?.tabs.find(tab => tabKey(tab) === (key ?? leaf.active));
@@ -1113,7 +1121,7 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
     overflow: purpose === 'context' && region.menu.dataset.overflow === 'true', sessionItems: tab?.kind === 'primary' ? primaryMenuItems() : tab?.kind === 'agent' ? agentMenuItems(tab.identity) : []});
   if (purpose === 'list' && leaf) {
     const first = items[0]; if (first) items[0] = {...first, heading: 'Pane actions', separatorBefore: true};
-    items.unshift(...leaf.tabs.map(tab => ({label: tabLabel(tab), description: tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(paneId, tabKey(tab))})));
+    items.unshift(...paneTabChoices(leaf, layout));
   }
   const trigger = region.menu; const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, event ? {x: event.clientX, y: event.clientY} : {x: box.right, y: box.bottom}, purpose === 'list' ? 'Tabs in this pane' : 'Tab and view actions', items, () => valid() && (!owner || owner.workspaceId === state.workspace?.id));
 }

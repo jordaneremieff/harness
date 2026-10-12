@@ -962,6 +962,28 @@ test('pane strips expose local navigation, a direct new-tab chooser and a separa
   assert.equal(contextMenu.openNow, false); assert.equal(byId('modal-title').textContent, 'Go to conversation'); byId('modal-close').click();
   app.openTabActions('pane-1'); for (const name of ['Split right', 'Split down', 'Close tab']) assert.ok(menuNode().children.some(node => node.textContent === name)); contextMenu.close();
 });
+test('pane tab-list choices disambiguate identical names and states through exact target tails', async () => {
+  const cases = [
+    {identities: ['left-source:choice-one', 'right-source:choice-two'], labels: ['Review · choice-one', 'Review · choice-two']},
+    {identities: ['left-source:shared-choice', 'right-source:shared-choice'], labels: ['Review · left-source:shared-choice', 'Review · right-source:shared-choice']},
+  ];
+  for (const [index, item] of cases.entries()) {
+    const [first, second] = item.identities; assert.ok(first); assert.ok(second);
+    const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: first}, {kind: 'agent', identity: second}, {kind: 'agent', identity: 'unique-choice'}]);
+    await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 8406 + index})], roster: [agentFixture(first, {name: 'Review'}), agentFixture(second, {name: 'Review'}), agentFixture('unique-choice', {name: 'Unique full name'})]});
+    app.openTabsList('pane-1');
+    const rows = menuNode().children.filter(node => item.labels.includes(node.textContent)); assert.equal(rows.length, 2);
+    assert.equal(rows[0]?.getAttribute('aria-description'), rows[1]?.getAttribute('aria-description'));
+    assert.deepEqual(rows.map(row => row.textContent), item.labels);
+    assert.deepEqual(rows.map(row => row.getAttribute('aria-label') ?? row.textContent), item.labels);
+    assert.ok(rows.every(row => row.getAttribute('role') === 'menuitemradio'));
+    assert.ok(menuNode().children.some(row => row.textContent === 'Unique full name'));
+    rows[1]?.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: second});
+    app.openTabsList('pane-1'); const selected = menuNode().children.find(row => row.textContent === item.labels[1]); assert.equal(selected?.getAttribute('aria-checked'), 'true');
+    const other = menuNode().children.find(row => row.textContent === item.labels[0]); assert.ok(other); other.click(); await settle();
+    assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: first}); contextMenu.close();
+  }
+});
 test('pane handles are labeled keyboard separators at their pane edges', async () => {
   const identity='separator-owner'; await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity},conversationLayout:twoPanes(identity)},primaries:[primaryFixture({epoch:9537})],roster:[agentFixture(identity)]});
   const agentForm=agentControl('composer'),agentHandle=agentForm.querySelector('.resizer'); assert.ok(agentHandle); assert.equal(agentHandle.getAttribute('aria-controls'),agentControl('editor').id); assert.ok(agentForm.children.indexOf(agentHandle)<agentForm.children.findIndex(node=>node.classList.contains('composer-input')));

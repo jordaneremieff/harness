@@ -357,7 +357,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .tab-dot[data-state=failed] { background: var(--error); }
 .tab-identity { flex: none; color: var(--muted); font-family: var(--mono); font-size: 12px; }
 .conversation-tab.tab-dragging { background: var(--raised); border-top-color: var(--edge); }
-.conversation-tabs[data-sole=true] > .conversation-tab { flex: 1 1 auto; max-width: none; }
+.conversation-tabs[data-sole=true] > .conversation-tab { flex: 1 0 auto; max-width: none; }
 .tab-state { flex: none; min-width: 0; color: var(--muted); font-size: 12px; font-weight: 400; white-space: nowrap; }
 .tab-state[data-state=working] { color: var(--link); }
 .tab-state[data-state=failed] { color: var(--error); }

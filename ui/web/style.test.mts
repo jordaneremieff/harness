@@ -392,7 +392,9 @@ test('editor text and prose share the pane gutter without horizontal correction 
 test('exceptional tab state remains readable and a sole tab fills its available width', () => {
   assert.match(rule('.tab-state'), /flex: none; min-width: 0/);
   assert.doesNotMatch(rule('.tab-state'), /overflow: hidden|text-overflow:/);
-  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 1 1 auto; max-width: none/);
+  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 1 0 auto; max-width: none/);
+  assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
+  assert.match(rule('.tab-label'), /flex: 1 0 auto/);
   assert.match(rule('.conversation-tab'), /overflow: hidden/);
   assert.match(rule('.tab-label'), /min-width: 8ch; white-space: nowrap/);
   assert.doesNotMatch(rule('.tab-label'), /text-overflow:|overflow:/);
