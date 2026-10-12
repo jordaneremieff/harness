@@ -13,6 +13,7 @@ class Node extends EventTarget {
   constructor(doc: Doc) {super(); this.ownerDocument = doc;}
   setAttribute(name: string, value: string): void {this.attributes.set(name, value);}
   append(...nodes: Node[]): void {for (const node of nodes) this.insertBefore(node, null);}
+  replaceChildren(...nodes: Node[]): void {for (const child of [...this.children]) child.remove(); this.textContent = ''; this.append(...nodes);}
   insertBefore(node: Node, next: Node | null): void {node.remove(); node.parent = this; this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, node);}
   remove(): void {if (this.parent) {this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = undefined;}}
   contains(node?: Node): boolean {return !!node && (node === this || this.children.some(child => child.contains(node)));}
@@ -94,6 +95,23 @@ test('pane-local arrows/endpoints and existing reorder keys never navigate anoth
   assert.equal(event(root.children[0],'keydown',{key:'End',isComposing:true}).defaultPrevented,false);
   assert.equal(event(root.children[0],'keydown',{key:'End',ctrlKey:true}).defaultPrevented,false);
 });
+test('toolbar steps address only the requested pane and stop at its tab boundaries', () => {
+  const f = fixture(); f.split('pane-1', 'x', 'agent:b');
+  f.strip.step('pane-1', 1); assert.equal(f.calls.at(-1), 'pane-1:agent:a'); assert.equal(f.doc.activeElement, f.root().children[1]);
+  const count = f.calls.length; f.strip.step('pane-2', 1); f.strip.step('missing-pane', -1); assert.equal(f.calls.length, count);
+  f.strip.step('pane-1', -1); assert.equal(f.calls.at(-1), 'pane-1:primary');
+  const before = f.calls.length; f.strip.step('pane-1', -1); assert.equal(f.calls.length, before);
+});
+test('shared sidebar status SVGs keep authored labels and retained nodes through repaint', () => {
+  let status = {label: 'Ready', glyph: '✓'}; const f = fixture(undefined, {status: () => status});
+  const row = f.rows()[0]; const state = row?.querySelector('.conversation-state'); assert.ok(row); assert.ok(state);
+  const ready = state.children[0]; assert.equal(ready?.attributes.get('class'), 'card-icon card-icon-success');
+  f.strip.render(); assert.equal(state.children[0], ready);
+  status = {label: 'Working · Read', glyph: '●'}; f.strip.render();
+  assert.equal(f.rows()[0], row); assert.equal(state.children.length, 1); assert.equal(state.children[0]?.attributes.get('class'), 'card-icon card-icon-working');
+  assert.equal(state.title, 'Working · Read'); assert.match(row.attributes.get('aria-label') ?? '', /Working · Read/);
+  assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.state, 'working');
+});
 test('owned drag moves across panes, retains the target node and does not accept an external drag', () => {
   const f=fixture(); f.split('pane-1','x','agent:b'); const source=f.root().children[1]; const target=f.root('pane-2').children[0]; assert.ok(source); assert.ok(target);
   assert.equal(event(target,'dragover').defaultPrevented,false); event(source,'dragstart'); assert.equal(event(target,'dragover').defaultPrevented,true);
@@ -110,7 +128,7 @@ test('each group fits its own status/width and overflow; narrowness does not rem
   const f=fixture(undefined,{label:()=> 'A very long conversation name',status:()=>({label:'Custom activity',glyph:'?'} )}); f.split('pane-1','x','agent:b');
   f.root().clientWidth=335; f.root().scrollWidth=900; f.root('pane-2').clientWidth=440; f.root('pane-2').scrollWidth=440;
   for (const node of f.root().children) node.clientWidth=130; f.strip.render();
-  assert.equal(f.root().styleValues.get('--tab-share'),`${335/3}px`); assert.equal(f.root('pane-2').styleValues.get('--tab-share'),'440px');
+  assert.equal(f.root().styleValues.has('--tab-share'),false); assert.equal(f.root('pane-2').styleValues.has('--tab-share'),false);
   assert.equal(f.overflow.get('pane-1'),true); assert.equal(f.overflow.get('pane-2'),false);
   for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state')?.hidden,false); assert.equal(node.querySelector('.tab-state')?.textContent,'Custom activity'); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
 });
@@ -151,6 +169,7 @@ test('destroy releases observer and strip drop handlers exactly once and never c
   assert.equal(event(root,'dragover').defaultPrevented,false); observer.resize(); f.strip.render(); assert.equal(root.children.length,0);
 });
 test('strip reveal uses only the nearest hidden edge', () => {
+  assert.equal(revealTabScroll(0,200,0,1500),0); assert.equal(revealTabScroll(300,200,0,1500),0);
   assert.equal(revealTabScroll(200,500,300,130),200); assert.equal(revealTabScroll(200,500,100,130),100); assert.equal(revealTabScroll(0,500,1300,130),930);
 });
 

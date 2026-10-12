@@ -891,7 +891,7 @@ test('the app delegates composer recovery without a duplicate renderer or hook',
 });
 
 test('visible controls supplement the palette without a header band or title click action', async () => {
-  for(const id of ['session-open','session-new','agent-new','app-menu'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("item?.activity === 'retrying' ? 'Retrying' : ''")); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('app-menu').addEventListener('click'", "{label: 'Commands', run: () => actions.palette()}", "{label: 'Appearance', run: () => actions.appearance()}", "{label: 'Notifications', description: notificationsLabel(), run: notices}"]) assert.ok(source.includes(binding));
+  for(const id of ['session-open','session-new','agent-new','commands-button','notifications-button','appearance-button'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("item?.activity === 'retrying' ? 'Retrying' : ''")); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('commands-button').addEventListener('click', () => actions.palette())", "byId('notifications-button').addEventListener('click', notices)", "byId('appearance-button').addEventListener('click', () => actions.appearance())"]) assert.ok(source.includes(binding));
 });
 
 test('project identity names both direct controls with a launch-directory fallback', async () => {
@@ -941,10 +941,27 @@ test('sidebar controls are visible and their icons have consistent decorative st
 });
 test('pane controls separate creation from conversation actions without title rows', async () => {
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:708})],roster:[]}); assert.equal(tabsNode().getAttribute('role'),'tablist'); assert.equal(tabsNode().getAttribute('aria-label'),'Conversations');
-  const pane=paneNode('pane-1'); assert.equal(pane.querySelectorAll('.pane-actions').length,1); assert.equal(pane.querySelector('.pane-actions')?.getAttribute('aria-label'),'New conversation or split'); assert.equal(pane.querySelector('.pane-actions svg')?.getAttribute('class'),'card-icon card-icon-plus'); assert.equal(primaryControl('transcript').getAttribute('aria-label'),'Conversation messages'); assert.equal(primaryControl('send').textContent,'Send'); assert.doesNotMatch(html,/pane-heading|id="tab-split"|id="session-title"/);
+  const pane=paneNode('pane-1'); assert.equal(pane.querySelectorAll('.pane-actions').length,1); assert.equal(pane.querySelector('.pane-actions')?.getAttribute('aria-label'),'New tab'); assert.equal(pane.querySelector('.pane-actions svg')?.getAttribute('class'),'card-icon card-icon-plus'); assert.equal(primaryControl('transcript').getAttribute('aria-label'),'Conversation messages'); assert.equal(primaryControl('send').textContent,'Send'); assert.doesNotMatch(html,/pane-heading|id="tab-split"|id="session-title"/);
 });
 
 test('pane handles are labeled keyboard separators at their pane edges', async () => {
+test('pane strips expose local navigation, a direct new-tab chooser and a separate complete tab list', async () => {
+  const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'strip-a'}, {kind: 'agent', identity: 'strip-b'}]);
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 8405})], roster: [agentFixture('strip-a', {name: 'First full tab name'}), agentFixture('strip-b', {name: 'Second full tab name'})]});
+  const pane = paneNode('pane-1'); const bar = pane.querySelector('.tab-bar'); assert.ok(bar);
+  assert.deepEqual(bar.children.filter(node => node.classList.contains('pane-tab-nav') || node.classList.contains('conversation-tabs') || node.classList.contains('pane-actions') || node.classList.contains('pane-menu')).map(node => node.getAttribute('aria-label')), ['Previous tab', 'Next tab', 'Conversations', 'New tab', 'Tabs in this pane']);
+  const [previous, next] = pane.querySelectorAll('.pane-tab-nav'); assert.ok(previous); assert.ok(next);
+  assert.equal(previous.disabled, true); assert.equal(next.disabled, false); next.click(); await settle();
+  assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'strip-a'}); assert.equal(previous.disabled, false);
+  const list = pane.querySelector('.pane-menu'); assert.ok(list); list.click();
+  assert.equal(menuNode().getAttribute('aria-label'), 'Tabs in this pane');
+  for (const name of ['First full tab name', 'Second full tab name', 'Split right', 'Split down', 'Close tab']) assert.ok(menuNode().children.some(node => node.textContent === name), name);
+  const selected = menuNode().children.find(node => node.textContent === 'First full tab name'); assert.equal(selected?.getAttribute('aria-checked'), 'true');
+  const second = menuNode().children.find(node => node.textContent === 'Second full tab name'); assert.ok(second); second.click(); await settle(); assert.equal(next.disabled, true);
+  contextMenu.close(); const plus = pane.querySelector('.pane-actions'); assert.ok(plus); plus.focus(); plus.click(); await settle();
+  assert.equal(contextMenu.openNow, false); assert.equal(byId('modal-title').textContent, 'Go to conversation'); byId('modal-close').click();
+  app.openTabActions('pane-1'); for (const name of ['Split right', 'Split down', 'Close tab']) assert.ok(menuNode().children.some(node => node.textContent === name)); contextMenu.close();
+});
   const identity='separator-owner'; await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity},conversationLayout:twoPanes(identity)},primaries:[primaryFixture({epoch:9537})],roster:[agentFixture(identity)]});
   const agentForm=agentControl('composer'),agentHandle=agentForm.querySelector('.resizer'); assert.ok(agentHandle); assert.equal(agentHandle.getAttribute('aria-controls'),agentControl('editor').id); assert.ok(agentForm.children.indexOf(agentHandle)<agentForm.children.findIndex(node=>node.classList.contains('composer-input')));
   const form=primaryControl('composer'),handle=form.querySelector('.resizer'); assert.ok(handle); assert.equal(form.contains(handle),true); assert.ok(form.children.indexOf(handle) < form.children.findIndex(node => node.classList.contains('composer-input'))); assert.equal(handle.getAttribute('aria-controls'),primaryControl('editor').id);
@@ -1017,7 +1034,7 @@ test('pane tabs keep separate menus and focused facts while both target owners s
   const identity='agent-pane',agent={kind:'agent' as const,identity}; await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:agent,conversationLayout:twoPanes(identity)},primaries:[primaryFixture({epoch:710})],roster:[agentFixture(identity)],observations:[observation(identity)],targets:[targetFixture('pane-p',{kind:'primary',key:'p',epoch:710},{draft:{revision:1,text:'Primary draft',mode:'steer',persisted:true}}),targetFixture('pane-a',agent,{draft:{revision:1,text:'Agent draft',mode:'prompt',persisted:true}})]});
   const p=controls(app.primaryComposer()),a=controls(app.agentComposer()),pe=p('editor'),ae=a('editor'); pe.setSelectionRange(1,3); ae.setSelectionRange(2,4); byId('primary-usage-details').open=true;
   app.focusPane('primary-pane'); await settle(); assert.equal(hostDocument.activeElement,pe); assert.equal(byId('workbench-status').dataset.pane,'primary'); assert.equal(byId('workbench-status-primary').hidden,false); assert.equal(byId('workbench-status-agent').hidden,true); assert.equal(byId('workbench-scope').title,'p'); assert.equal(app.state.conversations.get(JSON.stringify(['agent',identity]))?.connectionEpoch,1);
-  for(const pane of ['primary-pane','agent-pane']){app.openTabActions(pane);assert.equal(menuNode().getAttribute('aria-label'),'Conversation and view actions');contextMenu.close();}
+  for(const pane of ['primary-pane','agent-pane']){app.openTabActions(pane);assert.equal(menuNode().getAttribute('aria-label'),'Tab and view actions');contextMenu.close();}
   app.focusPane('agent-pane');await settle();assert.equal(hostDocument.activeElement,ae);assert.equal(byId('workbench-scope').title,identity);assert.equal(byId('workbench-status-primary').hidden,true);assert.equal(byId('workbench-status-agent').hidden,false);assert.equal(a('editor'),ae);assert.equal(p('editor'),pe);assert.deepEqual([pe.selectionStart,pe.selectionEnd],[1,3]);assert.deepEqual([ae.selectionStart,ae.selectionEnd],[2,4]);assert.equal(byId('primary-usage-details').open,true);
 });
 
@@ -1263,7 +1280,7 @@ test('the conversation list reuses exact tab activation without a new navigation
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'list-a'}, {kind: 'agent', identity: 'list-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 715})], roster: [agentFixture('list-a', {name: 'Review'}), agentFixture('list-b', {name: 'Review'})]});
   const rows = byId('sidebar-conversations').querySelectorAll('.conversation-row'); assert.equal(rows.length, 3); assert.notEqual(rows[1]?.textContent, rows[2]?.textContent); assert.notEqual(rows[1]?.getAttribute('aria-label'), rows[2]?.getAttribute('aria-label'));
-  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.textContent, index === 0 ? '●' : '✓'); assert.equal(status.title, index === 0 ? 'Working' : 'Connected'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connected/);}
+  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg')?.getAttribute('class'), index === 0 ? 'card-icon card-icon-working' : 'card-icon card-icon-success'); assert.equal(status.title, index === 0 ? 'Working' : 'Connected'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connected/);}
   rows[2]?.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'list-b'}); assert.equal(hostDocument.activeElement, agentControl('editor')); assert.equal(rows[2]?.getAttribute('aria-current'), 'true');
 });
 
@@ -1279,18 +1296,18 @@ test('the desktop transition restores the hidden-sidebar preference and a visibl
   assert.equal(hostDocument.activeElement, byId('sidebar-show')); parent.insertBefore(project, sibling); host.viewport = 1200;
 });
 
-test('unread notifications name the app menu and clear only after deliberate review', async () => {
+test('unread notifications name their direct control and clear only after deliberate review', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
-  const counter = byId('notices-count'); const control = byId('app-menu'); assert.equal(counter.hidden, true);
+  const counter = byId('notices-count'); const control = byId('notifications-button'); assert.equal(counter.hidden, true);
   event('notice', {id: 'visible-notice', level: 'info', message: 'A notification', at: 'now'});
-  assert.equal(counter.hidden, false); assert.equal(counter.textContent, '1'); assert.equal(control.attributes.get('aria-label'), 'App menu, Notifications (1 unread)');
-  control.click(); assert.equal(counter.hidden, false);
-  const notification = menuNode().children.find(node => node.textContent === 'Notifications'); assert.ok(notification); notification.click(); assert.match(byId('modal-body').textContent, /A notification/);
-  assert.equal(counter.hidden, true); assert.equal(control.attributes.get('aria-label'), 'App menu, Notifications'); byId('modal-close').click();
+  assert.equal(counter.hidden, false); assert.equal(counter.textContent, '1'); assert.equal(control.attributes.get('aria-label'), 'Notifications (1 unread)');
+  assert.equal(control.title, 'Notifications (1 unread)'); assert.equal(counter.parentNode, control);
+  control.click(); assert.equal(contextMenu.openNow, false); assert.match(byId('modal-body').textContent, /A notification/);
+  assert.equal(counter.hidden, true); assert.equal(control.attributes.get('aria-label'), 'Notifications'); byId('modal-close').click();
 });
 
 
-test('project navigation uses an anchored project-first menu and utility actions share one app menu', async () => {
+test('project navigation remains an anchored project-first menu beside direct utility actions', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({sessionId: 'named-project', sessionName: 'Release notes'})], roster: []});
   const project = byId('project-button'); project.click(); await settle(); const projects = menuNode();
   assert.equal(projects.getAttribute('aria-label'), 'Working folder'); assert.equal(project.getAttribute('aria-expanded'), 'true');
@@ -1299,12 +1316,24 @@ test('project navigation uses an anchored project-first menu and utility actions
   assert.equal(projects.style.left, `${Math.max(4, project.getBoundingClientRect().left)}px`);
   projects.dispatch('keydown', {key: 'Escape', preventDefault() {}, stopPropagation() {}});
   assert.equal(project.getAttribute('aria-expanded'), 'false'); assert.equal(hostDocument.activeElement, project);
-  const utilities = byId('app-menu'); utilities.click();
-  assert.deepEqual(menuNode().children.map(node => node.textContent), ['Commands', 'Appearance', 'Notifications']);
-  assert.equal(utilities.getAttribute('aria-expanded'), 'true'); assert.equal(byId('modal').open, false);
-  const appearance = menuNode().children.find(node => node.textContent === 'Appearance'); assert.ok(appearance); appearance.click();
-  assert.equal(utilities.getAttribute('aria-expanded'), 'false'); assert.equal(byId('modal').open, true); byId('modal-close').click();
-  assert.doesNotMatch(html, /id="commands-button"|id="appearance-button"|id="window-menu"/);
+  byId('appearance-button').click(); assert.equal(contextMenu.openNow, false); assert.equal(byId('modal').open, true);
+  assert.equal(byId('modal-title').textContent, 'Appearance'); byId('modal-close').click();
+  assert.doesNotMatch(html, /id="app-menu"|id="window-menu"/);
+});
+test('three direct utility icons preserve inventory, native button focus, destinations and unread count', async () => {
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
+  const footer = byId('sidebar').querySelector('.sidebar-footer'); assert.ok(footer);
+  assert.deepEqual(footer.querySelectorAll('button').map(node => node.getAttribute('aria-label')), ['Commands', 'Notifications', 'Appearance']);
+  assert.equal(hostDocument.getElementById('app-menu'), undefined); assert.doesNotMatch(source, /byId\('app-menu'\)|'App menu'/);
+  event('notice', {id: 'direct-utility-notice', level: 'info', message: 'Review through the direct icon', at: 'now'});
+  for (const [id, icon, title] of [['commands-button', 'commands', 'Commands'], ['appearance-button', 'appearance', 'Appearance'], ['notifications-button', 'notifications', 'Notifications']]) {
+    const control = byId(id as string); assert.equal(control.getAttribute('type'), 'button'); assert.equal(control.tabIndex, 0); assert.equal(control.getAttribute('aria-haspopup'), 'dialog');
+    assert.equal(control.querySelector('svg')?.getAttribute('class'), `card-icon card-icon-${icon}`);
+    assert.equal(control.querySelector('svg')?.getAttribute('aria-hidden'), 'true'); assert.ok(control.title.startsWith(title as string));
+    control.focus(); control.click(); await settle(); assert.equal(contextMenu.openNow, false); assert.equal(byId('modal').open, true); assert.equal(byId('modal-title').textContent, title);
+    assert.equal(byId('notices-count').hidden, id === 'notifications-button');
+    byId('modal-close').click(); assert.equal(hostDocument.activeElement, control);
+  }
 });
 test('notifications produce existing semantic classes instead of unused prefixed classes', async () => {
   const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');

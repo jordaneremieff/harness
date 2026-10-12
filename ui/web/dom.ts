@@ -1,3 +1,5 @@
+import { cardIcon } from './card-icons.ts';
+
 export function element<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -17,6 +19,13 @@ export function button(text: string, action: () => void, className?: string): HT
 }
 export function setText(node: Node, text: string): void {
   if (node.textContent !== text) node.textContent = text;
+}
+/** Only explicit UI status slots translate authored marks; supplied content stays text. */
+export function statusGlyph(node: HTMLElement, glyph: string): void {
+  if (node.dataset.glyph === glyph) return;
+  const icons = {'✓': 'success', '●': 'working', '○': 'disconnected', '!': 'error', '?': 'unknown'} as const;
+  const name = icons[glyph as keyof typeof icons]; node.dataset.glyph = glyph;
+  if (name) node.replaceChildren(cardIcon(name, node.ownerDocument)); else node.textContent = glyph;
 }
 export function announce(text: string): void { setText(byId('announcements'), text); }
 export async function copy(text: string, into?: HTMLElement): Promise<boolean> {

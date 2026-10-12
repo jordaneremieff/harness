@@ -55,6 +55,9 @@ const decorativeHairlines = new Set([
 const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)"]);
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
 const graphicBackgrounds = new Map([
+  [".tab-dot", "muted"],
+  [".tab-dot[data-state=working]", "link"],
+  [".tab-dot[data-state=failed]", "error"],
   [".pane-split > .pane-divider::after", "edge"],
   [".pane-split > .pane-divider:hover::after", "edge"],
   [".pane-split > .pane-divider:focus-visible::after", "accent"],

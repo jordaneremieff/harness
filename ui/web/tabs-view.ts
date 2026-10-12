@@ -1,4 +1,5 @@
 import {cardIcon} from './card-icons.ts';
+import {statusGlyph} from './dom.ts';
 import type { ConversationTab } from '../shared/api.ts';
 import { duplicateIdentityTails, tabKey } from './tabs.ts';
 import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout.ts';
@@ -38,6 +39,12 @@ export class TabStrip {
   private region(id: string): TabRegion | undefined { return this.regions.panes().find(region => region.id === id); }
   private activate(key: string): void { const pane = this.owner(key); if (!pane) return; this.requestReveal(); this.hooks.activate(pane, key); }
   requestReveal(): void { this.revealPending = true; }
+  step(id: string, direction: -1 | 1): void {
+    const pane = paneById(this.hooks.layout(), id); if (!pane) return;
+    const index = pane.tabs.findIndex(tab => tabKey(tab) === pane.active); if (index < 0) return;
+    const tab = pane.tabs[index + direction]; if (!tab) return;
+    this.activate(tabKey(tab)); this.focusActive(id);
+  }
   revealActive(id = this.hooks.layout().focusedPane): void {
     const pane = paneById(this.hooks.layout(), id); const host = this.region(id)?.tabs; const node = pane?.active ? this.nodes.get(pane.active) : undefined;
     if (!host?.clientWidth || !node) return;
@@ -93,7 +100,7 @@ export class TabStrip {
   private fitStatuses(): void {
     for (const {id, tabs: host} of this.regions.panes()) {
       const nodes = [...this.nodes.values()].filter(node => host.contains(node));
-      if (host.clientWidth) {host.style.setProperty('--tab-share', `${host.clientWidth / Math.max(1, nodes.length)}px`); for (const node of nodes) this.fitStatus(node);}
+      if (host.clientWidth) for (const node of nodes) this.fitStatus(node);
       this.hooks.overflow?.(host.clientWidth > 0 && host.scrollWidth > host.clientWidth + 1, id);
     }
   }
@@ -110,9 +117,14 @@ export class TabStrip {
     node.title = [label, tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · ');
     node.setAttribute('aria-label', `${accessible}${status.label ? `, ${status.label}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
     const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = label;
+    this.paintDot(node, status.glyph, status.label);
     const identity = node.querySelector<HTMLElement>('.tab-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail;}
     const state = node.querySelector<HTMLElement>('.tab-state'); if (state) {state.textContent = status.label === 'Ready' ? '' : status.label; state.hidden = !state.textContent; state.dataset.state = status.label.toLocaleLowerCase(); state.setAttribute('aria-hidden', 'true');}
     const close = node.querySelector<HTMLElement>('.tab-close'); if (close) {close.setAttribute('aria-label', `Close ${accessible} tab`); close.title = `Close ${accessible} tab`;}
+  }
+  private paintDot(node: HTMLElement, glyph: string, label: string): void {
+    const dot = node.querySelector<HTMLElement>('.tab-dot'); if (!dot) return;
+    dot.dataset.state = glyph === '●' ? 'working' : glyph === '!' ? 'failed' : 'idle'; dot.title = label;
   }
   private navigate(key: string, event: KeyboardEvent): void {
     const pane = paneForTab(this.hooks.layout(), key); if (!pane) return;
@@ -124,6 +136,7 @@ export class TabStrip {
   }
   private create(key: string): HTMLElement {
     const doc = this.regions.conversations.ownerDocument; const node = doc.createElement('div'); node.className = 'conversation-tab'; node.setAttribute('role', 'tab'); node.draggable = true; node.dataset.tabKey = key;
+    const dot = doc.createElement('span'); dot.className = 'tab-dot'; dot.setAttribute('aria-hidden', 'true');
     const label = doc.createElement('span'); label.className = 'tab-label'; const identity = doc.createElement('span'); identity.className = 'tab-identity'; const state = doc.createElement('span'); state.className = 'tab-state';
     const close = doc.createElement('button'); close.className = 'tab-close'; close.type = 'button'; close.append(cardIcon('close', doc)); close.tabIndex = -1;
     const remove = () => {if (this.owner(key)) this.hooks.close(key);};
@@ -139,7 +152,7 @@ export class TabStrip {
     node.addEventListener('dragover', event => {if (!this.dragging || !this.owner(this.dragging)) return; event.preventDefault(); event.stopPropagation(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; node.classList.add('tab-drop-target');});
     node.addEventListener('dragleave', () => node.classList.remove('tab-drop-target'));
     node.addEventListener('drop', event => {const pane = paneForTab(this.hooks.layout(), key); if (!pane || !this.dragging || !this.owner(this.dragging)) return; event.preventDefault(); event.stopPropagation(); this.hooks.move(this.dragging, pane.id, pane.tabs.findIndex(tab => tabKey(tab) === key)); this.clearDrag();});
-    node.addEventListener('dragend', () => this.clearDrag()); node.append(label, identity, state, close); return node;
+    node.addEventListener('dragend', () => this.clearDrag()); node.append(label, identity, dot, state, close); return node;
   }
   private group(id: string): HTMLElement {
     let group = this.groups.get(id); if (group) return group;
@@ -153,7 +166,7 @@ export class TabStrip {
       row.addEventListener('click', () => this.activate(key)); this.rows.set(key, row);}
     const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'agent' ? tab.identity : 'primary');
     row.title = [label, tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · '); row.setAttribute('aria-label', [label, tail, status.label].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
-    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {state.textContent = status.glyph; state.title = status.label; state.setAttribute('aria-hidden', 'true');}
+    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {statusGlyph(state, status.glyph); state.title = status.label; state.setAttribute('aria-hidden', 'true');}
     const caption = row.querySelector<HTMLElement>('.conversation-name'); if (caption) caption.textContent = label;
     const identity = row.querySelector<HTMLElement>('.conversation-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail; identity.title = tab.kind === 'agent' ? `Agent ID: ${tab.identity}` : '';}
     return row;
@@ -167,5 +180,5 @@ export class TabStrip {
 }
 /** Reveal only the local strip; do not scroll ancestors or change editor focus. */
 export function revealTabScroll(scroll: number, width: number, left: number, tabWidth: number): number {
-  return Math.max(0, left < scroll ? left : left + tabWidth > scroll + width ? left + tabWidth - width : scroll);
+  return Math.max(0, left < scroll ? left : left + Math.min(tabWidth, width) > scroll + width ? left + Math.min(tabWidth, width) - width : scroll);
 }

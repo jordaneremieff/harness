@@ -164,12 +164,12 @@ const references = new ReferenceResolver(resolveReference, destination => { void
 const actions: Actions = new Actions({snapshot: currentSnapshot, primary, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, find: query => focusedTranscript()?.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
-const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement}>();
+const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   move: (key, pane, index) => applyLayout(movePaneTab(currentLayout(), key, pane, index)), label: tabLabel,
   status: tab => { const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view)}; },
-  overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.plus.dataset.overflow = String(overflow); }},
+  overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: pane.content.id})), conversations: byId('sidebar-conversations')});
 const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload: reloadSelection, project: projectPath, projectsChanged: renderIdentity});
 actions.projectPicker = () => picker.open(projectPath());
@@ -342,9 +342,11 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
     const node = element('section', 'pane-leaf'); node.dataset.paneId = leaf.id;
     const bar = element('div', 'tab-bar'), tabs = element('div', 'conversation-tabs'), content = element('div', 'pane-content'); content.id = `pane-content-${leaf.id}`;
     tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Conversations');
-    const plus = cardAction('plus', 'New conversation or split', () => openPaneMenu(leaf.id, undefined, undefined, 'add'), 'icon-button pane-actions'); plus.setAttribute('aria-haspopup', 'menu');
-    const menu = cardAction('more', 'Conversation and view actions', () => openPaneMenu(leaf.id), 'icon-button pane-menu'); menu.setAttribute('aria-haspopup', 'menu');
-    bar.append(tabs, plus, menu); node.append(bar, content); pane = {node, tabs, content, plus, menu}; paneRegions.set(leaf.id, pane);
+    const previous = cardAction('previous', 'Previous tab', () => tabStrip.step(leaf.id, -1), 'icon-button pane-tab-nav');
+    const next = cardAction('next', 'Next tab', () => tabStrip.step(leaf.id, 1), 'icon-button pane-tab-nav');
+    const plus = cardAction('plus', 'New tab', () => choosePaneTarget(leaf.id), 'icon-button pane-actions'); plus.setAttribute('aria-haspopup', 'dialog');
+    const menu = cardAction('chevron', 'Tabs in this pane', () => openTabsList(leaf.id), 'icon-button pane-menu'); menu.setAttribute('aria-haspopup', 'menu');
+    bar.append(previous, next, tabs, plus, menu); node.append(bar, content); pane = {node, tabs, content, plus, menu, previous, next}; paneRegions.set(leaf.id, pane);
     node.addEventListener('contextmenu', event => {
       if (event.defaultPrevented || !(event.target instanceof HTMLElement) || nativeEditingTarget(event.target) || event.target.closest('.transcript')) return;
       event.preventDefault(); openPaneMenu(leaf.id, event, event.target.closest<HTMLElement>('.conversation-tab')?.dataset.tabKey);
@@ -352,6 +354,9 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
     content.addEventListener('pointerdown', () => updatePaneFocus(leaf.id));
     content.addEventListener('focusin', () => updatePaneFocus(leaf.id));
   }
+  const activeIndex = leaf.tabs.findIndex(tab => tabKey(tab) === leaf.active);
+  pane.previous.disabled = activeIndex <= 0; pane.next.disabled = activeIndex < 0 || activeIndex >= leaf.tabs.length - 1;
+  pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
   for (const child of [...pane.content.children]) if (!target || child !== conversationController(target).root) child.remove();
@@ -1000,7 +1005,7 @@ function showOperation(result: OperationView, workspaceId = state.workspace?.id)
 function notificationsLabel(): string { const unread = unreadNotices(state); return unread ? `Notifications (${unread} unread)` : 'Notifications'; }
 function noticesBadge(): void {
   const unread = unreadNotices(state); setText(byId('notices-count'), String(unread)); byId('notices-count').hidden = !unread;
-  const label = notificationsLabel(); byId('app-menu').setAttribute('aria-label', `App menu, ${label}`); byId('app-menu').title = `App menu, ${label}`;
+  const label = notificationsLabel(); byId('notifications-button').setAttribute('aria-label', label); byId('notifications-button').title = label;
 }
 function notices(): void {
   state = markReadNotices(state); noticesBadge(); modal.open('Notifications'); if (!state.notices.length) modal.body.append(empty('No notifications'));
@@ -1089,7 +1094,7 @@ function agentMenuItems(identity: string): ContextItem[] {
   return items;
 }
 function paneSpace(id: string): {width: number; height: number; divider: number} { const box = paneRegions.get(id)?.node.getBoundingClientRect(); return {width: box?.width ?? 0, height: box?.height ?? 0, divider: 4}; }
-function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose: 'add' | 'context' = 'context'): void {
+function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose: 'list' | 'context' = 'context'): void {
   const region = paneRegions.get(paneId), workspace = state.workspace; if (!region || !workspace) return;
   const layout = currentLayout(), leaf = paneById(layout, paneId), tab = leaf?.tabs.find(tab => tabKey(tab) === (key ?? leaf.active));
   const target = tab ? controllerTarget(tab) : undefined, owner = target ? conversationController(target) : undefined;
@@ -1103,8 +1108,12 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
     }, closeTab: key => applyLayout(closeTab(currentLayout(), key)), activate: activateConversationTab,
     view: key => {const tab = paneLeaves(currentLayout().root).flatMap(pane => pane.tabs).find(tab => tabKey(tab) === key); const target = tab ? controllerTarget(tab) : undefined; return target ? conversationController(target).transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological' : 'chronological';},
     setView: (key, view) => {const tab = paneLeaves(currentLayout().root).flatMap(pane => pane.tabs).find(tab => tabKey(tab) === key); const target = tab ? controllerTarget(tab) : undefined; if (target) conversationController(target).transcript.setView(view);},
-    purpose, overflow: region.plus.dataset.overflow === 'true', sessionItems: tab?.kind === 'primary' ? primaryMenuItems() : tab?.kind === 'agent' ? agentMenuItems(tab.identity) : []});
-  const trigger = purpose === 'add' ? region.plus : region.menu; const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, event ? {x: event.clientX, y: event.clientY} : {x: box.right, y: box.bottom}, purpose === 'add' ? 'New conversation or split' : 'Conversation and view actions', items, () => valid() && (!owner || owner.workspaceId === state.workspace?.id));
+    overflow: purpose === 'context' && region.menu.dataset.overflow === 'true', sessionItems: tab?.kind === 'primary' ? primaryMenuItems() : tab?.kind === 'agent' ? agentMenuItems(tab.identity) : []});
+  if (purpose === 'list' && leaf) {
+    const first = items[0]; if (first) items[0] = {...first, heading: 'Pane actions', separatorBefore: true};
+    items.unshift(...leaf.tabs.map(tab => ({label: tabLabel(tab), description: tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(paneId, tabKey(tab))})));
+  }
+  const trigger = region.menu; const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, event ? {x: event.clientX, y: event.clientY} : {x: box.right, y: box.bottom}, purpose === 'list' ? 'Tabs in this pane' : 'Tab and view actions', items, () => valid() && (!owner || owner.workspaceId === state.workspace?.id));
 }
 function choosePaneTarget(pane: string, axis?: 'x' | 'y'): void {
   const workspace = state.workspace, layout = currentLayout(); if (!workspace || !paneById(layout, pane)) return;
@@ -1119,7 +1128,7 @@ function choosePaneTarget(pane: string, axis?: 'x' | 'y'): void {
     next = normalizePaneLayout(openTab(next, tabForTarget(target))); applyLayout(next);
   });
 }
-export function openTabsList(pane: Pane = focusedPane): void { openPaneMenu(pane); }
+export function openTabsList(pane: Pane = focusedPane): void { openPaneMenu(pane, undefined, undefined, 'list'); }
 function tabLabel(tab: ConversationTab): string { return tabPresentation(tab).name; }
 let dismissedPointer = false;
 export function dismissDrawerPointer(event: PointerEvent): void {
@@ -1173,14 +1182,9 @@ function bind(): void {
   new ResizeObserver(renderNavigation).observe(byId('conversation-panes'));
   matchMedia('(pointer: coarse)').addEventListener('change', renderNavigation);
   for (const id of ['project-button', 'compact-project-button']) byId(id).addEventListener('click', () => picker.openProject(byId(id)));
-  byId('app-menu').addEventListener('click', () => {
-    const origin = byId('app-menu'), box = origin.getBoundingClientRect();
-    contextMenu.open(origin, {x: box.left, y: box.top}, 'App menu', [
-      {label: 'Commands', run: () => actions.palette()},
-      {label: 'Appearance', run: () => actions.appearance()},
-      {label: 'Notifications', description: notificationsLabel(), run: notices},
-    ]);
-  });
+  byId('commands-button').addEventListener('click', () => actions.palette());
+  byId('notifications-button').addEventListener('click', notices);
+  byId('appearance-button').addEventListener('click', () => actions.appearance());
   for (const id of ['session-open', 'tabs-open-session']) byId(id).addEventListener('click', () => picker.open(projectPath()));
   byId('access-retry').addEventListener('click', () => connectionRecovery.reconnect());
   byId('session-new').addEventListener('click', () => picker.newSession(projectPath()));

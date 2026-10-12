@@ -1,6 +1,6 @@
 import { button, element, setText } from './dom.ts';
 
-export type CardIcon = 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more';
+export type CardIcon = 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected';
 const paths: Record<CardIcon, string> = {
   copy: 'M6 5V2h8v9h-3 M2 5h8v9H2Z',
   wrap: 'M2 3h12 M2 7h9a3 3 0 0 1 0 6H7 M9 11l-2 2 2 2 M2 11h2',
@@ -15,6 +15,12 @@ const paths: Record<CardIcon, string> = {
   close: 'M4 4l8 8 M12 4l-8 8',
   menu: 'M3 8h.01 M8 8h.01 M13 8h.01',
   more: 'M8 3h.01 M8 8h.01 M8 13h.01',
+  send: 'M8 14V2 M3 7l5-5 5 5',
+  stop: 'M3 3h10v10H3Z',
+  disconnected: 'M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0 M4 4l8 8',
+  commands: 'M2 4l4 4-4 4 M9 12h5',
+  notifications: 'M3 11h10l-1-2V6a4 4 0 0 0-8 0v3Z M6 13a2 2 0 0 0 4 0 M8 1v1',
+  appearance: 'M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0 M8 2v12 M8 5h5 M8 8h6 M8 11h5',
   plus: 'M8 3v10 M3 8h10',
   search: 'M10.5 10.5L14 14 M12 7a5 5 0 1 1-10 0 5 5 0 0 1 10 0',
   info: 'M8 7v5 M8 4h.01 M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0',
