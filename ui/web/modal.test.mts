@@ -12,7 +12,10 @@ class FakeNode extends EventTarget {
   getBoundingClientRect(): {left: number; top: number; right: number; bottom: number} {return this.box;}
   querySelectorAll(): FakeNode[] {return this.buttons;}
   append(...nodes: FakeNode[]): void {this.children.push(...nodes); this.textContent += nodes.map(node => node.textContent).join('');}
+  prepend(...nodes: FakeNode[]): void {this.children.unshift(...nodes); this.textContent = nodes.map(node => node.textContent).join('') + this.textContent;}
   replaceChildren(...nodes: FakeNode[]): void {this.children = []; this.textContent = ''; this.append(...nodes);}
+  setAttribute(name: string, value: string): void {this.properties.set(name, value); if (name === 'class') this.className = value;}
+  querySelector(selector: string): FakeNode | undefined {return this.children.find(node => node.className.split(' ').includes(selector.slice(1)));}
   showModal(): void {this.open = true;}
   close(): void {this.open = false; this.dispatchEvent(new Event('close'));}
   focus(): void {this.focused = true;}
@@ -22,7 +25,7 @@ function setup(): {restore: () => void; nodes: Map<string, FakeNode>} {
   const elementDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
   const nodes = new Map(['modal', 'modal-body', 'modal-close', 'modal-title', 'modal-error', 'primary-editor', 'invoke'].map(id => [id, new FakeNode()]));
   Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: FakeNode});
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement() {return new FakeNode();}, getElementById(id: string) {return nodes.get(id);}, activeElement: nodes.get('invoke')}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement() {return new FakeNode();}, createElementNS() {return new FakeNode();}, getElementById(id: string) {return nodes.get(id);}, activeElement: nodes.get('invoke')}});
   return {nodes, restore() {
     if (documentDescriptor) Object.defineProperty(globalThis, 'document', documentDescriptor); else Reflect.deleteProperty(globalThis, 'document');
     if (elementDescriptor) Object.defineProperty(globalThis, 'HTMLElement', elementDescriptor); else Reflect.deleteProperty(globalThis, 'HTMLElement');

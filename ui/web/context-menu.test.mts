@@ -26,7 +26,12 @@ class Node {
   focus(): void { this.ownerDocument.activeElement = this; }
   scrollIntoView(): void { this.scrolled = true; }
   getBoundingClientRect() { return {width: 260, height: 96}; }
-  closest(): Node | null { return ['input', 'textarea', 'select', 'editable'].includes(this.tag) ? this : this.parent?.closest() ?? null; }
+  popover = ''; popoverShown = false;
+  showPopover(): void { this.popoverShown = true; }
+  closest(selector: string): Node | null {
+    if (selector === 'dialog:modal') return this.tag === 'dialog' && this.attrs.has('modal') ? this : this.parent?.closest(selector) ?? null;
+    return ['input', 'textarea', 'select', 'editable'].includes(this.tag) ? this : this.parent?.closest(selector) ?? null;
+  }
 }
 class Events {
   handlers = new Map<string, Handler[]>();
@@ -54,6 +59,28 @@ function fixture() {
   const key = (key: string, extra: Record<string, unknown> = {}) => menu.fire('keydown', {key, ...extra});
   return {doc, origin, controller, runs, menu, key, invalidate: () => {valid = false;}};
 }
+test('a modal-owned menu stays in the dialog and escapes transformed clipping through the top layer', () => {
+  const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc});
+  const dialog = new Node(doc, 'dialog'); dialog.attrs.set('modal', ''); doc.body.append(dialog);
+  const origin = new Node(doc, 'button'); origin.setAttribute('aria-haspopup', 'menu'); dialog.append(origin); origin.focus();
+  const controller = new ContextMenu(); const runs: string[] = [];
+  controller.open(origin as unknown as HTMLElement, {x: 315, y: 235}, 'Saved session options', [
+    {key: 'details', label: 'List details', run: () => runs.push('details')},
+    {key: 'file', label: 'Session file…', run: () => runs.push('file')},
+  ]);
+  const menu = dialog.children.at(-1); assert.ok(menu); assert.equal(menu.parent, dialog);
+  assert.equal(doc.body.children.length, 1); assert.equal(menu.popover, 'manual'); assert.equal(menu.popoverShown, true);
+  assert.equal(menu.style.margin, '0'); assert.equal(menu.style.inset, 'auto');
+  assert.equal(menu.style.left, '56px'); assert.equal(menu.style.top, '140px');
+  assert.equal(doc.activeElement, menu.children[0]); menu.fire('keydown', {key: 'ArrowDown'});
+  assert.equal(doc.activeElement, menu.children[1]); menu.fire('keydown', {key: 'Enter'});
+  assert.deepEqual(runs, ['file']); assert.equal(doc.activeElement, origin); assert.equal(controller.openNow, false);
+  controller.open(origin as unknown as HTMLElement, {x: 10, y: 10}, 'Saved session options', [{label: 'List details', run: () => runs.push('details')}]);
+  dialog.children.at(-1)?.fire('keydown', {key: 'Escape'});
+  assert.equal(controller.openNow, false); assert.equal(doc.activeElement, origin); assert.equal(origin.getAttribute('aria-expanded'), 'false');
+  assert.ok([...doc.handlers.values(), ...doc.defaultView.handlers.values()].every(list => list.length === 0));
+});
+
 test('same-trigger repaint retains a focused action key across insertion and description changes', () => {
   const f = fixture(); f.origin.setAttribute('aria-haspopup', 'menu');
   const origin = f.origin as unknown as HTMLElement; const point = {x: 10, y: 10};

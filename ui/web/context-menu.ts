@@ -67,7 +67,12 @@ export class ContextMenu {
     doc.addEventListener('pointerdown', outside, true); doc.addEventListener('focusin', blur);
     view.addEventListener('resize', resize); view.addEventListener('blur', resize);
     this.cleanup = () => { doc.removeEventListener('pointerdown', outside, true); doc.removeEventListener('focusin', blur); view.removeEventListener('resize', resize); view.removeEventListener('blur', resize); };
-    doc.body.append(menu);
+    const dialog = origin.closest('dialog:modal');
+    (dialog ?? doc.body).append(menu);
+    if (dialog) {
+      // A top-layer popover remains modal-owned without inheriting dialog clipping or transforms.
+      menu.popover = 'manual'; menu.style.margin = '0'; menu.style.inset = 'auto'; menu.showPopover();
+    }
     menu.style.maxWidth = `${Math.max(1, view.innerWidth - 8)}px`; menu.style.maxHeight = `${Math.max(1, view.innerHeight - 8)}px`;
     const position = menuPosition(point, menu.getBoundingClientRect(), {width: view.innerWidth, height: view.innerHeight});
     menu.style.left = `${position.x}px`; menu.style.top = `${position.y}px`;
