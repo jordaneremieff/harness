@@ -430,7 +430,8 @@ test('start receipts deduplicate exact work and separate workspaces without inpu
   const f=await startFixture(t);const target={kind:'agent' as const,identity:STORAGE};const agent=await f.registry.store.target(f.workspace.id,target);const primary=await f.registry.store.target(f.workspace.id,{kind:'primary',key:'retained-primary',epoch:1});
   await f.registry.store.putDraft(f.workspace.id,agent.targetKey,{expectedRevision:0,text:'Agent retained 🦉',mode:'steer'});await f.registry.store.putDraft(f.workspace.id,primary.targetKey,{expectedRevision:0,text:'Primary retained 🦉',mode:'prompt'});
   const saved=await Promise.all([f.registry.store.target(f.workspace.id,target),f.registry.store.target(f.workspace.id,primary.target)]);const bytes=saved.map(state=>Buffer.from(JSON.stringify(state.draft)));
-  await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,selectedTarget:target});
+  t.mock.method(f.registry.journal,'workspaceClients',(id:string)=>id===f.workspace.id?1:0);
+  await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,selectedTarget:target,conversationLayout:agentLayout([STORAGE])});
   const first=f.registry.startAgent(f.workspace.id,STORAGE,'same-key');assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'same-key'),first);
   const result=await first;assert.equal(result.availability,'live');assert.equal(result.capabilities.input,true);assert.equal(f.counts.launches,1);assert.deepEqual(f.prepares,[STORAGE]);assert.deepEqual(f.selects,[{workspace:f.workspace.id,identity:STORAGE}]);
   assert.throws(()=>f.registry.startAgent(f.workspace.id,`${STORAGE}:2`,'same-key'),{code:'operation_conflict'});assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'same-key'),first);assert.deepEqual(f.prepares,[STORAGE]);
@@ -453,7 +454,7 @@ for(const stage of ['refresh','prepare'] as const)test(`post-readiness ${stage} 
 
 test('browser detach leaves the admitted start and its receipt intact',{timeout:10000},async t=>{
   const f=await startFixture(t);f.control.announce=false;const first=f.registry.startAgent(f.workspace.id,STORAGE,'detached');await f.admitted.promise;
-  f.registry.detached(f.workspace.id);assert.equal(f.counts.disconnect,1);f.announce();assert.equal((await first).capabilities.input,true);assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'detached'),first);assert.equal(f.counts.launches,1);assert.equal(f.counts.signals,0);assert.equal(f.counts.input,0);
+  f.registry.detached(f.workspace.id);await f.registry.observe(f.workspace.id);assert.equal(f.counts.disconnect,1);f.announce();assert.equal((await first).capabilities.input,true);assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'detached'),first);assert.equal(f.counts.launches,1);assert.equal(f.counts.signals,0);assert.equal(f.counts.input,0);
 });
 
 for(const stage of ['readiness','refresh'] as const)test(`backend shutdown during ${stage} never stops or relaunches the host`,{timeout:10000},async t=>{

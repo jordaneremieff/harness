@@ -135,17 +135,21 @@ test('adapter display IDs never replace supplied native or saved origin IDs', ()
   const saved = projectEntry({id: 'original-peer', type: 'custom_message', customType: 'agent.peer', content: 'Transport', details: report(), timestamp}, 'adapter-entry');
   const savedMessage = saved.messages?.[0]; assert.ok(savedMessage); assert.deepEqual(ready(savedMessage).origin, {kind: 'ordinary-custom', customType: 'agent.peer', renderEntryId: 'original-peer:message:0', sourceEntryId: 'original-peer'});
 });
-test('native associations and retained carriers refuse contradictory frame recipients', () => {
+test('native associations and retained carriers refuse contradictory frame storage', () => {
   const entry = {id: '41', kind: 'pi.user', model: [{role: 'user', content: 'Transport'}], communication: wire()};
   const matched = projectFrame({storageId: identity, conversationId: 1, entries: [entry]}).entries[0]; assert.equal(matched?.messages?.[0]?.communication?.state, 'ready');
-  for (const frame of [{storageId: '20000000-0000-4000-8000-000000000002', conversationId: 1}, {storageId: identity, conversationId: 2}]) {
+  for (const frame of [{storageId: '20000000-0000-4000-8000-000000000002', conversationId: 1}]) {
     assert.deepEqual(projectFrame({...frame, entries: [entry]}).entries[0]?.messages?.[0]?.communication, {state: 'unavailable', reason: 'invalid'});
     assert.deepEqual(projectFrame({...frame, entries: [matched]}).entries[0]?.messages?.[0]?.communication, {state: 'unavailable', reason: 'invalid'});
   }
 });
-test('native transfer and repeated frame projection retain the normalized message carrier only', () => {
-  const source = {scope: 'conversation', storageId: identity, conversationId: 1, revision: 1, observedAt: new Date(timestamp).toISOString(), entries: [{id: '41', kind: 'pi.user', model: [{role: 'user', content: 'Transport'}], communication: wire()}], live: [], nextBefore: null, status: {identity, busy: false, lastText: '', agent: {}, tasks: [], submissions: []}, coverage: {complete: true, entries: 1, bytes: 2000, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false}} as unknown as ConversationFrame;
+test('inherited native origins survive fork projection, transfer and repeated projection', () => {
+  const source = {scope: 'conversation', storageId: identity, conversationId: 2, revision: 1, observedAt: new Date(timestamp).toISOString(), entries: [{id: '41', kind: 'pi.user', model: [{role: 'user', content: 'Transport'}], communication: wire()}], live: [], nextBefore: null, status: {identity, busy: false, lastText: '', agent: {}, tasks: [], submissions: []}, coverage: {complete: true, entries: 1, bytes: 2000, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false}} as unknown as ConversationFrame;
+  const projected = projectFrame(source);
+  assert.deepEqual(projected.entries[0]?.messages?.[0]?.communication, {state: 'ready', origin: {kind: 'native', recordEntryId: '42', target: wire().target}, value});
   const transferred = transferFrame(source), display = projectFrame(transferred);
+  assert.deepEqual(display.entries[0]?.messages?.[0]?.communication, projected.entries[0]?.messages?.[0]?.communication);
+  assert.deepEqual(projectFrame(display).entries[0]?.messages?.[0]?.communication, projected.entries[0]?.messages?.[0]?.communication);
   assert.equal(display.entries.length, 1); assert.equal(display.entries[0]?.messages?.length, 1);
   assert.equal(display.entries[0]?.messages?.[0]?.communication?.state, 'ready');
   assert.equal(Object.hasOwn(display.entries[0] ?? {}, 'communication'), false);

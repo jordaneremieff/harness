@@ -126,7 +126,7 @@ function check(files: Map<string, string>, runtime: Set<string>, dev: Set<string
       }
     }
   };
-  for (const filename of files.keys()) if (filename.startsWith(`${path.join(ui, 'web')}${path.sep}`) && !filename.endsWith('.test.mts')) browser(filename);
+  for (const filename of files.keys()) if (filename.startsWith(`${path.join(ui, 'web')}${path.sep}`) && filename.endsWith('.ts') && !filename.endsWith('.test.ts')) browser(filename);
   return errors;
 }
 async function sources() {
@@ -175,6 +175,16 @@ test('boundary rejects absolute paths, harness source escapes, and undeclared/de
     const files = new Map([[filename, `import ${JSON.stringify(specifier)};`]]);
     assert.ok(check(files, new Set(), new Set(['typescript'])).length, specifier);
   }
+});
+
+test('unshipped browser test support is not an entrypoint but runtime imports still traverse it', () => {
+  const app = path.join(ui, 'web', 'app.ts'), fixture = path.join(ui, 'web', 'app-fixture.mts');
+  const files = new Map([[app, 'export {};'], [fixture, "import 'node:test'; import '../server/fixture.mts';"], [path.join(ui, 'server', 'fixture.mts'), "import 'node:fs';"]]);
+  assert.deepEqual(check(files, new Set(), new Set()), []);
+  files.set(app, "import './app-fixture.mts';");
+  const errors = check(files, new Set(), new Set());
+  assert.ok(errors.some(error => error.includes('browser platform/package: node:test')));
+  assert.ok(errors.some(error => error.includes('browser server graph: server/fixture.mts')));
 });
 
 test('browser checks traverse shared modules into Node and server dependencies', () => {

@@ -115,7 +115,7 @@ function retainRawCoverage(normalized: CommunicationPresentation, display: Recor
 }
 function validNativeOrigin(at: NativeOrigin, value: unknown, source: CommunicationSource): boolean {
   if (source.singleMessage === false || source.nativeEntryId !== undefined && at.target.entryId !== source.nativeEntryId) return false;
-  if (source.storageId !== undefined && at.target.storageId !== source.storageId || source.conversationId !== undefined && at.target.conversationId !== source.conversationId) return false;
+  if (source.storageId !== undefined && at.target.storageId !== source.storageId) return false;
   return at.target.mode !== 'passive' || at.recordEntryId === at.target.entryId && record(value) && value.kind === 'notice' && record(value.metadata) && value.metadata.passive === true;
 }
 function projected(value: unknown, source: CommunicationSource, helpers: Helpers): CommunicationPresentation {

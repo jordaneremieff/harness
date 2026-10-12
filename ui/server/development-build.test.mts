@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +24,11 @@ test('producer completion validates both input inventories and never treats a wa
 });
 
 test('the private compiler produces a complete in-memory generation without modifying dist',async()=> {
-  let checks=0;const generation=await compileBrowser(root,snapshot(),async css=>{checks++;assert.equal(css.toString(),'body { color: black; }');});
+  const output=join(root,'dist/web/app.js');
+  const readOutput=()=>readFile(output).catch(error=>{if(error.code==='ENOENT') return null;throw error;});
+  const before=await readOutput(),inputs=snapshot(),captured=new Map([...inputs].map(([path,data])=>[path,Buffer.from(data)]));
+  let checks=0;const generation=await compileBrowser(root,inputs,async css=>{checks++;assert.equal(css.toString(),'body { color: black; }');});
+  assert.deepEqual(await readOutput(),before);assert.equal(sameInputs(inputs,captured),true);
   assert.ok(generation.asset('/web/app.js'));assert.ok(generation.asset('/shared/api.js'));assert.match(generation.asset('/')?.data.toString()??'',new RegExp(`/_ui/${generation.id}/web/app.js`));
   assert.equal(checks,1);assert.equal(Object.keys(generation.manifest).length,5);
 });
@@ -33,6 +37,38 @@ test('real syntax failure and failed CSS validation refuse publication, then cor
   await assert.rejects(()=>compileBrowser(root,snapshot('export const = ;'),async()=>{}),/compile/);
   await assert.rejects(()=>compileBrowser(root,snapshot(),async()=>{throw new Error('invalid-assets');}),/invalid-assets/);
   const fixed=await compileBrowser(root,snapshot(),async()=>{});assert.ok(fixed.asset('/web/app.js'));
+});
+
+test('static imports, exports and escaped literal dynamic imports retain exact local graph checks',async()=> {
+  const app="import '../shared/api.ts'; export * from '../shared/api.ts'; export const load=()=>import(/* source */ '\\u002e\\u002e/shared/api.ts');";
+  const generation=await compileBrowser(root,snapshot(app),async()=>{});assert.ok(generation.asset('/web/app.js'));
+  for(const app of ["const path='../shared/api.ts'; export const load=()=>import(path);", "const path='../shared/api.ts'; export const load=()=>import /* gap */ (path);", "// @ts-ignore\nexport const load=()=>import('../shared/api.ts', {});"]) await assert.rejects(()=>compileBrowser(root,snapshot(app),async()=>{}),/invalid-assets/);
+});
+
+test('import text in comments, strings and regular expressions is not executable module syntax',async()=> {
+  const app="// import(path)\nconst text='import(path)'; const pattern=/import(path)/; const custom={import(path:string){return path;}}; custom.import('not-a-module'); throw new Error('Modules must not execute'); export {text,pattern};";
+  assert.ok((await compileBrowser(root,snapshot(app),async()=>{})).asset('/web/app.js'));
+  await assert.rejects(()=>compileBrowser(root,snapshot("class Derived extends Object { constructor() { super(); const path='../shared/api.ts'; void import(path); } } export {Derived};"),async()=>{}),/invalid-assets/);
+  await assert.rejects(()=>compileBrowser(root,snapshot(`const path='../shared/api.ts'; export const value=\`\${import(path)}\`;`),async()=>{}),/invalid-assets/);
+});
+
+test('private compilation refuses external sources and configuration escapes',async()=> {
+  await assert.rejects(()=>compileBrowser(root,snapshot("export * from '../server/development-build.mts';"),async()=>{}),/compile/);
+  for(const extra of [{extends:'../../outside.json'}, {compilerOptions:{outFile:'../../outside.js'}}, {compilerOptions:{paths:{'*':['../../*']}}}]) {
+    const inputs=new Map(snapshot());inputs.set('web/tsconfig.json',Buffer.from(JSON.stringify(extra)));
+    await assert.rejects(()=>compileBrowser(root,inputs,async()=>{}),/compile/);
+  }
+});
+
+test('input byte and entry bounds reject the build before publication',async()=> {
+  const oversized=new Map(snapshot());oversized.set('web/app.ts',Buffer.alloc(2*1024*1024+1));
+  const total=new Map(snapshot());for(let index=0;index<9;index++)total.set(`server/source-${index}.mts`,Buffer.alloc(2*1024*1024));
+  const entries=new Map(snapshot());for(let index=0;index<1281;index++)entries.set(`server/source-${index}.mts`,Buffer.alloc(0));
+  for(const inputs of [oversized,total,entries]) await assert.rejects(()=>compileBrowser(root,inputs,async()=>{}),/capacity/);
+});
+
+test('the captured browser project compiles through the existing build executable',async()=> {
+  const generation=await compileBrowser(root,await captureInputs(root),async()=>{});assert.ok(generation.asset('/web/app.js'));assert.ok(generation.asset('/shared/api.js'));
 });
 
 test('backend, worker and wire input changes declare restart while browser changes remain build inputs',()=> {

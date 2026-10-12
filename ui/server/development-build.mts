@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { constants, watch, type FSWatcher } from 'node:fs';
-import { open, opendir } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { open, opendir, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import vm from 'node:vm';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
-import type ts from 'typescript';
 import { AssetGeneration, AssetGenerations, LatestBuild } from './asset-generations.mts';
 import type { Asset } from './http.mts';
 
@@ -51,52 +52,73 @@ export async function confirmedBuild(producer:BuildProducer) {
   if(!sameInputs(inputs,await producer.capture())) throw new Error('input-changed');return generation;
 }
 
-/** Existing development tools are loaded only through the explicitly selected mode. */
+/** The existing build executable emits only a private captured project, never ui/dist. */
 export async function compileBrowser(root:string,inputs:InputSnapshot,cssCheck:(css:Buffer)=>Promise<void>) {
-  const bundle=await emitBrowser(root,inputs);const css=inputs.get('web/style.css');if(!css) throw new Error('invalid-assets');await cssCheck(css);
-  return new AssetGeneration(bundle.assets,bundle.imports);
+  const bundle=await emitInWorker(root,inputs);const css=inputs.get('web/style.css');if(!css) throw new Error('invalid-assets');await cssCheck(css);
+  const assets=new Map([...bundle.assets].map(([route,asset])=>[route,{type:asset.type,data:Buffer.from(asset.data)}]));
+  return new AssetGeneration(assets,bundle.imports);
+}
+const compilerOptions=new Set(['target','module','moduleResolution','lib','types','strict','noUncheckedIndexedAccess','skipLibCheck','rewriteRelativeImportExtensions','erasableSyntaxOnly','rootDir','outDir','verbatimModuleSyntax']);
+function privateConfig(inputs:InputSnapshot,names:string[]) {
+  const text=inputs.get('web/tsconfig.json');if(!text) throw new Error('invalid-assets');
+  let config:Record<string,unknown>;
+  try {config=JSON.parse(text.toString('utf8'));} catch {throw new Error('compile');}
+  if(!config||Array.isArray(config)||typeof config!=='object'||Object.keys(config).some(key=>!['compilerOptions','include','exclude'].includes(key))) throw new Error('compile');
+  const options=config.compilerOptions;
+  if(!options||typeof options!=='object'||Array.isArray(options)||Object.keys(options).some(key=>!compilerOptions.has(key))) throw new Error('compile');
+  return JSON.stringify({compilerOptions:{...options,rootDir:'..',outDir:'../dist',types:[],typeRoots:[],noResolve:true,noEmitOnError:true},files:names.map(name=>`../${name}`)});
+}
+async function runCompiler(root:string,project:string) {
+  await new Promise<void>((resolve,reject)=> {
+    const child=spawn(process.execPath,[join(root,'../node_modules/typescript/bin/tsc'),'--project',project,'--pretty','false'],{stdio:'ignore',timeout:30000});
+    child.once('error',()=>reject(new Error('compile')));child.once('close',code=>code===0?resolve():reject(new Error('compile')));
+  });
 }
 async function emitBrowser(root:string,inputs:InputSnapshot) {
-  const compiler=await import('typescript');
-  const configText=inputs.get('web/tsconfig.json');if(!configText) throw new Error('invalid-assets');
-  const config=compiler.parseConfigFileTextToJson(join(root,'web/tsconfig.json'),configText.toString('utf8'));if(config.error) throw new Error('compile');
-  const parsed=compiler.parseJsonConfigFileContent(config.config,compiler.sys,join(root,'web'));
-  if(parsed.errors.length) throw new Error('compile');
-  const options={...parsed.options,noEmitOnError:true};const host=compiler.createCompilerHost(options);
-  const read=host.readFile;const exists=host.fileExists;const libraryRoot=resolve(root,'../node_modules')+sep;
-  const source=(path:string)=>inputs.get(relative(root,path).split(sep).join('/'));
-  host.readFile=path=>source(path)?.toString('utf8')??(resolve(path).startsWith(libraryRoot)?read(path):undefined);
-  host.fileExists=path=>!!source(path)||(resolve(path).startsWith(libraryRoot)&&exists(path));
-  host.getSourceFile=(path,languageVersion)=>{const text=host.readFile(path);return text===undefined?undefined:compiler.createSourceFile(path,text,languageVersion);};
-  const outputs=new Map<string,Asset>();const imports=new Map<string,string[]>();let emittedBytes=0;
-  host.writeFile=(path,text)=> {
-    const route=`/${relative(join(root,'dist'),path).split(sep).join('/')}`;
-    if(!/^\/(?:web|shared)\/[a-zA-Z0-9_-]+\.js$/.test(route)) throw new Error('invalid-assets');
-    const bytes=Buffer.byteLength(text);emittedBytes+=bytes;
-    if(bytes>2*1024*1024||emittedBytes>16*1024*1024||outputs.size>=253) throw new Error('capacity');
-    imports.set(route,moduleImports(compiler,path,text));outputs.set(route,{type:'text/javascript; charset=utf-8',data:Buffer.from(text)});
-  };
-  const rootNames=[...inputs.keys()].filter(path=>(path.startsWith('web/')&&path.endsWith('.ts'))||path==='shared/api.ts').map(path=>join(root,path));
-  const program=compiler.createProgram(rootNames,options,host);
-  if(compiler.getPreEmitDiagnostics(program).length||program.emit().emitSkipped) throw new Error('compile');
-  const staticFiles=[['/','web/index.html','text/html; charset=utf-8'],['/style.css','web/style.css','text/css; charset=utf-8'],['/favicon.svg','web/favicon.svg','image/svg+xml']] as const;
-  for(const [route,path,type] of staticFiles) {const data=inputs.get(path);if(!data) throw new Error('invalid-assets');outputs.set(route,{type,data});}
-  return {assets:outputs,imports};
+  validateInputBounds(inputs);
+  const names=[...inputs.keys()].filter(path=>/^(?:web|shared)\/[a-zA-Z0-9_-]+\.ts$/.test(path)&&!path.endsWith('.test.ts'));
+  const config=privateConfig(inputs,names);const directory=await mkdtemp(join(tmpdir(),'ui-browser-build-'));
+  try {
+    await mkdir(join(directory,'web'));await mkdir(join(directory,'shared'));
+    for(const name of names) await writeFile(join(directory,name),inputs.get(name) as Buffer,{flag:'wx'});
+    const project=join(directory,'web/tsconfig.json');await writeFile(project,config,{flag:'wx'});await runCompiler(root,project);
+    const {assets:outputs,imports}=await collectOutputs(directory);
+    const staticFiles=[['/','web/index.html','text/html; charset=utf-8'],['/style.css','web/style.css','text/css; charset=utf-8'],['/favicon.svg','web/favicon.svg','image/svg+xml']] as const;
+    for(const [route,path,type] of staticFiles) {const data=inputs.get(path);if(!data) throw new Error('invalid-assets');outputs.set(route,{type,data});}
+    return {assets:outputs,imports};
+  } finally {await rm(directory,{recursive:true,force:true});}
 }
-function moduleImports(compiler:typeof ts,path:string,text:string) {
-  const references:string[]=[];const tree=compiler.createSourceFile(path,text,compiler.ScriptTarget.ES2023,true,compiler.ScriptKind.JS);
-  const staticImport=(node:ts.ImportDeclaration|ts.ExportDeclaration)=> {
-    if(!node.moduleSpecifier) return;
-    if(!compiler.isStringLiteral(node.moduleSpecifier)) throw new Error('invalid-assets');references.push(node.moduleSpecifier.text);
-  };
-  const dynamicImport=(node:ts.CallExpression)=> {
-    const argument=node.arguments[0];if(node.arguments.length!==1||!argument||!compiler.isStringLiteral(argument)) throw new Error('invalid-assets');references.push(argument.text);
-  };
-  const visit=(node:ts.Node)=> {
-    if(compiler.isImportDeclaration(node)||compiler.isExportDeclaration(node)) staticImport(node);
-    if(compiler.isCallExpression(node)&&node.expression.kind===compiler.SyntaxKind.ImportKeyword) dynamicImport(node);
-    compiler.forEachChild(node,visit);
-  };visit(tree);return references;
+function validateInputBounds(inputs:InputSnapshot) {
+  let bytes=0;if(inputs.size>1280) throw new Error('capacity');
+  for(const data of inputs.values()) {bytes+=data.length;if(data.length>2*1024*1024||bytes>16*1024*1024) throw new Error('capacity');}
+}
+async function collectOutputs(directory:string) {
+  const assets=new Map<string,Asset>(),imports=new Map<string,string[]>();let bytes=0,visits=0;
+  for(const folder of ['web','shared']) {
+    const handle=await opendir(join(directory,'dist',folder),{bufferSize:1});
+    for await(const entry of handle) {
+      if(++visits>253) throw new Error('capacity');
+      if(!entry.isFile()||!/^[a-zA-Z0-9_-]+\.js$/.test(entry.name)) throw new Error('invalid-assets');
+      const route=`/${folder}/${entry.name}`,data=await captureFile(join(directory,'dist',folder,entry.name),16*1024*1024-bytes);bytes+=data.length;
+      imports.set(route,moduleImports(data.toString('utf8')));assets.set(route,{type:'text/javascript; charset=utf-8',data});
+    }
+  }
+  return {assets,imports};
+}
+/** V8 parses modules without linking or evaluating them, including literal string escapes. */
+function moduleImports(text:string) {
+  const references=[...new vm.SourceTextModule(text).dependencySpecifiers];
+  const gap='(?:\\s|/\\*[\\s\\S]*?\\*/|//[^\\r\\n]*(?:\\r?\\n|$))*';
+  const calls=new RegExp(`\\bimport${gap}\\(`,'g');let count=0;
+  for(const match of text.matchAll(calls)) {
+    if(++count>1024) throw new Error('capacity');const index=match.index;
+    // A reserved class token keeps property names and inert text valid, but not an import expression.
+    try {new vm.SourceTextModule(`${text.slice(0,index)}class${text.slice(index+6)}`);continue;} catch { /* Active syntax requires an exact literal argument. */ }
+    const rest=text.slice(index+match[0].length),argument=new RegExp(`^${gap}("(?:\\\\[\\s\\S]|[^"\\\\])*"|'(?:\\\\[\\s\\S]|[^'\\\\])*')${gap}\\)`).exec(rest);
+    if(!argument?.[1]) throw new Error('invalid-assets');
+    references.push(...new vm.SourceTextModule(`import ${argument[1]};`).dependencySpecifiers);
+  }
+  return references;
 }
 export function checkCss(root:string,css:Buffer):Promise<void> {
   return new Promise((resolve,reject)=> {
@@ -107,20 +129,18 @@ export function checkCss(root:string,css:Buffer):Promise<void> {
 }
 
 type CompilerBundle={assets:Map<string,Asset>;imports:Map<string,string[]>};
-async function compileInWorker(root:string,inputs:InputSnapshot) {
-  const bundle=await new Promise<CompilerBundle>((resolve,reject)=> {
-    const worker=new Worker(new URL(import.meta.url),{workerData:{kind:'browser-build',root,inputs},execArgv:[]});let result:CompilerBundle|undefined;let failure:Error|undefined;
-    worker.once('message',(message:CompilerBundle|{error:string})=>{if('error'in message) failure=new Error(message.error==='compile'?'compile':'invalid-assets');else result=message;});
+async function emitInWorker(root:string,inputs:InputSnapshot) {
+  return new Promise<CompilerBundle>((resolve,reject)=> {
+    const worker=new Worker(new URL('./development-build.mts',import.meta.url),{workerData:{kind:'browser-build',root,inputs},execArgv:['--experimental-vm-modules']});let result:CompilerBundle|undefined;let failure:Error|undefined;
+    worker.once('message',(message:CompilerBundle|{error:string})=>{if('error'in message) failure=new Error(['compile','capacity'].includes(message.error)?message.error:'invalid-assets');else result=message;});
     worker.once('error',()=>{failure=new Error('invalid-assets');});
     worker.once('exit',code=>{if(code===0&&result&&!failure) resolve(result);else reject(failure??new Error('invalid-assets'));});
   });
-  const css=inputs.get('web/style.css');if(!css) throw new Error('invalid-assets');await checkCss(root,css);
-  const assets=new Map([...bundle.assets].map(([route,asset])=>[route,{type:asset.type,data:Buffer.from(asset.data)}]));
-  return new AssetGeneration(assets,bundle.imports);
 }
+async function compileInWorker(root:string,inputs:InputSnapshot) {return compileBrowser(root,inputs,css=>checkCss(root,css));}
 if(!isMainThread&&workerData?.kind==='browser-build') {
   const inputs=new Map<string,Buffer>([...workerData.inputs].map(([path,data]:[string,Uint8Array])=>[path,Buffer.from(data)]));
-  void emitBrowser(workerData.root,inputs).then(bundle=>parentPort?.postMessage(bundle),error=>parentPort?.postMessage({error:error instanceof Error&&error.message==='compile'?'compile':'invalid-assets'})).finally(()=>parentPort?.close());
+  void emitBrowser(workerData.root,inputs).then(bundle=>parentPort?.postMessage(bundle),error=>parentPort?.postMessage({error:error instanceof Error&&['compile','capacity'].includes(error.message)?error.message:'invalid-assets'})).finally(()=>parentPort?.close());
 }
 /** One watcher set and one periodic reconciliation; no request/render path reads inputs. */
 export class DevelopmentBuild {
