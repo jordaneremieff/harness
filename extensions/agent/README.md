@@ -666,8 +666,11 @@ admission, cancellation and settlement remain unchanged. The existing post-nativ
 classification commit captures trusted metadata before a successful host response,
 including late suppression when native abort reports an already-placed or settled
 input. A queued abort keeps its suppression response without a fabricated link.
-Plain admissions retain their no-envelope decision in the existing row and exact
-index; eviction and stale dedupe observations do not permit later backfill. The
+Plain admissions retain their no-envelope decision in the existing provenance row
+and the persisted `CommunicationIndexDoc` point-index family; eviction and stale
+dedupe observations do not permit later backfill. This session-scoped family
+retains lookup hints, not authoritative communication records. Each observation
+verifies the immutable native target and companion before publishing their join. The
 plain view stays unresolved without a companion or invalid marker.
 The retained input bound stays 128. Terminal-row pruning prepares all native reads
 before companion writes and materializes unlinked metadata before row eviction in
