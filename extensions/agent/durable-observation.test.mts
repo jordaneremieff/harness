@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -31,6 +31,41 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 	});
 	return { promise, resolve };
 }
+
+it("returns the documented missing-request result and enforces native selector agreement", async t => {
+	const docs = readFileSync(new URL("../../docs/agent-host-contract.md", import.meta.url), "utf8");
+	assert.ok(Buffer.byteLength(docs) <= 512 * 1024, "Documented contract byte bound");
+	const heading = "### Fixture: unavailable-result\n";
+	assert.ok(docs.includes(heading));
+	const fixture = /^\s*```json\n(.*?)\n```/s.exec(docs.slice(docs.indexOf(heading) + heading.length));
+	assert.ok(fixture);
+	const expected = JSON.parse(fixture[1]) as { sessionId: string; requestId: string; [key: string]: unknown };
+	structuredObservation(InspectOutputSchema, expected);
+	const host = await DurableHost.open({ ...hostOptions(join(fixtureRoot(t), "result.sqlite"), await scriptedRuntime([answerMessage("first"), answerMessage("second")]), fixtureRegistry()), storageId: expected.sessionId }, BACKGROUND_CONTEXT);
+	try {
+		const params = { sessionId: expected.sessionId, view: "result", requestId: expected.requestId };
+		const native = await host.request("inspect", params) as Record<string, unknown>;
+		assert.deepEqual(native, expected);
+		assert.equal(native.status, "unavailable");
+		assert.equal(Object.hasOwn(native, "submissionId"), false);
+		structuredObservation(InspectOutputSchema, native);
+		for (const changed of [{ ...native, submissionId: 0 }, { ...native, status: "done" }, { ...native, answer: "fabricated" }]) assert.throws(() => structuredObservation(InspectOutputSchema, changed));
+		const { reason: _reason, ...withoutReason } = native;
+		assert.throws(() => structuredObservation(InspectOutputSchema, withoutReason));
+		const first = await host.submit({ message: "first input", requestId: "first-exact-request" });
+		await host.wait(first.submissionId, BACKGROUND_CONTEXT);
+		const second = await host.submit({ message: "second input", requestId: "second-exact-request" });
+		await host.wait(second.submissionId, BACKGROUND_CONTEXT);
+		const matching = { ...params, requestId: "first-exact-request", submissionId: first.submissionId };
+		const retained = await host.request("inspect", matching) as Record<string, unknown>;
+		assert.equal(retained.submissionId, first.submissionId);
+		assert.equal(retained.requestId, matching.requestId);
+		structuredObservation(InspectOutputSchema, retained);
+		await assert.rejects(host.request("inspect", { ...matching, submissionId: second.submissionId }), /select different native submissions/u);
+	} finally {
+		await host.close();
+	}
+});
 
 it("preserves native message durations without deriving them from message timestamps", () => {
 	const timed = { role: "toolResult" as const, toolCallId: "call", toolName: "gate", content: [{ type: "text" as const, text: "done" }], isError: false, timestamp: 900_000, durationMs: 7 };

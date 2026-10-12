@@ -1,6 +1,28 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
+import { readFileSync } from "node:fs";
 import { HOST_CONTRACT, contractRefusal, operationContractMismatch, parseOperationContract, parseRuntimeContract, type RuntimeContract } from "./version-contract.ts";
+
+it("implements the operation identities and schema hashes published in the host contract", () => {
+	const docs = readFileSync(new URL("../../docs/agent-host-contract.md", import.meta.url), "utf8");
+	assert.ok(Buffer.byteLength(docs) <= 512 * 1024, "Documented contract byte bound");
+	const common = docs.slice(docs.indexOf("For every member in the following set"), docs.indexOf("Overrides and remaining members:"));
+	const defaults = /```text\n([\s\S]*?)\n```/.exec(common);
+	assert.ok(defaults);
+	const documented: Record<string, RuntimeContract["operations"][string]> = {};
+	for (const member of defaults[1].trim().split(/\s+/u)) documented[member] = { request: `${member}/1.0.0`, response: `${member}/1.0.0` };
+	const table = docs.slice(docs.indexOf("| Member | Request | Response | Durable |"), docs.indexOf("Each `H-*`"));
+	for (const row of table.split("\n").filter(line => /^\| [a-z-]+ \|/u.test(line))) {
+		const cells = row.split("|").map(cell => cell.trim());
+		const response = cells[3];
+		const hash = response.startsWith("H-") ? docs.split("\n").find(line => line.startsWith(`${response} `))?.trim().split(/\s+/u)[1] : response;
+		assert.ok(hash, `Missing documented response: ${response}`);
+		if (response.startsWith("H-")) assert.match(hash, /^[a-f0-9]{64}$/u);
+		assert.ok(cells[4] === "D" || cells[4] === "absent");
+		documented[cells[1]] = { request: cells[2], response: hash, ...(cells[4] === "D" ? { durable: HOST_CONTRACT.upstream.durable } : {}) };
+	}
+	assert.deepEqual(HOST_CONTRACT.operations, documented);
+});
 
 it("refuses self-owned rewind and timer requests in both contract directions without changing responses", () => {
 	for (const method of ["rewind", "timer-schedule"]) {

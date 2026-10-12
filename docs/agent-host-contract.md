@@ -560,6 +560,12 @@ These examples contain fabricated identities and data. They are valid-shape exam
 {"submissionId":7,"conversationId":1,"deduped":false,"identity":"00000000-0000-4000-8000-000000000001","result":{"sessionId":"00000000-0000-4000-8000-000000000001","submissionId":7,"requestId":"input-example"}}
 ```
 
+### Fixture: unavailable-result
+
+```json
+{"view":"result","sessionId":"00000000-0000-4000-8000-000000000001","conversationId":1,"status":"unavailable","requestId":"missing-native-request","reason":"No native submission matches the result selector in this conversation","usage":{"models":{},"tools":{}}}
+```
+
 ### Fixture: empty-snapshot
 
 ```json

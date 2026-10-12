@@ -1,20 +1,31 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { DurableHost } from "../../extensions/agent/durable-host.ts";
-import { answerMessage, fixtureRegistry, fixtureStorageId, hostOptions, scriptedRuntime } from "../../extensions/agent/durable-host-fixture.mts";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { blockedResult } from "./fake-host.mts";
-import { HOST_CONTRACT } from "../../extensions/agent/version-contract.ts";
 import {
 	assertOperation, ContractError, decodeDescriptor, decodeFrame, decodeInput, decodeOperatorInput,
 	decodePublication, decodeResponse, type JsonObject, type OperationName, supportedOperations,
 } from "./contract.mts";
 
 const docs = readFileSync(new URL("../../docs/agent-host-contract.md", import.meta.url), "utf8");
+assert.ok(Buffer.byteLength(docs) <= 512 * 1024, "Documented contract byte bound");
+function documentedOperation(member: string): { request: string; response: string; durable?: string } {
+	const row = docs.split("\n").find(line => line.startsWith(`| ${member} |`));
+	if (row === undefined) {
+		const section = docs.slice(docs.indexOf("For every member in the following set"), docs.indexOf("Overrides and remaining members:"));
+		const defaults = /```text\n([\s\S]*?)\n```/.exec(section);
+		assert.ok(defaults?.[1].trim().split(/\s+/u).includes(member), `Missing documented operation: ${member}`);
+		return { request: `${member}/1.0.0`, response: `${member}/1.0.0` };
+	}
+	const cells = row.split("|").map(cell => cell.trim());
+	const response = cells[3];
+	const hash = response.startsWith("H-") ? docs.split("\n").find(line => line.startsWith(`${response} `))?.trim().split(/\s+/u)[1] : response;
+	assert.ok(hash, `Missing documented response: ${response}`);
+	if (response.startsWith("H-")) assert.match(hash, /^[a-f0-9]{64}$/u);
+	assert.ok(cells[4] === "D" || cells[4] === "absent");
+	return { request: cells[2], response: hash, ...(cells[4] === "D" ? { durable: D } : {}) };
+}
 function fixture(name: string): JsonObject {
 	const heading = `### Fixture: ${name}\n`;
 	const section = docs.slice(docs.indexOf(heading) + heading.length);
@@ -69,10 +80,9 @@ for (const member of Object.keys(supportedOperations) as OperationName[]) {
 	});
 }
 
-test("literal consumer identities match the current native host and reject superseded contracts", () => {
-	const remote = decodeDescriptor(HOST_CONTRACT);
+test("literal consumer identities match the documented contract and reject superseded contracts", () => {
 	for (const member of Object.keys(supportedOperations) as OperationName[]) {
-		if (member !== "configure") assertOperation(remote, member);
+		if (member !== "configure") assert.deepEqual(supportedOperations[member], documentedOperation(member));
 	}
 	for (const member of ["snapshot", "observe-open", "observe-frame", "inspect"] as OperationName[]) {
 		const value = descriptor(); const operation = (value.operations as JsonObject)[member] as JsonObject;
@@ -366,30 +376,18 @@ test("current admissions retain deduped and bind child and root result reference
 	refusal(() => decodeResponse("task-submit", { suppressed: true }));
 });
 
-test("a native missing-request result decodes without a fabricated submission ID", async t => {
-	const root = mkdtempSync(join(tmpdir(), "ui-native-result-"));
-	const host = await DurableHost.open(hostOptions(join(root, "run.sqlite"), await scriptedRuntime([answerMessage("first"), answerMessage("second")]), fixtureRegistry()), BACKGROUND_CONTEXT);
-	t.after(async () => { await host.close(); rmSync(root, { recursive: true, force: true }); });
-	const params = { sessionId: fixtureStorageId, view: "result", requestId: "missing-native-request" };
+test("the documented missing-request result decodes without a fabricated submission ID", () => {
+	const params = { sessionId: storageId, view: "result", requestId: "missing-native-request" };
 	assert.deepEqual(decodeInput("inspect", params), params);
-	const native = await host.request("inspect", params) as JsonObject;
-	assert.equal(native.status, "unavailable");
-	assert.equal(native.requestId, params.requestId);
-	assert.equal(Object.hasOwn(native, "submissionId"), false);
-	assert.deepEqual(decodeResponse("inspect", native, { identity: fixtureStorageId, requestId: params.requestId }), native);
-	for (const changed of [{ ...native, submissionId: 0 }, { ...native, status: "done" }, { ...native, answer: "fabricated" }]) refusal(() => decodeResponse("inspect", changed));
-	const { reason: _reason, ...withoutReason } = native;
+	const documented = fixture("unavailable-result");
+	assert.equal(documented.status, "unavailable");
+	assert.equal(documented.requestId, params.requestId);
+	assert.equal(Object.hasOwn(documented, "submissionId"), false);
+	assert.deepEqual(decodeResponse("inspect", documented, { identity: storageId, requestId: params.requestId }), documented);
+	for (const changed of [{ ...documented, submissionId: 0 }, { ...documented, status: "done" }, { ...documented, answer: "fabricated" }]) refusal(() => decodeResponse("inspect", changed));
+	const { reason: _reason, ...withoutReason } = documented;
 	refusal(() => decodeResponse("inspect", withoutReason));
-	refusal(() => decodeResponse("inspect", native, { requestId: "different" }));
-	const first = await host.submit({ message: "first input", requestId: "first-exact-request" });
-	await host.wait(first.submissionId, BACKGROUND_CONTEXT);
-	const second = await host.submit({ message: "second input", requestId: "second-exact-request" });
-	await host.wait(second.submissionId, BACKGROUND_CONTEXT);
-	const matching = { ...params, requestId: "first-exact-request", submissionId: first.submissionId };
-	decodeInput("inspect", matching);
-	const retained = await host.request("inspect", matching);
-	assert.deepEqual(decodeResponse("inspect", retained), retained);
-	await assert.rejects(host.request("inspect", { ...matching, submissionId: second.submissionId }), /select different native submissions/u);
+	refusal(() => decodeResponse("inspect", documented, { requestId: "different" }));
 });
 
 test("result request selectors validate current shapes without forbidding matching combined selectors", () => {
