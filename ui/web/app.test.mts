@@ -944,7 +944,6 @@ test('pane controls separate creation from conversation actions without title ro
   const pane=paneNode('pane-1'); assert.equal(pane.querySelectorAll('.pane-actions').length,1); assert.equal(pane.querySelector('.pane-actions')?.getAttribute('aria-label'),'New tab'); assert.equal(pane.querySelector('.pane-actions svg')?.getAttribute('class'),'card-icon card-icon-plus'); assert.equal(primaryControl('transcript').getAttribute('aria-label'),'Conversation messages'); assert.equal(primaryControl('send').textContent,'Send'); assert.doesNotMatch(html,/pane-heading|id="tab-split"|id="session-title"/);
 });
 
-test('pane handles are labeled keyboard separators at their pane edges', async () => {
 test('pane strips expose local navigation, a direct new-tab chooser and a separate complete tab list', async () => {
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'strip-a'}, {kind: 'agent', identity: 'strip-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 8405})], roster: [agentFixture('strip-a', {name: 'First full tab name'}), agentFixture('strip-b', {name: 'Second full tab name'})]});
@@ -962,6 +961,7 @@ test('pane strips expose local navigation, a direct new-tab chooser and a separa
   assert.equal(contextMenu.openNow, false); assert.equal(byId('modal-title').textContent, 'Go to conversation'); byId('modal-close').click();
   app.openTabActions('pane-1'); for (const name of ['Split right', 'Split down', 'Close tab']) assert.ok(menuNode().children.some(node => node.textContent === name)); contextMenu.close();
 });
+test('pane handles are labeled keyboard separators at their pane edges', async () => {
   const identity='separator-owner'; await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity},conversationLayout:twoPanes(identity)},primaries:[primaryFixture({epoch:9537})],roster:[agentFixture(identity)]});
   const agentForm=agentControl('composer'),agentHandle=agentForm.querySelector('.resizer'); assert.ok(agentHandle); assert.equal(agentHandle.getAttribute('aria-controls'),agentControl('editor').id); assert.ok(agentForm.children.indexOf(agentHandle)<agentForm.children.findIndex(node=>node.classList.contains('composer-input')));
   const form=primaryControl('composer'),handle=form.querySelector('.resizer'); assert.ok(handle); assert.equal(form.contains(handle),true); assert.ok(form.children.indexOf(handle) < form.children.findIndex(node => node.classList.contains('composer-input'))); assert.equal(handle.getAttribute('aria-controls'),primaryControl('editor').id);

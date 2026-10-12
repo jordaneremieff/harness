@@ -886,9 +886,9 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .sidebar > .roster-section { min-height: 0; }
   .agent-message-panel { min-height: 100px; max-height: 40dvh; }
 }
-  .sidebar-footer > .icon-button > .card-icon { margin-inline: 10px; }
 @media (pointer:coarse) {
   .conversation-tab { --tab-chrome: 90px; }
+  .sidebar-footer > .icon-button > .card-icon { margin-inline: 10px; }
   button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .icon-button { min-height: 44px; min-width: 44px; }
   .source-disclosure > summary.source-header { min-height: 49px; }
   .message-menu, .communication-unverified, .message-source-close, .pane-actions, .context-menu > .context-menu-item { min-height: 44px; min-width: 44px; }
