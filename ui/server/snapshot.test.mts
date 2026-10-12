@@ -88,10 +88,10 @@ test('large selected pages and frames are optional and do not displace exact dra
   const source = snapshot(); source.targets = [target('p', 'x'.repeat(LIMITS.textBytes))];
   const entry = {id: 'entry', kind: 'custom', data: {value: '界'.repeat(LIMITS.textBytes), truncated: false}};
   source.selectedPage = {target: {kind: 'primary', key: 'p', epoch: 1}, items: [entry, entry], nextCursor: 'real-page-cursor', coverage: {complete: true, truncated: false, omitted: 0}};
-  source.selectedFrame = {revision: 3, observedAt: 'date', entries: [entry, entry], live: [], nextBefore: null, status: {busy: true}, coverage: {complete: true, truncated: false, omitted: 0}};
+  source.observations = [{identity:'agent',connectionEpoch:1,frame:{revision: 3, observedAt: 'date', entries: [entry, entry], live: [], nextBefore: null, status: {busy: true}, coverage: {complete: true, truncated: false, omitted: 0}}}];
   const result = budgetSnapshot(source); bounded(result); assert.deepEqual(result.targets, source.targets);
-  assert.equal(result.selectedPage, undefined); assert.equal(result.selectedFrame, undefined);
-  assert.ok(result.omitted?.includes('selectedPage')); assert.ok(result.omitted?.includes('selectedFrame'));
+  assert.equal(result.selectedPage, undefined); assert.deepEqual(result.observations,[{identity:'agent',connectionEpoch:1,omitted:true}]);
+  assert.ok(result.omitted?.includes('selectedPage')); assert.ok(result.omitted?.includes('observations'));
 });
 
 test('all 128 operation IDs survive and bounded notices reserve space before large operation payloads', () => {
@@ -111,25 +111,32 @@ test('a roster page stays whole with its real cursor or is omitted with no fabri
   const kept = budgetSnapshot(small); bounded(kept); assert.deepEqual(kept.roster.rows, small.roster.rows); assert.equal(kept.roster.nextCursor, 'real-after-one');
 });
 
-test('selected-agent metadata survives omitted roster pages and frames before maximum drafts compete for space', () => {
-  const source = snapshot(); source.selectedAgent = {...row('beyond-first-page', 'x'.repeat(LIMITS.textBytes)), name: 'Selected agent'};
-  source.workspace.selectedTarget = {kind: 'agent', identity: source.selectedAgent.identity};
-  source.targets = [target('p', 'x'.repeat(LIMITS.textBytes)), target('agent', 'y'.repeat(LIMITS.textBytes))];
-  source.roster.rows = Array.from({length: 4}, (_, i) => row(`first-page${i}`, 'z'.repeat(LIMITS.textBytes))); source.roster.nextCursor = 'actual-first-page-end';
-  const entry = {id: 'entry', kind: 'custom', data: {value: 'z'.repeat(LIMITS.displayBytes), truncated: false}};
-  source.selectedPage = {target: source.workspace.selectedTarget, entries: [entry], nextBefore: null, coverage: {complete: true, truncated: false, omitted: 0}, revision: 'r'};
-  source.selectedFrame = {revision: 1, observedAt: 'date', entries: [entry], live: [], nextBefore: null, status: {busy: true}, coverage: {complete: true, truncated: false, omitted: 0}};
-  freeze(source); const result = budgetSnapshot(source); bounded(result);
-  assert.deepEqual(result.selectedAgent, source.selectedAgent); assert.deepEqual(result.workspace, source.workspace); assert.deepEqual(result.targets, source.targets);
-  assert.deepEqual(result.roster.rows, []); assert.ok(result.omitted?.includes('roster')); assert.equal(result.selectedFrame, undefined); assert.equal(result.selectedPage, undefined);
-  assert.equal(source.roster.nextCursor, 'actual-first-page-end');
+test('pure concurrent observation indexes survive omitted roster pages and oversized frames with exact drafts', () => {
+  const source = snapshot(); source.workspace.selectedTarget = {kind:'agent',identity:'beyond-first-page'};
+  source.targets = [target('p','x'.repeat(LIMITS.textBytes)),target('agent','y'.repeat(LIMITS.textBytes))];
+  source.roster.rows = Array.from({length:4},(_,i)=>row(`first-page${i}`,'z'.repeat(LIMITS.textBytes)));source.roster.nextCursor='actual-first-page-end';
+  const entry={id:'entry',kind:'custom',data:{value:'z'.repeat(LIMITS.displayBytes),truncated:false}};
+  source.observations=Array.from({length:4},(_,i)=>({identity:`beyond-page-${i}`,connectionEpoch:i+1,frame:{revision:1,observedAt:'date',entries:[entry],live:[],nextBefore:null,status:{busy:true},coverage:{complete:true,truncated:false,omitted:0}}}));
+  freeze(source);const result=budgetSnapshot(source);bounded(result);
+  assert.deepEqual(result.targets,source.targets);assert.deepEqual(result.workspace,source.workspace);
+  assert.deepEqual(result.observations,source.observations.map(({identity,connectionEpoch})=>({identity,connectionEpoch,omitted:true})));
+  assert.ok(result.omitted?.includes('observations'));assert.ok(result.omitted?.includes('roster'));assert.equal(source.roster.nextCursor,'actual-first-page-end');
 });
-
-test('a selected agent outside the first roster page does not alter page rows or its authentic cursor', () => {
-  const source = snapshot(); source.selectedAgent = row('beyond-first-page'); source.roster.rows = [row('first')]; source.roster.nextCursor = 'actual-after-first';
-  const result = budgetSnapshot(source); bounded(result);
-  assert.deepEqual(result.selectedAgent, source.selectedAgent); assert.deepEqual(result.roster.rows, source.roster.rows);
-  assert.equal(result.roster.nextCursor, 'actual-after-first'); assert.equal(result.omitted, undefined);
+test('pure concurrent optional frames share one display budget and do not alter authentic roster pagination',()=> {
+  const source=snapshot();source.roster.rows=[row('first')];source.roster.nextCursor='actual-after-first';
+  const entry={id:'entry',kind:'custom',data:{value:'x'.repeat(Math.floor(LIMITS.displayBytes/3)),truncated:false}};
+  source.observations=Array.from({length:4},(_,i)=>({identity:`agent${i}`,connectionEpoch:i+1,frame:{revision:i,observedAt:'date',entries:[entry],live:[],nextBefore:null,status:{busy:false},coverage:{complete:true,truncated:false,omitted:0}}}));
+  const result=budgetSnapshot(source);bounded(result);
+  assert.equal(result.observations?.length,4);assert.equal(result.observations?.filter(value=>value.frame).length,2);
+  assert.ok(result.observations?.slice(2).every(value=>value.omitted===true));assert.deepEqual(result.roster.rows,source.roster.rows);assert.equal(result.roster.nextCursor,'actual-after-first');
+  const second=budgetSnapshot(result);bounded(second);assert.deepEqual(second.observations,result.observations);
+});
+test('pure concurrent unobserved targets keep epoch zero and the fifth observation refuses explicitly',()=> {
+  const source=snapshot();source.observations=[{identity:'visible',connectionEpoch:0,omitted:true}];
+  const result=budgetSnapshot(source);bounded(result);assert.deepEqual(result.observations,source.observations);
+  assert.ok(result.omitted?.includes('observations'));
+  source.observations=Array.from({length:5},(_,i)=>({identity:`agent${i}`,connectionEpoch:0,omitted:true}));
+  assert.throws(()=>budgetSnapshot(source),{code:'capacity'});
 });
 
 test('oversized optional roster diagnostics do not displace authoritative core state', () => {

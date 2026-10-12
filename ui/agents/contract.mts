@@ -436,8 +436,9 @@ function inspectInput(o: JsonObject): void {
 	only(o, ["sessionId", "view", "limit", "cursor", "entryId", "fromId", "offset", "query", "source", "submissionId", "requestId", "operationId"]);
 	identity(o.sessionId); optional(o, ["entryId", "fromId", "submissionId"], v => integer(v, 1));
 	optional(o, ["limit"], v => integer(v, 1)); optional(o, ["offset"], v => integer(v)); optional(o, ["cursor"], object);
-	optional(o, ["query", "operationId", "requestId"], v => string(v, 2000));
-	if (o.requestId !== undefined) requireValue(o.view === "result", "Request ID selects only the result view");
+	optional(o, ["query", "operationId"], v => string(v, 2000));
+	optional(o, ["requestId"], v => string(v, 1024));
+	requireValue(o.requestId === undefined || o.view === "result", "Request IDs select only result inspection");
 	if (o.view === "result") requireValue(o.submissionId !== undefined || o.requestId !== undefined || o.operationId !== undefined, "Result inspection requires a selector");
 	if (o.view !== undefined) choice(o.view, ["activity", "history", "branch", "search", "exact", "result"]);
 	if (o.source !== undefined) choice(o.source, ["user", "assistant", "toolResult", "summary", "custom"]);

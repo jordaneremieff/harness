@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import type { JsonDisplay } from '../shared/api.ts';
-import { presentArguments, presentResult, PreviewBudget } from './generic-content.ts';
+import { presentArguments, presentResult, PreviewBudget, previewLimits, structuredResultPreview } from './generic-content.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 
 class DomNode extends EventTarget {
@@ -22,7 +22,7 @@ class DomNode extends EventTarget {
     }
   }
   remove(): void { if (this.parent) this.parent.childNodes = this.parent.childNodes.filter(child => child !== this); }
-  querySelectorAll(tag: string): DomNode[] { return descendants(this).filter(child => child.tag === tag); }
+  querySelectorAll(selector: string): DomNode[] { return descendants(this).filter(child => selector.startsWith('.') ? child.className.split(' ').includes(selector.slice(1)) : child.tag === selector); }
   setAttribute(key: string, value: string): void { this.dataset[key] = value; }
   set innerHTML(_value: string) { throw new Error('Unsafe HTML'); }
 }
@@ -63,6 +63,74 @@ function setup(): PresentationContext {
 function result(value: unknown, context = setup()): DomNode { return cast(presentResult({value, truncated: false}, context)); }
 function args(value: unknown, context = setup()): DomNode { return cast(presentArguments({value, truncated: false}, context)); }
 
+test('structured collapsed summaries use at most three top-level supplied facts or an array count', () => {
+  const display = (value: unknown): JsonDisplay => ({value, truncated: false});
+  assert.equal(structuredResultPreview(undefined), undefined);
+  assert.equal(structuredResultPreview(display(undefined)), undefined);
+  assert.equal(structuredResultPreview(display({alpha: 'kept', count: 0, ready: false, ignored: 'only after expansion'})), 'alpha: kept · count: 0 · ready: false');
+  assert.equal(structuredResultPreview(display({nested: {role: 'assistant'}, records: [1, 2], nullable: null})), 'nested · records · nullable: null');
+  assert.equal(structuredResultPreview(display([])), '0 items'); assert.equal(structuredResultPreview(display([{}])), '1 item');
+  assert.equal(structuredResultPreview(display([{}, {}, {}])), '3 items');
+  assert.equal(structuredResultPreview(display({})), 'Empty object');
+  for (const value of [0, false, null, 'literal']) assert.equal(structuredResultPreview(display(value)), String(value));
+});
+test('limited array summaries do not present a projected length as the original item count', () => {
+  for (const display of [
+    {value: ['one', 'two'], truncated: true},
+    {value: ['one', '[omitted]'], truncated: true},
+    {value: [], truncated: true},
+  ]) {
+    const before = JSON.stringify(display);
+    const summary = structuredResultPreview(display);
+    assert.equal(summary, 'Array preview limited'); assert.equal(JSON.stringify(display), before);
+    assert.ok(summary.length <= 240); assert.ok(summary.split('\n').length <= 2);
+    assert.doesNotMatch(summary, /\d/);
+  }
+  assert.equal(structuredResultPreview({value: ['one', 'two'], truncated: false}), '2 items');
+  const complete = {value: ['one', '[omitted]'], truncated: false}; const before = JSON.stringify(complete);
+  assert.equal(structuredResultPreview(complete), '2 items'); assert.equal(JSON.stringify(complete), before);
+  assert.equal(structuredResultPreview({...complete, truncated: true}), 'Array preview limited');
+  assert.equal(structuredResultPreview({value: ['one'], truncated: false}), '1 item');
+  assert.equal(structuredResultPreview({value: [], truncated: false}), '0 items');
+});
+test('structured summaries never decode text or derive a role or lifecycle state', () => {
+  const text = '{"role":"assistant","status":"success"}';
+  assert.equal(structuredResultPreview({value: text, truncated: false}), text);
+  assert.equal(structuredResultPreview({value: {message: text}, truncated: true}), `message: ${text}`);
+  assert.equal(structuredResultPreview({value: {role: 'assistant', status: 'success'}, truncated: false}), 'role: assistant · status: success');
+});
+test('structured summaries bound keys and strings without evaluating getters or nested values', () => {
+  let reads = 0;
+  const value = {['😀'.repeat(500)]: '😀'.repeat(500), second: 'line1\nline2', third: 'kept', fourth: 'not in summary'};
+  const shown = structuredResultPreview({value, truncated: false}); assert.ok(shown);
+  assert.ok(shown.length <= 240); assert.ok(shown.split('\n').length <= 2); assert.equal(shown.isWellFormed(), true);
+  assert.doesNotMatch(shown, /fourth|not in summary/);
+  const guarded = {next: 7}; Object.defineProperty(guarded, 'protected', {enumerable: true, get: () => { reads++; throw new Error('Getter invoked'); }});
+  assert.equal(structuredResultPreview({value: guarded, truncated: false}), 'next: 7 · protected'); assert.equal(reads, 0);
+  const unchanged = JSON.stringify(value); structuredResultPreview({value, truncated: true}); assert.equal(JSON.stringify(value), unchanged);
+});
+test('collapsed summaries leave full rich fields and omission callbacks in the shared expanded budget', () => {
+  const context = setup(); let calls = 0;
+  const value = {alpha: 'A', beta: 0, gamma: false, delta: 'D'};
+  const display = {value, truncated: false};
+  assert.equal(structuredResultPreview(display), 'alpha: A · beta: 0 · gamma: false');
+  const expanded = cast(presentResult(display, context)); assert.match(expanded.textContent, /deltaD/); bounded(expanded);
+  const budget = new PreviewBudget({copySavedText: () => { calls++; }});
+  const argument = cast(presentArguments({value: {code: 'x'.repeat(10000)}, truncated: false}, context, budget));
+  const result = cast(presentResult({value: {body: 'y'.repeat(6000)}, truncated: true}, context, budget));
+  assert.ok([argument, result].reduce((sum, node) => sum + descendants(node).length, 0) <= 512);
+  assert.ok(argument.textContent.length + result.textContent.length <= 16384);
+  assert.equal([argument, result].flatMap(node => classes(node, 'preview-omission')).length, 1);
+  const action = result.querySelectorAll('button')[0]; assert.ok(action); assert.equal(action.textContent, 'Copy saved text');
+  assert.match(result.textContent, /Some output was not retained/); action.dispatchEvent(new Event('click')); assert.equal(calls, 1);
+  assert.equal(value.delta, 'D');
+});
+test('structured preview limits describe the shared bounds for tool details', () => {
+  assert.match(previewLimits(), /8192 characters and 80 lines per document/);
+  assert.match(previewLimits(), /16384 total characters \(112 reserved for the notice\)/);
+  assert.match(previewLimits(), /24 fields per object, 12 rows per array, 6 table columns, depth 8/);
+  assert.match(previewLimits(), /128 visited values, 2048 scanned fields, and 512 display nodes/);
+});
 test('only a supplied projection produces a result preview and arguments retain their record contract', () => {
   const context = setup();
   assert.equal(presentResult(undefined, context), undefined);
@@ -303,15 +371,84 @@ test('metadata payload traversal precedes large header scans and never decodes s
 
 test('one omission note distinguishes host cuts from local preview cuts outside metadata', () => {
   const node = cast(presentResult({value: {metadata: {note: 'hidden'}, body: '# Kept\nBody'}, truncated: true}, setup()));
-  assert.match(node.textContent, /Structured preview incomplete/);
+  // Source omissions remain distinct from local display cuts.
+  assert.match(node.textContent, /Some output was not retained/);
   assert.doesNotMatch(node.textContent, /Preview shortened/);
-  const notice = node.childNodes.find(child => child.textContent === 'Structured preview incomplete. Inspect raw output or Copy for retained content.'); assert.ok(notice);
+  const notice = node.childNodes.find(child => child.textContent === 'Some output was not retained.'); assert.ok(notice);
   assert.equal(notice.parent, node);
   const long = cast(presentResult({value: {body: 'x'.repeat(10000)}, truncated: true}, setup()));
-  assert.match(long.textContent, /Preview shortened\. Inspect raw output or Copy for retained content\./);
+  assert.match(long.textContent, /Preview shortened\. Some output was not retained\./);
   assert.equal(classes(long, 'preview-omission').length, 1); bounded(long);
 });
 
+test('generic omission notices promise no action without an owner callback', () => {
+  const context = setup();
+  for (const [body, truncated, expected] of [
+    ['Kept body', false, undefined],
+    ['x'.repeat(10000), false, 'Preview shortened.'],
+    ['Kept body', true, 'Some output was not retained.'],
+    ['x'.repeat(10000), true, 'Preview shortened. Some output was not retained.'],
+  ] as const) {
+    const display = {value: {body}, truncated};
+    const node = cast(presentResult(display, context));
+    assert.equal(classes(node, 'preview-omission')[0]?.textContent, expected);
+    assert.equal(node.querySelectorAll('button').length, 0);
+    assert.doesNotMatch(node.textContent, /Open Raw|Copy for|saved output|saved text/);
+    assert.equal(display.value.body, body); assert.equal(display.truncated, truncated); bounded(node);
+  }
+});
+test('omission actions invoke only their supplied owner callbacks at the notice', () => {
+  const context = setup(); let shown = 0; let copied = 0;
+  const budget = new PreviewBudget({showSavedOutput: () => { shown++; }, copySavedText: () => { copied++; }});
+  const node = cast(presentResult({value: {body: 'x'.repeat(10000), metadata: {digest: 'exact digest'}}, truncated: true}, context, budget));
+  const notice = classes(node, 'preview-omission')[0]; assert.ok(notice);
+  const buttons = notice.querySelectorAll('button');
+  assert.deepEqual(buttons.map(node => node.textContent), ['Show saved output', 'Copy saved text']);
+  assert.equal(shown, 0); assert.equal(copied, 0);
+  buttons[0].dispatchEvent(new Event('click')); assert.equal(shown, 1); assert.equal(copied, 0);
+  buttons[1].dispatchEvent(new Event('click')); assert.equal(shown, 1); assert.equal(copied, 1);
+  const metadata = classes(node, 'tool-metadata')[0]; assert.ok(metadata);
+  assert.equal(metadata.childNodes[0].textContent, 'Details'); assert.equal(metadata.childNodes.length, 1);
+  open(metadata); assert.match(metadata.textContent, /metadata\.digestexact digest/);
+  budget.limit('rows'); budget.truncate();
+  assert.equal(classes(node, 'preview-omission')[0], notice);
+  assert.deepEqual(notice.querySelectorAll('button'), buttons);
+  assert.match(notice.textContent, /^Preview shortened\. Some output was not retained\./);
+  assert.equal(shown, 1); assert.equal(copied, 1); bounded(node);
+});
+test('each saved-content action requires its own owner callback and a real omission', () => {
+  const context = setup(); let calls = 0;
+  for (const [actions, label] of [
+    [{showSavedOutput: () => { calls++; }}, 'Show saved output'],
+    [{copySavedText: () => { calls++; }}, 'Copy saved text'],
+  ] as const) {
+    const complete = cast(presentResult({value: {body: 'Exact body'}, truncated: false}, context, new PreviewBudget(actions)));
+    assert.equal(classes(complete, 'preview-omission').length, 0); assert.equal(complete.querySelectorAll('button').length, 0);
+    const cut = cast(presentResult({value: {body: 'Exact retained body'}, truncated: true}, context, new PreviewBudget(actions)));
+    assert.match(cut.textContent, /Some output was not retained\./); assert.doesNotMatch(cut.textContent, /Preview shortened/);
+    assert.deepEqual(cut.querySelectorAll('button').map(node => node.textContent), [label]); bounded(cut);
+  }
+  assert.equal(calls, 0);
+});
+test('owner actions share the same text and node caps across adopted previews and lazy metadata', () => {
+  const context = setup(); let calls = 0;
+  const old = new PreviewBudget();
+  const argument = cast(presentArguments({value: {code: 'x'.repeat(10000), metadata: {note: 'argument metadata'}}, truncated: false}, context, old));
+  const budget = new PreviewBudget({showSavedOutput: () => { calls++; }, copySavedText: () => { calls++; }});
+  assert.equal(budget.adopt(argument as unknown as HTMLElement), true);
+  const roots = [argument];
+  for (let i = 0; i < 8; i++) {
+    const node = presentResult({value: {body: `# Retained body\n${'x'.repeat(6000)}`, metadata: {count: i}}, truncated: true}, context, budget);
+    if (node) roots.push(cast(node));
+  }
+  for (const root of roots) for (const metadata of classes(root, 'tool-metadata')) open(metadata);
+  assert.equal(roots.flatMap(root => classes(root, 'preview-omission')).length, 1);
+  assert.equal(roots.flatMap(root => root.querySelectorAll('button')).length, 2);
+  assert.ok(roots.reduce((sum, root) => sum + descendants(root).length, 0) <= 512);
+  assert.ok(roots.map(root => root.textContent).join('').length <= 16384);
+  assert.ok(budget.visits <= 128); assert.ok(budget.scanned <= 2048);
+  assert.equal(calls, 0); for (const root of roots) frames(root);
+});
 test('hidden serialized strings remain literal and never receive browser decoding', () => {
   const hidden = '{"body":"# Hidden\\nLiteral"}';
   const node = result({body: '# Visible\nDecoded', payload: hidden, metadata: {hidden}});
@@ -397,7 +534,8 @@ test('supplied edits use at most eight old and new pairs without an inferred dif
   const node = args({edits}); assert.equal(classes(node, 'diff-del').length, 8); assert.equal(classes(node, 'diff-add').length, 8);
   assert.match(node.textContent, /- before0\n- <script>/); assert.match(node.textContent, /\+ after0\n\+ <strong>/);
   assert.doesNotMatch(node.textContent, /@@/); assert.equal(node.querySelectorAll('script').length, 0);
-  assert.match(node.textContent, /not an inferred diff/); assert.match(node.textContent, /Preview shortened/); bounded(node);
+  // The caption identifies supplied text; diff safety remains checked above.
+  assert.match(node.textContent, /Supplied replacement/); assert.match(node.textContent, /Preview shortened/); bounded(node);
 });
 
 test('argument documents preserve exact supplied lines and generic highlighting hints', () => {
@@ -462,7 +600,7 @@ test('one tool budget bounds arguments, multiple result previews and all lazy me
   const text = nodes.map(node => node.textContent).join('');
   assert.ok(text.length <= 16384); assert.ok(nodes.reduce((sum, node) => sum + descendants(node).length, 0) <= 512);
   const notices = nodes.flatMap(node => classes(node, 'preview-omission')); assert.equal(notices.length, 1);
-  assert.doesNotMatch(notices[0]?.textContent ?? '', /Structured preview incomplete/);
+  assert.doesNotMatch(notices[0]?.textContent ?? '', /Some output is not available/);
   assert.match(notices[0]?.textContent ?? '', /Preview shortened/);
   assert.ok(classes(nodes[0], 'tool-source')[0]);
   const count = nodes.reduce((sum, node) => sum + descendants(node).length, 0);
@@ -512,12 +650,12 @@ test('adoption retains argument controls, removes stale result notices and rebin
   }
   assert.equal(classes(node, 'preview-omission').length, 0);
   assert.match(oldResults.at(-1)?.textContent ?? '', /Preview shortened/);
-  assert.doesNotMatch(oldResults.at(-1)?.textContent ?? '', /Structured preview incomplete/);
+  assert.doesNotMatch(oldResults.at(-1)?.textContent ?? '', /Some output is not available/);
   const budget = new PreviewBudget(); assert.equal(budget.adopt(node as unknown as HTMLElement), true);
   assert.equal(budget.visits, visits); assert.equal(budget.scanned, scanned);
   assert.equal(classes(node, 'tool-source')[0], source); assert.equal(classes(node, 'tool-command')[0], pre);
   assert.equal(classes(node, 'tool-metadata')[0], meta); assert.equal(source.open, false);
-  assert.doesNotMatch(node.textContent, /Preview shortened|Structured preview incomplete/);
+  assert.doesNotMatch(node.textContent, /Preview shortened|Some output is not available/);
   const next = [node, cast(presentResult({value: {body: `# First\n${'x'.repeat(7000)}`}, truncated: false}, context, budget)), cast(presentResult({value: {body: `# Second\n${'y'.repeat(7000)}`}, truncated: false}, context, budget))];
   const oldState = [previous.text, previous.visits, previous.scanned]; open(meta);
   assert.deepEqual([previous.text, previous.visits, previous.scanned], oldState);
@@ -532,7 +670,7 @@ test('adoption preserves retained argument omission notices and is idempotent', 
   const context = setup(); const previous = new PreviewBudget();
   const node = cast(presentArguments({value: {document: 'x'.repeat(10000)}, truncated: true}, context, previous));
   const budget = new PreviewBudget(); assert.equal(budget.adopt(node as unknown as HTMLElement), true);
-  assert.match(node.textContent, /Preview shortened/); assert.doesNotMatch(node.textContent, /Structured preview incomplete/);
+  assert.match(node.textContent, /Preview shortened/); assert.doesNotMatch(node.textContent, /Some output is not available/);
   const state = [budget.text, budget.visits, budget.scanned, descendants(node).length, node.textContent];
   assert.equal(budget.adopt(node as unknown as HTMLElement), true);
   assert.deepEqual([budget.text, budget.visits, budget.scanned, descendants(node).length, node.textContent], state);
@@ -627,7 +765,7 @@ test('useful record arrays precede query, scan, consistency and offset machinery
   const node = result(value); const meta = classes(node, 'tool-metadata')[0]; assert.ok(meta);
   assert.match(node.textContent, /Useful title/); assert.match(node.textContent, /Useful excerpt/);
   assert.doesNotMatch(node.textContent, /repeated search|visited100|Scope statement|Offset representation|excerptEnd50|fieldbody/);
-  assert.ok(node.textContent.indexOf('Useful title') < node.textContent.indexOf('Metadata'));
+  assert.ok(node.textContent.indexOf('Useful title') < node.textContent.indexOf('Details'));
   open(meta); assert.match(meta.textContent, /query\.1repeated search/); assert.match(meta.textContent, /scan\.visited100/);
   assert.match(meta.textContent, /matches\.1\.excerptEnd50/); assert.match(meta.textContent, /matches\.1\.fieldbody/);
   assert.equal(value.matches[0]?.excerpt, 'Useful excerpt'); bounded(node);
@@ -655,7 +793,7 @@ test('document-bearing records lift nested excerpts before scalar-only sibling r
     const node = result(value); const meta = classes(node, 'tool-metadata')[0]; assert.ok(meta);
     assert.doesNotMatch(node.textContent, /replacement|verified|deadline|problems|absent/);
     assert.doesNotMatch(node.textContent, /Useful title/);
-    assert.ok(node.textContent.indexOf(excerpt) < node.textContent.indexOf('Metadata'));
+    assert.ok(node.textContent.indexOf(excerpt) < node.textContent.indexOf('Details'));
     assert.equal(classes(node, 'tool-document')[0]?.textContent, excerpt);
     assert.equal(classes(node, 'preview-omission').length, 0);
     open(meta); assert.match(meta.textContent, /replacementnull/); assert.match(meta.textContent, /verifiedtrue/);

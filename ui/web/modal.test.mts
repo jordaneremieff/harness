@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Modal } from './modal.ts';
+import { ProjectPicker } from './picker.ts';
+import { contextMenu } from './context-menu.ts';
+import type { Bootstrap } from '../shared/api.ts';
 class FakeNode extends EventTarget {
   textContent = ''; open = false; isConnected = true; focused = false; disabled = false; buttons: FakeNode[] = [];
+  children: FakeNode[] = []; className = '';
   dataset: Record<string, string> = {}; properties = new Map<string, string>(); box = {left: 0, top: 0, right: 0, bottom: 0};
   style = {setProperty: (name: string, value: string) => { this.properties.set(name, value); }};
   getBoundingClientRect(): {left: number; top: number; right: number; bottom: number} {return this.box;}
   querySelectorAll(): FakeNode[] {return this.buttons;}
-  replaceChildren(): void {this.textContent = '';}
+  append(...nodes: FakeNode[]): void {this.children.push(...nodes); this.textContent += nodes.map(node => node.textContent).join('');}
+  replaceChildren(...nodes: FakeNode[]): void {this.children = []; this.textContent = ''; this.append(...nodes);}
   showModal(): void {this.open = true;}
   close(): void {this.open = false; this.dispatchEvent(new Event('close'));}
   focus(): void {this.focused = true;}
@@ -17,12 +22,61 @@ function setup(): {restore: () => void; nodes: Map<string, FakeNode>} {
   const elementDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
   const nodes = new Map(['modal', 'modal-body', 'modal-close', 'modal-title', 'modal-error', 'primary-editor', 'invoke'].map(id => [id, new FakeNode()]));
   Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: FakeNode});
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {getElementById(id: string) {return nodes.get(id);}, activeElement: nodes.get('invoke')}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement() {return new FakeNode();}, getElementById(id: string) {return nodes.get(id);}, activeElement: nodes.get('invoke')}});
   return {nodes, restore() {
     if (documentDescriptor) Object.defineProperty(globalThis, 'document', documentDescriptor); else Reflect.deleteProperty(globalThis, 'document');
     if (elementDescriptor) Object.defineProperty(globalThis, 'HTMLElement', elementDescriptor); else Reflect.deleteProperty(globalThis, 'HTMLElement');
   }};
 }
+test('a delayed close event cannot cancel or restore focus over a replacement dialog', t => {
+  const fake = setup();
+  try {
+    const dialog = fake.nodes.get('modal'); assert.ok(dialog);
+    t.mock.method(dialog, 'close', () => {dialog.open = false;});
+    const modal = new Modal(); let oldClosed = 0, newClosed = 0;
+    modal.open('First', undefined, () => {oldClosed++;}); modal.close(false);
+    assert.equal(oldClosed, 1); assert.equal(fake.nodes.get('invoke')?.focused, false);
+    modal.open('Replacement', undefined, () => {newClosed++;});
+    dialog.dispatchEvent(new Event('close'));
+    assert.equal(modal.openNow, true); assert.equal(oldClosed, 1); assert.equal(newClosed, 0);
+    assert.equal(fake.nodes.get('invoke')?.focused, false);
+    modal.close(); assert.equal(newClosed, 1); assert.equal(fake.nodes.get('invoke')?.focused, true);
+    const origin = fake.nodes.get('invoke'); assert.ok(origin); origin.focused = false; dialog.dispatchEvent(new Event('close'));
+    assert.equal(newClosed, 1); assert.equal(fake.nodes.get('invoke')?.focused, false);
+  } finally {fake.restore();}
+});
+test('dialog-to-project-menu closes only the old request and leaves popup focus and loading owned', async t => {
+  const fake = setup(); const previousFetch = globalThis.fetch;
+  try {
+    const dialog = fake.nodes.get('modal'); assert.ok(dialog);
+    t.mock.method(dialog, 'close', () => {dialog.open = false;});
+    const popup = new FakeNode(); let open = false; const signals: AbortSignal[] = [];
+    t.mock.method(contextMenu, 'open', () => {open = true; popup.focus();});
+    t.mock.method(contextMenu, 'close', () => {open = false;});
+    t.mock.method(contextMenu, 'owns', () => open);
+    globalThis.fetch = async (_url, init) => {signals.push(init?.signal as AbortSignal); return new Promise<Response>(() => {});};
+    const modal = new Modal(); const picker = new ProjectPicker({modal,
+      snapshot: () => ({primaries: [], launchCwd: '/project'}) as unknown as Bootstrap,
+      primary: () => undefined, selection: async () => {}, reload: async () => {}});
+    picker.open('/project');
+    const origin = fake.nodes.get('invoke'); assert.ok(origin);
+    picker.openProject(origin as unknown as HTMLElement);
+    assert.equal(signals.length, 2); assert.equal(signals[0]?.aborted, true); assert.equal(signals[1]?.aborted, false);
+    assert.equal(popup.focused, true); assert.equal(origin.focused, false);
+    dialog.dispatchEvent(new Event('close'));
+    assert.equal(signals[1]?.aborted, false); assert.equal(origin.focused, false); assert.equal(open, true);
+  } finally {globalThis.fetch = previousFetch; fake.restore();}
+});
+test('a close callback that opens another dialog keeps the new callback and focus owner', () => {
+  const fake = setup();
+  try {
+    const modal = new Modal(); let nextClosed = 0;
+    modal.open('First', undefined, () => {modal.open('Next', undefined, () => {nextClosed++;});});
+    modal.close(); assert.equal(modal.openNow, true); assert.equal(nextClosed, 0);
+    assert.equal(fake.nodes.get('invoke')?.focused, false);
+    modal.close(); assert.equal(nextClosed, 1);
+  } finally {fake.restore();}
+});
 test('an old async action never closes a replacement dialog', async () => {
   const fake = setup();
   try {
@@ -38,6 +92,15 @@ test('an async action closes only its own unchanged dialog and restores focus', 
   try {
     const modal = new Modal(); modal.open('Action'); await modal.run(async () => undefined);
     assert.equal(modal.openNow, false); assert.equal(fake.nodes.get('invoke')?.focused, true);
+  } finally {fake.restore();}
+});
+test('a detached modal origin uses only the explicit current-focus hook', () => {
+  const fake = setup();
+  try {
+    const current = new FakeNode(); const modal = new Modal(() => current.focus()); modal.open('Action');
+    const origin = fake.nodes.get('invoke'); assert.ok(origin); origin.isConnected = false;
+    fake.nodes.delete('primary-editor'); modal.close();
+    assert.equal(origin.focused, false); assert.equal(current.focused, true);
   } finally {fake.restore();}
 });
 test('a pending action blocks duplicate dispatch and preserves disabled controls', async () => {
@@ -80,6 +143,34 @@ test('a menu anchors under its trigger, closes on an outside click, and reverts 
     if (width) Object.defineProperty(globalThis, 'innerWidth', width); else Reflect.deleteProperty(globalThis, 'innerWidth');
     fake.restore();
   }
+});
+test('modal failures disclose the exact cause and preserve caller summaries and confirmation actions', () => {
+  const fake = setup();
+  try {
+    const modal = new Modal(); modal.open('Action'); modal.error(new Error('Exact host cause'));
+    const error = fake.nodes.get('modal-error'); assert.ok(error);
+    assert.equal(error.children[0]?.textContent, 'The action failed.');
+    assert.equal(error.children[1]?.children[0]?.textContent, 'Details');
+    assert.equal(error.children[1]?.children[1]?.textContent, 'Exact host cause');
+    modal.error(new Error('Response cause'), 'Response not confirmed.');
+    assert.equal(error.children[0]?.textContent, 'Response not confirmed.');
+    assert.doesNotMatch(error.textContent, /Exact host cause/);
+    modal.confirm('Delete copy', 'Copy only', async () => undefined);
+    assert.equal(error.textContent, '');
+    const body = fake.nodes.get('modal-body'); assert.ok(body);
+    assert.deepEqual(body.children[1]?.children.map(node => node.textContent), ['Cancel', 'Confirm']);
+  } finally {fake.restore();}
+});
+test('an async failure uses the caller summary and keeps the host cause in Details', async () => {
+  const fake = setup();
+  try {
+    const modal = new Modal(); modal.open('Models');
+    await modal.run(async () => {throw new Error('Host resource failed');}, false, 'Models could not be loaded.');
+    const error = fake.nodes.get('modal-error'); assert.ok(error);
+    assert.equal(error.children[0]?.textContent, 'Models could not be loaded.');
+    assert.equal(error.children[1]?.children[1]?.textContent, 'Host resource failed');
+    assert.equal(modal.openNow, true);
+  } finally {fake.restore();}
 });
 test('stale errors do not overwrite a replacement dialog', async () => {
   const fake = setup();

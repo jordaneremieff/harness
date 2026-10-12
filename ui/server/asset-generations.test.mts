@@ -1,0 +1,144 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
+import { AssetGeneration, AssetGenerations, LatestBuild, GENERATION_TOTAL_BYTES, GENERATION_FILE_BYTES } from './asset-generations.mts';
+import type { Asset } from './http.mts';
+
+function generation(revision='one',css='body { color: black; }') {
+  const assets=new Map<string,Asset>([
+    ['/',{type:'text/html',data:Buffer.from('<html><head><link rel="stylesheet" href="/style.css"><link rel="icon" href="/favicon.svg"></head><body><script type="module" src="/web/app.js"></script></body></html>')}],
+    ['/style.css',{type:'text/css',data:Buffer.from(css)}],['/favicon.svg',{type:'image/svg+xml',data:Buffer.from('<svg/>')}],
+    ['/web/app.js',{type:'text/javascript',data:Buffer.from(`import '../shared/api.js'; import './child.js'; export const revision='${revision}';`)}],
+    ['/web/child.js',{type:'text/javascript',data:Buffer.from(`export const revision='${revision}';`)}],
+    ['/shared/api.js',{type:'text/javascript',data:Buffer.from('export {};')}]
+  ]);
+  return {assets,imports:new Map<string,string[]>([['/web/app.js', ['../shared/api.js','./child.js']],['/web/child.js',[]],['/shared/api.js',[]]])};
+}
+const build=(revision='one',css?:string)=>{const input=generation(revision,css);return new AssetGeneration(input.assets,input.imports);};
+const deferred=<T,>()=>{let resolve!:(value:T)=>void;let reject!:(error:Error)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
+
+test('a complete generation pins HTML and resolves delayed relative module dependencies to old bytes',()=> {
+  const old=build();const generations=new AssetGenerations(old);const page=generations.document();generations.bind(page.client,'session');
+  assert.match(page.asset.data.toString(),new RegExp(`/_ui/${old.id}/web/app.js`));
+  assert.match(page.asset.data.toString(),new RegExp(`/_ui/${old.id}/style.css`));
+  assert.match(page.asset.data.toString(),/meta name="ui-client"/);
+  const next=build('two');assert.equal(generations.offer(next,1),true);
+  assert.match(generations.asset(old.id,'/web/child.js')?.data.toString()??'',/one/);
+  assert.match(generations.asset(next.id,'/web/child.js')?.data.toString()??'',/two/);
+  assert.equal(generations.asset('f'.repeat(64),'/web/app.js'),undefined);
+  const mutable=old.asset('/web/app.js');mutable?.data.fill(0);
+  assert.match(old.asset('/web/app.js')?.data.toString()??'',/one/);
+});
+
+test('the manifest hashes exact retained bytes and a newer build removes the older held candidate',()=> {
+  const one=build();for(const [route,hash] of Object.entries(one.manifest)) assert.equal(createHash('sha256').update(one.asset(route)?.data??Buffer.alloc(0)).digest('hex'),hash);
+  const generations=new AssetGenerations(one);const page=generations.document();generations.bind(page.client,'session');
+  generations.offer(build('two'),1);generations.offer(build('three'),2);assert.equal(generations.counts().candidate,1);
+  generations.building(3);assert.equal(generations.counts().candidate,0);assert.equal(generations.counts().published,2);assert.ok(generations.asset(one.id,'/web/app.js'));
+});
+
+test('missing imports and oversized inputs fail before publication and keep the complete active generation',()=> {
+  const generations=new AssetGenerations(build());const before=generations.status();const input=generation();input.assets.delete('/web/child.js');
+  assert.throws(()=>new AssetGeneration(input.assets,input.imports),/invalid-assets/);assert.deepEqual(generations.status(),before);
+  const large=generation();large.assets.set('/style.css',{type:'text/css',data:Buffer.alloc(2*1024*1024+1)});
+  assert.throws(()=>new AssetGeneration(large.assets,large.imports),/invalid-assets/);
+  const external=generation();external.imports.set('/web/app.js',['https://elsewhere.invalid/module.js']);
+  assert.throws(()=>new AssetGeneration(external.assets,external.imports),/invalid-assets/);
+});
+
+test('bootstrap validation rejects missing head and reserves envelope bytes before publication',()=> {
+  const missing=generation();missing.assets.set('/',{type:'text/html',data:Buffer.from('<html><body></body></html>')});assert.throws(()=>new AssetGeneration(missing.assets,missing.imports),/invalid-assets/);
+  const large=generation();const prefix='<html><head></head><body>';const suffix='</body></html>';
+  large.assets.set('/',{type:'text/html',data:Buffer.from(prefix+'x'.repeat(GENERATION_FILE_BYTES-prefix.length-suffix.length)+suffix)});assert.throws(()=>new AssetGeneration(large.assets,large.imports),/capacity/);
+  const generations=new AssetGenerations(build());const head=generations.documentHead();assert.equal(generations.counts().clients,0);
+  const page=generations.document();assert.equal(head?.data.length,page.asset.data.length);
+});
+
+test('active plus previous plus newest candidate are bounded without evicting an active client',()=> {
+  const one=build();const generations=new AssetGenerations(one);const page=generations.document();generations.bind(page.client,'session');
+  const two=build('two');const three=build('three');const four=build('four');
+  assert.equal(generations.offer(two,1),true);assert.equal(generations.offer(three,2),false);assert.equal(generations.offer(four,3),false);
+  assert.equal(generations.counts().published,2);assert.equal(generations.counts().candidate,1);
+  assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);assert.equal(generations.status().status,'held');
+  assert.ok(generations.asset(one.id,'/web/app.js'));assert.equal(generations.asset(three.id,'/web/app.js'),undefined);
+  generations.acknowledge(page.client,'session',two.id,two.id);
+  assert.equal(generations.status().generation,four.id);assert.equal(generations.asset(one.id,'/web/app.js'),undefined);
+  assert.ok(generations.asset(two.id,'/web/app.js'));
+});
+
+test('CSS adoption keeps the old JavaScript generation pinned, and stream disconnect does not release it',()=> {
+  const one=build();const generations=new AssetGenerations(one);const page=generations.document();let notifications=0;
+  const disconnect=generations.subscribe(page.client,'session',()=>{notifications++;});
+  const two=build('one','body { color: blue; }');generations.offer(two,1);assert.equal(generations.status().change,'css');
+  generations.acknowledge(page.client,'session',one.id,two.id);disconnect();
+  assert.equal(generations.offer(build('three'),2),true);assert.equal(generations.offer(build('four'),3),false);assert.ok(generations.asset(one.id,'/web/app.js'));
+  assert.throws(()=>generations.release(page.client,'another-session'));
+  generations.release(page.client,'session');assert.equal(generations.status().status,'ready');assert.equal(notifications,2);
+});
+
+test('consecutive CSS generations advance in place while old JS aliases retain exact shared bytes',()=> {
+  const a=build();const generations=new AssetGenerations(a);const page=generations.document();generations.bind(page.client,'session');
+  const js=a.asset('/web/child.js')?.data;const b=build('one','body {color:blue;}');const c=build('one','body {color:green;}');
+  assert.equal(generations.offer(b,1),true);generations.acknowledge(page.client,'session',a.id,b.id);
+  assert.equal(generations.offer(c,2),true);assert.equal(generations.status().change,'css');assert.equal(generations.status().generation,c.id);
+  generations.acknowledge(page.client,'session',a.id,c.id);assert.deepEqual(generations.asset(a.id,'/web/child.js')?.data,js);
+  assert.equal(generations.asset(a.id,'/style.css'),undefined);assert.equal(generations.asset(a.id,'/'),undefined);assert.equal(generations.documentHead(a.id),undefined);assert.throws(()=>generations.document(a.id));
+  assert.equal(generations.counts().jsPins,1);assert.ok(generations.counts().bytes< a.bytes+b.bytes+c.bytes);
+  for(let revision=3;revision<35;revision++) {const next=build('one',`body {opacity:${revision/100};}`);assert.equal(generations.offer(next,revision),true);generations.acknowledge(page.client,'session',a.id,next.id);assert.equal(generations.counts().jsPins,1);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);}
+  const copy=generations.asset(a.id,'/web/app.js');copy?.data.fill(0);assert.deepEqual(generations.asset(a.id,'/web/child.js')?.data,js);assert.match(generations.asset(a.id,'/web/app.js')?.data.toString()??'',/one/);
+  generations.release(page.client,'session');assert.equal(generations.counts().jsPins,0);assert.equal(generations.asset(a.id,'/web/child.js'),undefined);
+});
+
+test('live JS aliases stay lease-bounded across many CSS pages and release without retained payload growth',()=> {
+  const generations=new AssetGenerations(build());const pages:{client:string;generation:string;session:string}[]=[];
+  for(let revision=0;revision<64;revision++) {
+    if(revision) {const next=build('one',`body {opacity:${revision/100};}`);assert.equal(generations.offer(next,revision),true);for(const page of pages) generations.acknowledge(page.client,page.session,page.generation,next.id);}
+    const document=generations.document();const session=`session-${revision}`;generations.bind(document.client,session);pages.push({...document,session});
+    assert.ok(generations.counts().jsPins<=generations.counts().clients);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);
+    for(const page of pages) assert.ok(generations.asset(page.generation,'/web/child.js'));
+  }
+  assert.throws(()=>generations.document(),/capacity/);assert.equal(generations.counts().clients,64);assert.equal(generations.counts().jsPins,62);
+  for(const page of pages) generations.release(page.client,page.session);assert.equal(generations.counts().jsPins,0);assert.equal(generations.counts().clients,0);
+});
+
+test('CSS still protects an active old stylesheet and incompatible JS family without eviction',()=> {
+  const a=build();const generations=new AssetGenerations(a);const first=generations.document();const second=generations.document();
+  generations.bind(first.client,'session');generations.bind(second.client,'session');const b=build('one','body {color:blue;}');const c=build('one','body {color:green;}');
+  generations.offer(b,1);generations.acknowledge(first.client,'session',a.id,b.id);assert.equal(generations.offer(c,2),false);assert.equal(generations.status().status,'held');assert.ok(generations.asset(a.id,'/style.css'));
+  generations.acknowledge(second.client,'session',a.id,b.id);assert.equal(generations.status().generation,c.id);generations.acknowledge(first.client,'session',a.id,c.id);generations.acknowledge(second.client,'session',a.id,c.id);
+  const d=build('different');assert.equal(generations.offer(d,3),true);const e=build('different','body {color:red;}');assert.equal(generations.offer(e,4),false);
+  assert.deepEqual(generations.asset(a.id,'/web/child.js')?.data,a.asset('/web/child.js')?.data);assert.throws(()=>generations.acknowledge(first.client,'session',a.id,d.id));
+  generations.acknowledge(first.client,'session',d.id,d.id);assert.equal(generations.status().status,'held');assert.ok(generations.asset(a.id,'/web/child.js'));
+  generations.acknowledge(second.client,'session',d.id,d.id);assert.equal(generations.status().generation,e.id);assert.equal(generations.asset(a.id,'/web/child.js'),undefined);assert.equal(generations.counts().jsPins,0);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);
+});
+
+test('restart-required is a declaration and incompatible publication stays held',()=> {
+  const old=build();const generations=new AssetGenerations(old);const page=generations.document();const statuses:string[]=[];
+  generations.subscribe(page.client,'session',state=>{statuses.push(state.status);});
+  generations.restartRequired();assert.equal(generations.offer(build('two'),1),false);
+  assert.equal(generations.status().generation,old.id);assert.equal(generations.status().status,'restart-required');
+  assert.deepEqual(statuses,['ready','restart-required']);assert.equal(generations.counts().clients,1);
+});
+
+test('one builder discards stale completion and compiles only the newest dirty revision',async()=> {
+  const old=build();const generations=new AssetGenerations(old);const first=deferred<AssetGeneration>();const last=deferred<AssetGeneration>();const calls:number[]=[];
+  const builder=new LatestBuild(generations,revision=>{calls.push(revision);return revision===1?first.promise:last.promise;});
+  builder.request();for(let i=0;i<100;i++) builder.request();assert.deepEqual(calls,[1]);
+  first.resolve(build('stale'));await Promise.resolve();await Promise.resolve();assert.deepEqual(calls,[1,101]);
+  assert.equal(generations.status().generation,old.id);last.resolve(build('latest'));await builder.drain();
+  assert.equal(generations.status().generation,build('latest').id);assert.deepEqual(calls,[1,101]);
+});
+
+test('syntax failure leaves the last good generation and a corrected producer recovers once',async()=> {
+  const old=build();const generations=new AssetGenerations(old);let fails=true;let calls=0;
+  const builder=new LatestBuild(generations,async()=>{calls++;if(fails) throw new Error('compile');return build('fixed');});
+  builder.request();await builder.drain();assert.equal(generations.status().status,'failed');assert.equal(generations.status().generation,old.id);
+  fails=false;builder.request();await builder.drain();assert.equal(generations.status().generation,build('fixed').id);assert.equal(calls,2);
+});
+
+test('page admission is bounded and never silently removes a prior page lease',()=> {
+  const generations=new AssetGenerations(build());const pages=Array.from({length:64},()=>generations.document());
+  assert.throws(()=>generations.document(),/capacity/);assert.equal(generations.counts().clients,64);
+  for(const page of pages.slice(0,8)) generations.bind(page.client,'session');assert.throws(()=>generations.bind(pages[8]?.client??'','session'),/capacity/);
+  generations.release(pages[0]?.client??'','session');assert.equal(generations.counts().clients,63);
+});

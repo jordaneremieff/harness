@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { OperationView, CachedRoster, NoticeView, AgentRow, EntryView, EventData, EventName, MessageView, PrimaryView, ProjectedFrame, Snapshot, TargetState, ToolOutputInfo } from '../shared/api.ts';
-import { dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, agentBlocks, conversationBlocks, createState, mergeAgentPage, mergePrimaryPage, parseCursor, primaryBlocks, reduceEvent, replaceSnapshot, selectAgent, targetIdentity } from './state.ts';
+import { dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, agentBlocks, conversationBlocks, createState, mergeAgentPage, mergePrimaryPage, parseCursor, primaryBlocks, reduceEvent, replaceSnapshot, visibleTargets, targetIdentity } from './state.ts';
 import type { UiEvent, UiState } from './state.ts';
+import { TranscriptIndex } from './transcript-tools.ts';
 const target = {kind: 'primary' as const, key: 'p', epoch: 1};
 const coverage = {complete: true, truncated: false, omitted: 0};
 const primary = (epoch = 1): PrimaryView => ({key: 'p', epoch, cwd: '/project', lifecycle: 'ready', activity: 'idle', pendingOperationIds: [], pendingDialogs: [], capabilities: {input: true}});
@@ -14,8 +15,90 @@ function event<N extends EventName>(sequence: number, name: N, data: EventData[N
   return {id: `boot:${sequence}`, name, data, ...extra} as UiEvent;
 }
 const baseline = (): UiState => replaceSnapshot(createState(), snapshot());
+function selectAgent(state: UiState, identity: string): UiState {
+  const snap = snapshot('boot', state.sequence);
+  assert.ok(state.workspace);
+  snap.workspace = {...state.workspace, revision: state.workspace.revision + 1, selectedTarget: {kind: 'agent', identity},
+    conversationLayout: {root: {kind: 'pane', id: 'pane-1', tabs: [{kind: 'agent', identity}], active: `agent:${identity}`}, focusedPane: 'pane-1'}};
+  return replaceSnapshot(state, snap);
+}
 const frame = (revision: number, entries: EntryView[] = [], live: EntryView[] = []): ProjectedFrame => ({revision, entries, live, observedAt: '2026-10-08T12:00:00.000Z', nextBefore: null, status: {busy: !!live.length}, coverage});
 
+test('two visible agent leaves receive independent frames and reject stale availability epochs', () => {
+  const snap = snapshot();
+  snap.workspace.conversationLayout = {root: {kind: 'split', id: 'split', axis: 'x', ratio: 50,
+    first: {kind: 'pane', id: 'left', tabs: [{kind: 'agent', identity: 'a'}], active: 'agent:a'},
+    second: {kind: 'pane', id: 'right', tabs: [{kind: 'agent', identity: 'b'}], active: 'agent:b'}}, focusedPane: 'left'};
+  snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'};
+  snap.observations = [{identity: 'a', connectionEpoch: 2, frame: frame(1, [], [entry('a-live')])}, {identity: 'b', connectionEpoch: 4, frame: frame(1, [], [entry('b-live')])}];
+  let state = replaceSnapshot(createState(), snap);
+  const capabilities = {history: true, observe: true, input: true, abort: false, configure: false};
+  state = reduceEvent(state, event(1, 'agent.availability', {identity: 'b', connectionEpoch: 3, state: 'unavailable', capabilities}));
+  assert.equal(state.agentAvailability.has('b'), false);
+  state = reduceEvent(state, event(2, 'agent.frame', {identity: 'b', connectionEpoch: 3, frame: frame(100, [], [entry('b-stale')])}));
+  assert.equal(agentBlocks(state, 'b')[0]?.id, 'b-live');
+  state = reduceEvent(state, event(3, 'workspace.changed', {...snap.workspace, revision: 1, selectedTarget: {kind: 'agent', identity: 'b'}, panelVisible: false,
+    conversationLayout: {...snap.workspace.conversationLayout, focusedPane: 'right'}}));
+  state = reduceEvent(state, event(4, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(2, [], [entry('a-next')])}));
+  state = reduceEvent(state, event(5, 'agent.availability', {identity: 'b', connectionEpoch: 5, state: 'live', capabilities}));
+  assert.equal(agentBlocks(state, 'a')[0]?.id, 'a-next'); assert.equal(agentBlocks(state, 'b').length, 0);
+  state = reduceEvent(state, event(6, 'agent.frame', {identity: 'b', connectionEpoch: 4, frame: frame(101, [], [entry('b-late')])}));
+  assert.equal(agentBlocks(state, 'b').length, 0); assert.equal(state.agentAvailability.get('b')?.connectionEpoch, 5);
+  state = reduceEvent(state, event(7, 'agent.frame', {identity: 'b', connectionEpoch: 5, frame: frame(0, [], [entry('b-new')])}));
+  assert.equal(agentBlocks(state, 'b')[0]?.id, 'b-new'); assert.equal(agentBlocks(state, 'a')[0]?.id, 'a-next');
+});
+test('omitted unobserved targets do not admit epoch-zero events and workspace changes reset epoch ownership', () => {
+  const snap = snapshot(); snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'};
+  snap.observations = [{identity: 'a', connectionEpoch: 0, omitted: true}];
+  let state = replaceSnapshot(createState(), snap);
+  state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 0, frame: frame(1, [], [entry('zero')])}));
+  assert.deepEqual(agentBlocks(state, 'a'), []);
+  state = reduceEvent(state, event(2, 'agent.frame', {identity: 'a', connectionEpoch: 9, frame: frame(1, [], [entry('first-workspace')])}));
+  const next = {...snap, cursor: 'boot:3', workspace: {...snap.workspace, id: 'second-workspace'}, observations: [{identity: 'a', connectionEpoch: 1, frame: frame(1, [], [entry('second-workspace')])}]};
+  state = replaceSnapshot(state, next); assert.equal(state.agentEpochs.get('a'), 1); assert.equal(agentBlocks(state, 'a')[0]?.id, 'second-workspace');
+});
+test('committed membership and ordering stay cached through unrelated deltas', () => {
+  const retained = entry('cached-entry', 'cached-message'); const saved = retained.messages?.[0]; assert.ok(saved);
+  const parts = saved.parts; let reads = 0; Object.defineProperty(saved, 'parts', {enumerable: true, get: () => { reads++; return parts; }});
+  let state = mergePrimaryPage(baseline(), target, [retained]);
+  const before = primaryBlocks(state, 'p'); assert.equal(primaryBlocks(state, 'p'), before); const baselineReads = reads;
+  for (let sequence = 1; sequence <= 20; sequence++) {
+    state = reduceEvent(state, event(sequence, 'primary.delta', {messageId: 'burst', index: 0, kind: 'text', delta: 'x'}, {target}));
+    assert.equal(primaryBlocks(state, 'p')[0], retained);
+  }
+  assert.equal(reads, baselineReads);
+  state = reduceEvent(state, event(21, 'primary.entry', {entry: {id: 'committed-burst', kind: 'message', messages: [message('burst', 'x'.repeat(20))]}}, {target}));
+  assert.equal(primaryBlocks(state, 'p').filter(item => item.messages?.some(value => value.id === 'burst')).length, 1);
+  state = mergePrimaryPage(state, target, [entry('earlier-first')]);
+  assert.deepEqual(primaryBlocks(state, 'p').map(item => item.id), ['earlier-first', 'cached-entry', 'committed-burst']);
+});
+
+test('tool start receipt captures client time once and update/end retain it', t => {
+  let now = 1000; t.mock.method(Date, 'now', () => now);
+  const tool = (sequence: number, phase: 'start' | 'update' | 'end') => event(sequence, 'primary.tool', {callId: 'c', name: 'read', phase, ...(phase === 'end' ? {durationMs: 37} : {})}, {target});
+  let state = reduceEvent(baseline(), tool(1, 'start'));
+  const start = state.conversations.get(targetIdentity(target))?.tools.get('c')?.observedStart;
+  assert.equal(start, 1000); now = 4000;
+  state = reduceEvent(state, tool(2, 'start')); state = reduceEvent(state, tool(3, 'update')); state = reduceEvent(state, tool(4, 'end'));
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('c')?.observedStart, start);
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('c')?.durationMs, 37);
+  now = 5000; state = reduceEvent(state, tool(5, 'start'));
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('c')?.observedStart, 5000);
+});
+test('history, snapshot baselines, argument deltas and updates do not infer a tool start', () => {
+  const call: EntryView = {id: 'call', kind: 'message', messages: [{id: 'm', role: 'assistant', state: 'final', coverage,
+    parts: [{type: 'toolCall', callId: 'c', name: 'read', arguments: {value: {}, truncated: false}}]}]};
+  let state = mergePrimaryPage(baseline(), target, [call]);
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('c')?.observedStart, undefined);
+  state = reduceEvent(state, event(1, 'primary.delta', {messageId: 'args', index: 0, kind: 'toolArguments', callId: 'c', toolName: 'read', delta: '{}'}, {target}));
+  state = reduceEvent(state, event(2, 'primary.tool', {callId: 'c', name: 'read', phase: 'update'}, {target}));
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('c')?.observedStart, undefined);
+  state = reduceEvent(state, event(3, 'primary.tool', {callId: 'c', name: 'read', phase: 'start'}, {target}));
+  const resynced = replaceSnapshot(state, {...snapshot('boot', 3), selectedPage: {target, items: [call], nextBefore: null, coverage}});
+  assert.equal(resynced.conversations.get(targetIdentity(target))?.tools.get('c')?.observedStart, undefined);
+  const updated = reduceEvent(resynced, event(4, 'primary.tool', {callId: 'c', name: 'read', phase: 'update'}, {target}));
+  assert.equal(updated.conversations.get(targetIdentity(target))?.tools.get('c')?.observedStart, undefined);
+});
 test('target keys include exact primary epochs and agent identities', () => {
   assert.notEqual(targetIdentity(target), targetIdentity({...target, epoch: 2}));
   assert.notEqual(targetIdentity({kind: 'agent', identity: 'p'}), targetIdentity(target));
@@ -141,13 +224,13 @@ test('agent frames replace live output and reject duplicate revisions and old ep
   let state = selectAgent(baseline(), 'a');
   state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(8, [], [entry('live:8')])}));
   state = reduceEvent(state, event(2, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(9, [entry('committed')], [])}));
-  assert.deepEqual(agentBlocks(state).map(block => block.id), ['committed']);
+  assert.deepEqual(agentBlocks(state, 'a').map(block => block.id), ['committed']);
   state = reduceEvent(state, event(3, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(8, [], [entry('old')])}));
   state = reduceEvent(state, event(4, 'agent.frame', {identity: 'a', connectionEpoch: 1, frame: frame(100, [], [entry('old epoch')])}));
-  assert.deepEqual(agentBlocks(state).map(block => block.id), ['committed']);
+  assert.deepEqual(agentBlocks(state, 'a').map(block => block.id), ['committed']);
   state = reduceEvent(state, event(5, 'agent.frame', {identity: 'a', connectionEpoch: 3, frame: frame(1, [], [entry('fresh')])}));
-  assert.equal(state.selectedAgent?.revision, 1);
-  assert.deepEqual(agentBlocks(state).map(block => block.id), ['committed', 'fresh']);
+  assert.equal(state.conversations.get(targetIdentity({kind: 'agent', identity: 'a'}))?.frame?.revision, 1);
+  assert.deepEqual(agentBlocks(state, 'a').map(block => block.id), ['committed', 'fresh']);
 });
 test('deselection rejects late frames and re-entry requires a fresh connection epoch', () => {
   let state = selectAgent(baseline(), 'a');
@@ -156,16 +239,152 @@ test('deselection rejects late frames and re-entry requires a fresh connection e
   state = reduceEvent(state, event(2, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(9, [], [entry('late')])}));
   state = selectAgent(state, 'a');
   state = reduceEvent(state, event(3, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(10, [], [entry('stale')])}));
-  assert.deepEqual(agentBlocks(state), []);
+  assert.deepEqual(agentBlocks(state, 'a'), []);
   state = reduceEvent(state, event(4, 'agent.frame', {identity: 'a', connectionEpoch: 3, frame: frame(1, [], [entry('new')])}));
-  assert.equal(agentBlocks(state)[0]?.id, 'new');
+  assert.equal(agentBlocks(state, 'a')[0]?.id, 'new');
 });
 test('agent live and committed projections reconcile by message and tool-call keys', () => {
   const toolEntry = (id: string, messageId: string): EntryView => ({id, kind: 'message', messages: [{id: messageId, role: 'tool', state: 'final', coverage, parts: [{type: 'toolResult', callId: 'c', name: 'read', parts: [], isError: false}]}]});
   let state = selectAgent(baseline(), 'a');
-  state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 0, frame: frame(1, [entry('e', 'm'), toolEntry('tool', 'committed-tool')], [entry('live:generation', 'm'), toolEntry('live:tool:c', 'live-tool')])}));
-  assert.deepEqual(agentBlocks(state).map(block => block.id), ['e', 'tool']);
+  state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 1, frame: frame(1, [entry('e', 'm'), toolEntry('tool', 'committed-tool')], [entry('live:generation', 'm'), toolEntry('live:tool:c', 'live-tool')])}));
+  assert.deepEqual(agentBlocks(state, 'a').map(block => block.id), ['e', 'tool']);
 });
+test('same-session primary snapshots keep earlier pages while replacing transient tool state', () => {
+  const current = {...primary(), sessionId: 'session', sessionFile: '/project/session.jsonl'};
+  const first = {...snapshot(), primaries: [current], selectedPage: {target, items: [entry('leaf')], nextCursor: 'earlier', coverage}};
+  let state = replaceSnapshot(createState(), first); const earlier = entry('earlier');
+  state = mergePrimaryPage(state, target, [earlier], {nextCursor: null, earlier: true});
+  state = reduceEvent(state, event(1, 'primary.tool', {callId: 'c', name: 'read', phase: 'start'}, {target}));
+  const next = replaceSnapshot(state, {...first, cursor: 'boot:2'});
+  assert.deepEqual(next.conversations.get(targetIdentity(target))?.entryOrder, ['earlier', 'leaf']);
+  assert.equal(next.conversations.get(targetIdentity(target))?.entries.get('earlier'), earlier);
+  assert.equal(next.conversations.get(targetIdentity(target))?.tools.size, 0);
+  assert.equal(next.conversations.get(targetIdentity(target))?.historyCursor, null);
+});
+
+test('same-session navigation snapshots retain represented tool durations and active progress without replay', t => {
+  t.mock.method(Date, 'now', () => 123);
+  const current = {...primary(), activity: 'running' as const, sessionId: 'session'};
+  const calls: EntryView = {id: 'calls', kind: 'message', messages: [{id: 'call-message', role: 'assistant', state: 'final', coverage,
+    parts: ['read', 'edit', 'error', 'active'].map(callId => ({type: 'toolCall' as const, callId, name: 'custom', arguments: {value: {}, truncated: false}}))}]};
+  const first: Snapshot = {...snapshot(), primaries: [current], selectedPage: {target, items: [calls], nextCursor: null, coverage}};
+  let state = replaceSnapshot(createState(), first);
+  for (const [index, durationMs] of [83, 21, 47].entries()) state = reduceEvent(state, event(index + 1, 'primary.tool', {callId: ['read', 'edit', 'error'][index], name: 'custom', phase: 'end', durationMs, isError: index === 2}, {target}));
+  state = reduceEvent(state, event(4, 'primary.tool', {callId: 'active', name: 'custom', phase: 'start'}, {target}));
+  state = reduceEvent(state, event(5, 'primary.tool', {callId: 'active', name: 'custom', phase: 'update', parts: [{type: 'text', text: 'Partial progress'}]}, {target}));
+  const tools = state.conversations.get(targetIdentity(target))?.tools; assert.ok(tools);
+  const away = replaceSnapshot(state, {...first, cursor: 'boot:6', selectedPage: undefined});
+  const returned = replaceSnapshot(away, {...first, cursor: 'boot:7'});
+  const retained = returned.conversations.get(targetIdentity(target))?.tools; assert.ok(retained);
+  assert.deepEqual([...retained.values()].map(tool => tool.durationMs), [83, 21, 47, undefined]);
+  assert.equal(retained.get('active'), tools.get('active')); assert.equal(retained.get('active')?.observedStart, 123);
+  assert.deepEqual(retained.get('active')?.parts, [{type: 'text', text: 'Partial progress'}]);
+  for (const changed of [{...current, sessionId: 'other'}, {...current, sessionId: undefined}, {...current, sessionFile: '/project/other.jsonl'}]) {
+    const reset = replaceSnapshot(state, {...first, cursor: 'boot:7', primaries: [changed]});
+    assert.equal(reset.conversations.get(targetIdentity(target))?.tools.size, 0);
+  }
+  const idle = replaceSnapshot(state, {...first, cursor: 'boot:7', primaries: [{...current, activity: 'idle'}]});
+  assert.equal(idle.conversations.get(targetIdentity(target))?.tools.has('active'), false);
+  assert.equal(idle.conversations.get(targetIdentity(target))?.tools.get('read')?.durationMs, 83);
+  const omitted = replaceSnapshot(state, {...first, cursor: 'boot:7', selectedPage: {target, items: [], nextCursor: null, coverage}});
+  assert.equal(omitted.conversations.get(targetIdentity(target))?.tools.size, 0);
+  const branch = replaceSnapshot(state, {...first, cursor: 'boot:7', selectedPage: {target, items: [calls, {id: 'branch', kind: 'branch_summary'}], nextCursor: null, coverage}});
+  assert.equal(branch.conversations.get(targetIdentity(target))?.tools.size, 0);
+});
+test('terminal snapshot results replace observed partial tools without replay while the turn stays active', t => {
+  t.mock.method(Date, 'now', () => 123);
+  for (const activity of ['running', 'retrying'] as const) for (const isError of [false, true]) {
+    const current = {...primary(), activity, sessionId: 'session'};
+    const calls: EntryView = {id: 'calls', kind: 'message', messages: [{id: 'calls-message', role: 'assistant', state: 'final', coverage,
+      parts: ['A', 'B'].map(callId => ({type: 'toolCall' as const, callId, name: 'custom', arguments: {value: {}, truncated: false}}))}]};
+    const first: Snapshot = {...snapshot(), primaries: [current], selectedPage: {target, items: [calls], nextCursor: null, coverage}};
+    let state = replaceSnapshot(createState(), first);
+    state = reduceEvent(state, event(1, 'primary.tool', {callId: 'A', name: 'custom', phase: 'start'}, {target}));
+    state = reduceEvent(state, event(2, 'primary.tool', {callId: 'A', name: 'custom', phase: 'update', parts: [{type: 'text', text: 'Old partial'}]}, {target}));
+    state = reduceEvent(state, event(3, 'primary.tool', {callId: 'B', name: 'custom', phase: 'start'}, {target}));
+    const before = new TranscriptIndex(); before.update(primaryBlocks(state, 'p'), state.conversations.get(targetIdentity(target))?.tools ?? new Map());
+    assert.equal(before.joined.get('A')?.status, 'working'); assert.deepEqual(before.joined.get('A')?.result, [{type: 'text', text: 'Old partial'}]);
+    const parts = [{type: 'text' as const, text: isError ? 'Fresh terminal error' : 'Fresh terminal result'}];
+    const result: EntryView = {id: 'result', kind: 'message', messages: [{id: 'result-message', role: 'toolResult', state: 'final', coverage,
+      parts: [{type: 'toolResult', callId: 'A', name: 'custom', parts, isError}]}]};
+    const incoming: Snapshot = {...first, cursor: 'boot:4', selectedPage: {target, items: [calls, result], nextCursor: null, coverage}};
+    state = replaceSnapshot(state, incoming);
+    for (const next of [state, replaceSnapshot(state, {...incoming, cursor: 'boot:5'})]) {
+      const tools = next.conversations.get(targetIdentity(target))?.tools; assert.ok(tools);
+      const index = new TranscriptIndex(); index.update(primaryBlocks(next, 'p'), tools);
+      assert.equal(index.joined.get('A')?.status, isError ? 'error' : 'success');
+      assert.equal(index.joined.get('A')?.result, parts); assert.equal(index.joined.get('A')?.observedStart, undefined);
+      assert.equal(tools.has('A'), false); assert.equal(index.joined.get('B')?.status, 'working');
+      assert.equal(index.joined.get('B')?.observedStart, 123); assert.equal(next.primaries.get('p')?.activity, activity);
+    }
+  }
+});
+test('terminal snapshots retain only consistent completed duration metadata and never old payloads', () => {
+  const calls: EntryView = {id: 'calls', kind: 'message', messages: [{id: 'calls-message', role: 'assistant', state: 'final', coverage,
+    parts: [{type: 'toolCall', callId: 'A', name: 'custom', arguments: {value: {}, truncated: false}}]}]};
+  const first: Snapshot = {...snapshot(), primaries: [{...primary(), activity: 'running', sessionId: 'session'}], selectedPage: {target, items: [calls], nextCursor: null, coverage}};
+  const parts = [{type: 'text' as const, text: 'Final output'}];
+  for (const mode of ['match-success', 'match-error', 'wrong-name', 'wrong-status', 'wrong-parts', 'wrong-output'] as const) {
+    const isError = mode === 'match-error';
+    const result: EntryView = {id: 'result', kind: 'message', messages: [{id: 'result-message', role: 'toolResult', state: 'final', coverage,
+      parts: [{type: 'toolResult', callId: 'A', name: 'custom', parts, isError}]}]};
+    let state = replaceSnapshot(createState(), first);
+    state = reduceEvent(state, event(1, 'primary.tool', {callId: 'A', name: 'custom', phase: 'start'}, {target}));
+    state = reduceEvent(state, event(2, 'primary.tool', {callId: 'A', name: mode === 'wrong-name' ? 'other' : 'custom', phase: 'end',
+      durationMs: 83, isError: mode === 'wrong-status' ? true : isError,
+      parts: mode === 'wrong-parts' ? [{type: 'text', text: 'Old terminal output'}] : parts,
+      ...(mode === 'wrong-output' ? {output: {fullOutputPath: '/project/old-output.txt'}} : {})}, {target}));
+    state = replaceSnapshot(state, {...first, cursor: 'boot:3', selectedPage: {target, items: [calls, result], nextCursor: null, coverage}});
+    const tools = state.conversations.get(targetIdentity(target))?.tools; assert.ok(tools);
+    const index = new TranscriptIndex(); index.update(primaryBlocks(state, 'p'), tools);
+    const match = mode.startsWith('match'), joined = index.joined.get('A'); assert.ok(joined);
+    assert.equal(joined.duration, match ? 83 : undefined);
+    assert.equal(joined.status, isError ? 'error' : 'success'); assert.equal(joined.result, parts);
+    assert.equal(joined.observedStart, undefined); assert.equal(joined.output, undefined);
+    assert.deepEqual(tools.get('A'), match ? {callId: 'A', name: 'custom', phase: 'end', durationMs: 83, isError} : undefined);
+  }
+});
+test('initial refreshes preserve a partial earlier boundary and only earlier pages advance it', () => {
+  const current = {...primary(), sessionId: 'session', sessionFile: '/project/session.jsonl'};
+  const first: Snapshot = {...snapshot(), primaries: [current], selectedPage: {target, items: [entry('leaf')], nextCursor: null, coverage}};
+  let state = replaceSnapshot(createState(), first);
+  assert.equal(state.conversations.get(targetIdentity(target))?.historyCursor, undefined, 'a snapshot window does not establish the disk history boundary');
+  state = mergePrimaryPage(state, target, [], {nextCursor: null, earlier: false});
+  assert.equal(state.conversations.get(targetIdentity(target))?.historyCursor, undefined, 'an empty startup projection does not establish an exhausted boundary');
+  state = mergePrimaryPage(state, target, [entry('leaf')], {nextCursor: 'first', earlier: false});
+  assert.equal(state.conversations.get(targetIdentity(target))?.historyCursor, 'first');
+  state = mergePrimaryPage(state, target, [entry('middle')], {nextCursor: 'remaining', earlier: true});
+  state = replaceSnapshot(state, {...first, cursor: 'boot:2'});
+  state = mergePrimaryPage(state, target, [entry('leaf')], {nextCursor: 'first', earlier: false});
+  assert.equal(state.conversations.get(targetIdentity(target))?.historyCursor, 'remaining');
+  state = mergePrimaryPage(state, target, [entry('start')], {nextCursor: null, earlier: true});
+  assert.equal(state.conversations.get(targetIdentity(target))?.historyCursor, null);
+});
+test('primary snapshots discard cached pages across changed or unproven histories', () => {
+  const current = {...primary(), sessionId: 'session', sessionFile: '/project/session.jsonl'};
+  const first: Snapshot = {...snapshot(), primaries: [current], selectedPage: {target, items: [entry('leaf')], nextCursor: 'earlier', coverage}};
+  const state = mergePrimaryPage(replaceSnapshot(createState(), first), target, [entry('earlier')]);
+  const cases: {name: string; snapshot: Snapshot; target?: typeof target}[] = [
+    {name: 'boot', snapshot: {...first, bootId: 'next', cursor: 'next:2'}},
+    {name: 'epoch', snapshot: {...first, primaries: [{...current, epoch: 2}], selectedPage: {target: {...target, epoch: 2}, items: [entry('leaf')], nextCursor: null, coverage}}, target: {...target, epoch: 2}},
+    {name: 'fork session', snapshot: {...first, primaries: [{...current, sessionId: 'fork'}]}},
+    {name: 'changed file', snapshot: {...first, primaries: [{...current, sessionFile: '/project/fork.jsonl'}]}},
+    {name: 'unknown session', snapshot: {...first, primaries: [{...current, sessionId: undefined}]}},
+    {name: 'rewound leaf', snapshot: {...first, selectedPage: {target, items: [entry('earlier')], nextCursor: null, coverage}}},
+    {name: 'branch', snapshot: {...first, selectedPage: {target, items: [entry('leaf'), {id: 'branch', kind: 'branch_summary'}], nextCursor: null, coverage}}},
+    {name: 'compaction', snapshot: {...first, selectedPage: {target, items: [entry('leaf'), {id: 'compact', kind: 'compaction'}], nextCursor: null, coverage}}},
+  ];
+  for (const item of cases) {
+    const next = replaceSnapshot(state, {...item.snapshot, cursor: `${item.snapshot.bootId}:2`});
+    const history = next.conversations.get(targetIdentity(item.target ?? target)); assert.ok(history, item.name);
+    assert.deepEqual(history.entryOrder, item.snapshot.selectedPage && 'items' in item.snapshot.selectedPage ? item.snapshot.selectedPage.items.map(entry => entry.id) : [], item.name);
+  }
+  const agent = {kind: 'agent' as const, identity: 'a'};
+  const agentState = mergeAgentPage(state, 'a', [entry('agent-older')]);
+  const next = replaceSnapshot(agentState, {...first, cursor: 'boot:2', selectedPage: {target: agent, entries: [entry('agent-leaf')], nextBefore: null, coverage, revision: 'r'}});
+  assert.deepEqual(next.conversations.get(targetIdentity(agent))?.entryOrder, ['agent-leaf']);
+});
+
 test('older history prepends without duplicate entries or changed references', () => {
   let state = mergeAgentPage(baseline(), 'a', [entry('tail')]);
   const key = targetIdentity({kind: 'agent', identity: 'a'});
@@ -180,28 +399,28 @@ test('roster changes do not reorder pointer targets; removals use exact keys', (
   state = reduceEvent(state, event(2, 'agent.roster', {revision: 0, changed: [row('a')], removed: [], scan: snapshot().roster.scan, stale: false}));
   assert.equal(state.roster.has('a'), false);
 });
-test('workspace revisions and hidden panels release selected frame state', () => {
+test('workspace focus revisions do not let panel visibility suppress an active agent leaf', () => {
   let state = reduceEvent(baseline(), event(1, 'workspace.changed', {id: 'workspace', revision: 1, selectedTarget: {kind: 'agent', identity: 'a'}}));
-  assert.equal(state.selectedAgent?.identity, 'a');
+  assert.ok(state.workspace); assert.equal(visibleTargets(state.workspace)[0]?.kind, 'agent');
   state = reduceEvent(state, event(2, 'workspace.changed', {id: 'workspace', revision: 2, selectedTarget: {kind: 'agent', identity: 'a'}, panelVisible: false}));
-  assert.equal(state.selectedAgent, undefined);
+  assert.equal(state.workspace?.selectedTarget?.kind, 'agent');
   state = reduceEvent(state, event(3, 'workspace.changed', {id: 'workspace', revision: 1, selectedTarget: {kind: 'agent', identity: 'b'}}));
-  assert.equal(state.selectedAgent, undefined);
+  assert.equal(state.workspace?.selectedTarget?.kind, 'agent');
 });
-test('snapshot default panel visibility acquires selected agent and explicit clearing releases it', () => {
-  const snap = snapshot(); snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'}; snap.selectedFrame = frame(1, [entry('baseline')]);
+test('snapshot observations carry epochs and clearing the active layout releases live frames', () => {
+  const snap = snapshot(); snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'}; snap.observations = [{identity: 'a', connectionEpoch: 1, frame: frame(1, [entry('baseline')])}];
   let state = replaceSnapshot(createState(), snap);
-  assert.equal(agentBlocks(state)[0]?.id, 'baseline');
+  assert.equal(agentBlocks(state, 'a')[0]?.id, 'baseline');
   state = reduceEvent(state, event(1, 'workspace.changed', {id: 'workspace', revision: 1}));
-  assert.equal(state.selectedAgent, undefined);
+  assert.equal(state.conversations.get(targetIdentity({kind: 'agent', identity: 'a'}))?.frame, undefined);
 });
 test('same-boot snapshot frame accepts the existing connection after its boundary', () => {
   let state = selectAgent(baseline(), 'a');
   state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(8)}));
-  const snap = snapshot('boot', 2); snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'}; snap.selectedFrame = frame(9);
+  const snap = snapshot('boot', 2); snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'}; snap.observations = [{identity: 'a', connectionEpoch: 2, frame: frame(9)}];
   state = replaceSnapshot(state, snap);
   state = reduceEvent(state, event(3, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(10, [], [entry('latest')])}));
-  assert.equal(agentBlocks(state)[0]?.id, 'latest');
+  assert.equal(agentBlocks(state, 'a')[0]?.id, 'latest');
 });
 test('target draft and reading revisions reject older records', () => {
   const item: TargetState = {targetKey: 'opaque', target, draft: {revision: 4, text: 'new', mode: 'prompt', persisted: true}, reading: {revision: 2, anchorId: 'e', offsetPx: 10, followTail: false}, unconfirmed: []};
@@ -229,23 +448,23 @@ test('foreign workspace payloads advance journal order but never change this wor
 test('agent frames retain unchanged committed and live entry objects', () => {
   let state = selectAgent(baseline(), 'a');
   state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 1, frame: frame(1, [entry('e')], [entry('live:new')])}));
-  const blocks = agentBlocks(state);
+  const blocks = agentBlocks(state, 'a');
   state = reduceEvent(state, event(2, 'agent.frame', {identity: 'a', connectionEpoch: 1, frame: frame(2, [entry('e')], [entry('live:new')])}));
-  assert.equal(agentBlocks(state)[0], blocks[0]);
-  assert.equal(agentBlocks(state)[1], blocks[1]);
+  assert.equal(agentBlocks(state, 'a')[0], blocks[0]);
+  assert.equal(agentBlocks(state, 'a')[1], blocks[1]);
 });
 test('mixed live entries drop only committed messages, not remaining text', () => {
   let state = selectAgent(baseline(), 'a');
   const mixed = {id: 'live:generation', kind: 'message', messages: [message('committed'), message('new', 'still live', 'partial')]};
   state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 1, frame: frame(1, [entry('e', 'committed')], [mixed])}));
-  assert.deepEqual(agentBlocks(state)[1]?.messages?.map(message => message.id), ['new']);
+  assert.deepEqual(agentBlocks(state, 'a')[1]?.messages?.map(message => message.id), ['new']);
 });
 test('a committed tool key never removes unrelated live prose', () => {
   const tool: EntryView = {id: 'e', kind: 'message', messages: [{id: 'result', role: 'tool', state: 'final', coverage, parts: [{type: 'toolResult', callId: 'c', name: 'read', parts: [], isError: false}]}]};
   const live: EntryView = {id: 'live:generation', kind: 'message', messages: [{id: 'active', role: 'assistant', state: 'partial', coverage, parts: [{type: 'toolCall', callId: 'c', name: 'read', arguments: {value: {}, truncated: false}}, {type: 'text', text: 'new prose'}]}]};
   let state = selectAgent(baseline(), 'a');
   state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 1, frame: frame(1, [tool], [live])}));
-  assert.equal(agentBlocks(state).length, 2);
+  assert.equal(agentBlocks(state, 'a').length, 2);
 });
 
 const notice = (sequence: number, message = 'Notice', bootId = 'boot'): NoticeView => ({id: `${bootId}:${sequence}`, level: 'info', message});
@@ -389,7 +608,7 @@ test('post-cut roster replay still changes baseline rows and retained extra rows
 });
 test('omitted roster snapshots retain page metadata and reconcile loaded extras', () => {
   const snap = snapshot('boot', 5); snap.omitted = ['roster']; snap.roster.rows = []; snap.roster.nextCursor = null;
-  snap.selectedAgent = {...row('c'), name: 'Selected'};
+  snap.roster.rows = [{...row('c'), name: 'Selected'}];
   const delta = event(3, 'agent.roster', {...rosterDelta(3, [{...row('c'), name: 'Old'}], ['b']), stale: true});
   const state = replaceSnapshot(loadedRoster(), snap, [delta]);
   assert.deepEqual(state.rosterOrder, ['a', 'c', 'd']); assert.equal(state.roster.get('c')?.name, 'Selected');
@@ -416,14 +635,15 @@ test('pre-cut events already applied to the state never regress retained extras'
   assert.equal(state.roster.get('c')?.name, 'Current'); assert.equal(state.roster.has('d'), true);
   assert.equal(state.rosterRevision, 2);
 });
-test('snapshot selected agent supplies an unknown first-page row without changing the page cursor', () => {
+test('snapshot roster carries an active agent row without changing the page cursor', () => {
   const snap = partialSnapshot(); snap.workspace.selectedTarget = {kind: 'agent', identity: 'outside'};
   const selected: AgentRow = {...row('outside'), capabilities: {history: true, observe: true, input: true, abort: false, configure: false}};
-  snap.selectedAgent = selected;
+  snap.roster.rows.push(selected);
+  snap.observations = [{identity: 'outside', connectionEpoch: 0, omitted: true}];
   const state = replaceSnapshot(createState(), snap);
   assert.equal(state.roster.get('outside'), selected); assert.equal(state.roster.get('outside')?.capabilities?.input, true);
   assert.deepEqual(state.rosterOrder, ['a', 'b', 'outside']); assert.equal(state.rosterMeta?.nextCursor, 'after-b');
-  assert.deepEqual(state.selectedAgent, {identity: 'outside', connectionEpoch: -1, revision: -1});
+  assert.equal(state.agentEpochs.has('outside'), false);
 });
 
 test('captured snapshots never overwrite newer acknowledged presentation preferences', () => {
@@ -472,7 +692,7 @@ test('same-boot operation snapshots merge known receipts and a new boot resets t
 
 test('negotiated workspace availability survives retained roster and cached page updates', () => {
   let state = selectAgent(baseline(), 'a'); const capabilities = {history: true, observe: true, input: true, abort: true, configure: false};
-  state = reduceEvent(state, event(1, 'agent.availability', {identity: 'a', state: 'live', capabilities}));
+  state = reduceEvent(state, event(1, 'agent.availability', {identity: 'a', connectionEpoch: 1, state: 'live', capabilities}));
   state = reduceEvent(state, event(2, 'agent.roster', {revision: 1, changed: [{...row('a'), availability: 'stored'}], removed: [], scan: {state: 'ready', complete: true, visited: 1, skipped: 0, omitted: 0}, stale: false}));
   state = mergeRosterPage(state, {...snapshot().roster, rows: [{...row('a'), availability: 'stored'}]});
   assert.equal(state.agentAvailability.get('a')?.state, 'live'); assert.equal(state.agentAvailability.get('a')?.capabilities.input, true);

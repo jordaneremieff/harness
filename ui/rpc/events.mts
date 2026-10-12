@@ -102,7 +102,7 @@ export class EventProjection {
         const m = object(entry.message); const base = key(m); const ordinal = this.counts.get(base) ?? 0; this.counts.set(base, ordinal + 1); const signature = `${base}#${ordinal}`;
         const id = this.ids.get(signature) ?? `message:${text(entry.id)}`;
         this.ids.set(signature, id);
-        const message = projectMessage(m, id, 'final'); this.messages.push(message);
+        const message = projectMessage(m, id, 'final', undefined, {communicationSource: {entryId: text(entry.id), timestamp: entry.timestamp}}); this.messages.push(message);
         this.put({ id: text(entry.id), kind: 'message', messages: [message] });
       } else this.put(projectEntry(entry, text(entry.id)));
     }

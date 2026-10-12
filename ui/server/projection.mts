@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { CatalogRow } from '../agents/index.mts';
 import type { AgentRow, CachedRoster, DisplayCoverage, EntryView, ImageSource, JsonDisplay, MessageView, PartView, ProjectedFrame, ToolOutputInfo } from '../shared/api.ts';
 import { imagePart, imageSource } from './images.mts';
+import { projectCommunication, type CommunicationSource } from './communication.mts';
 
 const TEXT_BYTES = 64 * 1024;
 const DISPLAY_BYTES = 60 * 1024;
@@ -44,7 +45,7 @@ const STRUCTURED_INPUT_BYTES = 128 * 1024;
 const STRUCTURED_OUTPUT_BYTES = 16 * 1024;
 type StructuredBudget = {input: number; output: number; nodes: number; scan?: number};
 /** Trust is selected by an internal caller, never by a field in a native result. */
-type ProjectionOptions = {trustedStructured?: boolean; structuredText?: boolean; retainedText?: ReadonlyMap<number, string>; budget?: StructuredBudget; deferred?: (() => void)[]};
+type ProjectionOptions = {trustedStructured?: boolean; structuredText?: boolean; retainedText?: ReadonlyMap<number, string>; budget?: StructuredBudget; deferred?: (() => void)[]; communicationSource?: CommunicationSource};
 function structuredBudget(): StructuredBudget { return {input: STRUCTURED_INPUT_BYTES, output: STRUCTURED_OUTPUT_BYTES, nodes: 0}; }
 function structuredPriority(key: string, value: unknown): number {
   const name = safeText(key, 256).replace(/[_\s-]/g, '').toLowerCase();
@@ -271,10 +272,16 @@ class MessageProjector {
     }
     return parts;
   }
+  private communication(source: Record<string, unknown>, id: string): MessageView['communication'] {
+    const value = projectCommunication(source, id, this.options.communicationSource ?? {}, {safeText, jsonDisplay});
+    if (value) this.remaining -= sizeOf(value);
+    return value;
+  }
   message(raw: unknown, id: string, state: 'partial' | 'final'): MessageView {
     const source = object(raw);
     this.structuredText = this.acceptsStructured(source);
     const hidden = source.role === 'custom' && source.display === false;
+    const communication = this.communication(source, id);
     const parts = hidden ? [] : this.parts(source);
     const contentParts = [...parts];
     if (typeof source.role !== 'string') this.omitted++;
@@ -289,7 +296,7 @@ class MessageProjector {
     const result: MessageView = {id: safeText(id, 256), role: safeText(source.role, 256) || 'unknown', parts, state, coverage: coverage(this.changed || omitted > 0 || prior.truncated === true, omitted)};
     if (prior.complete === false) result.coverage.complete = false;
     if (this.omitted === 0 && typeof prior.reason === 'string') result.coverage.reason = safeText(prior.reason, 256);
-    messageDetails(source, result);
+    messageDetails(source, result, communication);
     this.structuredResult(contentParts, result);
     return result;
   }
@@ -312,7 +319,8 @@ function assistantUsage(raw: unknown): MessageView['usage'] {
   const usage = object(raw); const {input, cacheRead, cacheWrite} = usage;
   return tokenCount(input) && tokenCount(cacheRead) && tokenCount(cacheWrite) ? {input, cacheRead, cacheWrite} : undefined;
 }
-function messageDetails(source: Record<string, unknown>, result: MessageView): void {
+function messageDetails(source: Record<string, unknown>, result: MessageView, communication?: MessageView['communication']): void {
+  if (communication) result.communication = communication;
   if (result.role === 'assistant') { const usage = assistantUsage(source.usage); if (usage) result.usage = usage; }
   if (typeof source.timestamp === 'number' && Number.isFinite(source.timestamp)) result.timestamp = source.timestamp;
   if (typeof source.stopReason === 'string') result.stopReason = safeText(source.stopReason, 256);
@@ -323,7 +331,7 @@ export function projectMessage(raw: unknown, id: string, state: 'partial' | 'fin
   catch { return {id: safeText(id, 256), role: 'unknown', state, parts: [{type: 'omitted', label: 'Malformed message omitted'}], coverage: coverage(true, 1)}; }
 }
 function entryMessages(source: Record<string, unknown>): unknown[] | undefined {
-  if (source.type === 'custom_message') return [{role: 'custom', content: source.content, display: source.display, timestamp: source.timestamp}];
+  if (source.type === 'custom_message') return [{role: 'custom', customType: source.customType, details: source.details, content: source.content, display: source.display, timestamp: source.timestamp}];
   if (source.message !== undefined) return [source.message];
   if (Array.isArray(source.messages)) return source.messages;
   if (Array.isArray(source.model)) return source.model;
@@ -351,7 +359,10 @@ function displayEntry(raw: unknown, fallbackId: string, options: ProjectionOptio
     result.messages = messages.slice(0, 8).map((item, index) => {
       const message = object(item); const messageId = Array.isArray(message.parts) && typeof message.id === 'string' ? message.id : `${id}:message:${index}`;
       const source = entryImageSource(id, index, raw);
-      return projectMessage(item, messageId, 'final', source, {...options, budget, deferred});
+      const native = kind === 'pi.user' || kind === 'agent.thread-notice' || object(object(raw).communication).state === 'ready' ? object(raw).communication : undefined;
+      const sourceId = typeof object(raw).id === 'string' ? object(raw).id as string : undefined;
+      const communicationSource: CommunicationSource = {...options.communicationSource, entryId: sourceId, timestamp: object(raw).timestamp, native, nativeEntryId: sourceId, singleMessage: messages.length === 1 && message.role === 'user'};
+      return projectMessage(item, messageId, 'final', source, {...options, budget, deferred, communicationSource});
     });
     if (messages.length > 8) result.data = {value: 'Additional messages omitted', truncated: true};
   } else result.data = displayData(source.data ?? source);
@@ -447,12 +458,12 @@ class FrameProjector {
   private bytes = 4096;
   omitted = 0;
   truncated = false;
-  collect(value: unknown, partial: boolean): EntryView[] {
+  collect(value: unknown, partial: boolean, communicationSource: CommunicationSource): EntryView[] {
     if (!Array.isArray(value)) { this.truncated = true; return []; }
     const rows: EntryView[] = [];
     for (let index = value.length - 1; index >= 0; index--) {
       if (rows.length >= 100 || this.bytes >= 230 * 1024) { this.omitted += index + 1; break; }
-      const entry = projectEntry(value[index]);
+      const entry = projectEntry(value[index], undefined, {communicationSource});
       if (partial) entry.messages?.forEach(message => { message.state = 'partial'; unavailableLiveImages(message.parts); });
       const size = sizeOf(entry);
       if (this.bytes + size > 230 * 1024) { this.omitted += index + 1; break; }
@@ -471,7 +482,8 @@ function frameCoverage(raw: unknown, projected: FrameProjector): DisplayCoverage
 export function projectFrame(raw: unknown): ProjectedFrame {
   try {
     const source = object(raw), projector = new FrameProjector();
-    const live = projector.collect(source.live ?? [], true), entries = projector.collect(source.entries ?? [], false);
+    const communicationSource: CommunicationSource = {storageId: typeof source.storageId === 'string' ? source.storageId : undefined, conversationId: typeof source.conversationId === 'number' ? source.conversationId : undefined};
+    const live = projector.collect(source.live ?? [], true, communicationSource), entries = projector.collect(source.entries ?? [], false, communicationSource);
     return {revision: Number.isSafeInteger(source.revision) ? Number(source.revision) : 0, observedAt: safeText(source.observedAt, 256), entries, live,
       nextBefore: Number.isSafeInteger(source.nextBefore) && Number(source.nextBefore) > 0 ? Number(source.nextBefore) : null,
       status: frameStatus(source.status), coverage: frameCoverage(source.coverage, projector)};

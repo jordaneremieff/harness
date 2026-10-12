@@ -1,7 +1,7 @@
 import { LIMITS, type Bootstrap, type Snapshot, type SnapshotSection, type TargetState } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 
-const SECTIONS: SnapshotSection[] = ['notices', 'targets', 'selectedPage', 'selectedFrame', 'primaries', 'roster', 'pendingOperations', 'dialogs'];
+const SECTIONS: SnapshotSection[] = ['notices', 'targets', 'selectedPage', 'observations', 'primaries', 'roster', 'pendingOperations', 'dialogs'];
 const ENVELOPE_BYTES = Buffer.byteLength(JSON.stringify({ok: true, data: null})) - 4;
 const MAX_BYTES = LIMITS.displayBytes - ENVELOPE_BYTES;
 const ROSTER_CONTAINER_BYTES = Buffer.byteLength(JSON.stringify({rows: []}));
@@ -73,16 +73,21 @@ function optionalPages(source: Snapshot, result: Snapshot, budget: Budget, omitt
     if (budget.optional('selectedPage', source.selectedPage)) result.selectedPage = source.selectedPage;
     else omitted.add('selectedPage');
   }
-  if (source.selectedFrame !== undefined) {
-    if (budget.optional('selectedFrame', source.selectedFrame)) result.selectedFrame = source.selectedFrame;
-    else omitted.add('selectedFrame');
+  for (let i = 0; i < (source.observations ?? []).length; i++) {
+    const observation = source.observations?.[i]; const destination = result.observations?.[i];
+    if (observation?.frame !== undefined && destination && budget.optional('frame', observation.frame)) {
+      destination.frame = observation.frame;
+      if (!observation.omitted) delete destination.omitted;
+    }
+    if (destination?.omitted) omitted.add('observations');
   }
 }
 
-/** Selected-agent metadata is core state, independent of the containing roster page. */
+/** Target identity and lifetime survive omission without retaining frames in the core index. */
 function emptySnapshot(snapshot: Snapshot | Bootstrap): Snapshot | Bootstrap {
-  const {primaries, targets, pendingOperations, dialogs: _dialogs, roster, selectedPage: _page, selectedFrame: _frame, notices, omitted: _omitted, ...core} = snapshot;
-  const result: Snapshot = {...core, primaryIndex: snapshot.primaryIndex ?? primaries.map(({key, epoch, lifecycle}) => ({key, epoch, lifecycle})),
+  const {primaries, targets, pendingOperations, dialogs: _dialogs, roster, selectedPage: _page, observations = [], notices, omitted: _omitted, ...core} = snapshot;
+  if (observations.length > 4) throw new ApiError('capacity', 'The snapshot observation capacity is full.', 413);
+  const result: Snapshot = {...core, observations: observations.map(({identity,connectionEpoch}) => ({identity,connectionEpoch,omitted:true})), primaryIndex: snapshot.primaryIndex ?? primaries.map(({key, epoch, lifecycle}) => ({key, epoch, lifecycle})),
     operationIndex: snapshot.operationIndex ?? pendingOperations.map(operation => operation.id),
     targetIndex: snapshot.targetIndex ?? targetIndex(targets ?? []), omitted: [...SECTIONS], primaries: [], pendingOperations: [], dialogs: [],
     roster: {...roster, rows: [], nextCursor: undefined, error: undefined}, ...(targets === undefined ? {} : {targets: []}), ...(notices === undefined ? {} : {notices: []})};

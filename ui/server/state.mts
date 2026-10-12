@@ -47,26 +47,46 @@ function conversationTabKey(value: unknown): string {
   const tab = value as Record<string, unknown>;
   if (tab.kind === 'primary') { layoutObject(tab, ['kind'], 'primary tab'); return 'primary'; }
   if (tab.kind !== 'agent') throw new StateError('invalid_request', 'Invalid conversation tab kind');
-  layoutObject(tab, ['kind', 'identity', 'split'], 'agent tab');
+  layoutObject(tab, ['kind', 'identity'], 'agent tab');
   validateTarget({kind: 'agent', identity: tab.identity as string});
-  if (typeof tab.split !== 'boolean') throw new StateError('invalid_request', 'Invalid conversation tab split');
   return `agent:${tab.identity}`;
 }
-/** Layout metadata never changes selection or admits additional agent observations. */
-export function validateConversationLayout(value: unknown): asserts value is ConversationLayout {
-  const layout = layoutObject(value, ['tabs', 'active', 'splitRatio'], 'conversation layout');
-  if (!Array.isArray(layout.tabs) || layout.tabs.length > LIMITS.conversationTabs) throw new StateError('invalid_request', 'Invalid conversation tab count');
-  const keys = new Set<string>();
-  for (const tab of layout.tabs) {
+type LayoutValidation = {ids: Set<string>; leaves: Set<string>; keys: Set<string>; nodes: number; empty: number};
+function layoutPaneId(value: unknown, state: LayoutValidation): string {
+  if (typeof value !== 'string' || !value || value.length > 64 || /[\x00-\x1f]/.test(value) || state.ids.has(value)) throw new StateError('invalid_request', 'Invalid or duplicate conversation pane ID');
+  state.ids.add(value); return value;
+}
+function layoutLeaf(node: Record<string, unknown>, state: LayoutValidation): void {
+  state.leaves.add(node.id as string);
+  if (state.leaves.size > 4 || !Array.isArray(node.tabs) || node.tabs.length > LIMITS.conversationTabs) throw new StateError('invalid_request', 'Invalid conversation pane or tab count');
+  const local = new Set<string>();
+  for (const tab of node.tabs) {
     const key = conversationTabKey(tab);
-    if (keys.has(key)) throw new StateError('invalid_request', 'Duplicate conversation tab');
-    keys.add(key);
+    if (state.keys.has(key)) throw new StateError('invalid_request', 'Duplicate conversation tab');
+    local.add(key); state.keys.add(key);
   }
-  const active = layout.active;
-  const validActive = layout.tabs.length === 0 ? active === null : typeof active === 'number' && Number.isSafeInteger(active) && active >= 0 && active < layout.tabs.length;
-  if (!validActive) throw new StateError('invalid_request', 'Invalid active conversation tab');
-  const ratio = layout.splitRatio;
-  if (typeof ratio !== 'number' || !Number.isSafeInteger(ratio) || ratio < 20 || ratio > 80) throw new StateError('invalid_request', 'Invalid conversation split ratio');
+  if (state.keys.size > LIMITS.conversationTabs) throw new StateError('invalid_request', 'Invalid conversation tab count');
+  if (local.size ? typeof node.active !== 'string' || !local.has(node.active) : node.active !== null) throw new StateError('invalid_request', 'Invalid active conversation tab');
+  if (!local.size) state.empty++;
+}
+function layoutSplit(node: Record<string, unknown>): void {
+  if (node.kind !== 'split' || (node.axis !== 'x' && node.axis !== 'y') || typeof node.ratio !== 'number' || !Number.isSafeInteger(node.ratio) || node.ratio < 20 || node.ratio > 80) throw new StateError('invalid_request', 'Invalid conversation split');
+}
+function visitLayout(value: unknown, depth: number, state: LayoutValidation): void {
+  if (++state.nodes > 7 || depth > 3) throw new StateError('invalid_request', 'Conversation pane tree exceeds its bounds');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StateError('invalid_request', 'Invalid conversation pane');
+  const candidate = value as Record<string, unknown>;
+  const node = layoutObject(value, candidate.kind === 'pane' ? ['kind', 'id', 'tabs', 'active'] : ['kind', 'id', 'axis', 'ratio', 'first', 'second'], 'conversation pane');
+  layoutPaneId(node.id, state);
+  if (node.kind === 'pane') { layoutLeaf(node, state); return; }
+  layoutSplit(node); visitLayout(node.first, depth + 1, state); visitLayout(node.second, depth + 1, state);
+}
+/** One bounded tree owns tabs, active targets and pane focus. */
+export function validateConversationLayout(value: unknown): asserts value is ConversationLayout {
+  const layout = layoutObject(value, ['root', 'focusedPane'], 'conversation layout');
+  const state: LayoutValidation = {ids: new Set(), leaves: new Set(), keys: new Set(), nodes: 0, empty: 0};
+  visitLayout(layout.root, 0, state);
+  if (typeof layout.focusedPane !== 'string' || !state.leaves.has(layout.focusedPane) || state.empty && state.leaves.size !== 1) throw new StateError('invalid_request', 'Invalid conversation pane focus or empty group');
 }
 function revision(actual: number, expected: number, current: unknown): void {
   if (!Number.isSafeInteger(expected) || expected !== actual) throw new StateError('stale_revision', 'The saved revision changed', 409, current);
@@ -353,8 +373,8 @@ export class StateStore {
   putPresentation(wid: string, key: string, input: Omit<PresentationView, 'revision'> & {expectedRevision: number}): Promise<PresentationView> {
     return this.transaction(async () => {
       const value = this.requireTarget(wid, key); revision(value.presentation?.revision ?? 0, input.expectedRevision, value.presentation);
-      if (!Array.isArray(input.expanded) || input.expanded.length > 128 || input.expanded.some(id => typeof id !== 'string' || id.length > 256) || typeof input.showThinking !== 'boolean') throw new StateError('invalid_request', 'Invalid presentation preferences');
-      const presentation: PresentationView = {revision: (value.presentation?.revision ?? 0) + 1, expanded: [...new Set(input.expanded)], showThinking: input.showThinking};
+      if (!Array.isArray(input.expanded) || input.expanded.length > 128 || input.expanded.some(id => typeof id !== 'string' || id.length > 256) || typeof input.showThinking !== 'boolean' || input.transcriptView !== undefined && !['chronological', 'grouped'].includes(input.transcriptView)) throw new StateError('invalid_request', 'Invalid presentation preferences');
+      const presentation: PresentationView = {revision: (value.presentation?.revision ?? 0) + 1, expanded: [...new Set(input.expanded)], showThinking: input.showThinking, transcriptView: input.transcriptView ?? value.presentation?.transcriptView ?? 'chronological'};
       await this.writeTarget({...value, presentation}); return structuredClone(presentation);
     });
   }

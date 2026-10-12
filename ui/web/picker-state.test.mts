@@ -47,9 +47,9 @@ test('every cached page retains its pending title completion across More and ret
 });
 test('coverage separates loaded-list matches from total store coverage', () => {
   const list = mergeSessions(undefined, page(Array.from({length: 20}, (_, index) => item(String(index)))));
-  assert.equal(sessionCoverage(list, 20, ''), '20 of 1259 shown');
-  assert.equal(sessionCoverage(list, 2, 'id'), '2 matches in loaded sessions · 20 of 1259 shown');
-  assert.match(sessionCoverage({...list, omitted: 3}, 20, ''), /3 unavailable or outside the scan bound/);
+  assert.equal(sessionCoverage(list, 20, ''), '20 of 1259 sessions shown');
+  assert.equal(sessionCoverage(list, 2, 'id'), '2 matches in loaded sessions · 20 of 1259 sessions shown');
+  assert.match(sessionCoverage({...list, omitted: 3}, 20, ''), /3 sessions are not listed/);
 });
 test('empty search only offers More when another saved-session page exists', () => {
   const list = mergeSessions(undefined, page([item('one')]));
@@ -57,6 +57,7 @@ test('empty search only offers More when another saved-session page exists', () 
   assert.equal(sessionEmptyMessage({...list, nextCursor: null}), 'No saved sessions match this search.');
   assert.equal(sessionEmptyMessage({...list, items: [], nextCursor: null}), 'No saved sessions in this project.');
   assert.match(sessionEmptyMessage({...list, items: []}), /Use More/);
+  assert.equal(sessionEmptyMessage({...list, items: [], nextCursor: null, omitted: 2}), 'No sessions were loaded. The inventory is incomplete.');
 });
 test('manual Resume requires an absolute nonempty path', () => {
   for (const path of ['', 'relative.jsonl', '   ', '/bad\0path', `/${'x'.repeat(4096)}`]) assert.equal(savedPathValid(path), false);

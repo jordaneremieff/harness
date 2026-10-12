@@ -4,15 +4,23 @@ export class ApiError extends Error {
   readonly view: ErrorView;
   constructor(view: ErrorView) { super(view.message); this.view = view; }
 }
+let requestTiming: ((start: number, end: number) => void) | undefined;
+export function setRequestTiming(timing?: (start: number, end: number) => void): void {requestTiming = timing;}
+let unauthorizedHandler: ((error: ApiError) => void) | undefined;
+export function setUnauthorizedHandler(handler?: (error: ApiError) => void): void { unauthorizedHandler = handler; }
 export async function request<T>(path: string, method = 'GET', body?: unknown, operationId?: string, signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (operationId) headers['Idempotency-Key'] = operationId;
-  const startedAt = performance.now();
+  const startedAt = performance.now(), timing = requestTiming;
   const response = await fetch(workspacePath(path), {method, body: body === undefined ? undefined : JSON.stringify(body), headers, signal: signal ?? (method === 'GET' ? AbortSignal.timeout(15_000) : undefined), credentials: 'same-origin'});
   const result = await response.json() as ApiResult<T>;
-  performance.measure('ui:control-roundtrip', {start: startedAt, end: performance.now(), detail: {method, operationId}});
-  if (!result.ok) throw new ApiError(result.error);
+  try {timing?.(startedAt, performance.now());} catch { /* Diagnostics do not change the API result. */ }
+  if (!result.ok) {
+    const error = new ApiError(result.error);
+    if (response.status === 401 || error.view.code === 'unauthorized') unauthorizedHandler?.(error);
+    throw error;
+  }
   return result.data;
 }
 export function workspacePath(path: string): string {
@@ -32,12 +40,12 @@ export async function operation(kind: OperationKind, path: string, body: unknown
   return request<OperationView>(path, 'POST', body, id);
 }
 export const eventNames: EventName[] = ['ready', 'resync', 'primary.state', 'primary.message', 'primary.delta', 'primary.tool', 'primary.entry', 'primary.queue', 'primary.recovery', 'extension.request', 'extension.expired', 'agent.roster', 'agent.frame', 'agent.availability', 'workspace.changed', 'draft.changed', 'reading.changed', 'operation.changed', 'notice'];
-export type ReceivedEvent = {name: EventName; id: string; envelope: EventEnvelope; bytes?: number};
+export type ReceivedEvent = {name: EventName; id: string; envelope: EventEnvelope; bytes?: number; receivedAt?: number};
 export function connect(workspace: string, cursor: string, receive: (event: ReceivedEvent) => void, lost: () => void): EventSource {
   const source = new EventSource(`/api/events?workspace=${encodeURIComponent(workspace)}&after=${encodeURIComponent(cursor)}`);
   for (const name of eventNames) source.addEventListener(name, (event: MessageEvent<string>) => {
-    performance.mark('ui:event:receive');
-    try { receive({name, id: event.lastEventId, envelope: JSON.parse(event.data) as EventEnvelope, bytes: event.data.length * 2}); }
+    const receivedAt = performance.now();
+    try { receive({name, id: event.lastEventId, envelope: JSON.parse(event.data) as EventEnvelope, bytes: event.data.length * 2, receivedAt}); }
     catch { source.close(); lost(); }
   });
   source.onerror = () => { source.close(); lost(); };

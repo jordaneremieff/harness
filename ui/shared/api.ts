@@ -41,9 +41,25 @@ export type PartView = {type: 'text'; text: string; redacted?: boolean; more?: O
   ImageView | {type: 'omitted'; label: string};
 /** Supplied input-token counts for one assistant message; absent usage is unknown. */
 export type AssistantUsage = {input: number; cacheRead: number; cacheWrite: number};
+/** Producer-supplied communication facts, not authenticated instruction authority. */
+export type CommunicationBody = {text: string; complete: boolean; redacted: boolean};
+export type CommunicationSender = {identity: string; name?: string; kind?: 'agent' | 'session'};
+export type CommunicationReference = {submissionId: number; requestId?: string; entryId?: string; answerEntryId?: string};
+type CommunicationBase = {format: 'agent.communication/1'; sender: CommunicationSender; body: CommunicationBody; recordedAt: number};
+export type Communication = CommunicationBase & (
+  {kind: 'notice'; metadata: {threadId: string; event?: number; frameRevision?: number; eventKind?: string; title?: string; passive?: boolean}} |
+  {kind: 'report'; metadata: {sourceId: string; requestId: string; replyTo?: string}} |
+  {kind: 'result'; metadata: {status: 'done' | 'unanswered'; references: CommunicationReference[]; omittedReferences: number; reason?: string}} |
+  {kind: 'check-in'; metadata: {sourceId: string; producerRequestId: string; elapsedMs: number; origin: 'operator' | 'model'}});
+export type CommunicationInputLink = {mode: 'input'; storageId: string; conversationId: number; entryId: string; submissionId: number; requestId: string};
+export type CommunicationPassiveLink = {mode: 'passive'; storageId: string; conversationId: number; entryId: string; requestId: string};
+export type NativeOrigin = {kind: 'native'; recordEntryId: string; target: CommunicationInputLink | CommunicationPassiveLink};
+export type OrdinaryOrigin = {kind: 'ordinary-custom'; customType: 'agent.peer'; renderEntryId: string; sourceEntryId?: string};
+export type CommunicationPresentation = {state: 'ready'; origin: NativeOrigin | OrdinaryOrigin; value: Communication; rawDetails?: JsonDisplay} |
+  {state: 'unresolved'} | {state: 'unavailable'; reason: 'limit' | 'invalid'};
 /** Stable adapter ID, not an array index. Final messages replace partial messages. */
 export type MessageView = {id: string; role: string; timestamp?: number; parts: PartView[];
-  state: 'partial' | 'final'; stopReason?: string; error?: string; coverage: DisplayCoverage; usage?: AssistantUsage};
+  state: 'partial' | 'final'; stopReason?: string; error?: string; coverage: DisplayCoverage; usage?: AssistantUsage; communication?: CommunicationPresentation};
 export type EntryView = {id: string; kind: string; messages?: MessageView[]; data?: JsonDisplay; head?: string};
 export type ModelChoice = {provider: string; id: string; name: string; reasoning: boolean; input: string[]; thinkingLevels?: string[]};
 export type CommandView = {name: string; description: string; source: 'extension' | 'skill' | 'prompt'};
@@ -66,15 +82,18 @@ export type PrimaryView = {key: string; epoch: number; cwd: string;
 };
 export type Appearance = 'dark' | 'light' | 'system' | 'latte' | 'frappe' | 'macchiato' | 'mocha';
 /** Primary tabs follow the workspace primary; closing a tab never stops its conversation. */
-export type ConversationTab = {kind: 'primary'} | {kind: 'agent'; identity: string; split: boolean};
-export type ConversationLayout = {tabs: ConversationTab[]; active: number | null; splitRatio: number};
+export type ConversationTab = {kind: 'primary'} | {kind: 'agent'; identity: string};
+export type PaneNode = {kind: 'pane'; id: string; tabs: ConversationTab[]; active: string | null} |
+  {kind: 'split'; id: string; axis: 'x' | 'y'; ratio: number; first: PaneNode; second: PaneNode};
+export type ConversationLayout = {root: PaneNode; focusedPane: string};
 /** Shared tabs use compare-and-set revisions for view state. */
 export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
   panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance;
   conversationLayout?: ConversationLayout};
 export type DraftView = {revision: number; text: string; mode: string; persisted: true};
 export type ReadingView = {revision: number; anchorId: string | null; offsetPx: number; followTail: boolean};
-export type PresentationView = {revision: number; expanded: string[]; showThinking: boolean};
+export type TranscriptView = 'chronological' | 'grouped';
+export type PresentationView = {revision: number; expanded: string[]; showThinking: boolean; transcriptView?: TranscriptView};
 export type UnconfirmedInput = {operationId: string; target: Target; text: string; mode: string;
   submittedDraftRevision: number; createdAt: string; reason: string; textTruncated?: true};
 export type TargetIndex = {targetKey: string; target: Target; draftRevision: number; hasDraft: boolean; unconfirmedOperationIds: string[]};
@@ -117,9 +136,10 @@ export type HistoryPage = {target: Target; items: EntryView[]; nextCursor: strin
 export type AgentHistoryPage = {target: Target; entries: EntryView[]; nextBefore: number | null; coverage: DisplayCoverage; revision: string};
 export type ResourcePage = {items: CommandView[] | ModelChoice[] | string[]; nextCursor: string | null; revision: string};
 export type NoticeView = {id: string; target?: Target; workspaceId?: string; level: 'info' | 'warning' | 'error'; code?: string; message: string};
-export type SnapshotSection = 'notices' | 'targets' | 'selectedPage' | 'selectedFrame' | 'primaries' | 'roster' | 'pendingOperations' | 'dialogs';
+export type AgentObservationView = {identity: string; connectionEpoch: number; frame?: ProjectedFrame; omitted?: true};
+export type SnapshotSection = 'notices' | 'targets' | 'selectedPage' | 'observations' | 'primaries' | 'roster' | 'pendingOperations' | 'dialogs';
 export type Snapshot = {notices?: NoticeView[]; omitted?: SnapshotSection[]; primaryIndex?: Pick<PrimaryView,'key'|'epoch'|'lifecycle'>[]; operationIndex?: string[]; bootId: string; cursor: string; workspace: Workspace; primaries: PrimaryView[];
-  roster: CachedRoster; selectedAgent?: AgentRow; selectedPage?: HistoryPage | AgentHistoryPage; selectedFrame?: ProjectedFrame;
+  roster: CachedRoster; observations?: AgentObservationView[]; selectedPage?: HistoryPage | AgentHistoryPage;
   dialogs: DialogView[]; pendingOperations: OperationView[]; targets?: TargetState[]; targetIndex?: TargetIndex[]};
 export type Bootstrap = Snapshot & {limits: typeof LIMITS; launchCwd?: string};
 export type EventData = {
@@ -137,7 +157,7 @@ export type EventData = {
   'extension.expired': {id: string; reason: 'answered' | 'timeout' | 'epoch-changed' | 'process-exit' | 'cancelled'};
   'agent.roster': {revision: number; changed: AgentRow[]; removed: string[]; scan: ScanView; observedAt?: string; stale: boolean};
   'agent.frame': {identity: string; connectionEpoch: number; frame: ProjectedFrame};
-  'agent.availability': {identity: string; state: 'live' | 'stored' | 'unavailable' | 'incompatible'; reason?: string; capabilities: AgentCapabilities};
+  'agent.availability': {identity: string; connectionEpoch: number; state: 'live' | 'stored' | 'unavailable' | 'incompatible'; reason?: string; capabilities: AgentCapabilities};
   'workspace.changed': Workspace;
   'draft.changed': {targetKey: string; target: Target; draft: DraftView};
   'reading.changed': {targetKey: string; reading: ReadingView};

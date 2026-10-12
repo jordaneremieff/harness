@@ -8,9 +8,9 @@ function meaningfulPart(part: PartView): boolean {
   return true;
 }
 export function presentMessage(message: MessageView): {label: string; visible: boolean} {
-  const label = message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Assistant' : message.role;
+  const label = message.role === 'user' ? 'Input' : message.role === 'assistant' ? 'Assistant' : message.role === 'toolResult' ? 'Tool output' : ['custom', 'system'].includes(message.role) ? 'Notice' : message.role;
   const omitted = message.coverage.truncated || message.coverage.omitted > 0 || message.coverage.complete === false;
-  return {label, visible: !!message.error || omitted || message.parts.some(meaningfulPart) || message.stopReason === 'error' || message.stopReason === 'aborted'};
+  return {label, visible: !!message.communication || !!message.error || omitted || message.parts.some(meaningfulPart) || message.stopReason === 'error' || message.stopReason === 'aborted'};
 }
 export function entryVisible(entry: EntryView): boolean {
   if (entry.data) return true;
@@ -43,14 +43,14 @@ function sessionNote(entry: EntryView, data: JsonDisplay): string | undefined {
   return undefined;
 }
 export function presentEntry(entry: EntryView, context: PresentationContext): HTMLElement {
-  const data = entry.data ?? {value: 'No retained display data', truncated: false};
+  const data = entry.data ?? {value: 'No display data is available.', truncated: false};
   const note = sessionNote(entry, data);
-  const node = element('section', note ? 'system-note' : 'custom-entry');
+  const node = element('section', note ? 'system-note transcript-event' : 'custom-entry transcript-event');
   if (note) node.append(context.inspection(context.bounded(note, 4096), () => context.rawText(data.value)));
   else {
     const preview = entry.data ? dataPreview(entry.data) : '';
     node.append(context.inspection(context.bounded(`${entryHeading(entry)}${preview ? ` · ${preview}` : ''}`, 4096), () => context.rawText(data.value)));
-    if (data.truncated) node.append(element('p', 'warning', `Output omitted by host${data.omittedBytes !== undefined ? ` · ${data.omittedBytes} bytes` : ''}`));
+    if (data.truncated) node.append(element('p', 'warning', `Some output is not available.${data.omittedBytes !== undefined ? ` · ${data.omittedBytes} bytes` : ''}`));
   }
   return node;
 }

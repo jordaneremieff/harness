@@ -2,8 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
 import { absoluteTime, relativeTime, timestampDetails } from './format.ts';
-import { Roster, activityLine } from './roster.ts';
+import { Roster as RosterView, activityLine } from './roster.ts';
 
+type RosterParameters = ConstructorParameters<typeof RosterView>;
+class Roster extends RosterView {
+  constructor(select: RosterParameters[0], more: RosterParameters[1], search?: RosterParameters[2], message?: RosterParameters[3], resolved?: RosterParameters[4]) {
+    super(select, more, search, message, resolved ?? (row => ({glyph: row.availability !== 'live' ? '○' : ({working: '●', failed: '!', done: '✓'} as Record<string, string>)[row.state] ?? '○', label: row.availability === 'live' ? row.state : row.availability, tool: row.state === 'working' ? row.currentTool : undefined})));
+  }
+}
 function required<T>(value: T | undefined): T { assert.notEqual(value, undefined); return value as T; }
 class FakeNode {
   parentNode: FakeNode | null = null;
@@ -71,8 +77,8 @@ test('routine ready roster hides the footer without a refresh control', t => {
   assert.equal(fixture.footer.hidden, true); assert.equal(fixture.footer.textContent, '');
   assert.equal(refresh.title, 'Unchanged');
   roster.set([row('one')], {...meta, stale: true}); fixture.flush();
-  assert.equal(fixture.footer.hidden, false); assert.equal(fixture.footer.children[0]?.textContent, 'saved roster · 10m ago');
-  assert.equal(fixture.footer.children[1]?.textContent, 'refresh');
+  assert.equal(fixture.footer.hidden, false); assert.equal(fixture.footer.children[0]?.textContent, 'Saved agent list · 10m ago');
+  assert.equal(fixture.footer.children[1]?.textContent, 'Refresh agents');
   assert.equal(refresh.title, 'Unchanged');
   roster.set([], page([])); fixture.flush();
   assert.equal(fixture.footer.hidden, true); assert.equal(refresh.title, 'Unchanged');
@@ -94,16 +100,16 @@ test('paging follows expanded older rows, reuses its button, and never appears i
   const rows = Array.from({length: 80}, (_, i) => row(`agent-${i}`, i < 30 ? {} : {availability: 'stored', state: 'done'}));
   roster.set(rows, page(rows, 'next')); f.flush();
   assert.equal(f.node.children.filter(child => child.className === 'agent-row').length, 30);
-  const older = f.node.query('roster-older'); assert.equal(older.textContent, '50 older'); assert.equal(f.node.children.at(-1), older);
+  const older = f.node.query('roster-older'); assert.equal(older.textContent, 'Show 50 older agents'); assert.equal(f.node.children.at(-1), older);
   assert.equal(f.footer.hidden, true); assert.throws(() => f.node.query('roster-more'));
-  older.click(); const more = f.node.query('roster-more'); assert.equal(more.textContent, 'more'); assert.equal(more.type, 'button'); assert.equal(f.node.children.at(-1), more);
+  older.click(); const more = f.node.query('roster-more'); assert.equal(more.textContent, 'More agents'); assert.equal(more.type, 'button'); assert.equal(f.node.children.at(-1), more);
   more.click(); assert.deepEqual(actions, ['more']);
   const nextRows = [...rows, row('extra', {availability: 'stored', state: 'done'})];
-  roster.set(nextRows, page(nextRows, 'next-2')); f.flush(); assert.equal(f.node.query('roster-more'), more); assert.equal(older.textContent, 'hide older');
-  older.click(); assert.equal(f.node.children.at(-1), older); assert.equal(older.textContent, '51 older'); assert.equal(more.parentNode, null);
+  roster.set(nextRows, page(nextRows, 'next-2')); f.flush(); assert.equal(f.node.query('roster-more'), more); assert.equal(older.textContent, 'Hide older agents');
+  older.click(); assert.equal(f.node.children.at(-1), older); assert.equal(older.textContent, 'Show 51 older agents'); assert.equal(more.parentNode, null);
   older.click(); assert.equal(f.node.query('roster-more'), more);
   roster.set(nextRows, {...page(nextRows), scan: {...page([]).scan, complete: false, scanId: 'scan'}}); f.flush();
-  assert.equal(f.node.query('roster-more'), more); assert.equal(more.textContent, 'continue scan'); more.click();
+  assert.equal(f.node.query('roster-more'), more); assert.equal(more.textContent, 'Load more agents'); more.click();
   assert.equal(f.footer.hidden, true); assert.deepEqual(actions, ['more', 'more']);
   roster.set(nextRows, page(nextRows)); f.flush(); assert.equal(more.parentNode, null);
 });
@@ -112,9 +118,9 @@ test('paging without loaded older rows appears directly and scan continuation re
   for (const rows of [[], [row('one')]]) {
     roster.set(rows, page(rows, 'next')); f.flush();
     assert.throws(() => f.node.query('roster-older')); assert.equal(f.footer.hidden, true);
-    const more = f.node.query('roster-more'); assert.equal(more.textContent, 'more'); assert.equal(f.node.children.at(-1), more); more.click();
+    const more = f.node.query('roster-more'); assert.equal(more.textContent, 'More agents'); assert.equal(f.node.children.at(-1), more); more.click();
     roster.set(rows, {...page(rows), scan: {...page([]).scan, complete: false, scanId: 'scan'}}); f.flush();
-    assert.equal(f.node.query('roster-more'), more); assert.equal(more.textContent, 'continue scan'); more.click();
+    assert.equal(f.node.query('roster-more'), more); assert.equal(more.textContent, 'Load more agents'); more.click();
     roster.set(rows, {...page(rows), scan: {...page([]).scan, complete: false}}); f.flush(); assert.equal(more.parentNode, null);
     assert.equal(f.footer.hidden, true);
   }
@@ -123,12 +129,27 @@ test('paging without loaded older rows appears directly and scan continuation re
 test('exception footer actions preserve refresh and retry without routine paging', () => {
   const f = setup(); const actions: Array<string | undefined> = []; const roster = new Roster(() => {}, action => actions.push(action));
   roster.set([], {stale: false, scan: {...page([]).scan, state: 'not-started'}}); f.flush();
-  assert.equal(f.footer.textContent, 'refresh'); required(f.footer.children[0]).click();
+  assert.equal(f.footer.textContent, 'Refresh agents'); required(f.footer.children[0]).click();
   roster.set([row('one')], {...page([]), stale: true}); f.flush();
-  assert.equal(f.footer.children[0]?.textContent, 'saved roster'); assert.equal(f.footer.children[1]?.textContent, 'refresh'); required(f.footer.children[1]).click();
+  assert.equal(f.footer.children[0]?.textContent, 'Saved agent list'); assert.equal(f.footer.children[1]?.textContent, 'Refresh agents'); required(f.footer.children[1]).click();
   roster.set([row('one')], {...page([]), scan: {...page([]).scan, state: 'failed'}}); f.flush();
-  assert.match(f.footer.textContent, /Roster discovery failed/); const retry = required(f.footer.children.find(child => child.tagName === 'button'));
-  assert.equal(retry.textContent, 'retry'); retry.click(); assert.deepEqual(actions, ['refresh', 'refresh', 'refresh']);
+  assert.match(f.footer.textContent, /Agents could not be loaded/); const retry = required(f.footer.children.find(child => child.tagName === 'button'));
+  assert.equal(retry.textContent, 'Try again'); retry.click(); assert.deepEqual(actions, ['refresh', 'refresh', 'refresh']);
+});
+test('working roster rows replace the age with the current tool and keep the argument accessible', t => {
+  t.mock.method(Date, 'now', () => 600000);
+  const f = setup(); const roster = new Roster(() => {}, () => {});
+  const currentTool = {name: 'bash', argument: 'npm run check'};
+  roster.set([row('one', {state: 'working', currentTool})]); f.flush();
+  const node = required(f.node.children[0]); const age = node.query('row-age'); const select = node.query('row-select');
+  assert.equal(node.dataset.tool, 'true'); assert.equal(age.textContent, 'bash'); assert.equal(age.hidden, false); assert.equal(age.disabled, true);
+  assert.equal(age.title, 'bash · npm run check'); assert.equal(age.attributes['aria-description'], 'bash · npm run check');
+  assert.equal(age.query('timestamp').dateTime, ''); assert.match(select.title, /bash · npm run check/);
+  assert.match(select.attributes['aria-description'] ?? '', /bash · npm run check/);
+  const height = node.offsetHeight;
+  roster.set([row('one', {state: 'idle', modifiedAt: 599000})]); f.flush();
+  assert.equal(node.dataset.tool, 'false'); assert.equal(age.textContent, 'now'); assert.equal(age.disabled, false); assert.equal(node.offsetHeight, height);
+  roster.set([row('one', {state: 'working'})]); f.flush(); assert.notEqual(age.textContent, 'bash');
 });
 test('roster has sibling native actions and preserves retained, idle and working glyphs', t => {
   t.mock.method(Date, 'now', () => 600000);
@@ -154,7 +175,7 @@ test('roster has sibling native actions and preserves retained, idle and working
   assert.equal(stored.dataset.live, 'false'); assert.equal(idle.dataset.live, 'true'); assert.equal(working.dataset.live, 'true');
   for (const removed of ['row-word', 'row-detail', 'row-model', 'row-activity']) assert.throws(() => stored.query(removed));
   assert.equal(idle.query('row-select').title, 'idle'); assert.equal(working.query('row-select').title, 'working');
-  assert.equal(select.title, 'stored · working'); assert.equal(select.attributes['aria-description'], select.title);
+  assert.equal(select.title, 'stored'); assert.equal(select.attributes['aria-description'], select.title);
   assert.equal(age.tabIndex, 0); assert.equal(age.query('timestamp').textContent, '10m');
   assert.equal(age.query('timestamp').dateTime, '1970-01-01T00:00:00.000Z');
   assert.match(age.attributes['aria-description'] ?? '', /1969|1970/); assert.match(age.title, /1970-01-01T00:00:00.000Z/);
@@ -222,9 +243,9 @@ test('activity line never repeats the status and keeps distinct details', () => 
   assert.equal(activityLine({...live, latestReply: 'Reviewing the diff'}, 'working'), 'working · Reviewing the diff');
   assert.equal(activityLine({...live, currentTool: {name: 'read', argument: 'a.ts'}}, 'working'), 'working · read · a.ts');
   assert.equal(activityLine({...live, latestReply: 'working'}, 'working'), 'working');
-  assert.equal(activityLine({...live, availability: 'stored'} as AgentRow, 'stored'), 'stored · working');
+  assert.equal(activityLine({...live, availability: 'stored'} as AgentRow, 'stored'), 'stored');
 });
-test('duplicate loaded names show distinguishing identity text on the name line', () => {
+test('duplicate loaded names keep names first with distinguishing identity text', () => {
   const fixture = setup(); const roster = new Roster(() => {}, () => {});
   roster.set([row('storage:one'), row('storage:two'), row('unique', {name: 'Only'})]); fixture.flush();
   const [one, two, unique] = fixture.node.children; assert.ok(one); assert.ok(two); assert.ok(unique);
@@ -238,8 +259,8 @@ test('duplicate loaded names show distinguishing identity text on the name line'
   roster.set([row('first:shared'), row('second:shared')]); fixture.flush();
   assert.equal(fixture.node.children[0]?.query('row-identity').textContent, 'shared');
   assert.equal(fixture.node.children[1]?.query('row-identity').textContent, 'shared');
-  assert.equal(fixture.node.children[0]?.query('row-identity').title, 'first:shared');
-  assert.equal(fixture.node.children[1]?.query('row-identity').title, 'second:shared');
+  assert.equal(fixture.node.children[0]?.query('row-identity').title, 'Agent ID: first:shared');
+  assert.equal(fixture.node.children[1]?.query('row-identity').title, 'Agent ID: second:shared');
 });
 test('shared-prefix duplicates use the shortest unique identity tail and retain full identity metadata', () => {
   const f = setup(); const roster = new Roster(() => {}, () => {});
@@ -254,7 +275,8 @@ test('shared-prefix duplicates use the shortest unique identity tail and retain 
     assert.deepEqual(f.node.children.map(child => child.query('row-identity').textContent), labels);
     for (const [index, child] of f.node.children.entries()) {
       const identity = required(identities[index]);
-      assert.equal(child.query('row-identity').title, identity); assert.ok(child.title.includes(identity));
+      assert.equal(child.query('row-identity').title, `Agent ID: ${identity}`); assert.ok(child.title.includes(identity));
+      assert.equal(child.query('row-identity').attributes['aria-label'], `Agent ID: ${identity}`);
       assert.ok(child.query('row-select').attributes['aria-label']?.includes(identity));
     }
   }
@@ -274,9 +296,11 @@ test('empty roster discovery failure keeps the reason in the list and retry in t
   const fixture = setup(); const actions: Array<string | undefined> = [];
   const roster = new Roster(() => {}, action => actions.push(action));
   roster.set([], {stale: true, scan: {state: 'failed', complete: false, visited: 0, skipped: 0, omitted: 0}, error: {code: 'unavailable', message: 'Catalog could not be read', retry: 'read'}}); fixture.flush();
-  const failure = required(fixture.node.children[0]); assert.match(failure.textContent, /Catalog could not be read/);
+  const failure = required(fixture.node.children[0]); assert.equal(failure.textContent, 'Agents could not be loaded.');
+  assert.match(required(fixture.footer.children.find(child => child.tagName === 'details')).textContent, /Catalog could not be read/);
+  assert.equal(fixture.footer.children.some(child => child.tagName === 'p' && child.textContent === failure.textContent), false);
   assert.equal(failure.children.some(child => child.tagName === 'button'), false);
-  const retry = required(fixture.footer.children.find(child => child.tagName === 'button')); assert.equal(retry.textContent, 'retry');
+  const retry = required(fixture.footer.children.find(child => child.tagName === 'button')); assert.equal(retry.textContent, 'Try again');
   retry.click(); assert.deepEqual(actions, ['refresh']);
 });
 test('keyed wrappers, actions, order and focused timestamps survive roster updates', t => {
@@ -331,9 +355,9 @@ function searchFixture() {
 }
 test('cached search reaches a match beyond the first loaded page without discovery', async () => {
   const fixture = searchFixture(); fixture.query('needle');
-  assert.match(fixture.footer.textContent, /Searching cached pages/); assert.equal(fixture.footer.hidden, false);
+  assert.match(fixture.footer.textContent, /Searching agents…/); assert.equal(fixture.footer.hidden, false);
   required(fixture.loads[0]).pending.resolve(page([row('other')], 'page-2')); await required(fixture.loads[0]).pending.promise;
-  assert.equal(required(fixture.loads[1]).cursor, 'page-2'); assert.match(fixture.footer.textContent, /Searching cached pages/);
+  assert.equal(required(fixture.loads[1]).cursor, 'page-2'); assert.match(fixture.footer.textContent, /Searching agents…/);
   required(fixture.loads[1]).pending.resolve(page([row('needle', {name: 'Needle'})])); await required(fixture.loads[1]).pending.promise; await Promise.resolve(); fixture.flush();
   assert.equal(fixture.loads.length, 2); assert.match(fixture.node.textContent, /Needle/);
   assert.doesNotMatch(fixture.footer.textContent, /Searching/); assert.equal(fixture.footer.hidden, true); assert.deepEqual(fixture.actions, []);
@@ -343,7 +367,7 @@ test('obsolete cached searches abort and never merge late responses', async () =
   fixture.query('new'); assert.equal(old.signal.aborted, true); const current = required(fixture.loads[1]);
   old.pending.resolve(page([row('old')], 'old-next')); await old.pending.promise;
   assert.equal(fixture.merged.length, 0); assert.equal(fixture.loads.length, 2);
-  assert.match(fixture.footer.textContent, /Searching cached pages/);
+  assert.match(fixture.footer.textContent, /Searching agents…/);
   fixture.query(''); assert.equal(current.signal.aborted, true);
   current.pending.resolve(page([row('new')])); await current.pending.promise;
   assert.equal(fixture.merged.length, 0); assert.doesNotMatch(fixture.footer.textContent, /Searching/);
@@ -352,25 +376,25 @@ test('obsolete cached searches abort and never merge late responses', async () =
 test('cached search has a twenty-page bound and explicit continuation to cache end', async () => {
   const fixture = searchFixture(); fixture.query('missing');
   for (let i = 0; i < 20; i++) { required(fixture.loads[i]).pending.resolve(page([], `page-${i + 2}`)); await required(fixture.loads[i]).pending.promise; }
-  await Promise.resolve(); assert.equal(fixture.loads.length, 20); assert.match(fixture.footer.textContent, /Cached search limit reached · 20 pages read/);
+  await Promise.resolve(); assert.equal(fixture.loads.length, 20); assert.match(fixture.footer.textContent, /The agent list is incomplete/);
   fixture.roster.set(Array.from({length: 20}, (_, i) => row(`initial-${i}`)), page([], 'page-21')); assert.equal(fixture.loads.length, 20);
   required(fixture.footer.children.find(child => child.tagName === 'button')).click(); assert.equal(required(fixture.loads[20]).cursor, 'page-21');
   required(fixture.loads[20]).pending.resolve(page([])); await required(fixture.loads[20]).pending.promise; await Promise.resolve();
-  assert.match(fixture.footer.textContent, /No more cached agents/); assert.deepEqual(fixture.actions, []);
+  assert.match(fixture.footer.textContent, /No more agents/); assert.deepEqual(fixture.actions, []);
   assert.equal(fixture.footer.children.some(child => child.tagName === 'button'), false);
 });
 test('cached search errors keep manual retry and do not restart on paint', async () => {
   const fixture = searchFixture(); fixture.query('missing'); const failed = required(fixture.loads[0]);
   failed.pending.reject(new Error('Cache unavailable')); await assert.rejects(failed.pending.promise); fixture.flush();
-  assert.match(fixture.footer.textContent, /Cached search failed: Cache unavailable/); assert.equal(fixture.loads.length, 1);
+  assert.match(fixture.footer.textContent, /Agents could not be searched.*DetailsCache unavailable/); assert.equal(fixture.loads.length, 1);
   required(fixture.footer.children.find(child => child.tagName === 'button')).click(); const retry = required(fixture.loads[1]);
   retry.pending.resolve(page([], 'page-1')); await retry.pending.promise; await Promise.resolve();
   assert.match(fixture.footer.textContent, /Repeated cached page cursor/); assert.equal(fixture.loads.length, 2);
   assert.deepEqual(fixture.actions, []);
 });
-test('loaded matches do not fetch cached pages and expose the lowercase manual continuation', () => {
+test('loaded matches do not fetch cached pages and expose manual continuation', () => {
   const fixture = searchFixture(); fixture.query(' initial-3 '); assert.equal(fixture.loads.length, 0); assert.equal(fixture.node.children[0]?.dataset.identity, 'initial-3');
-  assert.equal(fixture.footer.hidden, true); const more = fixture.node.query('roster-more'); assert.equal(more.textContent, 'more'); more.click();
+  assert.equal(fixture.footer.hidden, true); const more = fixture.node.query('roster-more'); assert.equal(more.textContent, 'More agents'); more.click();
   assert.equal(fixture.loads.length, 1); assert.equal(fixture.loads[0]?.cursor, 'page-1'); fixture.flush(); assert.equal(more.parentNode, null);
 });
 test('focused timestamp pins its wrapper outside the virtual roster window', t => {
@@ -393,8 +417,8 @@ test('default scope includes live, working and recent rows with an older toggle 
   const ids = () => f.node.children.filter(child => child.className === 'agent-row').map(child => child.dataset.identity);
   roster.set(rows, page(rows)); f.flush();
   assert.deepEqual(ids(), ['live', 'working', 'recent', 'boundary']);
-  const older = f.node.query('roster-older'); assert.equal(older.textContent, '2 older'); assert.equal(older.type, 'button'); assert.equal(older.attributes['aria-expanded'], 'false'); assert.equal(f.node.children.at(-1), older);
-  older.click(); assert.deepEqual(ids(), rows.map(row => row.identity)); assert.equal(older.textContent, 'hide older'); assert.equal(older.attributes['aria-expanded'], 'true');
+  const older = f.node.query('roster-older'); assert.equal(older.textContent, 'Show 2 older agents'); assert.equal(older.type, 'button'); assert.equal(older.attributes['aria-expanded'], 'false'); assert.equal(f.node.children.at(-1), older);
+  older.click(); assert.deepEqual(ids(), rows.map(row => row.identity)); assert.equal(older.textContent, 'Hide older agents'); assert.equal(older.attributes['aria-expanded'], 'true');
   roster.set([...rows].reverse(), page(rows)); f.flush(); assert.deepEqual(ids(), rows.map(row => row.identity));
   older.click(); assert.deepEqual(ids(), ['live', 'working', 'recent', 'boundary']); assert.equal(f.node.query('roster-older'), older);
   f.search.value = 'old'; f.search.dispatch('input'); f.flush(); assert.deepEqual(ids(), ['old']); assert.throws(() => f.node.query('roster-older'));
@@ -408,12 +432,12 @@ test('selected, focused and retained rows remain in scope as the clock and retai
   roster.resume('retained', true); now += 86400001;
   roster.set(rows, page(rows), 'selected'); f.flush();
   assert.deepEqual(f.node.children.filter(child => child.className === 'agent-row').map(child => child.dataset.identity), ['selected', 'focused', 'retained']);
-  assert.equal(f.document.activeElement, age); assert.equal(f.node.query('roster-older').textContent, '1 older');
-  roster.set(rows, page(rows)); f.flush(); assert.equal(f.node.query('roster-older').textContent, '2 older');
+  assert.equal(f.document.activeElement, age); assert.equal(f.node.query('roster-older').textContent, 'Show 1 older agent');
+  roster.set(rows, page(rows)); f.flush(); assert.equal(f.node.query('roster-older').textContent, 'Show 2 older agents');
   const retained = required(f.node.children.find(child => child.dataset.identity === 'retained')); assert.equal(retained.dataset.action, 'resume');
-  roster.resume('retained', false); f.flush(); assert.equal(f.node.query('roster-older').textContent, '3 older');
+  roster.resume('retained', false); f.flush(); assert.equal(f.node.query('roster-older').textContent, 'Show 3 older agents');
   f.document.activeElement = null; f.node.dispatch('scroll'); f.flush();
-  assert.equal(f.node.children.length, 1); assert.equal(f.node.query('roster-older').textContent, '4 older');
+  assert.equal(f.node.children.length, 1); assert.equal(f.node.query('roster-older').textContent, 'Show 4 older agents');
   roster.resume('hidden', true); f.flush(); assert.equal(f.node.children[0]?.dataset.identity, 'hidden'); assert.equal(f.node.children[0]?.dataset.action, 'resume');
 });
 test('printable roster keys focus the visible filter, search older rows, and Escape returns to the roster', t => {
@@ -447,7 +471,7 @@ test('filter visibility never changes and Escape restores the recent scope witho
   f.node.dispatch('keydown', {key: 'x', preventDefault: () => {}}); assert.equal(old.parentNode, null);
   f.search.dispatch('keydown', {key: 'Escape', preventDefault: () => {}, stopPropagation: () => {}}); f.flush();
   assert.equal(f.document.activeElement, f.node); assert.equal(f.search.value, ''); assert.equal(f.search.hidden, false);
-  assert.equal(old.parentNode, null); assert.equal(f.node.query('roster-older').textContent, '1 older');
+  assert.equal(old.parentNode, null); assert.equal(f.node.query('roster-older').textContent, 'Show 1 older agent');
   f.search.dispatch('blur'); assert.equal(f.search.hidden, false);
 });
 test('the visible scoped list uses a 20 pixel estimate and preserves selected virtual pins', t => {
@@ -461,7 +485,7 @@ test('the visible scoped list uses a 20 pixel estimate and preserves selected vi
   const beforePin = f.node.children.slice(0, f.node.children.indexOf(pinned)).reduce((height, node) => height + node.offsetHeight, 0);
   assert.equal(beforePin, 200 * 20); assert.ok(Number.parseFloat(gap.style.height ?? '') % 20 === 0);
   assert.equal(f.node.children.reduce((height, node) => height + node.offsetHeight, 0), 220 * 20 + 20);
-  assert.equal(f.node.query('roster-older').textContent, '100 older'); assert.ok(f.node.children.filter(child => child.className === 'agent-row').length <= 77);
+  assert.equal(f.node.query('roster-older').textContent, 'Show 100 older agents'); assert.ok(f.node.children.filter(child => child.className === 'agent-row').length <= 77);
   const bottom = 220 * 20 + 20 - f.node.clientHeight;
   f.node.scrollTop = bottom; f.node.dispatch('scroll'); f.flush(); assert.equal(f.node.scrollTop, bottom);
   f.node.query('roster-older').click(); assert.equal(f.node.scrollTop, bottom);
@@ -491,4 +515,18 @@ test('Message captures identity across rename and reorder; Resume changes only i
   assert.equal(required(f.node.children[1]).query('row-message').textContent, 'Message');
   roster.set([row('a'), row('b')], undefined, 'b'); f.flush(); assert.equal(action.hidden, true);
   roster.set([row('a'), row('b')]); f.flush(); assert.equal(action.hidden, false); assert.equal(action.textContent, 'Resume');
+});
+
+test('resolved status overrides live catalog state and removes a stale tool without replacing the row', () => {
+  const f = setup(); let label = 'Working';
+  const roster = new RosterView(() => {}, () => {}, undefined, undefined, () => ({label, glyph: label === 'Working' ? '●' : '○', tool: label === 'Working' ? {name: 'read', argument: 'file.ts'} : undefined}));
+  const source = row('selected', {state: 'unavailable', currentTool: {name: 'read', argument: 'file.ts'}});
+  roster.set([source], undefined, source.identity); f.flush();
+  const node = required(f.node.children[0]); const select = node.query('row-select'); select.focus();
+  assert.match(select.attributes['aria-label'] ?? '', /Working/); assert.doesNotMatch(select.attributes['aria-label'] ?? '', /unavailable/);
+  assert.equal(node.query('row-age').textContent, 'read'); assert.equal(node.query('row-state').title, 'Working');
+  label = 'Ready'; roster.set([source], undefined, source.identity); f.flush();
+  assert.equal(f.node.children[0], node); assert.equal(f.document.activeElement, select);
+  assert.match(select.attributes['aria-label'] ?? '', /Ready/); assert.notEqual(node.query('row-age').textContent, 'read');
+  assert.equal(node.query('row-state').title, 'Ready');
 });

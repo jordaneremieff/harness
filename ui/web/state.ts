@@ -5,17 +5,19 @@ import type {
 import { createDialogs, enqueueDialog, expireDialog, expirePrimaryDialogs, reconcileDialogs } from './dialog-state.ts';
 import type { DialogState } from './dialog-state.ts';
 import { mergeOperationMap } from './operation-state.ts';
+import { workspaceLayout, tabKey } from './tabs.ts';
+import { paneLeaves } from './pane-layout.ts';
 
 export type UiEvent = { [N in EventName]: { name: N; id?: string; target?: Target; workspaceId?: string; data: EventData[N] } }[EventName];
 export interface ToolState {
   callId: string; name: string; phase: 'start' | 'update' | 'end'; arguments?: JsonDisplay;
-  argumentText?: string; parts?: PartView[]; isError?: boolean; durationMs?: number; output?: ToolOutputInfo;
+  argumentText?: string; parts?: PartView[]; isError?: boolean; durationMs?: number; observedStart?: number; output?: ToolOutputInfo;
 }
 export interface Conversation {
-  target: Target; entries: ReadonlyMap<string, EntryView>; entryOrder: string[];
+  target: Target; entries: ReadonlyMap<string, EntryView>; entryOrder: string[]; historyCursor?: string | null;
   messages: ReadonlyMap<string, MessageView>; messageOrder: string[];
   tools: ReadonlyMap<string, ToolState>; live: EntryView[]; messageBlocks: ReadonlyMap<string, EntryView>;
-  queue?: EventData['primary.queue']; recovery?: EventData['primary.recovery']; frame?: ProjectedFrame;
+  queue?: EventData['primary.queue']; recovery?: EventData['primary.recovery']; frame?: ProjectedFrame; connectionEpoch?: number;
 }
 export interface UiState {
   bootId?: string; cursor?: string; sequence: number; needsResync: boolean; resyncReason?: string;
@@ -25,7 +27,6 @@ export interface UiState {
   targets: ReadonlyMap<string, TargetState>; targetIndex: ReadonlyMap<string, TargetIndex>; dialogs: DialogState;
   operations: ReadonlyMap<string, OperationView>;
   primaryIndex: NonNullable<Snapshot['primaryIndex']>; operationIndex: string[]; omitted: NonNullable<Snapshot['omitted']>;
-  selectedAgent?: { identity: string; connectionEpoch: number; revision: number };
   agentEpochs: ReadonlyMap<string, number>;
   agentAvailability: ReadonlyMap<string, EventData['agent.availability']>;
   notices: NoticeView[]; noticeShelf: ReadonlyMap<string, NoticeView>;
@@ -107,22 +108,27 @@ function updateConversation(state: UiState, target: Target, update: (value: Conv
   return { ...state, conversations };
 }
 function mergeEntries(conversation: Conversation, incoming: EntryView[], prepend: boolean): Conversation {
-  const entries = new Map(conversation.entries);
+  let entries: Map<string, EntryView> | undefined;
   const added: string[] = [];
   for (const entry of incoming) {
-    if (!entries.has(entry.id)) added.push(entry.id);
-    const previous = entries.get(entry.id);
-    entries.set(entry.id, previous && JSON.stringify(previous) === JSON.stringify(entry) ? previous : entry);
+    const previous = (entries ?? conversation.entries).get(entry.id);
+    if (previous === entry || previous && JSON.stringify(previous) === JSON.stringify(entry)) continue;
+    entries ??= new Map(conversation.entries);
+    if (!previous) added.push(entry.id); entries.set(entry.id, entry);
   }
-  const entryOrder = prepend ? [...added, ...conversation.entryOrder] : [...conversation.entryOrder, ...added];
+  if (!entries) return conversation;
+  const entryOrder = !added.length ? conversation.entryOrder : prepend ? [...added, ...conversation.entryOrder] : [...conversation.entryOrder, ...added];
   return { ...conversation, entries, entryOrder, live: reconcileLiveEntries(entries, conversation.live, conversation.live) };
 }
 function primaryCurrent(state: UiState, target: Target): boolean {
   return target.kind === 'primary' && state.primaries.get(target.key)?.epoch === target.epoch;
 }
-export function mergePrimaryPage(state: UiState, target: Target, entries: EntryView[]): UiState {
+export function mergePrimaryPage(state: UiState, target: Target, entries: EntryView[], page?: {nextCursor: string | null; earlier: boolean}): UiState {
   if (!primaryCurrent(state, target)) return state;
-  return updateConversation(state, target, value => mergeEntries(value, entries, true));
+  return updateConversation(state, target, value => {
+    const merged = mergeEntries(value, entries, true);
+    return page && (page.earlier || entries.length > 0 && value.historyCursor === undefined) ? {...merged, historyCursor: page.nextCursor} : merged;
+  });
 }
 export function mergeAgentPage(state: UiState, identity: string, entries: EntryView[]): UiState {
   return updateConversation(state, { kind: 'agent', identity }, value => mergeEntries(value, entries, true));
@@ -135,21 +141,37 @@ function calls(parts: PartView[]): Set<string> {
   }
   return result;
 }
+const messageCallKeys = new WeakMap<MessageView, Set<string>>();
+function messageCalls(message: MessageView): Set<string> {
+  let value = messageCallKeys.get(message);
+  if (!value) { value = calls(message.parts); messageCallKeys.set(message, value); }
+  return value;
+}
 function entryCalls(entry: EntryView): Set<string> {
   const result = new Set<string>();
-  for (const message of entry.messages ?? []) for (const id of calls(message.parts)) result.add(id);
+  for (const message of entry.messages ?? []) for (const id of messageCalls(message)) result.add(id);
   return result;
+}
+interface CommittedKeys {messages: Set<string>; calls: Set<string>; order?: string[]; ordered?: EntryView[]}
+const committedKeys = new WeakMap<ReadonlyMap<string, EntryView>, CommittedKeys>();
+const blockViews = new WeakMap<Conversation, EntryView[]>();
+function committed(entries: ReadonlyMap<string, EntryView>): CommittedKeys {
+  let value = committedKeys.get(entries); if (value) return value;
+  value = {messages: new Set(), calls: new Set()};
+  for (const entry of entries.values()) {
+    for (const message of entry.messages ?? []) value.messages.add(message.id);
+    for (const call of entryCalls(entry)) value.calls.add(call);
+  }
+  committedKeys.set(entries, value); return value;
 }
 function representedMessage(message: MessageView, messageIds: Set<string>, callIds: Set<string>): boolean {
   if (messageIds.has(message.id)) return true;
   if (message.parts.some(part => part.type === 'text' || part.type === 'thinking')) return false;
-  const ids = calls(message.parts);
+  const ids = messageCalls(message);
   return ids.size > 0 && [...ids].every(id => callIds.has(id));
 }
 function reconcileLiveEntries(entries: ReadonlyMap<string, EntryView>, live: EntryView[], previous: EntryView[]): EntryView[] {
-  const committed = [...entries.values()];
-  const messageIds = new Set(committed.flatMap(entry => (entry.messages ?? []).map(message => message.id)));
-  const callIds = new Set(committed.flatMap(entry => [...entryCalls(entry)]));
+  const {messages: messageIds, calls: callIds} = committed(entries);
   const old = new Map(previous.map(entry => [entry.id, entry]));
   const result: EntryView[] = [];
   for (const entry of live) {
@@ -164,54 +186,68 @@ function reconcileLiveEntries(entries: ReadonlyMap<string, EntryView>, live: Ent
 }
 /** Committed message/call keys remove matching temporary projections without comparing prose. */
 export function conversationBlocks(conversation: Conversation): EntryView[] {
-  const entries = conversation.entryOrder.flatMap(id => {
-    const entry = conversation.entries.get(id); return entry ? [entry] : [];
-  });
-  const messageIds = new Set(entries.flatMap(entry => (entry.messages ?? []).map(message => message.id)));
-  const callIds = new Set(entries.flatMap(entry => [...entryCalls(entry)]));
-  const ordinaryCalls = new Set([...conversation.messages.values()].filter(message => !message.id.startsWith('tool:')).flatMap(message => [...calls(message.parts)]));
+  const cached = blockViews.get(conversation); if (cached) return cached;
+  const keys = committed(conversation.entries);
+  if (keys.order !== conversation.entryOrder) {
+    keys.order = conversation.entryOrder; keys.ordered = conversation.entryOrder.flatMap(id => {
+      const entry = conversation.entries.get(id); return entry ? [entry] : [];
+    });
+  }
+  const entries = keys.ordered ?? []; const messageIds = keys.messages; const callIds = keys.calls;
+  const ordinaryCalls = new Set([...conversation.messages.values()].filter(message => !message.id.startsWith('tool:')).flatMap(message => [...messageCalls(message)]));
   const standalone = conversation.messageOrder.flatMap(id => {
     const message = conversation.messages.get(id);
     const block = conversation.messageBlocks.get(id);
-    const duplicateTool = id.startsWith('tool:') && message && [...calls(message.parts)].some(call => ordinaryCalls.has(call) || callIds.has(call));
+    const duplicateTool = id.startsWith('tool:') && message && [...messageCalls(message)].some(call => ordinaryCalls.has(call) || callIds.has(call));
     return block && !messageIds.has(id) && !duplicateTool ? [block] : [];
   });
-  return [...entries, ...standalone, ...conversation.live];
+  const blocks = [...entries, ...standalone, ...conversation.live]; blockViews.set(conversation, blocks); return blocks;
 }
 export function primaryBlocks(state: UiState, key: string): EntryView[] {
   const primary = state.primaries.get(key);
   const conversation = primary && state.conversations.get(targetIdentity({ kind: 'primary', key, epoch: primary.epoch }));
   return conversation ? conversationBlocks(conversation) : [];
 }
-export function agentBlocks(state: UiState): EntryView[] {
-  const identity = state.selectedAgent?.identity;
-  const conversation = identity && state.conversations.get(targetIdentity({ kind: 'agent', identity }));
+export function visibleTargets(workspace: Workspace, primary?: Target): Target[] {
+  return paneLeaves(workspaceLayout(workspace).root).flatMap(pane => {
+    const tab = pane.tabs.find(tab => tabKey(tab) === pane.active);
+    return !tab ? [] : tab.kind === 'agent' ? [{kind: 'agent' as const, identity: tab.identity}] : primary ? [primary] : [];
+  });
+}
+export function agentBlocks(state: UiState, identity: string): EntryView[] {
+  const conversation = state.conversations.get(targetIdentity({kind: 'agent', identity}));
   return conversation ? conversationBlocks(conversation) : [];
 }
-export function selectAgent(state: UiState, identity?: string): UiState {
-  if (state.selectedAgent?.identity === identity) return state;
-  let next = state;
-  if (state.selectedAgent) next = updateConversation(next, { kind: 'agent', identity: state.selectedAgent.identity }, value => ({ ...value, live: [] }));
-  return { ...next, agentAvailability: new Map(), selectedAgent: identity ? { identity, connectionEpoch: -1, revision: -1 } : undefined };
+function visibleAgent(state: UiState, identity: string): boolean {
+  return !!state.workspace && visibleTargets(state.workspace).some(target => target.kind === 'agent' && target.identity === identity);
 }
-function selectedIdentity(workspace: Workspace): string | undefined {
-  return workspace.panelVisible !== false && workspace.selectedTarget?.kind === 'agent' ? workspace.selectedTarget.identity : undefined;
+function admitAgentEpoch(state: UiState, identity: string, epoch: number): UiState | undefined {
+  if (!visibleAgent(state, identity) || !Number.isSafeInteger(epoch) || epoch <= 0 || epoch < (state.agentEpochs.get(identity) ?? 0)) return;
+  if (epoch === state.agentEpochs.get(identity)) return state.conversations.get(targetIdentity({kind: 'agent', identity}))?.connectionEpoch === epoch ? state : undefined;
+  const agentEpochs = new Map(state.agentEpochs).set(identity, epoch);
+  const agentAvailability = new Map(state.agentAvailability); agentAvailability.delete(identity);
+  return updateConversation({...state, agentEpochs, agentAvailability}, {kind: 'agent', identity}, old => ({...old, live: [], frame: undefined, connectionEpoch: epoch}));
 }
 function applyFrame(state: UiState, identity: string, connectionEpoch: number, frame: ProjectedFrame): UiState {
-  const selected = state.selectedAgent;
-  if (!selected || selected.identity !== identity || !Number.isSafeInteger(connectionEpoch) || connectionEpoch < 0) return state;
-  const seenEpoch = state.agentEpochs.get(identity) ?? -1;
-  if (connectionEpoch < seenEpoch || (selected.connectionEpoch < 0 && connectionEpoch <= seenEpoch)) return state;
-  if (connectionEpoch === selected.connectionEpoch && frame.revision <= selected.revision) return state;
   if (!Number.isSafeInteger(frame.revision) || frame.revision < 0) return state;
-  const next = updateConversation(state, { kind: 'agent', identity }, old => {
+  const next = admitAgentEpoch(state, identity, connectionEpoch); if (!next) return state;
+  const old = next.conversations.get(targetIdentity({kind: 'agent', identity}));
+  if (old?.frame && frame.revision <= old.frame.revision) return next;
+  return updateConversation(next, {kind: 'agent', identity}, old => {
     const merged = mergeEntries(old, frame.entries, false);
-    return { ...merged, live: reconcileLiveEntries(merged.entries, frame.live,
-      connectionEpoch === selected.connectionEpoch ? old.live : []), frame };
+    return {...merged, live: reconcileLiveEntries(merged.entries, frame.live, old.live), frame, connectionEpoch};
   });
-  const agentEpochs = new Map(next.agentEpochs);
-  agentEpochs.set(identity, connectionEpoch);
-  return { ...next, agentEpochs, selectedAgent: { identity, connectionEpoch, revision: frame.revision } };
+}
+function releaseInvisibleAgents(state: UiState): UiState {
+  const visible = new Set(state.workspace ? visibleTargets(state.workspace).flatMap(target => target.kind === 'agent' ? [target.identity] : []) : []);
+  let next = state;
+  for (const conversation of state.conversations.values()) {
+    const target = conversation.target;
+    if (target.kind !== 'agent' || visible.has(target.identity) || conversation.connectionEpoch === undefined) continue;
+    next = updateConversation(next, target, old => ({...old, live: [], frame: undefined, connectionEpoch: undefined}));
+    const agentAvailability = new Map(next.agentAvailability); agentAvailability.delete(target.identity); next = {...next, agentAvailability};
+  }
+  return next;
 }
 function discardTransient(state: UiState): UiState {
   const conversations = new Map(state.conversations);
@@ -235,11 +271,6 @@ function snapshotTargets(state: UiState, snapshot: Snapshot): ReadonlyMap<string
   }
   return targets;
 }
-function restoreSnapshotAgent(next: UiState, previous: UiState, snapshot: Snapshot): UiState {
-  if (!next.selectedAgent || previous.bootId !== snapshot.bootId || previous.selectedAgent?.identity !== next.selectedAgent.identity) return next;
-  return { ...next, selectedAgent: { identity: next.selectedAgent.identity,
-    connectionEpoch: previous.selectedAgent.connectionEpoch, revision: snapshot.selectedFrame?.revision ?? -1 } };
-}
 /** Pending baselines retain receipts already known in the same backend boot. */
 function snapshotOperations(state: UiState, snapshot: Snapshot): ReadonlyMap<string, OperationView> {
   let operations: ReadonlyMap<string, OperationView> = state.bootId === snapshot.bootId ? state.operations : new Map();
@@ -262,7 +293,7 @@ function snapshotRoster(state: UiState, snapshot: Snapshot, buffered: UiEvent[],
   const omitted = snapshot.omitted?.includes('roster') ?? false;
   const partial = snapshot.roster.nextCursor != null || omitted;
   const retain = state.bootId === snapshot.bootId && partial;
-  const rows = [...snapshot.roster.rows, ...(snapshot.selectedAgent ? [snapshot.selectedAgent] : [])];
+  const rows = snapshot.roster.rows;
   const authoritative = new Set(rows.map(row => row.identity));
   const extras = new Set([...state.roster.keys()].filter(id => !authoritative.has(id)));
   let cached = retain ? state : { ...state, roster: new Map<string, AgentRow>(), rosterOrder: [], rosterRevision: -1, rosterMeta: undefined };
@@ -279,40 +310,80 @@ function snapshotRoster(state: UiState, snapshot: Snapshot, buffered: UiEvent[],
   return { roster: merged.roster, rosterOrder: merged.rosterOrder, rosterRevision: merged.rosterRevision,
     rosterMeta: retain && omitted ? cached.rosterMeta : merged.rosterMeta };
 }
+/** Keep cached primary pages only when the current history still contains their known leaf. */
+function retainedPrimaryHistory(state: UiState, snapshot: Snapshot, target: Target, old: Conversation, items: EntryView[]): Conversation {
+  const empty = emptyConversation(target);
+  if (target.kind !== 'primary' || state.bootId !== snapshot.bootId) return empty;
+  const previous = state.primaries.get(target.key); const current = snapshot.primaries.find(item => item.key === target.key);
+  if (!previous?.sessionId || !previous.sessionFile || previous.epoch !== target.epoch || current?.epoch !== target.epoch || previous.sessionId !== current.sessionId || previous.sessionFile !== current.sessionFile) return empty;
+  const leaf = old.entryOrder.at(-1);
+  if (!leaf || !items.some(item => item.id === leaf)) return empty;
+  if (items.some(item => ['compaction', 'branch_summary'].includes(item.kind) && JSON.stringify(old.entries.get(item.id)) !== JSON.stringify(item))) return empty;
+  return {...empty, entries: old.entries, entryOrder: old.entryOrder, historyCursor: old.historyCursor};
+}
+type ToolResult = Extract<PartView, {type: 'toolResult'}>;
+function snapshotToolResults(items: EntryView[]): Map<string, ToolResult> {
+  const results = new Map<string, ToolResult>();
+  const collect = (parts: PartView[]) => {for (const part of parts) if (part.type === 'toolResult') {results.set(part.callId, part); collect(part.parts);}};
+  for (const entry of items) for (const message of entry.messages ?? []) if (message.state === 'final') collect(message.parts);
+  return results;
+}
+/** Final snapshot content owns result and status; only matching completed timing can supplement it. */
+function snapshotToolTiming(tool: ToolState, result: ToolResult): ToolState | undefined {
+  if (tool.phase !== 'end' || tool.durationMs === undefined || tool.name !== result.name || !!tool.isError !== result.isError) return;
+  if (tool.parts !== undefined && JSON.stringify(tool.parts) !== JSON.stringify(result.parts) ||
+    tool.output !== undefined && JSON.stringify(tool.output) !== JSON.stringify(result.output)) return;
+  return {callId: result.callId, name: result.name, phase: 'end', durationMs: tool.durationMs, isError: result.isError};
+}
+/** History snapshots omit event-only tool metadata; matching unfinished calls retain observed state within one session. */
+function retainedPrimaryTools(state: UiState, snapshot: Snapshot, target: Target, old: Conversation, items: EntryView[]): ReadonlyMap<string, ToolState> {
+  if (target.kind !== 'primary' || state.bootId !== snapshot.bootId) return new Map();
+  const previous = state.primaries.get(target.key); const current = snapshot.primaries.find(item => item.key === target.key);
+  if (!previous?.sessionId || previous.epoch !== target.epoch || current?.epoch !== target.epoch || previous.sessionId !== current.sessionId || previous.sessionFile !== current.sessionFile) return new Map();
+  if (items.some(item => ['compaction', 'branch_summary'].includes(item.kind) && JSON.stringify(old.entries.get(item.id)) !== JSON.stringify(item))) return new Map();
+  const represented = new Set(items.flatMap(item => [...entryCalls(item)]));
+  const results = snapshotToolResults(items), retained = new Map<string, ToolState>();
+  const observed = [...old.tools].filter(([id, tool]) => represented.has(id) && (tool.phase === 'end' || current.activity === 'running' || current.activity === 'retrying'));
+  for (const [id, tool] of observed) {
+    const result = results.get(id), value = result ? snapshotToolTiming(tool, result) : tool;
+    if (value) retained.set(id, value);
+  }
+  return retained;
+}
+function restoreSnapshotConversations(next: UiState, state: UiState, snapshot: Snapshot): UiState {
+  for (const primary of snapshot.primaries) {
+    const target: Target = { kind: 'primary', key: primary.key, epoch: primary.epoch };
+    next = { ...next, dialogs: reconcileDialogs(expirePrimaryDialogs(next.dialogs, primary.key, primary.epoch), target, primary.pendingDialogs) };
+  }
+  if (state.bootId !== snapshot.bootId) next = discardTransient(next);
+  const page = snapshot.selectedPage;
+  if (page) {
+    const items = 'items' in page ? page.items : page.entries;
+    next = updateConversation(next, page.target, old => ({...mergeEntries(retainedPrimaryHistory(state, snapshot, page.target, old, items), items, false), tools: retainedPrimaryTools(state, snapshot, page.target, old, items)}));
+  }
+  for (const observation of snapshot.observations ?? []) {
+    if (observation.frame) next = applyFrame(next, observation.identity, observation.connectionEpoch, observation.frame);
+    else if (observation.connectionEpoch > 0) next = admitAgentEpoch(next, observation.identity, observation.connectionEpoch) ?? next;
+  }
+  return next;
+}
 export function replaceSnapshot(state: UiState, snapshot: Snapshot, buffered: UiEvent[] = []): UiState {
   const cursor = parseCursor(snapshot.cursor);
   if (!cursor || cursor.bootId !== snapshot.bootId) return { ...state, needsResync: true, resyncReason: 'invalid-snapshot' };
   if (state.bootId === snapshot.bootId && cursor.sequence < state.sequence) return state;
   const primaries = new Map(snapshot.primaries.map(primary => [primary.key, primary]));
+  const sameWorkspace = state.bootId === snapshot.bootId && state.workspace?.id === snapshot.workspace.id;
   let next: UiState = { ...state, bootId: snapshot.bootId, cursor: snapshot.cursor, sequence: cursor.sequence,
     needsResync: false, resyncReason: undefined, workspace: snapshot.workspace, primaries,
     ...snapshotMetadata(snapshot), ...snapshotRoster(state, snapshot, buffered, cursor.sequence),
     operations: snapshotOperations(state, snapshot),
     targetIndex: new Map(snapshot.targetIndex?.map(target => [target.targetKey, target]) ?? []),
-    agentEpochs: state.bootId === snapshot.bootId ? state.agentEpochs : new Map(), selectedAgent: undefined };
+    agentEpochs: sameWorkspace ? state.agentEpochs : new Map(), agentAvailability: sameWorkspace ? state.agentAvailability : new Map(),
+    conversations: sameWorkspace ? state.conversations : new Map(), targets: sameWorkspace ? state.targets : new Map() };
+  next = releaseInvisibleAgents(next);
   next = restoreSnapshotNotices(next, state, snapshot);
-  next = { ...next, targets: snapshotTargets(state, snapshot) };
-  for (const primary of snapshot.primaries) {
-    const target: Target = { kind: 'primary', key: primary.key, epoch: primary.epoch };
-    next = { ...next, dialogs: reconcileDialogs(expirePrimaryDialogs(next.dialogs, primary.key, primary.epoch), target, primary.pendingDialogs) };
-  }
-  next = selectAgent(next, selectedIdentity(snapshot.workspace));
-  next = restoreSnapshotAgent(next, state, snapshot);
-  if (snapshot.selectedAgent?.capabilities) next = {...next, agentAvailability: new Map([[snapshot.selectedAgent.identity, {identity: snapshot.selectedAgent.identity, state: snapshot.selectedAgent.availability, capabilities: snapshot.selectedAgent.capabilities}]])};
-  if (state.bootId !== snapshot.bootId) next = discardTransient(next);
-  const page = snapshot.selectedPage;
-  if (page) {
-    const items = 'items' in page ? page.items : page.entries;
-    next = updateConversation(next, page.target, () => mergeEntries(emptyConversation(page.target), items, false));
-  }
-  if (next.selectedAgent && snapshot.selectedFrame) {
-    const identity = next.selectedAgent.identity;
-    // Snapshot frames lack a connection epoch. Keep their baseline outside epoch ordering.
-    next = updateConversation(next, { kind: 'agent', identity }, old => ({
-      ...mergeEntries(old, snapshot.selectedFrame?.entries ?? [], false),
-      live: reconcileLiveEntries(new Map(snapshot.selectedFrame?.entries.map(entry => [entry.id, entry]) ?? []), snapshot.selectedFrame?.live ?? [], old.live), frame: snapshot.selectedFrame,
-    }));
-  }
+  next = { ...next, targets: snapshotTargets(next, snapshot) };
+  next = restoreSnapshotConversations(next, state, snapshot);
   for (const event of buffered) next = reduceEvent(next, event);
   return next;
 }
@@ -350,10 +421,12 @@ function applyMessage(conversation: Conversation, message: MessageView): Convers
     messageOrder: conversation.messages.has(message.id) ? conversation.messageOrder : [...conversation.messageOrder, message.id] };
 }
 function applyTool(conversation: Conversation, event: EventData['primary.tool']): Conversation {
-  const tool: ToolState = { ...conversation.tools.get(event.callId), ...event };
+  const previous = conversation.tools.get(event.callId);
+  const tool: ToolState = { ...previous, ...event,
+    observedStart: event.phase === 'start' ? previous?.phase === 'end' ? Date.now() : previous?.observedStart ?? Date.now() : previous?.observedStart };
   const tools = new Map(conversation.tools); tools.set(tool.callId, tool);
   let next: Conversation = { ...conversation, tools };
-  let matches = [...conversation.messages.values()].filter(message => calls(message.parts).has(tool.callId));
+  let matches = [...conversation.messages.values()].filter(message => messageCalls(message).has(tool.callId));
   if (!matches.length) {
     const message: MessageView = { id: `tool:${tool.callId}`, role: 'tool', state: tool.phase === 'end' ? 'final' : 'partial',
       parts: [{ type: 'toolCall', callId: tool.callId, name: tool.name, arguments: tool.arguments ?? { value: {}, truncated: false } }],
@@ -386,8 +459,8 @@ function applyDelta(conversation: Conversation, delta: EventData['primary.delta'
   const message: MessageView = old ?? { id: delta.messageId, role: 'assistant', state: 'partial', parts: [],
     coverage: { complete: true, truncated: false, omitted: 0 } };
   const parts = message.parts.slice();
-  while (parts.length <= delta.index) parts.push({ type: 'omitted', label: 'Part not yet received' });
-  const part = parts[delta.index] ?? { type: 'omitted' as const, label: 'Part not yet received' };
+  while (parts.length <= delta.index) parts.push({ type: 'omitted', label: 'Content has not arrived yet.' });
+  const part = parts[delta.index] ?? { type: 'omitted' as const, label: 'Content has not arrived yet.' };
   if (delta.kind === 'toolArguments') return applyArgumentDelta(conversation, message, parts, delta);
   if (part.type !== 'omitted' && part.type !== delta.kind) return conversation;
   parts[delta.index] = { type: delta.kind, text: (part.type === delta.kind ? part.text : '') + delta.delta };
@@ -395,7 +468,7 @@ function applyDelta(conversation: Conversation, delta: EventData['primary.delta'
 }
 function applyWorkspace(state: UiState, workspace: Workspace): UiState {
   if (state.workspace && (workspace.id !== state.workspace.id || workspace.revision <= state.workspace.revision)) return state;
-  return selectAgent({ ...state, workspace }, selectedIdentity(workspace));
+  return releaseInvisibleAgents({...state, workspace});
 }
 function applyPrimaryEvent(state: UiState, event: UiEvent): UiState {
   if (event.name === 'primary.state') {
@@ -435,11 +508,12 @@ function applyAgentEvent(state: UiState, event: UiEvent): UiState {
   if (event.name === 'agent.frame') return applyFrame(state, event.data.identity, event.data.connectionEpoch, event.data.frame);
   if (event.name === 'agent.roster') return applyRoster(state, event.data);
   if (event.name !== 'agent.availability') return state;
-  const agentAvailability = new Map(state.agentAvailability).set(event.data.identity, event.data);
+  const next = admitAgentEpoch(state, event.data.identity, event.data.connectionEpoch); if (!next) return state;
+  const agentAvailability = new Map(next.agentAvailability).set(event.data.identity, event.data);
   const row = state.roster.get(event.data.identity);
   const roster = new Map(state.roster);
   if (row) roster.set(row.identity, { ...row, availability: event.data.state, capabilities: event.data.capabilities });
-  return { ...state, roster, agentAvailability };
+  return { ...next, roster, agentAvailability };
 }
 function applyTargetEvent(state: UiState, event: UiEvent): UiState {
   if (event.name !== 'draft.changed' && event.name !== 'reading.changed') return state;

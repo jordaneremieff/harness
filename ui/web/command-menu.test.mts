@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { CommandMenu } from './command-menu.ts';
 import type { CommandInventory } from './command-menu-state.ts';
-type FakeEvent = {key: string; defaultPrevented: boolean; isComposing: boolean; keyCode: number; shiftKey: boolean; preventDefault(): void};
+type FakeEvent = {key: string; defaultPrevented: boolean; isComposing: boolean; keyCode: number; shiftKey: boolean; relatedTarget?: FakeNode; preventDefault(): void};
 class FakeNode {
   id = ''; tag = ''; className = ''; value = ''; disabled = false; hidden = true;
   selectionStart = 0; selectionEnd = 0; offsetTop = 0; offsetHeight = 40; clientHeight = 80; scrollTop = 0;
   children: FakeNode[] = []; attrs = new Map<string, string>(); writes = 0;
   rect: () => {top: number; bottom: number} = () => ({top: 0, bottom: 0});
   getBoundingClientRect(): {top: number; bottom: number} { return this.rect(); }
+  contains(node: FakeNode): boolean { return this === node || this.children.some(child => child.contains(node)); }
+  focus(): void { Reflect.set(document, 'activeElement', this); this.fire('focus'); }
   private text = ''; private listeners = new Map<string, ((event: FakeEvent) => void)[]>();
   get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
   set textContent(value: string) { this.text = value; this.children = []; this.writes++; }
@@ -18,6 +20,8 @@ class FakeNode {
   replaceChildren(...nodes: FakeNode[]): void { this.text = ''; this.children = []; this.append(...nodes); }
   setSelectionRange(start: number, end: number): void { this.selectionStart = start; this.selectionEnd = end; }
   addEventListener(name: string, listener: (event: FakeEvent) => void): void { this.listeners.set(name, [...this.listeners.get(name) ?? [], listener]); }
+  removeEventListener(name: string, listener: (event: FakeEvent) => void): void {this.listeners.set(name, (this.listeners.get(name) ?? []).filter(item => item !== listener));}
+  get listenerCount(): number {return [...this.listeners.values()].flat().length;}
   fire(name: string, extra: Partial<FakeEvent> = {}): FakeEvent {
     const event: FakeEvent = {key: '', defaultPrevented: false, isComposing: false, keyCode: 0, shiftKey: false, preventDefault() {this.defaultPrevented = true;}, ...extra};
     for (const listener of this.listeners.get(name) ?? []) listener(event); return event;
@@ -25,11 +29,11 @@ class FakeNode {
 }
 const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
 afterEach(() => { if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument); else Reflect.deleteProperty(globalThis, 'document'); });
-function fixture() {
+function fixture(more?: () => Promise<void>) {
   const editor = new FakeNode(); const menu = new FakeNode(); menu.id = 'primary-command-menu'; const announcements = new FakeNode(); const changed: string[] = [];
   let inventory: CommandInventory = {state: 'ready', items: ['compact', 'model', 'thinking'].map(name => ({name, description: `${name} description`, source: 'app'}))};
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => {const node = new FakeNode(); node.tag = tag; return node;}, getElementById: () => announcements}});
-  const controller = new CommandMenu(editor as unknown as HTMLTextAreaElement, menu as unknown as HTMLElement, () => inventory, text => {changed.push(text); controller.update();});
+  const controller = new CommandMenu(editor as unknown as HTMLTextAreaElement, menu as unknown as HTMLElement, () => inventory, text => {changed.push(text); controller.update();}, more);
   const text = (value: string, caret = value.length, end = caret) => {editor.value = value; editor.setSelectionRange(caret, end); editor.fire('focus'); controller.update();};
   const key = (value: string, extra: Partial<FakeEvent> = {}) => {
     const event = editor.fire('none', {key: value, ...extra}); const handled = controller.key(event as unknown as KeyboardEvent); return {event, handled};
@@ -38,6 +42,7 @@ function fixture() {
 }
 test('rows expose listbox semantics, stable name IDs, descriptions, sources, and safe name marks', () => {
   const f = fixture(); f.text('/mo');
+  assert.equal(f.menu.children.at(-1)?.textContent, '1 command');
   assert.equal(f.menu.attrs.get('role'), 'listbox'); assert.equal(f.menu.attrs.get('aria-label'), 'Commands');
   assert.equal(f.editor.attrs.has('role'), false); assert.equal(f.editor.attrs.get('aria-autocomplete'), 'list');
   const row = f.menu.children[0]; assert.ok(row); assert.equal(row.className, 'command-option');
@@ -96,7 +101,7 @@ test('each settled query announces at most once and never announces each arrow o
 });
 test('incomplete inventories explain their limit instead of claiming no command matches', () => {
   const f = fixture(); f.inventory({state: 'ready', items: [], incomplete: true}); f.text('/missing');
-  assert.equal(f.menu.children[0]?.textContent, 'Command list is incomplete. Open Commands to discover more.');
+  assert.equal(f.menu.children[0]?.textContent, 'The command list is incomplete.');
   assert.doesNotMatch(f.menu.children[0]?.textContent ?? '', /No commands match/);
   assert.equal(f.menu.children[0]?.attrs.has('role'), false); assert.equal(f.key('Enter').handled, true);
   f.inventory({state: 'ready', items: []}); assert.equal(f.menu.children[0]?.textContent, 'No commands match /missing');
@@ -115,6 +120,37 @@ test('rendered list padding cannot leave the active row partly behind the sticky
   f.controller.keepActiveVisible();
   assert.ok(active.getBoundingClientRect().bottom <= hint.getBoundingClientRect().top, `${active.getBoundingClientRect().bottom} > ${hint.getBoundingClientRect().top}`);
 });
+test('local command continuation fetches only on demand and preserves query, token, caret and editor focus', async () => {
+  const page = Promise.withResolvers<void>(); let calls = 0; const f = fixture(() => {calls++; return page.promise;});
+  f.inventory({state: 'ready', items: [], incomplete: true}); f.text('/missing retained text', 8); assert.equal(calls, 0);
+  const footer = f.menu.children.at(-1); const action = footer?.children.find(node => node.tag === 'button'); assert.ok(action);
+  assert.equal(action.textContent, 'More commands'); assert.equal(footer?.attrs.has('aria-hidden'), false);
+  assert.equal(action.fire('pointerdown').defaultPrevented, true); action.fire('click'); action.fire('click');
+  assert.equal(calls, 1); assert.equal(f.editor.value, '/missing retained text'); assert.deepEqual([f.editor.selectionStart, f.editor.selectionEnd], [8, 8]);
+  assert.equal(document.activeElement, f.editor); assert.equal(f.changed.length, 0);
+  assert.equal(f.menu.children.at(-1)?.children.find(node => node.tag === 'button')?.disabled, true);
+  f.inventory({state: 'ready', items: [{name: 'missing', description: 'saved', source: 'app'}]}); page.resolve(); await page.promise; await Promise.resolve();
+  assert.equal(f.menu.children[0]?.attrs.get('aria-label'), '/missing'); assert.equal(f.editor.value, '/missing retained text');
+  assert.equal(f.editor.selectionStart, 8); assert.equal(document.activeElement, f.editor); assert.deepEqual(f.changed, []);
+});
+test('command continuation fails locally, offers retry, and never revives errors across recipient reset', async () => {
+  let page = Promise.withResolvers<void>(); let calls = 0; const f = fixture(() => {calls++; return page.promise;});
+  f.inventory({state: 'ready', items: [], incomplete: true}); f.text('/x');
+  f.menu.children.at(-1)?.children.find(node => node.tag === 'button')?.fire('click'); page.reject(new Error('Page failed'));
+  await page.promise.catch(() => {}); await Promise.resolve(); assert.match(f.menu.textContent, /Could not load more commands. Page failed/);
+  const retry = f.menu.children.at(-1)?.children.find(node => node.tag === 'button'); assert.ok(retry); assert.equal(retry.textContent, 'Try again');
+  page = Promise.withResolvers<void>(); retry.fire('click'); assert.equal(calls, 2);
+  f.controller.reset(); f.inventory({state: 'ready', items: []}); f.text('/new'); page.reject(new Error('Old target failed'));
+  await page.promise.catch(() => {}); await Promise.resolve(); assert.doesNotMatch(f.menu.textContent, /Old target failed|Try again/);
+  assert.equal(f.editor.value, '/new'); assert.equal(f.editor.selectionStart, 4); assert.equal(f.changed.length, 0);
+});
+test('continuation completion does not steal external focus and the action remains reachable from an empty slash list', async () => {
+  const page = Promise.withResolvers<void>(); const f = fixture(() => page.promise); f.inventory({state: 'ready', items: [], incomplete: true}); f.text('/x');
+  const action = f.menu.children.at(-1)?.children.find(node => node.tag === 'button'); assert.ok(action);
+  f.editor.fire('blur', {relatedTarget: action}); assert.equal(f.menu.hidden, false); action.fire('click'); assert.equal(document.activeElement, f.editor);
+  const other = new FakeNode(); other.focus(); f.editor.fire('blur', {relatedTarget: other}); assert.equal(f.menu.hidden, true);
+  page.resolve(); await page.promise; await Promise.resolve(); assert.equal(document.activeElement, other); assert.equal(f.menu.hidden, true);
+});
 test('each open menu has a non-option count and active scrolling reserves its measured height', () => {
   const f = fixture(); f.text('/'); const hint = f.menu.children.at(-1); assert.ok(hint);
   assert.equal(hint.className, 'command-hint'); assert.equal(hint.attrs.get('aria-hidden'), 'true'); assert.equal(hint.attrs.has('role'), false);
@@ -123,4 +159,26 @@ test('each open menu has a non-option count and active scrolling reserves its me
   assert.ok(active.offsetTop + active.offsetHeight <= f.menu.scrollTop + f.menu.clientHeight - footer.offsetHeight);
   f.key('Escape'); assert.equal(f.menu.children.length, 0); assert.equal(f.menu.hidden, true);
   f.inventory({state: 'loading', items: []}); f.text('/pending'); assert.equal(f.menu.children.at(-1)?.className, 'command-hint');
+});
+test('destroy detaches every owned editor/menu listener and disconnects the retained observer once', () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis,'ResizeObserver'); let observation: FakeObserver | undefined;
+  class FakeObserver {
+    disconnected = 0; callback: () => void;
+    constructor(callback: () => void) {this.callback=callback; observation=this;}
+    observe(): void {} disconnect(): void {this.disconnected++;}
+  }
+  Object.defineProperty(globalThis,'ResizeObserver',{configurable:true,value:FakeObserver});
+  try {
+    const f=fixture(); f.text('/mo'); assert.ok(observation); assert.ok(f.editor.listenerCount>0); assert.ok(f.menu.listenerCount>0);
+    f.controller.destroy(); f.controller.destroy(); assert.equal(observation.disconnected,1); assert.equal(f.editor.listenerCount,0); assert.equal(f.menu.listenerCount,0);
+    assert.equal(f.menu.hidden,true); assert.equal(f.menu.children.length,0); assert.equal(f.editor.attrs.has('aria-activedescendant'),false); assert.equal(f.editor.attrs.has('aria-autocomplete'),false); assert.equal(f.editor.attrs.has('aria-controls'),false);
+    f.editor.fire('focus'); f.editor.fire('select'); f.controller.update(); observation.callback(); assert.equal(f.menu.hidden,true); assert.equal(f.menu.children.length,0);
+    assert.equal(f.key('Enter').handled,false); assert.equal(f.key('Enter').event.defaultPrevented,false); assert.deepEqual(f.changed,[]);
+  } finally {if(original)Object.defineProperty(globalThis,'ResizeObserver',original);else Reflect.deleteProperty(globalThis,'ResizeObserver');}
+});
+test('destroy invalidates a pending continuation without cancelling its outcome or reviving the menu', async () => {
+  const page=Promise.withResolvers<void>(); const f=fixture(()=>page.promise); f.inventory({state:'ready',items:[],incomplete:true}); f.text('/x');
+  const action=f.menu.children.at(-1)?.children.find(node=>node.tag==='button'); assert.ok(action); action.fire('click'); f.controller.destroy();
+  page.reject(new Error('Late page failure')); await page.promise.catch(()=>{}); await Promise.resolve();
+  assert.equal(f.menu.hidden,true); assert.equal(f.menu.children.length,0); assert.doesNotMatch(f.menu.textContent,/Late page failure/); assert.equal(f.editor.value,'/x'); assert.deepEqual(f.changed,[]);
 });

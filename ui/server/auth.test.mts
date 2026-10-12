@@ -91,6 +91,32 @@ test('logout, shutdown, and a backend restart revoke cookies', () => {
   assert.throws(() => second.session(request('GET', {cookie: `pi_ui_session=${token}`})), rejected('unauthorized', 401));
 });
 
+test('invalid, consumed, and expired launch links report their own authentication boundary', () => {
+  let now = 0;
+  const value = auth(() => now); const output = response();
+  const rejectedLaunch = (error: unknown) => {
+    assert.ok(error instanceof Error); assert.equal(error.message, 'This launch link is no longer valid.');
+    return rejected('unauthorized', 401)(error);
+  };
+  assert.throws(() => value.launch('invalid', output.http), rejectedLaunch);
+  assert.equal(output.headers.size, 0);
+  value.launch(value.capability, output.http);
+  assert.throws(() => value.launch(value.capability, output.http), rejectedLaunch);
+  const expired = auth(() => now); now = 300000;
+  assert.throws(() => expired.launch(expired.capability, response().http), rejectedLaunch);
+});
+test('missing, invalid, and revoked session cookies report browser authentication', () => {
+  const value = auth(); const output = response(); const session = value.launch(value.capability, output.http);
+  const rejectedSession = (error: unknown) => {
+    assert.ok(error instanceof Error); assert.equal(error.message, 'This browser is not authenticated.');
+    return rejected('unauthorized', 401)(error);
+  };
+  for (const cookie of [undefined, '', 'pi_ui_session=invalid', `pi_ui_session=${session}; pi_ui_session=${session}`]) {
+    assert.throws(() => value.session(request('GET', {cookie})), rejectedSession);
+  }
+  value.logout(session, output.http);
+  assert.throws(() => value.session(request('GET', {cookie: `pi_ui_session=${session}`})), rejectedSession);
+});
 test('security headers prohibit inline/eval content, framing, caching, and referrer leakage', () => {
   const output = response(); securityHeaders(output.http);
   assert.equal(output.headers.get('Content-Security-Policy'), "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");

@@ -13,7 +13,10 @@ test('contentless messages and entries have no visible chrome', () => {
   }
   assert.equal(entryVisible({id: 'entry', kind: 'message', messages: []}), false);
   assert.equal(presentMessage(message([], {role: 'assistant', state: 'partial'})).visible, false);
-  assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'user'})), {label: 'You', visible: true});
+  assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'user'})), {label: 'Input', visible: true});
+});
+test('communication state remains visible without original content', () => {
+  const value = message([], {communication: {state: 'unresolved'}}); assert.equal(presentMessage(value).visible, true); assert.equal(entryVisible({id: 'entry', kind: 'message', messages: [value]}), true);
 });
 test('errors, aborted responses, redacted thinking, tools, and reported omissions stay visible', () => {
   const cases = [message([], {error: 'failure'}), message([], {stopReason: 'error'}), message([], {stopReason: 'aborted'}), message([], {coverage: {...coverage, truncated: true}}), message([], {coverage: {...coverage, omitted: 1}}), message([], {coverage: {...coverage, complete: false}}), message([{type: 'omitted', label: 'Image omitted'}]), message([{type: 'thinking', text: '', redacted: true}]), message([{type: 'toolCall', callId: 'call', name: 'unknown', arguments: {value: {}, truncated: false}}])];
@@ -43,7 +46,7 @@ test('entry headings use public head text and session changes keep collapsed ins
     assert.deepEqual(inspectionTitles, ['<public-type> · data', 'custom · data', 'model changed to p/m', 'thinking changed to high']);
     assert.equal(sources[0](), JSON.stringify({text: 'data'}));
     const omitted = presentEntry({...entry, head: 'message', data: {value: {values: ['<script>']}, truncated: true, omittedBytes: 42}}, context);
-    assert.equal(omitted.textContent, 'message · valuesOutput omitted by host · 42 bytes');
+    assert.equal(omitted.textContent, 'message · valuesSome output is not available. · 42 bytes');
     assert.equal(sources.at(-1)?.(), JSON.stringify({values: ['<script>']}));
     const fields = presentEntry({...entry, head: undefined, data: {value: {a: 1, b: 2, c: 3, d: 4, e: 5}, truncated: false}}, context);
     assert.equal(fields.textContent, 'custom · a, b, c, d, …');

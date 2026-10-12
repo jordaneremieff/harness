@@ -10,5 +10,5 @@ export function routineReceipt(records: OperationView[]): string {
   const latest = records[0];
   if (!latest || (latest.state !== 'accepted' && latest.state !== 'completed')) return '';
   if (!inputOperation(latest)) return operationLabel(latest);
-  return latest.receipt?.kind === 'rpc' && latest.receipt.disposition === 'queued' ? 'Follow-up queued' : 'Admitted';
+  return latest.receipt?.kind === 'rpc' && latest.receipt.disposition === 'queued' ? 'Message queued' : 'Message sent';
 }

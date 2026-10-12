@@ -4,10 +4,61 @@ import { createServer, type Socket } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { createAgentService, deriveEndpoint } from "./index.mts";
+import { EventEmitter } from 'node:events';
+import { AgentService, createAgentService, deriveEndpoint } from "./index.mts";
 import { activity, blockedResult, deferred, descriptor, FakeHost, frame, receipt } from "./fake-host.mts";
 import { dispatchAgent } from "../server/routes-agent.mts";
 import type { Registry } from "../server/registry.mts";
+
+function memoryService() {
+  const requests: {id:number;member:string;args:unknown[]}[]=[];
+  const events: unknown[][]=[];
+  const port=Object.assign(new EventEmitter(),{postMessage(request:{id:number;member:string;args:unknown[]}) {
+    requests.push(request); queueMicrotask(()=>port.emit('message',{id:request.id,result:undefined}));
+  },terminate:async()=>0});
+  const service=new AgentService({store:'synthetic-store',installationId:'synthetic',onFrame:(...args)=>events.push(args),onAvailability:(...args)=>events.push(args)},()=>port);
+  return {service,port,requests,events};
+}
+test('pure concurrent parent routing admits only owned identity and exact lifetime epoch',async()=> {
+  const f=memoryService();
+  try {
+    f.port.emit('message',{event:'frame',args:['w','a',1,{}]}); assert.equal(f.events.length,0);
+    const first=f.service.select('w','a'); assert.equal(first,f.service.select('w','a'));
+    await Promise.all([first,f.service.select('w','b'),f.service.select('other','a')]);
+    for(const request of f.requests) f.port.emit('message',{event:'frame',args:[...request.args,{}]});
+    assert.equal(f.events.length,3);
+    await f.service.hide('w','a'); f.port.emit('message',{event:'availability',args:['w','a',1,'live']}); assert.equal(f.events.length,3);
+    await f.service.reconnect('w','b'); const reconnect=f.requests.at(-1); assert.equal(reconnect?.member,'reconnect');
+    assert.deepEqual(reconnect?.args,['w','b',4]);
+    f.port.emit('message',{event:'frame',args:['w','b',2,{}]}); assert.equal(f.events.length,3);
+    f.port.emit('message',{event:'availability',args:['w','b',4,'live']}); assert.equal(f.events.length,4);
+    f.port.emit('message',{event:'frame',args:['other','a',3,{}]}); assert.equal(f.events.length,5);
+    await f.service.disconnectWorkspace('other'); f.port.emit('message',{event:'frame',args:['other','a',3,{}]}); assert.equal(f.events.length,5);
+    assert.ok(f.requests.every(request=>['select','hide','reconnect','disconnectWorkspace'].includes(request.member)));
+  } finally {await f.service.close();}
+});
+test('pure concurrent failed reconnect never restores a retired callback epoch',async()=> {
+  const f=memoryService();
+  try {
+    await f.service.select('w','a');const pending=f.service.reconnect('w','a');const request=f.requests.at(-1);assert.ok(request);
+    f.port.emit('message',{id:request.id,error:{code:'capacity',message:'Token capacity'}});
+    await assert.rejects(pending,{code:'capacity'});
+    assert.deepEqual(f.events[0]?.slice(0,4),['w','a',2,'unavailable']);
+    f.port.emit('message',{event:'frame',args:['w','a',1,{}]});assert.equal(f.events.length,1);
+  } finally {await f.service.close();}
+});
+test('pure concurrent parent caps four targets per workspace and sixteen overall',async()=> {
+  const f=memoryService();
+  try {
+    for(let i=0;i<16;i++) await f.service.select(`w${Math.floor(i/4)}`,`a${i}`);
+    await assert.rejects(f.service.select('w0','fifth'),{code:'capacity'});
+    await assert.rejects(f.service.select('extra','a'),{code:'capacity'});
+    await f.service.hide('w0','a0'); await f.service.select('extra','a');
+    const selected=f.requests.filter(request=>request.member==='select'); assert.equal(selected.length,17);
+    assert.equal(new Set(selected.map(request=>request.args[2])).size,17);
+    await assert.rejects(f.service.reconnect('unknown','a'),{code:'invalid_request'});
+  } finally {await f.service.close();}
+});
 
 const storageId = "00000000-0000-4000-8000-000000000001";
 const input = { operationId: "operation-example", message: "An exact retained input.", mode: "steer" as const };
@@ -139,7 +190,7 @@ test("uncertain input reconnects and retries only through the explicit original 
   await host.waitForRelease();
   await assert.rejects(service.submit(storageId, input), hasCode("host_unavailable"));
   assert.equal(host.calls.filter(call => call.member === "task-submit").length, 1);
-  await service.reconnect("workspace");
+  await service.reconnect("workspace", storageId);
   const admission = await service.retrySubmit(storageId, input);
   assert.equal(admission.result.requestId, `ui:${input.operationId}`);
   const calls = host.calls.filter(call => call.member === "task-submit");
@@ -298,7 +349,7 @@ test("prepare refuses changed endpoints while the storage has a connected observ
   assert.equal(replacement.connectionCount, 0); assert.equal(replacement.calls.length, 0);
   assert.equal(replacement.tokenCount, 0);
   assert.equal(host.lifecycle.filter(event => event.kind === "connect").length, 1);
-  await service.reconnect("workspace");
+  await service.reconnect("workspace", storageId);
   await host.waitForRelease();
   assert.equal(host.connectionCount, 0); assert.equal(host.tokenCount, 0);
   assert.equal(replacement.connectionCount, 1); assert.equal(replacement.tokenCount, 1);

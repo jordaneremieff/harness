@@ -21,11 +21,31 @@ function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
   for (const item of node.items) { const li = element('li'); li.append(...item.map(block)); list.append(li); }
   return list;
 }
+/** Wrap changes only the scrollport's whitespace mode, not its text nodes. */
+export function sourceWrap(pre: HTMLElement): HTMLButtonElement {
+  pre.dataset.wrap = 'true';
+  const wrap = button('Wrap', () => {
+    pre.dispatchEvent(new Event('source-wrap', {bubbles: true}));
+    const wrapped = pre.dataset.wrap !== 'true';
+    pre.dataset.wrap = String(wrapped); wrap.setAttribute('aria-pressed', String(wrapped));
+  }, 'source-wrap');
+  wrap.setAttribute('aria-pressed', 'true'); wrap.setAttribute('aria-label', 'Wrap source lines');
+  return wrap;
+}
+/** Controls stay outside the source's scrollport and never replace its text nodes. */
+export function sourceHeader(pre: HTMLElement, language: string | HTMLElement = '', source?: () => string): HTMLElement {
+  const header = element('div', 'source-header');
+  const label = typeof language === 'string' ? element('span', 'source-language', language) : language;
+  if (typeof language !== 'string') label.classList.add('source-language');
+  header.append(label);
+  if (source) header.append(button('Copy code', () => { void copy(source(), header); }, 'copy'));
+  header.append(sourceWrap(pre)); return header;
+}
 function codeBlock(node: Extract<MarkdownBlock, {type: 'code'}>): HTMLElement {
   const wrap = element('div', 'code-block'); const pre = element('pre'); const code = element('code');
   code.append(highlight(node.text, node.language));
   if (node.language) code.dataset.language = node.language;
-  pre.append(code); wrap.append(button('copy', () => { void copy(node.text, wrap); }, 'copy'), pre); return wrap;
+  pre.append(code); wrap.append(sourceHeader(pre, node.language, () => node.text), pre); return wrap;
 }
 function tableBlock(node: Extract<MarkdownBlock, {type: 'table'}>): HTMLElement {
   const table = element('table'); const head = element('thead'); const row = element('tr');

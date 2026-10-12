@@ -1,6 +1,7 @@
 import { details, setText } from './dom.ts';
+export type ReportedFact = {key: string; label: string; text: string};
 /** Keyed reported facts keep disclosure state and focus through observation updates. */
-export function renderFacts(root: HTMLElement, facts: readonly {key: string; label: string; text: string}[]): void {
+export function renderFacts(root: HTMLElement, facts: readonly ReportedFact[]): void {
   const present = new Set(facts.map(fact => fact.key));
   for (const child of [...root.children]) if (!present.has((child as HTMLElement).dataset.key ?? '')) child.remove();
   for (const fact of facts) {

@@ -29,7 +29,7 @@ function observer(getLink: (identity: string) => Promise<HostLink>) {
 					waiter.resolve(received);
 				}
 		},
-		onAvailability: (_workspace, identity, state) => {
+		onAvailability: (_workspace, identity, _epoch, state) => {
 			availability.push({ identity, state });
 			if (state === "unavailable") unavailable.resolve();
 		},
@@ -201,7 +201,7 @@ test("disconnect keeps last frame and reconnect creates a fresh baseline and tok
 	assert.equal(acquisitions, 1);
 	assert.equal(watch.seen.at(-1)?.revision, 8);
 	assert.equal(host.calls.filter((call) => ["abort", "configure", "task-submit"].includes(call.member)).length, 0);
-	await watch.manager.reconnect("workspace");
+	await watch.manager.reconnect("workspace", STORAGE);
 	await watch.wait((value) => value.epoch === 2);
 	const opens = host.calls.filter((call) => call.member === "observe-open");
 	assert.equal(opens.length, 2);
@@ -266,4 +266,76 @@ test("malformed open receipt closes the original owned token", async (t) => {
 	assert.equal(host.lifecycle.filter((event) => event.kind === "subscribe").length, 0);
 	assert.deepEqual(watch.seen, []);
 	assert.deepEqual(watch.manager.identities(), []);
+});
+
+function memoryLink() {
+  let connected = true; let closes = 0; let failClose = false;
+  const subscriptions: {identity:string; receive:(value:ConversationFrame)=>void; fail:(error:Error)=>void; disposed:boolean}[] = [];
+  const calls: {member:string; params:Record<string,unknown>}[] = [];
+  const link = {
+    get connected() {return connected;}, require: () => {}, capabilities: () => ({snapshot:true,'observe-open':true,'observe-frame':true,'observe-close':true}),
+    onDisconnect: () => () => {},
+    request: async (member:string, params:Record<string,unknown>) => {calls.push({member,params}); if(member==='observe-close' && failClose) throw Error('Uncertain close'); return {};},
+    subscribeObservation: async (_token:string, receive:(value:ConversationFrame)=>void, identity:string, fail:(error:Error)=>void) => {
+      const subscription = {identity,receive,fail,disposed:false}; subscriptions.push(subscription);
+      return {baseline:frame(1,identity) as unknown as ConversationFrame,start:()=>{},dispose:async()=>{subscription.disposed=true;}};
+    }, close: async () => {closes++; connected=false;},
+  } as unknown as HostLink;
+  return {link,calls,subscriptions,get closes(){return closes;},set failClose(value:boolean){failClose=value;}};
+}
+test('pure concurrent observations isolate targets, workspace lifetimes, reconnect and late callbacks', async () => {
+  const memory = memoryLink(); const seen:Seen[]=[]; const states:{identity:string;epoch:number;state:AvailabilityState}[]=[];
+  const manager = new ObservationManager({getLink:async()=>memory.link,
+    onFrame:(workspace,identity,epoch,value)=>seen.push({workspace,identity,epoch,revision:value.revision}),
+    onAvailability:(_workspace,identity,epoch,state)=>states.push({identity,epoch,state})});
+  try {
+    await Promise.all([manager.select('w',STORAGE,1),manager.select('w',CHILD,2),manager.select('other',STORAGE,3)]); await turn();
+    assert.deepEqual(seen.map(({workspace,identity,epoch})=>[workspace,identity,epoch]),[['w',STORAGE,1],['w',CHILD,2],['other',STORAGE,3]]);
+    await manager.select('w',STORAGE,1); assert.equal(memory.subscriptions.length,3);
+    await manager.hide('w',STORAGE);
+    memory.subscriptions[0]?.receive(frame(9) as unknown as ConversationFrame); memory.subscriptions[0]?.fail(Error('Late failure'));
+    memory.subscriptions[1]?.receive(frame(7,CHILD) as unknown as ConversationFrame); await turn();
+    assert.deepEqual(seen.at(-1),{workspace:'w',identity:CHILD,epoch:2,revision:7}); assert.equal(states.length,3);
+    await manager.reconnect('w',CHILD,4); await turn();
+    memory.subscriptions[1]?.receive(frame(90,CHILD) as unknown as ConversationFrame); await turn();
+    assert.deepEqual(seen.at(-1),{workspace:'w',identity:CHILD,epoch:4,revision:1});
+    assert.deepEqual(manager.identities().sort(),[CHILD,STORAGE].sort()); assert.equal(memory.closes,0);
+    assert.ok(memory.calls.every(call=>['snapshot','observe-open','observe-close'].includes(call.member)));
+  } finally {await manager.close();}
+});
+test('pure concurrent observation caps count disposed asynchronous setups without retaining target history', async () => {
+  const held = deferred<HostLink>(); const memory=memoryLink(); let frames=0;
+  const manager=new ObservationManager({getLink:()=>held.promise,onFrame:()=>{frames++;}});
+  const setups:Promise<void>[]=[];
+  try {
+    for(let i=0;i<16;i++) {setups.push(manager.select(`w${i}`,STORAGE,i+1)); await manager.hide(`w${i}`);}
+    await assert.rejects(manager.select('overflow',STORAGE,17),{code:'capacity'});
+    held.resolve(memory.link); await Promise.all(setups); await turn();
+    assert.equal(memory.calls.length,0); assert.equal(frames,0);
+    await manager.select('fresh',STORAGE,18); await turn(); assert.equal(frames,1);
+    await Promise.all([manager.select('fresh',CHILD,19),manager.select('fresh',`${STORAGE}:3`,20),manager.select('fresh',`${STORAGE}:4`,21)]);
+    await assert.rejects(manager.select('fresh',`${STORAGE}:5`,22),{code:'capacity'});
+  } finally {held.resolve(memory.link); await Promise.allSettled(setups); await manager.close();}
+});
+test('pure concurrent late native open closes its original token after early disposal',async context=> {
+  const memory=memoryLink();const entered=deferred<void>();const release=deferred<void>();const tokens=new Set<string>();let closeCalls=0;let seen=0;
+  context.mock.method(memory.link,'request',async (member:string,params:Record<string,unknown>)=> {
+    if(member==='observe-open') {entered.resolve();await release.promise;tokens.add(params.token as string);}
+    if(member==='observe-close') {closeCalls++;tokens.delete(params.token as string);}return {};
+  });
+  const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{seen++;}});
+  const setup=manager.select('w',STORAGE,1);await entered.promise;await manager.hide('w',STORAGE);
+  assert.equal(closeCalls,1);release.resolve();await setup;await turn();
+  assert.equal(closeCalls,2);assert.equal(tokens.size,0);assert.equal(seen,0);assert.equal(memory.subscriptions.length,0);await manager.close();
+});
+test('pure concurrent failed token cleanup preserves shared links and reserves bounded capacity', async () => {
+  const memory=memoryLink(); const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  try {
+    await manager.select('healthy',STORAGE,1); memory.failClose=true;
+    for(let i=0;i<15;i++) {await manager.select(`retired${i}`,CHILD,i+2); await manager.hide(`retired${i}`,CHILD);}
+    assert.equal(memory.closes,0); assert.equal(memory.link.connected,true); assert.deepEqual(manager.identities(),[STORAGE]);
+    await assert.rejects(manager.select('full',CHILD,17),{code:'capacity'});
+    await memory.link.close(); memory.failClose=false;
+    await manager.select('fresh',CHILD,18);
+  } finally {await manager.close();}
 });

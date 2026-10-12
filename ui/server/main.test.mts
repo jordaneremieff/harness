@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import type { CatalogPage } from '../agents/index.mts';
+import type { ApiResult } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 import { main, parseArgs } from './main.mts';
 import type { AgentAdapter } from './registry.mts';
@@ -49,6 +50,31 @@ test('main passes the launch URL to the opener only with --open', {timeout: 1500
   let silent = 0;
   keep(await main(flags(cwd, root, 'state-plain'), async () => { silent += 1; }, {agents: () => adapter, assets}));
   assert.equal(silent, 0);
+});
+
+test('main forwards qualified native result selectors without admission and returns conflicts', {timeout: 15000}, async context => {
+  const {root, cwd, keep} = await project(context);
+  const identity = '00000000-0000-4000-8000-000000000001:7';
+  const calls: {identity: string; options: Parameters<AgentAdapter['inspect']>[1]}[] = [];
+  const injected: AgentAdapter = {...adapter, inspect: async (identity, options) => {
+    calls.push({identity, options});
+    if (options.submissionId === 99) throw new ApiError('invalid_request', 'Result selectors conflict.');
+    return {view: 'result', sessionId: identity, conversationId: 7, requestId: options.requestId ?? '', status: 'unavailable', reason: 'Not retained', usage: {models: {}, tools: {}}};
+  }};
+  const app = keep(await main(flags(cwd, root, 'state-inspect'), async () => { throw new Error('No browser'); }, {agents: () => injected, assets}));
+  const launch = new URL(app.launchUrl);
+  const login = await fetch(`${launch.origin}/api/auth/launch`, {method: 'POST', headers: {Origin: launch.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: new URLSearchParams(launch.hash.slice(1)).get('launch')})});
+  assert.equal(login.status, 200); const cookie = login.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
+  const inspect = (body: unknown) => fetch(`${launch.origin}/api/agents/${encodeURIComponent(identity)}/inspect`, {method: 'POST', headers: {Origin: launch.origin, Cookie: cookie, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const input = {view: 'result' as const, requestId: 'exact-native-request', operationId: 'separate-operation', entryId: 30};
+  const reply = await inspect(input); assert.equal(reply.status, 200);
+  const result = await reply.json() as ApiResult<{projection: {value: Record<string, unknown>}}>; assert.ok(result.ok); assert.equal(result.data.projection.value.status, 'unavailable');
+  assert.equal(Object.hasOwn(result.data.projection.value, 'submissionId'), false);
+  assert.deepEqual(calls, [{identity, options: input}]);
+  const conflict = await inspect({...input, submissionId: 99}); assert.equal(conflict.status, 400);
+  const failure = await conflict.json() as ApiResult<never>; assert.ok(!failure.ok);
+  assert.equal(failure.error.code, 'invalid_request'); assert.deepEqual(calls[1], {identity, options: {...input, submissionId: 99}});
+  const invalid = await inspect({...input, requestId: ''}); assert.equal(invalid.status, 400); assert.equal(calls.length, 2);
 });
 
 test('main keeps the backend running when the opener fails', {timeout: 15000}, async context => {

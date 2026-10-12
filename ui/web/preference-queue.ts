@@ -2,6 +2,8 @@ type Slot = {latest?: () => Promise<void>; running?: Promise<void>};
 /** View writes serialize by target and coalesce only edits not yet dispatched. */
 export class PreferenceQueue {
   private slots = new Map<string, Slot>();
+  get pending(): boolean { return this.slots.size > 0; }
+  async drain(): Promise<void> { while (this.slots.size) await Promise.all([...this.slots.values()].flatMap(slot => slot.running ? [slot.running] : [])); }
   save(key: string, write: () => Promise<void>): Promise<void> {
     let slot = this.slots.get(key);
     if (!slot) {slot = {}; this.slots.set(key, slot);}

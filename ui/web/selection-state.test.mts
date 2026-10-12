@@ -19,6 +19,13 @@ function setup() {
   const queue = new SelectionQueue({current: () => current, paint(workspace) {current = workspace; frames.push(workspace);}, reload: async () => {reloads++;}, save: (workspace, change) => new Promise<Workspace>((resolve, reject) => {calls.push({workspace, change, resolve, reject});})});
   return {queue, calls, frames, get reloads() {return reloads;}};
 }
+test('selection drain includes changes added while the existing tail settles', async () => {
+  const f = setup(); const first = f.queue.select({primaryKey: 'a'}); let drained = false;
+  const drain = f.queue.drain().then(() => {drained = true;}); await Promise.resolve(); assert.equal(f.queue.unsettled, true);
+  const second = f.queue.select({primaryKey: 'b'}); f.calls[0]?.resolve({id: 'workspace', revision: 1, primaryKey: 'a'}); await first;
+  await Promise.resolve(); assert.equal(drained, false); f.calls[1]?.resolve({id: 'workspace', revision: 2, primaryKey: 'b'});
+  await second; await drain; assert.equal(f.queue.unsettled, false); assert.equal(f.frames.at(-1)?.primaryKey, 'b');
+});
 test('cached last selection appears before any network response', async () => {
   const fixture = setup();
   const first = fixture.queue.select({selectedTarget: {kind: 'agent', identity: 'a'}});
@@ -105,11 +112,11 @@ test('message prepare captures workspace and exact identity and ignores supersed
   f.calls[1]?.result.resolve(prepared('storage:second')); await second;
   assert.equal(f.message.current?.identity, 'storage:second'); assert.equal(f.message.ready, true); assert.equal(f.paints(), 3);
 });
-test('close, workspace change and main agent selection each invalidate preparation', async () => {
-  for (const invalidate of ['close', 'workspace', 'selection']) {
+test('close and workspace change invalidate preparation', async () => {
+  for (const invalidate of ['close', 'workspace']) {
     const f = messageFixture(); const pending = f.message.open('a'); const before = f.paints();
     if (invalidate === 'close') f.message.close();
-    else f.workspace({id: invalidate === 'workspace' ? 'other' : 'w', revision: 1, selectedTarget: invalidate === 'selection' ? {kind: 'agent', identity: 'a'} : undefined});
+    else f.workspace({id: 'other', revision: 1});
     f.calls[0]?.result.resolve(prepared('a')); await pending;
     assert.equal(f.paints(), before); assert.equal(f.message.ready, false); assert.equal(f.message.current?.prepared, undefined);
   }
@@ -120,12 +127,16 @@ test('prepare response alone supplies readiness and stored targets remain safe d
     assert.equal(f.message.ready, availability === 'live' && input); assert.equal(f.message.current?.prepared?.targetState.targetKey, 'a');
   }
   const f = messageFixture(); f.workspace({id: 'w', revision: 0, selectedTarget: {kind: 'agent', identity: 'main'}});
-  await f.message.open('a'); assert.equal(f.calls.length, 0);
+  const pending = f.message.open('a'); assert.equal(f.calls.length, 1); const captured = f.message.current; assert.ok(captured);
+  f.workspace({id: 'w', revision: 1, selectedTarget: {kind: 'agent', identity: 'other-main'}});
+  const response = prepared('a'); response.targetState.draft.text = 'exact recipient draft'; f.calls[0]?.result.resolve(response); await pending;
+  assert.equal(f.message.current, captured); assert.equal(f.message.current?.identity, 'a'); assert.equal(f.message.ready, true);
+  assert.equal(f.message.current?.prepared?.targetState.draft.text, 'exact recipient draft'); assert.equal(f.message.valid(captured), true);
 });
 test('same-identity reopen rejects the prior generation and mismatched prepared target', async () => {
   const f = messageFixture(); const first = f.message.open('a'); f.message.close(); const second = f.message.open('a');
   f.calls[0]?.result.resolve(prepared('a')); await first; assert.equal(f.message.ready, false);
-  f.calls[1]?.result.resolve(prepared('wrong')); await second; assert.match(f.message.current?.error ?? '', /did not match/); assert.equal(f.message.ready, false);
+  f.calls[1]?.result.resolve(prepared('wrong')); await second; assert.match(f.message.current?.error ?? '', /message recipient changed/); assert.equal(f.message.ready, false);
 });
 
 function rosterEvent(identity: string, availability?: AgentRow['availability']): EventData['agent.roster'] {
@@ -136,6 +147,7 @@ test('later roster removal or non-live status revokes readiness but retains the 
     const f = messageFixture(); const pending = f.message.open('a'); const response = prepared('a'); response.targetState.draft.text = 'keep this draft';
     f.calls[0]?.result.resolve(response); await pending; assert.equal(f.message.ready, true);
     f.message.rosterChanged(rosterEvent('a', availability)); assert.equal(f.message.ready, false);
+    assert.equal(f.message.current?.error, 'Message access changed. Your draft is unchanged.');
     assert.equal(f.message.current?.prepared?.targetState.draft.text, 'keep this draft'); assert.equal(f.message.current?.invalidated, true);
     f.message.rosterChanged(rosterEvent('a', 'live')); assert.equal(f.message.ready, false);
     const reopened = f.message.open('a'); f.calls[1]?.result.resolve(prepared('a')); await reopened; assert.equal(f.message.ready, true);
@@ -152,6 +164,36 @@ test('catalog metadata before an explicit prepare and unrelated later events do 
   f.message.availabilityChanged({identity: 'a', state: 'live', capabilities: prepared('a').capabilities}); assert.equal(f.message.ready, false);
 });
 
+test('input capability loss uses neutral access copy even when the agent remains live', async () => {
+  const f = messageFixture(); const pending = f.message.open('a');
+  f.calls[0]?.result.resolve(prepared('a')); await pending;
+  f.message.availabilityChanged({identity: 'a', state: 'live', capabilities: prepared('a', 'live', false).capabilities});
+  assert.equal(f.message.ready, false);
+  assert.equal(f.message.current?.error, 'Message access changed. Your draft is unchanged.');
+});
+test('local preparation retry keeps exact identity and rejects stale recovery callbacks without dispatching input', async () => {
+  const f = messageFixture(); const pending = f.message.open('a'); assert.equal(f.message.recovery(), undefined);
+  const response = prepared('a'); response.targetState.draft.text = 'retained panel draft';
+  f.calls[0]?.result.resolve(response); await pending; const captured = f.message.current; assert.ok(captured);
+  assert.equal(f.message.recovery(), undefined); f.message.rosterChanged(rosterEvent('a', 'stored'));
+  const recovery = f.message.recovery(); assert.ok(recovery); assert.equal(recovery.label, 'Check connection');
+  const retry = recovery.run(); assert.equal(f.message.current?.identity, 'a'); assert.equal(f.message.current?.workspaceId, 'w');
+  assert.equal(f.message.current?.preparing, true); assert.equal(f.message.recovery(), undefined); assert.equal(f.message.ready, false);
+  assert.equal(captured.prepared?.targetState.draft.text, 'retained panel draft');
+  assert.deepEqual(f.calls[1]?.target, {kind: 'agent', identity: 'a'});
+  f.calls[1]?.result.resolve(prepared('wrong')); await retry; assert.equal(f.message.ready, false);
+  assert.match(f.message.current?.error ?? '', /recipient changed/); const again = f.message.recovery(); assert.ok(again); assert.equal(again.label, 'Try again');
+  const success = again.run(); f.calls[2]?.result.resolve(prepared('a')); await success; assert.equal(f.message.ready, true);
+  await recovery.run(); assert.equal(f.calls.length, 3);
+  f.message.rosterChanged(rosterEvent('a')); const stale = f.message.recovery(); assert.ok(stale); f.message.close();
+  await stale.run(); assert.equal(f.calls.length, 3); assert.equal(f.message.current, undefined);
+});
+test('failed preparation offers a deliberate retry and keeps newer targets immune to the old callback', async () => {
+  const f = messageFixture(); const pending = f.message.open('a'); f.calls[0]?.result.reject(new Error('Prepare failed')); await pending;
+  const recovery = f.message.recovery(); assert.ok(recovery); assert.equal(recovery.label, 'Try again');
+  const other = f.message.open('b'); await recovery.run(); assert.equal(f.calls.length, 2);
+  f.calls[1]?.result.resolve(prepared('b')); await other; assert.equal(f.message.current?.identity, 'b'); assert.equal(f.message.ready, true);
+});
 test('negative evidence during preparation latches through a late live response; unrelated events do not', async () => {
   for (const evidence of ['removed', 'unavailable', 'unrelated']) {
     const f = messageFixture(); const pending = f.message.open('a');

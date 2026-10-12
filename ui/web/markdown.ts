@@ -82,14 +82,14 @@ function readReferenceImage(source: string, i: number, pairs: ReadonlyMap<number
     const reference = pairs.get(after) ?? -1;
     if (reference >= 0) after = reference + 1;
   }
-  return { nodes: [{ type: 'omitted', label: `Image omitted: ${source.slice(i + 2, end)}` }], end: after };
+  return { nodes: [{ type: 'omitted', label: `Image not shown${end > i + 2 ? `: ${source.slice(i + 2, end)}` : ''}` }], end: after };
 }
 function readLink(source: string, i: number, depth: number, pairs: ReadonlyMap<number, number>): InlineRead | null {
   const image = source.charAt(i) === '!' && source.charAt(i + 1) === '[';
   if (!image && source.charAt(i) !== '[') return null;
   const link = linkAt(source, i + (image ? 1 : 0), pairs);
   if (!link) return image ? readReferenceImage(source, i, pairs) : null;
-  if (image) return { nodes: [{ type: 'omitted', label: `Image omitted${link.label ? `: ${link.label}` : ''}` }], end: link.end };
+  if (image) return { nodes: [{ type: 'omitted', label: `Image not shown${link.label ? `: ${link.label}` : ''}` }], end: link.end };
   const children = parseInline(link.label, depth + 1);
   return { nodes: link.href ? [{ type: 'link', href: link.href, children }] : children, end: link.end };
 }

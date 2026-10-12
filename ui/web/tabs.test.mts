@@ -1,82 +1,56 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ConversationLayout, ConversationTab, Workspace } from '../shared/api.ts';
-import { activeTab, closeTab, layoutTarget, MAX_TABS, moveTab, openTab, splitGeometry, splitPercent, switchTab, tabForTarget, tabKey, toggleSplit, workspaceLayout } from './tabs.ts';
+import type {ConversationTab, Workspace} from '../shared/api.ts';
+import {activeTab, closeTab, duplicateIdentityTails, layoutTarget, MAX_TABS, openTab, switchTab, tabForTarget, workspaceLayout} from './tabs.ts';
+import {createPaneLayout, paneById, paneLeaves, splitPane} from './pane-layout.ts';
+const agent = (identity: string): ConversationTab => ({kind: 'agent', identity});
+const base = () => createPaneLayout([{kind: 'primary'}]);
+const workspace = (layout = base()): Workspace => ({id: 'fixture', revision: 0, primaryKey: 'primary-key', conversationLayout: layout});
 
-const agent = (identity: string): ConversationTab => ({kind: 'agent', identity, split: false});
-const base = (): ConversationLayout => ({tabs: [{kind: 'primary'}], active: 0, splitRatio: 50});
-const workspace = (layout?: ConversationLayout): Workspace => ({id: 'fixture', revision: 0, ...(layout ? {conversationLayout: layout} : {})});
-test('workspace defaults and restored layouts keep the exact active conversation and split size', () => {
-  assert.deepEqual(workspaceLayout(), base());
+test('workspace defaults, explicit empty layouts and current selected targets use the single tree', () => {
+  assert.deepEqual(workspaceLayout(), createPaneLayout([])); assert.deepEqual(workspaceLayout(workspace()), base());
   const selected = {...workspace(), selectedTarget: {kind: 'agent' as const, identity: 'a'}};
-  assert.deepEqual(workspaceLayout(selected), {...base(), tabs: [{kind: 'primary'}, agent('a')], active: 1});
-  const saved = toggleSplit(openTab(base(), agent('a'))); saved.splitRatio = 62;
-  assert.deepEqual(workspaceLayout({...selected, conversationLayout: saved}), saved);
-  assert.deepEqual(workspaceLayout(workspace({tabs: [], active: null, splitRatio: 50})), {tabs: [], active: null, splitRatio: 50});
+  const layout = workspaceLayout(selected); assert.deepEqual(activeTab(layout), agent('a')); assert.equal(paneLeaves(layout.root).length, 1);
+  assert.deepEqual(workspaceLayout(workspace(createPaneLayout([]))), createPaneLayout([]));
+  assert.equal(workspaceLayout({...selected, conversationLayout: layout}), layout);
 });
-test('opening focuses existing tabs without changing order or split preference', () => {
-  const layout = toggleSplit(openTab(base(), agent('a')));
-  const two = openTab(layout, agent('b'));
-  const focused = openTab(two, agent('a'));
-  assert.equal(focused.active, 1); assert.equal(focused.tabs.length, 3);
-  assert.deepEqual(focused.tabs[1], {kind: 'agent', identity: 'a', split: true});
-  assert.deepEqual(layout.tabs, [{kind: 'primary'}, {kind: 'agent', identity: 'a', split: true}]);
+test('missing Primary closes only its tab, preserving agent topology and selected identity', () => {
+  let layout = openTab(openTab(base(), agent('a')), agent('b'));
+  layout = splitPane(layout, layout.focusedPane, 'y', {width: 900, height: 900, divider: 4});
+  const value = {...workspace(layout), primaryKey: undefined, selectedTarget: {kind: 'agent' as const, identity: 'b'}};
+  const current = workspaceLayout(value); assert.equal(paneLeaves(current.root).length, 2); assert.deepEqual(activeTab(current), agent('b'));
+  assert.equal(paneLeaves(current.root).flatMap(pane => pane.tabs).some(tab => tab.kind === 'primary'), false);
+  assert.deepEqual(workspaceLayout({...workspace(), primaryKey: undefined}), createPaneLayout([]));
 });
-test('close chooses an adjacent tab or an explicit empty layout without modifying target state', () => {
-  const layout = openTab(openTab(base(), agent('a')), agent('b'));
-  assert.equal(closeTab(layout, 0).active, 1);
-  const closed = closeTab(layout, 2); const selected = activeTab(closed); assert.ok(selected); assert.equal(tabKey(selected), 'agent:a');
-  assert.deepEqual(closeTab(base(), 0), {tabs: [], active: null, splitRatio: 50});
-  assert.equal(closeTab(layout, -1), layout);
-  assert.equal(layout.tabs.length, 3);
+test('opening an existing target focuses its owning pane without moving or copying it', () => {
+  const original = openTab(openTab(base(), agent('a')), agent('b')); const split = splitPane(original, 'pane-1', 'x', {width: 900, height: 700, divider: 4});
+  const selected = openTab(split, agent('a')); assert.equal(selected.focusedPane, 'pane-1'); assert.equal(selected.root.kind, 'split');
+  assert.deepEqual(activeTab(selected), agent('a')); assert.equal(paneLeaves(selected.root).flatMap(pane => pane.tabs).length, 3);
+  assert.equal(paneById(selected, 'pane-2')?.active, 'agent:b'); assert.equal(paneById(original, 'pane-1')?.active, 'agent:b');
 });
-test('reorder follows the active tab identity and keeps split metadata', () => {
-  const layout = toggleSplit(openTab(openTab(base(), agent('a')), agent('b')));
-  const moved = moveTab(layout, 2, 0);
-  assert.deepEqual(moved.tabs.map(tabKey), ['agent:b', 'primary', 'agent:a']);
-  assert.equal(moved.active, 0); assert.deepEqual(activeTab(moved), {kind: 'agent', identity: 'b', split: true});
-  assert.equal(moveTab(layout, -1, 0), layout); assert.equal(moveTab(layout, 0, 5), layout);
-  assert.deepEqual(layout.tabs.map(tabKey), ['primary', 'agent:a', 'agent:b']);
+test('closing routes by stable key after reorder and never uses a stale array position', () => {
+  const layout = openTab(openTab(base(), agent('a')), agent('b')); const closed = closeTab(layout, 'agent:b');
+  assert.deepEqual(activeTab(closed), agent('a')); assert.equal(closeTab(layout, 'missing'), layout);
+  assert.deepEqual(closeTab(base(), 'primary'), createPaneLayout([])); assert.equal(paneById(layout, 'pane-1')?.tabs.length, 3);
 });
-test('keyboard switching wraps and the primary target uses the current epoch', () => {
-  const layout = openTab(base(), agent('a'));
-  assert.equal(switchTab(layout, 1).active, 0); assert.equal(switchTab(base(), -1).active, 0);
-  assert.equal(switchTab({...base(), tabs: [], active: null}, 1).active, null);
-  assert.deepEqual(layoutTarget(layout), {kind: 'agent', identity: 'a'});
+test('keyboard switching wraps only in the focused group and Primary dispatch uses its current epoch', () => {
+  let layout = openTab(openTab(base(), agent('a')), agent('b')); layout = splitPane(layout, 'pane-1', 'x', {width: 900, height: 700, divider: 4});
+  assert.deepEqual(activeTab(switchTab(layout, 1)), agent('b'));
+  const selected = openTab(layout, {kind: 'primary'}); assert.deepEqual(activeTab(switchTab(selected, -1)), agent('a'));
+  assert.deepEqual(activeTab(switchTab(selected, 3)), agent('a')); assert.equal(switchTab(selected, Number.NaN), selected);
   assert.deepEqual(layoutTarget(base(), {kind: 'primary', key: 'p', epoch: 8}), {kind: 'primary', key: 'p', epoch: 8});
-  assert.equal(layoutTarget({tabs: [], active: null, splitRatio: 50}), null);
+  assert.equal(layoutTarget(createPaneLayout([])), null); assert.deepEqual(layoutTarget(layout), {kind: 'agent', identity: 'b'});
   assert.deepEqual(tabForTarget({kind: 'primary', key: 'p', epoch: 8}), {kind: 'primary'});
+  assert.deepEqual(tabForTarget({kind: 'agent', identity: 'a'}), agent('a'));
 });
-test('splits are primary plus one agent and their ratio stays bounded', () => {
-  assert.equal(toggleSplit(base()).tabs[0]?.kind, 'primary');
-  const layout = openTab(base(), agent('a')); assert.equal(layoutTarget(toggleSplit(layout))?.kind, 'agent');
-  assert.deepEqual(toggleSplit(toggleSplit(layout)), layout);
-  assert.equal(splitPercent(0, 500), 20); assert.equal(splitPercent(999, 500), 80);
-  assert.equal(splitPercent(275, 500), 55); assert.equal(splitPercent(0, 0), 50);
-});
-test('split geometry reserves the actual divider and both 320px pane minimums', () => {
-  assert.equal(splitGeometry(644, 5, 50), undefined);
-  assert.equal(splitGeometry(683, 44, 50), undefined);
-  assert.deepEqual(splitGeometry(645, 5, 20), {width: 640, min: 320, max: 320, primary: 320});
-  assert.deepEqual(splitGeometry(684, 44, 80), {width: 640, min: 320, max: 320, primary: 320});
-  assert.deepEqual(splitGeometry(700.75, 5, 20), {width: 695, min: 320, max: 375, primary: 320});
-  assert.equal(splitGeometry(644.99, 5, 50), undefined);
-  assert.equal(splitGeometry(Number.NaN, 5, 50), undefined);
-});
-test('saved ratios project into safe pixel bounds at every supported split width', () => {
-  for (const divider of [5, 44]) for (const width of [640, 650, 800, 1000, 1600, 2400]) for (const ratio of [20, 37, 50, 63, 80]) {
-    const size = splitGeometry(width + divider, divider, ratio); assert.ok(size);
-    assert.ok(size.primary >= 320); assert.ok(size.width - size.primary >= 320);
-    assert.ok(Number.isSafeInteger(size.min) && Number.isSafeInteger(size.max));
-    assert.ok(size.min >= Math.ceil(width * .2)); assert.ok(size.max <= Math.floor(width * .8));
-    assert.ok(size.primary >= size.min && size.primary <= size.max);
-  }
-});
-test('capacity fails without evicting drafts and externally selected sessions remain reachable', () => {
+test('the shared cap rejects new tabs without replacing any existing target or topology', () => {
   let full = base(); for (let i = 1; i < MAX_TABS; i++) full = openTab(full, agent(String(i)));
-  assert.throws(() => openTab(full, agent('extra')), /Close a conversation tab/);
-  assert.equal(openTab(full, agent('1')).active, 1);
-  const external = workspaceLayout({...workspace(full), selectedTarget: {kind: 'agent', identity: 'external'}});
-  assert.equal(external.tabs.length, MAX_TABS); assert.deepEqual(activeTab(external), agent('external'));
-  assert.equal(full.tabs.some(tab => tabKey(tab) === 'agent:external'), false);
+  const before = JSON.stringify(full); assert.throws(() => openTab(full, agent('extra')), /tab limit/);
+  assert.deepEqual(activeTab(openTab(full, agent('1'))), agent('1')); assert.equal(JSON.stringify(full), before);
+  assert.throws(() => workspaceLayout({...workspace(full), selectedTarget: {kind: 'agent', identity: 'extra'}}), /tab limit/);
+});
+test('duplicate identity tails stay unique across stores without decorating unique names', () => {
+  const rows = [{name: 'Review', identity: 'first:same'}, {name: 'Review', identity: 'second:same'}, {name: 'Unique', identity: 'third:same'}];
+  const tails = duplicateIdentityTails(rows); assert.notEqual(tails.get('first:same'), tails.get('second:same')); assert.equal(tails.get('third:same'), undefined);
+  assert.deepEqual(rows.map(row => row.identity), ['first:same', 'second:same', 'third:same']);
 });

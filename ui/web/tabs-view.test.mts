@@ -1,136 +1,155 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ConversationLayout } from '../shared/api.ts';
-import { TabStrip } from './tabs-view.ts';
-import { tabKey } from './tabs.ts';
+import type {ConversationTab} from '../shared/api.ts';
+import {TabStrip, revealTabScroll, type TabHooks} from './tabs-view.ts';
+import {tabKey} from './tabs.ts';
+import {activatePaneTab, closePaneTab, createPaneLayout, movePaneTab, paneLeaves, splitPane, type PaneLayout} from './pane-layout.ts';
 
 class Node extends EventTarget {
-  children: Node[] = []; parent?: Node; ownerDocument: Doc;
-  className = ''; textContent = ''; title = ''; type = ''; tabIndex = 0; draggable = false; hidden = false; dataset: Record<string,string> = {};
-  attributes = new Map<string, string>();
-  clientWidth = 0; offsetWidth = 22; scrollWidth = 54;
-  styleValues = new Map<string, string>();
-  style = {setProperty: (name: string, value: string) => this.styleValues.set(name, value)};
-  classes = new Set<string>();
-  classList = {add: (...names: string[]) => {for (const name of names) this.classes.add(name);}, remove: (...names: string[]) => {for (const name of names) this.classes.delete(name);}};
-  constructor(doc: Doc) { super(); this.ownerDocument = doc; }
-  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
-  append(...nodes: Node[]): void { for (const node of nodes) this.insertBefore(node, null); }
-  insertBefore(node: Node, next: Node | null): void { node.remove(); node.parent = this; this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, node); }
-  remove(): void { if (this.parent) {const index = this.parent.children.indexOf(this); this.parent.children.splice(index, 1); this.parent = undefined;} }
-  contains(node?: Node): boolean { return !!node && (node === this || this.children.some(child => child.contains(node))); }
-  querySelector(selector: string): Node | null { return this.children.find(node => node.className === selector.slice(1)) ?? null; }
-  focus(): void { this.ownerDocument.activeElement = this; }
+  children: Node[] = []; parent?: Node; ownerDocument: Doc; className = ''; textContent = ''; title = ''; type = ''; tabIndex = 0; draggable = false; hidden = false; dataset: Record<string,string> = {};
+  attributes = new Map<string,string>(); scrollLeft = 0; offsetLeft = 0; clientWidth = 230; offsetWidth = 130; scrollWidth = 54;
+  styleValues = new Map<string,string>(); style = {setProperty: (name: string, value: string) => this.styleValues.set(name, value)};
+  classes = new Set<string>(); classList = {add: (...names: string[]) => {for (const name of names) this.classes.add(name);}, remove: (...names: string[]) => {for (const name of names) this.classes.delete(name);}};
+  constructor(doc: Doc) {super(); this.ownerDocument = doc;}
+  setAttribute(name: string, value: string): void {this.attributes.set(name, value);}
+  append(...nodes: Node[]): void {for (const node of nodes) this.insertBefore(node, null);}
+  insertBefore(node: Node, next: Node | null): void {node.remove(); node.parent = this; this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, node);}
+  remove(): void {if (this.parent) {this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = undefined;}}
+  contains(node?: Node): boolean {return !!node && (node === this || this.children.some(child => child.contains(node)));}
+  querySelector(selector: string): Node | null {return this.children.find(node => node.className === selector.slice(1)) ?? null;}
+  getBoundingClientRect(): {left: number} {return {left: (this.parent?.getBoundingClientRect().left ?? 0) + this.offsetLeft - (this.parent?.scrollLeft ?? 0)};}
+  focus(): void {this.ownerDocument.activeElement = this;}
 }
-class Doc { activeElement?: Node; createElement(): Node { return new Node(this); } }
+class Doc {activeElement?: Node; createElement(): Node {return new Node(this);}}
 class Observer {
-  static instances: Observer[] = [];
-  observed = new Set<unknown>();
-  private callback: () => void;
-  constructor(callback: () => void) { this.callback = callback; Observer.instances.push(this); }
-  observe(node: unknown): void { this.observed.add(node); }
-  unobserve(node: unknown): void { this.observed.delete(node); }
-  resize(): void { this.callback(); }
+  static instances: Observer[] = []; observed = new Set<unknown>(); callback: () => void;
+  constructor(callback: () => void) {this.callback = callback; Observer.instances.push(this);}
+  observe(node: unknown): void {this.observed.add(node);} unobserve(node: unknown): void {this.observed.delete(node);} disconnect(): void {this.observed.clear();} resize(): void {this.callback();}
 }
 Object.defineProperty(globalThis, 'ResizeObserver', {value: Observer, configurable: true});
-Object.defineProperty(globalThis, 'getComputedStyle', {value: () => ({paddingLeft: '14px', paddingRight: '8px', columnGap: '8px', minWidth: '64px'}), configurable: true});
-function fixture() {
-  const doc = new Doc(); const root = new Node(doc);
-  let layout: ConversationLayout = {tabs: [{kind: 'primary'}, {kind: 'agent', identity: 'a', split: false}, {kind: 'agent', identity: 'b', split: true}], active: 0, splitRatio: 50};
-  const changes: ConversationLayout[] = [];
-  const strip = new TabStrip(root as unknown as HTMLElement, {layout: () => layout, label: tab => tabKey(tab), status: tab => tab.kind === 'agent' ? 'working' : '', change: value => {layout = value; changes.push(value); strip.render();}});
-  strip.render();
-  return {doc, root, strip, changes, layout: () => layout};
+Object.defineProperty(globalThis, 'getComputedStyle', {value: () => ({paddingLeft:'14px', paddingRight:'8px', columnGap:'8px', minWidth:'64px'}), configurable: true});
+function event(node: Node | null | undefined, type: string, fields: Record<string,unknown> = {}): Event {
+  assert.ok(node); const e = new Event(type, {cancelable:true}); const {target, ...rest} = fields; Object.assign(e, rest); if (target) Object.defineProperty(e, 'target', {value:target}); node.dispatchEvent(e); return e;
 }
-function event(node: Node | undefined, type: string, fields: Record<string, unknown> = {}): Event {
-  assert.ok(node); const event = new Event(type, {cancelable: true});
-  const {target, ...rest} = fields; Object.assign(event, rest);
-  if (target) Object.defineProperty(event, 'target', {value: target});
-  node.dispatchEvent(event); return event;
+function fixture(tabs: ConversationTab[] = [{kind:'primary'}, {kind:'agent',identity:'a'}, {kind:'agent',identity:'b'}, {kind:'agent',identity:'c'}], options: Partial<Pick<TabHooks,'label'|'status'>> = {}) {
+  const doc = new Doc(); const conversations = new Node(doc); const hosts = new Map<string,Node>(); const overflow = new Map<string,boolean>();
+  let layout = createPaneLayout(tabs); const calls: string[] = []; const moves: string[] = [];
+  const regions = () => paneLeaves(layout.root).map(pane => {let host = hosts.get(pane.id); if (!host) {host = new Node(doc); host.clientWidth = 760; hosts.set(pane.id, host);} return {id:pane.id,tabs:host as unknown as HTMLElement,controls:`content-${pane.id}`};});
+  const strip = new TabStrip({layout:()=>layout, label:tab=>tabKey(tab), status:()=>({label:'Ready',glyph:'✓'}), ...options,
+    activate:(pane,key)=>{calls.push(`${pane}:${key}`); layout=activatePaneTab(layout,pane,key); strip.render();},
+    close:key=>{layout=closePaneTab(layout,key); strip.render();},
+    move:(key,pane,index)=>{moves.push(`${key}:${pane}:${index}`); layout=movePaneTab(layout,key,pane,index); strip.render();}, overflow:(value,pane)=>overflow.set(pane,value),
+  }, {panes:regions, conversations:conversations as unknown as HTMLElement});
+  strip.render(); const root = (id='pane-1') => {const host=hosts.get(id); assert.ok(host); return host;};
+  const set = (next:PaneLayout) => {layout=next; strip.render();};
+  const split = (id='pane-1',axis:'x'|'y'='x',key?:string) => set(splitPane(layout,id,axis,{width:1400,height:1000,divider:4},key));
+  const rows = () => conversations.children.filter(node=>node.className==='conversation-group').flatMap(group=>group.querySelector('.conversation-list')?.children ?? []);
+  return {doc,strip,root,hosts,conversations,overflow,calls,moves,rows,layout:()=>layout,set,split};
 }
-test('tab nodes retain focus, identity, labels and ARIA through repeated paint', () => {
-  const {doc, root, strip} = fixture(); const primary = root.children[0]; assert.ok(primary);
-  primary.focus(); strip.render(); assert.equal(root.children[0], primary); assert.equal(doc.activeElement, primary);
-  assert.equal(primary.attributes.get('aria-selected'), 'true'); assert.equal(primary.attributes.get('role'), 'tab');
-  assert.equal(primary.attributes.get('aria-controls'), 'conversation-panes'); assert.equal(root.children[1]?.tabIndex, -1);
-  assert.equal(root.children[2]?.attributes.get('aria-label'), 'agent:b, split with primary, working');
-  assert.equal(root.children[2]?.querySelector('.tab-state')?.textContent, 'working'); assert.equal(root.children[2]?.querySelector('.tab-state')?.dataset.state, 'working');
-  assert.equal(primary.querySelector('.tab-state')?.hidden, true);
-  assert.equal(primary.querySelector('.tab-close')?.attributes.get('aria-label'), 'Close primary tab');
+test('retained tabs preserve identity, accessible target controls and selected state through repaint', () => {
+  const f=fixture(); const nodes=[...f.root().children]; nodes[0]?.focus(); f.strip.render(); assert.deepEqual(f.root().children,nodes); assert.equal(f.doc.activeElement,nodes[0]);
+  assert.equal(nodes[0]?.attributes.get('role'),'tab'); assert.equal(nodes[0]?.attributes.get('aria-controls'),'content-pane-1'); assert.equal(nodes[0]?.attributes.get('aria-selected'),'true');
+  assert.equal(nodes[1]?.tabIndex,-1); assert.equal(nodes[1]?.querySelector('.tab-state')?.textContent,'✓'); assert.equal(nodes[1]?.querySelector('.tab-close')?.attributes.get('aria-label'),'Close agent:a tab');
 });
-test('a 760px workspace bounds a long tab share and drops status before each name minimum', () => {
-  const doc = new Doc(); const root = new Node(doc); root.clientWidth = 620;
-  const name = 'A very long inactive conversation title that must not starve other names';
-  const layout: ConversationLayout = {tabs: [{kind: 'primary'}, {kind: 'agent', identity: 'a', split: false}, {kind: 'agent', identity: 'b', split: false}, {kind: 'agent', identity: 'long', split: false}], active: 1, splitRatio: 50};
-  const strip = new TabStrip(root as unknown as HTMLElement, {layout: () => layout, label: tab => tab.kind === 'primary' ? 'Primary' : tab.identity === 'long' ? name : `Agent ${tab.identity}`, status: () => 'working', change() {}});
-  strip.render();
-  assert.equal(root.styleValues.get('--tab-share'), '155px');
-  for (const node of root.children) node.clientWidth = 155;
-  const observer = Observer.instances.at(-1); assert.ok(observer); observer.resize();
-  for (const node of root.children) {
-    assert.equal(node.querySelector('.tab-state')?.hidden, true, 'status loses space before the reserved eight-ch name width');
-    assert.ok(node.querySelector('.tab-label')?.textContent);
-    assert.match(node.attributes.get('aria-label') ?? '', /working/);
-    assert.match(node.title, /working/);
-  }
-  assert.match(root.children[3]?.title ?? '', new RegExp(name));
-  assert.equal(root.children[1]?.attributes.get('aria-selected'), 'true');
-  root.clientWidth = 1060;
-  for (const node of root.children) node.clientWidth = 230;
-  observer.resize();
-  assert.equal(root.styleValues.get('--tab-share'), '265px');
-  for (const node of root.children) assert.equal(node.querySelector('.tab-state')?.hidden, false);
+test('mixed split axes move the same keyed nodes into any target-independent group', () => {
+  const f=fixture(); const original=[...f.root().children]; f.split('pane-1','x','agent:b'); f.split('pane-1','y','primary');
+  assert.equal(f.root('pane-2').children[0],original[2]); assert.equal(f.root('pane-3').children[0],original[0]);
+  assert.equal(original[0]?.attributes.get('aria-controls'),'content-pane-3'); assert.equal(original[2]?.attributes.get('aria-controls'),'content-pane-2');
+  assert.equal(original[0]?.attributes.get('aria-selected'),'true'); assert.equal(original[2]?.attributes.get('aria-selected'),'true'); assert.equal(original[1]?.attributes.get('aria-selected'),'true');
+  assert.equal(new Set([...f.hosts.values()].flatMap(host=>host.children)).size,4);
 });
-test('coarse close widths and short tabs retain captions while optional statuses collapse', () => {
-  const {root, strip, changes} = fixture(); root.clientWidth = 300;
-  for (const node of root.children) {node.clientWidth = 152; const close = node.querySelector('.tab-close'); assert.ok(close); close.offsetWidth = 44;}
-  strip.render();
-  assert.equal(root.children[0]?.querySelector('.tab-state')?.hidden, true);
-  for (const node of root.children.slice(1)) {
-    assert.equal(node.querySelector('.tab-state')?.hidden, true);
-    assert.match(node.querySelector('.tab-label')?.textContent ?? '', /agent:/);
-  }
-  const removed = root.children[1]; assert.ok(removed); const observer = Observer.instances.at(-1); assert.ok(observer);
-  event(removed.querySelector('.tab-close') ?? undefined, 'click');
-  assert.equal(observer.observed.has(removed), false); assert.equal(changes.length, 1);
-  assert.equal(root.styleValues.get('--tab-share'), '150px');
+test('explicit tab and sidebar activation invoke exact pane/key even for its already-selected target', () => {
+  const f=fixture(); f.split('pane-1','x','agent:b'); event(f.root().children[0],'click'); assert.equal(f.layout().focusedPane,'pane-1');
+  event(f.root().children[0],'click'); assert.deepEqual(f.calls.slice(-2),['pane-1:primary','pane-1:primary']);
+  const row=f.rows().find(row=>row.dataset.tabKey==='agent:b'); assert.ok(row); event(row,'click'); assert.equal(f.layout().focusedPane,'pane-2');
+  assert.equal(row.attributes.get('aria-current'),'true'); assert.equal(f.root('pane-2').dataset.focused,'true'); assert.equal(f.root().dataset.focused,'false');
 });
-test('click focuses a tab and close or middle click removes only that tab', () => {
-  const {root, layout, changes} = fixture();
-  event(root.children[1], 'click'); assert.equal(layout().active, 1);
-  event(root.children[1]?.querySelector('.tab-close') ?? undefined, 'click');
-  assert.deepEqual(layout().tabs.map(tabKey), ['primary', 'agent:b']); assert.equal(layout().active, 1);
-  const middle = event(root.children[1], 'auxclick', {button: 1}); assert.equal(middle.defaultPrevented, true);
-  assert.deepEqual(layout().tabs.map(tabKey), ['primary']); assert.equal(changes.length, 3);
+test('sidebar rows retain nodes and exact routing when tabs cross groups', () => {
+  const f=fixture(); const original=f.rows(); const b=original[2]; f.split('pane-1','x','agent:b'); assert.ok(b);
+  assert.ok(f.rows().includes(b)); assert.equal(b.dataset.paneId,'pane-2'); assert.equal(b.attributes.get('aria-controls'),'content-pane-2');
+  f.set(movePaneTab(f.layout(),'agent:b','pane-1',0)); assert.ok(f.rows().includes(b)); assert.equal(b.dataset.paneId,'pane-1');
+  event(b,'click'); assert.deepEqual(f.calls.at(-1),'pane-1:agent:b'); assert.equal(f.conversations.children.filter(node=>node.className==='conversation-group').length,1);
 });
-test('arrow and endpoint keys select, modifier reorder preserves active identity, and Delete closes', () => {
-  const {root, doc, layout} = fixture();
-  assert.equal(event(root.children[0], 'keydown', {key: 'ArrowRight'}).defaultPrevented, true);
-  assert.equal(layout().active, 1); assert.equal(doc.activeElement, root.children[1]);
-  event(root.children[1], 'keydown', {key: 'ArrowRight', altKey: true, shiftKey: true});
-  assert.deepEqual(layout().tabs.map(tabKey), ['primary', 'agent:b', 'agent:a']); assert.equal(layout().active, 2);
-  event(root.children[2], 'keydown', {key: 'Home'}); assert.equal(layout().active, 0);
-  event(root.children[0], 'keydown', {key: 'End'}); assert.equal(layout().active, 2);
-  event(root.children[2], 'keydown', {key: 'Delete'}); assert.equal(layout().tabs.length, 2); assert.equal(layout().active, 1);
-  event(root.children[1], 'keydown', {key: 'Home', isComposing: true}); assert.equal(layout().active, 1);
+test('close-button and sidebar focus survive a move of their retained nodes', () => {
+  const f=fixture(); const node=f.root().children[2]; const close=node?.querySelector('.tab-close'); assert.ok(node); assert.ok(close); close.focus();
+  f.split('pane-1','x','agent:b'); assert.equal(f.doc.activeElement,close); assert.equal(node.parent,f.root('pane-2'));
+  const row=f.rows().find(row=>row.dataset.tabKey==='agent:b'); assert.ok(row); row.focus(); f.set(movePaneTab(f.layout(),'agent:b','pane-1',0));
+  assert.equal(f.doc.activeElement,row); assert.equal(f.root().children[0],node); assert.equal(node.querySelector('.tab-close'),close);
 });
-test('close-button keys retain native activation without activating or reopening the parent tab', () => {
-  for (const key of ['Enter', ' ']) {
-    const {root, layout, changes} = fixture(); const row = root.children[1]; const close = row?.querySelector('.tab-close'); assert.ok(row); assert.ok(close);
-    close.focus();
-    const bubbled = event(row, 'keydown', {key, target: close});
-    assert.equal(bubbled.defaultPrevented, false); assert.equal(changes.length, 0); assert.equal(layout().active, 0);
-    // A native button dispatches click when its activation key is not canceled.
-    event(close, 'click'); assert.equal(changes.length, 1); assert.deepEqual(layout().tabs.map(tabKey), ['primary', 'agent:b']);
-    event(root.children[1], 'keydown', {key}); assert.equal(changes.length, 2); assert.equal(layout().active, 1);
-  }
+test('close and middle click remove only the addressed stable tab, release its observer and choose adjacent focus', () => {
+  const f=fixture(); const node=f.root().children[1]; assert.ok(node); event(node.querySelector('.tab-close'),'click');
+  assert.equal(f.layout().root.kind==='pane' && f.layout().root.tabs.some(tab=>tabKey(tab)==='agent:a'),false); assert.equal(Observer.instances.at(-1)?.observed.has(node),false);
+  const b=f.root().children[1]; assert.equal(event(b,'auxclick',{button:1}).defaultPrevented,true); assert.equal(f.root().children.length,2);
 });
-test('drag reorder accepts only an in-strip source and keeps the active conversation', () => {
-  const {root, layout} = fixture(); const source = root.children[2]; const destination = root.children[0];
-  assert.ok(source); assert.ok(destination);
-  assert.equal(event(destination, 'dragover').defaultPrevented, false);
-  event(source, 'dragstart'); assert.equal(source.classes.has('tab-dragging'), true);
-  assert.equal(event(destination, 'dragover').defaultPrevented, true);
-  event(destination, 'drop'); assert.deepEqual(layout().tabs.map(tabKey), ['agent:b', 'primary', 'agent:a']);
-  assert.equal(layout().active, 1); assert.equal(source.classes.has('tab-dragging'), false); assert.equal(destination.classes.has('tab-drop-target'), false);
+test('close-button activation keys stay native and never activate their parent', () => {
+  for (const key of ['Enter',' ']) {const f=fixture(); const node=f.root().children[1]; const close=node?.querySelector('.tab-close'); assert.ok(close);
+    assert.equal(event(node,'keydown',{key,target:close}).defaultPrevented,false); assert.equal(f.calls.length,0); event(close,'click'); assert.equal(f.root().children.length,3);}
+});
+test('pane-local arrows/endpoints and existing reorder keys never navigate another group', () => {
+  const f=fixture(); f.split('pane-1','x','agent:b'); const root=f.root();
+  event(root.children[0],'keydown',{key:'End'}); assert.deepEqual(f.calls.at(-1),'pane-1:agent:c');
+  event(root.children[2],'keydown',{key:'Home'}); assert.deepEqual(f.calls.at(-1),'pane-1:primary');
+  event(root.children[2],'keydown',{key:'ArrowLeft',altKey:true,shiftKey:true}); assert.deepEqual(f.moves.at(-1),'agent:c:pane-1:1');
+  assert.equal(f.layout().root.kind==='split' && f.layout().root.first.kind==='pane' && f.layout().root.first.active,'primary');
+  assert.equal(event(root.children[0],'keydown',{key:'End',isComposing:true}).defaultPrevented,false);
+  assert.equal(event(root.children[0],'keydown',{key:'End',ctrlKey:true}).defaultPrevented,false);
+});
+test('owned drag moves across panes, retains the target node and does not accept an external drag', () => {
+  const f=fixture(); f.split('pane-1','x','agent:b'); const source=f.root().children[1]; const target=f.root('pane-2').children[0]; assert.ok(source); assert.ok(target);
+  assert.equal(event(target,'dragover').defaultPrevented,false); event(source,'dragstart'); assert.equal(event(target,'dragover').defaultPrevented,true);
+  event(target,'drop'); assert.equal(f.root('pane-2').children[0],source); assert.equal(source.classes.has('tab-dragging'),false);
+  assert.deepEqual(f.moves.at(-1),'agent:a:pane-2:0'); assert.equal(source.attributes.get('aria-controls'),'content-pane-2');
+});
+test('empty provisional strip accepts an owned drop and old strip listeners disappear on collapse', () => {
+  const f=fixture([{kind:'primary'},{kind:'agent',identity:'a'}]); f.split('pane-1','x','agent:a'); f.split('pane-2','y');
+  const empty=f.root('pane-3'); const source=f.root().children[0]; const old=f.root(); assert.ok(source);
+  event(source,'dragstart'); assert.equal(event(empty,'dragover').defaultPrevented,true); event(empty,'drop'); assert.equal(empty.children[0],source);
+  assert.equal(Observer.instances.at(-1)?.observed.has(old),false); assert.equal(event(old,'dragover').defaultPrevented,false);
+});
+test('each group fits its own status/width and overflow; narrowness does not remove the name', () => {
+  const f=fixture(undefined,{label:()=> 'A very long conversation name',status:()=>({label:'Custom activity',glyph:'?'} )}); f.split('pane-1','x','agent:b');
+  f.root().clientWidth=335; f.root().scrollWidth=900; f.root('pane-2').clientWidth=440; f.root('pane-2').scrollWidth=440;
+  for (const node of f.root().children) node.clientWidth=130; f.strip.render();
+  assert.equal(f.root().styleValues.get('--tab-share'),`${335/3}px`); assert.equal(f.root('pane-2').styleValues.get('--tab-share'),'440px');
+  assert.equal(f.overflow.get('pane-1'),true); assert.equal(f.overflow.get('pane-2'),false);
+  for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state')?.hidden,true); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
+});
+test('repeated resize fits measure a previously hidden status before deciding visibility', () => {
+  const f=fixture([{kind:'primary'},{kind:'agent',identity:'a'}], {label:tab=>tab.kind==='primary'?'Primary':'Parser',status:()=>({label:'Working · bash',glyph:'○'})});
+  const node=f.root().children[0]; const state=node?.querySelector('.tab-state'); assert.ok(node); assert.ok(state);
+  Object.defineProperty(state,'scrollWidth',{get:()=>state.hidden?0:100});
+  node.clientWidth=280; const observer=Observer.instances.at(-1); assert.ok(observer);
+  for (let i=0;i<3;i++) {observer.resize(); assert.equal(state.hidden,true);}
+  assert.equal(node.querySelector('.tab-label')?.textContent,'Primary');
+  assert.equal(f.root().children[1]?.querySelector('.tab-label')?.textContent,'Parser');
+  assert.equal(node.attributes.get('aria-label'),'Primary, Working · bash'); assert.match(node.title,/Working · bash/);
+  assert.equal(state.attributes.get('aria-hidden'),'true');
+  node.clientWidth=400; observer.resize(); assert.equal(state.hidden,false);
+  node.clientWidth=280; observer.resize(); observer.resize(); assert.equal(state.hidden,true);
+});
+test('canonical glyph callback stays authoritative and status repaint preserves retained focus', () => {
+  let status={label:'Custom',glyph:'●'}; const f=fixture(undefined,{status:()=>status}); const node=f.root().children[1]; assert.ok(node); node.focus();
+  assert.equal(node.querySelector('.tab-state')?.textContent,'●'); status={label:'Working',glyph:'○'}; f.strip.render();
+  assert.equal(node.querySelector('.tab-state')?.textContent,'○'); assert.equal(f.doc.activeElement,node); assert.match(node.attributes.get('aria-label')??'',/Working/);
+});
+test('active reveal scrolls only its local host and repaint preserves manual strip position and draft selection', () => {
+  const f=fixture(Array.from({length:11},(_,i)=>({kind:'agent',identity:String(i)}))); f.set(activatePaneTab(f.layout(),'pane-1','agent:10'));
+  const root=f.root(); root.clientWidth=500; root.scrollWidth=1600; root.children.forEach((node,index)=>{node.offsetLeft=index*130; node.offsetWidth=130;});
+  const editor=Object.assign(new Node(f.doc),{value:'retained draft',selectionStart:2,selectionEnd:7}); editor.focus();
+  f.strip.requestReveal(); f.strip.render(); assert.equal(root.scrollLeft,930); assert.equal(f.doc.activeElement,editor); assert.equal(editor.value,'retained draft'); assert.deepEqual([editor.selectionStart,editor.selectionEnd],[2,7]);
+  root.scrollLeft=20; f.strip.render(); assert.equal(root.scrollLeft,20); const observer=Observer.instances.at(-1); assert.ok(observer); observer.resize();
+  root.clientWidth=400; observer.resize(); assert.equal(root.scrollLeft,1030); assert.equal(f.doc.activeElement,editor);
+});
+test('zero-width hidden groups retain tabs without scroll/focus theft and reveal after they reappear', () => {
+  const f=fixture(); f.split('pane-1','x','agent:b'); const node=f.root().children[0]; const editor=new Node(f.doc); editor.focus(); f.root().clientWidth=0;
+  f.strip.render(); f.strip.revealActive('pane-1'); assert.equal(f.root().children[0],node); assert.equal(f.doc.activeElement,editor); assert.equal(f.overflow.get('pane-1'),false);
+  f.root().clientWidth=760; f.strip.render(); assert.equal(f.root().children[0],node);
+});
+test('destroy releases observer and strip drop handlers exactly once and never clears unrelated sidebar children', () => {
+  const f=fixture(); const unrelated=new Node(f.doc); f.conversations.append(unrelated); const observer=Observer.instances.at(-1); assert.ok(observer);
+  const root=f.root(); f.strip.destroy(); f.strip.destroy(); assert.equal(observer.observed.size,0); assert.deepEqual(f.conversations.children,[unrelated]);
+  assert.equal(event(root,'dragover').defaultPrevented,false); observer.resize(); f.strip.render(); assert.equal(root.children.length,0);
+});
+test('strip reveal uses only the nearest hidden edge', () => {
+  assert.equal(revealTabScroll(200,500,300,130),200); assert.equal(revealTabScroll(200,500,100,130),100); assert.equal(revealTabScroll(0,500,1300,130),930);
 });

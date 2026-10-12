@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { AssetGeneration, AssetGenerations } from './asset-generations.mts';
+import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
+import { DevelopmentBuild } from './development-build.mts';
+import { Registry } from './registry.mts';
+import { Journal } from './journal.mts';
 import { access, chmod, mkdtemp, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises';
 import { request, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -11,7 +19,7 @@ import type { ApiResult, Bootstrap, EventData, EventEnvelope, EventName, Operati
 import { LIMITS } from '../shared/api.ts';
 import type { CatalogPage } from '../agents/index.mts';
 import { startBackend } from './main.mts';
-import { ASSET_ENTRY_LIMIT, ASSET_FILE_BYTES, ASSET_TOTAL_BYTES, assetMap, type Asset } from './http.mts';
+import { ASSET_ENTRY_LIMIT, ASSET_FILE_BYTES, ASSET_TOTAL_BYTES, assetMap, LocalHttp, type HttpBackend, type Asset } from './http.mts';
 import { ApiError } from './errors.mts';
 import type { AgentAdapter } from './registry.mts';
 
@@ -62,6 +70,104 @@ async function fixture(context: TestContext) {
   const reserve = async (kind: OperationKind, target?: Target) => data<{operationId: string}>(await call('/api/operations', 'POST', {kind, ...(target ? {target} : {})})).operationId;
   return {...app, cwd, fake, origin, call, login, reserve, useWorkspace(id: string) { workspace = id; }, get cookie() { return cookie; }};
 }
+
+class MemoryResponse extends EventEmitter {
+  statusCode=200;headersSent=false;destroyed=false;writableLength=0;headers:Record<string,string>={};text='';
+  setHeader(name:string,value:unknown) {this.headers[name]=String(value);}
+  writeHead(status:number,headers:Record<string,string>) {this.statusCode=status;this.headersSent=true;Object.assign(this.headers,headers);return this;}
+  write(data:string|Buffer) {this.text+=data.toString();return true;}
+  end(data?:string|Buffer) {if(data) this.write(data);this.destroyed=true;this.emit('close');}
+}
+function inProcessHttp(context:TestContext) {
+  const assets=new Map<string,Asset>([
+    ['/',{type:'text/html',data:Buffer.from('<html><head><link href="/style.css" rel="stylesheet"><link href="/favicon.svg" rel="icon"></head><body><script src="/web/app.js"></script></body></html>')}],
+    ['/style.css',{type:'text/css',data:Buffer.from('body {color:black;}')}],['/favicon.svg',{type:'image/svg+xml',data:Buffer.from('<svg/>')}],
+    ['/web/app.js',{type:'text/javascript',data:Buffer.from("import '../shared/api.js';")}],['/shared/api.js',{type:'text/javascript',data:Buffer.from('export {};')}]
+  ]);
+  const imports=new Map<string,string[]>();imports.set('/web/app.js',['../shared/api.js']);imports.set('/shared/api.js',[]);
+  const generations=new AssetGenerations(new AssetGeneration(assets,imports));
+  let now=0;const rows:string[]=[];const diagnostics=new DiagnosticSink({append:async row=>{rows.push(row);},close:async()=>{}},()=>now);
+  const counts={dispatch:0,observe:0,detached:0};const journal=new Journal();
+  const backend:HttpBackend={journal,dispatch:async()=>{counts.dispatch++;return {};},workspace:async()=> 'fake',observe:async()=>{counts.observe++;},detached:()=>{counts.detached++;}};
+  const http=new LocalHttp(backend,new Map(),undefined,{generations,diagnostics});http.auth.setPort(12345);
+  context.after(async()=>{await diagnostics.close();http.auth.close();http.server.removeAllListeners();});
+  const authenticated=new MemoryResponse();http.auth.launch(http.auth.capability,authenticated as unknown as ServerResponse);
+  const cookie=(authenticated.headers['Set-Cookie']??'').split(';')[0]??'';
+  const invoke=async(path:string,method='GET',body?:unknown,headers:Record<string,string>={})=> {
+    const raw=body===undefined?'':JSON.stringify(body);const request=Readable.from(raw?[Buffer.from(raw)]:[]) as unknown as IncomingMessage;
+    request.url=path;request.method=method;request.headers={host:'127.0.0.1:12345',origin:http.auth.origin,cookie,'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),...headers};
+    const response=new MemoryResponse();const handler=http as unknown as {handle(request:IncomingMessage,response:ServerResponse):Promise<void>};
+    await handler.handle(request,response as unknown as ServerResponse);return response;
+  };
+  return {http,backend,generations,diagnostics,rows,counts,invoke,advance:(value:number)=>{now=value;}};
+}
+
+test('pure development HTTP startup closes its admitted listener when watcher setup throws',async context=> {
+  const fixture=inProcessHttp(context);const failure=new Error('watcher setup failed');const events:string[]=[];const closed:string[]=[];
+  const registry={journal:fixture.backend.journal,validatePath:async()=>{},close:async()=>{closed.push('registry');},agents:{refresh:async()=>{throw new Error('unexpected refresh');}}};
+  context.mock.method(Registry,'open',async()=>registry as unknown as Registry);
+  context.mock.method(DevelopmentBuild,'open',async()=>({generations:fixture.generations,build:{start:()=>{events.push('watch');throw failure;},close:async()=>{closed.push('build');}}}) as unknown as Awaited<ReturnType<typeof DevelopmentBuild.open>>);
+  context.mock.method(DiagnosticDisk,'open',async()=>({append:async()=>{},close:async()=>{closed.push('diagnostics');}}) as unknown as DiagnosticDisk);
+  context.mock.method(LocalHttp.prototype,'listen',async()=>{events.push('listen');return 'http://127.0.0.1:12345/';});
+  context.mock.method(LocalHttp.prototype,'close',async function(this:LocalHttp) {closed.push('http');this.auth.close();this.server.removeAllListeners();});
+  await assert.rejects(startBackend({cwd:'/synthetic/project',stateDir:'/synthetic/state',pi:'unrun',port:0,devReload:true,devDiagnostics:true}),error=>error===failure);
+  assert.deepEqual(events,['listen','watch']);assert.deepEqual(closed.sort(),['build','diagnostics','http','registry']);assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
+});
+
+test('pure development HTTP enforces Host Origin session and bounded closed metadata ingestion',async context=> {
+  const fixture=inProcessHttp(context);const body={records:[{event:'measure',metric:'editor-echo',durationMs:2}],dropped:0};
+  assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{host:'wrong.invalid'})).statusCode,403);
+  assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{origin:'http://wrong.invalid'})).statusCode,403);
+  assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{cookie:''})).statusCode,401);assert.equal(fixture.diagnostics.state().accepted,0);
+  const accepted=await fixture.invoke('/api/dev/diagnostics','POST',body);assert.equal(accepted.statusCode,200);assert.equal(JSON.parse(accepted.text).data.accepted,1);
+  fixture.advance(1000);const rejected=await fixture.invoke('/api/dev/diagnostics','POST',{records:[{event:'connection',body:'PRIVATE-BODY-SENTINEL'}],dropped:0});
+  assert.equal(JSON.parse(rejected.text).data.dropped,1);
+  assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',{records:[],dropped:0,body:'x'.repeat(17000)})).statusCode,413);
+  await fixture.diagnostics.drain();assert.equal(fixture.rows.join('').includes('PRIVATE-BODY-SENTINEL'),false);assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
+});
+
+test('pure development HTTP refuses generation-prefixed HTML through parsed and direct routes without an unleased page',async context=> {
+  const fixture=inProcessHttp(context);const id=fixture.generations.status().generation;
+  for(const path of [`/_ui/${id}/`,`/_ui/${id}/index.html`]) {
+    for(const method of ['GET','HEAD']) {const response=await fixture.invoke(path,method);assert.equal(response.statusCode,404);assert.doesNotMatch(response.text,/<html|ui-client/);assert.equal(fixture.generations.counts().clients,0);}
+    const router=fixture.http as unknown as {developmentRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string):Promise<boolean>};
+    await assert.rejects(router.developmentRoute({} as IncomingMessage,new MemoryResponse() as unknown as ServerResponse,new URL(path,fixture.http.auth.origin),'GET'),error=>error instanceof ApiError&&error.status===404);
+  }
+  const page=await fixture.invoke('/');assert.equal(page.statusCode,200);assert.match(page.text,/ui-client/);assert.equal(fixture.generations.counts().clients,1);assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
+});
+
+test('pure development HTTP pins every asset and uses a distinct bounded notification stream without work replay',async context=> {
+  const fixture=inProcessHttp(context);const cursor=fixture.backend.journal.cursor;
+  const page=await fixture.invoke('/');assert.equal(page.statusCode,200);const id=fixture.generations.status().generation;
+  const head=await fixture.invoke('/','HEAD');assert.equal(head.statusCode,200);assert.equal(head.headers['Content-Length'],page.headers['Content-Length']);assert.equal(fixture.generations.counts().clients,1);
+  assert.match(page.text,new RegExp(`/_ui/${id}/style.css`));const client=/name="ui-client" content="([a-f0-9]+)"/.exec(page.text)?.[1];assert.ok(client);
+  const stream=await fixture.invoke(`/api/dev/events?client=${client}`);assert.match(stream.text,/event: build\ndata:/);assert.equal(stream.destroyed,false);
+  assert.equal(fixture.backend.journal.cursor,cursor);assert.equal(fixture.backend.journal.connectionCount,0);
+  assert.equal((await fixture.invoke(`/_ui/${id}/web/app.js`)).statusCode,200);assert.equal((await fixture.invoke(`/_ui/${'f'.repeat(64)}/web/app.js`)).statusCode,409);
+  assert.equal((await fixture.invoke('/api/dev/ack','POST',{client,generation:id,cssGeneration:id,extra:'no'})).statusCode,400);
+  assert.equal((await fixture.invoke('/api/dev/ack','POST',{client,generation:id,cssGeneration:id})).statusCode,200);
+  fixture.generations.restartRequired();assert.match(stream.text,/restart-required/);assert.equal(fixture.generations.status().generation,id);
+  assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});stream.end();assert.equal(fixture.generations.counts().clients,1);
+  assert.equal((await fixture.invoke('/api/dev/release','POST',{client})).statusCode,200);assert.equal(fixture.generations.counts().clients,0);
+});
+
+test('agent start has one authenticated POST route with a separate request ID', {timeout:10000}, async context => {
+  const app = await fixture(context); const calls: {workspace:string;identity:string;requestId:string}[] = [];
+  context.mock.method(app.registry,'startAgent',async (workspace:string,identity:string,requestId:string)=> {
+    calls.push({workspace,identity,requestId});
+    return {targetState:await app.registry.store.target(workspace,{kind:'agent',identity}),availability:'live',capabilities:{input:true,history:true,observe:true,abort:true,configure:false,inspect:true}};
+  });
+  assert.equal((await app.call('/api/agents/stored/start','POST',{}, {'Idempotency-Key':'explicit'})).status,401);
+  await app.login(); const boot = data<Bootstrap>(await app.call('/api/bootstrap'));app.useWorkspace(boot.workspace.id);
+  assert.equal((await app.call('/api/agents/stored/start','GET')).status,405);
+  assert.equal((await app.call('/api/agents/stored/start','POST',{requestId:'explicit',message:'forbidden'})).status,400);
+  assert.equal((await app.call('/api/agents/stored/start','POST',{})).status,400);assert.equal(calls.length,0);
+  assert.equal((await app.call('/api/agents/stored/start','POST',{}, {Origin:'http://wrong.invalid','Idempotency-Key':'wrong-origin'})).status,403);
+  assert.equal((await app.call('/api/agents/stored/start?workspace=00000000-0000-4000-8000-000000000099','POST',{}, {'Idempotency-Key':'unknown-workspace'})).status,404);assert.equal(calls.length,0);
+  const reply = await app.call('/api/agents/stored/start','POST',{}, {'Idempotency-Key':'explicit'});assert.equal(reply.status,200);
+  assert.equal(data<{capabilities:{input:boolean}}>(reply).capabilities.input,true);
+  assert.deepEqual(calls,[{workspace:boot.workspace.id,identity:'stored',requestId:'explicit'}]);
+});
 
 type Frame = {name: string; id?: string; body: EventEnvelope};
 class Stream {
@@ -232,7 +338,7 @@ test('request rate accounting rejects the next request at a deterministic fixed 
   assert.equal(app.fake.counts.refresh, 1); assert.equal(app.registry.sessions.size, 0);
 });
 
-const requiredAssets = ['web/index.html', 'web/style.css', 'dist/web/app.js', 'dist/shared/api.js'];
+const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js'];
 async function browserBuild(context: TestContext, emptyFiles = false) {
   const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));
   const apps: Awaited<ReturnType<typeof startBackend>>[] = [];
@@ -267,6 +373,10 @@ async function verifyBrowserBytes(origin: string, assets: Map<string, Asset>) {
     assert.equal(get.status, 200, route); assert.equal(head.status, 200, route);
     assert.deepEqual(get.bytes, asset.data, route); assert.equal(head.bytes.length, 0, route);
     assert.equal(get.headers['content-type'], asset.type, route);
+    if (route === '/favicon.svg') {
+      assert.equal(asset.type, 'image/svg+xml');
+      assert.match(String(get.headers['content-security-policy']), /img-src 'self'/);
+    }
     assert.equal(get.headers['content-length'], String(asset.data.length), route);
     assert.equal(get.headers['cache-control'], 'no-store'); assert.equal(get.headers['x-content-type-options'], 'nosniff');
     assert.equal(get.headers['referrer-policy'], 'no-referrer'); assert.match(String(get.headers['content-security-policy']), /default-src 'none'/);
@@ -279,7 +389,7 @@ test('startup browser bytes survive overwrites and deletion; a fresh backend rea
   const {root, start} = await browserBuild(context); const extra = 'dist/web/extra-module.js';
   await writeFile(join(root, extra), Buffer.from([0, 255, 1, 127, 128]));
   const original = await assetMap(root);
-  assert.deepEqual([...original.keys()].sort(), ['/', '/shared/api.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
+  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
   const app = await start(); const headers = await verifyBrowserBytes(app.origin, original);
   for (const path of [...requiredAssets, extra]) await writeFile(join(root, path), `Rebuilt ${path}`);
   assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
@@ -331,7 +441,7 @@ test('browser reads accept the exact total byte bound and stop at the next byte'
 test('browser traversal accepts the exact entry cap and rejects the next entry', async context => {
   const {root} = await browserBuild(context);
   for (let i = 1; i < ASSET_ENTRY_LIMIT; i++) await writeFile(join(root, `dist/web/ignored-${i}.txt`), '');
-  assert.equal((await assetMap(root)).size, 4);
+  assert.equal((await assetMap(root)).size, 5);
   await writeFile(join(root, 'dist/web/one-too-many.txt'), '');
   await assert.rejects(assetMap(root), buildError('dist/web', `${ASSET_ENTRY_LIMIT} entries`));
 });
@@ -341,7 +451,7 @@ test('browser traversal ignores non-matching names and does not recurse', async 
   for (const name of ['bad.name.js', '.hidden.js', 'space name.js', 'note.txt', 'app.js.map', '雪.js']) await writeFile(join(root, 'dist/web', name), 'ignored');
   await mkdir(join(root, 'dist/web/nested')); await writeFile(join(root, 'dist/web/nested/valid.js'), 'ignored');
   await writeFile(join(root, 'dist/web/Valid_0-module.js'), 'routed');
-  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/shared/api.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
+  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
 });
 
 test('browser startup rejects special build files without waiting on them', async context => {
@@ -369,7 +479,7 @@ test('malformed build directories name the path and the build command; other rea
 test('browser asset routes preserve method errors and Host, Origin, and fetch metadata validation', async context => {
   const {root, start} = await browserBuild(context); const app = await start();
   await verifyBrowserBytes(app.origin, await assetMap(root));
-  for (const path of ['/', '/style.css', '/web/app.js', '/shared/api.js']) {
+  for (const path of ['/', '/style.css', '/favicon.svg', '/web/app.js', '/shared/api.js']) {
     const post = await send(app.origin, path, 'POST', {}, {Origin: app.origin});
     assert.equal(post.status, 405); assert.equal(post.json?.ok, false);
     assert.equal(post.headers['content-type'], 'application/json; charset=utf-8');
@@ -380,5 +490,7 @@ test('browser asset routes preserve method errors and Host, Origin, and fetch me
     assert.equal((await send(app.origin, path, 'GET', undefined, {'Sec-Fetch-Site': 'cross-site'})).status, 403);
   }
   assert.equal((await send(app.origin, '/api/bootstrap')).status, 401);
-  assert.equal((await send(app.origin, '/web/not-built.js')).status, 404);
+  for (const path of ['/web/not-built.js', '/favicon.ico', '/unknown.svg', '/favicon.svg/extra']) {
+    assert.equal((await send(app.origin, path)).status, 404, path);
+  }
 });

@@ -28,16 +28,19 @@ test('image renderer uses lazy same-origin image with size, alt, failure and ret
   const img = figure.children.find(node => node.tag === 'img'); const retry = figure.children.find(node => node.tag === 'button'); assert.ok(img && retry);
   assert.equal(img.loading, 'lazy'); assert.equal(img.decoding, 'async'); assert.equal(img.src, url); assert.equal(img.alt, image.alt);
   assert.deepEqual([img.width, img.height], [300, 200]); assert.match(figure.textContent, /300 × 200 · 1 KiB/);
-  img.dispatchEvent(new Event('error')); assert.equal(img.hidden, true); assert.equal(retry.hidden, false); assert.match(figure.textContent, /Image unavailable/);
+  assert.match(figure.textContent, /Loading image…/);
+  // Expectations use the display labels while preserving source and action checks.
+  img.dispatchEvent(new Event('error')); assert.equal(img.hidden, true); assert.equal(retry.hidden, false); assert.match(figure.textContent, /The image could not be loaded/);
   retry.dispatchEvent(new Event('click')); assert.equal(img.hidden, false); assert.equal(retry.hidden, true);
   img.dispatchEvent(new Event('load')); assert.equal(changes, 4);
+  assert.equal(figure.children.find(node => node.className === 'transcript-image-status')?.textContent, '');
 });
 test('only four image elements retain source URLs and eviction exposes a reload control', () => {
   dom(); const url = imageUrl(image, {kind: 'primary', key: 'key', epoch: 1});
   const figures = Array.from({length: 6}, () => transcriptImage(image, url) as unknown as FakeNode);
   const images = figures.map(figure => { const image = figure.children.find(node => node.tag === 'img'); assert.ok(image); return image; });
   assert.equal(images.filter(image => image.src).length, 4); assert.equal(images[0]?.src, '');
-  const first = figures[0]; assert.ok(first); assert.match(first.textContent, /released to limit memory/);
+  const first = figures[0]; assert.ok(first); assert.match(first.textContent, /Reload this image to view it/);
   const retry = first.children.find(node => node.tag === 'button'); assert.ok(retry); assert.equal(retry.hidden, false);
   const firstImage = images[0]; assert.ok(firstImage); firstImage.dispatchEvent(new Event('error')); assert.equal(retry.hidden, false);
   retry.dispatchEvent(new Event('click')); assert.equal(images[0]?.src, url);
@@ -47,6 +50,6 @@ test('missing source and foreign, inline, and malformed URLs never create an ima
   dom();
   for (const url of [undefined, 'https://example.test/image.png', '//example.test/x', 'data:image/png;base64,AAAA', 'blob:test', '/api/primaries/key/history/image?x=1#fragment']) {
     const figure = transcriptImage(image, url) as unknown as FakeNode;
-    assert.ok(!figure.children.some(node => node.tag === 'img')); assert.match(figure.textContent, /no retained source/);
+    assert.ok(!figure.children.some(node => node.tag === 'img')); assert.match(figure.textContent, /This image is not available/);
   }
 });

@@ -1,13 +1,65 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { EntryView, PartView } from '../shared/api.ts';
-import { actionableEntry, slot, TranscriptIndex } from './transcript-tools.ts';
+import { actionableEntry, slot, communicationDisclosureKeys, TranscriptIndex, ToolElapsedClock, toolTime } from './transcript-tools.ts';
 
 const coverage = {complete: true, truncated: false, omitted: 0};
 function entry(id: string, parts: PartView[]): EntryView { return {id, kind: 'message', messages: [{id, role: 'assistant', state: 'final', parts, coverage}]}; }
 const call = (id: string): PartView => ({type: 'toolCall', callId: id, name: 'read', arguments: {value: {}, truncated: false}});
 const result = (id: string, text: string): PartView => ({type: 'toolResult', callId: id, name: 'read', isError: false, parts: [{type: 'text', text}]});
 
+test('communication disclosures follow their message owner and clear on source removal', () => {
+  const index = new TranscriptIndex(); const source = entry('peer', []); const message = source.messages?.[0]; assert.ok(message); message.communication = {state: 'unresolved'};
+  const keys = communicationDisclosureKeys('peer', 'peer');
+  index.update([source], new Map()); for (const key of keys) assert.equal(index.disclosures.get(key), 'peer');
+  index.update([], new Map()); for (const key of keys) assert.equal(index.disclosures.has(key), false);
+  assert.ok(communicationDisclosureKeys('a'.repeat(256), 'b'.repeat(256)).every(key => key.length <= 256));
+  assert.notDeepEqual(communicationDisclosureKeys('a:b', 'c'), communicationDisclosureKeys('a', 'b:c'));
+});
+test('elapsed formatting uses only observed starts and retains supplied completed durations', () => {
+  const base = {callId: 'x', name: 'read', owner: 'entry', slot: 'slot', status: 'working'};
+  assert.equal(toolTime(base, 90000), '');
+  assert.equal(toolTime({...base, observedStart: 1000}, 1000), '0s elapsed');
+  assert.equal(toolTime({...base, observedStart: 1000}, 60999), '59s elapsed');
+  assert.equal(toolTime({...base, observedStart: 1000}, 62000), '1m 1s elapsed');
+  assert.equal(toolTime({...base, observedStart: 1000}, 0), '0s elapsed');
+  assert.equal(toolTime({...base, observedStart: 1000, status: 'success', duration: 123}, 90000), '123 ms');
+  assert.equal(toolTime({...base, observedStart: 1000, status: 'error'}, 90000), '');
+});
+test('one elapsed clock starts only with visible timed work and stops on hide, completion, unmount and reset', t => {
+  t.mock.timers.enable({apis: ['setInterval']});
+  let painted = false; let visible = true; let working = true; let observed = true; let writes = 0; let calls = 0;
+  const clock = new ToolElapsedClock(() => { calls++; const active = painted && visible && working && observed; if (active) writes++; return active; });
+  clock.sync(); const idle = calls; t.mock.timers.tick(3000); assert.equal(calls, idle);
+  painted = true; observed = false; clock.sync(); const unknown = calls; t.mock.timers.tick(3000); assert.equal(calls, unknown);
+  observed = true; clock.sync(); clock.sync(); const before = writes; t.mock.timers.tick(1000); assert.equal(writes, before + 1);
+  visible = false; clock.sync(); const hidden = calls; t.mock.timers.tick(3000); assert.equal(calls, hidden);
+  visible = true; clock.sync(); working = false; t.mock.timers.tick(1000); const ended = calls; t.mock.timers.tick(3000); assert.equal(calls, ended);
+  working = true; clock.sync(); painted = false; clock.sync(); const unmounted = calls; t.mock.timers.tick(3000); assert.equal(calls, unmounted);
+  painted = true; clock.sync(); clock.stop(); clock.stop(); const reset = calls; t.mock.timers.tick(3000); assert.equal(calls, reset);
+});
+test('joined tools carry observed starts and invalidate timing changes without inventing history starts', () => {
+  const index = new TranscriptIndex(); const entries = [entry('owner', [call('x')])];
+  index.update(entries, new Map()); assert.equal(index.joined.get('x')?.observedStart, undefined);
+  index.update(entries, new Map([['x', {callId: 'x', name: 'read', phase: 'start', observedStart: 1000}]]));
+  assert.equal(index.joined.get('x')?.observedStart, 1000); const first = index.joined.get('x');
+  index.update(entries, new Map([['x', {callId: 'x', name: 'read', phase: 'start', observedStart: 2000}]]));
+  assert.notEqual(index.joined.get('x'), first); assert.equal(index.changed.has('owner'), true);
+  index.update(entries, new Map()); assert.equal(index.joined.get('x')?.observedStart, undefined);
+});
+test('historical calls never imply execution and known child disclosures follow the actual call owner', () => {
+  const index = new TranscriptIndex(); const owner = entry('call', [call('x')]);
+  index.update([owner], new Map()); assert.equal(index.joined.get('x')?.status, 'missing'); assert.equal(toolTime(index.joined.get('x') as NonNullable<ReturnType<typeof index.joined.get>>), '');
+  for (const key of ['tool:x', 'arguments:x', 'raw-output:x']) assert.equal(index.disclosures.get(key), 'call');
+  index.update([owner], new Map([['x', {callId: 'x', name: 'read', phase: 'update'}]])); assert.equal(index.joined.get('x')?.status, 'missing');
+  index.update([owner], new Map([['x', {callId: 'x', name: 'read', phase: 'update', parts: [{type: 'text', text: 'partial supplied result'}]}]]));
+  assert.equal(index.joined.get('x')?.status, 'available');
+  index.update([owner], new Map([['x', {callId: 'x', name: 'read', phase: 'start', observedStart: 1000}]])); assert.equal(index.joined.get('x')?.status, 'working');
+  const supplied = entry('result', [{type: 'toolResult', callId: 'x', name: 'different supplied result name', isError: false, parts: [{type: 'text', text: 'error is only literal text'}]}]);
+  index.update([owner, supplied], new Map()); assert.equal(index.joined.get('x')?.status, 'success'); assert.equal(index.joined.get('x')?.name, 'read');
+  index.update([supplied], new Map()); for (const key of ['tool:x', 'arguments:x', 'raw-output:x']) assert.equal(index.disclosures.get(key), 'result');
+  index.update([], new Map()); assert.equal(index.disclosures.size, 0);
+});
 test('text deltas inspect changed entries without reading retained message parts', () => {
   const index = new TranscriptIndex(); let reads = 0;
   const retained = entry('retained', [call('tool')]); const parts = retained.messages?.[0]?.parts;

@@ -1,58 +1,53 @@
 import { LIMITS, type ConversationLayout, type ConversationTab, type Target, type Workspace } from '../shared/api.ts';
+import { activatePaneTab, closePaneTab, createPaneLayout, openPaneTab, paneById, paneForTab } from './pane-layout.ts';
 
 export const MAX_TABS = LIMITS.conversationTabs;
-export const MIN_SPLIT_PANE = 320;
-export type SplitGeometry = {width: number; min: number; max: number; primary: number};
-export function splitGeometry(container: number, divider: number, ratio: number): SplitGeometry | undefined {
-  const width = Math.floor(container - divider);
-  if (!Number.isFinite(width) || divider < 0 || width < MIN_SPLIT_PANE * 2) return;
-  const min = Math.max(MIN_SPLIT_PANE, Math.ceil(width * .2));
-  const max = Math.min(width - MIN_SPLIT_PANE, Math.floor(width * .8));
-  return {width, min, max, primary: Math.min(max, Math.max(min, Math.round(width * ratio / 100)))};
-}
 export function tabKey(tab: ConversationTab): string { return tab.kind === 'primary' ? 'primary' : `agent:${tab.identity}`; }
-export function activeTab(layout: ConversationLayout): ConversationTab | undefined { return layout.active === null ? undefined : layout.tabs[layout.active]; }
-export function tabForTarget(target: Target): ConversationTab { return target.kind === 'primary' ? {kind: 'primary'} : {kind: 'agent', identity: target.identity, split: false}; }
-export function openTab(layout: ConversationLayout, tab: ConversationTab): ConversationLayout {
-  const index = layout.tabs.findIndex(item => tabKey(item) === tabKey(tab));
-  if (index >= 0) return {...layout, active: index};
-  if (layout.tabs.length >= MAX_TABS) throw new Error('Close a conversation tab before opening another. Drafts stay saved.');
-  return {...layout, tabs: [...layout.tabs, tab], active: layout.tabs.length};
+export function activeTab(layout: ConversationLayout): ConversationTab | undefined {
+  const pane = paneById(layout, layout.focusedPane); return pane?.tabs.find(tab => tabKey(tab) === pane.active);
 }
+export function tabForTarget(target: Target): ConversationTab { return target.kind === 'primary' ? {kind: 'primary'} : {kind: 'agent', identity: target.identity}; }
+export function openTab(layout: ConversationLayout, tab: ConversationTab): ConversationLayout { return openPaneTab(layout, layout.focusedPane, tab); }
+export function closeTab(layout: ConversationLayout, key: string): ConversationLayout { return closePaneTab(layout, key); }
 export function workspaceLayout(workspace?: Workspace): ConversationLayout {
-  const layout = workspace?.conversationLayout ?? {tabs: [{kind: 'primary'}], active: 0, splitRatio: 50};
-  const target = workspace?.selectedTarget; const selected = activeTab(layout);
-  if (!target || tabKey(tabForTarget(target)) === (selected ? tabKey(selected) : undefined)) return layout;
-  const tab = tabForTarget(target);
-  // External session selection must stay reachable even when the tab strip is full.
-  if (layout.tabs.length === MAX_TABS && !layout.tabs.some(item => tabKey(item) === tabKey(tab))) {
-    const tabs = layout.tabs.slice(); tabs[layout.active ?? 0] = tab;
-    return {...layout, tabs, active: layout.active ?? 0};
-  }
-  return openTab(layout, tab);
-}
-export function closeTab(layout: ConversationLayout, index: number): ConversationLayout {
-  if (!layout.tabs[index]) return layout;
-  const tabs = layout.tabs.filter((_, i) => i !== index);
-  const active = !tabs.length ? null : layout.active === null ? 0 : layout.active > index ? layout.active - 1 : Math.min(layout.active, tabs.length - 1);
-  return {...layout, tabs, active};
-}
-export function moveTab(layout: ConversationLayout, from: number, to: number): ConversationLayout {
-  const moved = layout.tabs[from]; if (!moved || !layout.tabs[to] || from === to) return layout;
-  const selected = activeTab(layout); const tabs = layout.tabs.slice();
-  tabs.splice(from, 1); tabs.splice(to, 0, moved);
-  return {...layout, tabs, active: selected ? tabs.findIndex(tab => tabKey(tab) === tabKey(selected)) : null};
+  let layout = workspace?.conversationLayout ?? createPaneLayout(workspace?.primaryKey ? [{kind: 'primary'}] : []);
+  if (!workspace?.primaryKey) layout = closePaneTab(layout, 'primary');
+  const target = workspace?.selectedTarget;
+  if (!target || target.kind === 'primary' && !workspace?.primaryKey) return layout;
+  const tab = tabForTarget(target); const key = tabKey(tab); const owner = paneForTab(layout, key);
+  return owner ? activatePaneTab(layout, owner.id, key) : openTab(layout, tab);
 }
 export function switchTab(layout: ConversationLayout, direction: number): ConversationLayout {
-  if (!layout.tabs.length) return layout;
-  return {...layout, active: ((layout.active ?? 0) + direction + layout.tabs.length) % layout.tabs.length};
-}
-export function toggleSplit(layout: ConversationLayout): ConversationLayout {
-  const tab = activeTab(layout); if (tab?.kind !== 'agent') return layout;
-  return {...layout, tabs: layout.tabs.map((item, i) => i === layout.active ? {...tab, split: !tab.split} : item)};
+  const pane = paneById(layout, layout.focusedPane); if (!pane?.tabs.length || !Number.isInteger(direction)) return layout;
+  const current = pane.tabs.findIndex(tab => tabKey(tab) === pane.active);
+  const index = ((Math.max(0, current) + direction) % pane.tabs.length + pane.tabs.length) % pane.tabs.length;
+  const tab = pane.tabs[index]; return tab ? activatePaneTab(layout, pane.id, tabKey(tab)) : layout;
 }
 export function layoutTarget(layout: ConversationLayout, primary?: Target): Target | null {
   const tab = activeTab(layout);
   return !tab ? null : tab.kind === 'primary' ? primary ?? null : {kind: 'agent', identity: tab.identity};
 }
-export function splitPercent(pixels: number, width: number): number { return Math.max(20, Math.min(80, Math.round(width > 0 ? pixels / width * 100 : 50))); }
+
+function agentTail(identity: string, counts: Map<string, number>[], conversations: Map<string, number>): string {
+  const colon = identity.lastIndexOf(':');
+  if (colon >= 0 && colon < identity.length - 1 && conversations.get(identity.slice(colon + 1)) === 1) return identity.slice(colon + 1);
+  const index = counts.findIndex((values, index) => values.get(identity.slice(-(index + 4))) === 1);
+  return index < 0 ? identity : identity.slice(-(index + 4));
+}
+export function duplicateIdentityTails(rows: {name: string; identity: string}[]): Map<string, string> {
+  const groups = new Map<string, string[]>();
+  for (const row of rows) { const name = row.name; const group = groups.get(name) ?? []; group.push(row.identity); groups.set(name, group); }
+  const labels = new Map<string, string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const conversations = new Map<string, number>();
+    for (const identity of group) { const tail = identity.slice(identity.lastIndexOf(':') + 1); conversations.set(tail, (conversations.get(tail) ?? 0) + 1); }
+    const counts = Array.from({length: 5}, (_, index) => {
+      const values = new Map<string, number>();
+      for (const identity of group) { const tail = identity.slice(-(index + 4)); values.set(tail, (values.get(tail) ?? 0) + 1); }
+      return values;
+    });
+    for (const identity of group) labels.set(identity, agentTail(identity, counts, conversations));
+  }
+  return labels;
+}

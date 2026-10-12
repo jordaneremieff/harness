@@ -34,7 +34,7 @@ export class ExtensionDialogs {
     this.shownToken = this.modal.token;
     body.append(element('p', 'target-label', `Primary: ${primary.sessionName ?? primary.sessionId ?? primary.key}`));
     if (dialog.message) body.append(element('p', undefined, stripControls(dialog.message)));
-    if (dialog.deadline) body.append(element('p', 'secondary', `Pi limits this request until ${new Date(dialog.deadline).toLocaleString()}. Pi owns expiry.`));
+    if (dialog.deadline) body.append(element('p', 'secondary', `Respond before ${new Date(dialog.deadline).toLocaleString()}.`));
     const cancel = button('Cancel', () => submit({cancelled: true}));
     if (dialog.method === 'select') {
       this.options(dialog, body, submit); this.modal.actions(cancel);
@@ -80,7 +80,7 @@ export class ExtensionDialogs {
       const result = respondDialog(this.get().dialogs, item.target, item.dialog.id, value);
       if (!result.command) { await request(`/api/operations/${encodeURIComponent(id)}`, 'DELETE'); return; }
       this.put({...this.get(), dialogs: result.state});
-      if (this.modal.owns(token)) this.modal.body.append(element('p', 'secondary', 'Response requested'));
+      if (this.modal.owns(token)) this.modal.body.append(element('p', 'secondary', 'Sending response…'));
       await operation('primary.dialog', `/api/primaries/${encodeURIComponent(item.target.key)}/dialogs/${encodeURIComponent(item.dialog.id)}`, result.command.response, item.target, id);
       if (this.shown === key) { this.shown = undefined; if (this.modal.owns(token)) this.modal.close(); } this.update();
     } catch (error) { if (this.modal.owns(token)) this.responseError(error, id); }
@@ -88,10 +88,10 @@ export class ExtensionDialogs {
   }
   private buttons(disabled: boolean): void { for (const node of this.modal.body.querySelectorAll<HTMLButtonElement>('button')) node.disabled = disabled; }
   private responseError(error: unknown, id?: string): void {
-    this.modal.error(error);
+    this.modal.error(error, id ? 'Response not confirmed. Check before you respond again.' : 'The response was not sent. Try again.');
     if (!id) return;
-    this.modal.body.append(button('Check response receipt', () => { void this.modal.run(async () => {
-      const result = await request(`/api/operations/${encodeURIComponent(id)}/reconcile`, 'POST', {}); this.modal.body.append(details('Response receipt', JSON.stringify(result, null, 2)));
+    this.modal.body.append(button('Check response', () => { void this.modal.run(async () => {
+      const result = await request(`/api/operations/${encodeURIComponent(id)}/reconcile`, 'POST', {}); this.modal.body.append(details('Response details', JSON.stringify(result, null, 2)));
     }, false); }), button('Close without another response', () => { this.shown = undefined; this.modal.close(); }));
   }
 }
@@ -130,20 +130,20 @@ function renderStatuses(root: HTMLElement, statuses: Record<string, string>): vo
   }
   disclosure.rows = visible; disclosure.signature = signature;
   const compact = statusPreview(visible);
-  setText(disclosure.preview, compact.text); setText(disclosure.count, compact.omitted ? ` · +${compact.omitted}` : '');
+  setText(disclosure.preview, compact.text); setText(disclosure.count, compact.omitted ? ` · ${compact.omitted} more` : '');
   disclosure.count.hidden = compact.omitted === 0;
-  disclosure.summary.setAttribute('aria-label', `${visible.map(([key, value]) => `${key}: ${value}`).join('; ')}. Expand all ${visible.length} extension statuses.`);
+  disclosure.summary.setAttribute('aria-label', `${visible.length} extension statuses. Expand for details.`);
   if (disclosure.node.open) statusList(disclosure);
 }
-export function extensionStatus(primary?: PrimaryView): void {
+type WidgetRoots = {above: HTMLElement; below: HTMLElement};
+export function extensionStatus(primary?: PrimaryView, roots?: WidgetRoots): void {
   const extension = primary?.extension;
   renderStatuses(byId('extension-status'), extension?.statuses ?? {});
-  renderWidgets(extension?.widgets ?? {});
-  if (extension?.title) document.title = `Pi · ${stripControls(extension.title)}`;
+  if (roots) renderWidgets(extension?.widgets ?? {}, roots);
 }
-function renderWidgets(widgets: Record<string, {lines: string[]; placement?: string}>): void {
-  for (const place of ['above', 'below']) {
-    const node = byId(`primary-widgets-${place}`); node.replaceChildren();
+function renderWidgets(widgets: Record<string, {lines: string[]; placement?: string}>, roots: WidgetRoots): void {
+  for (const place of ['above', 'below'] as const) {
+    const node = roots[place]; node.replaceChildren();
     for (const [key, widget] of Object.entries(widgets)) {
       if ((widget.placement === 'belowEditor' ? 'below' : 'above') !== place) continue;
       const text = widget.lines.map(stripControls).join('\n'); const preview = element('pre', undefined, widget.lines.slice(0, 3).map(stripControls).join('\n')); node.append(preview);

@@ -26,11 +26,12 @@ export function filterSessions(items: SavedSession[], search: string): SavedSess
   return query ? items.filter(item => `${item.title}\n${item.id}\n${item.path}`.toLocaleLowerCase().includes(query)) : items;
 }
 export function sessionCoverage(list: SessionList, matches: number, search: string): string {
-  const coverage = `${list.items.length} of ${list.total} shown${list.omitted ? ` · ${list.omitted} unavailable or outside the scan bound` : ''}`;
+  const coverage = `${list.items.length} of ${list.total} sessions shown${list.omitted ? ` · ${list.omitted} ${list.omitted === 1 ? 'session is' : 'sessions are'} not listed.` : ''}`;
   return search.trim() ? `${matches} matches in loaded sessions · ${coverage}` : coverage;
 }
 export function sessionEmptyMessage(list: SessionList): string {
-  if (list.nextCursor) return 'No matches in loaded sessions. Use More to search more saved sessions.';
+  if (list.nextCursor) return 'No loaded sessions match. Use More saved sessions to search further.';
+  if (!list.items.length && list.omitted) return 'No sessions were loaded. The inventory is incomplete.';
   return list.items.length ? 'No saved sessions match this search.' : 'No saved sessions in this project.';
 }
 export function savedPathValid(path: string): boolean {

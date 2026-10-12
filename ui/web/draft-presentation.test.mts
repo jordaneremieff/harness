@@ -16,7 +16,7 @@ test('only an actual outstanding request reaches the slow-save threshold', () =>
 test('disconnection never changes a clean acknowledged draft into unsaved text', () => {
   assert.equal(draftPresentation({...pending, connected: false, unsaved: false, outstandingSince: undefined}, 5000), '');
   assert.equal(draftPresentation({...pending, connected: false, text: '', outstandingSince: undefined}, 5000), '');
-  assert.equal(draftPresentation({...pending, connected: false}, 5000), 'Draft not saved · offline');
+  assert.equal(draftPresentation({...pending, connected: false}, 5000), 'Draft not saved');
 });
 test('save failures and conflicts use exception presentation instead of routine success text', () => {
   assert.equal(draftPresentation({...pending, failed: true}, 5000), 'Draft not saved');

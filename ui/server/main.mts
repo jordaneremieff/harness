@@ -5,8 +5,10 @@ import { pathToFileURL } from 'node:url';
 import { Registry, type RegistryOptions } from './registry.mts';
 import { LocalHttp, assetMap, type Asset } from './http.mts';
 import { ApiError } from './errors.mts';
+import { DevelopmentBuild } from './development-build.mts';
+import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
 
-export type Options = {cwd: string; port: number; pi: string; stateDir?: string; open?: boolean};
+export type Options = {cwd: string; port: number; pi: string; stateDir?: string; open?: boolean; devReload?:boolean; devDiagnostics?:boolean};
 /** CLI flags select process boundaries, never environment or arbitrary commands. */
 export function parseArgs(args: string[], cwd = process.cwd()): Options {
   const result: Options = {cwd,port:4318,pi:'pi',open:false};
@@ -14,8 +16,10 @@ export function parseArgs(args: string[], cwd = process.cwd()): Options {
   for(let i=0;i<args.length;i+=1) {
     const flag=args[i];
     if(flag==='--open') {result.open=true;continue;}
+    if(flag==='--dev-reload') {result.devReload=true;continue;}
+    if(flag==='--dev-diagnostics') {result.devDiagnostics=true;continue;}
     const value=args[i+1];
-    if(!flag || !flags.has(flag) || !value || value.startsWith('--')) throw new ApiError('invalid_request','Use --cwd, --port, --pi, and --state-dir with values, or --open.');
+    if(!flag || !flags.has(flag) || !value || value.startsWith('--')) throw new ApiError('invalid_request','Use --cwd, --port, --pi, and --state-dir with values, or --open, --dev-reload, and --dev-diagnostics.');
     assignFlag(result,flag,value);
     i+=1;
   }
@@ -49,21 +53,31 @@ export function statePaths(environment:NodeJS.ProcessEnv=process.env) {
 export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'>> & {assets?:Map<string,Asset>; assetRoot?:string}={}) {
   const paths=statePaths();
   if(!isAbsolute(options.cwd)) throw new ApiError('invalid_request','The project directory must be absolute.');
-  const assets=injection.assets??await assetMap(injection.assetRoot);
-  const registry=await Registry.open({stateDir:options.stateDir??paths.stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,agents:injection.agents,primary:injection.primary,measure:injection.measure});
+  const development=options.devReload?await DevelopmentBuild.open(injection.assetRoot):undefined;
+  const assets=injection.assets??(development?new Map<string,Asset>():await assetMap(injection.assetRoot));
+  const stateDir=options.stateDir??paths.stateDir;
+  const registry=await Registry.open({stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,agents:injection.agents,primary:injection.primary,measure:injection.measure});
+  let diagnostics:DiagnosticSink|undefined;
+  if(options.devDiagnostics) {
+    try {diagnostics=new DiagnosticSink(await DiagnosticDisk.open(stateDir),undefined,undefined,()=>development?.generations.status().generation);}
+    catch {process.stderr.write('Local diagnostics are unavailable.\n');}
+  }
+  let startupHttp:LocalHttp|undefined;
   try {
     await registry.validatePath(options.cwd,true);
-    const http=new LocalHttp(registry,assets);
+    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics});startupHttp=http;
     const launchUrl=await http.listen(options.port);
+    development?.generations.observe(status=>{diagnostics?.emit({event:'reload',code:status.status==='failed'?'failed':status.status==='ready'?'applied':'deferred'},'build');});
+    development?.build.start();diagnostics?.emit({event:'connection',code:'applied'});
     void registry.agents.refresh().catch(()=>registry.journal.publish('notice',undefined,{level:'warning',message:'The retained agent catalog is unavailable.',code:'catalog_unavailable'}));
     let closing:Promise<void>|undefined;
     const close=()=>closing??=(async()=> {
       http.stopAdmission();registry.journal.close();
-      const result=await Promise.allSettled([registry.close(),http.close()]);
+      const result=await Promise.allSettled([registry.close(),http.close(),development?.build.close(),diagnostics?.close()]);
       const failed=result.find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
     })();
     return {registry,http,launchUrl,close};
-  } catch(error) {await registry.close().catch(()=>{});throw error;}
+  } catch(error) {await Promise.allSettled([registry.close(),startupHttp?.close(),development?.build.close(),diagnostics?.close()]);throw error;}
 }
 export async function main(args=process.argv.slice(2), opener: (url: string) => Promise<void> = openInBrowser, injection: Parameters<typeof startBackend>[1] = {}) {
   const options=parseArgs(args);

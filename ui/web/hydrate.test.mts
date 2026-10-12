@@ -57,6 +57,30 @@ test('selected agent draft hydrates while observation and sidebar are hidden', a
   const result = await hydrateVisible(original, reader({'/api/workspaces/workspace/targets/a': agent}, seen));
   assert.deepEqual(seen, ['/api/workspaces/workspace/targets/a']); assert.equal(result.targets?.at(-1), agent);
 });
+test('active leaves hydrate independent drafts without preparing inactive tabs or duplicating a Message target', async () => {
+  const original = snapshot(); const seen: string[] = [];
+  original.workspace.conversationLayout = {root: {kind: 'split', id: 's1', axis: 'x', ratio: 50,
+    first: {kind: 'pane', id: 'primary', tabs: [{kind: 'primary'}], active: 'primary'},
+    second: {kind: 'split', id: 's2', axis: 'y', ratio: 50,
+      first: {kind: 'pane', id: 'a', tabs: [{kind: 'agent', identity: 'a'}, {kind: 'agent', identity: 'inactive'}], active: 'agent:a'},
+      second: {kind: 'pane', id: 'b', tabs: [{kind: 'agent', identity: 'b'}], active: 'agent:b'}}}, focusedPane: 'primary'};
+  const a = {...target, targetKey: 'a', target: {kind: 'agent' as const, identity: 'a'}, draft: {...target.draft, text: 'Draft A'}};
+  const b = {...target, targetKey: 'b', target: {kind: 'agent' as const, identity: 'b'}, draft: {...target.draft, text: 'Draft B'}};
+  original.targetIndex?.push(...[a, b].map(saved => ({targetKey: saved.targetKey, target: saved.target, draftRevision: saved.draft.revision, hasDraft: true, unconfirmedOperationIds: []})));
+  const result = await hydrateVisible(original, reader({'/api/workspaces/workspace/targets/a': a, '/api/workspaces/workspace/targets/b': b}, seen), a.target);
+  assert.deepEqual(seen, ['/api/workspaces/workspace/targets/a', '/api/workspaces/workspace/targets/b']);
+  assert.deepEqual(result.targets?.map(saved => saved.draft.text), [' exact\n', 'Draft A', 'Draft B']); assert.equal(result.workspace, original.workspace);
+});
+test('an unindexed active target uses the existing preparation path before input is available', async () => {
+  const original = snapshot(); original.workspace.selectedTarget = {kind: 'agent', identity: 'new'};
+  const saved = {...target, targetKey: 'new', target: {kind: 'agent' as const, identity: 'new'}};
+  let calls = 0;
+  const read: SnapshotReader = async <T>(path: string, method?: string, body?: unknown): Promise<T> => {
+    calls++; assert.equal(path, '/api/workspaces/workspace/targets'); assert.equal(method, 'POST'); assert.deepEqual(body, {target: saved.target});
+    return {targetState: saved, availability: 'stored', capabilities: {history: true, observe: false, input: false, abort: false, configure: false}} as T;
+  };
+  const result = await hydrateVisible(original, read); assert.equal(calls, 1); assert.equal(result.targets?.at(-1), saved);
+});
 test('a failed hydration never turns a missing draft into a blank saved draft', async () => {
   const original = {...snapshot(), targets: []};
   await assert.rejects(hydrateVisible(original, async () => {throw new Error('read unavailable');}), /read unavailable/);

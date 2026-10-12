@@ -30,10 +30,13 @@ export async function dispatchView(registry:Registry,context:RequestContext):Pro
     return registry.store.putReading(workspace,key,{expectedRevision,anchorId:body.anchorId===null?null:v.string(body.anchorId,'anchor ID'),offsetPx:body.offsetPx as number,followTail:v.boolean(body.followTail,'follow tail')});
   }
   if(parts[5]==='presentation') {
-    v.fields(body,['expectedRevision','expanded','showThinking'],['expectedRevision','expanded','showThinking']);
-    return registry.store.putPresentation(workspace,key,{expectedRevision,expanded:body.expanded as string[],showThinking:v.boolean(body.showThinking,'thinking visibility')});
+    return presentation(registry,workspace,key,expectedRevision,body);
   }
   throw new ApiError('invalid_request','The view action does not exist.',404);
+}
+function presentation(registry:Registry,workspace:string,key:string,expectedRevision:number,body:Record<string,unknown>) {
+  v.fields(body,['expectedRevision','expanded','showThinking','transcriptView'],['expectedRevision','expanded','showThinking']);
+  return registry.store.putPresentation(workspace,key,{expectedRevision,expanded:body.expanded as string[],showThinking:v.boolean(body.showThinking,'thinking visibility'),...(body.transcriptView!==undefined?{transcriptView:v.choice(body.transcriptView,['chronological','grouped'],'transcript view')}:{})});
 }
 async function prepareTarget(registry:Registry,workspace:string,body:Record<string,unknown>) {
   await registry.workspace(workspace);
@@ -61,8 +64,7 @@ async function selection(registry:Registry,workspace:string,body:Record<string,u
   }
   const result=await registry.store.updateSelection(workspace,selectionFields(body,primaryKey,selectedTarget));
   if(result.selectedTarget) await registry.store.target(workspace,result.selectedTarget);
-  if(result.panelVisible===false || result.selectedTarget?.kind!=='agent') {await registry.agents.hide(workspace);registry.frames.delete(workspace);}
-  else if(registry.journal.workspaceClients(workspace)) void registry.observe(workspace).catch(()=>{});
+  void registry.observe(workspace).catch(() => undefined);
   return result;
 }
 function selectionFields(body:Record<string,unknown>,primaryKey:string|undefined,selectedTarget:ReturnType<typeof v.target>|null|undefined) {

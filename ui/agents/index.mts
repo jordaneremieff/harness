@@ -48,7 +48,9 @@ interface InputReceipt {
 }
 interface Selection {
 	identity: string;
+	epoch: number;
 	confirmed: boolean;
+	promise?: Promise<void>;
 }
 const mutations = new Set(["submit", "retrySubmit", "abort"]);
 const MAX_ROWS = 2048,
@@ -62,8 +64,8 @@ export class AgentService {
 	readonly #inputs = new Map<string, InputReceipt>();
 	readonly #rows = new Map<string, { row: CatalogRow; bytes: number }>();
 	#orderedRows: { row: CatalogRow; bytes: number }[] = [];
-	readonly #selections = new Map<string, Selection>();
-	readonly #hidden = new Set<string>();
+	readonly #selections = new Map<string, Map<string, Selection>>();
+	#epoch = 0;
 	#bytes = 0;
 	#revision = 0;
 	#serial = 0;
@@ -119,12 +121,11 @@ export class AgentService {
 			this.#options.onAvailability?.(...(args as Parameters<NonNullable<AgentServiceOptions["onAvailability"]>>));
 	}
 	#callbackTarget(args: unknown[]): boolean {
-		const [workspaceId, identity] = args;
-		if (typeof workspaceId !== "string" || typeof identity !== "string" || this.#hidden.has(workspaceId)) return false;
-		const prior = this.#selections.get(workspaceId);
-		if (prior && prior.identity !== identity) return false;
-		if (!prior && this.#selections.size >= 16) return false;
-		this.#selections.set(workspaceId, { identity, confirmed: true });
+		const [workspaceId, identity, epoch] = args;
+		if (typeof workspaceId !== "string" || typeof identity !== "string") return false;
+		const selected = this.#selections.get(workspaceId)?.get(identity);
+		if (!selected || selected.epoch !== epoch) return false;
+		selected.confirmed = true;
 		return true;
 	}
 	#removeRow(id: string): void {
@@ -179,8 +180,9 @@ export class AgentService {
 			request.reject(new AgentError("host_unavailable", message, request.mutation));
 		this.#pending.clear();
 		if (!this.#closed && first) {
-			for (const [workspaceId, selected] of this.#selections)
-				this.#options.onAvailability?.(workspaceId, selected.identity, "unavailable", message, {});
+			for (const [workspaceId, targets] of this.#selections)
+				for (const selected of targets.values())
+					this.#options.onAvailability?.(workspaceId, selected.identity, selected.epoch, "unavailable", message, {});
 			this.#page = {
 				...this.#page,
 				stale: true,
@@ -256,42 +258,48 @@ export class AgentService {
 	}
 	select(workspaceId: string, identity?: string): Promise<void> {
 		this.#ready();
-		if (!identity) return this.#releaseWorkspace("select", workspaceId);
-		const prior = this.#selections.get(workspaceId);
-		if ((!prior && this.#selections.size >= 16) || this.#pending.size >= 64)
+		if (!identity) return this.hide(workspaceId);
+		const prior = this.#selections.get(workspaceId)?.get(identity);
+		if (prior) return prior.promise ?? Promise.resolve();
+		return this.#selectTarget("select", workspaceId, identity);
+	}
+	#selectTarget(member: string, workspaceId: string, identity: string): Promise<void> {
+		const targets = this.#selections.get(workspaceId) ?? new Map<string, Selection>();
+		const prior = targets.get(identity);
+		const count = [...this.#selections.values()].reduce((total, values) => total + values.size, 0);
+		if ((!prior && (targets.size >= 4 || count >= 16)) || this.#pending.size >= 64 || this.#epoch >= Number.MAX_SAFE_INTEGER)
 			return Promise.reject(new AgentError("capacity", "Agent selection capacity reached."));
-		const selected = { identity, confirmed: false };
-		const hidden = this.#hidden.delete(workspaceId);
-		this.#selections.set(workspaceId, selected);
-		return this.#request<void>("select", [workspaceId, identity]).catch((error) => {
-			if (this.#selections.get(workspaceId) === selected && !selected.confirmed) {
-				if (prior) this.#selections.set(workspaceId, prior);
-				else this.#selections.delete(workspaceId);
-				if (hidden) this.#hidden.add(workspaceId);
+		const selected: Selection = {identity, epoch: ++this.#epoch, confirmed: false};
+		targets.set(identity, selected); this.#selections.set(workspaceId, targets);
+		selected.promise = this.#request<void>(member, [workspaceId, identity, selected.epoch]).catch(error => {
+			if (this.#selections.get(workspaceId)?.get(identity) === selected && !selected.confirmed) {
+				if (member === "reconnect") {
+					selected.confirmed = true;
+					this.#options.onAvailability?.(workspaceId,identity,selected.epoch,"unavailable",error instanceof Error ? error.message : "Agent reconnection failed.",{});
+				} else targets.delete(identity);
+				if (!targets.size) this.#selections.delete(workspaceId);
 			}
 			throw error;
 		});
+		return selected.promise;
 	}
-	#releaseWorkspace(member: string, workspaceId: string): Promise<void> {
+	#releaseWorkspace(member: string, workspaceId: string, identity?: string): Promise<void> {
 		if (this.#closed || this.#failed || this.#exited) return Promise.resolve();
 		if (this.#pending.size >= 64)
 			return Promise.reject(new AgentError("capacity", "Agent worker request capacity reached."));
-		this.#selections.delete(workspaceId);
-		if (!this.#hidden.has(workspaceId) && this.#hidden.size >= 16) {
-			const oldest = this.#hidden.values().next().value;
-			if (oldest !== undefined) this.#hidden.delete(oldest);
-		}
-		this.#hidden.add(workspaceId);
-		return this.#request(member, [workspaceId]);
+		const targets = this.#selections.get(workspaceId);
+		if (identity === undefined) this.#selections.delete(workspaceId);
+		else { targets?.delete(identity); if (!targets?.size) this.#selections.delete(workspaceId); }
+		return this.#request(member, identity === undefined ? [workspaceId] : [workspaceId, identity]);
 	}
-	hide(workspaceId: string): Promise<void> {
-		return this.#releaseWorkspace("hide", workspaceId);
+	hide(workspaceId: string, identity?: string): Promise<void> {
+		return this.#releaseWorkspace("hide", workspaceId, identity);
 	}
-	async reconnect(workspaceId: string): Promise<void> {
+	reconnect(workspaceId: string, identity: string): Promise<void> {
 		this.#ready();
-		if (this.#pending.size >= 64) throw new AgentError("capacity", "Agent worker request capacity reached.");
-		this.#hidden.delete(workspaceId);
-		return this.#request("reconnect", [workspaceId]);
+		if (!this.#selections.get(workspaceId)?.has(identity))
+			return Promise.reject(new AgentError("invalid_request", "The target is not observed in this workspace."));
+		return this.#selectTarget("reconnect", workspaceId, identity);
 	}
 	async prepare(identity: string): Promise<Record<string, boolean>> {
 		this.#ready();

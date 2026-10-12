@@ -28,7 +28,7 @@ export class Auth {
   }
   launch(capability: string, response: ServerResponse) {
     if (this.consumed || this.now() - this.issuedAt >= 300_000 || !equal(capability, this.capability)) {
-      throw new ApiError('unauthorized', 'Open the launch link from this Mac.', 401);
+      throw new ApiError('unauthorized', 'This launch link is no longer valid.', 401);
     }
     this.consumed = true;
     const session = token(); this.sessions.add(session);
@@ -39,7 +39,7 @@ export class Auth {
     const values = (request.headers.cookie ?? '').split(';').map(s => s.trim());
     const matches = values.filter(s => s.startsWith(`${COOKIE}=`));
     const value = matches.length === 1 ? matches[0]?.slice(COOKIE.length + 1) : undefined;
-    if (!value || !this.sessions.has(value)) throw new ApiError('unauthorized', 'Open the launch link from this Mac.', 401);
+    if (!value || !this.sessions.has(value)) throw new ApiError('unauthorized', 'This browser is not authenticated.', 401);
     return value;
   }
   logout(session: string, response: ServerResponse) {

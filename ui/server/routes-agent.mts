@@ -15,11 +15,7 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     const roster=projectRoster(page);
     return {rows:roster.rows,nextCursor:page.nextCursor,coverage:page.coverage,observedAt:roster.observedAt,stale:roster.stale,scan:roster.scan};
   }
-  if(parts[2]==='refresh') {
-    v.fields(body,['scanId','continue']);
-    if(body.scanId!==undefined) {v.string(body.scanId,'scan ID');if(body.continue!==true) throw new ApiError('invalid_request','Confirm catalog continuation.');}
-    return registry.agents.refresh(body.scanId as string | undefined);
-  }
+  if(parts[2]==='refresh') return refresh(registry,body);
   const identity=v.string(parts[2],'agent identity'); const target:Target={kind:'agent',identity};
   if(isImageRoute(method,parts)) {
     const request=imageRequest(url,false);
@@ -28,6 +24,10 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
   if(method==='GET') return history(registry,identity,target,url);
   if(parts[3]==='inspect') return inspect(registry,identity,body);
   const workspace=await registry.workspace(context.workspace);
+  if(parts[3]==='start') {
+    v.fields(body,[]);
+    return registry.startAgent(workspace,identity,v.string(context.operationId,'start request ID',128));
+  }
   if(parts[3]==='inputs') {
     v.fields(body,['message','mode','draftRevision'],['message','mode','draftRevision']);
     const message=v.text(body.message); const mode=v.choice(body.mode,['steer','followUp'],'agent mode'); const draftRevision=v.integer(body.draftRevision,'draft revision');
@@ -52,6 +52,11 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
   }
   throw new ApiError('invalid_request','The agent action does not exist.',404);
 }
+async function refresh(registry:Registry,body:Record<string,unknown>) {
+  v.fields(body,['scanId','continue']);
+  if(body.scanId!==undefined) {v.string(body.scanId,'scan ID');if(body.continue!==true) throw new ApiError('invalid_request','Confirm catalog continuation.');}
+  return registry.agents.refresh(body.scanId as string | undefined);
+}
 async function history(registry:Registry,identity:string,target:Target,url:URL) {
   const before=url.searchParams.get('before');
   const source=await registry.agents.history(identity,{limit:v.limit(url),...(before?{before:v.integer(Number(before),'history boundary',1)}:{})});
@@ -60,14 +65,15 @@ async function history(registry:Registry,identity:string,target:Target,url:URL) 
   return page;
 }
 async function inspect(registry:Registry,identity:string,body:Record<string,unknown>) {
-  v.fields(body,['view','cursor','entryId','offset','submissionId','requestId','limit'],['view']);
+  v.fields(body,['view','cursor','entryId','offset','submissionId','requestId','operationId','limit'],['view']);
   const view=v.choice(body.view,['history','activity','exact','result'],'inspect view');
   const source=await registry.agents.inspect(identity,{view,
     ...(body.cursor!==undefined?{cursor:body.cursor as Record<string,never>} : {}),
     ...(body.entryId!==undefined?{entryId:v.integer(body.entryId,'entry ID',1)}:{}),
     ...(body.offset!==undefined?{offset:v.integer(body.offset,'offset')}:{}),
     ...(body.submissionId!==undefined?{submissionId:v.integer(body.submissionId,'submission ID',1)}:{}),
-    ...(body.requestId!==undefined?{requestId:v.string(body.requestId,'request ID',2000)}:{}),
+    ...(body.requestId!==undefined?{requestId:v.string(body.requestId,'native request ID',1024)}:{}),
+    ...(body.operationId!==undefined?{operationId:v.string(body.operationId,'native operation ID',1024)}:{}),
     ...(body.limit!==undefined?{limit:v.integer(body.limit,'page limit',1)}:{})});
   const display=projectJson(source);
   return {projection:display};

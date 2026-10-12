@@ -10,6 +10,9 @@ import { IMAGE_BYTES, ImageResponse } from './images.mts';
 import { isImageRoute } from './image-request.mts';
 import type { Journal } from './journal.mts';
 import { SessionStore, validateSessionProject } from './sessions.mts';
+import type { AssetGenerations } from './asset-generations.mts';
+import type { DiagnosticSink } from './diagnostics.mts';
+export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; session: string};
@@ -19,7 +22,7 @@ export type Asset = {type: string; data: Buffer};
 export const ASSET_FILE_BYTES = 2 * 1024 * 1024;
 export const ASSET_TOTAL_BYTES = 16 * 1024 * 1024;
 export const ASSET_ENTRY_LIMIT = 256;
-const MIME = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8'};
+const MIME = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml'};
 function missingAsset(path: string) {
   return new ApiError('not_ready', `Browser assets are missing: ${path}. Run npm run ui:build before starting.`, 503);
 }
@@ -70,13 +73,14 @@ export async function assetMap(root = fileURLToPath(new URL('../', import.meta.u
   };
   await add('/', 'web/index.html', MIME['.html']);
   await add('/style.css', 'web/style.css', MIME['.css']);
+  await add('/favicon.svg', 'web/favicon.svg', MIME['.svg']);
   for (const name of files) await add(`/web/${name}`, `dist/web/${name}`, MIME['.js']);
   await add('/shared/api.js', 'dist/shared/api.js', MIME['.js']);
   return assets;
 }
 function matchRoute(method: string, parts: string[]) {
   let pathKnown = false;
-  for (const route of [...ROUTES, 'GET /api/sessions', 'GET /api/projects']) {
+  for (const route of [...ROUTES, 'GET /api/sessions', 'GET /api/projects', 'POST /api/agents/:identity/start']) {
     const [verb, path] = route.split(' '); const expected = path?.split('/').filter(Boolean) ?? [];
     if (expected.length !== parts.length || !expected.every((part, index) => part.startsWith(':') || part === parts[index])) continue;
     pathKnown = true; if (method === verb) return;
@@ -93,16 +97,16 @@ function pathParts(pathname: string) {
     });
   } catch { throw new ApiError('invalid_request', 'The route path is invalid.', 404); }
 }
-async function readBody(request: IncomingMessage) {
+async function readBody(request: IncomingMessage, limit: number = LIMITS.requestBytes) {
   const length = Number(request.headers['content-length'] ?? 0);
-  if (length > LIMITS.requestBytes) { request.resume(); throw new ApiError('payload_too_large', 'The request body is too large.', 413); }
+  if (length > limit) { request.resume(); throw new ApiError('payload_too_large', 'The request body is too large.', 413); }
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers['content-type'] ?? '')) {
     request.resume(); throw new ApiError('invalid_request', 'Use a UTF-8 JSON request body.', 400);
   }
   const chunks: Buffer[] = []; let bytes = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); bytes += buffer.length;
-    if (bytes > LIMITS.requestBytes) { request.resume(); throw new ApiError('payload_too_large', 'The request body is too large.', 413); }
+    if (bytes > limit) { request.resume(); throw new ApiError('payload_too_large', 'The request body is too large.', 413); }
     chunks.push(buffer);
   }
   try {
@@ -117,6 +121,7 @@ function respond(response: ServerResponse, data: unknown, status = 200) {
   if (Buffer.byteLength(json) > LIMITS.displayBytes) throw new ApiError('payload_too_large', 'The response exceeds the display bound.', 413);
   response.writeHead(status, {'Content-Type': 'application/json; charset=utf-8'}); response.end(json);
 }
+function requireMethod(method:string,expected:string) {if(method!==expected) throw new ApiError('invalid_request','The route does not accept this method.',405);}
 function operationKey(request: IncomingMessage) {
   const header = request.headers['idempotency-key'];
   if (Array.isArray(header) || (header && header.length > LIMITS.idChars)) throw new ApiError('invalid_request', 'The operation key is invalid.');
@@ -133,8 +138,10 @@ export class LocalHttp {
   readonly backend: HttpBackend;
   private assets: Map<string, Asset>;
   private sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'>;
-  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore()) {
-    this.backend = backend; this.assets = assets; this.sessions = sessions;
+  private development:DevelopmentHttp;
+  private buildStreams=new Map<ServerResponse,string>();
+  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}) {
+    this.backend = backend; this.assets = assets; this.sessions = sessions;this.development=development;
     this.server = createServer((request, response) => { void this.handle(request, response); });
     this.server.requestTimeout = 30_000;
     this.server.headersTimeout = 10_000;
@@ -149,6 +156,7 @@ export class LocalHttp {
   stopAdmission() { this.stopped = true; }
   async close() {
     this.stopAdmission(); this.backend.journal.close(); this.auth.close();
+    for(const response of this.buildStreams.keys()) response.end();
     await new Promise<void>((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
   }
   private rate(key: string) {
@@ -158,7 +166,7 @@ export class LocalHttp {
     bucket.tokens--; this.buckets.set(key, bucket);
   }
   private async handle(request: IncomingMessage, response: ServerResponse) {
-    securityHeaders(response);
+    securityHeaders(response);const started=performance.now();
     try {
       if (this.stopped) throw new ApiError('not_ready', 'The backend no longer accepts requests.', 503);
       this.auth.validate(request); this.rate('loopback');
@@ -170,13 +178,18 @@ export class LocalHttp {
       const status = error instanceof ApiError ? error.status : error && typeof error==='object' && 'status' in error && typeof error.status==='number' ? error.status : 500;
       response.writeHead(status, {'Content-Type': 'application/json; charset=utf-8'});
       response.end(JSON.stringify({ok: false, error: errorView(error)}));
-    }
+    } finally {this.recordRequest(request,started);}
+  }
+  private recordRequest(request:IncomingMessage,started:number) {
+    if(!this.development.diagnostics) return;
+    try {this.auth.session(request);this.development.diagnostics.request(performance.now()-started);} catch { /* Pre-auth requests produce no diagnostics. */ }
   }
   private async route(request: IncomingMessage, response: ServerResponse) {
     const rawPath=(request.url??'/').split('?')[0]??'/';
     pathParts(rawPath);
     const url = new URL(request.url ?? '/', this.auth.origin);
     const method = request.method ?? 'GET'; const parts = pathParts(url.pathname);
+    if(await this.developmentRoute(request,response,url,method)) return;
     const asset = this.assets.get(url.pathname);
     if (asset) return this.staticAsset(method, asset, response);
     matchRoute(method, parts);
@@ -187,11 +200,59 @@ export class LocalHttp {
     if (url.pathname === '/api/events') return this.events(request, response, url, session);
     if (await this.savedMetadata(url, response)) return;
     await this.validateResume(method, url, body);
-    const header = operationKey(request);
-    const context = {method, parts, url, body, session, operationId: header, workspace: url.searchParams.get('workspace') ?? undefined};
-    if (isImageRoute(method,parts)) return this.image(context,response);
-    const data = await this.backend.dispatch(context);
-    respond(response, data, method === 'POST' && url.pathname === '/api/primaries' ? 202 : 200);
+    return this.dispatchRequest(request,response,url,method,parts,body,session);
+  }
+  private async dispatchRequest(request:IncomingMessage,response:ServerResponse,url:URL,method:string,parts:string[],body:Record<string,unknown>,session:string) {
+    const context={method,parts,url,body,session,operationId:operationKey(request),workspace:url.searchParams.get('workspace')??undefined};
+    if(isImageRoute(method,parts)) return this.image(context,response);
+    const data=await this.backend.dispatch(context);respond(response,data,method==='POST'&&url.pathname==='/api/primaries'?202:200);
+  }
+  private async developmentRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string):Promise<boolean> {
+    const generations=this.development.generations;
+    if(generations&&(url.pathname==='/'||url.pathname.startsWith('/_ui/'))) {this.generationAsset(generations,response,url,method);return true;}
+    if(!url.pathname.startsWith('/api/dev/')||(!generations&&!this.development.diagnostics)) return false;
+    const session=this.auth.session(request);
+    if(url.pathname==='/api/dev/diagnostics'&&this.development.diagnostics) {
+      requireMethod(method,'POST');const body=await readBody(request,16*1024);
+      respond(response,this.development.diagnostics.ingest(session,body,Buffer.byteLength(JSON.stringify(body))));return true;
+    }
+    if(!generations) return false;
+    if(url.pathname==='/api/dev/events') {requireMethod(method,'GET');this.developmentEvents(generations,response,url,session);return true;}
+    if(url.pathname==='/api/dev/ack'||url.pathname==='/api/dev/release') {requireMethod(method,'POST');await this.developmentAck(generations,request,response,url,session);return true;}
+    return false;
+  }
+  private generationAsset(generations:AssetGenerations,response:ServerResponse,url:URL,method:string) {
+    if(method!=='GET'&&method!=='HEAD') throw new ApiError('invalid_request','The asset does not accept this method.',405);
+    if(url.pathname==='/') return this.generationPage(generations,response,url,method);
+    const match=/^\/_ui\/([a-f0-9]{64})(\/.*)$/.exec(url.pathname);
+    const route=match?.[2];
+    if(route==='/'||route==='/index.html') throw new ApiError('invalid_request','Browser documents require the leased root route.',404);
+    const asset=match?generations.asset(match[1]??'',route??''):undefined;
+    if(!asset) throw new ApiError('not_ready','The browser generation is unavailable.',409);this.staticAsset(method,asset,response);
+  }
+  private generationPage(generations:AssetGenerations,response:ServerResponse,url:URL,method:string) {
+    const id=url.searchParams.get('generation')??generations.status().generation;
+    if(method==='HEAD') {const asset=generations.documentHead(id);if(!asset) throw new ApiError('not_ready','The browser generation is unavailable.',409);this.staticAsset(method,asset,response);return;}
+    try {const page=generations.document(id);response.setHeader('X-UI-Generation',page.generation);this.staticAsset(method,page.asset,response);}
+    catch {throw new ApiError('capacity','The browser generation or page capacity is unavailable.',409);}
+  }
+  private developmentEvents(generations:AssetGenerations,response:ServerResponse,url:URL,session:string) {
+    const client=url.searchParams.get('client')??'';
+    try {generations.bind(client,session);} catch {throw new ApiError('invalid_request','The page lease is unavailable.',409);}
+    let unsubscribe:(()=>unknown)|undefined;
+    try {unsubscribe=generations.subscribe(client,session,status=> {
+      if(response.destroyed) return;
+      if(!response.headersSent) response.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store','Connection':'keep-alive'});
+      if(response.writableLength>4096||!response.write(`event: build\ndata: ${JSON.stringify(status)}\n\n`)) response.end();
+    });} catch {throw new ApiError('capacity','The page already has an update stream.',429);}
+    this.buildStreams.set(response,session);response.once('close',()=>{unsubscribe?.();this.buildStreams.delete(response);});
+  }
+  private async developmentAck(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse,url:URL,session:string) {
+    const body=await readBody(request,1024);const allowed=url.pathname.endsWith('/ack')?['client','generation','cssGeneration']:['client'];
+    if(Object.keys(body).length!==allowed.length||!allowed.every(key=>typeof body[key]==='string')) throw new ApiError('invalid_request','The generation acknowledgment is invalid.');
+    try {if(url.pathname.endsWith('/ack')) generations.acknowledge(body.client as string,session,body.generation as string,body.cssGeneration as string);else generations.release(body.client as string,session);}
+    catch {throw new ApiError('invalid_request','The page generation is unavailable.',409);}
+    respond(response,generations.status());
   }
   private async image(context: RequestContext, response: ServerResponse): Promise<void> {
     if (this.imageReads >= 2) throw new ApiError('capacity', 'Two image reads are already active; retry this image.', 429, 'read');
@@ -221,7 +282,9 @@ export class LocalHttp {
     this.auth.launch(body.capability, response); respond(response, {authenticated: true});
   }
   private logout(session: string, response: ServerResponse) {
-    this.auth.logout(session, response); this.backend.journal.revoke(session); respond(response, {authenticated: false});
+    this.auth.logout(session, response); this.backend.journal.revoke(session);this.development.diagnostics?.revoke(session);
+    for(const [stream,owner] of this.buildStreams) if(owner===session) stream.end();
+    respond(response, {authenticated: false});
   }
   private staticAsset(method: string, asset: Asset, response: ServerResponse) {
     if (method !== 'GET' && method !== 'HEAD') throw new ApiError('invalid_request', 'The asset does not accept this method.', 405);

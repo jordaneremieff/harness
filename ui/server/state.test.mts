@@ -3,9 +3,38 @@ import { mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { StateError, StateStore } from './state.mts';
+import { StateError, StateStore, validateConversationLayout } from './state.mts';
 import type { Appearance, ConversationLayout, Workspace } from '../shared/api.ts';
 
+test('conversation layout accepts one bounded target-object tree and rejects flat records', () => {
+  const layout: ConversationLayout = {root: {kind: 'split', id: 'split-1', axis: 'x', ratio: 50,
+    first: {kind: 'pane', id: 'pane-1', tabs: [{kind: 'primary'}], active: 'primary'},
+    second: {kind: 'pane', id: 'pane-2', tabs: [{kind: 'agent', identity: 'agent-one'}], active: 'agent:agent-one'}}, focusedPane: 'pane-2'};
+  assert.doesNotThrow(() => validateConversationLayout(layout));
+  assert.doesNotThrow(() => validateConversationLayout({root: {kind: 'pane', id: 'empty', tabs: [], active: null}, focusedPane: 'empty'}));
+  assert.throws(() => validateConversationLayout({tabs: [{kind: 'primary'}], active: 0, splitRatio: 50}), StateError);
+  assert.throws(() => validateConversationLayout({...layout, tabs: []}), StateError);
+  assert.throws(() => validateConversationLayout({...layout, focusedPane: 'split-1'}), StateError);
+  assert.throws(() => validateConversationLayout({...layout, root: {...layout.root, ratio: 50.5}}), StateError);
+});
+test('conversation layout rejects duplicate targets, unknown tab fields, empty groups and oversized trees', () => {
+  const leaf = {kind: 'pane', id: 'pane-1', tabs: [{kind: 'primary'}], active: 'primary'};
+  const layout = (root: unknown) => ({root, focusedPane: 'pane-1'});
+  const invalid = [
+    {...leaf, tabs: [{kind: 'primary'}, {kind: 'primary'}]},
+    {...leaf, tabs: [{kind: 'agent', identity: 'one', split: false}], active: 'agent:one'},
+    {...leaf, active: 'agent:missing'}, {...leaf, id: 'x'.repeat(65)},
+    {...leaf, tabs: Array.from({length: 17}, (_, index) => ({kind: 'agent', identity: String(index)})), active: 'agent:0'},
+    {kind: 'split', id: 'split', axis: 'x', ratio: 50, first: leaf, second: {...leaf, id: 'pane-2', tabs: [], active: null}},
+    {kind: 'split', id: 'split', axis: 'x', ratio: 50, first: leaf, second: {...leaf, id: 'pane-2'}},
+    {kind: 'split', id: 'split', axis: 'z', ratio: 50, first: leaf, second: {...leaf, id: 'pane-2'}},
+  ];
+  for (const root of invalid) assert.throws(() => validateConversationLayout(layout(root)), StateError);
+  let root: unknown = leaf;
+  for (let index = 0; index < 4; index++) root = {kind: 'split', id: `split-${index}`, axis: 'y', ratio: 50, first: root,
+    second: {kind: 'pane', id: `extra-${index}`, tabs: [{kind: 'agent', identity: String(index)}], active: `agent:${index}`}};
+  assert.throws(() => validateConversationLayout(layout(root)), StateError);
+});
 async function setup(t: test.TestContext, hook?: Parameters<typeof StateStore.open>[1]) {
   const root = await mkdtemp(join(tmpdir(), 'ui-state-test-'));
   const store = await StateStore.open(root, hook);
@@ -46,26 +75,29 @@ test('conversation layouts replace atomically, clone nested values, preserve omi
   const events: Workspace[] = [];
   const {root, store, workspace, target} = await setup(t, {onChange: (name, data) => {if (name === 'workspace.changed') events.push(data as Workspace);}});
   assert.equal(workspace.conversationLayout, undefined); assert.equal(workspace.appearance, 'dark');
-  const layout: ConversationLayout = {tabs: [{kind: 'primary'}, {kind: 'agent', identity: 'agent-a', split: true}], active: 1, splitRatio: 60};
+  const layout: ConversationLayout = {root: {kind: 'split', id: 'split', axis: 'x', ratio: 60, first: {kind: 'pane', id: 'left', tabs: [{kind: 'primary'}], active: 'primary'}, second: {kind: 'pane', id: 'right', tabs: [{kind: 'agent', identity: 'agent-a'}], active: 'agent:agent-a'}}, focusedPane: 'right'};
   const original = structuredClone(layout);
   const saved = await store.updateSelection(workspace.id, {expectedRevision: 0, conversationLayout: layout, selectedTarget: {kind: 'agent', identity: 'agent-a'}});
   assert.deepEqual(saved.conversationLayout, original); assert.equal(saved.revision, 1);
   assert.ok(saved.conversationLayout); const published = events.at(-1)?.conversationLayout; assert.ok(published);
-  layout.tabs.length = 0; saved.conversationLayout.tabs.pop(); published.splitRatio = 20;
-  const snapshot = store.snapshot(workspace.id); assert.ok(snapshot.workspace.conversationLayout); snapshot.workspace.conversationLayout.tabs.length = 0;
+  assert.ok(layout.root.kind === 'split'); assert.ok(saved.conversationLayout.root.kind === 'split'); assert.ok(published.root.kind === 'split');
+  assert.ok(layout.root.first.kind === 'pane'); assert.ok(saved.conversationLayout.root.second.kind === 'pane');
+  layout.root.first.tabs.length = 0; saved.conversationLayout.root.second.tabs.pop(); published.root.ratio = 20;
+  const snapshot = store.snapshot(workspace.id); assert.ok(snapshot.workspace.conversationLayout); snapshot.workspace.conversationLayout.focusedPane = 'left';
   assert.deepEqual((await store.workspace(workspace.id)).conversationLayout, original);
   await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 0, conversationLayout: original}), error => error instanceof StateError && error.code === 'stale_revision');
-  const selected = await store.updateSelection(workspace.id, {expectedRevision: 1, selectedTarget: target.target, appearance: 'mocha', sidebarWidth: 320});
-  assert.deepEqual(selected.conversationLayout, original); assert.deepEqual(selected.selectedTarget, target.target);
-  const replacement: ConversationLayout = {tabs: [{kind: 'agent', identity: 'agent-b', split: false}], active: 0, splitRatio: 80};
-  const replaced = await store.updateSelection(workspace.id, {expectedRevision: 2, conversationLayout: replacement});
-  assert.deepEqual(replaced.conversationLayout, replacement); assert.deepEqual(replaced.selectedTarget, target.target);
+  const selected = await store.updateSelection(workspace.id, {expectedRevision: 1, appearance: 'mocha', sidebarWidth: 320});
+  assert.deepEqual(selected.conversationLayout, original); assert.deepEqual(selected.selectedTarget, {kind: 'agent', identity: 'agent-a'});
+  const replacement: ConversationLayout = {root: {kind: 'pane', id: 'pane', tabs: [{kind: 'agent', identity: 'agent-b'}], active: 'agent:agent-b'}, focusedPane: 'pane'};
+  const replaced = await store.updateSelection(workspace.id, {expectedRevision: 2, conversationLayout: replacement, selectedTarget: {kind: 'agent', identity: 'agent-b'}});
+  assert.deepEqual(replaced.conversationLayout, replacement); assert.deepEqual(replaced.selectedTarget, {kind: 'agent', identity: 'agent-b'});
   await store.close(); const reopened = await StateStore.open(root);
   try {
     const restored = await reopened.workspace(workspace.id);
     assert.deepEqual(restored.conversationLayout, replacement); assert.equal(restored.appearance, 'mocha'); assert.equal(restored.sidebarWidth, 320);
-    const closed = await reopened.updateSelection(workspace.id, {expectedRevision: 3, conversationLayout: {tabs: [], active: null, splitRatio: 50}, selectedTarget: null});
-    assert.deepEqual(closed.conversationLayout, {tabs: [], active: null, splitRatio: 50}); assert.equal(closed.selectedTarget, undefined);
+    const empty: ConversationLayout = {root: {kind: 'pane', id: 'pane', tabs: [], active: null}, focusedPane: 'pane'};
+    const closed = await reopened.updateSelection(workspace.id, {expectedRevision: 3, conversationLayout: empty, selectedTarget: null});
+    assert.deepEqual(closed.conversationLayout, empty); assert.equal(closed.selectedTarget, undefined);
     assert.equal((await reopened.getTarget(workspace.id, target.targetKey)).targetKey, target.targetKey);
   } finally { await reopened.close(); }
 });
@@ -73,18 +105,20 @@ test('conversation layouts replace atomically, clone nested values, preserve omi
 test('invalid conversation layouts never advance revisions, write state or publish changes', async t => {
   const changes: string[] = [];
   const {root, store, workspace} = await setup(t, {onChange: name => {changes.push(name);}});
-  const one = {tabs: [{kind: 'primary'}], active: 0, splitRatio: 50};
-  const agent = {kind: 'agent', identity: 'agent', split: false};
-  const invalid: unknown[] = [null, [], 1, {}, {...one, extra: true}, {...one, tabs: null}, {...one, tabs: {}},
-    {tabs: [], active: 0, splitRatio: 50}, {...one, active: null}, {...one, active: -1}, {...one, active: 1},
-    {...one, active: 0.5}, {...one, active: '0'}, {...one, active: NaN}, {...one, active: Infinity},
-    {...one, splitRatio: 19}, {...one, splitRatio: 81}, {...one, splitRatio: 50.5}, {...one, splitRatio: '50'}, {...one, splitRatio: NaN}, {...one, splitRatio: Infinity},
-    {tabs: one.tabs, active: 0}, {active: 0, splitRatio: 50}, {...one, tabs: [{kind: 'primary'}, {kind: 'primary'}]},
-    {...one, tabs: Array.from({length: 17}, (_, i) => ({kind: 'agent', identity: `agent-${i}`, split: false}))},
-    {...one, tabs: [agent, {...agent, split: true}]}, {...one, tabs: [null]}, {...one, tabs: [[]]}, {...one, tabs: [{kind: 'other'}]},
-    {...one, tabs: [{kind: 'primary', split: true}]}, {...one, tabs: [{kind: 'primary', key: 'primary', epoch: 1}]},
-    {...one, tabs: [{...agent, extra: true}]}, {...one, tabs: [{kind: 'agent', identity: 'agent'}]}, {...one, tabs: [{...agent, split: 'false'}]},
-    ...['', 'x'.repeat(257), 'bad\nidentity', null, 1].map(identity => ({...one, tabs: [{...agent, identity}]})),
+  const leaf = {kind: 'pane', id: 'pane', tabs: [{kind: 'primary'}], active: 'primary'};
+  const one = {root: leaf, focusedPane: 'pane'};
+  const wrap = (root: unknown) => ({root, focusedPane: 'pane'});
+  const agent = {kind: 'agent', identity: 'agent'};
+  const split = {kind: 'split', id: 'split', axis: 'x', ratio: 50, first: leaf, second: {kind: 'pane', id: 'other', tabs: [agent], active: 'agent:agent'}};
+  const invalid: unknown[] = [null, [], 1, {}, {...one, extra: true}, {root: leaf}, {focusedPane: 'pane'}, {...one, focusedPane: 'missing'},
+    ...[null, {}, [], [{kind: 'primary'}, {kind: 'primary'}], [agent, agent], [null], [[]], [{kind: 'other'}], [{kind: 'primary', extra: true}],
+      [{kind: 'primary', key: 'primary', epoch: 1}], [{...agent, split: false}], [{...agent, extra: true}],
+      Array.from({length: 17}, (_, index) => ({kind: 'agent', identity: String(index)}))].map(tabs => wrap({...leaf, tabs})),
+    ...[null, '', 'missing', 0, 1, NaN, Infinity].map(active => wrap({...leaf, active})),
+    ...['', 'x'.repeat(65), 'bad\nid', null, 1].map(id => wrap({...leaf, id})),
+    ...[19, 81, 50.5, '50', NaN, Infinity].map(ratio => wrap({...split, ratio})),
+    wrap({...split, axis: 'z'}), wrap({...split, second: leaf}), wrap({...split, second: {...split.second, tabs: [], active: null}}),
+    ...['', 'x'.repeat(257), 'bad\nidentity', null, 1].map(identity => wrap({...leaf, tabs: [{...agent, identity}], active: 'agent:agent'})),
   ];
   const path = join(root, 'workspaces', `${workspace.id}.json`); const bytes = await readFile(path, 'utf8');
   for (const conversationLayout of invalid) await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 0, conversationLayout: conversationLayout as ConversationLayout}), error => error instanceof StateError && error.code === 'invalid_request');
@@ -93,25 +127,32 @@ test('invalid conversation layouts never advance revisions, write state or publi
 
 test('conversation tab and ratio boundaries retain the workspace file bound', async t => {
   const {root, store, workspace} = await setup(t);
-  const layout: ConversationLayout = {tabs: Array.from({length: 16}, (_, i) => ({kind: 'agent', identity: `agent-${i}`, split: i % 2 === 0})), active: 15, splitRatio: 20};
+  const leaf = (id: string, offset: number): Extract<import('../shared/api.ts').PaneNode, {kind: 'pane'}> => ({kind: 'pane', id, tabs: Array.from({length: 8}, (_, index) => ({kind: 'agent', identity: `agent-${index + offset}`})), active: `agent:${id}`});
+  const layout: ConversationLayout = {root: {kind: 'split', id: 'split', axis: 'x', ratio: 20, first: {...leaf('left', 0), active: 'agent:agent-7'}, second: {...leaf('right', 8), active: 'agent:agent-15'}}, focusedPane: 'right'};
   const first = await store.updateSelection(workspace.id, {expectedRevision: 0, conversationLayout: layout});
   assert.deepEqual(first.conversationLayout, layout);
-  const huge: ConversationLayout = {...layout, tabs: layout.tabs.map((_tab, i) => ({kind: 'agent', identity: `${'\\'.repeat(254)}${i}`, split: true}))};
+  const huge = structuredClone(layout); assert.ok(huge.root.kind === 'split');
+  for (const [index, pane] of [huge.root.first, huge.root.second].entries()) {
+    assert.ok(pane.kind === 'pane');
+    pane.tabs = pane.tabs.map((_tab, offset) => ({kind: 'agent', identity: `${'\\'.repeat(254)}${index * 8 + offset}`}));
+    const active = pane.tabs[0]; assert.ok(active?.kind === 'agent'); pane.active = `agent:${active.identity}`;
+  }
   assert.ok(Buffer.byteLength(JSON.stringify({...first, conversationLayout: huge})) > 8192);
   await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 1, conversationLayout: huge}), error => error instanceof StateError && error.code === 'payload_too_large');
   assert.deepEqual(await store.workspace(workspace.id), first);
   await rename(join(root, 'workspaces'), join(root, 'workspaces-away'));
-  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 1, conversationLayout: {...layout, splitRatio: 80}}));
+  const replacement = structuredClone(layout); assert.ok(replacement.root.kind === 'split'); replacement.root.ratio = 80; replacement.focusedPane = 'left';
+  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 1, conversationLayout: replacement}));
   assert.deepEqual(await store.workspace(workspace.id), first);
   await rename(join(root, 'workspaces-away'), join(root, 'workspaces'));
-  const last = await store.updateSelection(workspace.id, {expectedRevision: 1, conversationLayout: {...layout, active: 0, splitRatio: 80}});
-  assert.equal(last.conversationLayout?.splitRatio, 80); assert.equal(last.conversationLayout?.active, 0);
+  const last = await store.updateSelection(workspace.id, {expectedRevision: 1, conversationLayout: replacement});
+  assert.equal(last.conversationLayout?.root.kind === 'split' && last.conversationLayout.root.ratio, 80); assert.equal(last.conversationLayout?.focusedPane, 'left');
 });
 
 test('a malformed saved conversation layout rejects on reopen without rewriting the record', async t => {
   const {root, store, workspace} = await setup(t); await store.close();
   const path = join(root, 'workspaces', `${workspace.id}.json`);
-  const bytes = JSON.stringify({...workspace, conversationLayout: {tabs: [], active: 0, splitRatio: 50}});
+  const bytes = JSON.stringify({...workspace, conversationLayout: {root: {kind: 'pane', id: 'pane', tabs: [], active: 'primary'}, focusedPane: 'pane'}});
   await writeFile(path, bytes); await assert.rejects(StateStore.open(root), /active conversation tab/);
   assert.equal(await readFile(path, 'utf8'), bytes);
 });

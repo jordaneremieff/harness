@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { blockedResult } from "./fake-host.mts";
+import { blockedResult, descriptor as fakeDescriptor } from "./fake-host.mts";
 import {
 	assertOperation, ContractError, decodeDescriptor, decodeFrame, decodeInput, decodeOperatorInput,
 	decodePublication, decodeResponse, type JsonObject, type OperationName, supportedOperations,
@@ -112,6 +112,33 @@ test("operation mutations refuse only the affected operation", () => {
 	}
 	const missing = descriptor(); delete (missing.operations as JsonObject).snapshot;
 	refusal(() => assertOperation(decodeDescriptor(missing), "snapshot"), "incompatible");
+});
+
+test("inspect requires the supplied schema identity and current fake host operations", async () => {
+	const remote = decodeDescriptor(await fakeDescriptor());
+	for (const member of ["snapshot", "observe-open", "observe-frame", "inspect"] as const) assertOperation(remote, member);
+	assert.equal(assertOperation(remote, "inspect").response, "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a");
+	for (const response of ["3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", "inspect/2.0.0"]) {
+		const changed = descriptor(); ((changed.operations as JsonObject).inspect as JsonObject).response = response;
+		refusal(() => assertOperation(decodeDescriptor(changed), "inspect"), "incompatible");
+		assertOperation(decodeDescriptor(changed), "snapshot");
+	}
+});
+
+test("native request result selectors retain conversation scope and unavailable results", () => {
+	const identity = `${storageId}:7`;
+	const input = {sessionId: identity, view: "result", requestId: "native-request", operationId: "separate-operation", submissionId: 12, entryId: 30};
+	assert.deepEqual(decodeInput("inspect", input, {identity}), input);
+	for (const view of ["history", "activity", "exact"]) refusal(() => decodeInput("inspect", {...input, view}));
+	for (const requestId of ["", "x".repeat(1025), 3]) refusal(() => decodeInput("inspect", {...input, requestId}));
+	refusal(() => decodeInput("inspect", {sessionId: identity, view: "result", entryId: 30}));
+	const unavailable = {view: "result", sessionId: identity, conversationId: 7, requestId: "native-request", status: "unavailable", reason: "Not retained", usage: {models: {}, tools: {}}};
+	assert.deepEqual(decodeResponse("inspect", unavailable, {identity, requestId: "native-request"}), unavailable);
+	assert.equal(Object.hasOwn(unavailable, "submissionId"), false);
+	refusal(() => decodeResponse("inspect", {...unavailable, requestId: "another-request"}, {identity, requestId: "native-request"}));
+	refusal(() => decodeResponse("inspect", {...unavailable, status: "done"}, {identity}));
+	const old = descriptor(); ((old.operations as JsonObject).inspect as JsonObject).request = "inspect/1.0.0";
+	refusal(() => assertOperation(decodeDescriptor(old), "inspect"), "incompatible");
 });
 
 test("diagnostic release changes do not change operation compatibility", () => {

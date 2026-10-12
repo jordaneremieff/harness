@@ -1,10 +1,54 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { ApiError, authenticate, operation, request, reserve } from './transport.ts';
+import { ApiError, authenticate, operation, request, reserve, setUnauthorizedHandler, setRequestTiming, connect } from './transport.ts';
 
 const originalFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = originalFetch; });
+afterEach(() => { globalThis.fetch = originalFetch; setUnauthorizedHandler(); setRequestTiming(); });
 function json(data: unknown): Response { return Response.json({ok: true, data}); }
+test('request timing supplies only its own numeric interval without creating UserTiming entries', async () => {
+  const samples: number[][] = [], pending = Promise.withResolvers<Response>(); const count = performance.getEntriesByName('ui:control-roundtrip').length;
+  globalThis.fetch = () => pending.promise; setRequestTiming((start, end) => {samples.push([start, end]);});
+  const result = request('/api/primaries/p/inputs', 'POST', {message: 'private text'}, 'private operation'); let other = 0; setRequestTiming(() => {other++;});
+  pending.resolve(json({value: 'exact'})); assert.deepEqual(await result, {value: 'exact'}); assert.equal(other, 0); assert.equal(samples.length, 1);
+  assert.equal(samples[0]?.length, 2); assert.ok(samples[0]?.every(Number.isFinite)); assert.ok((samples[0]?.[1] ?? -1) >= (samples[0]?.[0] ?? 0));
+  assert.equal(performance.getEntriesByName('ui:control-roundtrip').length, count);
+  setRequestTiming(() => {throw Error('diagnostic failure');}); globalThis.fetch = async () => json({value: 'still exact'});
+  assert.deepEqual(await request('/api/primaries/p'), {value: 'still exact'});
+});
+test('event receipt carries a monotonic timestamp without a global receive mark', () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'EventSource'); const listeners = new Map<string, (event: {data: string; lastEventId: string}) => void>();
+  class Source {onerror?: () => void; addEventListener(name: string, callback: (event: {data: string; lastEventId: string}) => void) {listeners.set(name, callback);} close() {}}
+  Object.defineProperty(globalThis, 'EventSource', {configurable: true, value: Source});
+  try {
+    const received: import('./transport.ts').ReceivedEvent[] = []; let lost = 0; connect('w', 'cursor', event => {received.push(event);}, () => {lost++;});
+    const count = performance.getEntriesByName('ui:event:receive').length, start = performance.now(), envelope = {workspaceId: 'w', data: {text: 'exact payload'}};
+    listeners.get('primary.delta')?.({data: JSON.stringify(envelope), lastEventId: 'cursor2'});
+    assert.equal(received.length, 1); assert.deepEqual(received[0]?.envelope, envelope); assert.equal(received[0]?.id, 'cursor2');
+    assert.ok((received[0]?.receivedAt ?? -1) >= start); assert.ok((received[0]?.receivedAt ?? Infinity) <= performance.now());
+    assert.equal(lost, 0); assert.equal(performance.getEntriesByName('ui:event:receive').length, count);
+  } finally {if (original) Object.defineProperty(globalThis, 'EventSource', original); else Reflect.deleteProperty(globalThis, 'EventSource');}
+});
+test('later draft and control refusals report access without replacing the typed error or retrying', async () => {
+  for (const [path, method] of [['/api/workspaces/w/drafts', 'PUT'], ['/api/primaries/p/control', 'POST']]) {
+    let notified: ApiError | undefined; let calls = 0; let reports = 0;
+    setUnauthorizedHandler(error => { notified = error; reports++; });
+    globalThis.fetch = async () => { calls++; return Response.json({ok: false, error: {code: 'unauthorized', message: 'Access required', retry: 'none'}}, {status: 401}); };
+    await assert.rejects(request(path, method, {text: 'retained'}), error => error === notified && error instanceof ApiError && error.view.code === 'unauthorized');
+    assert.equal(calls, 1); assert.equal(reports, 1);
+  }
+});
+test('an unauthorized control reservation reports access without dispatching its mutation', async () => {
+  const paths: string[] = []; let reports = 0; setUnauthorizedHandler(() => { reports++; });
+  globalThis.fetch = async path => { paths.push(String(path)); return Response.json({ok: false, error: {code: 'unauthorized', message: 'Access required', retry: 'none'}}, {status: 401}); };
+  await assert.rejects(operation('primary.control', '/api/primaries/p/control', {epoch: 1, action: 'thinking', level: 'high'}), ApiError);
+  assert.deepEqual(paths, ['/api/operations']); assert.equal(reports, 1);
+});
+test('ordinary API refusals do not change browser access', async () => {
+  let reports = 0; setUnauthorizedHandler(() => { reports++; });
+  globalThis.fetch = async () => Response.json({ok: false, error: {code: 'stale_epoch', message: 'Conversation changed', retry: 'read'}}, {status: 409});
+  await assert.rejects(request('/api/primaries/p/control', 'POST', {}), ApiError); assert.equal(reports, 0);
+});
+
 test('request preserves the issued operation key and exact captured body', async () => {
   let captured: RequestInit | undefined;
   globalThis.fetch = async (_path, init) => { captured = init; return json({state: 'accepted'}); };

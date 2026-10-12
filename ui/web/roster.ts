@@ -1,5 +1,5 @@
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
-import { byId, button, element, setText } from './dom.ts';
+import { byId, button, details, element, setText } from './dom.ts';
 import { captureAnchor, layoutItems, restoreAnchor, visibleWindow } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 import { absoluteTime, isValidTimestamp, previewText, relativeTime, timestampDetails } from './format.ts';
@@ -41,11 +41,7 @@ function duplicateLabels(rows: AgentRow[]): Map<string, string> {
   }
   return labels;
 }
-function status(row: AgentRow): {glyph: string; label: string} {
-  if (row.availability !== 'live') return {glyph: '○', label: row.availability};
-  const values: Record<string, string> = {working: '●', failed: '!', done: '✓', idle: '○'};
-  return {glyph: values[row.state] ?? '○', label: row.state};
-}
+export type RosterStatus = {glyph: string; label: string; tool?: AgentRow['currentTool']};
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
@@ -59,7 +55,7 @@ function activityText(row: AgentRow): string {
 /** Status label plus distinct detail; a row without detail shows its status once. */
 export function activityLine(row: AgentRow, label: string): string {
   const detail = previewText(activityText(row), 1, 1200).text;
-  if (!detail || detail === label) return row.availability === 'live' || label === row.state ? label : `${label} · ${row.state}`;
+  if (!detail || detail === label) return label;
   return `${label} · ${detail}`;
 }
 export class Roster {
@@ -81,13 +77,15 @@ export class Roster {
   private searchController?: AbortController;
   private searchQuery = '';
   private searchNotice = '';
+  private searchError = '';
   private layout: VirtualLayout = layoutItems([], new Map(), ROW_HEIGHT);
+  private resolvedStatus: (row: AgentRow) => RosterStatus;
   private select: (row: AgentRow) => void;
   private more: (action?: 'refresh' | 'more') => void;
   private empty = element('p', 'empty-state');
   readonly node = byId('roster');
-  constructor(select: (row: AgentRow) => void, more: (action?: 'refresh' | 'more') => void, search?: CachedPageSearch, message?: (identity: string) => void) {
-    this.select = select; this.more = more; this.search = search; this.message = message;
+  constructor(select: (row: AgentRow) => void, more: (action?: 'refresh' | 'more') => void, search: CachedPageSearch | undefined, message: ((identity: string) => void) | undefined, resolvedStatus: (row: AgentRow) => RosterStatus) {
+    this.resolvedStatus = resolvedStatus; this.select = select; this.more = more; this.search = search; this.message = message;
     const searchField = byId<HTMLInputElement>('agent-search');
     searchField.addEventListener('input', () => { this.node.scrollTop = 0; this.paint(); void this.searchCached(); });
     searchField.addEventListener('keydown', event => {
@@ -134,16 +132,16 @@ export class Roster {
   private async searchCached(more = false): Promise<void> {
     const query = this.query();
     if (query !== this.searchQuery) {
-      this.searchController?.abort(); this.searchController = undefined; this.searchQuery = ''; this.searchNotice = '';
+      this.searchController?.abort(); this.searchController = undefined; this.searchQuery = ''; this.searchNotice = ''; this.searchError = '';
       this.footer(this.rows.length, this.meta, Date.now());
     }
     if (!this.search || !query || this.searchController || (!more && query === this.searchQuery)) return;
     const cursor = this.meta?.nextCursor;
     if (!cursor || (!more && this.filtered().length)) return;
     this.searchQuery = query; const controller = new AbortController(); this.searchController = controller;
-    this.searchNotice = 'Searching cached pages'; this.footer(this.rows.length, this.meta, Date.now()); this.schedule();
+    this.searchNotice = 'Searching agents…'; this.searchError = ''; this.footer(this.rows.length, this.meta, Date.now()); this.schedule();
     try { await this.searchPages(this.search, query, cursor, controller); } catch (error) {
-      if (!controller.signal.aborted) this.searchNotice = `Cached search failed: ${error instanceof Error ? error.message : String(error)}`;
+      if (!controller.signal.aborted) { this.searchNotice = 'Agents could not be searched.'; this.searchError = error instanceof Error ? error.message : String(error); }
     } finally {
       if (this.searchController === controller) {
         this.searchController = undefined; this.footer(this.rows.length, this.meta, Date.now()); this.schedule();
@@ -158,10 +156,10 @@ export class Roster {
       if (controller.signal.aborted || this.query() !== query) return;
       search.merge(page);
       if (this.filtered().length) { this.searchNotice = ''; return; }
-      if (!page.nextCursor) { this.searchNotice = 'No more cached agents'; return; }
+      if (!page.nextCursor) { this.searchNotice = 'No more agents'; return; }
       cursor = page.nextCursor;
     }
-    this.searchNotice = 'Cached search limit reached · 20 pages read';
+    this.searchNotice = 'The agent list is incomplete. Select More agents to search further.';
   }
   private prune(ids: Set<string>): void {
     for (const [id, cached] of this.cache) if (!ids.has(id)) { cached.node.remove(); this.cache.delete(id); this.heights.delete(id); }
@@ -170,30 +168,32 @@ export class Roster {
   private footer(count: number, meta: Omit<CachedRoster, 'rows'> | undefined, now: number): void {
     const footer = byId('roster-footer'); footer.replaceChildren();
     if (this.searchNotice) footer.append(element('p', 'roster-search-status', this.searchNotice));
-    if (meta?.error || meta?.scan.state === 'failed') footer.append(element('p', 'error', `Roster discovery failed${meta?.error ? `: ${meta.error.message}` : ''}`));
-    if (count && meta?.scan.state === 'running') footer.append(element('p', undefined, 'Loading roster'));
-    if (meta?.stale) footer.append(element('p', undefined, meta.observedAt ? `saved roster · ${relativeTime(meta.observedAt, now)}` : 'saved roster'));
+    if (this.searchError) footer.append(details('Details', this.searchError));
+    if (count && (meta?.error || meta?.scan.state === 'failed')) footer.append(element('p', 'error', 'Agents could not be loaded.'));
+    if (meta?.error) footer.append(details('Details', meta.error.message));
+    if (count && meta?.scan.state === 'running') footer.append(element('p', undefined, 'Loading agents…'));
+    if (meta?.stale) footer.append(element('p', undefined, meta.observedAt ? `Saved agent list · ${relativeTime(meta.observedAt, now)}` : 'Saved agent list'));
     this.footerAction(footer, meta);
     if (meta?.scan.skipped) footer.append(element('p', undefined, 'Some records could not be read'));
     footer.hidden = !footer.children.length && !meta?.stale && !meta?.error && meta?.scan.state !== 'failed' && meta?.scan.state !== 'running';
   }
   private footerAction(footer: HTMLElement, meta?: Omit<CachedRoster, 'rows'>): void {
     const state = meta?.scan.state ?? 'not-started';
-    if (meta?.error || state === 'failed') footer.append(button('retry', () => this.more('refresh')));
-    else if (state === 'not-started' || meta?.stale) footer.append(button('refresh', () => this.more('refresh')));
+    if (meta?.error || state === 'failed') footer.append(button('Try again', () => this.more('refresh')));
+    else if (state === 'not-started' || meta?.stale) footer.append(button('Refresh agents', () => this.more('refresh')));
     if (this.query() && this.search && this.searchNotice) this.cachedSearchAction(footer, meta);
   }
   private cachedSearchAction(footer: HTMLElement, meta?: Omit<CachedRoster, 'rows'>): void {
-    if (meta?.nextCursor && !this.searchController) footer.append(button('more cached agents', () => { void this.searchCached(true); }));
+    if (meta?.nextCursor && !this.searchController) footer.append(button('More agents', () => { void this.searchCached(true); }));
   }
   private emptyState(): HTMLElement {
     let text: string;
     if (this.rows.length) text = 'No loaded agents match';
     else {
       switch (this.meta?.scan.state ?? 'not-started') {
-        case 'not-started': text = 'Roster not loaded'; break;
-        case 'running': text = 'Loading roster'; break;
-        case 'failed': text = `Roster discovery failed${this.meta?.error ? `: ${this.meta.error.message}` : ''}`; break;
+        case 'not-started': text = 'Agents are not loaded.'; break;
+        case 'running': text = 'Loading agents…'; break;
+        case 'failed': text = 'Agents could not be loaded.'; break;
         case 'ready': text = 'No agents in this view'; break;
       }
     }
@@ -216,20 +216,20 @@ export class Roster {
     return pins;
   }
   private pagingLabel(): string {
-    if (this.meta?.nextCursor) return 'more';
+    if (this.meta?.nextCursor) return 'More agents';
     const scan = this.meta?.scan;
-    return scan?.state === 'ready' && !scan.complete && scan.scanId ? 'continue scan' : '';
+    return scan?.state === 'ready' && !scan.complete && scan.scanId ? 'Load more agents' : '';
   }
   private controls(olderCount: number, query: string): HTMLElement[] {
     const controls: HTMLElement[] = [];
     if (olderCount) {
-      setText(this.older, this.expanded ? 'hide older' : `${olderCount} older`);
+      setText(this.older, this.expanded ? 'Hide older agents' : `Show ${olderCount} older ${olderCount === 1 ? 'agent' : 'agents'}`);
       this.older.setAttribute('aria-expanded', String(this.expanded)); controls.push(this.older);
     }
     const label = this.pagingLabel();
     const searchMore = query && this.search && this.meta?.nextCursor && !this.searchController && !this.searchNotice;
     const pageMore = !query && label && (this.expanded || !olderCount);
-    if (searchMore || pageMore) { setText(this.paging, query ? 'more' : label); controls.push(this.paging); }
+    if (searchMore || pageMore) { setText(this.paging, query ? 'More agents' : label); controls.push(this.paging); }
     return controls;
   }
   private paint(): void {
@@ -296,22 +296,34 @@ export class Roster {
     return cached;
   }
   private row(row: AgentRow, identity: string): RowNode {
-    const cached = this.cache.get(row.identity) ?? this.createRow(row); const changed = cached.source !== row;
-    const state = status(row); setText(cached.state, state.glyph); setText(cached.name, rowName(row));
-    setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = row.identity;
-    cached.state.dataset.state = row.availability === 'live' ? row.state : 'retained';
+    const cached = this.cache.get(row.identity) ?? this.createRow(row);
+    const state = this.resolvedStatus(row); setText(cached.state, state.glyph); cached.state.title = state.label; setText(cached.name, rowName(row));
+    setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
+    cached.identity.setAttribute('aria-label', cached.identity.title);
+    cached.state.dataset.state = row.availability === 'live' ? state.label.toLocaleLowerCase() : 'retained';
     cached.node.dataset.live = String(row.availability === 'live');
-    const description = [modelText(row), activityLine(row, state.label)].filter(Boolean).join('\n');
+    cached.node.dataset.tool = String(!!state.tool);
+    const reported = !state.tool && row.currentTool ? `Last reported tool · ${row.currentTool.name} · ${row.currentTool.argument}` : '';
+    const description = [modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported].filter(Boolean).join('\n');
     cached.select.title = description; cached.select.setAttribute('aria-description', description);
     cached.select.setAttribute('aria-current', row.identity === this.selected ? 'page' : 'false');
     cached.select.setAttribute('aria-label', `${rowName(row)} · ${row.identity} · ${state.label}`);
     cached.node.setAttribute('aria-label', rowName(row));
     cached.node.title = `${row.identity}\n${state.label}\n${row.ownerLabel ?? row.availability}`;
-    cached.source = row; this.messageAction(cached); if (changed || !cached.age.textContent) this.updateAge(cached);
+    cached.source = row; this.messageAction(cached); this.updateAge(cached);
     return cached;
   }
   private updateAge(cached: RowNode, deliberate = false): void {
     const row = cached.source; const now = deliberate ? Date.now() : this.arrivals.get(row.identity)?.now ?? Date.now();
+    const tool = this.resolvedStatus(row).tool;
+    if (tool) {
+      cached.absolute = false; cached.ageButton.dataset.absolute = 'false';
+      cached.ageButton.hidden = false; cached.ageButton.disabled = true; cached.ageButton.tabIndex = -1;
+      setText(cached.age, tool.name); cached.age.dateTime = '';
+      const description = `${tool.name} · ${tool.argument}`;
+      cached.ageButton.title = description; cached.ageButton.setAttribute('aria-label', `Current tool for ${rowName(row)} · ${tool.name}`);
+      cached.ageButton.setAttribute('aria-description', description); return;
+    }
     const label = cached.absolute ? absoluteTime(row.modifiedAt) : relativeTime(row.modifiedAt, now);
     const valid = isValidTimestamp(row.modifiedAt) && !!label;
     cached.ageButton.dataset.absolute = String(cached.absolute);

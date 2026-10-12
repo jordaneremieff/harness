@@ -4,21 +4,22 @@ import { parseInline, parseMarkdown, safeLink } from './markdown.ts';
 import { markdownDom } from './safe-markdown.ts';
 import { HIGHLIGHT_BYTES } from './highlight.ts';
 
-class MarkdownNode {
+class MarkdownNode extends EventTarget {
   children: MarkdownNode[] = []; className = ''; dataset: Record<string, string> = {}; private text = '';
   readonly tag: string;
-  constructor(tag: string) { this.tag = tag; }
+  attributes: Record<string, string> = {};
+  constructor(tag: string) { super(); this.tag = tag; }
   get textContent(): string { return this.text + this.children.map(node => node.textContent).join(''); }
   set textContent(value: string) { this.text = value; this.children = []; }
   append(...nodes: MarkdownNode[]): void { for (const node of nodes) this.children.push(...(node.tag === '#fragment' ? node.children : [node])); }
-  addEventListener(): void {}
-  setAttribute(): void {}
+  setAttribute(key: string, value: string): void { this.attributes[key] = value; }
   set innerHTML(_value: string) { throw new Error('Unsafe HTML'); }
 }
 function mockDocument(context: {after: (callback: () => void) => void}): void {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
   context.after(() => { if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document'); });
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {
+    getElementById: () => new MarkdownNode('span'),
     createElement: (tag: string) => new MarkdownNode(tag), createDocumentFragment: () => new MarkdownNode('#fragment'),
     createTextNode: (text: string) => { const node = new MarkdownNode('#text'); node.textContent = text; return node; },
   }});
@@ -62,7 +63,9 @@ test('frontmatter DOM uses a safe highlighted pre block and keeps body Markdown 
   assert.deepEqual(dom.children.map(node => node.tag), ['div', 'h1', 'ul', 'p']);
   const wrap = dom.children[0];
   assert.equal(wrap.className, 'code-block');
-  assert.deepEqual(wrap.children.map(node => node.tag), ['button', 'pre']);
+  assert.deepEqual(wrap.children.map(node => node.tag), ['div', 'pre']);
+  assert.equal(wrap.children[0].className, 'source-header');
+  assert.deepEqual(wrap.children[0].children.map(node => node.textContent), ['yaml', 'Copy', 'Wrap']);
   const code = wrap.children[1].children[0];
   assert.equal(code.tag, 'code');
   assert.equal(code.dataset.language, 'yaml');
@@ -103,6 +106,57 @@ test('ordered, unordered, and nested lists preserve item structure', () => {
   assert.equal(blocks[1].type === 'list' && blocks[1].items[0][1].type, 'list');
   assert.equal(blocks[1].type === 'list' && blocks[1].items.length, 2);
 });
+test('an empty supplied list item does not absorb the following unindented paragraph', context => {
+  mockDocument(context);
+  const source = '1. Restart ordinary Pi to load the changed manager.\n2. \n\nUse agent_inspect for retained source evidence.';
+  const blocks = parseMarkdown(source);
+  assert.equal(blocks.length, 2);
+  assert.deepEqual(blocks[0], {type: 'list', ordered: true, start: 1, items: [
+    [{type: 'paragraph', children: [{type: 'text', text: 'Restart ordinary Pi to load the changed manager.'}]}], [],
+  ]});
+  assert.deepEqual(blocks[1], {type: 'paragraph', children: [{type: 'text', text: 'Use agent_inspect for retained source evidence.'}]});
+  const dom = markdownDom(source) as unknown as MarkdownNode;
+  assert.deepEqual(dom.children.map(node => node.tag), ['ol', 'p']);
+  assert.deepEqual(dom.children[0].children.map(node => [node.tag, node.textContent]), [
+    ['li', 'Restart ordinary Pi to load the changed manager.'], ['li', ''],
+  ]);
+  assert.equal(dom.children[1].textContent, 'Use agent_inspect for retained source evidence.');
+});
+test('loose list items keep every paragraph node inside its own item', context => {
+  mockDocument(context);
+  for (const [source, tag, start] of [
+    ['3. First paragraph.\n\n   More first-item text.\n\n4. Second paragraph.\n\n   More second-item text.', 'ol', '3'],
+    ['- First paragraph.\n\n  More first-item text.\n\n- Second paragraph.\n\n  More second-item text.', 'ul', undefined],
+  ] as const) {
+    const blocks = parseMarkdown(source);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].type === 'list' && blocks[0].items.every(item => item.length === 2 && item.every(node => node.type === 'paragraph')), true);
+    const dom = markdownDom(source) as unknown as MarkdownNode;
+    assert.equal(dom.children.length, 1);
+    const list = dom.children[0]; assert.equal(list.tag, tag); assert.equal(list.attributes.start, start);
+    assert.equal(list.children.length, 2);
+    assert.deepEqual(list.children.map(item => item.tag), ['li', 'li']);
+    assert.deepEqual(list.children.map(item => item.children.map(node => [node.tag, node.textContent])), [
+      [['p', 'First paragraph.'], ['p', 'More first-item text.']],
+      [['p', 'Second paragraph.'], ['p', 'More second-item text.']],
+    ]);
+  }
+});
+test('a list marker with an indented paragraph continuation keeps the paragraph inside the item', context => {
+  mockDocument(context);
+  const source = '1. First item.\n\n2. \n\n   Use agent_inspect for retained source evidence.';
+  const blocks = parseMarkdown(source);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(blocks[0], {type: 'list', ordered: true, start: 1, items: [
+    [{type: 'paragraph', children: [{type: 'text', text: 'First item.'}]}],
+    [{type: 'paragraph', children: [{type: 'text', text: 'Use agent_inspect for retained source evidence.'}]}],
+  ]});
+  const dom = markdownDom(source) as unknown as MarkdownNode;
+  assert.deepEqual(dom.children.map(node => node.tag), ['ol']);
+  const item = dom.children[0].children[1];
+  assert.equal(item.tag, 'li'); assert.deepEqual(item.children.map(node => node.tag), ['p']);
+  assert.equal(item.textContent, 'Use agent_inspect for retained source evidence.');
+});
 test('inline and fenced code preserve source without evaluation', () => {
   assert.deepEqual(parseInline('a `x < y` b'), [{type: 'text', text: 'a '}, {type: 'code', text: 'x < y'}, {type: 'text', text: ' b'}]);
   assert.deepEqual(parseInline('`` a ` b ``'), [{type: 'code', text: 'a ` b'}]);
@@ -126,8 +180,9 @@ test('raw HTML is always text and remote images are omissions', () => {
   assert.deepEqual(parseInline('<img src="https://example.test/a" onerror="run()">'), [{type: 'text', text: '<img src="https://example.test/a" onerror="run()">'}]);
   const ast = parseMarkdown('<script>alert(1)</script>\n\n![photo](https://example.test/a.png) ![other][ref]');
   assert.equal(ast[0].type, 'paragraph');
-  assert.deepEqual(parseInline('![photo](https://example.test/a.png)'), [{type: 'omitted', label: 'Image omitted: photo'}]);
-  assert.deepEqual(parseInline('![other][ref]'), [{type: 'omitted', label: 'Image omitted: other'}]);
+  // Expectations use the display labels while preserving source and action checks.
+  assert.deepEqual(parseInline('![photo](https://example.test/a.png)'), [{type: 'omitted', label: 'Image not shown: photo'}]);
+  assert.deepEqual(parseInline('![other][ref]'), [{type: 'omitted', label: 'Image not shown: other'}]);
   assert.equal(JSON.stringify(ast).includes('"type":"link"'), false);
 });
 test('simple tables preserve alignment, escaped pipes, and inline code', () => {
@@ -150,4 +205,24 @@ test('long incomplete marker runs stay readable without recursive expansion', ()
   for (const source of ['['.repeat(32768), '<'.repeat(32768), String.fromCharCode(96).repeat(32768)]) {
     assert.deepEqual(parseInline(source), [{type: 'text', text: source}]);
   }
+});
+
+test('source controls reserve a header and toggles and Copy keep exact highlighted text', async context => {
+  mockDocument(context);
+  let copied = '';
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  context.after(() => { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator'); });
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => { copied = text; }}}});
+  const source = '  const n = 1;\n\n\treturn n;  ';
+  const dom = markdownDom(['```ts', source, '```'].join('\n')) as unknown as MarkdownNode;
+  const block = dom.children[0]; const header = block.children[0]; const pre = block.children[1];
+  const original = pre.children[0];
+  assert.equal(header.className, 'source-header'); assert.equal(header.children[0].textContent, 'ts');
+  assert.equal(pre.textContent, source); assert.equal(pre.dataset.wrap, 'true');
+  const wrap = header.children[2]; const copy = header.children[1];
+  wrap.dispatchEvent(new Event('click')); assert.equal(pre.dataset.wrap, 'false');
+  assert.equal(wrap.attributes['aria-pressed'], 'false'); assert.equal(pre.textContent, source);
+  copy.dispatchEvent(new Event('click')); await Promise.resolve(); assert.equal(copied, source);
+  wrap.dispatchEvent(new Event('click')); assert.equal(pre.dataset.wrap, 'true');
+  assert.equal(pre.children[0], original); assert.equal(pre.textContent, source);
 });

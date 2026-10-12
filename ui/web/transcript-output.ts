@@ -2,11 +2,11 @@ import type { OutputContinuation, OutputPage } from '../shared/api.ts';
 import { button, copy, element, setText } from './dom.ts';
 
 export type OutputLoader = (more: OutputContinuation) => Promise<OutputPage>;
-function outputError(error: unknown): string { return error instanceof Error ? error.message : 'Output request failed.'; }
+function outputError(error: unknown): string { return error instanceof Error ? error.message : 'Output could not be loaded.'; }
 function pageBytes(page: OutputPage, more: OutputContinuation, offset: number): number {
   const bytes = new TextEncoder().encode(page.text).length;
   const nextValid = page.nextOffset === null || (Number.isSafeInteger(page.nextOffset) && page.nextOffset > offset);
-  if (page.entryId !== more.entryId || page.part !== more.part || bytes > 8192 || !nextValid) throw new Error('Output page does not match this text.');
+  if (page.entryId !== more.entryId || page.part !== more.part || bytes > 8192 || !nextValid) throw new Error('This output does not match the selected message.');
   return bytes;
 }
 /** Each request replaces one bounded page, never an accumulated full output. */
@@ -21,12 +21,12 @@ export function outputPages(more: OutputContinuation, load: OutputLoader | undef
     pageIndex = index; nextOffset = page.nextOffset; offsets[index] = offset;
     if (offsets.length > 64) { offsets = offsets.slice(-64); pageIndex = offsets.length - 1; }
     setText(text, page.text); content.hidden = false;
-    setText(status, `retained output · ${offset}–${offset + bytes} of ${page.totalBytes} bytes`);
+    setText(status, `Output bytes ${offset}–${offset + bytes} of ${page.totalBytes}`);
   }
   const active = (request: number) => request === version && current();
   const requestPage = async (offset: number, index: number) => {
     if (!load || busy || !current()) return;
-    busy = true; const request = ++version; setText(status, 'loading output'); controls(); changed();
+    busy = true; const request = ++version; setText(status, 'Loading output…'); controls(); changed();
     try {
       const page = await load({...more, offset});
       if (!active(request)) return;
@@ -38,19 +38,19 @@ export function outputPages(more: OutputContinuation, load: OutputLoader | undef
       if (active(request)) { busy = false; controls(); changed(); }
     }
   };
-  const next = button('more output', () => { if (nextOffset !== null) void requestPage(nextOffset, pageIndex + 1); });
-  const previous = button('previous output', () => { const index = pageIndex - 1; const offset = offsets[index]; if (offset !== undefined) void requestPage(offset, index); });
-  const restart = button('start over', () => {
+  const next = button('More output', () => { if (nextOffset !== null) void requestPage(nextOffset, pageIndex + 1); });
+  const previous = button('Previous output', () => { const index = pageIndex - 1; const offset = offsets[index]; if (offset !== undefined) void requestPage(offset, index); });
+  const restart = button('Start over', () => {
     if (busy) return;
     version++; offsets = [more.offset]; pageIndex = -1; nextOffset = more.offset;
     content.hidden = true; setText(text, ''); setText(status, ''); controls(); changed();
   });
-  const copyPage = button('copy page', () => { void copy(content.textContent ?? '', node); });
+  const copyPage = button('Copy page', () => { void copy(content.textContent ?? '', node); });
   function controls(): void {
-    next.disabled = busy || !load || nextOffset === null; setText(next, pageIndex < 0 ? 'more output' : 'next output');
+    next.disabled = busy || !load || nextOffset === null; setText(next, pageIndex < 0 ? 'More output' : 'Next output');
     previous.hidden = pageIndex <= 0; previous.disabled = busy; restart.disabled = busy; restart.hidden = pageIndex < 0 && !busy;
     copyPage.hidden = content.hidden;
-    if (!load) setText(status, 'More retained output is unavailable in this view.');
+    if (!load) setText(status, 'More output is unavailable here.');
   }
   node.append(content, status, previous, next, restart, copyPage); controls(); return node;
 }

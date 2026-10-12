@@ -41,17 +41,29 @@ function fixture(dialog: DialogView) {
 function response(data: unknown): Response {return {json: async () => ({ok: true, data})} as Response;}
 const select: DialogView = {id: 'd', method: 'select', title: 'Pick', options: ['Safe label'], optionKeys: ['option:0']};
 function statusFixture() {
-  const roots = new Map(['extension-status', 'primary-widgets-above', 'primary-widgets-below'].map(id => [id, new FakeNode()]));
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new FakeNode(tag), getElementById: (id: string) => roots.get(id)}});
-  return roots.get('extension-status') as FakeNode;
+  const root = new FakeNode();
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new FakeNode(tag), getElementById: (id: string) => {assert.equal(id, 'extension-status'); return root;}}});
+  return root;
 }
+test('extension widgets use only the supplied target roots and leave another target untouched', () => {
+  statusFixture(); const first = {above: new FakeNode(), below: new FakeNode()}, second = {above: new FakeNode(), below: new FakeNode()};
+  const roots = (value: typeof first) => value as unknown as {above: HTMLElement; below: HTMLElement};
+  extensionStatus({...primary, extension: {statuses: {}, widgets: {a: {lines: ['one', 'two', 'three', '<four>']}, b: {lines: ['below'], placement: 'belowEditor'}}}}, roots(first));
+  assert.equal(first.above.children[0]?.textContent, 'one\ntwo\nthree'); assert.equal(first.above.children[1]?.children[1]?.textContent, 'one\ntwo\nthree\n<four>');
+  assert.equal(first.below.textContent, 'below'); const retained = first.above.children[0];
+  extensionStatus({...primary, epoch: 2, extension: {statuses: {}, widgets: {other: {lines: ['other target']}}}}, roots(second));
+  assert.equal(first.above.children[0], retained); assert.equal(second.above.textContent, 'other target'); assert.equal(second.below.children.length, 0);
+  extensionStatus(primary, roots(first)); assert.equal(first.above.children.length, 0); assert.equal(first.below.children.length, 0); assert.equal(second.above.textContent, 'other target');
+  extensionStatus({...primary, extension: {statuses: {}, widgets: {closed: {lines: ['not mounted']}}}}); assert.equal(second.above.textContent, 'other target');
+});
 test('compact extension status counts hidden cells and native expansion retains every full keyed fact', () => {
   const root = statusFixture(); const statuses = {one: 'first', two: 'x'.repeat(60), three: '<script>inert</script>'};
   extensionStatus({...primary, extension: {statuses, widgets: {}}});
   const disclosure = root.children[0]; assert.ok(disclosure); assert.equal(disclosure.tag, 'details');
   const summary = disclosure.children[0]; const list = disclosure.children[1]; assert.ok(summary && list);
-  assert.equal(summary.tag, 'summary'); assert.equal(summary.textContent, 'first · +2');
-  assert.match(summary.attributes.get('aria-label') ?? '', /Expand all 3 extension statuses/);
+  // Expectations use the display labels while preserving source and action checks.
+  assert.equal(summary.tag, 'summary'); assert.equal(summary.textContent, 'first · 2 more');
+  assert.match(summary.attributes.get('aria-label') ?? '', /3 extension statuses\. Expand for details\./);
   assert.equal(list.children.length, 0);
   disclosure.open = true; disclosure.dispatchEvent(new Event('toggle'));
   assert.deepEqual(list.children.map(node => node.textContent), Object.entries(statuses).flat());
@@ -59,6 +71,18 @@ test('compact extension status counts hidden cells and native expansion retains 
   assert.equal(root.children[0], disclosure); assert.equal(disclosure.open, true); assert.equal(disclosure.children[0], summary);
   extensionStatus({...primary, extension: {statuses: {...statuses, one: 'changed'}, widgets: {}}});
   assert.equal(root.children[0], disclosure); assert.equal(disclosure.open, true); assert.equal(list.children[1]?.textContent, 'changed');
+});
+test('Primary extension status does not replace the active conversation browser title', () => {
+  statusFixture(); document.title = 'Pi · Selected agent';
+  extensionStatus({...primary, extension: {title: 'Background Primary', statuses: {one: 'Useful fact'}, widgets: {}}});
+  assert.equal(document.title, 'Pi · Selected agent');
+});
+test('dialog deadlines name the response deadline without replacing supplied content', () => {
+  const deadline = '2030-01-01T00:00:00.000Z';
+  const f = fixture({...select, deadline, message: 'Supplied message'});
+  assert.match(f.modal.body.textContent, /Supplied message/);
+  assert.ok(f.modal.body.textContent.includes(`Respond before ${new Date(deadline).toLocaleString()}.`));
+  assert.doesNotMatch(f.modal.body.textContent, /Pi owns|Pi limits/);
 });
 test('one long Unicode status keeps its full text accessible without inventing another hidden cell', () => {
   const root = statusFixture(); const value = `\x1b[31m${'😀'.repeat(70)}\x1b[0m`;

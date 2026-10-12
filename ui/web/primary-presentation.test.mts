@@ -5,12 +5,12 @@ import { primaryBusy, primaryActivityLabel, primaryEmpty } from './primary-prese
 const primary = (lifecycle: PrimaryView['lifecycle'], activity: PrimaryView['activity']): PrimaryView => ({key: 'p', epoch: 1, cwd: '/project', lifecycle, activity, pendingOperationIds: [], pendingDialogs: [], capabilities: {}});
 test('ready empty primary offers a starting prompt only after history is known', () => {
   const ready = primary('ready', 'idle');
-  assert.deepEqual(primaryEmpty(ready, false, true), {heading: 'Start a conversation', caption: 'Type a message, or / for commands.'});
+  assert.deepEqual(primaryEmpty(ready, false, true), {heading: 'Start this session', caption: 'Write your first message below.'});
   assert.equal(primaryEmpty(ready, true, true), undefined);
-  assert.equal(primaryEmpty(ready, false, false), undefined);
+  assert.deepEqual(primaryEmpty(ready, false, false), {heading: 'Loading messages…', caption: ''});
   assert.equal(primaryEmpty(primary('ready', 'running'), false, true), undefined);
   assert.equal(primaryEmpty(primary('failed', 'idle'), false, true), undefined);
-  assert.equal(primaryEmpty(undefined, false, false)?.heading, 'No session open');
+  assert.equal(primaryEmpty(undefined, false, false)?.heading, 'Sessions');
 });
 test('busy presentation requires a ready primary and recognized work or queue state', () => {
   for (const activity of ['running', 'retrying', 'compacting'] as const) assert.equal(primaryBusy(primary('ready', activity)), true);

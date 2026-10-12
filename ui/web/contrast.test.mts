@@ -11,7 +11,7 @@ const cssPath = process.env.CONTRAST_CSS
 const css = readFileSync(cssPath, "utf8");
 const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link"];
 // Every painted surface, including tool-status tints and diff rows, carries any foreground.
-const surfaces = ["canvas", "side", "raised", "code", "user", "run-bg", "ok-bg", "err-bg", "add-bg", "del-bg"];
+const surfaces = ["canvas", "side", "raised", "code", "run-bg", "ok-bg", "err-bg", "add-bg", "del-bg"];
 // No inverted fills exist; the list stays explicit so a new one needs a deliberate model.
 const inverseFills: string[] = [];
 // The edge token marks controls, status rules and neutral selections; the accent marks focus.
@@ -22,6 +22,8 @@ const flavors = ["latte", "frappe", "macchiato", "mocha"];
 // Rule hairlines decorate content already identified by text or position.
 // Any new use of the low-contrast rule needs a deliberate classification.
 const decorativeHairlines = new Set([
+  ".project-bar|border-bottom", ".connection-banner|border-bottom", ".pane-heading|border-bottom",
+	".source-header|border-bottom",
 	".sidebar|border-right",
 	".sidebar-footer|border-top",
 	".tab-bar|border-bottom",
@@ -34,6 +36,8 @@ const decorativeHairlines = new Set([
 	".code-block > .copy|border",
 	".thinking > .stream-text|border-left",
 	".thinking-content|border-left",
+	".tool-shell|border-left",
+	".composer-detail-body|border-top",
 	".tool-copy|border",
 	".output-pages button|border",
 	".receipt-details pre|border",
@@ -43,15 +47,8 @@ const decorativeHairlines = new Set([
 	".notification|border-bottom",
 	".palette-input-row|border-bottom",
 ]);
-// Non-content paint: the dialog backdrop dims the page behind a dialog, and the context meter
-// fill repeats the percentage that the statusline states in text beside it.
-const decorativeBackgrounds = new Set([
-	"dialog::backdrop|var(--backdrop)",
-	".context-bar::-webkit-meter-optimum-value|var(--success)",
-	".context-bar::-webkit-meter-suboptimum-value|var(--warning)",
-	".context-bar::-webkit-meter-even-less-good-value|var(--error)",
-	".context-bar::-moz-meter-bar|var(--success)",
-]);
+// Non-content paint: the dialog backdrop dims the page behind a dialog.
+const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)"]);
 type RGB = [number, number, number];
 type Rule = { selector: string; contexts: string[]; declarations: { property: string; value: string }[] };
 type Measurement = {

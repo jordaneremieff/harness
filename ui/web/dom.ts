@@ -18,7 +18,6 @@ export function button(text: string, action: () => void, className?: string): HT
 export function setText(node: Node, text: string): void {
   if (node.textContent !== text) node.textContent = text;
 }
-export function clear(node: HTMLElement): void { node.replaceChildren(); }
 export function announce(text: string): void { setText(byId('announcements'), text); }
 export async function copy(text: string, into?: HTMLElement): Promise<boolean> {
   try {
@@ -31,7 +30,7 @@ export async function copy(text: string, into?: HTMLElement): Promise<boolean> {
     area.setAttribute('aria-label', 'Select and copy text');
     (into ?? byId('modal-body')).append(area);
     area.focus(); area.select();
-    announce('Clipboard permission failed. Select and copy the text.'); return false;
+    announce('Copy failed. Select and copy the text.'); return false;
   }
 }
 export { stripControls } from './format.ts';

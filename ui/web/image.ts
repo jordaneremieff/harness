@@ -26,19 +26,19 @@ export function transcriptImage(part: ImageView, url?: string, changed: () => vo
   const caption = element('figcaption', 'transcript-image-caption', `${part.mimeType === 'image/png' ? 'PNG' : 'JPEG'} · ${part.width} × ${part.height} · ${Math.ceil(part.bytes / 1024)} KiB`);
   const status = element('p', 'transcript-image-status');
   figure.append(caption, status);
-  if (!safeUrl(url)) { setText(status, 'Image unavailable: this view has no retained source. Reload history after the message is saved.'); return figure; }
+  if (!safeUrl(url)) { setText(status, 'This image is not available.'); return figure; }
   const image = element('img', 'transcript-image-content');
   image.alt = part.alt; image.width = part.width; image.height = part.height;
   image.loading = 'lazy'; image.decoding = 'async'; image.referrerPolicy = 'no-referrer';
   let active = false;
   const slot: ImageSlot = {release: () => {
     active = false; image.removeAttribute('src'); image.hidden = true; retry.hidden = false;
-    setText(status, 'Image released to limit memory. Reload the image to view it.'); changed();
+    setText(status, 'Reload this image to view it.'); changed();
   }};
-  const activate = () => { reserve(slot); active = true; image.hidden = false; retry.hidden = true; setText(status, 'Image loads when visible.'); image.src = url; changed(); };
+  const activate = () => { reserve(slot); active = true; image.hidden = false; retry.hidden = true; setText(status, 'Loading image…'); image.src = url; changed(); };
   const retry = button('Reload image', activate);
   retry.hidden = true;
   image.addEventListener('load', () => { if (!active) return; setText(status, ''); retry.hidden = true; changed(); });
-  image.addEventListener('error', () => { if (!active) return; active = false; image.removeAttribute('src'); image.hidden = true; setText(status, 'Image unavailable: the source changed, exceeded its limit, or failed to decode.'); retry.hidden = false; changed(); });
+  image.addEventListener('error', () => { if (!active) return; active = false; image.removeAttribute('src'); image.hidden = true; setText(status, 'The image could not be loaded.'); retry.hidden = false; changed(); });
   figure.append(image, retry); activate(); return figure;
 }

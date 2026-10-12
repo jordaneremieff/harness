@@ -1,6 +1,8 @@
 import { announce, button, element } from './dom.ts';
+import { tabKey } from './tabs.ts';
+import { canSplitPane, closePane, MAX_PANES, movePaneTab, paneById, paneLeaves, type PaneAxis, type PaneLayout, type PaneSpace, type PaneView } from './pane-layout.ts';
 
-export type ContextItem = {label: string; run: () => void; enabled?: boolean};
+export type ContextItem = {key?: string; label: string; run: () => void; enabled?: boolean; checked?: boolean; description?: string; disabledReason?: string; separatorBefore?: boolean; heading?: string};
 export type MenuPoint = {x: number; y: number};
 export function menuPosition(point: MenuPoint, size: {width: number; height: number}, viewport: {width: number; height: number}): MenuPoint {
   return {x: Math.max(4, Math.min(point.x, viewport.width - size.width - 4)), y: Math.max(4, Math.min(point.y, viewport.height - size.height - 4))};
@@ -13,23 +15,39 @@ export class ContextMenu {
   private node?: HTMLElement;
   private restore?: HTMLElement;
   private cleanup?: () => void;
+  private trigger?: HTMLElement;
+  private rows: HTMLElement[] = [];
+  private items: ContextItem[] = [];
   get openNow(): boolean { return !!this.node; }
+  owns(origin: HTMLElement): boolean { return !!this.node && this.trigger === origin; }
   open(origin: HTMLElement, point: MenuPoint, label: string, items: ContextItem[], valid: () => boolean = () => true): void {
+    const previous = this.trigger === origin ? this.rows.indexOf(origin.ownerDocument.activeElement as HTMLElement) : -1;
+    const choice = this.items[previous];
+    const restore = previous >= 0 ? this.restore : undefined;
     this.close(false); if (!items.length) return;
     const doc = origin.ownerDocument; const view = doc.defaultView; if (!view) return;
     const active = doc.activeElement as HTMLElement | null;
-    this.restore = active && origin.contains(active) ? active : origin;
+    this.restore = restore ?? (active && origin.contains(active) ? active : origin);
+    if (origin.getAttribute?.('aria-haspopup') === 'menu') { this.trigger = origin; origin.setAttribute('aria-expanded', 'true'); }
     const menu = element('div', 'context-menu'); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', label);
     this.node = menu;
     const rows = items.map(item => {
       const row = button(item.label, () => {
         if (item.enabled === false) return;
         const current = valid(); this.close();
-        if (current) item.run(); else announce('This menu target changed. Open its menu again.');
+        if (current) item.run(); else announce('This item changed. Choose the action again.');
       });
-      row.setAttribute('role', 'menuitem'); row.setAttribute('aria-disabled', String(item.enabled === false)); row.tabIndex = -1;
+      row.className = 'context-menu-item';
+      row.setAttribute('role', item.checked === undefined ? 'menuitem' : 'menuitemradio');
+      if (item.checked !== undefined) row.setAttribute('aria-checked', String(item.checked));
+      if (item.description) {row.setAttribute('aria-description', item.description); row.title = item.description;}
+      row.setAttribute('aria-disabled', String(item.enabled === false)); row.tabIndex = -1;
+      if (item.disabledReason && item.enabled === false) { const note = element('span', 'context-menu-note'); note.textContent = item.disabledReason; row.append(note); }
+      if (item.separatorBefore) { const separator = element('div', 'context-menu-separator'); separator.setAttribute('role', 'separator'); menu.append(separator); }
+      if (item.heading) {const heading = element('div', 'context-menu-heading'); heading.setAttribute('role', 'presentation'); heading.textContent = item.heading; menu.append(heading);}
       menu.append(row); return row;
     });
+    this.rows = rows; this.items = items;
     const focus = (index: number) => rows[index]?.focus({preventScroll: true});
     menu.addEventListener('keydown', event => {
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
@@ -50,13 +68,63 @@ export class ContextMenu {
     doc.body.append(menu);
     menu.style.maxWidth = `${Math.max(1, view.innerWidth - 8)}px`; menu.style.maxHeight = `${Math.max(1, view.innerHeight - 8)}px`;
     const position = menuPosition(point, menu.getBoundingClientRect(), {width: view.innerWidth, height: view.innerHeight});
-    menu.style.left = `${position.x}px`; menu.style.top = `${position.y}px`; focus(0);
+    menu.style.left = `${position.x}px`; menu.style.top = `${position.y}px`;
+    const retained = choice?.key ? items.findIndex(item => item.key === choice.key) : -1;
+    focus(previous < 0 ? 0 : retained >= 0 ? retained : Math.min(previous, rows.length - 1));
   }
   close(restore = true): void {
     if (!this.node) return;
     const origin = this.restore;
     this.cleanup?.(); this.cleanup = undefined; this.node.remove(); this.node = undefined; this.restore = undefined;
+    this.trigger?.setAttribute('aria-expanded', 'false'); this.trigger = undefined; this.rows = []; this.items = [];
     if (restore && origin?.isConnected) origin.focus({preventScroll: true});
   }
 }
 export const contextMenu = new ContextMenu();
+
+export type PaneMenuTarget = {paneId: string; tabKey?: string};
+export type PaneMenuHooks = {layout: () => PaneLayout; valid: () => boolean; space: (pane: string) => PaneSpace;
+  label: (key: string) => string; change: (layout: PaneLayout) => void; newTab: (pane: string) => void;
+  split: (pane: string, axis: PaneAxis, key: string | null) => void; closeTab: (key: string) => void;
+  activate: (pane: string, key: string) => void; view: (key: string) => PaneView; setView: (key: string, view: PaneView) => void;
+  overflow?: boolean; sessionItems?: ContextItem[]};
+type Guard = (run: () => void) => () => void;
+function moveChoices(layout: PaneLayout, paneId: string, key: string | null, hooks: PaneMenuHooks, guard: Guard): ContextItem[] {
+  const leaves = paneLeaves(layout.root); const destinations = leaves.filter(leaf => leaf.id !== paneId);
+  if (!destinations.length) return [{label: 'Move tab to pane…', enabled: false, disabledReason: 'No other pane', run() {}}];
+  return destinations.map(destination => {
+    const number = leaves.indexOf(destination) + 1; const name = destination.active ? hooks.label(destination.active) : 'Empty';
+    return {label: `Move tab to ${name} (pane ${number})`, enabled: !!key, run: guard(() => {if (key) hooks.change(movePaneTab(layout, key, destination.id));})};
+  });
+}
+function viewChoices(key: string | null, hooks: PaneMenuHooks, guard: Guard): ContextItem[] {
+  const view = key ? hooks.view(key) : 'chronological';
+  return ([['chronological', 'View: Conversation'], ['grouped', 'View: Grouped']] as const).map(([mode, label]) =>
+    ({label, checked: view === mode, enabled: !!key, separatorBefore: mode === 'chronological', run: guard(() => {if (key) hooks.setView(key, mode);})}));
+}
+function tabChoices(layout: PaneLayout, hooks: PaneMenuHooks, guard: Guard): ContextItem[] {
+  return paneLeaves(layout.root).flatMap((leaf, index) => leaf.tabs.map((tab, tabIndex) => {
+    const key = tabKey(tab); const first = index === 0 && tabIndex === 0;
+    return {label: `${hooks.label(key)} (pane ${index + 1})`, heading: first ? 'Tabs' : undefined, separatorBefore: first, run: guard(() => hooks.activate(leaf.id, key))};
+  }));
+}
+/** Both entry points use this builder; callbacks retain the captured pane and target. */
+export function paneMenuItems(target: PaneMenuTarget, hooks: PaneMenuHooks): ContextItem[] {
+  const layout = hooks.layout(); const pane = paneById(layout, target.paneId); if (!pane) return [];
+  const key = target.tabKey ?? pane.active;
+  if (target.tabKey && !pane.tabs.some(tab => tabKey(tab) === target.tabKey)) return [];
+  const leaves = paneLeaves(layout.root); const space = hooks.space(pane.id);
+  const guard = (run: () => void): (() => void) => () => {
+    if (hooks.valid() && hooks.layout().root === layout.root) run(); else announce('This item changed. Choose the action again.');
+  };
+  const split = (axis: PaneAxis): ContextItem => ({label: axis === 'x' ? 'Split right' : 'Split down', enabled: canSplitPane(layout, pane.id, axis, space),
+    disabledReason: leaves.length >= MAX_PANES ? 'Four panes maximum' : 'Not enough space', run: guard(() => hooks.split(pane.id, axis, key))});
+  const items: ContextItem[] = [{label: 'New tab…', run: guard(() => hooks.newTab(pane.id))}, split('x'), split('y')];
+  items.push(...moveChoices(layout, pane.id, key, hooks, guard));
+  items.push({label: 'Close tab', enabled: !!key, run: guard(() => {if (key) hooks.closeTab(key);})},
+    {label: 'Close pane', enabled: leaves.length > 1, run: guard(() => hooks.change(closePane(layout, pane.id)))});
+  items.push(...viewChoices(key, hooks, guard));
+  items.push(...(hooks.sessionItems ?? []).map((item, index) => ({...item, separatorBefore: index === 0 || item.separatorBefore, run: guard(item.run)})));
+  if (hooks.overflow) items.push(...tabChoices(layout, hooks, guard));
+  return items;
+}

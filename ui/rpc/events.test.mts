@@ -9,6 +9,14 @@ function create() {
   const projection = new EventProjection(view, (name, _target, data) => emitted.push({name, data: structuredClone(data)}), () => {});
   return { projection, emitted };
 }
+test('live and saved peer messages preserve the same communication value through RPC projection', () => {
+  const raw = {role: 'custom', customType: 'agent.peer', timestamp: 1700000000000, content: 'Transport', details: {kind: 'report', senderIdentity: '10000000-0000-4000-8000-000000000001', message: 'Contribution', reportSourceId: 'source', requestId: 'request'}};
+  const {projection} = create(); projection.reduce({type: 'message_start', message: raw}); projection.reduce({type: 'message_end', message: raw});
+  const first = projection.messages[0]?.communication; assert.equal(first?.state, 'ready');
+  projection.snapshot({entries: [{id: 'saved-peer', parentId: null, type: 'message', timestamp: new Date(raw.timestamp).toISOString(), message: {...raw, timestamp: undefined}}], leafId: 'saved-peer'});
+  const saved = projection.messages[0]?.communication; assert.equal(saved?.state, 'ready');
+  if (first?.state === 'ready' && saved?.state === 'ready') { assert.deepEqual(saved.value, first.value); assert.equal(saved.origin.kind, 'ordinary-custom'); if (saved.origin.kind === 'ordinary-custom') assert.equal(saved.origin.sourceEntryId, 'saved-peer'); }
+});
 test('messages with identical role and timestamp retain distinct stable IDs', () => {
   const { projection } = create();
   for (const word of ['first', 'second']) {

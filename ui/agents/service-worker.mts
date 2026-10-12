@@ -25,9 +25,9 @@ async function invoke(member: string, args: unknown[]): Promise<unknown> {
   const identity = args[0] as string;
   switch (member) {
     case "refresh": return service.refresh(args[0] as string | undefined);
-    case "select": return service.select(identity, args[1] as string | undefined);
-    case "hide": return service.hide(identity);
-    case "reconnect": return service.reconnect(identity);
+    case "select": return service.select(identity, args[1] as string | undefined, args[2] as number | undefined);
+    case "hide": return service.hide(identity, args[1] as string | undefined);
+    case "reconnect": return service.reconnect(identity, args[1] as string, args[2] as number | undefined);
     case "disconnectWorkspace": return service.disconnectWorkspace(identity);
     case "prepare": return service.prepare(identity);
     case "history": return transferSnapshot(await service.history(identity, args[1] as HistoryOptions));

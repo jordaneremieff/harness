@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { presentTool, presentToolPreview, readRange, compactRead } from './cards.ts';
+import { presentTool, presentToolPreview, readRange, cardPreviewLimits, resultPreview } from './cards.ts';
+import type { PartView } from '../shared/api.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 
 class Node extends EventTarget {
@@ -30,7 +31,8 @@ test('structured edit previews every supplied old/new pair without invented file
   assert.match(card.textContent, /- return a - b;\n- \n\+ return a \+ b;\n\+ /);
   assert.match(card.textContent, /- <script>\nNew text: empty\n/);
   assert.equal(card.children[0]?.tag, 'p'); assert.equal(card.children[0]?.className, 'secondary tool-caption');
-  assert.equal(card.children[0]?.textContent, 'supplied old and new text, not an inferred diff');
+  // Expectations use the display labels while preserving source and action checks.
+  assert.equal(card.children[0]?.textContent, 'Supplied replacement');
   assert.equal(card.children.some(child => ['h3', 'h4'].includes(child.tag)), false);
   const blocks = card.children.filter(child => child.tag === 'pre');
   assert.deepEqual(blocks[0]?.children.filter(child => child.tag === 'span').map(child => [child.className, child.textContent]),
@@ -54,14 +56,14 @@ test('write shows supplied content with a truthful success, pending, or error la
   const {context} = setup();
   const contents = '<img src=x onerror=alert(1)>\nhello';
   const written = node(presentTool(source('write', {content: contents}), context));
-  assert.match(written.textContent, /written content<img src=x onerror=alert\(1\)>\nhello/);
+  assert.match(written.textContent, /Supplied content<img src=x onerror=alert\(1\)>\nhello/);
   assert.equal(written.children[0]?.tag, 'p'); assert.equal(written.children[0]?.className, 'secondary tool-caption');
-  assert.equal(written.children[0]?.textContent, 'written content');
+  assert.equal(written.children[0]?.textContent, 'Supplied content');
   for (const status of ['working', 'error']) {
     const pending = node(presentTool(source('write', {content: ''}, status), context));
-    assert.match(pending.textContent, /content to write\(empty content\)/);
+    assert.match(pending.textContent, /Supplied content\(empty content\)/);
     assert.equal(pending.children[0]?.tag, 'p'); assert.equal(pending.children[0]?.className, 'secondary tool-caption');
-    assert.equal(pending.children[0]?.textContent, 'content to write');
+    assert.equal(pending.children[0]?.textContent, 'Supplied content');
   }
 });
 test('long replacements and written content have bounded previews and lazy retained inspection', () => {
@@ -81,15 +83,6 @@ test('public single replacements work; unfamiliar or malformed calls keep the ge
   assert.match(node(presentTool(source('edit', {oldText: 'old', newText: 'new'}), context)).textContent, /- old\n\+ new/);
   for (const [name, args] of [['other', {edits: [{oldText: 'old', newText: 'new'}]}], ['edit', {edits: [{oldText: 'old'}]}], ['edit', {edits: []}], ['write', {content: 5}], ['edit', null]] as const) assert.equal(presentTool(source(name, args), context), undefined);
   assert.equal(presentTool({callId: 'tool', name: 'edit', status: 'working', argumentText: '{"edits":'}, context), undefined);
-});
-test('compact reads classify exact skill and resource names using supplied paths only', () => {
-  assert.deepEqual(compactRead({path: '/skills/audit/SKILL.md'}), {name: '[skill]', target: 'audit'});
-  assert.deepEqual(compactRead({path: '/skills/audit/child/../SKILL.md'}), {name: '[skill]', target: 'audit'});
-  assert.deepEqual(compactRead({path: 'SKILL.md'}), {name: '[skill]', target: 'SKILL.md'});
-  assert.deepEqual(compactRead({path: 'wrong', file_path: '/skills/audit/SKILL.md'}), {name: '[skill]', target: 'audit'});
-  for (const file of ['AGENTS.override.md', 'AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD']) assert.deepEqual(compactRead({path: `dir/${file}`}), {name: 'read resource', target: `dir/${file}`});
-  for (const path of ['docs/readme.md', 'README.md', '/package/docs/api.md', '/skills/audit/skill.md', 'AGENTS.OVERRIDE.md', 'CLAUDE.mD']) assert.equal(compactRead({path}), undefined);
-  assert.equal(compactRead({path: 7}), undefined);
 });
 test('read ranges use supplied offset and limit, not inferred output lines', () => {
   assert.equal(readRange({offset: 7, limit: 4}), 'lines 7–10');
@@ -114,7 +107,7 @@ test('collapsed write and edit previews expose supplied content with diff classe
   assert.match(edit.textContent, /- <script>\n- old\n\+ new\n\+ text\n…/);
   assert.equal(edit.className, 'tool-content-preview');
   const write = node(presentToolPreview(source('write', {content: 'one\ntwo\nthree'})));
-  assert.equal(write.textContent, 'one\ntwo\n…');
+  assert.equal(write.textContent, "one\ntwo\nthree");
   assert.equal(node(presentToolPreview(source('write', {content: ''}))).textContent, '(empty content)');
   assert.equal(presentToolPreview(source('write', {content: 'file text'}, 'error')), undefined);
   assert.equal(presentToolPreview(source('unknown', {content: 'text'})), undefined);
@@ -134,7 +127,45 @@ test('write previews highlight by extension and preserve exact supplied text and
   assert.equal(lines.every(child => child.className === 'diff-del' || child.className === 'diff-add'), true);
   assert.equal(lines.every(child => child.children.length === 0), true);
 });
+test('card preview limits describe the applied bounds for tool details', () => {
+  assert.match(cardPreviewLimits(), /8192 characters and 80 lines per text/);
+  assert.match(cardPreviewLimits(), /16384 characters of supplied text in total, and 8 replacements/);
+});
+test('collapsed results summarize supplied structure without parsing literal text or changing source', () => {
+  const parts: PartView[] = [{type: 'text', text: '{\n  "count": 2\n}', structured: {value: {count: 2, valid: false, tag: 'kept', extra: 'expanded only'}, truncated: false}}];
+  const before = JSON.stringify(parts);
+  assert.equal(resultPreview(parts), 'count: 2 · valid: false · tag: kept');
+  assert.equal(JSON.stringify(parts), before);
+  assert.equal(resultPreview([{type: 'text', text: "{\n\"role\": \"assistant\"\n}"}]), "{\n\"role\": \"assistant\"\n}");
+  assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', 'two'], truncated: true}}]), 'Array preview limited');
+  assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', 'two'], truncated: false}}]), '2 items');
+  assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', '[omitted]'], truncated: false}}]), '2 items');
+  assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', '[omitted]'], truncated: true}}]), 'Array preview limited');
+  assert.equal(resultPreview([{type: 'text', text: '[protected text]', redacted: true, structured: {value: {hidden: 'never preview'}, truncated: false}}]), '[protected text]');
+});
+test('collapsed literal results have a six-line and 1200-character limit without a source-loss promise', () => {
+  for (const text of ['one\ntwo\nthree', 'one\rtwo\rthree', 'one\r\ntwo\r\nthree', 'x'.repeat(10000), '😀'.repeat(10000)]) {
+    const parts: PartView[] = [{type: 'text', text}];
+    const shown = resultPreview(parts);
+    assert.ok(shown.length <= 1200); assert.ok(shown.split(/\r\n|\r|\n/).length <= 6);
+    assert.equal(shown.isWellFormed(), true); assert.equal(parts[0].type === 'text' && parts[0].text, text);
+    assert.doesNotMatch(shown, /not retained|Copy|Raw output/);
+  }
+  assert.equal(resultPreview([]), ''); assert.equal(resultPreview([{type: 'omitted', label: 'Image unavailable'}]), '');
+  assert.equal(resultPreview([{type: 'text', text: ''}, {type: 'text', text: 'Second supplied text'}]), 'Second supplied text');
+});
+test('supplied write and edit source labels remain independent of reported success', () => {
+  const {context} = setup();
+  for (const status of ['success', 'working', 'error', 'unknown']) {
+    const write = node(presentTool(source('write', {content: 'exact'}, status), context));
+    const edit = node(presentTool(source('edit', {oldText: 'old', newText: 'new'}, status), context));
+    assert.equal(write.children[0]?.textContent, 'Supplied content');
+    assert.equal(edit.children[0]?.textContent, 'Supplied replacement');
+    assert.match(edit.textContent, /- old\n\+ new/); assert.match(write.textContent, /exact/);
+    assert.doesNotMatch(write.textContent, /Written content|filesystem|current file/);
+  }
+});
 test('incomplete retained arguments have a visible omission warning', () => {
   const {context} = setup(); const value = source('edit', {edits: [{oldText: '[omitted]', newText: 'new'}]}); assert.ok(value.args); value.args = {...value.args, truncated: true};
-  assert.match(node(presentTool(value, context)).textContent, /Arguments omitted by host/);
+  assert.match(node(presentTool(value, context)).textContent, /Some arguments are not available/);
 });

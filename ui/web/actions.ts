@@ -1,9 +1,12 @@
-import type { AgentRow, Appearance, Bootstrap, CommandView, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
+import { ProjectPicker } from './picker.ts';
+import { renderFacts, type ReportedFact } from './facts.ts';
+import type { AgentRow, Appearance, CommandView, ConversationLayout, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
 import { button, copy, details, element, input, rawText } from './dom.ts';
 import type { Modal } from './modal.ts';
 import { operation, request } from './transport.ts';
 import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
+import { duplicateIdentityTails } from './tabs.ts';
 import { relativeTime } from './format.ts';
 import { navigateOptions } from './list-navigation.ts';
 import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
@@ -15,14 +18,31 @@ const appearanceChoices: readonly [Appearance, string][] = [
 type ResourceKind = 'commands' | 'models' | 'thinking';
 const appCommands: CommandOption[] = [
   {name: 'new', description: 'Start a new session', source: 'app'},
-  {name: 'resume', description: 'Open a saved session', source: 'app'},
+  {name: 'resume', description: 'Resume a saved session', source: 'app'},
   {name: 'fork', description: 'Start a branch from a user message', source: 'app'},
   {name: 'compact', description: 'Summarize the session context', source: 'app'},
-  {name: 'model', description: 'Choose a model for the primary', source: 'app'},
-  {name: 'thinking', description: 'Choose the thinking level', source: 'app'},
+  {name: 'model', description: 'Choose Primary model', source: 'app'},
+  {name: 'thinking', description: 'Choose the thinking level for Primary', source: 'app'},
 ];
 
 export type PaletteEntry = CommandOption & {enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string};
+function commandSource(source: string): string { return ({app: 'App', primary: 'Primary', agent: 'Agent'} as Record<string, string>)[source] ?? source; }
+function paletteName(item: PaletteEntry, marks: number[], conversation: boolean): HTMLElement {
+  const name = element('span', 'palette-name');
+  const title = conversation ? element('span', 'palette-title') : name; if (conversation) name.append(title);
+  const selected = new Set(marks);
+  for (let offset = 0; offset < item.name.length; offset++) title.append(element(selected.has(offset) ? 'mark' : 'span', undefined, item.name[offset]));
+  if (item.tail) name.append(element('span', conversation ? 'palette-identity' : 'palette-tail', ` ${item.tail}`));
+  return name;
+}
+function rosterIncomplete(snapshot?: Snapshot): boolean {
+  const roster = snapshot?.roster;
+  return !!roster?.nextCursor || !!roster && (!roster.scan.complete || roster.scan.omitted > 0) || !!snapshot?.omitted?.includes('roster');
+}
+function paletteEmpty(query: string, incomplete: boolean): HTMLElement {
+  const message = element('p', 'secondary', `No results${query.trim() ? ` for “${query.trim()}”` : ''}.${incomplete ? ' The list is incomplete.' : ''}`);
+  message.setAttribute('role', 'status'); return message;
+}
 function compactAge(value: number, now: number): string {
   const full = relativeTime(value, now); if (!full) return '';
   const seconds = (now - value) / 1000;
@@ -30,27 +50,6 @@ function compactAge(value: number, now: number): string {
   return full.replace(/hr ago$/, 'h').replace(/ ago$/, '');
 }
 function agentName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
-function agentTail(identity: string, counts: Map<string, number>[]): string {
-  const colon = identity.lastIndexOf(':');
-  if (colon >= 0 && colon < identity.length - 1) return identity.slice(colon + 1);
-  const index = counts.findIndex((values, index) => values.get(identity.slice(-(index + 4))) === 1);
-  return index < 0 ? identity : identity.slice(-(index + 4));
-}
-function duplicateAgentTails(rows: AgentRow[]): Map<string, string> {
-  const groups = new Map<string, string[]>();
-  for (const row of rows) { const name = agentName(row); const group = groups.get(name) ?? []; group.push(row.identity); groups.set(name, group); }
-  const labels = new Map<string, string>();
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const counts = Array.from({length: 5}, (_, index) => {
-      const values = new Map<string, number>();
-      for (const identity of group) { const tail = identity.slice(-(index + 4)); values.set(tail, (values.get(tail) ?? 0) + 1); }
-      return values;
-    });
-    for (const identity of group) labels.set(identity, agentTail(identity, counts));
-  }
-  return labels;
-}
 function revealPaletteRow(container: HTMLElement, row: HTMLElement): void {
   if (container.clientHeight <= 0 || container.scrollHeight <= container.clientHeight) return;
   const top = container.getBoundingClientRect().top + container.clientTop;
@@ -72,8 +71,8 @@ export function rankPalette(entries: PaletteEntry[], query: string): CommandMatc
   return [...matches.values()].sort((a, b) => a.rank - b.rank || a.item.name.localeCompare(b.item.name));
 }
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
-export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; modal: Modal;
-  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; tabs?: {close: () => void; switch: (direction: number) => void; split: () => void; canSplit: () => boolean}};
+export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modal: Modal;
+  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
@@ -83,6 +82,8 @@ export class Actions {
   private commandsIncomplete = false;
   private commandPaint?: () => void;
   private displayedHandoffs = new Set<string>();
+  private picker?: ProjectPicker;
+  private changingSession = false;
   private ctx: ActionContext;
   constructor(ctx: ActionContext) { this.ctx = ctx; }
   private target(primary: PrimaryView): Target { return {kind: 'primary', key: primary.key, epoch: primary.epoch}; }
@@ -92,7 +93,7 @@ export class Actions {
     if (this.resourceTarget === target) return false;
     this.resourceTarget = target; this.resourceVersion++; this.resources.clear(); this.commands = []; this.commandsLoaded = false; this.commandsIncomplete = false; this.commandsChanged(); return true;
   }
-  private commandsChanged(): void { this.commandPaint?.(); this.ctx.composer.commandsChanged(); }
+  private commandsChanged(): void { this.commandPaint?.(); this.ctx.commandsChanged(); }
   commandOptions(): CommandInventory {
     const primary = this.ctx.primary();
     if (primary?.lifecycle !== 'ready') return {items: [], state: 'unavailable'};
@@ -149,10 +150,19 @@ export class Actions {
       throw error;
     }
   }
+  async continueCommands(target: Target): Promise<void> {
+    const primary = this.ctx.primary();
+    if (target.kind !== 'primary' || primary?.lifecycle !== 'ready' || primary.key !== target.key || primary.epoch !== target.epoch) throw new Error('This conversation changed. Choose the action again.');
+    this.observeResources(primary); const version = this.resourceVersion;
+    const page = await this.load('commands');
+    if (!this.currentResources(primary, version)) throw new Error('This conversation changed. Choose the action again.');
+    await this.moreCommands(primary, version, page);
+    if (!this.currentResources(primary, version)) throw new Error('This conversation changed. Choose the action again.');
+  }
   private async moreCommands(primary: PrimaryView | undefined, version: number, page: ResourcePage): Promise<void> {
     if (!primary || !page.nextCursor || !this.currentResources(primary, version)) return;
-    const next = await this.resourcePage(primary, 'commands', page.nextCursor);
-    if (!this.currentResources(primary, version)) return;
+    const cursor = page.nextCursor; const next = await this.resourcePage(primary, 'commands', cursor);
+    if (!this.currentResources(primary, version) || page.nextCursor !== cursor) return;
     this.commands = [...page.items as CommandView[], ...next.items as CommandView[]]; page.items = this.commands; page.nextCursor = next.nextCursor;
     this.commandsIncomplete = !!next.nextCursor; this.commandsChanged();
   }
@@ -164,34 +174,20 @@ export class Actions {
     const result = await operation('primary.control', this.path(primary, 'control'), {...control, epoch: primary.epoch}, this.target(primary)); this.ctx.result(result);
     if (result.error) throw new Error(result.error.message);
   }
-  projectPicker(): void {
-    const {modal} = this.ctx; const snapshot = this.ctx.snapshot(); const primary = this.ctx.primary();
-    const body = modal.open('Open a project');
-    const directory = input('Project directory', primary?.cwd ?? (snapshot as Bootstrap | undefined)?.launchCwd ?? '');
-    const session = input('Saved session path (optional)'); body.append(directory.label, directory.field, session.label, session.field);
-    const start = async (resume: boolean) => {
-      const result = await operation('primary.open', '/api/primaries', {cwd: directory.field.value, ...(resume ? {sessionFile: session.field.value} : {})});
-      const opened = result as unknown as {primaryKey?: string; operation?: OperationView};
-      if (opened.operation?.error) throw new Error(opened.operation.error.message);
-      if (!opened.primaryKey) throw new Error('Pi did not open the primary. Your project choice stays unchanged.');
-      await this.ctx.reload();
-    };
-    const launch = (snapshot as Bootstrap | undefined)?.launchCwd;
-    if (launch) body.append(button('Use launch directory', () => { directory.field.value = launch; }));
-    modal.actions(button('Cancel', () => modal.close()), button('Resume saved session', () => { void modal.run(() => start(true)); }), button('Start new session', () => { void modal.run(() => start(false)); }, 'main-action'));
-    if (snapshot?.primaries.length) {
-      body.append(element('h2', undefined, 'Open in this workspace'));
-      for (const item of snapshot.primaries) body.append(button(`${item.sessionName ?? item.sessionId ?? 'Session'} · ${item.cwd} · ${item.lifecycle}`, () => { void modal.run(() => this.ctx.selection({primaryKey: item.key, selectedTarget: null})); }));
-    }
-    for (const index of snapshot?.primaryIndex ?? []) if (!snapshot?.primaries.some(item => item.key === index.key)) body.append(button(`Backend session ${index.key} · ${index.lifecycle}`, () => { void modal.run(() => this.ctx.selection({primaryKey: index.key, selectedTarget: null})); }));
-    body.append(element('p', 'secondary', 'Enter an exact saved session path. Browsing this picker does not start Pi.'));
-    directory.field.focus();
+  private sessionPicker(): ProjectPicker { this.picker ??= new ProjectPicker(this.ctx); return this.picker; }
+  projectPicker(): void { this.sessionPicker().open(); }
+  openProject(): void { this.sessionPicker().openProject(); }
+  newSession(project?: string): void {
+    const primary = this.ctx.primary(); if (!primary) { this.sessionPicker().newSession(project); return; }
+    if (this.changingSession) return;
+    this.changingSession = true;
+    void this.replaceSession(primary).catch(cause => {
+      this.ctx.modal.open('The session did not open.').append(details('Details', cause instanceof Error ? cause.message : String(cause)));
+    }).finally(() => { this.changingSession = false; });
   }
-  newSession(): void {
-    const primary = this.ctx.primary(); if (!primary) return;
-    this.ctx.modal.confirm('New session', 'Your current draft stays with this session. Pi changes the session only after its response.', async () => {
-      const result = await operation('primary.session', this.path(primary, 'session'), {epoch: primary.epoch, action: 'new'}, this.target(primary)); this.ctx.result(result); await this.ctx.reload();
-    }, 'Start new session');
+  private async replaceSession(primary: PrimaryView): Promise<void> {
+    const result = await operation('primary.session', this.path(primary, 'session'), {epoch: primary.epoch, action: 'new'}, this.target(primary));
+    this.ctx.result(result); if (result.error) throw new Error(result.error.message); await this.ctx.reload();
   }
   fork(entryId: string, excerpt: string): void {
     const primary = this.ctx.primary(); if (!primary) return;
@@ -205,7 +201,7 @@ export class Actions {
     for (const entry of entries) for (const message of entry.messages ?? []) if (message.role === 'user' && message.state === 'final') {
       const excerpt = message.parts.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n'); modal.body.append(button(excerpt.slice(0, 200), () => this.fork(entry.id, excerpt)));
     }
-    modal.body.append(element('p', 'secondary', 'Only loaded user messages appear here. Pi validates the selected fork point.'));
+    modal.body.append(element('p', 'secondary', 'Only loaded messages appear here.'));
   }
   compact(): void {
     const primary = this.ctx.primary(); if (!primary) return;
@@ -216,22 +212,31 @@ export class Actions {
   automaticSettings(action: 'autoRetry' | 'autoCompaction'): void {
     const primary = this.ctx.primary(); if (!primary) return;
     const modal = this.ctx.modal; modal.open(action === 'autoRetry' ? 'Automatic retry' : 'Automatic compaction');
-    modal.body.append(element('p', 'secondary', 'These actions set Pi’s behavior. No current setting is inferred.'));
+    modal.body.append(element('p', 'secondary', 'The current setting is not reported.'));
     modal.actions(button('Enable', () => { void modal.run(() => this.control({action, enabled: true} as PrimaryControl, primary)); }), button('Disable', () => { void modal.run(() => this.control({action, enabled: false} as PrimaryControl, primary)); }));
     if (action === 'autoRetry' && primary.activity === 'retrying') modal.actions(button('Stop current retry', () => { void modal.run(() => this.control({action: 'abortRetry'} as PrimaryControl, primary)); }));
   }
-  sessionDetails(): void {
-    const primary = this.ctx.primary(); if (!primary) return;
-    const modal = this.ctx.modal; modal.open('Session details'); const token = modal.token;
-    modal.body.append(element('p', 'identity', primary.sessionId ?? primary.key), button('Copy identity', () => { void copy(primary.sessionId ?? primary.key, modal.body); }), details('Reported session state', rawText(primary)));
+  sessionDetails(primary = this.ctx.primary()): void {
+    if (!primary) return;
+    const modal = this.ctx.modal; modal.open('Conversation details'); const token = modal.token;
+    modal.body.append(element('p', 'identity', primary.sessionId ?? primary.key), button('Copy session ID', () => { void copy(primary.sessionId ?? primary.key, modal.body); }), details('Reported session state', rawText(primary)));
     modal.body.append(button('Diagnostics', () => { void modal.run(async () => { const data = await request(this.path(primary, 'diagnostics')); if (modal.owns(token)) modal.body.append(details('Diagnostics', rawText(data))); }, false); }));
+  }
+  conversationDetails(identity?: string): void {
+    const captured = identity ?? this.ctx.selectedAgent()?.identity;
+    if (!captured) { this.sessionDetails(); return; }
+    const row = this.ctx.agents().find(item => item.identity === captured);
+    const body = this.ctx.modal.open('Conversation details');
+    body.append(element('p', 'identity', captured), button('Copy agent ID', () => { void copy(captured, body); }));
+    if (row) body.append(details('Reported agent metadata', rawText(row)));
+    const facts = element('div', 'conversation-facts'); renderFacts(facts, this.ctx.conversationFacts?.(captured) ?? []); body.append(facts);
   }
   modelPicker(): void {
     const primary = this.ctx.primary(); if (!primary) return;
-    const modal = this.ctx.modal; modal.open('Choose model for Primary'); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading cached models'));
+    const modal = this.ctx.modal; modal.open('Choose model for Primary'); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading models…'));
     void modal.run(async () => {
       const page = await this.load('models'); if (!modal.owns(token)) return;
-      modal.body.replaceChildren(); const search = input('Search cached models'); const list = element('div', 'options'); modal.body.append(search.label, search.field, list);
+      modal.body.replaceChildren(); const search = input('Search models'); const list = element('div', 'options'); modal.body.append(search.label, search.field, list);
       const paint = () => {
         list.replaceChildren();
         for (const model of page.items as ModelChoice[]) if (`${model.provider}/${model.id}`.toLocaleLowerCase().includes(search.field.value.toLocaleLowerCase())) {
@@ -244,12 +249,12 @@ export class Actions {
       };
       search.field.addEventListener('input', paint); paint(); search.field.focus();
       if (page.nextCursor) {
-        const more = button('More cached models', () => { more.disabled = true; void modal.run(async () => {
+        const more = button('More models', () => { more.disabled = true; void modal.run(async () => {
           try { const next = await request<ResourcePage>(this.path(primary, `resources/models?limit=100&cursor=${encodeURIComponent(page.nextCursor ?? '')}`)); page.items = [...page.items as ModelChoice[], ...next.items as ModelChoice[]]; page.nextCursor = next.nextCursor; more.hidden = !next.nextCursor; paint(); }
           finally { more.disabled = false; }
-        }, false); }); modal.body.append(more);
+        }, false, 'Models could not be loaded.'); }); modal.body.append(more);
       }
-    }, false);
+    }, false, 'Models could not be loaded.');
   }
   thinkingPicker(): void {
     const primary = this.ctx.primary(); if (!primary) return;
@@ -257,58 +262,62 @@ export class Actions {
     void modal.run(async () => {
       const page = await this.load('thinking'); if (!modal.owns(token)) return;
       const list = element('div', 'options'); for (const level of page.items as string[]) list.append(button(level, () => { void modal.run(() => this.control({action: 'thinking', level} as PrimaryControl, primary)); })); modal.body.append(list);
-    }, false);
+    }, false, 'Thinking levels could not be loaded.');
   }
   paletteEntries(): PaletteEntry[] {
     const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent();
     const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(alias ? {search: [alias, `/${alias}`]} : {})});
     const entries = [
-      entry('New session', 'Start a new primary session', () => this.newSession(), !!primary, 'new'),
-      entry('Resume saved session', 'Open an exact saved session path', () => this.projectPicker(), true, 'resume'),
+      entry('New session', 'Start a new session', () => this.newSession(), true, 'new'),
+      entry('Sessions', 'Resume a saved session', () => this.projectPicker(), true, 'resume'),
       entry('Fork from message…', 'Branch from a loaded user message', () => this.forkPicker(), !!primary, 'fork'),
       entry('Compact…', 'Summarize primary context', () => this.compact(), !!primary, 'compact'),
       entry('Automatic retry…', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), !!primary),
       entry('Automatic compaction…', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), !!primary),
-      entry('Continue in terminal…', 'Release the browser writer', () => this.handoff(), !!primary),
-      entry('Session details', 'Identity, state and diagnostics', () => this.sessionDetails(), !!primary),
-      entry('Saved drafts and input copies', 'Review retained input', () => this.ctx.recovery()),
+      entry('Continue in terminal…', 'Continue this session in the terminal', () => this.handoff(), !!primary),
+      entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent),
+      entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
       {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', ...appearanceChoices.flatMap(([value, label]) => [value, label, ...(label.startsWith('Catppuccin ') ? [`Catppuccin ${value}`] : [])])]},
       entry('Help', 'Browser controls and terminal fallback', () => this.help()),
       entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), !!primary),
       entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), !!primary),
       entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), !!primary),
       entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), !!primary),
-      entry('Find in loaded messages', 'Find text in the primary transcript', () => this.find(), !!primary),
+      entry('Find text', 'Find text in this session', () => this.find(), !!primary),
       entry('Notifications', 'Read and dismiss notices', () => this.ctx.notices()),
-      entry('Refresh agent roster', 'Request a fresh agent scan', () => this.ctx.rosterRefresh()),
-      entry('New agent through primary', 'Prepare /agent new in the primary', () => this.prepareText('/agent new')),
+      entry('Refresh agents', 'Refresh the agent list', () => this.ctx.rosterRefresh()),
+      entry('Insert /agent new', 'Insert the command into the Primary draft', () => this.prepareText('/agent new')),
       entry('Hide sidebar', 'Hide the conversation sidebar', () => this.ctx.sidebar(false)),
       entry('Show sidebar', 'Show the conversation sidebar', () => this.ctx.sidebar(true)),
-      entry('Open project or session', 'Choose a project or primary', () => this.projectPicker()),
-      entry('Model', 'Choose the primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model'),
-      entry('Thinking', 'Choose the primary thinking level', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking'),
+      entry('Projects', 'Choose a project', () => this.openProject()),
+      entry('Model', 'Choose Primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model'),
+      entry('Thinking', 'Choose the thinking level for Primary', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking'),
     ];
     if (this.ctx.tabs) {
       const tabs = this.ctx.tabs;
       entries.push(entry('Close conversation tab', 'Keep its session and draft', tabs.close),
         entry('Next conversation tab', 'Select the next conversation', () => tabs.switch(1)),
-        entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)),
-        entry('Toggle split with Primary', 'Show Primary beside this agent', tabs.split, tabs.canSplit()));
+        entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)));
     }
-    if (primary?.lastError) entries.push(entry('Review retry prompt', 'Restore the last loaded user prompt for review', () => this.retryOutput()));
+    if (primary?.lastError) entries.push(entry('Review message', 'Restore the last loaded user prompt for review', () => this.retryOutput()));
     if (agent) {
-      entries.push(entry('Copy agent identity', agent.identity, () => this.ctx.copyAgent()));
-      if (agent.capabilities?.inspect) entries.push(entry('Inspect agent activity', agent.identity, () => this.ctx.inspectAgent()));
+      entries.push(entry('Copy agent ID', agent.identity, () => this.ctx.copyAgent()));
+      if (agent.capabilities?.inspect) entries.push(entry('View activity…', agent.identity, () => this.ctx.inspectAgent()));
     }
     if (primary?.lifecycle === 'ready' && this.resourceTarget === `${primary.key}:${primary.epoch}:${primary.lifecycle}`) {
-      for (const command of this.commands) entries.push({...command, name: `/${command.name}`, enabled: true, run: () => this.prepareText(`/${command.name}`)});
+      for (const command of this.commands.filter(item => item.name !== 'resume')) {
+        entries.push({...command, name: `Insert /${command.name}`, search: [`/${command.name}`], enabled: true, run: () => this.prepareText(`/${command.name}`)});
+      }
     }
-    const now = Date.now(); const agents = this.ctx.agents(); const tails = duplicateAgentTails(agents);
-    for (const row of agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b))) entries.push({name: agentName(row), tail: tails.get(row.identity), description: [row.availability === 'live' ? row.state : row.availability, compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => this.ctx.selectAgent(row)});
-    return entries;
+    return [...entries, ...this.agentEntries()];
+  }
+  private agentEntries(chooseTarget?: (target: Target) => void): PaletteEntry[] {
+    const now = Date.now(); const agents = this.ctx.agents().filter(row => !chooseTarget || !!row.identity);
+    const tails = duplicateIdentityTails(agents.map(row => ({name: agentName(row), identity: row.identity})));
+    return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({name: agentName(row), tail: tails.get(row.identity), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Copy agent identity', 'Inspect agent activity', 'Saved drafts and input copies', 'Appearance', 'Help'] : ['New session', 'Resume saved session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Session details', 'Saved drafts and input copies', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find in loaded messages', 'Model', 'Thinking', 'Review retry prompt']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'View activity…', 'Saved drafts and messages', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {
@@ -321,19 +330,24 @@ export class Actions {
     list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list);
     list.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
   }
-  gotoEntries(): PaletteEntry[] {
-    const entries = this.paletteEntries().filter(item => item.source === 'agent'); const primary = this.ctx.primary();
-    if (primary) entries.unshift({name: primary.extension?.title ?? primary.sessionName ?? primary.sessionId ?? 'Primary', description: 'Primary conversation', source: 'primary', enabled: true, title: `primary:${primary.key}:${primary.epoch}`, search: ['primary', primary.key, primary.cwd, ...(primary.sessionId ? [primary.sessionId] : [])], run: () => this.ctx.selectPrimary()});
-    return entries;
+  gotoEntries(chooseTarget?: (target: Target) => void): PaletteEntry[] {
+    const entries = chooseTarget ? this.agentEntries(chooseTarget) : this.paletteEntries().filter(item => item.source === 'agent'); const primary = this.ctx.primary();
+    if (primary && (!chooseTarget || primary.key)) {
+      const target = this.target(primary);
+      entries.unshift({name: primary.extension?.title ?? primary.sessionName ?? primary.sessionId ?? 'Primary', description: 'Primary', source: 'primary', enabled: true, title: `primary:${primary.key}:${primary.epoch}`, search: ['primary', primary.key, primary.cwd, ...(primary.sessionId ? [primary.sessionId] : [])], run: () => chooseTarget ? chooseTarget(target) : this.ctx.selectPrimary()});
+    }
+    const tails = duplicateIdentityTails(entries.map(item => ({name: item.name, identity: item.title ?? item.name})));
+    return entries.map(item => ({...item, tail: tails.get(item.title ?? item.name)}));
   }
-  palette(mode: 'commands' | 'goto' = 'commands'): void {
+  palette(mode: 'commands' | 'goto' = 'commands', chooseTarget?: (target: Target) => void): void {
     let dispose = () => {};
-    const modal = this.ctx.modal; modal.open(mode === 'goto' ? 'Goto conversation' : 'Commands', undefined, () => dispose()); const token = modal.token;
+    const modal = this.ctx.modal; modal.open(mode === 'goto' ? 'Go to conversation' : 'Commands', undefined, () => dispose()); const token = modal.token;
     modal.node.dataset.variant = 'palette'; modal.node.dataset.mode = mode;
     const search = input(mode === 'goto' ? 'Search conversations' : 'Search commands and agents'); search.label.className = 'sr-only';
     search.field.setAttribute('role', 'combobox'); search.field.setAttribute('aria-autocomplete', 'list'); search.field.setAttribute('aria-expanded', 'true'); search.field.setAttribute('aria-controls', 'palette-list');
     const prompt = element('span', 'palette-prompt', '›'); prompt.setAttribute('aria-hidden', 'true');
-    const line = element('div', 'palette-input'); line.append(prompt, search.label, search.field);
+    search.field.className = 'palette-input'; search.field.placeholder = mode === 'goto' ? 'Search conversations' : 'Search commands and agents';
+    const line = element('div', 'palette-input-row'); line.append(prompt, search.label, search.field);
     const list = element('div', 'palette-list'); list.id = 'palette-list'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', mode === 'goto' ? 'Conversations' : 'Commands and agents'); modal.body.append(line, list);
     let active = 0; let matches: ReturnType<typeof rankCommands> = [];
     const reveal = () => {
@@ -341,7 +355,7 @@ export class Actions {
       revealPaletteRow(list, selected); revealPaletteRow(modal.node, selected);
     };
     const view = list.ownerDocument.defaultView;
-    if (!view) throw new Error('The palette requires a document view.');
+    if (!view) { modal.error(new Error('The palette requires a document view.'), 'Commands are unavailable.'); return; }
     const sizePalette = () => {
       if (!modal.owns(token)) { dispose(); return; }
       const limit = Number.parseFloat(view.getComputedStyle(modal.node).maxHeight);
@@ -364,27 +378,26 @@ export class Actions {
       modal.close(); selected.run();
     };
     const select = () => {
-      const rows = [...list.children] as HTMLElement[];
+      const rows = [...list.children].slice(0, matches.length) as HTMLElement[];
       rows.forEach((row, index) => { row.setAttribute('aria-selected', String(index === active)); });
       const selected = rows[active];
       if (selected) { search.field.setAttribute('aria-activedescendant', selected.id); reveal(); }
       else search.field.removeAttribute('aria-activedescendant');
     };
     const paint = () => {
-      const previous = matches[active]?.item as PaletteEntry | undefined; const entries = mode === 'goto' ? this.gotoEntries() : this.paletteEntries();
+      const previous = matches[active]?.item as PaletteEntry | undefined; const entries = mode === 'goto' ? this.gotoEntries(chooseTarget) : this.paletteEntries();
       matches = rankPalette(entries, search.field.value.trim());
       active = Math.max(0, matches.findIndex(match => match.item.name === previous?.name && match.item.source === previous?.source && (match.item as PaletteEntry).title === previous?.title)); list.replaceChildren();
       matches.forEach((match, index) => {
         const item = match.item as PaletteEntry; const row = button('', () => run(index), 'palette-row'); row.id = `palette-option-${index}`; row.tabIndex = -1;
         if (item.title) row.title = item.title;
         row.setAttribute('role', 'option'); row.setAttribute('aria-disabled', String(!item.enabled)); row.disabled = !item.enabled;
-        const name = element('span', 'palette-name');
-        const marks = new Set(match.marks);
-        for (let offset = 0; offset < item.name.length; offset++) name.append(element(marks.has(offset) ? 'mark' : 'span', undefined, item.name[offset]));
-        if (item.tail) name.append(element('span', 'palette-tail', ` ${item.tail}`));
-        row.append(name, element('span', 'palette-desc', item.description), element('span', 'palette-source', item.source.toLowerCase()));
+        const conversation = mode === 'goto' || item.source === 'agent'; if (conversation) row.dataset.kind = 'conversation';
+        row.setAttribute('aria-label', [item.name, item.tail, item.description].filter(Boolean).join(', '));
+        row.append(paletteName(item, match.marks, conversation), element('span', 'palette-desc', item.description), element('span', 'palette-source', commandSource(item.source)));
         list.append(row);
       });
+      if (!matches.length) list.append(paletteEmpty(search.field.value, mode === 'commands' && (!this.commandsLoaded || this.commandsIncomplete) || rosterIncomplete(this.ctx.snapshot())));
       sizePalette(); select();
     };
     search.field.addEventListener('input', () => { active = 0; matches = []; paint(); });
@@ -399,12 +412,12 @@ export class Actions {
       if (!modal.owns(token)) return;
       paint(); if (page.nextCursor) {
         const primary = this.ctx.primary(); const version = this.resourceVersion;
-        const more = button('More discovered commands', () => { more.disabled = true; void modal.run(async () => {
+        const more = button('More commands', () => { more.disabled = true; void modal.run(async () => {
           try { await this.moreCommands(primary, version, page); more.hidden = !page.nextCursor; }
           finally { more.disabled = false; }
-        }, false); }); modal.body.append(more); sizePalette();
+        }, false, 'Commands could not be loaded.'); }); modal.body.append(more); sizePalette();
       }
-    }).catch(error => { if (modal.owns(token)) modal.error(error); });
+    }).catch(error => { if (modal.owns(token)) modal.error(error, 'Commands could not be loaded.'); });
   }
   unknown(text: string, sendLiteral: () => void): boolean {
     const name = /^\/([^\s]+)/.exec(text)?.[1]; if (!name) return false;
@@ -412,13 +425,16 @@ export class Actions {
     if (builtin[name]) { builtin[name](); return true; }
     if (['agent', 'stash'].includes(name) && !text.includes(' ')) { this.terminalOnly(name); return true; }
     if (this.commands.some(command => command.name === name)) return false;
-    const modal = this.ctx.modal; modal.open('Unknown slash command'); modal.body.append(element('p', undefined, `/${name} is not a discovered command. Your draft stays unchanged.`));
-    modal.actions(button('Correct draft', () => modal.close()), button('Send literal text', () => { modal.close(); sendLiteral(); })); return true;
+    const modal = this.ctx.modal; modal.open('Unknown slash command'); modal.body.append(element('p', undefined, `/${name} is not in the command list. Your draft is unchanged.`));
+    modal.actions(button('Edit draft', () => modal.close()), button('Send literal text', () => { modal.close(); sendLiteral(); })); return true;
   }
   prepareText(text: string): void {
     const composer = this.ctx.composer;
-    if (!composer.target || this.ctx.primary()?.lifecycle !== 'ready') {
-      this.projectPicker(); this.ctx.modal.body.append(element('p', 'secondary', 'Open a primary, then use this text action. Your agent draft stays unchanged.'), element('pre', undefined, text)); return;
+    if (composer.target?.kind !== 'primary' || this.ctx.primary()?.lifecycle !== 'ready') {
+      const modal = this.ctx.modal;
+      modal.open('Primary session required');
+      modal.body.append(element('p', 'secondary', 'Select a session for Primary to insert this command. Your drafts are unchanged.'), element('pre', undefined, text));
+      modal.actions(button('Sessions', () => this.projectPicker()), button('Copy command', () => { void copy(text, modal.body); })); return;
     }
     const target = {...composer.target}; const previousText = composer.editor.value;
     const apply = async () => {
@@ -427,13 +443,13 @@ export class Actions {
       composer.setText(text); composer.editor.focus();
     };
     if (!composer.editor.value) { void this.ctx.modal.run(apply, false); return; }
-    this.ctx.modal.confirm('Use primary text action', 'Your current primary draft will be replaced. Copy it first if you need both texts.', apply, 'Replace draft');
+    this.ctx.modal.confirm('Replace Primary draft?', 'This replaces your Primary draft. Copy it first to keep both texts.', apply, 'Replace draft');
     this.ctx.modal.body.append(element('pre', undefined, composer.editor.value), button('Copy draft', () => { void copy(composer.editor.value, this.ctx.modal.body); }));
   }
   private terminalOnly(name: string): void {
     const modal = this.ctx.modal; modal.open('Terminal-only panel'); modal.body.append(element('p', undefined, `The bare /${name} panel requires the terminal. Text actions remain available through the primary.`));
     modal.actions(button('Cancel', () => modal.close()), button('Continue in terminal…', () => this.handoff()));
-    if (name === 'agent') modal.body.append(button('New agent through primary…', () => { modal.close(); this.prepareText('/agent new'); }));
+    if (name === 'agent') modal.body.append(button('Insert /agent new…', () => { modal.close(); this.prepareText('/agent new'); }));
   }
   appearance(): void {
     const modal = this.ctx.modal; modal.open('Appearance'); const rows = element('div', 'options');
@@ -447,36 +463,36 @@ export class Actions {
     rows.addEventListener('keydown', event => navigateOptions(event, rows)); modal.body.append(rows); selected?.focus();
   }
   find(): void {
-    const modal = this.ctx.modal; modal.open('Find in loaded messages'); const query = input('Text'); modal.body.append(query.label, query.field);
+    const modal = this.ctx.modal; modal.open('Find text'); const query = input('Text'); modal.body.append(query.label, query.field);
     modal.actions(button('Find', () => { this.ctx.find(query.field.value); modal.close(); }));
   }
   help(): void {
     const modal = this.ctx.modal; modal.open('Help');
-    modal.body.append(element('p', undefined, 'Local browser access only. Pi owns primary work. Durable hosts own agent work. Closing this tab does not stop either.'), element('p', undefined, 'Agent configure is unavailable in this browser. Use the existing primary text command.'), element('p', undefined, 'Use Commands to find actions. Closing a dialog never stops work.'), element('p', undefined, 'Browser drafts stay in memory until the Mac confirms a save. A browser crash cannot restore text that the Mac did not receive.'));
+    modal.body.append(element('p', undefined, 'Closing this tab does not stop your sessions or agents.'), element('p', undefined, 'To configure an agent, use its command through Primary.'), element('p', undefined, 'Use Commands to find actions. Closing a dialog never stops work.'), element('p', undefined, 'Unsaved drafts are lost if the browser closes unexpectedly.'));
   }
   retryOutput(): void {
     const items = this.ctx.primaryEntries();
     const user = items.flatMap(entry => entry.messages ?? []).findLast(message => message.role === 'user');
     const text = user?.parts.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n');
-    if (!text) { this.ctx.modal.open('Retry output').append(element('p', undefined, 'No loaded user prompt is available. Enter an explicit new prompt in the primary.')); return; }
-    this.ctx.modal.confirm('Review retry prompt', 'A new send repeats this prompt and its possible tool effects. This action only restores text for your review.', async () => this.prepareText(text), 'Restore prompt');
+    if (!text) { this.ctx.modal.open('Review message').append(element('p', undefined, 'No loaded message is available. Write a new message to Primary.')); return; }
+    this.ctx.modal.confirm('Review message', 'This restores the message for review. Sending it again risks duplicate work.', async () => this.prepareText(text), 'Restore message');
   }
   handoff(): void {
     const primary = this.ctx.primary(); if (!primary) return;
     const modal = this.ctx.modal; modal.open('Continue in terminal');
-    modal.body.append(element('p', 'identity', primary.sessionFile ?? 'No saved session yet'), element('p', undefined, 'This releases the browser’s Pi writer before terminal resume. Other Durable agents continue.'));
+    modal.body.append(element('p', 'identity', primary.sessionFile ?? 'No saved session yet'), element('p', undefined, 'Browser control stops before you continue in the terminal. Other agents continue.'));
     const release = async (mode: 'settle' | 'abort') => {
       const result = await operation('primary.handoff', this.path(primary, 'handoff'), {epoch: primary.epoch, mode, clearQueue: mode === 'abort'}, this.target(primary));
       this.ctx.result(result);
     };
-    modal.actions(button('Cancel', () => modal.close()), button(primary.activity === 'idle' ? 'Release for terminal' : 'Wait for this work', () => { void modal.run(() => release('settle'), false); }));
-    if (primary.activity !== 'idle') modal.actions(button('Stop work and hand off…', () => modal.confirm('Stop work and hand off', 'Pi clears queued input and aborts current work. The backend retains cleared text copies.', () => release('abort'), 'Stop and release')));
+    modal.actions(button('Cancel', () => modal.close()), button(primary.activity === 'idle' ? 'Continue in terminal' : 'Finish work, then continue', () => { void modal.run(() => release('settle'), false); }));
+    if (primary.activity !== 'idle') modal.actions(button('Stop and continue in terminal…', () => modal.confirm('Stop and continue in terminal', 'Pi clears queued input and aborts current work. The backend retains cleared text copies.', () => release('abort'), 'Stop and continue')));
   }
   handoffResult(result: OperationView): void {
     if (result.kind !== 'primary.handoff' || result.state !== 'completed' || result.receipt?.kind !== 'rpc') return;
     const data = result.receipt.result?.value as HandoffView | undefined; if (!data?.command || this.displayedHandoffs.has(result.id)) return;
     this.displayedHandoffs.add(result.id); if (this.displayedHandoffs.size > 64) this.displayedHandoffs.delete(this.displayedHandoffs.values().next().value as string);
     const modal = this.ctx.modal; modal.open('Ready for terminal');
-    modal.body.append(element('pre', undefined, data.command), button('Copy command', () => { void copy(data.command, modal.body); }), element('p', undefined, 'Browser control is stopped. Other Durable agents continue.'), element('p', 'warning', 'Exit the terminal writer before explicit browser resume. This Pi version exposes no external writer lock query.'), button('Resume saved session…', () => this.projectPicker()));
+    modal.body.append(element('pre', undefined, data.command), button('Copy command', () => { void copy(data.command, modal.body); }), element('p', undefined, 'Browser control is stopped. Other Durable agents continue.'), button('Open session…', () => this.projectPicker()));
   }
 }

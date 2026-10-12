@@ -1,5 +1,5 @@
 import type { JsonDisplay } from '../shared/api.ts';
-import { element } from './dom.ts';
+import { button, element } from './dom.ts';
 import { highlight, languageFromPath } from './highlight.ts';
 import { markdownDom } from './safe-markdown.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
@@ -15,6 +15,11 @@ const DOC_LINES = 80;
 const TEXT_CHARS = 16384;
 const DOM_NODES = 512;
 const NOTICE_CHARS = 112;
+// Reserve all notice controls before saved-output actions become available.
+const NOTICE_NODES = 8;
+export function previewLimits(): string {
+  return `Structured previews: at most ${DOC_CHARS} characters and ${DOC_LINES} lines per document, ${TEXT_CHARS} total characters (${NOTICE_CHARS} reserved for the notice), ${FIELDS} fields per object, ${ROWS} rows per array, ${COLS} table columns, depth ${DEPTH}, ${NODES} visited values, ${SCAN} scanned fields, and ${DOM_NODES} display nodes. Arguments, output, and expanded details share these limits.`;
+}
 type PreviewOmission = 'text' | 'fields' | 'rows' | 'nested values';
 const sourceKey = /(?:^|[_-])(command|program|code|script)$/i;
 const payloadKey = /^(?:payload|content|body|text|document|data|records|results|items|entries|value)$/i;
@@ -68,6 +73,31 @@ function prefix(text: string, chars: number, lines = DOC_LINES): string {
   if (end && /[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
   return text.slice(0, end) + (cut && chars > 0 ? '…' : '');
 }
+function summaryFact(key: string, value: unknown): string {
+  const name = prefix(key, 80, 1).replace(/[\r\n\t]/g, ' ');
+  const literal = value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
+  return literal ? `${name}: ${prefix(scalar(value), 80, 1).replace(/[\r\n\t]/g, ' ')}` : name;
+}
+function summaryArray(value: unknown[], truncated: boolean): string {
+  // The projection can replace an unknown tail with a single omission marker.
+  if (truncated) return 'Array preview limited';
+  return `${value.length} ${value.length === 1 ? 'item' : 'items'}`;
+}
+/** Summarize only the decoded value supplied by the output projection. */
+export function structuredResultPreview(display: JsonDisplay | undefined): string | undefined {
+  if (!record(display)) return undefined;
+  const value = own(display, 'value');
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) return summaryArray(value, own(display, 'truncated') === true);
+  if (!record(value)) return prefix(scalar(value), 240, 2);
+  const facts: string[] = [];
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    facts.push(summaryFact(key, own(value, key)));
+    if (facts.length === 3) break;
+  }
+  return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240, 2);
+}
 function countNodes(node: Node, limit = DOM_NODES): number {
   let count = 0; const pending = [node];
   while (pending.length && count <= limit) {
@@ -108,6 +138,8 @@ function language(args: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+export type PreviewActions = {showSavedOutput?: () => void; copySavedText?: () => void};
+
 /** Share one instance across a tool's arguments, result previews and deferred metadata. */
 export class PreviewBudget {
   text = TEXT_CHARS - NOTICE_CHARS;
@@ -115,9 +147,12 @@ export class PreviewBudget {
   scanned = 0;
   private readonly roots = new Set<HTMLElement>();
   private notice?: HTMLElement;
+  private noticeText?: Text;
   private noticeRoot?: HTMLElement;
   private readonly omissions = new Set<PreviewOmission>();
   private hostOmitted = false;
+  private readonly actions: PreviewActions;
+  constructor(actions: PreviewActions = {}) { this.actions = {...actions}; }
   /** Transfer only a helper-owned root, before fresh result previews are created. */
   adopt(root: HTMLElement): boolean {
     if (this.roots.has(root)) return true;
@@ -157,15 +192,24 @@ export class PreviewBudget {
       nodes += countNodes(root, DOM_NODES - nodes);
       if (nodes >= DOM_NODES) break;
     }
-    return DOM_NODES - nodes - (this.notice ? 0 : 2);
+    return DOM_NODES - nodes - (NOTICE_NODES - (this.notice ? countNodes(this.notice) : 0));
   }
   limit(reason: PreviewOmission = 'fields'): void { this.omissions.add(reason); this.updateNotice(); }
   truncate(): void { this.hostOmitted = true; this.updateNotice(); }
   private updateNotice(): void {
     const root = this.noticeRoot ?? this.roots.values().next().value; if (!root) return;
-    if (!this.notice) this.notice = element('p', 'secondary tool-caption preview-omission');
-    this.notice.textContent = this.omissions.size ? 'Preview shortened. Inspect raw output or Copy for retained content.' :
-      'Structured preview incomplete. Inspect raw output or Copy for retained content.';
+    if (!this.notice) {
+      this.notice = element('p', 'secondary tool-caption preview-omission');
+      this.noticeText = document.createTextNode(''); this.notice.append(this.noticeText);
+      for (const [label, action] of [
+        ['Show saved output', this.actions.showSavedOutput], ['Copy saved text', this.actions.copySavedText],
+      ] as const) {
+        if (action) this.notice.append(document.createTextNode(' '), button(label, action));
+      }
+    }
+    if (this.noticeText) this.noticeText.textContent = [
+      this.omissions.size ? 'Preview shortened.' : '', this.hostOmitted ? 'Some output was not retained.' : '',
+    ].filter(Boolean).join(' ');
     this.notice.remove(); root.append(this.notice);
   }
 }
@@ -350,8 +394,8 @@ class Preview {
     const text = this.take(value); if (!text) return;
     const doc = element('div', 'tool-document message-body'); doc.append(markdownDom(text));
     // Raw inspection and copy belong to the containing tool, not to previews.
-    for (const control of doc.querySelectorAll('button')) control.remove();
-    for (const pre of doc.querySelectorAll('pre')) preFrame(pre);
+    for (const header of doc.querySelectorAll('.source-header')) header.remove();
+    for (const pre of doc.querySelectorAll('pre')) { delete pre.dataset.wrap; preFrame(pre); }
     const rendered = doc.textContent ?? '';
     if (rendered.length > text.length || rendered.split(/\r\n|\r|\n/).length > DOC_LINES || countNodes(doc, DOM_NODES) > this.room()) {
       this.append(parent, framedPre('tool-document message-body', text).pre);
@@ -414,7 +458,7 @@ class Preview {
     if (text) frame.append(element('span', className, text), document.createTextNode(this.take('\n', 1)));
   }
   private edits(parent: HTMLElement, values: unknown[]): void {
-    this.caption(parent, 'Supplied old and new text, not an inferred diff');
+    this.caption(parent, 'Supplied replacement');
     for (let i = 0; i < Math.min(values.length, 8) && this.budget.text; i++) {
       if (this.budget.visits + 3 > NODES) { this.limit(); break; }
       this.budget.visits += 3; this.spentVisits += 3;
@@ -475,7 +519,7 @@ class Preview {
   private fact(parent: HTMLElement, label: string, value: Record<string, unknown> | unknown[], depth: number, path: string, hint?: string): void {
     const details = element('details', 'tool-fact'); const summary = element('summary');
     const facts = this.scan(value).entries.filter(([, child]) => !container(child) && this.meaningfulFlag(child)).slice(0, 3);
-    const text = `${label}${facts.length ? ` · ${facts.map(([key, child]) => `${key} ${scalar(child)}`).join(', ')}` : ' · details'}`;
+    const text = `${label}${facts.length ? ` · ${facts.map(([key, child]) => `${key} ${scalar(child)}`).join(', ')}` : ' · Details'}`;
     appendKey(summary, this.take(text, 160, 1)); details.append(summary);
     if (!this.append(parent, details)) return;
     let built = false;
@@ -534,11 +578,20 @@ class Preview {
       this.field(parent, `${label}.${i + 1}`, own(value, String(i)), depth + 1, itemPath, hint, collectMetadata, fullLabels);
     }
   }
-  render(value: unknown): HTMLElement | undefined {
+  private argumentObject(value: Record<string, unknown>, presentation?: {caption?: string; replacement?: boolean}): void {
+    if (presentation?.caption) this.caption(this.root, presentation.caption);
+    let fields: Field[] | undefined;
+    if (presentation?.replacement && typeof own(value, 'oldText') === 'string' && typeof own(value, 'newText') === 'string') {
+      this.edits(this.root, [value]); fields = this.fields(value, '', 0, true).filter(field => field.key !== 'oldText' && field.key !== 'newText');
+    }
+    this.object(this.root, value, 0, '', language(value), true, false, fields);
+  }
+  render(value: unknown, presentation?: {caption?: string; replacement?: boolean}): HTMLElement | undefined {
     if (!this.admitted) return undefined;
     if (record(value)) {
       this.ancestors.add(value);
-      this.object(this.root, value, 0, '', this.argumentsMode ? language(value) : undefined, true);
+      if (this.argumentsMode) this.argumentObject(value, presentation);
+      else this.object(this.root, value, 0, '', undefined, true);
       this.ancestors.delete(value);
     } else this.field(this.root, 'Result', value, 0, 'Result');
     this.revealMetadata();
@@ -547,8 +600,8 @@ class Preview {
   }
   private revealMetadata(): void {
     if (!this.metadata.length) return;
-    if (this.budget.text < 'Metadata'.length) { this.limit(); return; }
-    const details = element('details', 'tool-metadata'); details.append(element('summary', undefined, this.take('Metadata', 8, 1)));
+    if (this.budget.text < 'Details'.length) { this.limit(); return; }
+    const details = element('details', 'tool-metadata'); details.append(element('summary', undefined, this.take('Details', 8, 1)));
     if (!this.append(this.root, details)) return;
     details.addEventListener('toggle', () => {
       if (!details.open || this.metadataBuilt) return;
@@ -570,8 +623,8 @@ export function presentResult(display: JsonDisplay | undefined, context: Present
 }
 
 /** Supplied argument previews have their own collapse controls, without extra raw inspection. */
-export function presentArguments(args: JsonDisplay | undefined, context: PresentationContext, budget?: PreviewBudget): HTMLElement | undefined {
+export function presentArguments(args: JsonDisplay | undefined, context: PresentationContext, budget?: PreviewBudget, presentation?: {caption?: string; replacement?: boolean}): HTMLElement | undefined {
   if (!record(args)) return undefined;
   const value = own(args, 'value'); if (!record(value)) return undefined;
-  return new Preview(context, true, own(args, 'truncated') === true, budget ?? new PreviewBudget()).render(value);
+  return new Preview(context, true, own(args, 'truncated') === true, budget ?? new PreviewBudget()).render(value, presentation);
 }

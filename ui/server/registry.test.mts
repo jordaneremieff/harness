@@ -1,19 +1,20 @@
 import assert from 'node:assert/strict';
 import { ChildProcess } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test, { type TestContext } from 'node:test';
-import { AgentError, type AgentServiceOptions, type CatalogPage, type CatalogRow } from '../agents/index.mts';
+import { AgentError, type AgentServiceOptions, type CatalogPage } from '../agents/index.mts';
 import { ApiError } from './errors.mts';
 import { RpcClient } from '../rpc/client.mts';
 import { PrimarySession, type PrimarySessionOptions } from '../rpc/session.mts';
-import { LIMITS, type PrimaryView, type TargetPreparation } from '../shared/api.ts';
+import { LIMITS, type ConversationLayout, type Workspace, type Target, type TargetState, type PrimaryView, type TargetPreparation } from '../shared/api.ts';
 import { Registry, type AgentAdapter, type RegistryOptions } from './registry.mts';
 import { StateStore } from './state.mts';
 import { assertOperation, decodeDescriptor, supportedOperations, type OperationName } from '../agents/contract.mts';
-import { activity, descriptor } from '../agents/fake-host.mts';
+import { activity, descriptor, frame, CHILD, STORAGE } from '../agents/fake-host.mts';
+import { deriveEndpoint, type CatalogRecord } from '../agents/catalog-record.mts';
 
 const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
 function fakeAgents() {
@@ -201,47 +202,107 @@ test('shutdown awaits a pending saved open before releasing the StateStore lock 
   try { assert.deepEqual(await next.readPrimaries(), []); } finally { await next.close(); }
 });
 
-test('selected agent metadata comes from the exact cache lookup beyond the first roster page', {timeout: 10000}, async context => {
-  const setup = await fixture(context);
-  const rows: CatalogRow[] = Array.from({length: 30}, (_, i) => ({id: `storage:conversation-${i}`, storageId: 'storage', cwd: setup.cwd,
-    modifiedAt: i, owner: 'unknown', state: 'idle', cost: 0, partial: false, claim: 'absent', name: `Agent ${i}`, latestReply: `Reply ${i}`}));
-  const cached = new Map(rows.map(row => [row.id, row])); const selected = rows[25]; assert.ok(selected);
-  const page: CatalogPage = {...empty, rows: rows.slice(0, 20), nextCursor: 'actual-page-cursor'};
-  const inert = fakeAgents()(); const lookups: string[] = [];
-  setup.options.agents = () => ({...inert, roster: options => { assert.equal(options?.limit, 20); return page; },
-    rosterRow: identity => { lookups.push(identity); return structuredClone(cached.get(identity)); }});
-  const registry = await setup.open(); const workspace = await registry.store.workspace();
-  await registry.store.updateSelection(workspace.id, {expectedRevision: workspace.revision, selectedTarget: {kind: 'agent', identity: selected.id}});
-  const snapshot = await registry.snapshot(workspace.id);
-  assert.deepEqual(lookups, [selected.id]); assert.equal(snapshot.selectedAgent?.identity, selected.id);
-  assert.equal(snapshot.selectedAgent?.cwd, selected.cwd); assert.equal(snapshot.selectedAgent?.name, selected.name);
-  assert.equal(snapshot.selectedAgent?.latestReply, selected.latestReply);
-  assert.deepEqual(snapshot.roster.rows.map(row => row.identity), page.rows.map(row => row.id));
-  assert.ok(!snapshot.roster.rows.some(row => row.identity === selected.id)); assert.equal(snapshot.roster.nextCursor, 'actual-page-cursor');
-  assert.equal(setup.counts.started, 0);
+function agentLayout(identities: string[]): ConversationLayout {
+  const leaves = identities.map((identity,index) => ({kind:'pane' as const,id:`pane${index}`,tabs:[{kind:'agent' as const,identity}],active:`agent:${identity}`}));
+  const primary = {kind:'pane' as const,id:'primary-pane',tabs:[{kind:'primary' as const}],active:'primary'};
+  let root:ConversationLayout['root']=primary;
+  for(const leaf of leaves) root={kind:'split',id:`split-${leaf.id}`,axis:'x',ratio:50,first:root,second:leaf};
+  return {root,focusedPane:'primary-pane'};
+}
+async function memoryRegistry(context: TestContext) {
+  const workspaces = new Map<string,Workspace>([['w',{id:'w',revision:0,conversationLayout:agentLayout([STORAGE,CHILD])}],['other',{id:'other',revision:0,conversationLayout:agentLayout([STORAGE])}]]);
+  const states = new Map<string,TargetState[]>(); const clients = new Map([['w',1],['other',1]]);
+  const calls:unknown[][]=[]; const epochs=new Map<string,Map<string,number>>(); let epoch=0;
+  let callbacks!:AgentServiceOptions; let selectGate: ((workspace:string,identity:string)=>Promise<void>) | undefined; let disconnectGate: (()=>Promise<void>) | undefined;
+  const state = async (workspace:string,target:Target):Promise<TargetState> => {
+    const values=states.get(workspace) ?? []; let value=values.find(value=>JSON.stringify(value.target)===JSON.stringify(target));
+    if(!value) {value={targetKey:target.kind==='agent'?target.identity:'primary',target,draft:{revision:0,text:'',mode:'steer',persisted:true},reading:{revision:0,anchorId:null,offsetPx:0,followTail:false},unconfirmed:[]};values.push(value);states.set(workspace,values);} return value;
+  };
+  const store={instanceId:'synthetic',workspace:async(id='w')=>{const value=workspaces.get(id);assert.ok(value);return structuredClone(value);},target:state,
+    readPrimaries:async()=>[],savePrimaries:async()=>{},close:async()=>{},transaction:async<T,>(job:()=>Promise<T>)=>job(),operationViews:()=>[],
+    snapshot:(id:string)=>({workspace:structuredClone(workspaces.get(id)),targets:states.get(id) ?? [],targetIndex:[]})} as unknown as StateStore;
+  context.mock.method(StateStore,'open',async()=>store);
+  const registry=await Registry.open({cwd:'/project',stateDir:'synthetic',agentStore:'synthetic',executable:'not-used',agents:options=> {
+    callbacks=options;return {...fakeAgents()(),roster:()=>({...empty,nextCursor:'authentic-page'}),prepare:async()=>({snapshot:true}),
+      select:async(workspace,identity)=>{assert.ok(identity);calls.push(['select',workspace,identity]);await selectGate?.(workspace,identity);
+        const targets=epochs.get(workspace) ?? new Map();const current=++epoch;targets.set(identity,current);epochs.set(workspace,targets);
+        callbacks.onAvailability?.(workspace,identity,current,'live',undefined,{snapshot:true,'observe-open':true,'observe-frame':true,'observe-close':true,'task-submit':true,abort:true});},
+      hide:async(workspace,identity)=>{calls.push(['hide',workspace,identity]);if(identity)epochs.get(workspace)?.delete(identity);else epochs.delete(workspace);},
+      disconnectWorkspace:async workspace=>{calls.push(['disconnect',workspace]);epochs.delete(workspace);await disconnectGate?.();}};
+  }});
+  context.mock.method(registry.journal,'workspaceClients',(id:string)=>clients.get(id) ?? 0);
+  context.after(()=>registry.close());
+  return {registry,workspaces,clients,calls,epochs,callbacks,set selectGate(value:typeof selectGate){selectGate=value;},set disconnectGate(value:typeof disconnectGate){disconnectGate=value;}};
+}
+test('pure concurrent registry snapshots include active leaves beyond the roster page while Primary focus preserves observations',async context=> {
+  const f=await memoryRegistry(context); const before=await f.registry.snapshot('w');
+  assert.deepEqual(before.observations,[{identity:STORAGE,connectionEpoch:0,omitted:true},{identity:CHILD,connectionEpoch:0,omitted:true}]);
+  await f.registry.observe('w'); await f.registry.observe('other');
+  f.callbacks.onFrame?.('w',STORAGE,1,frame(5) as never);f.callbacks.onFrame?.('w',CHILD,2,frame(7,CHILD) as never);
+  f.callbacks.onFrame?.('other',STORAGE,3,frame(9) as never);
+  const active=await f.registry.snapshot('w');assert.deepEqual(active.observations?.map(value=>[value.identity,value.connectionEpoch,value.frame?.revision]),[[STORAGE,1,5],[CHILD,2,7]]);
+  assert.deepEqual(active.roster.rows,[]);assert.equal(active.roster.nextCursor,'authentic-page');
+  assert.equal(active.targets?.length,2);assert.equal(f.registry.availability.get('w')?.get(CHILD)?.capabilities.input,true);
+  f.callbacks.onAvailability?.('w',CHILD,1,'unavailable');assert.equal(f.registry.availability.get('w')?.get(CHILD)?.state,'live');
+  assert.equal((await f.registry.snapshot('other')).observations?.[0]?.frame?.revision,9);
+  const current=f.workspaces.get('w');assert.ok(current);current.conversationLayout=agentLayout([CHILD]);
+  await f.registry.observe('w');f.callbacks.onFrame?.('w',STORAGE,1,frame(99) as never);
+  assert.deepEqual(f.calls.filter(call=>call[0]==='hide'),[['hide','w',STORAGE]]);assert.equal(f.registry.frames.get('w')?.has(STORAGE),false);
+  assert.equal((await f.registry.snapshot('w')).observations?.[0]?.frame?.revision,7);
+  f.clients.set('w',0);f.registry.detached('w');await f.registry.observe('w');
+  assert.equal(f.registry.frames.has('w'),false);assert.equal(f.registry.frames.get('other')?.get(STORAGE)?.frame.revision,9);
+  assert.ok(f.calls.some(call=>call[0]==='disconnect' && call[1]==='w'));
 });
-
-test('negotiated selected-agent capabilities survive a snapshot cut and remain scoped to workspace and identity', {timeout: 10000}, async context => {
-  const setup = await fixture(context); const factoryOptions: AgentServiceOptions[] = [];
-  const rows: CatalogRow[] = Array.from({length: 2}, (_, i) => ({id: `storage:agent-${i}`, storageId: 'storage', cwd: setup.cwd,
-    modifiedAt: i, owner: 'here', state: 'idle', cost: 0, partial: false, claim: 'live'}));
-  const selected = rows[0]; const otherIdentity = rows[1]; assert.ok(selected && otherIdentity);
-  assert.ok(!('capabilities' in selected)); const cached = new Map(rows.map(row => [row.id, row])); const inert = fakeAgents()();
-  setup.options.agents = options => { factoryOptions.push(options); return {...inert, roster: () => ({...empty, rows}), rosterRow: identity => structuredClone(cached.get(identity))}; };
-  const registry = await setup.open(); const workspace = await registry.store.workspace(); const unrelated = await registry.store.createWorkspace();
-  for (const current of [workspace, unrelated]) await registry.store.updateSelection(current.id, {expectedRevision: current.revision, selectedTarget: {kind: 'agent', identity: selected.id}});
-  const before = await registry.snapshot(workspace.id); assert.ok(before.selectedAgent); assert.notEqual(before.selectedAgent.capabilities?.input, true);
-  const emit = factoryOptions[0]?.onAvailability; assert.ok(emit);
-  emit(workspace.id, selected.id, 'live', undefined, {snapshot: true, 'observe-open': true, 'observe-frame': true, 'observe-close': true, 'task-submit': true, abort: true});
-  const cut = registry.journal.cursor; const active = await registry.snapshot(workspace.id);
-  assert.equal(active.cursor, cut); assert.equal(active.selectedAgent?.identity, selected.id); assert.equal(active.selectedAgent?.availability, 'live');
-  assert.equal(active.selectedAgent?.capabilities?.input, true); assert.equal(active.selectedAgent?.capabilities?.observe, true); assert.equal(active.selectedAgent?.capabilities?.abort, true);
-  assert.deepEqual(registry.journal.replay(active.cursor, workspace.id).records, []);
-  const separate = await registry.snapshot(unrelated.id); assert.ok(separate.selectedAgent); assert.notEqual(separate.selectedAgent.capabilities?.input, true);
-  const current = await registry.store.workspace(workspace.id);
-  await registry.store.updateSelection(workspace.id, {expectedRevision: current.revision, selectedTarget: {kind: 'agent', identity: otherIdentity.id}});
-  const changed = await registry.snapshot(workspace.id); assert.equal(changed.selectedAgent?.identity, otherIdentity.id); assert.notEqual(changed.selectedAgent?.capabilities?.input, true);
-  assert.equal(setup.counts.started, 0);
+test('pure concurrent explicit preparation reopens only a failed active target and rejects its old epoch',async context=> {
+  const f=await memoryRegistry(context);await f.registry.observe('w');
+  f.callbacks.onFrame?.('w',CHILD,2,frame(7,CHILD) as never);
+  f.callbacks.onAvailability?.('w',STORAGE,1,'unavailable');
+  await f.registry.prepareTarget('w',{kind:'agent',identity:STORAGE});
+  assert.deepEqual(f.calls.filter(call=>call[0]==='hide'),[['hide','w',STORAGE]]);
+  assert.equal(f.calls.filter(call=>call[0]==='select' && call[2]===CHILD).length,1);
+  f.callbacks.onFrame?.('w',STORAGE,1,frame(99) as never);assert.equal(f.registry.frames.get('w')?.has(STORAGE),false);
+  f.callbacks.onFrame?.('w',STORAGE,3,frame(8) as never);
+  assert.deepEqual((await f.registry.snapshot('w')).observations?.map(value=>[value.connectionEpoch,value.frame?.revision]),[[3,8],[2,7]]);
+});
+test('pure concurrent hidden tabs do not acquire observations',async context=> {
+  const f=await memoryRegistry(context);const root=f.workspaces.get('w')?.conversationLayout?.root;
+  assert.ok(root?.kind==='split' && root.first.kind==='split' && root.first.second.kind==='pane');
+  root.first.second.tabs.push({kind:'agent',identity:`${STORAGE}:3`});
+  await f.registry.observe('w');assert.deepEqual(f.calls.filter(call=>call[0]==='select').map(call=>call[2]),[STORAGE,CHILD]);
+  assert.deepEqual((await f.registry.snapshot('w')).observations?.map(value=>value.identity),[STORAGE,CHILD]);
+});
+test('pure concurrent last detach serializes a new attach behind workspace cleanup',async context=> {
+  const f=await memoryRegistry(context);await f.registry.observe('w');const entered=deferred();const release=deferred();
+  f.disconnectGate=async()=>{entered.resolve();await release.promise;};
+  f.clients.set('w',0);f.registry.detached('w');await entered.promise;
+  f.clients.set('w',1);const attached=f.registry.observe('w');
+  f.callbacks.onFrame?.('w',STORAGE,1,frame(99) as never);release.resolve();await attached;
+  assert.deepEqual(f.calls.map(call=>call[0]),['select','select','hide','hide','disconnect','select','select']);
+  assert.deepEqual((await f.registry.snapshot('w')).observations?.map(value=>value.connectionEpoch),[3,4]);
+  assert.equal(f.registry.frames.get('w')?.has(STORAGE) ?? false,false);
+});
+test('pure concurrent detach during setup releases workspace capacity without retaining history',async context=> {
+  const f=await memoryRegistry(context);
+  for(let i=0;i<17;i++) {
+    const id=`workspace-${i}`;f.workspaces.set(id,{id,revision:0,conversationLayout:agentLayout([STORAGE])});f.clients.set(id,1);
+    const entered=deferred();const release=deferred();f.selectGate=async()=>{entered.resolve();await release.promise;};
+    const opening=f.registry.observe(id);await entered.promise;f.clients.set(id,0);
+    const departing=f.registry.observe(id);release.resolve();await Promise.all([opening,departing]);
+  }
+  assert.equal(f.calls.filter(call=>call[0]==='select').length,17);assert.equal(f.calls.filter(call=>call[0]==='disconnect').length,17);
+  assert.equal(f.registry.frames.size,0);assert.equal(f.registry.availability.size,0);
+});
+test('pure concurrent registry coalesces pending setup and refuses obsolete target work',async context=> {
+  const f=await memoryRegistry(context);const entered=deferred();const release=deferred();
+  f.selectGate=async(_workspace,identity)=>{if(identity===STORAGE){entered.resolve();await release.promise;}};
+  const first=f.registry.observe('w');await entered.promise;
+  const current=f.workspaces.get('w');assert.ok(current);current.conversationLayout=agentLayout([`${STORAGE}:3`]);
+  const second=f.registry.observe('w');current.conversationLayout=agentLayout([`${STORAGE}:4`,`${STORAGE}:5`]);
+  const third=f.registry.observe('w');release.resolve();await Promise.all([first,second,third]);
+  assert.deepEqual(f.calls.filter(call=>call[0]==='select').map(call=>call[2]),[STORAGE,`${STORAGE}:4`,`${STORAGE}:5`]);
+  assert.deepEqual(f.calls.filter(call=>call[0]==='hide'),[['hide','w',STORAGE]]);
+  assert.equal(f.registry.availability.get('w')?.has(STORAGE),false);
+  const active=await f.registry.snapshot('w');assert.deepEqual(active.observations?.map(value=>value.identity),[`${STORAGE}:4`,`${STORAGE}:5`]);
 });
 
 function prepareRoute(registry: Registry, workspace: string, body: Record<string,unknown>) {
@@ -339,4 +400,81 @@ test('current host identities enable input and activity inspection but never con
   assert.deepEqual(calls,[{identity,options:{view:'activity',limit:20}}]);
   assert.equal(registry.frames.size,0); assert.equal(setup.counts.started,0);
   assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
+});
+
+
+async function startFixture(t:TestContext) {
+  const root=await realpath(await mkdtemp(join(tmpdir(),'ui-registry-start-')));let retained:Registry|undefined;t.after(async()=>{await retained?.close();await rm(root,{recursive:true,force:true});});const cwd=join(root,'project');const agentDir=join(root,'agent');const store=join(root,'catalog');const durable=join(store,'durable');
+  const owner=join(root,'owner');const slice=join(owner,'extensions','agent');const packageDir=join(root,'installation');const executable=join(packageDir,'dist','bundle','cli.js');
+  await Promise.all([mkdir(cwd),mkdir(agentDir),mkdir(durable,{recursive:true}),mkdir(slice,{recursive:true}),mkdir(dirname(executable),{recursive:true})]);
+  await Promise.all([writeFile(join(owner,'package.json'),JSON.stringify({name:'harness',pi:{extensions:['./extensions']}})),writeFile(join(slice,'index.ts'),'// inert entry'),writeFile(join(slice,'durable-runner.ts'),'// inert runner'),writeFile(join(agentDir,'settings.json'),JSON.stringify({packages:[join(slice,'index.ts')]})),writeFile(join(packageDir,'package.json'),JSON.stringify({name:'@earendil-works/pi-coding-agent',version:'1.1.0',bin:{pi:'dist/bundle/cli.js'}})),writeFile(executable,'// inert CLI',{mode:0o700})]);
+  const record:CatalogRecord={storageId:STORAGE,cwd,agentDir,packageDir,storagePath:join(durable,`${STORAGE}.sqlite`),model:{provider:'fixture',modelId:'inert'},thinkingLevel:'off',trust:false,createdAt:new Date().toISOString()};
+  await Promise.all([writeFile(record.storagePath,'inert storage'),writeFile(join(durable,`${STORAGE}.json`),JSON.stringify(record))]);
+  const endpoint=deriveEndpoint(record);const contract=await descriptor();const remote=decodeDescriptor(contract);const supported=Object.fromEntries((Object.keys(supportedOperations) as OperationName[]).map(member=>{try{assertOperation(remote,member);return [member,true];}catch{return [member,false];}}));
+  const admitted=deferred();const refreshEntered=deferred();const control:{announce:boolean;claim:boolean;refreshError?:Error;prepareError?:Error;refreshGate?:Promise<void>}={announce:true,claim:true};
+  const counts={launches:0,signals:0,input:0,refresh:0,disconnect:0};const prepares:string[]=[];const selects:{workspace:string;identity?:string}[]=[];const children:ChildProcess[]=[];
+  const forbidden=async():Promise<never>=>{counts.input++;throw new Error('Start must not submit input');};
+  const adapter:AgentAdapter={...fakeAgents()(),refresh:async()=>{counts.refresh++;refreshEntered.resolve();await control.refreshGate;if(control.refreshError)throw control.refreshError;return empty.scan;},prepare:async identity=>{prepares.push(identity);if(control.prepareError)throw control.prepareError;return supported;},select:async(workspace,identity)=>{selects.push({workspace,identity});},submit:forbidden,retrySubmit:forbidden,disconnectWorkspace:async()=>{counts.disconnect++;}};
+  const announce=()=>{const child=children[0];assert.ok(child);child.stdout?.emit('data',Buffer.from(`PI_AGENT_HOST_READY ${JSON.stringify({pid:child.pid,socketPath:endpoint.socketPath,contract})}${String.fromCharCode(10)}`));};
+  const fakeSpawn=()=>{
+    counts.launches++;const child=Object.assign(new ChildProcess(),{pid:process.pid,stdout:new PassThrough(),stderr:new PassThrough()});children.push(child);
+    t.mock.method(child,'kill',()=>{counts.signals++;throw new Error('Start must not signal the host');});
+    queueMicrotask(()=>{void(async()=>{if(control.claim){await mkdir(dirname(endpoint.claimPath),{recursive:true});await writeFile(endpoint.claimPath,JSON.stringify({sessionId:STORAGE,cwd,host:hostname(),createdAt:new Date().toISOString(),pid:process.pid}));}admitted.resolve();if(control.announce)announce();})().catch(error=>child.emit('error',error));});return child;
+  };
+  const registry=await Registry.open({stateDir:join(root,'ui'),cwd,executable,agentStore:store,agents:()=>adapter,agentStart:{agentDir,spawn:fakeSpawn,timeoutMs:100}});
+  retained=registry;const workspace=await registry.store.workspace();
+  return {registry,workspace,control,counts,prepares,selects,children,admitted,refreshEntered,announce};
+}
+
+test('start receipts deduplicate exact work and separate workspaces without input or draft changes',{timeout:10000},async t=>{
+  const f=await startFixture(t);const target={kind:'agent' as const,identity:STORAGE};const agent=await f.registry.store.target(f.workspace.id,target);const primary=await f.registry.store.target(f.workspace.id,{kind:'primary',key:'retained-primary',epoch:1});
+  await f.registry.store.putDraft(f.workspace.id,agent.targetKey,{expectedRevision:0,text:'Agent retained 🦉',mode:'steer'});await f.registry.store.putDraft(f.workspace.id,primary.targetKey,{expectedRevision:0,text:'Primary retained 🦉',mode:'prompt'});
+  const saved=await Promise.all([f.registry.store.target(f.workspace.id,target),f.registry.store.target(f.workspace.id,primary.target)]);const bytes=saved.map(state=>Buffer.from(JSON.stringify(state.draft)));
+  await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,selectedTarget:target});
+  const first=f.registry.startAgent(f.workspace.id,STORAGE,'same-key');assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'same-key'),first);
+  const result=await first;assert.equal(result.availability,'live');assert.equal(result.capabilities.input,true);assert.equal(f.counts.launches,1);assert.deepEqual(f.prepares,[STORAGE]);assert.deepEqual(f.selects,[{workspace:f.workspace.id,identity:STORAGE}]);
+  assert.throws(()=>f.registry.startAgent(f.workspace.id,`${STORAGE}:2`,'same-key'),{code:'operation_conflict'});assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'same-key'),first);assert.deepEqual(f.prepares,[STORAGE]);
+  const second=await f.registry.store.createWorkspace();const separate=f.registry.startAgent(second.id,STORAGE,'same-key');assert.notEqual(separate,first);const other=await separate;assert.equal(other.targetState.targetKey,(await f.registry.store.target(second.id,target)).targetKey);assert.notEqual(other.targetState.targetKey,result.targetState.targetKey);assert.deepEqual(f.prepares,[STORAGE,STORAGE]);assert.equal(f.counts.launches,1);
+  for(let i=0;i<saved.length;i++)assert.deepEqual(Buffer.from(JSON.stringify((await f.registry.store.target(f.workspace.id,saved[i].target)).draft)),bytes[i]);
+  assert.deepEqual((await f.registry.store.workspace(f.workspace.id)).selectedTarget,target);assert.equal(f.counts.input,0);assert.equal(f.counts.signals,0);
+});
+
+test('conversations share acquisition while each receipt prepares its exact target',{timeout:10000},async t=>{
+  const f=await startFixture(t);const child=`${STORAGE}:2`;const results=await Promise.all([f.registry.startAgent(f.workspace.id,STORAGE,'root'),f.registry.startAgent(f.workspace.id,child,'child')]);
+  assert.equal(f.counts.launches,1);assert.deepEqual(f.prepares.sort(),[STORAGE,child]);assert.deepEqual(results.map(result=>result.targetState.target),[{kind:'agent',identity:STORAGE},{kind:'agent',identity:child}]);assert.ok(results.every(result=>result.capabilities.input));assert.equal(f.counts.input,0);assert.equal(f.counts.signals,0);
+});
+
+for(const stage of ['refresh','prepare'] as const)test(`post-readiness ${stage} failure retains the receipt and permits only attach checks`,{timeout:10000},async t=>{
+  const f=await startFixture(t);const error=new Error('inert connection failure');if(stage==='refresh')f.control.refreshError=error;else f.control.prepareError=error;
+  const first=f.registry.startAgent(f.workspace.id,STORAGE,'uncertain');await assert.rejects(first,stage==='refresh'?error:{code:'not_ready'});assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'uncertain'),first);await assert.rejects(first);
+  assert.equal(f.counts.launches,1);assert.equal(f.counts.refresh,1);assert.equal(f.prepares.length,stage==='refresh'?0:1);assert.equal(f.selects.length,0);
+  f.control.refreshError=undefined;f.control.prepareError=undefined;const checked=await f.registry.prepareTarget(f.workspace.id,{kind:'agent',identity:STORAGE});assert.equal(checked.availability,'live');assert.equal(f.counts.launches,1);assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'uncertain'),first);assert.equal(f.counts.signals,0);assert.equal(f.counts.input,0);
+});
+
+test('browser detach leaves the admitted start and its receipt intact',{timeout:10000},async t=>{
+  const f=await startFixture(t);f.control.announce=false;const first=f.registry.startAgent(f.workspace.id,STORAGE,'detached');await f.admitted.promise;
+  f.registry.detached(f.workspace.id);assert.equal(f.counts.disconnect,1);f.announce();assert.equal((await first).capabilities.input,true);assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'detached'),first);assert.equal(f.counts.launches,1);assert.equal(f.counts.signals,0);assert.equal(f.counts.input,0);
+});
+
+for(const stage of ['readiness','refresh'] as const)test(`backend shutdown during ${stage} never stops or relaunches the host`,{timeout:10000},async t=>{
+  const f=await startFixture(t);const gate=deferred();if(stage==='readiness')f.control.announce=false;else f.control.refreshGate=gate.promise;
+  const first=f.registry.startAgent(f.workspace.id,STORAGE,'shutdown');const rejected=assert.rejects(first,{code:'not_ready'});await(stage==='readiness'?f.admitted.promise:f.refreshEntered.promise);
+  await f.registry.close();gate.resolve();await rejected;assert.throws(()=>f.registry.startAgent(f.workspace.id,STORAGE,'shutdown'),{code:'not_ready'});assert.throws(()=>f.registry.startAgent(f.workspace.id,STORAGE,'another-key'),{code:'not_ready'});assert.equal(f.counts.launches,1);assert.equal(f.counts.signals,0);assert.equal(f.counts.input,0);
+});
+
+test('selection changes before readiness do not observe the old recipient',{timeout:10000},async t=>{
+  const f=await startFixture(t);f.control.announce=false;await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:0,selectedTarget:{kind:'agent',identity:STORAGE}});
+  const first=f.registry.startAgent(f.workspace.id,STORAGE,'changed-selection');await f.admitted.promise;
+  const other={kind:'primary' as const,key:'another-primary',epoch:1};await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:1,selectedTarget:other});f.announce();await first;assert.deepEqual(f.selects,[]);assert.deepEqual((await f.registry.store.workspace(f.workspace.id)).selectedTarget,other);assert.equal(f.counts.input,0);assert.equal(f.counts.signals,0);
+});
+
+for(const state of ['hidden','stored'] as const)test(state==='hidden'?'a hidden selected agent returns live capabilities without observation':'a stored result disables input and never selects observation',{timeout:10000},async t=>{
+  const f=await startFixture(t);await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:0,selectedTarget:{kind:'agent',identity:STORAGE},panelVisible:state!=='hidden'});if(state==='stored')f.control.prepareError=new AgentError('stored','inert stored outcome');
+  const result=await f.registry.startAgent(f.workspace.id,STORAGE,'availability');assert.deepEqual(f.selects,[]);assert.equal(result.availability,state==='stored'?'stored':'live');assert.equal(result.capabilities.input,state!=='stored');assert.equal(f.counts.input,0);assert.equal(f.counts.signals,0);
+});
+
+test('receipt capacity refuses new work without evicting an uncertain outcome',{timeout:30000},async t=>{
+  const f=await startFixture(t);f.control.announce=false;f.control.claim=false;const first=f.registry.startAgent(f.workspace.id,STORAGE,'uncertain-0');await assert.rejects(first,{code:'not_ready'});
+  for(let i=1;i<2048;i++)await assert.rejects(f.registry.startAgent(f.workspace.id,STORAGE,`uncertain-${i}`),{code:'not_ready'});
+  assert.throws(()=>f.registry.startAgent(f.workspace.id,STORAGE,'overflow'),{code:'capacity'});assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'uncertain-0'),first);await assert.rejects(first,{code:'not_ready'});assert.equal(f.counts.launches,1);assert.equal(f.counts.refresh,0);assert.deepEqual(f.prepares,[]);assert.equal(f.counts.signals,0);assert.equal(f.counts.input,0);
 });

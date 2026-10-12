@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
-import type { Appearance, OperationView, PrimaryControl, PrimaryView, Snapshot } from '../shared/api.ts';
+import type { AgentRow, Appearance, OperationView, PrimaryControl, PrimaryView, Snapshot, Target } from '../shared/api.ts';
 import { Actions, COMMAND_INVENTORY_PAGE_LIMIT, rankPalette } from './actions.ts';
 import { Modal } from './modal.ts';
 import { rankCommands } from './command-menu-state.ts';
@@ -24,8 +24,37 @@ afterEach(() => {
 const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/project', lifecycle: 'ready', activity: 'idle', pendingDialogs: [], pendingOperationIds: [], capabilities: {control: true}};
 const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'completed', target: {kind: 'primary', key: 'p', epoch: 1}, createdAt: '2026-10-08T12:00:00Z', updatedAt: '2026-10-08T12:00:00Z'};
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
-  return {snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
+  return {snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
 }
+test('resource invalidation notifies the existing command owner without acquiring a Primary composer', () => {
+  let selected: PrimaryView | undefined = {...primary, lifecycle: 'starting'}, changed = 0; const ctx = context({primary: () => selected, commandsChanged: () => {changed++;}});
+  Object.defineProperty(ctx, 'composer', {get: () => {throw Error('No Primary editor is mounted');}});
+  const actions = new Actions(ctx); actions.warm(); selected = undefined; actions.warm(); assert.equal(changed, 2);
+});
+test('agent palette descriptions use the required recipient status callback without a catalog fallback', () => {
+  const row: AgentRow = {identity: 'agent', storageId: 'store', cwd: '/project', availability: 'incompatible', state: 'working'};
+  let label = 'Recipient status'; const seen: AgentRow[] = [];
+  const actions = new Actions(context({agents: () => [row], agentStatus: value => {seen.push(value); return label;}}));
+  const entry = actions.paletteEntries().find(item => item.source === 'agent'); assert.ok(entry);
+  assert.equal(entry.description, label); assert.deepEqual(seen, [row]);
+  label = ''; assert.equal(actions.paletteEntries().find(item => item.source === 'agent')?.description, '');
+});
+test('New session starts once without confirmation and leaves the old recipient draft unchanged', async () => {
+  const started = Promise.withResolvers<void>(); const response = Promise.withResolvers<Response>(); const reloaded = Promise.withResolvers<void>();
+  const draft = {target: {kind: 'primary' as const, key: 'p', epoch: 1}, editor: {value: 'Keep this old session draft'}, commandsChanged() {}};
+  let current = primary; const seen: string[] = []; const emitted: OperationView[] = [];
+  globalThis.fetch = async (path, init) => {
+    seen.push(String(path));
+    if (String(path) === '/api/operations') { assert.deepEqual(JSON.parse(String(init?.body)), {kind: 'primary.session', target: draft.target}); return Response.json({ok: true, data: {operationId: 'op'}}); }
+    assert.equal(path, '/api/primaries/p/session'); assert.deepEqual(JSON.parse(String(init?.body)), {epoch: 1, action: 'new'});
+    started.resolve(); return response.promise;
+  };
+  const actions = new Actions(context({primary: () => current, composer: draft as ActionContext['composer'], modal: {confirm() {throw new Error('New session needs no confirmation');}} as unknown as ActionContext['modal'], result: value => emitted.push(value), reload: async () => {reloaded.resolve();}}));
+  actions.newSession(); actions.newSession(); await started.promise; current = {...primary, key: 'other', epoch: 4};
+  response.resolve(Response.json({ok: true, data: {...operation, kind: 'primary.session'}})); await reloaded.promise;
+  assert.deepEqual(seen, ['/api/operations', '/api/primaries/p/session']); assert.equal(emitted.length, 1);
+  assert.deepEqual(draft.target, {kind: 'primary', key: 'p', epoch: 1}); assert.equal(draft.editor.value, 'Keep this old session draft');
+});
 test('model and thinking choices bind the displayed primary rather than a later selection', async () => {
   const seen: string[] = []; const emitted: OperationView[] = [];
   globalThis.fetch = async (path, init) => {
@@ -124,20 +153,25 @@ test('an open Commands palette repaints when startup resources become ready', as
     const modal = {node: new FakeNode(), body, token: 1, open() {return body;}, owns(token: number) {return token === 1;}} as unknown as ActionContext['modal'];
     globalThis.fetch = async () => Response.json({ok: true, data: {items: [{name: 'fixture', description: 'public', source: 'extension'}], nextCursor: null, revision: '2'}});
     const actions = new Actions(context({primary: () => selected, modal})); actions.warm(); actions.palette(); await actions.load('commands');
-    const list = body.children[1]; assert.ok(list); assert.equal(list.children.some(node => textOf(node).startsWith('/fixture')), false);
+    const list = body.children[1]; assert.ok(list); assert.equal(list.children.some(node => textOf(node).startsWith('Insert /fixture')), false);
     selected = {...primary}; actions.warm(); await actions.load('commands');
-    assert.equal(list.children.some(node => textOf(node).startsWith('/fixture')), true);
+    assert.equal(list.children.some(node => textOf(node).startsWith('Insert /fixture')), true);
   } finally {if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');}
 });
 
-test('primary text actions with no ready target open the picker without changing drafts', () => {
+test('text insertion without a ready Primary shows its prerequisite without changing drafts', () => {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   Object.defineProperty(globalThis, 'document', {configurable: true, value: fakeDocument()});
   try {
     let opened = 0; let edits = 0; const body = new FakeNode();
-    const actions = new Actions(context({primary: () => undefined, composer: {editor: {value: 'retained'}, setText: () => {edits++;}} as unknown as ActionContext['composer'], modal: {body} as unknown as ActionContext['modal']}));
-    actions.projectPicker = () => {opened++;}; actions.prepareText('/agent attach retained');
-    assert.equal(opened, 1); assert.equal(edits, 0); assert.match(body.children[1]?.textContent ?? '', /agent attach retained/);
+    const modal = {body, open: () => body, actions: (...buttons: FakeNode[]) => body.append(...buttons)} as unknown as ActionContext['modal'];
+    const actions = new Actions(context({primary: () => undefined, composer: {editor: {value: 'retained'}, setText: () => {edits++;}} as unknown as ActionContext['composer'], modal}));
+    actions.projectPicker = () => {opened++;}; actions.prepareText('/fixture argument');
+    assert.equal(opened, 0); assert.equal(edits, 0); assert.match(body.children[1]?.textContent ?? '', /fixture argument/);
+    assert.match(body.children[0]?.textContent ?? '', /Select a session for Primary/);
+    assert.ok(body.children.find(node => node.textContent === 'Copy command'));
+    body.children.find(node => node.textContent === 'Sessions')?.dispatchEvent(new Event('click'));
+    assert.equal(opened, 1); assert.equal(edits, 0);
   } finally {if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');}
 });
 
@@ -149,10 +183,10 @@ test('command options report lifecycle state, merge Pi with App aliases, and not
   assert.deepEqual(actions.commandOptions(), {state: 'unavailable', items: []});
   selected = {...primary}; assert.equal(actions.commandOptions().state, 'loading'); await actions.load('commands');
   const options = actions.commandOptions(); assert.equal(options.state, 'ready'); assert.equal(options.items.filter(item => item.name === 'model').length, 1);
-  assert.deepEqual(options.items.find(item => item.name === 'model'), {name: 'model', description: 'Choose a model for the primary', source: 'app'});
+  assert.deepEqual(options.items.find(item => item.name === 'model'), {name: 'model', description: 'Choose Primary model', source: 'app'});
   assert.equal(options.items.find(item => item.name === 'fixture')?.source, 'extension');
   assert.deepEqual(options.items.filter(item => item.source === 'app').map(item => item.name).sort(), ['compact', 'fork', 'model', 'new', 'resume', 'thinking']);
-  assert.equal(notifications, 2); const first = options.items[0]; assert.ok(first); first.description = 'mutated'; assert.equal(actions.commandOptions().items[0]?.description, 'Choose a model for the primary');
+  assert.equal(notifications, 2); const first = options.items[0]; assert.ok(first); first.description = 'mutated'; assert.equal(actions.commandOptions().items[0]?.description, 'Choose Primary model');
   selected = {...primary, epoch: 2}; assert.equal(actions.commandOptions().state, 'loading'); actions.warm(); await actions.load('commands'); assert.ok(notifications > 2);
   selected = undefined; actions.warm(); assert.equal(actions.commandOptions().state, 'unavailable');
 });
@@ -207,7 +241,7 @@ test('slash inventory loads beyond the first page sequentially and shares the pa
     assert.equal(page.items.length, names.length + 1); assert.equal(actions.commandOptions().state, 'ready'); assert.equal(actions.commandOptions().incomplete, undefined);
     assert.equal(actions.commandOptions().items.some(item => item.name === 'later-command'), true); assert.equal(actions.unknown('/later-command', () => {}), false);
     assert.deepEqual(paths, ['/api/primaries/p/resources/commands?limit=100', '/api/primaries/p/resources/commands?limit=100&cursor=next%20page']);
-    assert.equal(body.children[1]?.children.some(node => textOf(node).startsWith('/later-command')), true);
+    assert.equal(body.children[1]?.children.some(node => textOf(node).startsWith('Insert /later-command')), true);
   } finally { if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document'); }
 });
 test('a page from a stale epoch is discarded and never requests its continuation', async () => {
@@ -236,11 +270,94 @@ test('the automatic page bound marks partial inventory and palette More extends 
     assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT); assert.equal(actions.commandOptions().state, 'ready'); assert.equal(actions.commandOptions().incomplete, true);
     assert.equal(page.items.length, COMMAND_INVENTORY_PAGE_LIMIT); assert.equal(page.nextCursor, `cursor-${COMMAND_INVENTORY_PAGE_LIMIT}`);
     actions.palette(); await actions.load('commands'); await Promise.resolve(); assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT);
-    const more = body.children.find(node => node.textContent === 'More discovered commands'); assert.ok(more); more.dispatchEvent(new Event('click')); await runs[0];
+    const more = body.children.find(node => node.textContent === 'More commands'); assert.ok(more); more.dispatchEvent(new Event('click')); await runs[0];
     assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT + 1); assert.equal(actions.commandOptions().incomplete, undefined);
     assert.equal(page.items.length, COMMAND_INVENTORY_PAGE_LIMIT + 1); assert.equal(page.nextCursor, null);
     assert.equal(await actions.load('commands'), page); assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT + 1);
   } finally { if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document'); }
+});
+test('composer continuation deliberately extends the cached inventory without editing or dispatching', async () => {
+  const paths: string[] = []; let changed = 0;
+  const editor = {value: '/command query', selectionStart: 4, selectionEnd: 9, focused: true};
+  const saved = {...editor};
+  globalThis.fetch = async (path, init) => {
+    assert.equal(init?.body, undefined); paths.push(String(path)); const page = paths.length;
+    return commandResponse([`page-${page}`], page < COMMAND_INVENTORY_PAGE_LIMIT + 2 ? `cursor-${page}` : null);
+  };
+  const composer = {editor, commandsChanged() {changed++;}} as unknown as ActionContext['composer'];
+  const actions = new Actions(context({composer, selection: async () => {assert.fail('continuation must not select');}, result: () => {assert.fail('continuation must not dispatch');}}));
+  const page = await actions.load('commands'); const initialChanged = changed;
+  assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT); actions.commandOptions(); actions.commandOptions();
+  assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT);
+  await actions.continueCommands({kind: 'primary', key: 'p', epoch: 1});
+  assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT + 1); assert.equal(page.items.length, COMMAND_INVENTORY_PAGE_LIMIT + 1);
+  assert.equal(actions.commandOptions().incomplete, true); assert.ok(changed > initialChanged);
+  assert.equal(await actions.load('commands'), page); assert.deepEqual(editor, saved);
+  await actions.continueCommands({kind: 'primary', key: 'p', epoch: 1});
+  assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT + 2); assert.equal(actions.commandOptions().incomplete, undefined);
+  await actions.continueCommands({kind: 'primary', key: 'p', epoch: 1});
+  assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT + 2); assert.deepEqual(editor, saved);
+});
+test('simultaneous palette and composer continuation request and append one cursor only once', async () => {
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: fakeDocument()});
+  try {
+    const paths: string[] = []; const body = new FakeNode(); const runs: Promise<unknown>[] = [];
+    const reached = deferred<void>(); const response = deferred<Response>();
+    globalThis.fetch = async path => {
+      paths.push(String(path)); const page = paths.length;
+      if (page > COMMAND_INVENTORY_PAGE_LIMIT) {reached.resolve(); return response.promise;}
+      return commandResponse([`page-${page}`], `cursor-${page}`);
+    };
+    const modal = {node: new FakeNode(), body, token: 1, open: () => body, owns: () => true, run: (action: () => Promise<unknown>) => {const run = action(); runs.push(run); return run;}} as unknown as ActionContext['modal'];
+    const actions = new Actions(context({modal})); const page = await actions.load('commands');
+    actions.palette(); await actions.load('commands'); await Promise.resolve();
+    const more = body.children.find(node => node.textContent === 'More commands'); assert.ok(more);
+    more.dispatchEvent(new Event('click')); await reached.promise;
+    const composer = actions.continueCommands({kind: 'primary', key: 'p', epoch: 1}); await Promise.resolve();
+    response.resolve(commandResponse(['shared-next'], null)); await Promise.all([runs[0], composer]);
+    assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT + 1);
+    assert.equal(page.items.filter(item => (item as {name: string}).name === 'shared-next').length, 1);
+    assert.equal(actions.commandOptions().incomplete, undefined);
+  } finally { if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document'); }
+});
+test('failed composer continuation retries the same cursor without reloading confirmed pages', async () => {
+  const paths: string[] = []; let failed = false;
+  globalThis.fetch = async path => {
+    paths.push(String(path)); const page = paths.length;
+    if (page <= COMMAND_INVENTORY_PAGE_LIMIT) return commandResponse([`page-${page}`], `cursor-${page}`);
+    if (!failed) {failed = true; throw new Error('continuation unavailable');}
+    return commandResponse(['recovered'], null);
+  };
+  const actions = new Actions(context()); const page = await actions.load('commands');
+  await assert.rejects(actions.continueCommands({kind: 'primary', key: 'p', epoch: 1}), /continuation unavailable/);
+  assert.equal(page.items.length, COMMAND_INVENTORY_PAGE_LIMIT); assert.equal(actions.commandOptions().incomplete, true);
+  await actions.continueCommands({kind: 'primary', key: 'p', epoch: 1});
+  assert.equal(paths.length, COMMAND_INVENTORY_PAGE_LIMIT + 2); assert.equal(paths.at(-1), paths.at(-2));
+  assert.equal(await actions.load('commands'), page); assert.equal(page.items.length, COMMAND_INVENTORY_PAGE_LIMIT + 1);
+});
+test('composer continuation refuses changed or unusable recipients before any request', async () => {
+  let selected = {...primary}; let requests = 0; globalThis.fetch = async () => {requests++; return commandResponse([], null);};
+  const actions = new Actions(context({primary: () => selected}));
+  await assert.rejects(actions.continueCommands({kind: 'agent', identity: 'a'}), /conversation changed/);
+  await assert.rejects(actions.continueCommands({kind: 'primary', key: 'other', epoch: 1}), /conversation changed/);
+  await assert.rejects(actions.continueCommands({kind: 'primary', key: 'p', epoch: 2}), /conversation changed/);
+  selected = {...primary, lifecycle: 'stopped'};
+  await assert.rejects(actions.continueCommands({kind: 'primary', key: 'p', epoch: 1}), /conversation changed/);
+  assert.equal(requests, 0);
+});
+test('composer continuation discards a late page after the captured epoch changes', async () => {
+  let selected = {...primary}; let requests = 0; const reached = deferred<void>(); const response = deferred<Response>();
+  globalThis.fetch = async () => {
+    requests++; if (requests <= COMMAND_INVENTORY_PAGE_LIMIT) return commandResponse([`old-${requests}`], `cursor-${requests}`);
+    reached.resolve(); return response.promise;
+  };
+  const actions = new Actions(context({primary: () => selected})); const page = await actions.load('commands');
+  const continuation = actions.continueCommands({kind: 'primary', key: 'p', epoch: 1});
+  const rejected = assert.rejects(continuation, /conversation changed/); await reached.promise; selected = {...primary, epoch: 2};
+  response.resolve(commandResponse(['late-old'], 'must-not-fetch')); await rejected;
+  assert.equal(requests, COMMAND_INVENTORY_PAGE_LIMIT + 1); assert.equal(page.items.length, COMMAND_INVENTORY_PAGE_LIMIT);
+  assert.equal(actions.commandOptions().items.some(item => item.name.startsWith('old-') || item.name === 'late-old'), false);
 });
 test('a failed later page retains incomplete items and retry reuses confirmed earlier pages', async () => {
   const paths: string[] = []; let failed = false;
@@ -272,10 +389,10 @@ function key(node: FakeNode, name: string, options: Record<string, unknown> = {}
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context());
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Resume saved session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Session details', 'Saved drafts and input copies', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find in loaded messages', 'Notifications', 'Refresh agent roster', 'New agent through primary', 'Hide sidebar', 'Show sidebar', 'Open project or session', 'Model', 'Thinking']);
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Show sidebar', 'Projects', 'Model', 'Thinking']);
   const absent = new Actions(context({primary: () => undefined})).paletteEntries();
   const disabled = absent.filter(item => !item.enabled).map(item => item.name);
-  assert.deepEqual(disabled, ['New session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Session details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find in loaded messages', 'Model', 'Thinking']);
+  assert.deepEqual(disabled, ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking']);
   const starting = new Actions(context({primary: () => ({...primary, lifecycle: 'starting'})})).paletteEntries();
   assert.equal(starting.find(item => item.name === 'New session')?.enabled, true);
   assert.equal(starting.find(item => item.name === 'Model')?.enabled, false);
@@ -283,11 +400,11 @@ test('palette covers every displaced control and session availability follows th
 });
 test('retry and selected-agent palette entries require their evidence and capability', () => {
   const actions = new Actions(context({primary: () => ({...primary, lastError: {code: 'failed', message: 'Failure', retry: 'manual'}}), selectedAgent: () => ({identity: 'agent-id'})}));
-  assert.equal(actions.paletteEntries().some(item => item.name === 'Review retry prompt'), true);
-  assert.equal(actions.paletteEntries().some(item => item.name === 'Copy agent identity'), true);
-  assert.equal(actions.paletteEntries().some(item => item.name === 'Inspect agent activity'), false);
+  assert.equal(actions.paletteEntries().some(item => item.name === 'Review message'), true);
+  assert.equal(actions.paletteEntries().some(item => item.name === 'Copy agent ID'), true);
+  assert.equal(actions.paletteEntries().some(item => item.name === 'View activity…'), false);
   const inspect = new Actions(context({selectedAgent: () => ({identity: 'agent-id', capabilities: {history: true, observe: true, input: false, abort: false, configure: false, inspect: true}})}));
-  assert.equal(inspect.paletteEntries().some(item => item.name === 'Inspect agent activity'), true);
+  assert.equal(inspect.paletteEntries().some(item => item.name === 'View activity…'), true);
   assert.equal(new Actions(context()).paletteEntries().some(item => /Copy agent|Inspect agent|Review retry/.test(item.name)), false);
 });
 test('palette uses ranked rows, marked names and input-owned keyboard selection', async () => {
@@ -302,7 +419,7 @@ test('palette uses ranked rows, marked names and input-owned keyboard selection'
     f.actions.palette(); await f.actions.load('commands'); await Promise.resolve();
     assert.equal(f.node.dataset.variant, 'palette');
     const line = f.body.children[0]; const list = f.body.children[1]; assert.ok(line && list);
-    assert.equal(line.className, 'palette-input'); assert.equal(line.children[0]?.textContent, '›');
+    assert.equal(line.className, 'palette-input-row'); assert.equal(line.children[0]?.textContent, '›');
     const field = line.children[2]; assert.ok(field); field.value = 'xy'; field.dispatchEvent(new Event('input'));
     assert.deepEqual(list.children.map(row => textOf(row.children[0] as FakeNode)), ['xy', 'xy-long', 'tool:xy', 'zxyz', 'other']);
     assert.equal(list.attributes.get('role'), 'listbox'); assert.equal(list.children[0]?.attributes.get('aria-selected'), 'true');
@@ -339,7 +456,7 @@ test('palette height reserves actual input, footer, error and dialog border spac
     list.offsetHeight = 568; list.clientHeight = 560;
     f.node.offsetHeight = 630; f.node.clientHeight = 628; f.node.scrollHeight = 628;
     observer.fire(); assert.equal(list.properties.get('--palette-available-height'), '568px');
-    const more = new FakeNode(); more.textContent = 'More discovered commands'; f.body.append(more); f.node.scrollHeight += 44;
+    const more = new FakeNode(); more.textContent = 'More commands'; f.body.append(more); f.node.scrollHeight += 44;
     observer.fire(); assert.equal(list.properties.get('--palette-available-height'), '524px');
     f.error.textContent = 'Resource request failed'; f.node.scrollHeight += 24;
     observer.fire(); assert.equal(list.properties.get('--palette-available-height'), '500px');
@@ -392,10 +509,10 @@ test('agent rows search names, handles and identity and mouse selection selects 
   let picked = ''; const f = paletteFixture({agents: () => [agent], selectAgent: row => {picked = row.identity;}}); try {
     f.actions.palette(); const field = f.body.children[0]?.children[2]; const list = f.body.children[1]; assert.ok(field && list);
     for (const query of ['Builder', 'build-handle', 'stored-identity']) {field.value = query; field.dispatchEvent(new Event('input')); assert.equal(list.children.length, 1);}
-    assert.equal(list.children[0]?.children[2]?.textContent, 'agent');
+    assert.equal(list.children[0]?.children[2]?.textContent, 'Agent');
     assert.equal(list.children[0]?.title, agent.identity);
     assert.doesNotMatch(textOf(list.children[0] as FakeNode), /stored-identity|build-handle|\/project/);
-    field.value = '/project'; field.dispatchEvent(new Event('input')); assert.equal(list.children.length, 0);
+    field.value = '/project'; field.dispatchEvent(new Event('input')); assert.equal(list.children.length, 1); assert.match(textOf(list.children[0] as FakeNode), /No .*results/); assert.notEqual(list.children[0]?.attributes.get('role'), 'option');
     field.value = agent.identity; field.dispatchEvent(new Event('input')); list.children[0]?.dispatchEvent(new Event('click'));
     assert.equal(picked, agent.identity); assert.equal(f.isOpen(), false);
   } finally {f.restore();}
@@ -446,21 +563,21 @@ test('hidden agent aliases reuse command ranking without false marks on the disp
 test('the palette keeps canonical browser actions and their slash aliases without duplicate rows', async () => {
   globalThis.fetch = async () => Response.json({ok: true, data: {items: [{name: 'fixture', description: 'Public command', source: 'extension'}], nextCursor: null, revision: '1'}});
   const actions = new Actions(context()); await actions.load('commands'); const inventory = actions.commandOptions();
-  const rows = actions.paletteEntries(); const aliases = [['new', 'New session'], ['resume', 'Resume saved session'], ['fork', 'Fork from message…'], ['compact', 'Compact…'], ['model', 'Model'], ['thinking', 'Thinking']] as const;
+  const rows = actions.paletteEntries(); const aliases = [['new', 'New session'], ['resume', 'Sessions'], ['fork', 'Fork from message…'], ['compact', 'Compact…'], ['model', 'Model'], ['thinking', 'Thinking']] as const;
   for (const [alias, name] of aliases) {
     assert.equal(rows.filter(row => row.name === name).length, 1);
     assert.equal(rows.some(row => row.name === `/${alias}` && row.source === 'app'), false);
     for (const query of [alias, `/${alias}`]) assert.equal(rankPalette(rows, query)[0]?.item.name, name);
     assert.equal(inventory.items.some(item => item.name === alias && item.source === 'app'), true);
   }
-  assert.equal(rows.some(row => row.name === '/fixture' && row.source === 'extension'), true);
+  assert.equal(rows.some(row => row.name === 'Insert /fixture' && row.source === 'extension'), true);
   assert.deepEqual(rankPalette(rows, 'compact')[0]?.marks, [0, 1, 2, 3, 4, 5, 6]);
   assert.deepEqual(actions.commandOptions(), inventory);
 });
 test('non-browser discovered commands retain palette rows even with a browser alias of the same name', async () => {
   globalThis.fetch = async () => Response.json({ok: true, data: {items: [{name: 'model', description: 'Public model command', source: 'extension'}], nextCursor: null, revision: '1'}});
   const actions = new Actions(context()); await actions.load('commands');
-  assert.equal(actions.paletteEntries().some(item => item.name === '/model' && item.source === 'extension'), true);
+  assert.equal(actions.paletteEntries().some(item => item.name === 'Insert /model' && item.source === 'extension'), true);
   assert.equal(actions.paletteEntries().some(item => item.name === 'Model' && item.source === 'app'), true);
   assert.equal(actions.commandOptions().items.find(item => item.name === 'model')?.source, 'app');
 });
@@ -523,8 +640,8 @@ test('duplicate palette rows render dim-tail spans and retain exact keyboard sel
     field.value = 'Builder'; field.dispatchEvent(new Event('input')); assert.equal(list.children.length, 2);
     for (const [index, row] of list.children.entries()) {
       const name = row.children[0]; assert.ok(name); const tail = name.children.at(-1); assert.ok(tail);
-      assert.equal(tail.className, 'palette-tail'); assert.equal(tail.tagName, 'span'); assert.equal(tail.textContent, index === 0 ? ' conversation-a' : ' conversation-b');
-      assert.equal(name.children[0]?.tagName, 'mark');
+      assert.equal(tail.className, 'palette-identity'); assert.equal(tail.tagName, 'span'); assert.equal(tail.textContent, index === 0 ? ' conversation-a' : ' conversation-b');
+      assert.equal(name.children[0]?.className, 'palette-title'); assert.equal(name.children[0]?.children[0]?.tagName, 'mark');
     }
     key(field, 'ArrowDown'); assert.equal(list.children[1]?.attributes.get('aria-selected'), 'true');
     page.resolve(commandResponse([], null)); await f.actions.load('commands'); await Promise.resolve();
@@ -539,16 +656,17 @@ test('session menus reuse palette availability and preserve primary-only actions
   for (const item of actions.sessionMenuEntries()) {
     assert.equal(item.source, 'app'); assert.equal(item.enabled, palette.find(row => row.name === item.name)?.enabled);
   }
-  assert.equal(actions.sessionMenuEntries().find(item => item.name === 'New session')?.enabled, false);
-  assert.equal(actions.sessionMenuEntries().find(item => item.name === 'Resume saved session')?.enabled, true);
-  assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Refresh agent roster'), false);
-  assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Copy agent identity'), false);
+  assert.equal(actions.sessionMenuEntries().find(item => item.name === 'New session')?.enabled, true);
+  assert.equal(actions.sessionMenuEntries().find(item => item.name === 'Sessions')?.enabled, true);
+  assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Refresh agents'), false);
+  assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Copy agent ID'), false);
   const selected = new Actions(context({selectedAgent: () => ({identity: 'selected-agent'})}));
-  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Copy agent identity'), true);
-  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Inspect agent activity'), false);
+  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Copy agent ID'), true);
+  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'View activity…'), false);
   assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'New session'), false);
   const capable = new Actions(context({selectedAgent: () => ({identity: 'selected-agent', capabilities: {history: true, observe: true, input: true, abort: true, configure: false, inspect: true}})}));
-  assert.equal(capable.sessionMenuEntries(true).some(item => item.name === 'Inspect agent activity'), true);
+
+  assert.equal(capable.sessionMenuEntries(true).some(item => item.name === 'View activity…'), true);
 });
 test('session menu clicks dispatch named actions and disabled rows reject dispatch', () => {
   const f = paletteFixture(); try {
@@ -560,7 +678,7 @@ test('session menu clicks dispatch named actions and disabled rows reject dispat
   } finally {f.restore();}
   const unavailable = paletteFixture({primary: () => undefined}); try {
     let sessions = 0; unavailable.actions.newSession = () => {sessions++;}; unavailable.actions.sessionMenu();
-    const row = unavailable.body.children[0]?.children.find(row => row.textContent === 'New session'); assert.ok(row);
+    const row = unavailable.body.children[0]?.children.find(row => row.textContent === 'Compact…'); assert.ok(row);
     assert.equal(row.disabled, true); row.dispatchEvent(new Event('click')); assert.equal(sessions, 0);
   } finally {unavailable.restore();}
 });
@@ -568,10 +686,11 @@ test('session menu clicks dispatch named actions and disabled rows reject dispat
 test('session menu keyboard navigation skips disabled rows and reaches the full palette', () => {
   const f = paletteFixture({primary: () => undefined}); try {
     f.actions.sessionMenu(); const list = f.body.children[0]; assert.ok(list);
-    assert.equal(focused?.textContent, 'Resume saved session');
-    assert.equal(key(list, 'ArrowDown').defaultPrevented, true); assert.equal(focused?.textContent, 'Saved drafts and input copies');
+    assert.equal(focused?.textContent, 'New session');
+    assert.equal(key(list, 'ArrowDown').defaultPrevented, true); assert.equal(focused?.textContent, 'Sessions');
+    key(list, 'ArrowDown'); assert.equal(focused?.textContent, 'Saved drafts and messages');
     key(list, 'End'); assert.equal(focused?.textContent, 'Commands…');
-    key(list, 'Home'); assert.equal(focused?.textContent, 'Resume saved session');
+    key(list, 'Home'); assert.equal(focused?.textContent, 'New session');
   } finally {f.restore();}
 });
 
@@ -638,7 +757,7 @@ test('Goto uses the shared fuzzy palette and Enter selects without fetching comm
     const field = f.body.children[0]?.children[2]; const list = f.body.children[1]; assert.ok(field); assert.ok(list);
     field.value = 'Pj'; field.dispatchEvent(new Event('input'));
     const name = list.children[0]?.children[0]; assert.ok(name); assert.equal(textOf(name), 'Primary project');
-    assert.deepEqual(name.children.filter(node => node.tagName === 'mark').map(node => node.textContent), ['P', 'j']);
+    assert.deepEqual(name.children[0]?.children.filter(node => node.tagName === 'mark').map(node => node.textContent), ['P', 'j']);
     assert.equal(key(field, 'Enter').defaultPrevented, true); assert.equal(primaries, 1); assert.equal(f.isOpen(), false); assert.equal(calls, 0);
   } finally {f.restore();}
 });
@@ -654,9 +773,79 @@ test('the command palette highlights each fuzzy name character and keeps command
 
 test('tab palette actions retain sessions and expose safe browser keyboard paths', () => {
   const calls: string[] = [];
-  const actions = new Actions(context({tabs: {close: () => calls.push('close'), switch: direction => calls.push(String(direction)), split: () => calls.push('split'), canSplit: () => false}}));
+  const actions = new Actions(context({tabs: {close: () => calls.push('close'), switch: direction => calls.push(String(direction)), layout: () => ({root: {kind: 'pane', id: 'pane-one', tabs: [{kind: 'primary'}], active: 'primary'}, focusedPane: 'pane-one'})}}));
   const entries = actions.paletteEntries();
   for (const label of ['Close conversation tab', 'Next conversation tab', 'Previous conversation tab']) { const entry = entries.find(item => item.name === label); assert.ok(entry); assert.equal(entry.enabled, true); entry.run(); }
-  assert.equal(entries.find(item => item.name === 'Toggle split with Primary')?.enabled, false);
+  assert.equal(entries.some(item => item.name === 'Toggle split with Primary'), false);
   assert.deepEqual(calls, ['close', '1', '-1']);
+});
+
+test('target-choice Goto forwards the displayed Primary and exact agent without ordinary selection or command fetch', () => {
+  const base = {storageId: 'store', cwd: '/project', modifiedAt: 0, state: 'idle', availability: 'stored' as const};
+  const rows = [{...base, identity: 'agent-a', name: 'Same name'}, {...base, identity: 'agent-b', name: 'Same name'}];
+  let current = primary; const chosen: Target[] = []; let requests = 0;
+  const f = paletteFixture({primary: () => current, agents: () => rows, selectAgent: () => {throw new Error('Chooser must not select an ordinary agent');}, selectPrimary: () => {throw new Error('Chooser must not select ordinary Primary');}});
+  try {
+    globalThis.fetch = async () => {requests++; throw new Error('Chooser must not fetch commands or start a session');};
+    const choose = (target: Target) => {assert.equal(f.isOpen(), false); chosen.push(target);};
+    f.actions.palette('goto', choose); const list = f.body.children[1]; assert.ok(list);
+    assert.deepEqual(list.children.map(row => row.title), ['primary:p:1', 'agent-a', 'agent-b']);
+    const displayed = list.children[0]; assert.ok(displayed); current = {...primary, key: 'later', epoch: 9}; displayed.dispatchEvent(new Event('click'));
+    assert.deepEqual(chosen, [{kind: 'primary', key: 'p', epoch: 1}]); displayed.dispatchEvent(new Event('click')); assert.equal(chosen.length, 1);
+    f.actions.palette('goto', choose); const next = f.body.children[1]; assert.ok(next); const agent = next.children.find(row => row.title === 'agent-b'); assert.ok(agent); agent.dispatchEvent(new Event('click'));
+    assert.deepEqual(chosen, [{kind: 'primary', key: 'p', epoch: 1}, {kind: 'agent', identity: 'agent-b'}]); assert.equal(requests, 0);
+    f.actions.palette('goto', choose); f.modal.close(); assert.equal(chosen.length, 2);
+  } finally {f.restore();}
+});
+
+test('target chooser omits missing identities and Primary while ordinary Commands keeps its selection path', () => {
+  const base = {storageId: 'store', cwd: '/project', modifiedAt: 0, state: 'idle'};
+  const rows: AgentRow[] = [{...base, identity: 'live', availability: 'live'}, {...base, identity: 'saved', availability: 'stored'}, {...base, identity: 'offline', availability: 'unavailable'}, {...base, identity: 'incompatible', availability: 'incompatible'}, {...base, identity: '', availability: 'stored', name: 'Missing identity'}];
+  const chosen: Target[] = []; const actions = new Actions(context({primary: () => undefined, agents: () => rows, selectAgent: () => {throw new Error('Chooser must not select an ordinary agent');}}));
+  const entries = actions.gotoEntries(target => chosen.push(target));
+  assert.deepEqual(entries.map(item => item.title), ['live', 'saved', 'offline', 'incompatible']); assert.equal(entries.every(item => item.source === 'agent'), true);
+  for (const entry of entries) entry.run(); assert.deepEqual(chosen, entries.map(item => ({kind: 'agent', identity: item.title})));
+  const absent = new Actions(context({primary: () => ({...primary, key: ''}), agents: () => []})); assert.deepEqual(absent.gotoEntries(target => chosen.push(target)), []);
+  const selected: string[] = []; const f = paletteFixture({agents: () => rows.slice(0, 1), selectAgent: row => selected.push(row.identity)});
+  try {
+    f.actions.palette('commands', () => {throw new Error('Commands must not use the target-choice callback');}); const list = f.body.children[1]; assert.ok(list);
+    list.children.find(row => row.title === 'live')?.dispatchEvent(new Event('click')); assert.deepEqual(selected, ['live']);
+  } finally {f.restore();}
+});
+
+test('finders label their purpose and separate duplicate identity from the ellipsized title', () => {
+  const base = {storageId: 'store', cwd: '/project', modifiedAt: Date.now(), name: 'Review companion', state: 'idle', owner: 'unknown' as const, availability: 'stored' as const, partial: false};
+  const f = paletteFixture({agents: () => [{...base, identity: 'first0033'}, {...base, identity: 'second0034'}]});
+  try {
+    f.actions.palette('goto'); const line = f.body.children[0]; const field = line?.children[2]; const list = f.body.children[1]; assert.ok(field && list);
+    assert.equal(line?.className, 'palette-input-row'); assert.equal(field.className, 'palette-input'); assert.equal(field.placeholder, 'Search conversations');
+    const row = list.children.find(row => row.title === 'second0034'); assert.ok(row);
+    assert.equal(row.dataset.kind, 'conversation'); assert.equal(row.children[0]?.children[0]?.className, 'palette-title'); assert.equal(row.children[0]?.children[1]?.className, 'palette-identity');
+    assert.match(row.attributes.get('aria-label') ?? '', /Review companion, 0034/);
+    field.value = 'nothingmatches'; field.dispatchEvent(new Event('input'));
+    assert.match(textOf(list.children[0] as FakeNode), /No results for “nothingmatches”/); assert.equal(field.attributes.has('aria-activedescendant'), false);
+    f.actions.palette(); assert.equal(f.body.children[0]?.children[2]?.placeholder, 'Search commands and agents');
+  } finally { f.restore(); }
+});
+test('zero command matches keep incomplete inventory distinct from a complete empty match', async () => {
+  const f = paletteFixture(); const page = deferred<Response>(); globalThis.fetch = async () => page.promise;
+  try {
+    f.actions.palette(); const field = f.body.children[0]?.children[2]; const list = f.body.children[1]; assert.ok(field && list);
+    field.value = 'missing-query'; field.dispatchEvent(new Event('input')); assert.match(textOf(list.children[0] as FakeNode), /No results.*list is incomplete/);
+    page.resolve(commandResponse([], null)); await f.actions.load('commands'); await Promise.resolve();
+    assert.match(textOf(list.children[0] as FakeNode), /No results/); assert.doesNotMatch(textOf(list.children[0] as FakeNode), /incomplete/);
+  } finally { f.restore(); }
+});
+
+test('conversation details keeps the captured agent and reported facts separate from Primary', () => {
+  let selected = {identity: 'agent-first'}; const requested: string[] = [];
+  const base = {storageId: 'store', cwd: '/project', modifiedAt: 0, state: 'unavailable', availability: 'live' as const, owner: 'unknown' as const, partial: false};
+  const f = paletteFixture({selectedAgent: () => selected, agents: () => [{...base, identity: 'agent-first'}, {...base, identity: 'agent-second'}],
+    agentStatus: () => 'Connected', conversationFacts: identity => { requested.push(identity); return [{key: 'task', label: 'Reported task', text: `task for ${identity}`}]; }});
+  try {
+    const entry = f.actions.sessionMenuEntries(true).find(item => item.name === 'Conversation details'); assert.ok(entry);
+    selected = {identity: 'agent-second'}; entry.run();
+    assert.deepEqual(requested, ['agent-first']); assert.match(textOf(f.body), /task for agent-first/); assert.doesNotMatch(textOf(f.body), /agent-second/);
+    assert.match(f.actions.paletteEntries().find(item => item.source === 'agent')?.description ?? '', /^Connected/);
+  } finally {f.restore();}
 });

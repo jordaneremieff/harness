@@ -5,22 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>Pi · Web harness</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 <script type="module" src="/web/app.js"></script>
 </head>
 <body>
 <a id="skip-composer" class="skip-link" href="#primary-editor">Skip to message box</a>
 <div id="app" class="app">
+<div id="connection" class="connection-banner" role="status" aria-live="polite" hidden></div>
+<div class="workbench">
 <nav id="sidebar" class="sidebar" aria-label="Conversations">
-<div class="project-controls"><button id="project-button" class="project-button" type="button" title="Choose project or session"><span id="project-name">open a project</span></button><button id="session-new" class="icon-button" type="button" aria-label="New session" title="New session"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10"/></svg></button></div>
+<div class="nav-top"><button id="project-button" class="project-button" type="button" title="Projects" aria-haspopup="menu" aria-expanded="false"><span id="project-name">Projects</span></button><button id="sidebar-close" class="icon-button sidebar-close" type="button" aria-label="Close sidebar" title="Close sidebar"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+<section id="sidebar-conversations" class="nav-section sidebar-conversations" aria-label="Conversations"></section>
 <section id="primary-section" class="nav-section primary-section" aria-labelledby="primary-heading">
-<h2 class="nav-heading"><button id="primary-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="primary-section-body">PRIMARY</button></h2>
-<div id="primary-section-body" class="section-body">
+<h2 class="nav-heading"><button id="primary-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="primary-section-body">Sessions</button></h2>
+<div id="primary-section-body" class="section-body"><div class="session-entry-actions"><button id="session-open" type="button">Sessions</button><button id="session-new" type="button">New session</button></div>
 <button id="primary-row" class="nav-row primary-row" type="button"><span id="primary-row-state" class="state-glyph" aria-hidden="true"></span><span id="primary-row-title" class="row-title">no session</span><span id="primary-row-meta" class="row-meta"></span></button>
 </div>
 </section>
 <section id="roster-section" class="nav-section roster-section" aria-labelledby="agents-heading">
-<div class="nav-heading-row"><h2 class="nav-heading"><button id="agents-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="agents-section-body">AGENTS <span id="agent-count" class="count"></span></button></h2><div class="nav-heading-actions"><button id="agent-refresh" class="icon-button" type="button" aria-label="Refresh agent roster" title="Refresh agent roster"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13 5.5A5.5 5.5 0 1 0 13.5 9M13 2v4h-4"/></svg></button><button id="agent-new" class="icon-button" type="button" aria-label="New agent through primary" title="New agent through primary"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="6" cy="5" r="2.5"/><path d="M1.5 13v-1a4.5 4.5 0 0 1 9 0v1M13 5v6M10 8h6"/></svg></button></div></div>
+<div class="nav-heading-row"><h2 class="nav-heading"><button id="agents-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="agents-section-body">Agents</button></h2><div class="nav-heading-actions"><button id="agent-refresh" class="icon-button" type="button" aria-label="Refresh agent roster" title="Refresh agent roster"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13 5.5A5.5 5.5 0 1 0 13.5 9M13 2v4h-4"/></svg></button><button id="agent-new" class="icon-button" type="button" aria-label="New agent through primary" title="New agent through primary"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="6" cy="5" r="2.5"/><path d="M1.5 13v-1a4.5 4.5 0 0 1 9 0v1M13 5v6M10 8h6"/></svg></button></div></div>
 <div id="agents-section-body" class="section-body roster-body">
 <label class="sr-only" for="agent-search">Filter agents</label><input id="agent-search" class="nav-filter" type="search" placeholder="Filter agents" autocomplete="off" spellcheck="false">
 <div id="roster" class="roster" role="list" aria-labelledby="agents-heading"></div>
@@ -31,86 +35,35 @@
 <div id="message-panel-resizer" class="resizer" data-axis="y" tabindex="0" role="separator" aria-orientation="horizontal" aria-label="Resize Message panel" aria-controls="agent-message-panel"></div>
 <header class="message-panel-head"><h2 id="agent-message-name"></h2><button id="agent-message-close" type="button" aria-label="Close message panel" title="Close message panel">×</button></header>
 <p class="message-panel-identity"><code id="agent-message-identity"></code></p>
-<p id="agent-message-status" class="message-panel-status" role="status"></p>
+<p class="message-panel-status" role="status"><span id="agent-message-status"></span><button id="agent-message-retry" type="button" hidden disabled></button></p>
 </section>
-<div class="sidebar-footer"><button id="notices-button" class="icon-button notices-button" type="button" aria-label="Notifications" title="Notifications"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 11.5h10l-1.5-2V6a3.5 3.5 0 0 0-7 0v3.5L3 11.5ZM6.5 14h3"/></svg><span id="notices-count" class="notices-count" hidden></span></button><button id="appearance-button" class="icon-button" type="button" aria-label="Appearance" title="Appearance"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11M8 2.5a5.5 5.5 0 0 1 0 11Z"/></svg></button></div>
+
+<footer class="sidebar-footer"><button id="app-menu" class="icon-button notifications-button" type="button" aria-label="App menu" aria-haspopup="menu" aria-expanded="false" title="App menu"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="3" r="0.5"/><circle cx="8" cy="8" r="0.5"/><circle cx="8" cy="13" r="0.5"/></svg><span id="notices-count" class="notices-count" aria-hidden="true" hidden></span></button></footer>
 <div id="sidebar-resizer" class="resizer" data-axis="x" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-controls="sidebar"></div>
 </nav>
 <main id="workspace" class="workspace">
-<button id="sidebar-show" class="sidebar-show" type="button" aria-label="Show sidebar" aria-controls="sidebar" aria-expanded="false" title="Show sidebar" hidden>▸</button>
-<div id="workspace-alert" class="workspace-alert" role="status" hidden></div>
-<div id="tab-bar" class="tab-bar"><div id="conversation-tabs" class="conversation-tabs" role="tablist" aria-label="Open conversations"></div><button id="tab-split" class="tab-split" type="button" aria-pressed="false" disabled>Split</button><button id="session-actions" class="icon-button tab-actions" type="button" aria-label="Session actions" aria-haspopup="menu" title="Session actions"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="3" cy="8" r=".75"/><circle cx="8" cy="8" r=".75"/><circle cx="13" cy="8" r=".75"/></svg></button></div>
-<div id="tabs-empty" class="empty-state" hidden><p>No open conversation tabs. Drafts and sessions remain saved.</p><button id="tabs-open-primary" type="button">Open Primary</button></div>
-<div id="conversation-panes" class="conversation-panes">
-<section id="primary" class="conversation" aria-label="Primary conversation">
-<div id="primary-view-notice" class="availability" role="status"></div>
-<div class="transcript-actions"><button id="primary-earlier" type="button" hidden>↑ earlier</button></div>
-<div class="transcript-region">
-<p id="primary-empty" class="empty-state" hidden><span id="primary-empty-caption">No session. Open a project from the sidebar.</span></p>
-<div id="primary-transcript" class="transcript" tabindex="0" aria-label="Primary messages"></div>
-<button id="primary-latest" class="latest" type="button" hidden>↓ latest</button>
-</div>
-<div id="primary-widgets-above" class="widgets"></div>
-<form id="primary-composer" class="composer">
-<div id="primary-composer-resizer" class="resizer" data-axis="y" tabindex="0" role="separator" aria-orientation="horizontal" aria-label="Resize primary message box" aria-controls="primary-editor"></div>
-<p id="primary-activity" class="exception" role="status"></p>
-<div id="primary-receipt" class="receipt" role="status"></div>
-<ul id="primary-queued" class="queued-list" aria-label="Queued messages" hidden></ul>
-<div class="composer-input">
-<div id="primary-command-menu" class="command-menu" hidden></div>
-<label class="sr-only" for="primary-editor">Message to primary</label>
-<textarea id="primary-editor" rows="1" placeholder="Message Pi · / for commands" spellcheck="false" aria-autocomplete="list" aria-controls="primary-command-menu"></textarea>
-</div>
-<p id="primary-caption" class="caption"></p>
-<div class="composer-line">
-<div id="primary-status" class="statusline"><span id="primary-save" class="draft-state"></span><span id="primary-receipt-details" class="receipt-details"></span></div>
-<div class="composer-bar">
-<div id="primary-modes" class="modes" role="group" aria-label="Delivery while working" hidden><button type="button" data-mode="steer" aria-pressed="true">steer</button><button type="button" data-mode="followUp" aria-pressed="false">follow-up</button></div>
-<button type="button" id="primary-stop" class="stop" hidden title="Stop work and clear queued input">Stop</button>
-<button id="primary-send" type="submit" class="send" disabled aria-label="Send" title="Send">Send</button>
-</div>
-</div>
-</form>
-<div id="primary-widgets-below" class="widgets"></div>
-</section>
-<div id="conversation-splitter" class="resizer" data-axis="x" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize conversation split" aria-controls="primary agent-detail" hidden></div>
-<section id="agent-detail" class="conversation" aria-label="Agent conversation" hidden>
-<div id="agent-facts" class="facts-panel"></div>
-<div id="agent-view-notice" class="availability" role="status"></div>
-<div class="transcript-actions"><button id="agent-earlier" type="button" hidden>↑ earlier</button></div>
-<div class="transcript-region">
-<div id="agent-transcript" class="transcript" tabindex="0" aria-label="Agent messages"></div>
-<button id="agent-latest" class="latest" type="button" hidden>↓ latest</button>
-</div>
-<p id="agent-availability" class="exception" role="status"></p>
-<form id="agent-composer" class="composer">
-<div id="agent-composer-resizer" class="resizer" data-axis="y" tabindex="0" role="separator" aria-orientation="horizontal" aria-label="Resize agent message box" aria-controls="agent-editor"></div>
-<div id="agent-receipt" class="receipt" role="status"></div>
-<div class="composer-input">
-<label class="sr-only" for="agent-editor">Message to this agent</label>
-<textarea id="agent-editor" rows="1" placeholder="Message this agent" spellcheck="false"></textarea>
-</div>
-<div class="composer-line">
-<span id="agent-status" class="agent-settings"></span>
-<div class="statusline"><span id="agent-save" class="draft-state"></span><span id="agent-receipt-details" class="receipt-details"></span></div>
-<div class="composer-bar">
-<div id="agent-modes" class="modes" role="group" aria-label="Delivery while working"><button type="button" data-mode="steer" aria-pressed="false">steer</button><button type="button" data-mode="followUp" aria-pressed="true">follow-up</button></div>
-<span id="agent-caption" class="caption"></span>
-<button type="button" id="agent-abort" class="stop" title="Abort agent work" hidden>Stop</button>
-<button id="agent-acquire" type="button" hidden>open through primary</button>
-<button id="agent-send" type="submit" class="send" disabled aria-label="Send" title="Send">Send</button>
-</div>
-</div>
-</form>
-</section>
-</div>
+<div id="navigation-access" class="navigation-access"><button id="sidebar-show" class="icon-button navigation-toggle" type="button" aria-label="Show navigation" aria-controls="sidebar" aria-expanded="false" title="Show navigation"><svg class="ui-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 3h12v10H2zM6 3v10"/></svg></button><button id="compact-project-button" class="compact-project-button" type="button" aria-haspopup="menu" aria-expanded="false"><span id="compact-project-name">Projects</span></button></div>
+<div id="tabs-empty" class="empty-state" hidden><p>No conversation selected.</p><button id="tabs-open-session" type="button">Sessions</button><button id="tabs-open-primary" type="button">Return to Primary</button></div>
+<section id="session-chooser" class="inline-session-chooser" aria-label="Session chooser" hidden></section>
+<div id="conversation-panes" class="conversation-panes pane-tree" data-focus-only="false"></div>
 </main>
-<footer id="statusbar" class="statusbar" aria-label="Primary status">
-<div class="statusbar-facts"><div class="statusbar-settings"><button id="model-button" type="button" disabled>model</button><button id="thinking-button" type="button" hidden></button></div><span id="primary-usage" class="fact"></span><span id="extension-status" class="fact"></span></div>
-<div class="statusbar-left"><div id="connection" class="connection" role="status" aria-live="polite"></div><span id="statusbar-state" class="status-segment" data-key="state"></span><span id="statusbar-folder" class="status-segment" data-key="folder" hidden></span><button id="statusbar-agents" class="status-segment" data-key="agents" type="button" aria-label="Filter agents" title="Loaded roster">0 live</button></div>
-<div class="statusbar-right"><button id="commands-button" class="palette-hint" type="button" aria-haspopup="dialog" aria-label="Commands" title="Commands">Commands</button></div>
+</div>
+<footer id="workbench-status" class="workbench-status" aria-label="Focused conversation status">
+<span id="workbench-scope" class="workbench-scope"></span><span id="workbench-activity" class="workbench-activity"></span>
+<div id="focused-composer-status" class="workbench-draft-state"></div>
+<div id="workbench-status-primary" class="workbench-status-facts" data-pane="primary" hidden>
+<div class="workbench-model"><button id="model-button" type="button" disabled>Model</button><button id="thinking-button" type="button" hidden></button></div>
+
+<details id="primary-usage-details" class="composer-details workbench-status-details" hidden><summary><span id="primary-context"></span><span id="primary-usage-summary" class="composer-summary-secondary"></span><span class="composer-details-label">Details</span></summary><div class="composer-detail-body"><div id="primary-usage" class="usage-details"></div><p id="primary-folder" hidden></p><section class="composer-extension"><p>Extension status</p><span id="extension-status" class="fact"></span></section></div></details>
+</div>
+<div id="workbench-status-agent" class="workbench-status-facts" data-pane="agent" hidden>
+<span id="agent-status" class="agent-settings"></span>
+
+<details id="agent-usage-details" class="composer-details workbench-status-details" hidden><summary><span id="agent-usage-summary"></span><span class="composer-details-label">Details</span></summary><div class="composer-detail-body"><p id="agent-usage-note"></p><div id="agent-usage" class="usage-details"></div><p id="agent-folder" hidden></p></div></details>
+</div>
 </footer>
 </div>
+<section id="access-view" class="access-view" aria-labelledby="access-title" hidden><div><h1 id="access-title">This browser is not signed in.</h1><p>Use the browser window started by the UI command on this Mac.</p><p>A new UI start prints a fresh, one-use launch link.</p><button id="access-retry" type="button">Check access</button><details><summary>Details</summary><pre id="access-error"></pre></details></div></section>
 <div id="announcements" class="sr-only" role="status" aria-live="polite"></div>
 <dialog id="modal" aria-labelledby="modal-title"><div class="modal-heading"><h2 id="modal-title"></h2><button id="modal-close" type="button" aria-label="Close dialog">×</button></div><div id="modal-body"></div><div id="modal-error" class="error" role="alert"></div></dialog>
 </body>
