@@ -506,6 +506,7 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 		rawStopReason: "tool-use",
 		endTurn: false,
 		timestamp: 2,
+		durationMs: 123,
 	};
 	const conversation = {
 		conversationId: 2,
