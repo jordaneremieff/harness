@@ -8,23 +8,18 @@
  * counts, and exposes offsets and cursors for continuation. Nothing here decodes
  * private SQL.
  *
- * `DurableObservation.open()` copies a SQLite file through `node:sqlite`'s
- * backup API and opens the copy without `resume()`, so a live writer keeps sole
+ * `DurableObservation.open()` captures database/WAL bytes through read-only
+ * filesystem handles and opens only the private copy, so a live writer keeps sole
  * ownership of the source. The copy is writable: harness bookkeeping stays in
  * the temporary file. Read-only viewers never schedule work.
  */
-import { mkdtemp, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { backup, DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { Message, Models } from "@earendil-works/pi-ai";
 import type { ModelEvidenceCollector } from "./model-evidence.ts";
 import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { captureSnapshot } from "./snapshot-capture.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
 import { AgentDeliveryDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
 import { timerStatusRows } from "./durable-timers.ts";
@@ -173,23 +168,6 @@ const REDACTED_MARKER = "[omitted: redacted thinking]";
 /** External identity of one conversation in one storage. */
 export function durableIdentity(storageId: string, conversationId: ConversationId | undefined): string {
 	return conversationId === undefined ? storageId : `${storageId}:${conversationId}`;
-}
-
-/** Main database bytes plus the WAL, the logical source size a snapshot copies. */
-function snapshotSourceBytes(path: string): number | undefined {
-	let total: number;
-	try {
-		total = statSync(path).size;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-		throw error;
-	}
-	try {
-		total += statSync(`${path}-wal`).size;
-	} catch {
-		// A missing WAL is an empty WAL.
-	}
-	return total;
 }
 
 /** Readable source category of one entry kind. */
@@ -1280,13 +1258,21 @@ function collectHistoryEntries(items: readonly EntryRecord[], params: DurableIns
 	return { entries, hitLimit: false };
 }
 
+/** Caller selectors and cursors rejected by the inspection owner, not implementation failures. */
+export class InspectionRequestError extends TypeError {}
+
+function inspectionEntries(conversation: Conversation, query: Parameters<Conversation["entries"]>[0], limit: number, cursor: Cursor | undefined, context: Context) {
+	if (cursor !== undefined && (cursor === null || typeof cursor !== "object" || typeof cursor.after !== "number" || !Number.isSafeInteger(cursor.after) || (cursor.order !== undefined && cursor.order !== "ascending" && cursor.order !== "descending"))) throw new InspectionRequestError("Invalid storage cursor");
+	return conversation.entries(query, limit, cursor, context);
+}
+
 async function scanHistory(conversation: Conversation, params: DurableInspectParams, end: EntryId | undefined, limit: number, context: Context, readable: boolean): Promise<{ readonly entries: EntryRecord[]; readonly next: Cursor | undefined }> {
 	const scanned: EntryRecord[] = [];
 	const seen = new Set<EntryId>();
 	let cursor = params.cursor;
 	let next: Cursor | undefined;
 	for (let page = 0; page < 8; page++) {
-		const result = await conversation.entries(end === undefined ? {} : { maxEntryId: end }, limit - scanned.length, cursor, context);
+		const result = await inspectionEntries(conversation, end === undefined ? {} : { maxEntryId: end }, limit - scanned.length, cursor, context);
 		const collected = collectHistoryEntries(result.items, params, limit - scanned.length, seen, readable);
 		scanned.push(...collected.entries);
 		next = result.next;
@@ -1454,7 +1440,7 @@ async function scanSearch(conversation: Conversation, params: DurableInspectPara
 	let resume: SearchCursor | null = null;
 	while (scannedEntries < SEARCH_SCAN_LIMIT_DEFAULT && matches.length < maxMatches) {
 		const pageCursor = cursor;
-		const page = await conversation.entries({}, Math.min(32, SEARCH_SCAN_LIMIT_DEFAULT - scannedEntries), pageCursor, context);
+		const page = await inspectionEntries(conversation, {}, Math.min(32, SEARCH_SCAN_LIMIT_DEFAULT - scannedEntries), pageCursor, context);
 		if (page.items.length === 0) {
 			complete = true;
 			break;
@@ -1575,7 +1561,7 @@ async function scanActivity(conversation: Conversation, params: DurableInspectPa
 	let scannedBytes = 0;
 	// Collect newest-first until one more than the requested turn count or either bound.
 	while (scannedEntries < ACTIVITY_SCAN_ENTRIES && scannedBytes < ACTIVITY_SCAN_BYTES) {
-		const page = await conversation.entries(after === undefined ? {} : { maxEntryId: (after - 1) as EntryId }, 32, cursor, context);
+		const page = await inspectionEntries(conversation, after === undefined ? {} : { maxEntryId: (after - 1) as EntryId }, 32, cursor, context);
 		collected.push(...page.items);
 		scannedEntries += page.items.length;
 		for (const entry of page.items) scannedBytes += Buffer.byteLength(searchableText(entry), "utf8");
@@ -1892,9 +1878,9 @@ async function resultSubmission(harness: Harness, submissionId: SubmissionId, co
 }
 function verifyResultSelectors(record: SubmissionRecord | undefined, conversation: Conversation, params: DurableInspectParams): void {
 	if (record === undefined) return;
-	if (record.conversationId !== conversation.id) throw new Error(`durable submission ${record.id} belongs to conversation ${record.conversationId}`);
-	if (params.requestId !== undefined && record.requestId !== params.requestId) throw new TypeError("requestId and the other result selectors select different native submissions");
-	if (params.entryId !== undefined && (!("entry" in record) || record.entry !== params.entryId)) throw new TypeError("entryId does not match the selected native submission");
+	if (record.conversationId !== conversation.id) throw new InspectionRequestError(`durable submission ${record.id} belongs to conversation ${record.conversationId}`);
+	if (params.requestId !== undefined && record.requestId !== params.requestId) throw new InspectionRequestError("requestId and the other result selectors select different native submissions");
+	if (params.entryId !== undefined && (!("entry" in record) || record.entry !== params.entryId)) throw new InspectionRequestError("entryId does not match the selected native submission");
 }
 async function operationResult(harness: Harness, conversation: Conversation, params: DurableInspectParams, record: SubmissionRecord | undefined, context: Context): Promise<ResultSelection> {
 	if (params.operationId === undefined) return { ...(record === undefined ? {} : { record }) };
@@ -1903,7 +1889,7 @@ async function operationResult(harness: Harness, conversation: Conversation, par
 	const matches = (receipt: typeof receipts[number]) => receipt.operationId === params.operationId && receipt.conversationId === conversation.id;
 	const found = receipts.find((receipt) => matches(receipt) && (selected === undefined || receipt.submissionId === selected));
 	if (found !== undefined) return { record: record ?? await resultSubmission(harness, found.submissionId, context), operationId: params.operationId };
-	if (receipts.some(matches)) throw new TypeError("operationId and the other result selectors select different native submissions");
+	if (receipts.some(matches)) throw new InspectionRequestError("operationId and the other result selectors select different native submissions");
 	return { reason: "No retained receipt matches the operationId in this conversation" };
 }
 async function resultTarget(harness: Harness, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ResultSelection> {
@@ -1911,7 +1897,7 @@ async function resultTarget(harness: Harness, conversation: Conversation, params
 	const requestId = params.requestId;
 	let record = requestId === undefined ? undefined : await harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
 	if (params.submissionId !== undefined) {
-		if (record !== undefined && record.id !== params.submissionId) throw new TypeError("requestId and submissionId select different native submissions");
+		if (record !== undefined && record.id !== params.submissionId) throw new InspectionRequestError("requestId and submissionId select different native submissions");
 		record ??= await resultSubmission(harness, params.submissionId, context);
 	}
 	verifyResultSelectors(record, conversation, params);
@@ -1983,6 +1969,12 @@ export interface DurableObservationOptions {
 	readonly maxSourceBytes?: number;
 	/** Longest a snapshot backup may run before it fails. */
 	readonly backupTimeoutMs?: number;
+	/** Public retained reads distinguish missing sources from existing empty storage. */
+	readonly requireSourceExists?: boolean;
+	/** Scratch must remain outside this retained sessions root, when supplied. */
+	readonly sourceRoot?: string;
+	/** Absolute cooperative deadline shared by the public reader, including stdin. */
+	readonly deadline?: number;
 	/**
 	 * Writer-claim classification for dashboard rows. The caller composes this
 	 * with `observeClaim`: a live or unknown claim is unavailable, an absent or
@@ -1997,42 +1989,8 @@ export const SNAPSHOT_MAX_SOURCE_BYTES = 512 * 1024 * 1024;
 /** Default time bound for one cold snapshot backup. */
 export const SNAPSHOT_BACKUP_TIMEOUT_MS = 30_000;
 
-/** A caller-opened storage or a SQLite file copied through `node:sqlite` backup. */
+/** A caller-opened storage or a filesystem-captured SQLite database/WAL pair. */
 export type DurableSnapshotSource = { readonly backupFrom: string } | { readonly storage: Storage };
-
-interface SnapshotCopy {
-	readonly absent?: boolean;
-	readonly storage: Storage;
-	readonly cleanup: (() => Promise<void>) | undefined;
-}
-
-/** Copy one SQLite source into a bounded temporary snapshot. Never writes the source. */
-async function copySnapshot(backupFrom: string, maxSourceBytes: number, backupTimeoutMs: number): Promise<SnapshotCopy> {
-	const sourceBytes = snapshotSourceBytes(backupFrom);
-	if (sourceBytes === undefined) return { storage: await openNodeSqliteStorage(":memory:"), cleanup: undefined, absent: true };
-	if (sourceBytes > maxSourceBytes) throw new RangeError(`snapshot source is ${sourceBytes} bytes, above the ${maxSourceBytes} byte bound`);
-	const directory = await mkdtemp(join(tmpdir(), "pi-durable-snapshot-"));
-	const target = join(directory, "snapshot.sqlite");
-	try {
-		const source = new DatabaseSync(backupFrom, { readOnly: true });
-		let timer: NodeJS.Timeout | undefined;
-		try {
-			await Promise.race([
-				backup(source, target),
-				new Promise<never>((_, reject) => {
-					timer = setTimeout(() => reject(new Error(`snapshot backup exceeded ${backupTimeoutMs} ms`)), backupTimeoutMs);
-				}),
-			]);
-		} finally {
-			if (timer !== undefined) clearTimeout(timer);
-			source.close();
-		}
-		return { storage: await openNodeSqliteStorage(target), cleanup: async () => { await rm(directory, { recursive: true, force: true }); } };
-	} catch (error) {
-		await rm(directory, { recursive: true, force: true }).catch(() => {});
-		throw error;
-	}
-}
 
 /**
  * Read-only Harness over a cold snapshot or a caller-supplied storage. Opening
@@ -2063,7 +2021,7 @@ export class DurableObservation {
 		if ("storage" in options) {
 			storage = options.storage;
 		} else {
-			const copy = await copySnapshot(options.backupFrom, options.maxSourceBytes ?? SNAPSHOT_MAX_SOURCE_BYTES, options.backupTimeoutMs ?? SNAPSHOT_BACKUP_TIMEOUT_MS);
+			const copy = await captureSnapshot(options.backupFrom, { maxSourceBytes: options.maxSourceBytes ?? SNAPSHOT_MAX_SOURCE_BYTES, deadline: options.deadline ?? Date.now() + (options.backupTimeoutMs ?? SNAPSHOT_BACKUP_TIMEOUT_MS), signal: context.abortSignal, requireExists: options.requireSourceExists, sourceRoot: options.sourceRoot });
 			storage = copy.storage;
 			cleanup = copy.cleanup;
 			absent = copy.absent === true;
@@ -2239,7 +2197,7 @@ export class DurableObservation {
 					return emptyConversationSnapshot();
 				}
 				const conversation = await this.target(params, context);
-				return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context);
+				return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context, this.storageId);
 			}
 			case "receipts":
 				return this.requestReceipts(params, context);

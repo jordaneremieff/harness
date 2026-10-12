@@ -2,13 +2,13 @@
 
 This document defines the current local consumer boundary for retained Durable agents. The Agent extension owns execution, storage, admission, and publication. It may change this contract. Consumers compare supported operation identities with each connected host and refuse mismatched operations; they do not require the extension to preserve older behavior.
 
-Communication shapes and operation identities are defined by `extensions/agent/communication.ts`, `observation-schema.ts`, and `version-contract.ts`. Other source references use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`, except receipts, configure, task-submit, status and provider-block references, which use `0468691ac2c7bdf8a85d3aa8560f2e5d87dfce26`. These references do not establish the version loaded by a running host.
+Communication shapes and operation identities are defined by `extensions/agent/communication.ts`, `observation-schema.ts`, and `version-contract.ts`. Historical line-number references use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`, except receipts, configure, task-submit, status and provider-block references, which use `0468691ac2c7bdf8a85d3aa8560f2e5d87dfce26`. These references do not establish the version loaded by a running host.
 
 Paths are relative to the repository root. References describe implementation, not runtime acceptance or the loaded version of an arbitrary running host. The companion [Durable harness track](pi-durable-harness.md) describes lifecycle context.
 
 ## Scope and identity
 
-This is a same-user, machine-local interface. Public `@earendil-works/pi-client` and its `/unix` export supply transport. The service names, payloads, catalog publications, operation identities, and retry policy below are harness contracts, not generic Pi protocol features. The endpoint is a private directory and owner-only Unix socket, not remote authentication. Source: `extensions/agent/host-protocol.ts:1-30`; `extensions/agent/host-client.ts:213-222`; `extensions/agent/host-process.ts:523-544`.
+This is a same-user, machine-local interface. [Independent retained reads](#independent-retained-reads) use a one-shot process without a live host. Public `@earendil-works/pi-client` and its `/unix` export supply the live transport. The service names, payloads, catalog publications, operation identities, and retry policy below are harness contracts, not generic Pi protocol features. The endpoint is a private directory and owner-only Unix socket, not remote authentication. Source: `extensions/agent/host-protocol.ts:1-30`; `extensions/agent/host-client.ts:213-222`; `extensions/agent/host-process.ts:523-544`.
 
 Use these terms consistently:
 
@@ -16,12 +16,12 @@ Use these terms consistently:
 - `<store>` is `PI_AGENT_SESSIONS_DIR`, resolved as an absolute path, or `<agentDir>/agent-sessions`.
 - `storageId` identifies one Durable SQLite storage and host.
 - The external conversation identity is `storageId` for root conversation 1, otherwise `storageId:conversationId`.
-- `conversationId`, submission IDs, and entry IDs resolve to positive safe integers. Request parsers also accept decimal-digit strings in the corresponding ID fields; responses use numbers except display snapshot entry IDs, which are strings. Source: `extensions/agent/durable-observation.ts:473-500`.
+- `conversationId`, submission IDs, and entry IDs resolve to positive safe integers. Live request parsers also accept decimal-digit strings in the corresponding ID fields; responses use numbers except display snapshot entry IDs, which are strings. Source: `extensions/agent/durable-observation.ts:473-500`.
 - `serverId` is the UUID used by the public transport handshake. It is not a conversation identity.
 
 Source: `extensions/agent/index.ts:231-235`; `extensions/agent/identity.ts:15-19`; `extensions/agent/durable-observation.ts:508-522`; `extensions/agent/dashboard-types.ts:107-127`.
 
-A targeted request accepts either `sessionId` (external identity) or `conversationId`, never both. Omission selects root conversation 1. A `sessionId` belonging to another storage is rejected. Prefer explicit `sessionId` for every conversation operation. `dashboard` is an exception: its filter is `conversationId`, not `sessionId`. Source: `extensions/agent/durable-observation.ts:508-522`; `extensions/agent/durable-host.ts:454-457`.
+A targeted live request accepts either `sessionId` (external identity) or `conversationId`, never both. Omission selects root conversation 1. A `sessionId` belonging to another storage is rejected. Prefer explicit `sessionId` for every conversation operation. `dashboard` is an exception: its filter is `conversationId`, not `sessionId`. Source: `extensions/agent/durable-observation.ts:508-522`; `extensions/agent/durable-host.ts:454-457`.
 
 Ordinary primaries are not Durable targets. Their separate presence/message channel does not expose these controls or a live terminal attachment. Source: `extensions/agent/manager.ts:526-555`.
 
@@ -540,9 +540,239 @@ Admission and answer delivery are separate. Native result inspection or retained
 
 ## No-start observation versus acquiring controls
 
-Catalog/presence reads, attach-only `connectHost`, and manager observational reads do not launch a host. Without a live host, the manager can make a bounded cold SQLite copy for observation; this is not a wire operation and is not zero-cost filesystem work. Source: `extensions/agent/manager.ts:284-303,703-733`; `extensions/agent/cold-observation.ts:133-190`.
+Catalog/presence reads, attach-only `connectHost`, and manager observational reads do not launch a host. Without a live host, the manager uses a bounded cold database/WAL capture for observation. This is not a wire operation and is not zero-cost filesystem work. A surviving live claim still subjects manager reads to live connection negotiation; the independent reader below does not use that route. Source: `extensions/agent/manager.ts` (`observationConnection`, `observeDurableStorage`); `extensions/agent/cold-observation.ts` (`openColdObservationSnapshot`); `extensions/agent/snapshot-capture.ts` (`captureSnapshot`).
 
 Acquiring controls resolve the retained record and acquire/start its owner. An explicit attach can resume unfinished work even with no new prompt. Low-level `snapshotHost()` acquires despite its name; do not use it as an attach-only helper. Native wire spawn requires a sender conversation in an already running host; there is no hostless spawn member available from a bare transport client. Fleet/effort composition and ordinary-primary intent publication are manager functions, not host members. Source: `extensions/agent/manager.ts:469-523,762-783,830-851`; `extensions/agent/host-client.ts:910-932`; `extensions/agent/durable-runtime.ts:411-438`.
+
+## Independent retained reads
+
+`extensions/agent/retained-read.ts` exposes `retained-read/1.0.0` outside a Pi
+session. It reads retained snapshot and inspection evidence without starting or
+resuming an agent. It is a separate executable, not a `durable-runner.ts` mode,
+Unix service, or live-host fallback. Consumers use this process contract rather
+than importing Agent implementation modules or parsing private SQLite shapes.
+
+### Invocation and descriptor
+
+Invoke without a shell:
+
+```text
+node <agent-extension-directory>/retained-read.ts --contract
+node <agent-extension-directory>/retained-read.ts
+```
+
+The backend chooses the trusted executable path; browser input and retained
+`packageDir` never select it. The reader uses its own installed package graph.
+It does not load the retained target's package directory, cwd resources,
+settings, credentials, models, or extensions.
+
+`--contract` emits `{version,upstream:{codingAgent,durable},operations:{snapshot,inspect}}`
+without reading catalog or storage. `version` is exactly `retained-read/1.0.0`.
+The loaded reader derives upstream versions and both operation values from
+`HOST_CONTRACT`; it advertises no other operations. See the
+[descriptor fixture](#fixture-retained-read-descriptor). Its concrete 1.1.0
+values describe the current example, not a supported-version ceiling.
+
+Default mode reads exactly one UTF-8 JSON request on stdin followed by EOF.
+The caller closes stdin and drains stdout/stderr concurrently. The reader emits
+exactly one JSON object plus newline on stdout. Stderr contains diagnostics,
+never protocol data. Success or descriptor exits 0; a structured read failure
+exits 1. Bootstrap/process failure without a valid envelope is a transport
+failure, not an empty history result. The caller owns this short-lived child;
+there is no server, socket, detached owner, watcher, or subscription.
+
+### Request and exact negotiation
+
+The closed request shape is:
+
+```text
+{
+  version: "retained-read/1.0.0", id: string, store: absolutePath,
+  sessionId: string, method: "snapshot" | "inspect",
+  expected: {request: string, response: string, durable?: string},
+  params: object
+}
+```
+
+Every top-level field is required, including `params:{}` for a snapshot with
+no optional parameters. Unknown fields fail. History uses method `inspect`
+with `params.view:"history"`; there is no history alias or third method.
+
+- `id` is nonempty, at most 256 UTF-16 code units, and contains no whitespace or
+  control characters. It correlates this process response only, not native
+  requestId, operationId, or submission ID.
+- `store` is an absolute filesystem path, at most 4096 code units, with no
+  control characters. It is the existing sessions root containing `durable/`,
+  not a database file path.
+- `sessionId` is a canonical lowercase storage UUID for root conversation 1,
+  or that UUID plus `:` and a canonical positive safe decimal conversation ID
+  greater than 1. Handles, names, root `:1`, leading zeros, and paths fail.
+- `expected` is the closed existing `OperationContract` shape. Its identity
+  strings are nonempty, at most 256 code units, with no ASCII spaces/control
+  characters; `durable`, when present, is a valid semantic-version string.
+
+The reader validates the envelope, expected operation, and parameter grammar
+before catalog or source-storage access. It parses `expected` with the existing
+operation parser and compares request, response, and optional Durable identity
+by exact equality against its selected `HOST_CONTRACT` operation. For both
+native methods, missing or different Durable identity fails. Consumers supply
+the identities of the payload they support; echoing an unknown descriptor does
+not establish compatibility. The descriptor does not replace the per-request
+check, including when the executable changes between invocations. Live-host
+negotiation remains separate and unchanged. See
+[current operation identities](#current-operation-identities) and the
+[snapshot request fixture](#fixture-retained-read-request).
+
+### Parameter grammar
+
+Only the top-level `sessionId` selects a target. Unknown parameter fields,
+including `sessionId`, `conversationId`, `cwd`, and `ownerId`, fail. The reader
+injects the verified identity internally after validation.
+
+Snapshot parameters:
+
+```ts
+{ before?: number; limit?: number; maxBytes?: number }
+```
+
+`before` is a positive safe integer; `limit` is an integer from 1 through 100;
+`maxBytes` is an integer from 1 through 1048576. Omitted values use existing
+snapshot defaults. This public limit is narrower than the live snapshot limit.
+Existing page selection, first-entry byte exception, coverage, and `nextBefore`
+semantics still apply; the process response has a separate hard byte bound.
+
+Inspect parameters:
+
+```ts
+{
+  view: "history" | "branch" | "activity" | "exact" | "search" | "result";
+  limit?: number;
+  cursor?: JsonObject;
+  entryId?: number;
+  fromId?: number;
+  offset?: number;
+  query?: string;
+  source?: "user" | "assistant" | "toolResult" | "summary" | "custom";
+  submissionId?: number;
+  requestId?: string;
+  operationId?: string;
+}
+```
+
+`view` is required. `limit` is an integer from 1 through 100.
+`entryId`, `fromId`, and `submissionId` are positive safe integers; `offset` is a
+nonnegative safe integer. Numbers are required, not decimal-string aliases.
+`cursor` is a JSON object with at most 4096 serialized UTF-8 bytes. Pass returned
+cursors unchanged to the same target/query. `query` is nonempty and at most 256
+code units. `requestId` and `operationId` are nonempty, at most 1024 code units,
+and contain no control characters; their contents are not normalized.
+
+Exact view requires `entryId`. Search requires `query`. `requestId` is legal
+only in result view. Result requires at least one of `requestId`, `submissionId`,
+or `operationId`. Matching combined selectors remain valid; the native reader
+rejects selectors for different submissions. Allowed parameters pass through
+the existing inspection parser and reader, with their existing per-view
+semantics and bounds. This boundary does not invent result lookup rules.
+
+### Response and failures
+
+A successful read has this closed wrapper:
+
+```text
+{
+  version: "retained-read/1.0.0", id: string, ok: true,
+  method: "snapshot" | "inspect", sessionId: string,
+  storageId: string, conversationId: positiveSafeInteger, result: operationPayload
+}
+```
+
+`result` is the unchanged current [snapshot or inspect payload](#transcript-pages-and-inspection),
+not a new transcript format. Snapshot retains native entry/model values,
+communication metadata, inherited fork-origin IDs, pagination, and coverage.
+The wrapper adds target correlation. Inspect retains its closed output union,
+native optional timing fields, and matching sessionId/conversationId. A missing
+native result selector target is a successful `status:"unavailable"` inspection,
+not a process error or fabricated submission. Missing catalog, source database,
+or conversation instead returns `not_found`. An existing empty conversation
+returns its normal empty payload. See the
+[success fixture](#fixture-retained-read-success).
+
+A failure has only `{version,id,ok:false,error:{code,message,retryable}}`.
+`id` is the valid parsed process ID, or null if unavailable/malformed. Failure
+includes no method, target, or result fields. Messages are at most 2000 code
+units and omit stacks, credentials, retained content, and incidental private
+paths. Local typed failures determine codes rather than broad text matching.
+See the [failure fixture](#fixture-retained-read-error).
+
+| Code | Condition | retryable |
+|---|---|---|
+| invalid_request | Bad JSON, envelope, identity, parameters, unsupported method or CLI arguments | false |
+| incompatible | Envelope version or expected request/response/Durable identity mismatch | false |
+| not_found | Catalog, database, or selected conversation absent | false |
+| source_changed | Source identities changed during capture; copied view discarded | true |
+| source_unreadable | Permissions, nonregular/symlink source, corrupt/unusable SQLite, or unsupported nonempty rollback journal | false |
+| limit_exceeded | Request, source, or output byte bound exceeded | false |
+| timeout | Cooperative read deadline expired | true |
+| cancelled | SIGINT/SIGTERM or caller cancellation of this reader | false |
+| internal | Other reader failure | false |
+
+`retryable` is advice, not an automatic process loop. A consumer keeps live-host
+incompatibility separate from a successful retained read.
+
+### Source isolation and lifecycle bounds
+
+The entire request is bounded to 65536 UTF-8 bytes. The serialized response is
+bounded to 16 MiB; oversized output returns `limit_exceeded`, never truncated
+JSON success. The main database plus WAL is bounded to 512 MiB. One 30-second
+**cooperative absolute deadline** starts when the CLI begins reading stdin and
+covers request collection, capture, open, query, and cleanup. The reader passes
+the same deadline through these stages; EOF does not reset it. This is not a
+hard wall-time interrupt. Copy chunks check cancellation and use a small bounded
+buffer, not a source-sized allocation. Synchronous SQLite `quick_check` and
+cleanup are not interruptible by a timer. The caller owns any optional hard
+process timeout. Forced termination leaves source unchanged but can leave
+private scratch.
+
+The reader resolves the canonical catalog record and its exact assigned database
+path. It does not accept arbitrary storage paths, cwd, or packageDir fields.
+It opens source main/WAL files only with read-only, no-follow filesystem handles
+and regular-file checks, never through SQLite. It rejects a nonempty rollback
+journal. It copies database and optional WAL to private scratch, without copying
+SHM. Before and after capture, it checks the full source identities, including
+initially absent WAL: existence, device, inode, size, mtimeNs, and ctimeNs. It
+compares file descriptors with current paths. Replacement, truncation, or other
+identity change discards the copy without a hidden retry.
+
+SQLite validation/recovery and paused `Harness.open` operate only on the private
+copy, with an empty registry/models configuration. Opening a paused Harness
+reconciles native task state in that copy; it is not live scheduler truth.
+The reader never resumes, submits, waits for idle, acquires a writer claim,
+initializes cwd services, or connects to/signals a live host. An absent or
+incompatible live host therefore does not gate reads. An independent writer
+that changes the capture returns `source_changed`, not live incompatibility.
+
+The guarantee is no reader-caused writes, creation, or deletion in source
+database/WAL/SHM/journal, catalog, claims, or retained entries/tasks/submissions.
+Only private scratch is writable. Ordinary filesystem access-time accounting
+and independent writer changes are outside this guarantee. On orderly success,
+failure, cancellation, and timeout, the reader closes its observation and raw
+handles and removes only its own scratch directory **before the response**.
+Forced process termination does not promise cleanup. Scratch never resides under
+the retained source store.
+
+Every invocation returns one retained snapshot, not `live:true`, resumable-host
+readiness, or fresh runtime state. Separate invocations see independently captured
+state. Existing page anchors/cursors retain their semantics; no cross-request
+snapshot lease or storage cache is introduced. The manager's existing bounded
+cold cache remains separate and reuses only stable source identities.
+
+Defining sources: `extensions/agent/retained-read.ts`, `retained-errors.ts`,
+`snapshot-capture.ts`, `catalog.ts` (`read`), `durable-observation.ts`
+(`DurableObservation`, `readInspection`), and `version-contract.ts`
+(`HOST_CONTRACT`, `parseOperationContract`, `operationContractMismatch`).
+Installed Durable `dist/storage/sqlite/node.js` and `dist/harness/harness.js`
+define the private adapter/open behavior. These references describe source
+mechanisms and protocol requirements, not runtime acceptance.
 
 ## Synthetic contract examples
 
@@ -583,5 +813,35 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ```json
 {"type":"state","member":"change","sequence":1,"ops":[["r",{"revision":1}]]}
 ```
+
+### Fixture: retained-read-descriptor
+
+```json
+{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.1.0","durable":"1.1.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.1.0"},"inspect":{"request":"inspect/1.1.0","response":"9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a","durable":"1.1.0"}}}
+```
+
+### Fixture: retained-read-request
+
+```json
+{"version":"retained-read/1.0.0","id":"retained-example","store":"/example/sessions","sessionId":"00000000-0000-4000-8000-000000000001:2","method":"snapshot","expected":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.1.0"},"params":{"limit":50,"maxBytes":65536}}
+```
+
+### Fixture: retained-read-success
+
+```json
+{"version":"retained-read/1.0.0","id":"retained-example","ok":true,"method":"snapshot","sessionId":"00000000-0000-4000-8000-000000000001:2","storageId":"00000000-0000-4000-8000-000000000001","conversationId":2,"result":{"entries":[],"partial":false,"revision":"empty","nextBefore":null,"coverage":{"complete":true,"entries":0,"bytes":0,"hiddenExcluded":0,"entryLimitReached":false,"byteLimitReached":false}}}
+```
+
+### Fixture: retained-read-error
+
+```json
+{"version":"retained-read/1.0.0","id":"retained-example","ok":false,"error":{"code":"source_changed","message":"Retained storage changed during capture. Retry the read.","retryable":true}}
+```
+
+Retained-read fixture shapes: `extensions/agent/retained-read.ts`; operation
+identities: `extensions/agent/version-contract.ts`. Synthetic paths and identities
+are examples, not retained sessions. Agent and UI fixture tests must read these documented
+fixtures independently, without imports from another slice's implementation
+or tests.
 
 Fixture shape sources: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-observation.ts:1133-1143`; `extensions/agent/catalog-view.ts:48-65`; `extensions/agent/host-process.ts:387-399`.

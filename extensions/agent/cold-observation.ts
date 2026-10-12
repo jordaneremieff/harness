@@ -11,7 +11,7 @@
  *
  * One snapshot per storage path is kept while the source identity is unchanged.
  * The identity pins the database and its `-wal` file by device, inode, size,
- * and nanosecond modification time; an absent or unreadable file is part of the
+ * and nanosecond modification and change times; an absent or unreadable file is part of the
  * key. An absent database uses a transient empty observation, so database
  * creation never retains an empty cache entry or fails that first empty read.
  * A changed identity disposes the snapshot and copies again. Results are
@@ -19,10 +19,9 @@
  * bound. `closeColdObservations()` releases every retained snapshot; eviction
  * and invalidation dispose their own.
  *
- * The snapshot never writes source content and never resumes a Harness. SQLite
- * can create or update the source `-wal` and `-shm` sidecars when it opens the
- * database read-only, so one entry records the source identity after its own
- * open; a later content change still invalidates it.
+ * The snapshot never opens source files through SQLite or resumes a Harness.
+ * Filesystem-only capture leaves source bytes and sidecars unchanged. Only a
+ * stable source identity is eligible for reuse.
  *
  * All cache work for one path is serialized: an open, a read, eviction, and
  * disposal never overlap, so a snapshot is never closed while borrowed and a
@@ -118,7 +117,7 @@ interface ColdFileState {
 function fileState(path: string): ColdFileState {
 	try {
 		const stat = statSync(path, { bigint: true });
-		return { state: "file", key: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`, size: Number(stat.size) };
+		return { state: "file", key: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`, size: Number(stat.size) };
 	} catch (error) {
 		return errnoCode(error) === "ENOENT" ? { state: "absent", key: "absent" } : { state: "error", key: `error:${errnoCode(error) ?? "unknown"}` };
 	}
@@ -137,11 +136,9 @@ function sourceState(storagePath: string): ColdSourceState {
 	return { key: `db:${db.key}|wal:${wal.key}`, db: db.key, wal };
 }
 
-/** Only a stable database plus an absent-to-empty WAL creation may keep a just-opened snapshot. */
+/** Reader capture never creates source sidecars; the full source identity must stay stable. */
 function stableAfterOpen(pre: ColdSourceState, post: ColdSourceState): boolean {
-	if (pre.db !== post.db) return false;
-	if (pre.wal.key === post.wal.key) return true;
-	return pre.wal.state === "absent" && post.wal.state === "file" && post.wal.size === 0;
+	return pre.key === post.key;
 }
 
 /** Stable serialization of JSON control parameters, with object keys sorted. */

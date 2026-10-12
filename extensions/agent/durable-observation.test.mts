@@ -229,7 +229,7 @@ it("bounds the snapshot source before copying", async (t) => {
 	await host.close();
 	await assert.rejects(
 		DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models: await fixtureRuntime("answer"), registry: fixtureRegistry(), maxSourceBytes: 1 }, BACKGROUND_CONTEXT),
-		/above the 1 byte bound/u,
+		(error: unknown) => error instanceof Error && "code" in error && error.code === "limit_exceeded",
 	);
 
 	assert.ok(SNAPSHOT_MAX_SOURCE_BYTES >= 1024);

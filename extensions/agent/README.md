@@ -294,6 +294,65 @@ automatic/system theme selection, or ordinary extension UI context. Related
 efforts and peer-thread dialogs require the ordinary extension surface and are
 unavailable here. No retained ordinary archive is converted or edited.
 
+## Independent retained reads
+
+Read Durable history without starting an agent through the separate one-shot
+executable, not the terminal attachment or writer runner:
+
+```sh
+node extensions/agent/retained-read.ts --contract
+node extensions/agent/retained-read.ts < /example/retained-request.json
+```
+
+The second command uses a synthetic request-file path. Supply one UTF-8 JSON
+request followed by EOF. The
+[public retained-read contract](../../docs/agent-host-contract.md#independent-retained-reads)
+defines the exact `retained-read/1.0.0` envelope, operation agreement, parameter
+bounds, responses, and error codes. Its
+[request fixture](../../docs/agent-host-contract.md#fixture-retained-read-request)
+uses a synthetic sessions root and exact child identity.
+
+`--contract` advertises only snapshot and inspect, with versions from this
+reader's installed packages. Every read supplies a supported exact operation
+identity again; discovery does not replace negotiation. History is
+`method:"inspect"` with `params.view:"history"`, not a separate method.
+The canonical top-level sessionId selects a root or child conversation; params
+never select another target. This surface accepts no handles or decimal-string
+numeric aliases.
+
+The caller owns the short-lived child, closes stdin, and drains stdout/stderr
+concurrently. Stdout contains one JSON object plus newline. Stderr is diagnostic
+only. Success/descriptor exits 0; a structured failure exits 1. Failure without
+a valid envelope is a transport failure, not empty history. A backend chooses
+the trusted executable; browser input and retained packageDir do not select it.
+Consumers use the documented process contract, not Agent imports or a private
+SQLite parser.
+
+The reader copies source database/WAL through read-only filesystem handles,
+validates source identity, and opens SQLite only on private scratch. It never
+resumes work, submits input, acquires a writer claim, loads cwd services, or
+connects to/signals a live host. It creates, changes, or deletes no source
+database, WAL, SHM, journal, catalog, claims, entries, tasks, or submissions.
+It closes its handles and removes its own scratch before an orderly success,
+failure, cancellation, or timeout response. OS access-time accounting and
+independent writer changes are outside the source guarantee.
+
+One 30-second cooperative absolute deadline starts when the CLI begins reading
+stdin. It covers request collection, capture, open, query, and cleanup; EOF does
+not reset it. This is not a hard wall-time interrupt. Synchronous SQLite checks
+and cleanup are not interruptible by a timer. The caller owns any optional hard
+process timeout; forced termination leaves source unchanged but can leave
+private scratch.
+
+An absent or incompatible live host does not block retained reads. Source
+changes during capture return `source_changed`; no hidden retry occurs.
+Missing catalog/database/conversation returns `not_found`, while an existing
+empty conversation returns normal empty evidence. A missing native result
+selector returns successful inspection with `status:"unavailable"`. Every read
+is one retained snapshot, not live state or resumable-host readiness; separate
+invocations have no shared snapshot lease or cache. Cancellation ends only this
+reader, not independent native work.
+
 ## Dashboard and agent console
 
 The dashboard is one full-screen overlay. It observes agents and effort presence,
@@ -723,14 +782,18 @@ Continue incomplete pages even without matches. Provider signatures, image
 payloads, and redacted thinking stay omitted with markers and counts on raw
 reads. Observation and task outcomes grant no control or acceptance authority.
 
-A stopped agent uses a cached public snapshot without services, model runtime,
-extension bootstrap, or Harness resume. The cache tracks database and WAL
-identity plus writer claim state. Changed or unstable source identity refuses
-reuse. Snapshot operations serialize to protect reads and eviction. The public
-SQLite backup path creates source sidecars where needed; an absent WAL becoming
-an empty WAL does not invalidate the snapshot. An absent database has an empty
-in-memory observation that is not cached, so a later read sees database creation.
-The snapshot writes no source content and never becomes a writer.
+The manager's stopped-agent reads use a cached public snapshot without services,
+model runtime, extension bootstrap, or Harness resume. The cache tracks database
+and WAL identity plus writer claim state. Changed or unstable source identity
+refuses reuse. Snapshot operations serialize to protect reads and eviction.
+Filesystem-only capture never opens the source through SQLite and never creates
+source sidecars; an absent WAL must remain absent for reuse. SQLite recovery and
+paused Harness reconciliation mutate only the private copy. An absent database
+has an empty in-memory internal observation that is not cached, so a later read
+sees database creation. The independent public reader instead returns
+`not_found` for an absent database and owns no cache. See
+[independent retained reads](#independent-retained-reads) for source-isolation
+and process guarantees.
 
 The dashboard does not embed InteractiveMode. The published extension API has
 no complete InteractiveMode view, editor state, dialog, widget, or renderer
