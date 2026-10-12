@@ -247,7 +247,10 @@ it("finds a retained result by operation ID in a cold snapshot", async (t) => {
 		const result = (await observation.request("inspect", { view: "result", operationId: "op-cold-7" })) as { submissionId: SubmissionId; operationId?: string; answer?: string };
 		assert.equal(result.submissionId, submitted.submissionId);
 		assert.equal(result.answer, "durable answer");
-		await assert.rejects(observation.request("inspect", { view: "result", operationId: "missing-op" }), /no retained result/u);
+		const missing = await observation.request("inspect", { view: "result", operationId: "missing-op" }) as { status: string; operationId: string; submissionId?: number };
+		assert.equal(missing.status, "unavailable");
+		assert.equal(missing.operationId, "missing-op");
+		assert.equal(missing.submissionId, undefined);
 	} finally {
 		await observation.close();
 	}

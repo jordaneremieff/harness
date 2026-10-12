@@ -13,6 +13,7 @@ import type { AgentConversationEntry } from "./dashboard-types.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import type { AgentReadingState } from "./dashboard-state.ts";
 import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
+import { parseCommunicationView, type Communication } from "./communication.ts";
 
 export function cleanDashboardText(text: string): string {
 	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
@@ -55,6 +56,14 @@ function terminalCodemodeResult(message: ToolResultMessage): ToolResultMessage {
 	);
 	if (settled.every((call, index) => call === calls[index])) return message;
 	return { ...message, details: { ...details, calls: settled } };
+}
+
+/** Display-only source facts; the original entry remains available through exact inspection. */
+export function communicationText(value: Communication): string {
+	const sender = value.sender.name === undefined ? value.sender.identity : `${value.sender.name} (${value.sender.identity})`;
+	const body = cleanDashboardText(value.body.text);
+	const flags = [value.body.complete ? "" : "[Partial body]", value.body.redacted || body !== value.body.text ? "[Redacted body]" : ""].filter(Boolean).join(" ");
+	return `${value.kind} from ${sender}\n${body}${flags === "" ? "" : `\n${flags}`}\nRecorded ${value.recordedAt}\n${JSON.stringify(value.metadata)}`;
 }
 
 export interface ConversationBlock {
@@ -308,6 +317,12 @@ export class AgentConversation {
 	}
 	private appendEntry(source: AgentConversationEntry): void {
 		try {
+			const communication = parseCommunicationView(source.communication);
+			if (communication?.state === "ready") {
+				this.blocks.push({ id: source.id, component: new Text(cleanDashboardText(communicationText(communication.value)), 1, 1) });
+				return;
+			}
+			if (communication?.state === "unavailable") this.blocks.push({ id: `${source.id}:communication`, component: new Text(`[Communication metadata unavailable: ${communication.reason}]`, 1, 0) });
 			const entry = displayValue(source) as AgentConversationEntry;
 			if (entry.kind === "pi.custom_message" && this.renderCustom) {
 				const component = this.renderCustom(entry);

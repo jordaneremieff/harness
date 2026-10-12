@@ -16,7 +16,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
-import { acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, reconcileInputRelease } from "./awaited-results.ts";
+import { AwaitDoc, acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
+import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, type RequestContext } from "./request-context.ts";
 import { refreshManagedInstructions } from "./profile.ts";
@@ -147,6 +148,9 @@ export type DeliveryReport = {
 	readonly threadId?: string;
 	/** Title and display body from the defining thread event, not parsed notice text. */
 	readonly threadTitle?: string;
+	readonly threadEvent?: number;
+	readonly threadFrameRevision?: number;
+	readonly threadEventKind?: string;
 	readonly operatorMessage?: string;
 	/** Informational primary copies accepted before owner delivery; retained across host reopen. */
 	readonly fallbackRecipients?: string[];
@@ -216,9 +220,12 @@ export interface DurableSubmitParams {
 	/** Host-authored metadata; base submit callers need not supply it. */
 	readonly requestContext?: RequestContext;
 	readonly providerRetry?: ProviderRetryNotice;
+	/** Trusted owner value, captured inside the existing post-admission bookkeeping commit. */
+	readonly communication?: { readonly storageId: string; readonly value: unknown };
 }
 
 export interface RichSubmitParams {
+	readonly communication?: DurableSubmitParams["communication"];
 	readonly message: UserInput;
 	readonly requestId: string;
 	readonly requester: string;
@@ -354,14 +361,26 @@ function writeFirstMessage(meta: AgentMeta, message: UserInput | DeliveryMessage
 }
 
 function admissionProvenance(conversationId: ConversationId, params: DurableSubmitParams): import("./awaited-results.ts").InputProvenance {
-	return { conversationId, requestId: params.requestId, ...(params.provenance ?? { classification: "explicit", ...(params.requestContext === undefined ? {} : { sender: params.requestContext.requester }) }) };
+	const provenance: import("./awaited-results.ts").InputProvenance = { conversationId, requestId: params.requestId, ...(params.provenance ?? { classification: "explicit", ...(params.requestContext === undefined ? {} : { sender: params.requestContext.requester }) }) };
+	delete provenance.communicationIntent;
+	return provenance;
 }
 function awaitInputMode(classification: { defer: boolean; release: boolean }, mode: DurableSubmitParams["whenBusy"]): "steer" | "followUp" | "reject" | undefined {
 	if (classification.defer) return "followUp";
 	return classification.release ? "steer" : mode;
 }
-async function suppressAdmittedCheckIn(conversation: Conversation, submission: import("@earendil-works/pi-durable").Submission, provenance: import("./awaited-results.ts").InputProvenance, context: Context): Promise<void> {
-	const decision = await conversation.commit((tx) => classifyAwaitInput(tx, provenance), context);
+async function suppressAdmittedCheckIn(conversation: Conversation, submission: import("@earendil-works/pi-durable").Submission, provenance: import("./awaited-results.ts").InputProvenance, context: Context, communication: DurableSubmitParams["communication"], now: () => number, deduped: boolean): Promise<void> {
+	const decision = await conversation.commit(async (tx) => {
+		const capture = communication === undefined ? undefined : await prepareAdmittedCapture(tx, communication.storageId, conversation.id, provenance.requestId, submission.id, communication.value, now, deduped);
+		const classified = await classifyAwaitInput(tx, provenance);
+		await recordInputProvenance(tx, provenance);
+		if (capture !== undefined) await capture();
+		else {
+			const row = (await tx.doc(AwaitDoc)).provenance.find((item) => item.conversationId === conversation.id && item.requestId === provenance.requestId);
+			if (row !== undefined) row.submissionId = submission.id;
+		}
+		return classified;
+	}, context);
 	if (decision.suppress && await submission.abort(context) === "aborted") throw new AwaitInputSuppressed();
 }
 
@@ -434,7 +453,7 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 		},
 		context,
 	);
-	await suppressAdmittedCheckIn(conversation, submission, provenance, context);
+	await suppressAdmittedCheckIn(conversation, submission, provenance, context, params.communication, now, deduped);
 	await conversation.commit(async (tx) => {
 		await reconcileInputRelease(tx, conversation.id, requestId);
 		await linkProviderRecovery(tx, submission.id, recoveryOf);

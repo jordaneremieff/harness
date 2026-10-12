@@ -14,13 +14,14 @@ import { closeColdObservations, coldObservationMetrics, disposeColdStorage, obse
 import { runtimeFixture, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { acquireHost, connectHost } from "./host-client.ts";
 import { Type } from "typebox";
+import { CommunicationViewSchema } from "./communication.ts";
 import { hostPaths } from "./host-protocol.ts";
 import { AgentConversationSummarySchema, ConversationStatusSchema, DurableInventorySchema, InspectOutputSchema, JsonValueSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 
 /** Snapshot envelope consumed by the dashboard; native messages remain opaque JSON. */
 const SnapshotPageSchema = Type.Object({
 	entries: Type.Array(Type.Object({
-		id: Type.String(), kind: Type.String(), head: Type.Optional(Type.String()),
+		id: Type.String(), kind: Type.String(), communication: CommunicationViewSchema, head: Type.Optional(Type.String()),
 		model: Type.Optional(Type.Array(JsonValueSchema)), data: Type.Optional(JsonValueSchema),
 	}, { additionalProperties: false })),
 	partial: Type.Boolean(), revision: Type.String(), nextBefore: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),

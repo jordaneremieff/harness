@@ -14,6 +14,7 @@
  * the temporary file. Read-only viewers never schedule work.
  */
 import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +31,8 @@ import { timerStatusRows } from "./durable-timers.ts";
 import { readAwaitFact } from "./await-observation.ts";
 import { PROVIDER_BLOCK_ERROR, readProviderBlock, readInputProviderBlock, readInputRecovery, type ProviderBlockFact } from "./provider-block.ts";
 import type { AwaitFact } from "./await-facts.ts";
+import type { CommunicationView } from "./communication.ts";
+import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";
 
 /** Byte/unit bounds used by every projection in this module. */
 export const ENTRY_PREVIEW_UNITS = 1200;
@@ -60,6 +63,7 @@ export interface EntryOmissions {
 export type DurableEntrySource = "user" | "assistant" | "toolResult" | "summary" | "custom";
 
 export interface DurableEntryRow {
+	readonly communication?: CommunicationView;
 	readonly id: EntryId;
 	readonly format?: "compact";
 	readonly kind: string;
@@ -86,11 +90,12 @@ export interface DurableInspectParams {
 	readonly query?: string;
 	readonly source?: DurableEntrySource;
 	readonly submissionId?: SubmissionId;
+	readonly requestId?: string;
 	readonly operationId?: string;
 }
 
 /** Entry kinds a conversation surface never displays. They are not part of the visible transcript. */
-const HIDDEN_TRANSCRIPT_KINDS: ReadonlySet<string> = new Set(["pi.system"]);
+const HIDDEN_TRANSCRIPT_KINDS: ReadonlySet<string> = new Set(["pi.system", "agent.communication"]);
 
 /** True for an entry kind the transcript surface hides; hidden entries never consume transcript bounds. */
 export function isHiddenTranscriptKind(kind: string): boolean {
@@ -525,6 +530,8 @@ export function resolveSessionConversationId(storageId: string, sessionId: strin
 /** Parse one inspection request into its native parameters. */
 export function parseInspectParams(params: RequestParams | undefined): DurableInspectParams {
 	const view = requestString(params, "view");
+	const requestId = requestString(params, "requestId");
+	if (requestId === "") throw new TypeError("requestId must be nonempty");
 	const source = requestString(params, "source");
 	const cursor = params?.cursor;
 	if (cursor !== undefined && (typeof cursor !== "object" || cursor === null || Array.isArray(cursor))) throw new TypeError("cursor must be an object");
@@ -539,6 +546,7 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 		...optionalParam("source", source as DurableInspectParams["source"] | undefined),
 		...optionalParam("submissionId", requestPositiveId(params?.submissionId, "submissionId") as SubmissionId | undefined),
 		...optionalParam("operationId", requestString(params, "operationId")),
+		...optionalParam("requestId", requestId),
 	};
 }
 
@@ -1051,11 +1059,13 @@ export async function readDashboard(
 }
 
 export function snapshotEntry(entry: EntryRecord): AgentConversationEntry {
+	const data = entry.data;
+	const passiveMetadata = entry.kind === "agent.thread-notice" && data !== null && typeof data === "object" && !Array.isArray(data) && (data.format === "agent.communication-passive/1" || data.format === "agent.communication-invalid/1");
 	return {
 		id: String(entry.id),
 		kind: entry.kind,
 		...(entry.model === undefined ? {} : { model: entry.model }),
-		...(entry.data === undefined ? {} : { data: entry.data }),
+		...(data === undefined || passiveMetadata ? {} : { data }),
 		...(entry.head === undefined ? {} : { head: String(entry.head) }),
 	};
 }
@@ -1166,15 +1176,23 @@ export function emptyConversationSnapshot(): ConversationSnapshotPage {
 }
 
 function snapshotPage(selection: SnapshotSelection, before: EntryId | undefined): ConversationSnapshotPage {
-	const entries = selection.entries.map((entry) => snapshotEntry(entry));
+	const entries = selection.entries.map((entry) => ({ ...snapshotEntry(entry), communication: { state: "unresolved" as const } }));
 	const first = entries[0];
 	const last = entries[entries.length - 1];
 	const revision = first === undefined || last === undefined ? `${before === undefined ? "empty" : `before-${before}`}` : `${first.id}-${last.id}-${entries.length}`;
 	return { entries, partial: selection.partial, revision, nextBefore: selection.nextBefore, coverage: selection.coverage };
 }
 
+async function joinedSnapshotPage(selection: SnapshotSelection, before: EntryId | undefined, reader: CapturedCommunicationReader | undefined): Promise<ConversationSnapshotPage> {
+	const page = snapshotPage(selection, before);
+	if (reader === undefined) return page;
+	const views = await reader.views(selection.entries);
+	const revision = `${page.revision}:${createHash("sha256").update(JSON.stringify(views)).digest("hex")}`;
+	return { ...page, revision, entries: page.entries.map((entry, index) => ({ ...entry, communication: views[index] ?? { state: "unavailable", reason: "limit" } })) };
+}
+
 /** One earlier page from the conversation's fork-aware history, newest first at the source. */
-async function readEarlierSnapshot(conversation: Conversation, before: EntryId, limit: number, maxBytes: number, context: Context): Promise<ConversationSnapshotPage> {
+async function readEarlierSnapshot(conversation: Conversation, before: EntryId, limit: number, maxBytes: number, context: Context, reader?: CapturedCommunicationReader): Promise<ConversationSnapshotPage> {
 	const collected: EntryRecord[] = [];
 	let cursor: Cursor | undefined;
 	let sourceComplete = false;
@@ -1189,18 +1207,19 @@ async function readEarlierSnapshot(conversation: Conversation, before: EntryId, 
 		if (selectSnapshotEntries(collected, limit, maxBytes).partial) break;
 	}
 	const selection = selectSnapshotEntries(collected, limit, maxBytes);
+	const page = await joinedSnapshotPage(selection, before, reader);
 	if (!selection.partial && !sourceComplete) {
 		// The source has more records, but every visible entry in the scanned
 		// window fits: report the bound instead of claiming completeness.
-		const oldest = selection.entries[0];
+		const oldest = collected[collected.length - 1];
 		return {
-			...snapshotPage(selection, before),
+			...page,
 			partial: true,
 			nextBefore: oldest?.id ?? null,
 			coverage: { ...selection.coverage, complete: false },
 		};
 	}
-	return snapshotPage(selection, before);
+	return page;
 }
 
 /**
@@ -1213,13 +1232,15 @@ export async function readConversationSnapshotPage(
 	conversationId: ConversationId,
 	params: ConversationSnapshotParams,
 	context: Context,
+	storageId?: string,
 ): Promise<ConversationSnapshotPage> {
 	const conversation = await harness.conversation(conversationId, context);
 	if (!conversation) throw new Error(`conversation ${conversationId} does not exist`);
-	if (params.before !== undefined) return readEarlierSnapshot(conversation, params.before, params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT, context);
+	const reader = storageId === undefined ? undefined : await captureCommunicationReader(harness, storageId, conversation, context);
+	if (params.before !== undefined) return readEarlierSnapshot(conversation, params.before, params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT, context, reader);
 	const entries = await activeEntries(conversation, context);
 	const selection = selectSnapshotEntries([...entries].reverse(), params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT);
-	return snapshotPage(selection, undefined);
+	return joinedSnapshotPage(selection, undefined, reader);
 }
 
 export async function readReceipts(harness: Harness, ownerId: string | undefined, context: Context): Promise<readonly DeliveryReceipt[]> {
@@ -1240,11 +1261,12 @@ interface HistoryPage {
 	readonly detail: string;
 }
 
-function collectHistoryEntries(items: readonly EntryRecord[], params: DurableInspectParams, remaining: number, seen: Set<EntryId>): { readonly entries: EntryRecord[]; readonly hitLimit: boolean } {
+function collectHistoryEntries(items: readonly EntryRecord[], params: DurableInspectParams, remaining: number, seen: Set<EntryId>, readable: boolean): { readonly entries: EntryRecord[]; readonly hitLimit: boolean } {
 	const entries: EntryRecord[] = [];
 	for (const entry of items) {
 		if (seen.has(entry.id)) continue;
 		seen.add(entry.id);
+		if (readable && entry.kind === "agent.communication") continue;
 		if (params.source !== undefined && entrySource(entry.kind) !== params.source) continue;
 		entries.push(entry);
 		if (entries.length >= remaining) return { entries, hitLimit: true };
@@ -1252,14 +1274,14 @@ function collectHistoryEntries(items: readonly EntryRecord[], params: DurableIns
 	return { entries, hitLimit: false };
 }
 
-async function scanHistory(conversation: Conversation, params: DurableInspectParams, end: EntryId | undefined, limit: number, context: Context): Promise<{ readonly entries: EntryRecord[]; readonly next: Cursor | undefined }> {
+async function scanHistory(conversation: Conversation, params: DurableInspectParams, end: EntryId | undefined, limit: number, context: Context, readable: boolean): Promise<{ readonly entries: EntryRecord[]; readonly next: Cursor | undefined }> {
 	const scanned: EntryRecord[] = [];
 	const seen = new Set<EntryId>();
 	let cursor = params.cursor;
 	let next: Cursor | undefined;
 	for (let page = 0; page < 8; page++) {
 		const result = await conversation.entries(end === undefined ? {} : { maxEntryId: end }, limit - scanned.length, cursor, context);
-		const collected = collectHistoryEntries(result.items, params, limit - scanned.length, seen);
+		const collected = collectHistoryEntries(result.items, params, limit - scanned.length, seen, readable);
 		scanned.push(...collected.entries);
 		next = result.next;
 		if (collected.hitLimit || next === undefined) break;
@@ -1269,21 +1291,24 @@ async function scanHistory(conversation: Conversation, params: DurableInspectPar
 }
 
 async function readHistoryPage(
+	harness: Harness,
 	storageId: string,
 	conversation: Conversation,
 	params: DurableInspectParams,
 	view: "history" | "branch",
 	context: Context,
 ): Promise<HistoryPage> {
+	const reader = view === "history" ? await captureCommunicationReader(harness, storageId, conversation, context) : undefined;
 	const limit = boundedLimit(params.limit, HISTORY_LIMIT_DEFAULT, HISTORY_LIMIT_MAX);
 	const end = view === "branch" ? (parseEntryId(params.fromId ?? params.entryId) ?? await currentLeaf(conversation, context)) : parseEntryId(params.entryId);
-	const scanned = await scanHistory(conversation, params, end, limit, context);
+	const scanned = await scanHistory(conversation, params, end, limit, context, view === "history");
+	const views = await reader?.views(scanned.entries);
 	return {
 		view,
 		...(view === "history" ? { format: "compact" as const } : {}),
 		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
 		conversationId: conversation.id,
-		entries: scanned.entries.map((entry) => view === "branch" ? rawEntryRow(entry) : entryRow(entry)),
+		entries: scanned.entries.map((entry, index) => view === "branch" ? rawEntryRow(entry) : { ...entryRow(entry), communication: views?.[index] ?? { state: "unresolved" } }),
 		nextCursor: scanned.next ?? null,
 		order: "newestFirst",
 		detail: view === "branch"
@@ -1805,12 +1830,13 @@ function boundedActivity(base: ActivityBase, scan: ActivityScan, candidates: rea
 }
 
 async function readActivity(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, options: DurableInspectionOptions, context: Context): Promise<ActivityPage> {
+	const reader = await captureCommunicationReader(harness, storageId, conversation, context);
 	const turnLimit = boundedLimit(params.limit, ACTIVITY_TURN_LIMIT_DEFAULT, ACTIVITY_TURN_LIMIT_MAX);
 	const scan = await scanActivity(conversation, params, turnLimit, context);
-	const allGroups = groupActivityTurns(scan.collected);
+	const allGroups = groupActivityTurns(scan.collected.filter((entry) => entry.kind !== "agent.communication"));
 	const groups = allGroups.slice(-turnLimit);
 	const candidates = activityCandidates(groups);
-	const oldestSelected = groups[0]?.[0];
+	const oldestSelected = groups[0]?.[0] ?? scan.collected[scan.collected.length - 1];
 	const hasOlder = allGroups.length > turnLimit || !scan.complete;
 	const baseFor = (metadata: DurableActivityMetadata): ActivityBase => ({
 		view: "activity",
@@ -1828,15 +1854,21 @@ async function readActivity(harness: Harness, storageId: string, conversation: C
 	const base = baseFor(reduced.metadata);
 	const ranked = [...candidates].reverse();
 	const kept = selectActivityRows(ranked, (rows) => activityBytes(activityDraft(base, scan, rows, candidates.length, reduced.truncated, hasOlder)) <= ACTIVITY_DIGEST_SELECT_BYTES);
-	return boundedActivity(base, scan, candidates, kept, reduced.truncated, hasOlder);
+	const result = boundedActivity(base, scan, candidates, kept, reduced.truncated, hasOlder);
+	const records = new Map(scan.collected.map((entry) => [entry.id, entry]));
+	const rows = result.turns.flatMap((turn) => turn.entries);
+	const views = await reader.views(rows.map((row) => records.get(row.id) as EntryRecord));
+	let index = 0;
+	result.turns = result.turns.map((turn) => ({ ...turn, entries: turn.entries.map((row) => ({ ...row, communication: views[index++] ?? { state: "unresolved" } })) }));
+	return finalizedActivity(result);
 }
 
 interface ResultPage {
 	readonly view: "result";
 	readonly sessionId: string;
 	readonly conversationId: ConversationId;
-	readonly submissionId: SubmissionId;
-	readonly status: SubmissionRecord["status"];
+	readonly submissionId?: SubmissionId;
+	readonly status: SubmissionRecord["status"] | "unavailable";
 	readonly requestId?: string;
 	readonly operationId?: string;
 	readonly entryId?: EntryId;
@@ -1848,14 +1880,38 @@ interface ResultPage {
 	readonly usage: UsageState;
 }
 
-async function resultTarget(harness: Harness, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<{ readonly submissionId: SubmissionId; readonly operationId?: string }> {
-	if (params.submissionId !== undefined) return { submissionId: params.submissionId, ...(params.operationId === undefined ? {} : { operationId: params.operationId }) };
-	if (params.operationId === undefined) throw new TypeError("result inspection requires submissionId or operationId");
-	const operationId = params.operationId;
+interface ResultSelection { readonly record?: SubmissionRecord; readonly operationId?: string; readonly reason?: string }
+async function resultSubmission(harness: Harness, submissionId: SubmissionId, context: Context): Promise<SubmissionRecord | undefined> {
+	return (await harness.submission(submissionId, context))?.status(context);
+}
+function verifyResultSelectors(record: SubmissionRecord | undefined, conversation: Conversation, params: DurableInspectParams): void {
+	if (record === undefined) return;
+	if (record.conversationId !== conversation.id) throw new Error(`durable submission ${record.id} belongs to conversation ${record.conversationId}`);
+	if (params.requestId !== undefined && record.requestId !== params.requestId) throw new TypeError("requestId and the other result selectors select different native submissions");
+	if (params.entryId !== undefined && (!("entry" in record) || record.entry !== params.entryId)) throw new TypeError("entryId does not match the selected native submission");
+}
+async function operationResult(harness: Harness, conversation: Conversation, params: DurableInspectParams, record: SubmissionRecord | undefined, context: Context): Promise<ResultSelection> {
+	if (params.operationId === undefined) return { ...(record === undefined ? {} : { record }) };
 	const receipts = await readReceipts(harness, undefined, context);
-	const found = receipts.find((receipt) => receipt.operationId === operationId && receipt.conversationId === conversation.id);
-	if (!found) throw new Error(`no retained result for operation ${operationId}`);
-	return { submissionId: found.submissionId, operationId };
+	const selected = record?.id ?? params.submissionId;
+	const matches = (receipt: typeof receipts[number]) => receipt.operationId === params.operationId && receipt.conversationId === conversation.id;
+	const found = receipts.find((receipt) => matches(receipt) && (selected === undefined || receipt.submissionId === selected));
+	if (found !== undefined) return { record: record ?? await resultSubmission(harness, found.submissionId, context), operationId: params.operationId };
+	if (receipts.some(matches)) throw new TypeError("operationId and the other result selectors select different native submissions");
+	return { reason: "No retained receipt matches the operationId in this conversation" };
+}
+async function resultTarget(harness: Harness, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ResultSelection> {
+	if (params.submissionId === undefined && params.requestId === undefined && params.operationId === undefined) throw new TypeError("result inspection requires submissionId, requestId or operationId");
+	const requestId = params.requestId;
+	let record = requestId === undefined ? undefined : await harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
+	if (params.submissionId !== undefined) {
+		if (record !== undefined && record.id !== params.submissionId) throw new TypeError("requestId and submissionId select different native submissions");
+		record ??= await resultSubmission(harness, params.submissionId, context);
+	}
+	verifyResultSelectors(record, conversation, params);
+	const target = await operationResult(harness, conversation, params, record, context);
+	verifyResultSelectors(target.record, conversation, params);
+	return target;
 }
 
 async function resultAnswer(harness: Harness, answerEntryId: EntryId, context: Context): Promise<{ readonly answer?: string; readonly reason?: string }> {
@@ -1866,18 +1922,16 @@ async function resultAnswer(harness: Harness, answerEntryId: EntryId, context: C
 
 async function readResult(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ResultPage> {
 	const target = await resultTarget(harness, conversation, params, context);
-	const submission = await harness.submission(target.submissionId, context);
-	if (!submission) throw new Error(`durable submission ${target.submissionId} is not retained`);
-	const record = await submission.status(context);
-	if (record.conversationId !== conversation.id) throw new Error(`durable submission ${target.submissionId} belongs to conversation ${record.conversationId}`);
+	const record = target.record;
 	const usage = await harness.usage(context);
+	if (record === undefined) return { view: "result", sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id), conversationId: conversation.id, status: "unavailable", reason: target.reason ?? "No native submission matches the result selector in this conversation", ...optionalParam("requestId", params.requestId), ...optionalParam("submissionId", params.submissionId), ...optionalParam("operationId", params.operationId), usage };
 	const recoveryOf = await harness.commit((tx) => readInputRecovery(tx, record.id), context);
 	const base = {
 		...(recoveryOf === undefined ? {} : { recoveryOf }),
 		view: "result" as const,
 		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
 		conversationId: conversation.id,
-		submissionId: target.submissionId,
+		submissionId: record.id,
 		status: record.status,
 		...optionalParam("requestId", record.requestId),
 		...optionalParam("operationId", target.operationId),
@@ -1895,11 +1949,12 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 /** One bounded inspection over a conversation's committed entries, submissions, and receipts. */
 export async function readInspection(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context, options: DurableInspectionOptions = {}): Promise<unknown> {
 	const view = params.view ?? "history";
+	if (params.requestId !== undefined && view !== "result") throw new TypeError("requestId selects only the result view");
 	switch (view) {
 		case "history":
-			return readHistoryPage(storageId, conversation, params, "history", context);
+			return readHistoryPage(harness, storageId, conversation, params, "history", context);
 		case "branch":
-			return readHistoryPage(storageId, conversation, params, "branch", context);
+			return readHistoryPage(harness, storageId, conversation, params, "branch", context);
 		case "search":
 			return readSearch(storageId, conversation, params, context);
 		case "exact":
@@ -2077,7 +2132,7 @@ export class DurableObservation {
 
 	async snapshot(conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<ConversationSnapshotPage> {
 		if (this.absent) return emptyConversationSnapshot();
-		return readConversationSnapshotPage(this.harness, conversationId, {}, context);
+		return readConversationSnapshotPage(this.harness, conversationId, {}, context, this.storageId);
 	}
 
 	async usage(context: Context = BACKGROUND_CONTEXT): Promise<UsageState> {

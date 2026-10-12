@@ -507,6 +507,7 @@ const InspectParams = Type.Object(
 		query: Type.Optional(Type.String({ minLength: 1 })),
 		source: Type.Optional(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
 		submissionId: Type.Optional(PositiveId),
+		requestId: Type.Optional(Type.String({ minLength: 1, description: "Native request ID within the selected conversation; result view only." })),
 		operationId: Type.Optional(Type.String({ minLength: 1 })),
 	},
 	{ additionalProperties: false },
@@ -1571,7 +1572,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_inspect",
 			description:
-				"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
+				"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Images, signatures, and redacted thinking stay omitted.",
 			parameters: InspectParams,
 			replay: "safe",
 			execute: async (args: InspectInput) =>
@@ -1589,6 +1590,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 							"query",
 							"source",
 							"submissionId",
+							"requestId",
 							"operationId",
 						]),
 					},

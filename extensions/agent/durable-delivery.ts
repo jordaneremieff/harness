@@ -22,6 +22,7 @@
  * Retries and reopens reuse them for recipient-local deduplication.
  */
 import { createHash } from "node:crypto";
+import { COMMUNICATION_BODY_BYTES, COMMUNICATION_VALUE_BYTES, communicationSerializedBytes, parseCommunication, type Communication } from "./communication.ts";
 import type { InputProvenance } from "./awaited-results.ts";
 import { canonicalIdentity } from "./identity.ts";
 import { providerBlockText } from "./provider-block.ts";
@@ -127,6 +128,45 @@ type ReceiptRow = {
 };
 
 type DeliveryRow = ReceiptRow | { readonly kind: "report"; readonly report: DeliveryReport; readonly deliveredTo: Set<string> };
+
+/** Structured source facts are captured independently of transport prose. */
+function receiptCommunication(row: ReceiptRow, host: DurableHost): Communication {
+	const receipt = row.receipt;
+	return { format: "agent.communication/1", kind: "result", sender: { identity: host.identity(receipt.conversationId) }, body: { text: receipt.answer ?? receipt.reason ?? "", complete: false, redacted: false }, recordedAt: 0, metadata: { status: receipt.status, references: row.receipts.slice(0, 16).map((member) => ({ submissionId: member.submissionId, requestId: member.requestId, ...(member.entryId === null ? {} : { entryId: String(member.entryId) }), ...(member.answerEntryId === null ? {} : { answerEntryId: String(member.answerEntryId) }) })), omittedReferences: Math.max(0, row.receipts.length - 16), ...(receipt.reason === null ? {} : { reason: receipt.reason }) } };
+}
+function reportCommunication(report: DeliveryReport): Communication | undefined {
+	const common = { format: "agent.communication/1" as const, sender: { identity: report.senderIdentity }, body: { text: report.message, complete: false, redacted: false }, recordedAt: report.createdAt };
+	if (report.threadId !== undefined) {
+		if (report.operatorMessage === undefined) return undefined;
+		return { ...common, kind: "notice", body: { ...common.body, text: report.operatorMessage }, metadata: { threadId: report.threadId, ...(report.threadTitle === undefined ? {} : { title: report.threadTitle }), ...(report.threadEvent === undefined ? {} : { event: report.threadEvent }), ...(report.threadFrameRevision === undefined ? {} : { frameRevision: report.threadFrameRevision }), ...(report.threadEventKind === undefined ? {} : { eventKind: report.threadEventKind }), passive: report.passive === true } };
+	}
+	if (report.checkIn !== undefined) return { ...common, kind: "check-in", metadata: { sourceId: report.sourceId, producerRequestId: report.checkIn.requestId, elapsedMs: report.checkIn.elapsedMs, origin: report.checkIn.origin } };
+	return { ...common, kind: "report", metadata: { sourceId: report.sourceId, requestId: report.requestId, ...(report.replyTo === null ? {} : { replyTo: report.replyTo }) } };
+}
+function deliveryCommunication(row: DeliveryRow, host: DurableHost): Communication | undefined {
+	try {
+		let value: Communication | undefined = row.kind === "receipt" ? receiptCommunication(row, host) : reportCommunication(row.report);
+		if (value === undefined) return undefined;
+		let text = "";
+		let bytes = 0;
+		for (const point of value.body.text) {
+			const size = Buffer.byteLength(point, "utf8");
+			if (bytes + size > COMMUNICATION_BODY_BYTES) break;
+			text += point; bytes += size;
+		}
+		value = { ...value, body: { ...value.body, text } };
+		while (communicationSerializedBytes(value) > COMMUNICATION_VALUE_BYTES && value.body.text.length > 0) {
+			const points: string[] = Array.from(value.body.text);
+			value = { ...value, body: { ...value.body, text: points.slice(0, Math.floor(points.length / 2)).join(""), complete: false } };
+		}
+		return parseCommunication(value);
+	} catch { return undefined; }
+}
+
+function deliveryCommunicationParams(row: DeliveryRow, host: DurableHost): { communication?: Communication } {
+	const communication = deliveryCommunication(row, host);
+	return communication === undefined ? {} : { communication };
+}
 
 /** Informational copies already accepted for this answer group or report. */
 function fallbackRecipients(row: DeliveryRow): readonly string[] {
@@ -479,12 +519,14 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const deliverSameStorage = async (row: DeliveryRow, owner: string): Promise<void> => {
 		if (row.kind === "receipt") {
 			const requestId = receiptRequestId(metadata, row.receipt);
-			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row), requestId, provenance: { classification: "automatic" }, whenBusy: "followUp" });
+			const communicationParams = deliveryCommunicationParams(row, host);
+			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row), requestId, provenance: { classification: "automatic" }, ...communicationParams, whenBusy: "followUp" });
 			return;
 		}
 		if (!await reportCurrent(row)) return;
 		const requestId = reportRequestId(metadata, row.report);
-		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" });
+		const communicationParams = deliveryCommunicationParams(row, host);
+		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, ...communicationParams, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" });
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
@@ -801,11 +843,13 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const connection = await targetConnection(record);
 		if (row.kind === "receipt") {
 			const requestId = receiptRequestId(metadata, row.receipt);
+			const communicationParams = deliveryCommunicationParams(row, host);
 			await connection.request(
 				"submit",
 				{
 					sessionId: owner,
 					provenance: { classification: "automatic" },
+					...communicationParams,
 					message: receiptFollowText(metadata, row),
 					requestId,
 					whenBusy: "followUp",
@@ -815,9 +859,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		} else {
 			if (!await reportCurrent(row)) return;
 			const requestId = reportRequestId(metadata, row.report);
+			const communicationParams = deliveryCommunicationParams(row, host);
 			await connection.request(
 				row.report.passive ? "passive-submit" : "submit",
-				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" },
+				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, ...communicationParams, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" },
 				{ requestId, signal },
 			);
 		}

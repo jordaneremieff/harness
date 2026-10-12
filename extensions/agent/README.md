@@ -137,7 +137,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/2.1.0`; a reload over an older retained manager
+The manager contract is `manager/2.2.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -649,6 +649,33 @@ before creating the agent. When Pi clamps a thinking level, the dispatch result
 includes `thinking: {requested, effective}`. Reusing a handle keeps its retained
 configuration; supplied model, thinking, and role fields, including preset
 values, are reported as unapplied rather than retuning it.
+
+Committed snapshot and conversation frame entries carry a closed `communication`
+view. Readable history and activity carry the same view on every compact row.
+A ready view supplies the original native target, a separate record ID, checked
+sender facts and a structured body. Pending or absent metadata is unresolved;
+invalid or bounded-out metadata has an unavailable marker. The native terminal
+uses this joined value without parsing transport text. Exact, branch and search
+retain their original source paths. Result inspection accepts a native request ID
+within the selected conversation, a submission ID or a separate retained
+operation ID. Supplied selectors must agree. Missing native results return
+unavailable without a fabricated submission or entry. Communication bookkeeping is hidden
+only on display surfaces, with native pagination and hidden counts preserved.
+Bodies and added views have separate UTF-8 bounds; native input bytes, order,
+admission, cancellation and settlement remain unchanged. The existing post-native
+classification commit captures trusted metadata before a successful host response,
+including late suppression when native abort reports an already-placed or settled
+input. A queued abort keeps its suppression response without a fabricated link.
+Plain admissions retain their no-envelope decision in the existing row and exact
+index; eviction and stale dedupe observations do not permit later backfill. The
+plain view stays unresolved without a companion or invalid marker.
+The retained input bound stays 128. Terminal-row pruning prepares all native reads
+before companion writes and materializes unlinked metadata before row eviction in
+the same transaction. Queued intent reconciliation uses the existing background
+and reopen paths, not another queue. Native admission remains a separate commit;
+a crash before owner capture leaves an unresolved association. See the
+[Agent host contract](../../docs/agent-host-contract.md#native-communication-provenance)
+for envelopes, exact fork visibility, public limits and operation identities.
 
 History and activity mark every page and entry row with `format: "compact"`,
 including empty pages. Their schemas require this marker; raw branch and exact
@@ -1717,7 +1744,7 @@ observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/2.1.0` includes awaited primary endpoint teardown,
+clearance. `manager/2.2.0` includes joined communication display and awaited primary endpoint teardown,
 preset-first creation resolution and machine
 preference snapshots, alongside caller usage for fleet observations, effective
 thinking from catalog validation, ordinary retained observation, first-input

@@ -2,7 +2,7 @@
 
 This document defines the current local consumer boundary for retained Durable agents. The Agent extension owns execution, storage, admission, and publication. It may change this contract. Consumers compare supported operation identities with each connected host and refuse mismatched operations; they do not require the extension to preserve older behavior.
 
-The `submit`, `receipts`, `configure`, and `task-submit` identities, `H-inspect`, `H-status`, provider-block fields, and task-submit payload references use defining revision `0468691ac2c7bdf8a85d3aa8560f2e5d87dfce26`. Other source references use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`. This scoped attribution is not a whole-document revalidation.
+Communication shapes and operation identities are defined by `extensions/agent/communication.ts`, `observation-schema.ts`, and `version-contract.ts`. Other source references use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`, except receipts, configure, task-submit, status and provider-block references, which use `0468691ac2c7bdf8a85d3aa8560f2e5d87dfce26`. These references do not establish the version loaded by a running host.
 
 Paths are relative to the repository root. References describe implementation, not runtime acceptance or the loaded version of an arbitrary running host. The companion [Durable harness track](pi-durable-harness.md) describes lifecycle context.
 
@@ -24,6 +24,103 @@ Source: `extensions/agent/index.ts:231-235`; `extensions/agent/identity.ts:15-19
 A targeted request accepts either `sessionId` (external identity) or `conversationId`, never both. Omission selects root conversation 1. A `sessionId` belonging to another storage is rejected. Prefer explicit `sessionId` for every conversation operation. `dashboard` is an exception: its filter is `conversationId`, not `sessionId`. Source: `extensions/agent/durable-observation.ts:508-522`; `extensions/agent/durable-host.ts:454-457`.
 
 Ordinary primaries are not Durable targets. Their separate presence/message channel does not expose these controls or a live terminal attachment. Source: `extensions/agent/manager.ts:526-555`.
+
+## Native communication provenance
+
+The existing `submit` and `passive-submit` request objects accept optional `communication: Communication`. This application value never changes native input parameters, model content, admission order, cancellation, reply routing or settlement. Inputs without an envelope keep the original path. Metadata rejection does not reject or resubmit an otherwise valid input.
+
+`Communication` is a closed object with `format: "agent.communication/1"`, `sender`, `body`, `recordedAt`, `kind` and `metadata`. Sender identity is the canonical external conversation identity; optional name and kind are checked supplied facts, not labels or inferred roles. Body has `text`, `complete` and `redacted`. Redaction or omission requires `complete:false`. These local same-user assertions establish neither cryptographic authentication nor instruction authority.
+
+| Kind | Metadata |
+|---|---|
+| notice | `threadId`, optional `event`, `frameRevision`, `eventKind`, `title`, `passive` |
+| report | `sourceId`, `requestId`, optional `replyTo` |
+| result | `status:done|unanswered`, ordered `references`, `omittedReferences`, optional `reason` |
+| check-in | `sourceId`, `producerRequestId`, `elapsedMs`, `origin:operator|model` |
+
+A reference contains `submissionId` and optional `requestId`, `entryId`, `answerEntryId`. Receipt grouping remains unchanged. At most sixteen references fit the value; `omittedReferences` counts the rest. Native producers capture structured receipt, report, check-in and collaboration event fields before transport formatting. Existing excerpts have `complete:false`; no prose parser reconstructs missing fields.
+
+The owner captures the first trusted envelope inside the existing post-native classification commit, before a successful host response. That commit reconstructs a classification row evicted during native admission, prepares native submission, input and index reads before classification can prune, then materializes an available link and stores the resulting intent in the existing retained input row. A late suppress classification still retains that already-admitted request before the unchanged native abort. An `aborted` result keeps the suppression response; `already_placed` or `settled` keeps the successful response and captured association. The owner records its capture time as `recordedAt`. Repeated request IDs preserve the first retained value. Conflicts do not replace an original verified association. A plain admission retains an explicit no-envelope decision in the same bounded row. Once its native entry exists, post-native capture or pre-eviction materialization transfers that decision to the existing exact entry index. Later capture consults that index, not just the earlier dedupe observation, so an evicted plain row never permits backfill. This marker stays unresolved publicly: it creates neither a companion nor an invalid view. A queued or canceled input without a native entry has no display link.
+
+The existing input provenance bound remains 128. Its prune predicate retains queued and placed submissions, plus the original live-run condition for unadmitted classification rows. Before eviction of terminal rows, the owner prepares all native and index reads for their unlinked intents, then appends companions and updates their indexes in that same prune transaction. Only after those writes does it remove the rows. No separate queue, admission pin, metadata store, lookup family or metadata-specific capacity rule is introduced. Queued intent reconciliation uses the existing background and reopen paths. Invalid or unavailable metadata produces a bounded owner diagnostic or invalid index marker without changing native input acceptance.
+
+Native admission and post-native classification remain separate commits. A crash after native admission but before owner capture leaves an unresolved association; this interface does not promise crash-atomic capture with native admission. The successful-response and pre-eviction guarantees apply to completed owner bookkeeping commits, not that intervening crash gap.
+
+Active input provenance uses a separate model-less `agent.communication` entry in the original input's conversation. Its data is `{format:"agent.communication-link/1",target:InputLink,value:Communication}`. `InputLink` contains `mode:"input"`, canonical `storageId`, numeric `conversationId`, decimal-string `entryId`, numeric `submissionId`, and `requestId`. The original input remains unchanged. The owner point index and companion append share a transaction; the index is only a lookup hint.
+
+Passive notices retain the original `agent.thread-notice` write and model array. Valid data is `{format:"agent.communication-passive/1",requestId,value}` and requires a notice with `metadata.passive:true`. Its public `PassiveLink` has `mode:"passive"`, the actual storage/conversation/entry IDs and request ID, but no input submission claim. Its own native ID is `recordEntryId`. Invalid metadata adds only bounded `{format:"agent.communication-invalid/1",reason:"invalid"}` data to that original write. The owner verifies the write's exact visibility before publishing the invalid marker.
+
+Every committed snapshot/frame entry and compact history/activity row contains one closed view:
+
+```text
+{state:"ready",recordEntryId,target:InputLink|PassiveLink,value:Communication}
+{state:"unresolved"}
+{state:"unavailable",reason:"limit"|"invalid"}
+```
+
+Unresolved means no visible verified association, not human authorship or a promise of future completion. Live progress rows without a committed ID omit this field. Task observation frames are unchanged.
+
+Snapshot, conversation observation and readable inspection share one owner reader. It captures a visible native tail before the read. Every index hit verifies the native submission, actual origin and target/companion records through bounded fork-aware exact-ID queries. Both records must remain visible at that tail. An older display page still uses the captured current view tail, not its `before` anchor, as the provenance cutoff. A fork before the companion never inherits later parent metadata. A visible inherited entry retains its original conversation ID in the communication target; that ID need not equal the selected fork's conversation ID. No UI or terminal lookup scans for adjacent text or guesses a sender.
+
+The join handles at most 200 display entries. One eligible index hit needs at most one exact target read and one exact companion read, each limited to one record. Added views fit 65,536 serialized bytes per response in returned order; each ready view fits 32,768 bytes. Minimal markers remain reserved for later rows. Communication fits 24,576 bytes and body text fits 16,384 UTF-8 bytes. IDs, counts and times are safe integers; strings reject malformed Unicode and controls except ordinary body newline/tab. Missing optional fields remain absent.
+
+Display snapshots and conversation frames omit the owner-added passive communication data from the entry's `data` field. The bounded joined view carries that metadata after native row selection, so it neither duplicates the body nor evicts native display rows. The original passive write data remains available in raw inspection.
+
+Readable surfaces suppress standalone `agent.communication` bookkeeping while native scan cursors and hidden-entry accounting continue. New metadata changes the opaque snapshot revision and invalidates conversation observation. Native terminal rendering consumes the joined source identity and body directly. Raw exact, branch, search and result inspection retain their original paths and semantics; exact inspection of the companion exposes its separate immutable data.
+
+Source: `extensions/agent/communication.ts`; `communication-retention.ts`; `communication-observation.ts`; `durable-host.ts`; `durable-observation.ts`; `live-observation.ts`; `dashboard-conversation.ts`; `collaboration.ts`.
+
+## Ordinary peer communication mapping
+
+Ordinary Pi custom messages with `customType: "agent.peer"` expose a structured peer contribution through their supplied `details`. This section is the public mapping for consumers; it does not authorize imports of Agent-private types, prose parsing, new delivery operations, or history rewriting. `primary-delivery/1.1.0`, `sendMessage`, wake behavior, original content, and `display: false` exclusion remain unchanged. Saved `custom_message` entries and live `role: "custom"` messages use the same mapping before projection drops their details.
+
+The normalized value has `format: "agent.communication/1"`, `sender`, `body`, `recordedAt`, and exactly one of the variants below. Unknown properties are not copied into this closed value. Ordinary source records retain their original detail fields separately.
+
+### Identity and timestamp validation
+
+A canonical identity is a lowercase UUID storage identity for conversation 1, or that UUID followed by `:` and a positive safe-integer conversation ID other than 1. UUID syntax is `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`; it does not select a UUID version. A child suffix is canonical decimal text: no sign, leading zero, exponent, fraction, whitespace, or suffix outside `Number.MAX_SAFE_INTEGER`. Do not normalize `uuid:1`, a handle, a label, or uppercase UUID text into asserted authorship. Identity is at most 256 UTF-8 bytes.
+
+For receipts, use `details.identity`. For reports, check-ins, and thread notices, use `details.senderIdentity`. When both fields are present, validate each and require exact equality. If supplied `storageId` or `conversationId` identifies that same receipt producer, require agreement with its canonical identity. A sender contradiction is `unavailable/invalid`, not a guessed preference. A supplied `senderKind` maps to `sender.kind` only when it is `"agent"` or `"session"`. Copy the separately supplied `details.name` to `sender.name` only when it is a well-typed, valid Unicode, control-free string within 160 UTF-8 bytes; `rowDetails` obtains this field from the exact source status. Omit it otherwise. The ordinary `label` may contain a display-name fallback; it remains a presentation label and never supplies `sender.name`.
+
+Use the supplied custom-message timestamp, not `details.createdAt`, receipt time, content text, or the current clock. A live numeric timestamp must be a nonnegative safe integer in milliseconds. A saved-entry ISO timestamp must parse to the same nonnegative safe-integer millisecond domain. Missing required identity, body, timestamp, or variant fields leaves the presentation `unresolved`; malformed supplied values or contradictory identity fields produce `unavailable/invalid`.
+
+### Variant selection and exact fields
+
+Apply these selectors in order, using only structured details:
+
+1. `details.kind === "receipt"`: produce `kind: "result"`; body source is the string `details.answer`, including an explicitly supplied empty string. Require `details.status` to be `"done"` or `"unanswered"` and a nonempty `details.submissions` array. Preserve that array's order and answer grouping. The output metadata is `{status, references, omittedReferences, reason?}`.
+2. `details.kind === "report"` with a supplied `checkIn` object: produce `kind: "check-in"`; body source is `details.message`. Metadata is `{sourceId, producerRequestId, elapsedMs, origin}`. `sourceId` is `details.reportSourceId`, or `details.sourceId` when the former is absent; `producerRequestId`, `elapsedMs`, and `origin` come from `checkIn.requestId`, `checkIn.elapsedMs`, and `checkIn.origin`. Elapsed milliseconds are nonnegative safe integers; origin is exactly `"operator"` or `"model"`.
+3. `details.kind === "report"` with supplied `threadId` and `operatorMessage`: produce `kind: "notice"`; body source is `details.operatorMessage`. Metadata contains `threadId` and an optional `title` from `details.threadTitle`. Current ordinary details supply no independent event number, frame revision, event kind, or passive flag. Omit those fields; do not infer them from text, wake intent, or transport state.
+4. Other `details.kind === "report"`: produce `kind: "report"`; body source is `details.message`. Metadata is `{sourceId, requestId, replyTo?}`. Select source ID as above; use `details.requestId`. Include `details.replyTo` only when non-null and valid as a canonical identity.
+
+A present malformed higher-priority variant does not fall through to a different variant. Source/request IDs are nonempty, valid Unicode, control-free strings of at most 1,024 UTF-8 bytes. Notice thread IDs are nonempty strings of at most 256 UTF-8 bytes; supplied titles are at most 160 UTF-8 bytes. These are same-user producer assertions, not cryptographic authentication or fresh instruction authority.
+
+### Receipt references
+
+For each of the first 16 supplied submission members, map:
+
+```text
+submissionId  <- member.submissionId (positive safe integer, required)
+requestId     <- member.requestId (valid source/request ID, when supplied)
+entryId       <- member.entryId (positive safe integer -> canonical decimal string)
+answerEntryId <- details.answerEntryId (positive safe integer -> canonical decimal string)
+```
+
+A null native `entryId` or `answerEntryId` means absent, never `"null"`, zero, or a fabricated entry. The shared `details.answerEntryId` belongs to every reference in this producer's answer group; no per-member answer ID is invented. `omittedReferences` equals the number of supplied members beyond the retained first 16. Do not deduplicate references, substitute `operationId` for `requestId`, infer an admission from `ownerId`, or treat a continuation as a result reference. `details.reason` is optional when non-null and a valid bounded string of at most 1,024 UTF-8 bytes. Invalid supplied reference fields produce `unavailable/invalid`; a missing required submissions/body/status value remains `unresolved`.
+
+The existing `continuation` is raw producer detail only. Ordinary entry IDs remain ordinary IDs; do not cast them into Durable integer IDs. Delivery recipient, original owner, source alias, wake/fallback flags, acknowledgement, provider metadata, and cost are not sender authority or extra fields in the closed communication value.
+
+### Body coverage, redaction, and bounded presentation
+
+`body` is `{text, complete, redacted}`. Protect only the selected structured body with the existing credential-redaction transform. Set `redacted: true` exactly when that transform removes source material; this flag describes the normalized body, not an assertion that upstream records never redacted anything. Set `complete: false` for these current ordinary shapes. The producer supplies excerpts and no affirmative complete-body marker: absent `textTruncated` does not prove completeness. `textTruncated: true` independently establishes loss, while passive `operatorMessage` can lose source text without that shared marker. Do not parse the truncation paragraph or invent omitted-byte counts.
+
+Limit normalized body text to 16,384 UTF-8 bytes at valid Unicode boundaries. Any clipping or redaction keeps `complete: false`; preserve ordinary newlines/tabs and reject malformed Unicode or other controls. The closed communication value must fit 24,576 serialized bytes. The ready presentation, including origin and protected raw details, must fit 32,768 serialized bytes; raw details get at most 8,192 serialized bytes and use the existing truthful omission marker. If the attributed value cannot fit, return `unavailable/limit`, not partial identity or silently cut metadata.
+
+Ordinary origin is `{kind: "ordinary-custom", customType: "agent.peer", renderEntryId, sourceEntryId?}`. `renderEntryId` is the existing retained message key; `sourceEntryId` exists only when the public saved record supplies it. Each is a bounded string of at most 256 UTF-8 bytes. A live custom message without a saved entry ID is a valid presentation source but supplies no exact saved-record identity. Native submission, link, or companion fields do not belong in this origin.
+
+Original content remains the source for Raw content and Copy with its actual existing coverage. A normalized card does not replace that content with a reconstructed body, duplicate the transport paragraph at rest, expose secrets through raw details, or change native admission. Preserve a validated communication value through repeated projection rather than treating it as another producer record.
+
+Sources: `extensions/agent/index.ts` ordinary primary registration; `extensions/agent/durable-delivery.ts` `boundedPeerText`, `sharedRowDetails`, `rowDetails`, `reportOptionalDetails`, and `receiptContinuationDetails`; `extensions/agent/durable-controls.ts` `DeliveryReceipt` and `DeliveryReport`; `extensions/agent/identity.ts` `canonicalIdentity`. These references define source fields and mapping, not a claim that an arbitrary running UI already consumes them.
 
 ## Retained discovery and endpoint derivation
 
@@ -91,6 +188,42 @@ A claim contains `{sessionId,cwd,host,createdAt,pid}`; the parser accepts extra 
 
 A consumer never removes a claim, takes a writer lock, or starts a host merely to refresh metadata. Source: `extensions/agent/claims.ts:25-35,98-136`; `extensions/agent/manager.ts:284-303,652-701`.
 
+### Explicit stored-host acquisition
+
+A consumer starts a stored host only after explicit user action. Selection, page load, retained discovery, and connection checks do not acquire a writer. Before the action, disclose that starting the host can resume unfinished Durable work without a new prompt. A start request contains an exact external conversation identity and a separate bounded request ID, never composer text or a task-submission payload.
+
+The package process entry is `extensions/agent/durable-runner.ts`. Invoke it without a shell:
+
+```text
+node <trusted-harness-package>/extensions/agent/durable-runner.ts <metadata-JSON>
+```
+
+The UI reads server-owned global `<agentDir>/settings.json`, using the server's public `getAgentDir()` resolution rather than the retained record or project settings. It requires exactly one explicit local source entry in `packages` or `extensions` ending in `/extensions/agent/index.ts`. An absolute entry resolves directly; `./` and `../` entries resolve relative to the global agent directory, as the installed package manager defines. That entry selects the adjacent `durable-runner.ts`, with canonical regular-file checks and validation of the owning `harness` package and its `pi.extensions` declaration. An absent, ambiguous, disabled, or unsupported source configuration refuses before spawn. The UI package's own Agent copy is not assumed to be the configured source. Neither browser input nor retained `packageDir` selects executable source. Source: installed coding-agent `dist/core/settings-manager.d.ts:Settings`, `dist/core/package-manager.js:resolveLocalExtensionSource,getBaseDirForScope`; the configured owner package's `pi.extensions` declaration. Construct metadata from the validated catalog record with exactly the host fields below; omit `createdAt`, `view`, `threads`, `recoveryDue`, and consumer diagnostics:
+
+```text
+storageId, cwd, agentDir, packageDir, storagePath,
+model: {provider, modelId}, thinkingLevel,
+name?, trust?, ownerId?, independent?: {inputDigest, projectTrusted}
+```
+
+Replace `packageDir` with the installation selected by the server's configured `--pi` executable, not the retained installation or an unrelated ambient SDK import. An executable name resolves through the server's bounded PATH search; an absolute executable resolves directly. The supported shapes are the coding-agent package's `dist/bundle/cli.js` and the current managed `bin/pi` launcher beside `install/current-version`. The managed marker selects `install/releases/<version>/node_modules/@earendil-works/pi-coding-agent`; its bounded version must agree with the package manifest. Both shapes require the coding-agent package name, a valid version, its `bin.pi` declaration, and canonical CLI/package paths. Unknown wrappers or missing installation metadata refuse. If `PI_PACKAGE_DIR` is set, its canonical root must agree with that selected installation. Source: the installed coding-agent `package.json:bin`, `dist/config.js:getPackageDir`, and managed `bin/pi` launcher.
+
+Preserve `trust`, `ownerId`, and the complete `independent` object exactly. Explicit trust participates in the owner's normal trust resolver. If independent metadata exists, `independent.projectTrusted` supplies the prioritized resolver instead. An unresolved normal decision follows the retained owner chain, not the Primary displayed in the browser. Do not replace absent trust with false, force true, fabricate an owner, or omit independent metadata. Source: `extensions/agent/durable-runtime.ts:55–79`; `durable-services.ts:553–564`; `trust-support.ts:73–109`; installed coding-agent `dist/core/resource-loader.js:352–366`.
+
+Before dynamically loading host modules, the runner binds coding-agent, agent-core, ai, tui, and typebox imports originating under the Agent source root to the selected installation. Durable, client, server, and chord remain dependencies of the configured owner checkout; the binding does not redirect every Pi package. Validate the catalog identity, exact database path under the configured durable catalog root, and existing canonical regular-file/directory paths before spawn. Source: `extensions/agent/{durable-runner,installation-binding,host-protocol}.ts`.
+
+A live same-host writer claim requires attach and negotiation without a spawn. An unknown claim refuses acquisition. For an absent or proven-dead claim, launch one detached runner with ignored stdin and drained stdout/stderr. The runner, not the consumer, acquires and releases its writer claim. Consumers never remove, rewrite, or lock claims. Concurrent starts for one storage join the same attempt; repeated request IDs retain the same outcome. If another process wins the claim, its live ownership remains authoritative and the consumer attaches to that owner. It never signals the competing owner. Source: `extensions/agent/{claims,host-process,host-client}.ts`.
+
+After the listener starts, the owner prints one line with this prefix and JSON record:
+
+```text
+PI_AGENT_HOST_READY {"pid":positiveInteger,"socketPath":absolutePath,"contract":RuntimeContract}
+```
+
+Read a bounded amount of output within a bounded deadline. A matching malformed line is a refusal, not ordinary output. Validate the spawned PID, the derived socket path, and the current operation descriptor. `serverId` is not a readiness field; derive it from metadata and verify it through the public Unix transport handshake. Then use the existing negotiated preparation and observation paths for the exact conversation. A usable composer requires a negotiated `task-submit` capability. Readiness alone proves neither a compatible connection nor a valid conversation. Source: `extensions/agent/host-protocol.ts:parseHostReadyLine`; `extensions/agent/host-process.ts:runHost`; `extensions/agent/host-client.ts:launchRunner`.
+
+The host owns its lifetime independently of the UI. Runtime construction resumes unfinished conversations, tool work, and retained deliveries before the socket starts and before READY is emitted. A readiness, negotiation, or startup timeout does not prove that native work was never admitted. Source: `extensions/agent/durable-runtime.ts:324–350`; `durable-host.ts:353–362`; `host-process.ts:277–302,688–711`; owner-installed Durable `dist/harness/{harness,scheduler}.js:resume`. Retain an uncertain attempt while its child remains alive; offer an explicit connection check rather than automatic relaunch or task submission. Malformed readiness, socket mismatch, connection failure, browser loss, and UI shutdown never justify killing admitted or pre-existing work. UI shutdown cancels only its own readiness wait and closes its observations/transports. A confirmed exited child permits a new explicit attempt. The owner client's current cleanup implementation is not a consumer requirement or permission to interrupt work. Source: `extensions/agent/{durable-runner,host-process,durable-runtime}.ts`.
+
 ## Negotiation and request envelope
 
 Negotiate on the expected server target:
@@ -134,7 +267,7 @@ A consumer must possess an expected contract for the payload it implements. It m
 For every member in the following set, request and response are both `<member>/1.0.0`, with no `durable` field:
 
 ```text
-close passive-submit attach report acknowledge abort reset
+close attach report acknowledge abort reset
  timer-list timer-cancel observe-close changes
  collaboration-list collaboration-read collaboration-mutate await-release
 ```
@@ -144,12 +277,13 @@ Overrides and remaining members:
 | Member | Request | Response | Durable |
 |---|---|---|---|
 | recovery-state | recovery-state/1.0.0 | recovery-state/1.1.0 | absent |
-| submit | submit/1.2.0 | submit/1.1.0 | absent |
+| submit | submit/1.3.0 | submit/1.1.0 | absent |
+| passive-submit | passive-submit/1.1.0 | passive-submit/1.0.0 | absent |
 | spawn | spawn/2.0.0 | spawn/2.0.0 | absent |
 | place | place/2.0.0 | place/2.0.0 | absent |
 | resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.0.0 | absent |
 | receipts | receipts/1.1.0 | receipts/1.2.0 | D |
-| inspect | inspect/1.0.0 | H-inspect | D |
+| inspect | inspect/1.1.0 | H-inspect | D |
 | status | status/1.0.0 | H-status | D |
 | list | list/1.0.0 | H-list | absent |
 | fork | fork/1.0.0 | fork/1.0.0 | D |
@@ -159,9 +293,9 @@ Overrides and remaining members:
 | command | command/1.1.0 | command/1.0.0 | D |
 | timer-schedule | timer-schedule/1.1.0 | timer-schedule/1.0.0 | absent |
 | dashboard | dashboard/1.0.0 | H-dashboard | absent |
-| snapshot | snapshot/1.0.0 | snapshot/1.0.0 | D |
-| observe-open | observe-open/1.0.0 | observe-open/1.0.0 | D |
-| observe-frame | observe-frame/1.0.0 | observe-frame/1.0.0 | D |
+| snapshot | snapshot/1.0.0 | snapshot/2.0.0 | D |
+| observe-open | observe-open/1.0.0 | observe-open/2.0.0 | D |
+| observe-frame | observe-frame/1.0.0 | observe-frame/2.0.0 | D |
 | profile-read | profile-read/1.0.0 | H-profile-read | absent |
 | profile-update | profile-update/1.0.0 | H-profile-update | absent |
 | profile-list | profile-list/1.0.0 | H-profile-list | absent |
@@ -171,7 +305,7 @@ Overrides and remaining members:
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863
+H-inspect       d5921b17798451b298b92896cb9995c32df9402f2f4ddca7acc377639797a51f
 H-status        5e66c5049686a2f023b036947ddc9329d483d1833f4f6f6ced17377799fea071
 H-list          76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600
 H-dashboard     46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241
@@ -183,6 +317,14 @@ H-profile-list  0eb5c60290d491535a1dd158e5d5ed4432eb8f89fe26a496a395e08b58ff4db4
 Schema owners in table order are `InspectOutputSchema`, `StatusOutputSchema`, `ListRowSchema`, `AgentConversationSummarySchema`, `AgentProfileSchema`, `ProfileUpdateSchema`, and `ProfiledListOutputSchema`. `dashboard` returns an array despite its response identity hashing the row schema. Maintain these identities with the defining schemas; do not infer a complete result shape from the schema name alone. Source: `extensions/agent/version-contract.ts:30-56`; `extensions/agent/durable-host.ts:454-457`.
 
 The table lists advertised identities, not a claim that all members have the same target or side-effect policy. The consumer operations below define the relevant payloads. `changes` gates a service subscription; it is not an ordinary runtime request member.
+
+## Native result inspection
+
+The existing `inspect` operation accepts `{sessionId?,view:"result",requestId?,submissionId?,entryId?,operationId?}`. The selected storage/conversation qualifies every lookup; a root session uses its storage UUID and a child uses `UUID:conversationId`. One of requestId, submissionId or operationId is required. A native requestId resolves exactly through public `Tx.submissionByRequest(conversationId,requestId)`, not a report ID, text search or another store.
+
+Multiple selectors must identify the same native submission. A supplied entryId must equal its native input/write entry, not its answer entry. Conflicting selectors fail. OperationId is a separate admission value resolved through retained receipts in the selected conversation; it is never a requestId alias. A missing operation receipt is unavailable rather than an unverified operation association.
+
+A missing native submission returns `{view:"result",sessionId,conversationId,status:"unavailable",reason,usage}` with the supplied requestId/submissionId/operationId selectors when present. It invents no submission ID or native entry. A found result retains the native status, submissionId, producer requestId, entry/answer IDs and answer/reason fields. RequestId selects only the result view. Native terminal tool text uses the same validated output. No new operation, store or private-store parser participates.
 
 ## Roster publications and dashboard
 
@@ -242,16 +384,16 @@ Result:
   coverage:{complete:boolean,entries:number,bytes:number,hiddenExcluded:number,
             entryLimitReached:boolean,byteLimitReached:boolean}
 }
-Entry = {id:string,kind:string,model?:PiMessage[],data?:JSON,head?:string}
+Entry = {id:string,kind:string,communication:CommunicationView,model?:PiMessage[],data?:JSON,head?:string}
 ```
 
-Entries are oldest first. System entries are hidden. `revision` is an opaque display revision, not a durable replay cursor. Preserve `partial`, coverage, and `nextBefore`; an empty bounded scan with null continuation does not override `complete:false`. Earlier reads scan at most eight source pages of 64 entries. Source: `extensions/agent/dashboard-types.ts:107-135`; `extensions/agent/durable-observation.ts:1037-1057,1102-1200`.
+Entries are oldest first. System and communication bookkeeping entries are hidden. `revision` is an opaque display revision, not a durable replay cursor. Preserve `partial`, coverage, and `nextBefore`; an empty bounded scan with null continuation does not override `complete:false`. Earlier reads scan at most eight source pages of 64 entries. Source: `extensions/agent/dashboard-types.ts:107-135`; `extensions/agent/durable-observation.ts:1037-1057,1102-1200`.
 
 **Byte-bound exception:** selection admits the first visible entry even if that entry alone exceeds `maxBytes`. `coverage.bytes` measures source-entry selection, not a hard serialized response bound. Model messages, entry data, and live frames require separate consumer output/memory bounds. Source: `extensions/agent/durable-observation.ts:1063-1097`.
 
 ### Inspect
 
-Params: `{sessionId, view?, limit?, cursor?, entryId?, fromId?, offset?, query?, source?, submissionId?, operationId?}`. Supported views are `activity`, `history`, `branch`, `search`, `exact`, and `result`; the raw host default is `history` (`extensions/agent/durable-observation.ts:1858-1873`). Sources are `user`, `assistant`, `toolResult`, `summary`, and `custom`. `cursor` is an opaque JSON object: pass the returned cursor unchanged to the same query/target, never fabricate it from entry IDs. Source: `extensions/agent/durable-observation.ts:77-90,524-541`; `extensions/agent/durable-host.ts:612-618`; `extensions/agent/observation-schema.ts:47,306-427`.
+Params: `{sessionId, view?, limit?, cursor?, entryId?, fromId?, offset?, query?, source?, requestId?, submissionId?, operationId?}`. `requestId` selects only `view:"result"`. Supported views are `activity`, `history`, `branch`, `search`, `exact`, and `result`; the raw host default is `history` (`extensions/agent/durable-observation.ts:1858-1873`). Sources are `user`, `assistant`, `toolResult`, `summary`, and `custom`. `cursor` is an opaque JSON object: pass the returned cursor unchanged to the same query/target, never fabricate it from entry IDs. Source: `extensions/agent/durable-observation.ts:77-90,524-541`; `extensions/agent/durable-host.ts:612-618`; `extensions/agent/observation-schema.ts:47,306-427`.
 
 Output is discriminated by `view`:
 
@@ -262,11 +404,11 @@ Output is discriminated by `view`:
 | activity | `{view:"activity",format:"compact",sessionId,conversationId,turns:[{entries:CompactEntry[]}],nextCursor,metadata,coverage,detail}` |
 | exact | `{view:"exact",sessionId,conversationId,entryId,offset,text,nextOffset:number|null,truncated,omissions?}`; text is retained redacted JSON, not an unredacted archive. |
 | search | `{view:"search",sessionId,conversationId,matches,nextCursor,coverage:{scannedEntries,scannedBytes,complete},detail}` |
-| result | `{view:"result",sessionId,conversationId,submissionId,status,requestId?,operationId?,entryId?,answerEntryId?,reason?,answer?,usage,providerBlock?,recoveryOf?}`; status is queued, placed, done, or unanswered. |
+| result | Retained result: `{view:"result",sessionId,conversationId,submissionId,status,requestId?,operationId?,entryId?,answerEntryId?,reason?,answer?,usage,providerBlock?,recoveryOf?}`; status is queued, placed, done, or unanswered. Unavailable result: `{view:"result",sessionId,conversationId,status:"unavailable",reason,usage,requestId?,submissionId?,operationId?}`; only supplied selectors are retained, with no fabricated submission or entry. |
 
 `providerBlock` is an optional retained fact in result inspection and conversation status. Its closed shape is `{blockId,conversationId,providerSessionId,epoch,model:{provider,modelId},error,errorRedacted,errorTruncated,source:"provider"|"host-block",timestamp,originalResults,omittedOriginalResults}`. `originalResults` contains at most 16 closed references `{sessionId,submissionId,requestId?}`; error text is bounded to 4,096 characters. `recoveryOf` is an optional string in a result. These fields do not add a result status or authorize automatic replay. Source: `extensions/agent/observation-schema.ts:143-144,413-431`; `extensions/agent/provider-block.ts:18-26`; `extensions/agent/result-reference.ts:6-10`.
 
-`CompactEntry` has `{id:number,kind,source,role?,text,truncated,format:"compact",nextOffset:null,omissions?,toolCalls?,toolResults?,omittedParts?}`. Tool call summaries carry `{callId?,name,arguments,truncated}`; tool result summaries carry `{callId?,name,text,isError,truncated}`. Raw rows omit the compact discriminator and may carry `preview:{text,truncated}` plus `nextOffset`. Omission counters are `{providerSignatures,imagePayloads,redactedThinking}`. Search matches carry `{entryId,kind,source,matchOffset,excerpt,excerptText,truncated}` and their cursor is `{cursor:object|null,skip,scannedBytes}`. Source: `extensions/agent/observation-schema.ts:306-377`.
+`CompactEntry` has `{id:number,kind,source,role?,text,truncated,communication:CommunicationView,format:"compact",nextOffset:null,omissions?,toolCalls?,toolResults?,omittedParts?}`. Tool call summaries carry `{callId?,name,arguments,truncated}`; tool result summaries carry `{callId?,name,text,isError,truncated}`. Raw rows omit the compact discriminator and may carry `preview:{text,truncated}` plus `nextOffset`. Omission counters are `{providerSignatures,imagePayloads,redactedThinking}`. Search matches carry `{entryId,kind,source,matchOffset,excerpt,excerptText,truncated}` and their cursor is `{cursor:object|null,skip,scannedBytes}`. Source: `extensions/agent/observation-schema.ts:306-377`.
 
 Activity metadata contains `{owner,live,operation:number|null,runningTools,pending:number|null,streamedText?,lastError?,compactionFailure?,autoRetry?}`. Running tools carry `{toolCallId,name,issuedAt?,elapsedMs?,elapsedFrom?}`. Activity coverage includes scanned entries/bytes, complete, entry/scan-byte/output-byte limit flags, output bytes, omittedEntries, and metadataTruncated. Usage is `{models:{[key]:Usage},tools:{[key]:Usage}}`, with Pi usage values; consumers need not display financial fields to read an answer. Source: `extensions/agent/observation-schema.ts:49-60,379-425`.
 

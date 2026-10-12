@@ -7,6 +7,7 @@
  * no storage, worker, or activity module.
  */
 import type { Message } from "@earendil-works/pi-ai";
+import type { CommunicationView } from "./communication.ts";
 import type { ProfileHint } from "./profile-schema.ts";
 import type { AwaitFact } from "./await-facts.ts";
 
@@ -117,6 +118,8 @@ export interface AgentConversationEntry {
 	data?: unknown;
 	/** First entry retained by a compaction or reset entry. */
 	head?: string;
+	/** Committed display rows carry an exact owner join; uncommitted rows omit it. */
+	communication?: CommunicationView;
 }
 
 /** Active transcript of one conversation, oldest first. */

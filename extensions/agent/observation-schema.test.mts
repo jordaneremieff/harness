@@ -64,7 +64,11 @@ it("validates every inspect view and the empty and missing cases against a real 
 	assert.ok(result.answerEntryId);
 
 	await assert.rejects(readInspection(harness, fixtureStorageId, conversation, { view: "exact", entryId: 999_999 as EntryId }, BACKGROUND_CONTEXT), /not visible/u);
-	await assert.rejects(readInspection(harness, fixtureStorageId, conversation, { view: "result", operationId: "missing" }, BACKGROUND_CONTEXT), /no retained result/u);
+	const missing = await readInspection(harness, fixtureStorageId, conversation, { view: "result", operationId: "missing" }, BACKGROUND_CONTEXT);
+	structuredObservation(InspectOutputSchema, missing);
+	assert.equal((missing as { status: string }).status, "unavailable");
+	assert.equal((missing as { operationId: string }).operationId, "missing");
+	assert.equal(Object.hasOwn(missing as object, "submissionId"), false);
 	await assert.rejects(readInspection(harness, fixtureStorageId, conversation, { view: "search", query: "" }, BACKGROUND_CONTEXT), /requires query/u);
 	assert.throws(() => structuredObservation(InspectOutputSchema, { view: "nope" }), /does not match its schema/u);
 

@@ -38,7 +38,9 @@ for (const method of ["profile-read", "profile-update", "profile-list", "resolve
 operations["task-submit"] = { ...operations["task-submit"], response: "task-submit/1.2.0" };
 for (const method of ["spawn", "resolve-agent", "place"]) operations[method] = { request: `${method}/2.0.0`, response: `${method}/2.0.0` };
 operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
-operations.submit = { request: "submit/1.2.0", response: "submit/1.1.0" };
+operations.submit = { request: "submit/1.3.0", response: "submit/1.1.0" };
+operations["passive-submit"] = { request: "passive-submit/1.1.0", response: "passive-submit/1.0.0" };
+for (const method of ["snapshot", "observe-open", "observe-frame"]) operations[method] = { ...operations[method], response: `${method}/2.0.0` };
 operations.command = { request: "command/1.1.0", response: "command/1.0.0" };
 for (const method of ["rewind", "timer-schedule"]) operations[method] = { ...operations[method], request: `${method}/1.1.0` };
 operations.receipts = { request: "receipts/1.1.0", response: "receipts/1.2.0" };
@@ -48,7 +50,7 @@ operations["profile-list"] = { ...operations["profile-list"], response: schemaId
 operations["profile-read"] = { ...operations["profile-read"], response: schemaId(AgentProfileSchema) };
 operations["profile-update"] = { ...operations["profile-update"], response: schemaId(ProfileUpdateSchema) };
 operations.status = { ...operations.status, response: schemaId(StatusOutputSchema), durable: durableVersion };
-operations.inspect = { ...operations.inspect, response: schemaId(InspectOutputSchema), durable: durableVersion };
+operations.inspect = { ...operations.inspect, request: "inspect/1.1.0", response: schemaId(InspectOutputSchema), durable: durableVersion };
 operations.list = { ...operations.list, response: schemaId(ListRowSchema) };
 operations.dashboard = { ...operations.dashboard, response: schemaId(AgentConversationSummarySchema) };
 for (const method of ["snapshot", "observe-open", "observe-frame", "receipts", "fork", "rewind", "compact", "command"]) operations[method] = { ...operations[method], durable: durableVersion };
@@ -65,7 +67,7 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 });
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
-export const MANAGER_CONTRACT = "manager/2.1.0";
+export const MANAGER_CONTRACT = "manager/2.2.0";
 export const CONTROL_BINDING_CONTRACT = `native-controls/2.0.0;durable=${durableVersion}`;
 export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.1.0";
 

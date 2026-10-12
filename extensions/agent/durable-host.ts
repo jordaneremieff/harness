@@ -14,6 +14,8 @@
  * writer claim.
  */
 import { randomUUID } from "node:crypto";
+import { reconcileInputCommunications } from "./communication-retention.ts";
+import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
 import { ProviderModels } from "./provider-models.ts";
 import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-notices.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
@@ -216,6 +218,7 @@ export class DurableHost {
 	private readonly retryCeiling: () => number;
 	private readonly now: () => number;
 	private deliveryError: string | undefined;
+	private communicationDiagnostic: "retention-unavailable" | "invalid-envelope" | undefined;
 	private recovery: StrandedInputRecovery | undefined;
 	private resumeWork: Promise<void> | undefined;
 	private recoveryError: ((error: unknown) => void) | undefined;
@@ -240,6 +243,9 @@ export class DurableHost {
 		// A commit may add or remove work; the cached idle result is stale until the refresh settles.
 		harness.subscribeCommits((publication) => {
 			if (publication.changes.length > 0) liveObservations.get(harness)?.invalidate();
+			if (publication.changes.some((change) => change.type === "submission" || (change.type === "entry" && change.value.kind === "pi.user"))) queueMicrotask(() => {
+				if (!this.closed) void reconcileInputCommunications(harness, this.storageId, BACKGROUND_CONTEXT).catch(() => { this.communicationDiagnostic = "retention-unavailable"; });
+			});
 			this.commitGeneration += 1;
 			this.idleDirty = true;
 			queueMicrotask(() => {
@@ -260,6 +266,11 @@ export class DurableHost {
 
 	isIdle(): boolean {
 		return this.idle;
+	}
+
+	/** Bounded owner diagnostic, never a sender assertion or an admission failure. */
+	get communicationMetadataDiagnostic(): "retention-unavailable" | "invalid-envelope" | undefined {
+		return this.communicationDiagnostic;
 	}
 
 	/**
@@ -354,6 +365,8 @@ export class DurableHost {
 		if (this.closed) return Promise.reject(new DurableHostClosedError());
 		this.resumeWork ??= (async () => {
 			this.recovery = new StrandedInputRecovery(this.harness, (error) => this.recoveryError?.(error));
+			try { await reconcileInputCommunications(this.harness, this.storageId, context); }
+			catch { this.communicationDiagnostic = "retention-unavailable"; }
 			this.harness.resume();
 			await reconcileDeliveries(this.harness, context);
 			await this.recovery.open(context);
@@ -399,13 +412,7 @@ export class DurableHost {
 			case "collaboration-list": return listCollaboration(this.harness, params ?? {}, requestContext);
 			case "collaboration-read": return readCollaboration(this.harness, params ?? {}, requestContext);
 			case "collaboration-mutate": return mutateCollaboration(this.harness, this.storageId, params ?? {}, requestContext);
-			case "passive-submit": {
-				const conversation = await this.target(params, requestContext);
-				const message = requestRequiredString(params, "message");
-				if (Buffer.byteLength(message) > 16 * 1024) throw new Error("Passive thread notice exceeds its byte bound");
-				const submission = await conversation.submit({ type: "write", requestId: requestRequiredString(params, "requestId"), entry: { kind: "agent.thread-notice", model: [{ role: "user", content: message, timestamp: Date.now() }] } }, requestContext);
-				return { submissionId: submission.id, conversationId: conversation.id, passive: true };
-			}
+			case "passive-submit": return this.passiveSubmitRequest(params, requestContext);
 			case "profile-read": {
 				const conversation = await this.target(params, requestContext);
 				return readProfile(this.harness, this.storageId, conversation.id, requestContext, true);
@@ -424,6 +431,7 @@ export class DurableHost {
 				await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), requestContext);
 				const submitted = await richSubmitConversation(conversation, {
 					message: messageFrom(params?.message), requestId: requestRequiredString(params, "requestId"), requester: requestRequiredString(params, "requester"),
+					communication: { storageId: this.storageId, value: undefined },
 					origin, ...optionalParam("replyTo", requestString(params, "replyTo")), ...optionalParam("whenBusy", this.busyMode(params)), ...optionalParam("operationId", requestString(params, "operationId")),
 					...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }), senderIdentity: this.identity(conversation.id),
 				}, requestContext);
@@ -523,16 +531,21 @@ export class DurableHost {
 		return this.harness.commit((tx) => releaseAwait(tx, this.storageId, target.id, requestRequiredId(params?.expectedRunId, "expectedRunId")), context);
 	}
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const communication = params?.communication === undefined ? undefined : parseCommunication(params.communication) ?? null;
+		if (communication === null) this.communicationDiagnostic = "invalid-envelope";
 		const conversation = await this.target(params, context);
 		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
 		const provenance = params?.provenance as Omit<InputProvenance, "conversationId" | "requestId" | "submissionId"> | undefined;
 		const providerRetry = params?.providerRetry;
 		if (providerRetry !== undefined && (!Value.Check(ProviderRetryNoticeSchema, providerRetry) || providerRetry.fact.execution === undefined)) throw new TypeError("Invalid provider retry notice evidence");
+		const message = messageFrom(params?.message);
+		const requestId = requestRequiredString(params, "requestId");
 		const submitted = await submitConversation(
 			conversation,
 			{
-				message: messageFrom(params?.message),
-				requestId: requestRequiredString(params, "requestId"),
+				message,
+				requestId,
+				communication: { storageId: this.storageId, value: communication },
 				...(provenance === undefined ? {} : { provenance }),
 				...(providerRetry === undefined ? {} : { providerRetry: providerRetry as ProviderRetryNotice }),
 				...optionalParam("ownerId", requestString(params, "ownerId")),
@@ -546,6 +559,25 @@ export class DurableHost {
 			this.now,
 		);
 		return { ...submitted, identity: this.identity(conversation.id) };
+	}
+
+	private async passiveSubmitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const communication = params?.communication === undefined ? undefined : parseCommunication(params.communication) ?? null;
+		const conversation = await this.target(params, context);
+		const message = requestRequiredString(params, "message");
+		if (Buffer.byteLength(message) > 16 * 1024) throw new Error("Passive thread notice exceeds its byte bound");
+		const requestId = requestRequiredString(params, "requestId");
+		let data: ReturnType<typeof parseCommunicationPassive> | { format: "agent.communication-invalid/1"; reason: "invalid" };
+		if (communication !== undefined) {
+			try { data = parseCommunicationPassive({ format: "agent.communication-passive/1", requestId, value: communication === null ? null : { ...communication, recordedAt: this.now() } }); }
+			catch { data = undefined; }
+			if (data === undefined) {
+				this.communicationDiagnostic = "invalid-envelope";
+				data = { format: "agent.communication-invalid/1", reason: "invalid" };
+			}
+		}
+		const submission = await conversation.submit({ type: "write", requestId, entry: { kind: "agent.thread-notice", model: [{ role: "user", content: message, timestamp: Date.now() }], ...(data === undefined ? {} : { data }) } }, context);
+		return { submissionId: submission.id, conversationId: conversation.id, passive: true };
 	}
 
 	private busyMode(params: RequestParams | undefined): "steer" | "followUp" | "reject" | undefined {
@@ -841,7 +873,7 @@ export class DurableHost {
 
 	private async snapshotRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
-		return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context);
+		return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context, this.storageId);
 	}
 
 	// ----- live observation -----------------------------------------------------------------
@@ -884,7 +916,7 @@ export class DurableHost {
 	 */
 	async submit(params: DurableSubmitParams & { readonly conversationId?: ConversationId }, context: Context = BACKGROUND_CONTEXT): Promise<DurableSubmitResult & { readonly identity: string }> {
 		const conversation = params.conversationId === undefined ? this.rootConversation : await this.conversation(params.conversationId, context);
-		const submitted = await submitConversation(conversation, params, context);
+		const submitted = await submitConversation(conversation, { ...params, communication: params.communication ?? { storageId: this.storageId, value: undefined } }, context);
 		return { ...submitted, identity: this.identity(conversation.id) };
 	}
 

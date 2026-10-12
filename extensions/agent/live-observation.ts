@@ -10,6 +10,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { ConversationId, ConversationView, Harness, LiveState, TaskGraph, WatchHandle } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
+import { captureCommunicationReader } from "./communication-observation.ts";
 import { durableIdentity, publicLiveState, readConversationStatus, selectSnapshotEntries, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_ENTRY_LIMIT, snapshotEntry } from "./durable-observation.ts";
 import { buildLiveEntries, jsonSafeFrame, taskGraphRows, type ConversationFrame, type ObservationFrame, type TaskLabel, type TasksFrame } from "./live-frames.ts";
 
@@ -238,8 +239,12 @@ export class LiveObservationService {
 		if (state.frame !== undefined && !state.dirty) return state.frame;
 		const revision = state.revision;
 		const value = state.handle.value;
+		const conversation = await this.harness.conversation(state.conversationId, this.context);
+		if (conversation === undefined) throw new Error(`observed conversation ${state.conversationId} does not exist`);
+		const reader = await captureCommunicationReader(this.harness, this.options.storageId, conversation, this.context);
 		const selection = selectSnapshotEntries([...value.entries].reverse(), SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_BYTE_LIMIT);
-		const entries = selection.entries.map((entry) => snapshotEntry(entry));
+		const views = await reader.views(selection.entries);
+		const entries = selection.entries.map((entry, index) => ({ ...snapshotEntry(entry), communication: views[index] ?? { state: "unavailable" as const, reason: "limit" as const } }));
 		const status = await readConversationStatus(this.harness, this.options.storageId, state.conversationId, {}, this.context);
 		if (!status) throw new Error(`observed conversation ${state.conversationId} has no status`);
 		const frame: ConversationFrame = jsonSafeFrame({

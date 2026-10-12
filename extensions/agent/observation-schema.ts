@@ -20,6 +20,7 @@ import { FleetStatusSchema } from "./fleet-status.ts";
 import { OrdinaryPrimaryObservationSchema } from "./primary-observation.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
 import { CreatedAgentsSchema } from "./agent-lineage.ts";
+import { CommunicationViewSchema } from "./communication.ts";
 import { AwaitFactSchema } from "./await-facts.ts";
 import { ProviderBlockFactSchema } from "./provider-block.ts";
 
@@ -326,6 +327,7 @@ const rawEntryRow = object({
 /** Explicit compact semantics, including text-only entries. */
 export const CompactEntryRowSchema = object({
 	...entryRowFields,
+	communication: CommunicationViewSchema,
 	format: literal("compact"),
 	nextOffset: Type.Null(),
 	toolCalls: Type.Optional(Type.Array(object({ callId: Type.Optional(string), name: string, arguments: string, truncated: boolean }), { maxItems: 8 })),
@@ -410,7 +412,7 @@ export const ActivityOutputSchema = object({
 	detail: string,
 });
 
-export const ResultOutputSchema = object({
+const RetainedResultOutputSchema = object({
 	providerBlock: Type.Optional(ProviderBlockFactSchema),
 	recoveryOf: Type.Optional(string),
 	view: literal("result"),
@@ -426,6 +428,18 @@ export const ResultOutputSchema = object({
 	answer: Type.Optional(string),
 	usage: UsageStateSchema,
 });
+
+export const ResultOutputSchema = union([RetainedResultOutputSchema, object({
+	view: literal("result"),
+	sessionId: string,
+	conversationId: id,
+	status: literal("unavailable"),
+	requestId: Type.Optional(string),
+	submissionId: Type.Optional(id),
+	operationId: Type.Optional(string),
+	reason: string,
+	usage: UsageStateSchema,
+})]);
 
 /** `agent_inspect` output: one shape per view, selected by the `view` property. */
 export const InspectOutputSchema = union([HistoryOutputSchema, SearchOutputSchema, ExactOutputSchema, ActivityOutputSchema, ResultOutputSchema]);

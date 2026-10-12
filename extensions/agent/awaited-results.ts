@@ -1,8 +1,9 @@
 /** Native await ownership, exact outcomes, and control-provenance release. */
 import { createHash } from "node:crypto";
 import { Type, type Static } from "typebox";
-import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { canonicalIdentity } from "./identity.ts";
+import { prepareCommunication } from "./communication-retention.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
 import { ProducerAwaitFactSchema, type ProducerAwaitFact, type ProducerRetry } from "./await-facts.ts";
 import { ProviderBlockFactSchema, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
@@ -37,10 +38,10 @@ export const AwaitOutputSchema = Type.Object({
 export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; providerBlock?: ProviderBlockFact; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
 export type AwaitDecision = "awaiting" | "settled" | "released" | "failed";
 export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[]; producers?: ProducerAwaitFact[]; releaseOnProviderRetry?: AwaitInput["releaseOnProviderRetry"]; producerRetries?: ProducerAwaitFact[] };
-export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number };
+export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number; communicationIntent?: import("./communication-retention.ts").RetainedCommunicationIntent };
 export type AwaitDelivery = { requestId: string; results: ResultReference[]; complete: boolean };
 type RetryVisibility = { conversationId: number; input: number; result: ResultReference; runId: number; attempt: number; nextRetryAt: number; revision: string };
-export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[]; retryVisibility?: RetryVisibility[] };
+export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[]; retryVisibility?: RetryVisibility[]; communicationDiagnostic?: "invalid" | "unavailable" };
 export const AwaitDoc = defineDoc<AwaitState>({ kind: "agent.awaited-results", version: 1, scope: "session", initial: () => ({ declarations: [], provenance: [] }) });
 export const AWAIT_DECLARATION_LIMIT = 64;
 export const AWAIT_PROVENANCE_LIMIT = 128;
@@ -272,6 +273,30 @@ export async function commitAwaitOutcome(tx: Tx, taskId: TaskId, outcome: AwaitO
 	if (declaration.decision === "failed") releaseCohort(state, declaration, outcome.reason ?? "a result did not succeed");
 }
 
+async function prepareEvictedCommunication(tx: Tx, state: AwaitState, item: InputProvenance, submission: SubmissionRecord | undefined): Promise<(() => Promise<void>) | undefined> {
+	const intent = item.communicationIntent;
+	if (intent === undefined || intent.linkedEntryId !== undefined) return undefined;
+	if (intent.storageId === undefined || submission === undefined) { state.communicationDiagnostic = "unavailable"; return undefined; }
+	return prepareCommunication(tx, intent.storageId, item.conversationId as ConversationId, item.requestId, intent, submission);
+}
+
+async function pruneInputProvenance(tx: Tx, state: AwaitState): Promise<void> {
+	const retained: InputProvenance[] = [];
+	const materialize: (() => Promise<void>)[] = [];
+	for (const item of state.provenance) {
+		const submission = await tx.submissionByRequest(item.conversationId as ConversationId, item.requestId);
+		const live = await tx.doc(LiveDoc, item.conversationId as ConversationId);
+		if ((submission === undefined && item.runId !== undefined && item.runId === live.run?.taskId) || submission?.status === "queued" || submission?.status === "placed") retained.push(item);
+		else {
+			const write = await prepareEvictedCommunication(tx, state, item, submission);
+			if (write !== undefined) materialize.push(write);
+		}
+	}
+	// All native table reads precede the first companion append.
+	for (const write of materialize) await write();
+	state.provenance.splice(0, state.provenance.length, ...retained);
+}
+
 /** Record classification before admission; native input identity makes release crash-reconcilable. */
 export async function recordInputProvenance(tx: Tx, provenance: InputProvenance): Promise<void> {
 	const state = await tx.doc(AwaitDoc);
@@ -280,15 +305,7 @@ export async function recordInputProvenance(tx: Tx, provenance: InputProvenance)
 		if (prior.classification !== provenance.classification || prior.sender !== provenance.sender) throw new Error("Input requestId already has different release provenance");
 		return;
 	}
-	if (state.provenance.length >= AWAIT_PROVENANCE_LIMIT) {
-		const retained: InputProvenance[] = [];
-		for (const item of state.provenance) {
-			const submission = await tx.submissionByRequest(item.conversationId as ConversationId, item.requestId);
-			const live = await tx.doc(LiveDoc, item.conversationId as ConversationId);
-			if ((submission === undefined && item.runId !== undefined && item.runId === live.run?.taskId) || submission?.status === "queued" || submission?.status === "placed") retained.push(item);
-		}
-		state.provenance.splice(0, state.provenance.length, ...retained);
-	}
+	if (state.provenance.length >= AWAIT_PROVENANCE_LIMIT) await pruneInputProvenance(tx, state);
 	if (state.provenance.length >= AWAIT_PROVENANCE_LIMIT) throw new Error("Input provenance bound is full");
 	const live = await tx.doc(LiveDoc, provenance.conversationId as ConversationId);
 	state.provenance.push({ ...provenance, ...(live.run === undefined ? {} : { runId: live.run.taskId }) });
