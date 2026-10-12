@@ -18,12 +18,15 @@ class NodeFake {
   get offsetHeight(): number { return Number.parseFloat(this.style.height) || 85.5; }
   get scrollHeight(): number { return this.value.split('\n').length * 22.5 + 16; }
   conversationHeight = 900;
-  closest(selector?: string): {clientHeight: number} | null { return selector === '[hidden],[inert]' ? null : {clientHeight: this.conversationHeight}; }
+  closest(selector?: string): {clientHeight: number} | null {
+    if (selector === '[hidden],[inert]') return this.hidden || this.inert ? this : this.parentElement?.closest(selector) ?? null;
+    return {clientHeight: this.conversationHeight};
+  }
   getBoundingClientRect(): {top: number; bottom: number} { return {top: 0, bottom: 0}; }
   private input = '';
   get value(): string { return this.input; }
   set value(value: string) { this.input = value; this.selectionStart = 0; this.selectionEnd = 0; this.selectionDirection = 'none'; }
-  open = false; dataset: Record<string, string> = {}; hidden = false; disabled = false; focused = false;
+  open = false; dataset: Record<string, string> = {}; hidden = false; inert = false; disabled = false; focused = false;
   private text = ''; children: NodeFake[] = []; attrs = new Map<string, string>(); listeners = new Map<string, ((event: EventFake) => void)[]>();
   get textContent(): string { return this.text + this.children.map(child => child.textContent).join('\n'); }
   set textContent(text: string) { this.text = text; this.children = []; }
@@ -113,6 +116,22 @@ test('saved ranges and editor scroll survive reload with exact target identity',
   assert.deepEqual([reloaded.node('editor').scrollTop, reloaded.node('editor').scrollLeft], [48, 12]);
   for (const [workspace, target] of [['other-workspace', a], ['w', {...a, target: {...a.target, epoch: 8}}], ['w', state('a', draft(5, 'saved draft'))]] as const) {
     const other = f.create('other'); other.composer.attach(workspace, target); assert.equal(other.node('editor').selectionStart, 0);
+  }
+});
+test('hidden viewport clamping never replaces the owned editor range or scroll checkpoint', () => {
+  for (const hiddenEvents of [false, true]) {
+    const f = fixture(); const saved = f.connect(state('a', draft(4, 'saved draft'))); const editor = f.node('editor'), root = f.node('composer');
+    editor.focus(); editor.setSelectionRange(2, 7, 'backward'); editor.scrollTop = 80; editor.scrollLeft = 12; editor.fire('select');
+    const unrelated = new NodeFake(); unrelated.focus(); root.hidden = true; root.inert = true; editor.scrollTop = 0; editor.scrollLeft = 0;
+    if (hiddenEvents) {editor.fire('blur'); editor.fire('scroll'); f.composer.attach('w', saved);}
+    root.hidden = false; root.inert = false; f.composer.attach('w', {...saved, draft: {...saved.draft}});
+    assert.equal(document.activeElement === unrelated, true);
+    assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection, editor.scrollTop, editor.scrollLeft], [2, 7, 'backward', 80, 12]);
+    editor.fire('scroll'); f.composer.focus();
+    assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection, editor.scrollTop, editor.scrollLeft], [2, 7, 'backward', 80, 12]);
+    editor.scrollTop = 0; editor.scrollLeft = 0; editor.fire('scroll'); unrelated.focus(); f.composer.attach('w', saved); f.composer.focus();
+    assert.deepEqual([editor.scrollTop, editor.scrollLeft], [0, 0], 'A deliberate visible scroll to the start remains a valid checkpoint.');
+    assert.equal(f.composer.editor.value, saved.draft.text); assert.equal(f.calls.length, 0);
   }
 });
 test('in-memory selection ownership rejects another epoch even with a reused target key', () => {
@@ -477,6 +496,8 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     editor.conversationHeight = 400; f.composer.resize(); paint(); assert.equal(editor.style.height, '240px');
     editor.conversationHeight = 900; f.composer.resize(); paint(); assert.equal(editor.style.height, '540px');
     f.composer.setManualHeight(300.6); paint(); assert.equal(editor.style.height, '301px');
+    f.node('composer').hidden = true; f.composer.setManualHeight(600); paint(); assert.equal(editor.style.height, '301px');
+    f.node('composer').hidden = false; f.composer.resize(); paint(); assert.equal(editor.style.height, '540px');
     f.composer.setManualHeight(0); paint(); assert.equal(editor.style.height, '40.5px');
     f.composer.setManualHeight(undefined); paint(); assert.equal(editor.style.height, '40.5px'); assert.equal(editor.style.maxHeight, '243px');
     for (const px of [NaN, Infinity, -1]) assert.throws(() => f.composer.setManualHeight(px), RangeError);

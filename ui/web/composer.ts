@@ -124,7 +124,8 @@ export class Composer {
     this.manualHeight = px === undefined ? undefined : Math.round(px); this.resize();
   }
   attach(workspace: string, state?: TargetState): void {
-    this.rememberSelection();
+    // Hidden layout can reset native offsets without changing the owned draft.
+    if (document.activeElement === this.editor) this.rememberSelection();
     const previousTarget = this.current?.state.target;
     if (!state) { this.commandMenu?.reset(); }
     if (!state) { this.current = undefined; this.editor.value = ''; this.slot().replaceChildren(); this.elements.receiptDetails.replaceChildren(); this.render(); return; }
@@ -249,14 +250,14 @@ export class Composer {
     });
   }
   private rememberSelection(): void {
-    const buffer = this.current; if (!buffer || this.editor.value !== buffer.data.text) return;
+    const buffer = this.current; if (!buffer || this.elements.root.closest('[hidden],[inert]') || this.editor.value !== buffer.data.text) return;
     buffer.selection = {start: this.editor.selectionStart, end: this.editor.selectionEnd, direction: this.editor.selectionDirection ?? 'none',
       text: buffer.data.text, revision: buffer.data.server.revision, edit: buffer.data.edit, scrollTop: this.editor.scrollTop, scrollLeft: this.editor.scrollLeft};
     this.persistSelection(buffer);
   }
   private restoreSelection(buffer?: Buffer): void {
     const saved = buffer?.selection;
-    if (!buffer || !saved || saved.text !== buffer.data.text || this.editor.value !== saved.text || saved.revision !== buffer.data.server.revision || saved.edit !== buffer.data.edit) return;
+    if (!buffer || !saved || this.elements.root.closest('[hidden],[inert]') || saved.text !== buffer.data.text || this.editor.value !== saved.text || saved.revision !== buffer.data.server.revision || saved.edit !== buffer.data.edit) return;
     this.editor.setSelectionRange(saved.start, saved.end, saved.direction);
     this.editor.scrollTop = saved.scrollTop; this.editor.scrollLeft = saved.scrollLeft;
   }
@@ -278,13 +279,14 @@ export class Composer {
     buffer.state.draft = buffer.data.server;
     if (this.current !== buffer) return;
     if (this.editor.value !== buffer.data.text) { this.editor.value = buffer.data.text; this.restoreSelection(buffer); }
+    else if (document.activeElement !== this.editor) this.restoreSelection(buffer);
     this.resize(); this.render(); this.finishFocusRequest();
   }
   resize(): void {
     if (this.destroyed || this.sizePending) return; this.sizePending = true;
     requestAnimationFrame(() => {
       this.sizePending = false;
-      if (this.destroyed || !this.editor.isConnected) return;
+      if (this.destroyed || !this.editor.isConnected || this.elements.root.closest('[hidden],[inert]')) return;
       const scrollTop = this.editor.scrollTop, scrollLeft = this.editor.scrollLeft;
       const style = getComputedStyle(this.editor); const line = Number.parseFloat(style.lineHeight);
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
