@@ -687,7 +687,7 @@ test('connection and access views stay distinct and tab hiding releases observat
   assert.ok(source.includes('connectionSurfaceFor(connectionPhase)')); assert.ok(source.includes('setUnauthorizedHandler(error =>'));
   assert.ok(source.includes("byId('app').hidden = auth")); assert.ok(source.includes("byId('access-view').hidden = !auth")); assert.ok(source.includes("byId('skip-composer').hidden = auth")); assert.doesNotMatch(source, /setInterval/);
   const identity = 'visibility-owner'; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9536})], roster: [agentFixture(identity)], observations: [observation(identity)]});
-  const editor = agentControl('editor'), stream = streamSources.at(-1); assert.ok(stream); editor.value = 'Hidden tab draft'; editor.dispatch('input'); editor.setSelectionRange(2, 7);
+  const editor = agentControl('editor'), stream = streamSources.at(-1); assert.ok(stream); editor.value = 'Hidden tab draft'; editor.dispatch('input'); editor.setSelectionRange(2, 7); editor.dispatch('select');
   const tree = app.state.workspace?.conversationLayout, selected = app.state.workspace?.selectedTarget, saves = selectionSaves.length;
   const retained = () => {assert.deepEqual(app.state.workspace?.conversationLayout, tree); assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.equal(selectionSaves.length, saves); assert.equal(agentControl('editor'), editor);};
   const visibility = () => {for (const handler of [...documentHandlers.get('visibilitychange') ?? []]) handler({target: hostDocument});};
@@ -868,7 +868,7 @@ test('disconnected thinking changes alternate locally without claiming a saved p
 test('close and Escape retain buffers, return focus by identity, and hide unsafe controls', async () => {
   const row=agentFixture('escape-recipient'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:707})],roster:[row]});
   const message=byId('roster').querySelector('[data-identity="escape-recipient"]')?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
-  const editor=messageControl('editor'); editor.value='Escape buffer'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(2,7); assert.equal(messageControl('stop').hidden,true);
+  const editor=messageControl('editor'); editor.value='Escape buffer'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(2,7); editor.dispatch('select'); assert.equal(messageControl('stop').hidden,true);
   app.appKey({key:'Escape',preventDefault(){}} as KeyboardEvent); await settle(); assert.equal(byId('agent-message-panel').hidden,true); assert.equal(hostDocument.activeElement,message);
   message.click(); await settle(); assert.equal(messageControl('editor'),editor); assert.equal(editor.value,'Escape buffer'); assert.deepEqual([editor.selectionStart,editor.selectionEnd],[2,7]); byId('agent-message-close').click();
 });
@@ -1155,7 +1155,7 @@ test('split panes retain both transcript and composer nodes and use the shared r
   app.applyLayout(twoPanes('split-a'));await settle();assert.equal(p('root'),roots[0]);assert.equal(a('root'),roots[1]);assert.equal(p('editor'),editors[0]);assert.equal(a('editor'),editors[1]);assert.equal(p('transcript'),transcripts[0]);assert.equal(a('transcript'),transcripts[1]);assert.equal(p('composer'),forms[0]);assert.equal(a('composer'),forms[1]);const handle=byId('conversation-panes').querySelector('.pane-divider');assert.ok(handle);assert.equal(handle.getAttribute('role'),'separator');assert.equal(handle.tabIndex,0);handle.dispatch('keydown',{key:'ArrowRight'});await settle();assert.ok(selectionSaves.at(-1)?.body.conversationLayout);
 });
 test('an addressed split retains Primary and agent owners without a permanent Split control', async () => {
-  const identity='split-target';const layout=singlePane([{kind:'primary'},{kind:'agent',identity}]);await arrive({workspace:{id:'w',revision:1,primaryKey:'p',conversationLayout:layout},primaries:[primaryFixture({epoch:712})],roster:[agentFixture(identity)]});const p=controls(app.primaryComposer()),editor=p('editor');editor.value='Retain the Primary draft';editor.dispatch('input');editor.setSelectionRange(3,8);
+  const identity='split-target';const layout=singlePane([{kind:'primary'},{kind:'agent',identity}]);await arrive({workspace:{id:'w',revision:1,primaryKey:'p',conversationLayout:layout},primaries:[primaryFixture({epoch:712})],roster:[agentFixture(identity)]});const p=controls(app.primaryComposer()),editor=p('editor');editor.value='Retain the Primary draft';editor.dispatch('input');editor.setSelectionRange(3,8);editor.dispatch('select');
   const next=splitPane(layout,'pane-1','x',{width:1400,height:640,divider:4},`agent:${identity}`);app.applyLayout(next);await settle();assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity});assert.equal(p('editor'),editor);assert.equal(editor.value,'Retain the Primary draft');assert.deepEqual([editor.selectionStart,editor.selectionEnd],[3,8]);assert.equal(paneLeaves(app.state.workspace?.conversationLayout?.root??next.root).length,2);assert.equal(hostDocument.getElementById('tab-split'),undefined);
 });
 
@@ -1471,7 +1471,7 @@ test('stored Start is explicit, uses fresh keys and retains both drafts, caret, 
   const before = transportLog.length; await storedLaunchFixture(identity);
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 0);
   const primaryEditor = primaryControl('editor'); const agentEditor = agentControl('editor');
-  primaryEditor.setSelectionRange(2, 7); agentEditor.setSelectionRange(3, 8); app.focusPane('agent-pane');
+  primaryEditor.setSelectionRange(2, 7); primaryEditor.dispatch('select'); agentEditor.setSelectionRange(3, 8); agentEditor.dispatch('select'); app.focusPane('agent-pane');
   startPreparation = async captured => confirmLaunch(captured);
   await app.startStoredAgent('w', identity); await settle();
   const first = transportLog.slice(before).find(call => call.path.endsWith('/start')); assert.ok(first);
