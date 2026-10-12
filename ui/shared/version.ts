@@ -1,5 +1,5 @@
 /** The iteration owner changes this value at the UI iteration tie-off. */
-export const UI_ITERATION = '0.3';
+export const UI_ITERATION = '0.4';
 
 export type UiIdentity = Readonly<{
   iteration: string;
