@@ -55,5 +55,6 @@ export function cardActionLabel(node: HTMLButtonElement, label: string, descript
   node.setAttribute('aria-label', description); node.title = description;
 }
 export function cardDisclosure(summary: HTMLElement): void {
-  summary.classList.add('card-disclosure'); summary.prepend(cardIcon('chevron'));
+  summary.classList.add('card-disclosure');
+  if (!summary.querySelector('.card-icon-chevron')) summary.prepend(cardIcon('chevron', summary.ownerDocument));
 }

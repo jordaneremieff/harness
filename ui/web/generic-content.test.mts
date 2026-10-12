@@ -21,6 +21,7 @@ class DomNode extends EventTarget {
       else { node.parent = this; this.childNodes.push(node); }
     }
   }
+  prepend(...nodes: DomNode[]): void {for (const node of nodes) node.parent = this; this.childNodes.unshift(...nodes);}
   remove(): void { if (this.parent) this.parent.childNodes = this.parent.childNodes.filter(child => child !== this); }
   querySelectorAll(selector: string): DomNode[] { return descendants(this).filter(child => selector.startsWith('.') ? child.className.split(' ').includes(selector.slice(1)) : child.tag === selector); }
   querySelector(selector: string): DomNode | null { return this.querySelectorAll(selector)[0] ?? null; }

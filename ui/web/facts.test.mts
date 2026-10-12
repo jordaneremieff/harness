@@ -7,12 +7,14 @@ class FakeNode {
   tag: string; children: FakeNode[] = []; parent?: FakeNode; dataset: Record<string, string> = {}; textContent = ''; className = ''; open = false;
   constructor(tag: string) {this.tag = tag;}
   append(...nodes: FakeNode[]): void {for (const node of nodes) {node.parent = this; this.children.push(node);}}
+  prepend(...nodes: FakeNode[]): void {this.children.unshift(...nodes);}
+  setAttribute(): void {}
   querySelector(tag: string): FakeNode | undefined {return this.children.find(node => node.tag === tag);}
   remove(): void {if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this);}
   set innerHTML(_value: string) {throw new Error('HTML assignment forbidden');}
 }
 function root(): HTMLElement {
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new FakeNode(tag)}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new FakeNode(tag), createElementNS: (_namespace: string, tag: string) => new FakeNode(tag)}});
   return new FakeNode('div') as unknown as HTMLElement;
 }
 test('reported fact updates retain the disclosure node and its open state', () => {

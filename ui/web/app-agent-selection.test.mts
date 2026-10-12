@@ -1,8 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ProjectedFrame } from '../shared/api.ts';
-import {app, arrive, settle, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} from './app-fixture.mts';
+import {app, arrive, settle, hostDocument, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} from './app-fixture.mts';
 
+test('initial focused draft hydration restores focus, while rerenders preserve another control focus', async () => {
+  const target = {kind: 'agent', identity: 'caret-agent'} as const;
+  const saved = targetFixture('caret-target', target, {draft: {revision: 4, text: 'saved draft', mode: 'followUp', persisted: true}, reading: {revision: 3, anchorId: 'caret-entry', offsetPx: 17, followTail: false}});
+  const frame: ProjectedFrame = {revision: 1, observedAt: '', live: [], entries: [entryFixture('caret-entry', [messageFixture('caret-message', [textPart('Reading anchor')])])], nextBefore: null, coverage, status: {busy: false}};
+  hostDocument.activeElement = hostDocument.body;
+  await arrive({workspace: {id: 'caret-workspace', revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(target.identity)], targets: [saved], observations: [observation(target.identity, frame)]});
+  const composer = app.agentComposer(); assert.equal(hostDocument.activeElement, composer.editor);
+  composer.editor.setSelectionRange(2, 7, 'backward'); agentControl('editor').dispatch('select');
+  const unrelated = byId('agent-search'); unrelated.focus(); await app.reload(); await settle();
+  assert.equal(hostDocument.activeElement, unrelated); assert.deepEqual([composer.editor.selectionStart, composer.editor.selectionEnd], [2, 7]);
+  assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading, saved.reading);
+  app.focusPane('pane-1'); assert.equal(hostDocument.activeElement, composer.editor);
+  assert.deepEqual([composer.editor.selectionStart, composer.editor.selectionEnd, composer.editor.selectionDirection], [2, 7, 'backward']);
+  assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading, saved.reading);
+});
 test('agent settings retain model and thinking text from the exact frame without replacing global Primary facts', async () => {
   const row = agentFixture('selected', {model: {provider: 'other', modelId: 'roster-model'}, thinkingLevel: 'low'});
   const frame: ProjectedFrame = {revision: 1, observedAt: '', live: [], entries: [], nextBefore: null, coverage,

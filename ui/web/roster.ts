@@ -1,6 +1,6 @@
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
 import {cardAction, cardActionLabel} from './card-icons.ts';
-import { byId, button, details, element, setText } from './dom.ts';
+import { byId, button, details, element, setText, statusGlyph } from './dom.ts';
 import { captureAnchor, layoutItems, restoreAnchor, visibleWindow } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 import { absoluteTime, isValidTimestamp, previewText, relativeTime, timestampDetails } from './format.ts';
@@ -298,7 +298,7 @@ export class Roster {
   }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
-    const state = this.resolvedStatus(row); setText(cached.state, state.glyph); cached.state.title = state.label; setText(cached.name, rowName(row));
+    const state = this.resolvedStatus(row); statusGlyph(cached.state, state.glyph); cached.state.title = state.label; setText(cached.name, rowName(row));
     setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
     cached.identity.setAttribute('aria-label', cached.identity.title);
     cached.state.dataset.state = row.availability === 'live' ? state.label.toLocaleLowerCase() : 'retained';

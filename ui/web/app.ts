@@ -61,7 +61,7 @@ export function focusPane(pane: Pane): void {
   const leaf = paneById(currentLayout(), pane); if (!leaf) return;
   applyLayout({...currentLayout(), focusedPane: pane});
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
-  if (target) conversationController(target).composer.editor.focus({preventScroll: true});
+  if (target) conversationController(target).composer.focus();
 }
 function updatePaneFocus(pane: Pane): void { if (focusedPane !== pane) applyLayout({...currentLayout(), focusedPane: pane}); }
 function markFocusedPane(): void {
@@ -596,7 +596,7 @@ function renderSessionEntry(hasTab: boolean): void {
   const chooser = byId('session-chooser'); chooser.hidden = !firstUse;
   if (firstUse && snapshot) picker.mount(chooser, projectPath()); else picker.unmount();
 }
-function focusEditor(): void { const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.editor.focus({preventScroll: true}); }
+function focusEditor(): void { const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
   if (!matchMedia('(min-width: 900px)').matches) {
     drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'session-open' : 'sidebar-show').focus(); return;
@@ -628,6 +628,7 @@ function renderPrimaryExtensions(item = primary()): void {
 }
 function renderController(controller: ConversationController, deferred = false, receivedAt?: number): void {
   const saved = targetState(controller.target); controller.saved = saved; controller.resizer ??= composerResizer(controller);
+  const firstDraft = !!saved && !controller.initialized;
   if (saved) {
     if (!controller.initialized) {controller.initialized = true; controller.showThinking = saved.presentation?.showThinking ?? false; controller.transcript.configure(saved.presentation, saved.reading);}
     controller.composer.attach(controller.workspaceId, saved);
@@ -635,6 +636,7 @@ function renderController(controller: ConversationController, deferred = false, 
   controller.composer.receipts(state.operations.values());
   const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + view.name, controllerGuidance(controller, view));
   controller.composer.availability(connected, !!saved && view.input, view.busy, selecting);
+  if (firstDraft && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
   controller.elements.root.hidden = !saved; controllerNode(controller, 'observed').hidden = connected || !view.activity;
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
   if (controller.root.hidden) return;

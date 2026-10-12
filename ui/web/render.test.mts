@@ -935,6 +935,16 @@ function geometryEnvironment() {
     run: () => { const pending = [...timers.values()]; timers.clear(); for (const callback of pending) callback(); },
     restore: () => { for (const [key, value] of Object.entries(previous)) { if (value) Reflect.set(globalThis, key, value); else Reflect.deleteProperty(globalThis, key); } }};
 }
+test('composer focus and repeated transcript refresh never replace non-tail reading intent', () => {
+  setup(); const readings: ReadingView[] = []; const view = new Transcript('primary', {presentation: () => {}, reading: value => readings.push(value)});
+  const reading: ReadingView = {revision: 8, anchorId: 'e20', offsetPx: 17, followTail: false};
+  const entries = Array.from({length: 100}, (_, index) => entry(`e${index}`));
+  view.configure(undefined, reading); view.set(entries); flush(); const container = node('primary-transcript'); const before = container.scrollTop;
+  node('primary-editor').focus(); view.set(entries); flush(); assert.equal(container.scrollTop, before); assert.equal(view.captureGeometry().followTail, false);
+  const saved = view.captureGeometry(); container.hidden = true; view.visibilityChanged(); container.hidden = false; view.visibilityChanged(); view.applyGeometry(saved); flush();
+  assert.equal(container.scrollTop, before); assert.equal(view.captureGeometry().anchor?.id, 'e20'); assert.equal(view.captureGeometry().anchor?.offsetPx, 17);
+  assert.ok(readings.every(value => !value.followTail && value.anchorId === 'e20')); view.reset();
+});
 test('settled root resize retains its saved anchor and only processes actual dirty geometry', () => {
   setup(); const geometry = geometryEnvironment();
   try {
@@ -2102,7 +2112,9 @@ test('static workbench markup owns one footer and keeps composer actions without
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
   assert.match(factory, /const root = element\('form', 'composer'\); root\.id = id/);
-  assert.match(factory, /const send = element\('button', 'send', 'Send'\); send\.id = `\$\{id\}-send`; send\.type = 'submit'/);
+  assert.match(factory, /const send = element\('button', 'send'\); send\.id = `\$\{id\}-send`; send\.type = 'submit'/);
+  assert.match(factory, /controlIcon\(send, 'send', 'Send'\)/); assert.match(factory, /controlIcon\(stop, 'stop', 'Stop'\)/);
+  assert.match(factory, /element\('select'\)/);
   assert.match(factory, /const modes = element\('div', 'modes'\); modes\.id = `\$\{id\}-modes`/);
   assert.match(factory, /const recipient = element\('label', 'sr-only', 'Message'\); recipient\.id = `\$\{id\}-recipient`; recipient\.htmlFor = editor\.id/);
   assert.match(factory, /root\.append\(resize, receipt, input, line\)/); assert.match(factory, /bar\.append\(modes, stop, send\)/);

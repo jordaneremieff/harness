@@ -930,7 +930,8 @@ test('working-folder context disambiguates loaded primaries and late recent proj
 
 test('the missing Primary uses the shared unknown glyph rather than a connected mark', async () => {
   await arrive({workspace: {id: 'w', revision: 1}, primaries: [], roster: []});
-  assert.equal(byId('primary-row-state').textContent, '?');
+  assert.equal(byId('primary-row-state').dataset.glyph, '?');
+  assert.ok(byId('primary-row-state').querySelector('.card-icon-unknown'));
   assert.equal(byId('primary-row-state').dataset.state, 'none');
   assert.equal(byId('primary-row-title').textContent, 'no session');
   assert.equal(byId('session-chooser').hidden, false); assert.equal(byId('conversation-panes').querySelector('textarea'), null);
@@ -1242,7 +1243,7 @@ test('status settings label model and thinking while retaining picker accessible
 });
 
 test('the Primary composer uses the projected conversation name without replacing its editor', async () => {
-  const item=primaryFixture({epoch:41,sessionName:'Named conversation',activity:'idle'});await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'primary',key:'p',epoch:41}},primaries:[item],roster:[]});const editor=primaryControl('editor');assert.equal(primaryControl('recipient').textContent,'Message Named conversation');assert.equal(byId('primary-row-state').textContent,'✓');event('primary.state',{...item,sessionName:'Renamed conversation'},{kind:'primary',key:'p',epoch:41});assert.equal(primaryControl('recipient').textContent,'Message Renamed conversation');assert.equal(primaryControl('editor'),editor);
+  const item=primaryFixture({epoch:41,sessionName:'Named conversation',activity:'idle'});await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'primary',key:'p',epoch:41}},primaries:[item],roster:[]});const editor=primaryControl('editor');assert.equal(primaryControl('recipient').textContent,'Message Named conversation');assert.equal(byId('primary-row-state').dataset.glyph,'✓'); assert.ok(byId('primary-row-state').querySelector('.card-icon-success'));event('primary.state',{...item,sessionName:'Renamed conversation'},{kind:'primary',key:'p',epoch:41});assert.equal(primaryControl('recipient').textContent,'Message Renamed conversation');assert.equal(primaryControl('editor'),editor);
 });
 
 test('navigation uses drawer state while a breakpoint resize still has desktop DOM visibility', async () => {

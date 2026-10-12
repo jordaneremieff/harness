@@ -1,11 +1,13 @@
 import { LIMITS } from '../shared/api.ts';
 import type { DraftView, OperationView, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
 import { announce, button, copy, element, rawText, setText } from './dom.ts';
+import { cardAction, controlIcon } from './card-icons.ts';
 import { exactInput } from './recovery.ts';
 import { targetReceipts } from './receipt.ts';
 import { CommandMenu } from './command-menu.ts';
 import type { CommandInventory } from './command-menu-state.ts';
-import { draftPresentation, SLOW_SAVE_MS } from './draft-presentation.ts';
+import { clampSelection, draftPresentation, editorSelectionKey, readEditorSelection, SLOW_SAVE_MS } from './draft-presentation.ts';
+import type { EditorSelection } from './draft-presentation.ts';
 export type { CommandOption } from './command-menu-state.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draftSaved, editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, settleSubmission } from './draft-state.ts';
@@ -27,11 +29,14 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const commandMenu = element('div', 'command-menu'); commandMenu.id = `${id}-commands`; commandMenu.hidden = true;
   const input = element('div', 'composer-input'); input.append(commandMenu, recipient, editor);
   const modes = element('div', 'modes'); modes.id = `${id}-modes`; modes.hidden = true; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Delivery while working');
-  for (const [mode, text] of [['steer', 'Next step'], ['followUp', 'After response']]) {
-    const choice = element('button', undefined, text); choice.type = 'button'; choice.dataset.mode = mode; choice.setAttribute('aria-pressed', 'false'); modes.append(choice);
+  const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Delivery while working';
+  for (const [mode, text] of [['steer', 'Next step'], ['followUp', 'After response']] as const) {
+    const choice = element('option', undefined, text); choice.value = mode; delivery.append(choice);
   }
+  modes.append(delivery);
   const stop = element('button', 'stop', 'Stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true;
-  const send = element('button', 'send', 'Send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true; send.title = 'Send'; send.setAttribute('aria-label', 'Send');
+  const send = element('button', 'send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true;
+  controlIcon(send, 'send', 'Send'); controlIcon(stop, 'stop', 'Stop');
   const bar = element('div', 'composer-bar'); bar.append(modes, stop, send); const line = element('div', 'composer-line'); line.append(bar); root.append(resize, receipt, input, line);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
@@ -39,7 +44,6 @@ export function createComposerElements(instanceId: string): ComposerElements {
 }
 type Edit = {text: string; mode: string; edit: number};
 type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; authorized?: boolean; cleanup?: DraftView; settling?: Promise<void>};
-type EditorSelection = {start: number; end: number; direction: 'forward' | 'backward' | 'none'; text: string; revision: number; edit: number};
 type Buffer = {selection?: EditorSelection; workspace: string; state: TargetState; data: DraftState; saving?: Promise<DraftView>; submitting: boolean;
   review: boolean; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; noticeDetails?: string; lastOperation?: OperationView; retained?: boolean};
 const encoded = encodeURIComponent;
@@ -65,6 +69,7 @@ export class Composer {
   private hooks: ComposerHooks;
   private commandMenu?: CommandMenu;
   private composing = false;
+  private focusRequest?: {origin: Element | null};
   constructor(elements: ComposerElements, hooks: ComposerHooks) {
     this.elements = elements; this.hooks = hooks; this.editor = elements.editor;
     this.listen(this.editor, 'input', () => {
@@ -75,7 +80,7 @@ export class Composer {
       });
     });
     this.listen(this.editor, 'keydown', event => this.key(event));
-    for (const event of ['select', 'keyup', 'blur'] as const) this.listen(this.editor, event, () => this.rememberSelection());
+    for (const event of ['select', 'keyup', 'blur', 'scroll'] as const) this.listen(this.editor, event, () => this.rememberSelection());
     this.listen(this.editor, 'focus', () => this.restoreSelection(this.current));
     this.listen(this.editor, 'compositionstart', () => { this.composing = true; });
     this.listen(this.editor, 'compositionend', () => { this.composing = false; });
@@ -90,12 +95,11 @@ export class Composer {
     });
     this.listen(elements.root, 'submit', event => { event.preventDefault(); void this.send(); });
     this.editor.placeholder = 'Write a message…';
-    for (const node of this.modes()) {
-      const next = node.dataset.mode === 'steer';
-      setText(node, next ? 'Next step' : 'After response');
-      node.setAttribute('aria-description', next ? 'Send at the next step' : 'Send after the current response');
-      this.listen(node, 'click', () => this.change(this.editor.value, next ? 'steer' : 'followUp'));
-    }
+    const delivery = this.delivery();
+    if (delivery) this.listen(delivery, 'change', () => {
+      if (delivery.value !== 'steer' && delivery.value !== 'followUp') return;
+      this.rememberSelection(); this.change(this.editor.value, delivery.value);
+    });
   }
   private listen<K extends keyof HTMLElementEventMap>(node: HTMLElement, type: K, handler: (event: HTMLElementEventMap[K]) => void): void {
     const listener = handler as EventListener; node.addEventListener(type, listener); this.cleanup.push(() => node.removeEventListener(type, listener));
@@ -124,17 +128,20 @@ export class Composer {
     const previousTarget = this.current?.state.target;
     if (!state) { this.commandMenu?.reset(); }
     if (!state) { this.current = undefined; this.editor.value = ''; this.slot().replaceChildren(); this.elements.receiptDetails.replaceChildren(); this.render(); return; }
-    const key = `${workspace}/${state.targetKey}`;
+    const key = JSON.stringify([workspace, state.targetKey, state.target]);
     let buffer = this.buffers.get(key);
     if (!buffer) {
       buffer = {workspace, state: {...state}, data: createDraft(state.draft), submitting: false, review: false, pending: new Map(), resolved: new Set(), notice: ''};
+      try { buffer.selection = readEditorSelection(sessionStorage.getItem(editorSelectionKey(workspace, state.target)), state.draft); } catch { /* Editor continuity still works in memory when storage is unavailable. */ }
       this.buffers.set(key, buffer);
     } else {
       buffer.state = {...state, draft: buffer.data.server}; this.receive(buffer, state.draft);
     }
     const switched = this.current !== buffer; this.current = buffer;
     if (switched || !sameTarget(state.target, previousTarget)) this.commandMenu?.reset();
-    this.hydrate(buffer, state); this.paint(buffer); this.prepare(buffer);
+    this.hydrate(buffer, state);
+    if (switched) { this.editor.value = buffer.data.text; this.editor.scrollTop = 0; this.editor.scrollLeft = 0; this.restoreSelection(buffer); }
+    this.paint(buffer); this.prepare(buffer);
     this.receipt(buffer); this.flush(buffer);
   }
   updateDraft(draft: DraftView): void { if (this.current) { this.receive(this.current, draft); this.paint(this.current); this.receipt(this.current); } }
@@ -199,17 +206,33 @@ export class Composer {
   }
   get target(): Target | undefined { return this.current?.state.target; }
   get state(): TargetState | undefined { return this.current?.state; }
-  setText(text: string): void { this.editor.value = text; this.change(text); }
+  /** New supplied text starts at its end; restoring an existing draft retains its range. */
+  setText(text: string): void {
+    this.editor.value = text; this.change(text); this.editor.setSelectionRange(text.length, text.length); this.rememberSelection();
+  }
+  focus(): void {
+    if (this.destroyed) return;
+    if (this.editor.disabled) { this.focusRequest = {origin: document.activeElement}; return; }
+    this.focusRequest = undefined; this.editor.focus({preventScroll: true}); this.restoreSelection(this.current);
+  }
+  private finishFocusRequest(): void {
+    const request = this.focusRequest; if (!request || this.editor.disabled) return;
+    this.focusRequest = undefined;
+    if (!this.elements.root.closest('[hidden],[inert]') && (document.activeElement === request.origin || document.activeElement === document.body)) this.focus();
+  }
   suggest(text: string): void {
     if (!this.editor.value && this.current && draftSaved(this.current.data)) { this.setText(text); return; }
     this.slot().replaceChildren(element('p', 'warning', 'Suggested text is available. Your draft is unchanged.'), button('Use suggested text', () => this.setText(text)), button('Keep draft', () => this.receipt(this.current)));
   }
-  private modes(): NodeListOf<HTMLButtonElement> { return this.elements.modes.querySelectorAll<HTMLButtonElement>('button'); }
+  private delivery(): HTMLSelectElement | null { return this.elements.modes.querySelector<HTMLSelectElement>('select'); }
   private slot(): HTMLElement { return this.elements.receipt; }
   private base(buffer: Buffer): string { return `/api/workspaces/${encoded(buffer.workspace)}/targets/${encoded(buffer.state.targetKey)}`; }
   private change(text: string, mode = this.current?.data.mode): void {
     const buffer = this.current; if (!buffer) return;
-    buffer.data = editDraft(buffer.data, text, mode); this.notifyRetained(buffer); this.resize(); this.render(); this.commandMenu?.update(); this.flush(buffer);
+    const previous = buffer.data;
+    buffer.data = editDraft(buffer.data, text, mode);
+    if (text === previous.text) this.rebaseSelection(buffer, previous);
+    this.rememberSelection(); this.notifyRetained(buffer); this.resize(); this.render(); this.commandMenu?.update(); this.flush(buffer);
   }
   private key(event: KeyboardEvent): void {
     if (event.defaultPrevented || this.composing || event.isComposing || event.keyCode === 229) return;
@@ -228,24 +251,41 @@ export class Composer {
   private rememberSelection(): void {
     const buffer = this.current; if (!buffer || this.editor.value !== buffer.data.text) return;
     buffer.selection = {start: this.editor.selectionStart, end: this.editor.selectionEnd, direction: this.editor.selectionDirection ?? 'none',
-      text: buffer.data.text, revision: buffer.data.server.revision, edit: buffer.data.edit};
+      text: buffer.data.text, revision: buffer.data.server.revision, edit: buffer.data.edit, scrollTop: this.editor.scrollTop, scrollLeft: this.editor.scrollLeft};
+    this.persistSelection(buffer);
   }
   private restoreSelection(buffer?: Buffer): void {
     const saved = buffer?.selection;
     if (!buffer || !saved || saved.text !== buffer.data.text || this.editor.value !== saved.text || saved.revision !== buffer.data.server.revision || saved.edit !== buffer.data.edit) return;
     this.editor.setSelectionRange(saved.start, saved.end, saved.direction);
+    this.editor.scrollTop = saved.scrollTop; this.editor.scrollLeft = saved.scrollLeft;
+  }
+  private persistSelection(buffer: Buffer): void {
+    const saved = buffer.selection;
+    if (!saved || !draftSaved(buffer.data) || saved.text !== buffer.data.text || saved.revision !== buffer.data.server.revision || saved.edit !== buffer.data.edit) return;
+    try { sessionStorage.setItem(editorSelectionKey(buffer.workspace, buffer.state.target), JSON.stringify({...saved, mode: buffer.data.server.mode})); } catch { /* A storage quota or policy does not interrupt editing. */ }
+  }
+  private rebaseSelection(buffer: Buffer, previous: DraftState, replace = false): void {
+    const saved = buffer.selection;
+    if (!saved || saved.text !== previous.text || saved.revision !== previous.server.revision || saved.edit !== previous.edit || (!replace && previous.text !== buffer.data.text)) return;
+    buffer.selection = clampSelection(saved, buffer.data.text, buffer.data.server.revision, buffer.data.edit); this.persistSelection(buffer);
+  }
+  private returnFocus(buffer: Buffer, origin: Element | null): void {
+    if (this.current !== buffer || this.destroyed || this.elements.root.closest('[hidden],[inert]') || (origin && origin !== document.body && !this.elements.root.contains(origin))) return;
+    if (document.activeElement === origin || document.activeElement === this.editor || document.activeElement === document.body) this.focus();
   }
   private paint(buffer: Buffer): void {
     buffer.state.draft = buffer.data.server;
     if (this.current !== buffer) return;
     if (this.editor.value !== buffer.data.text) { this.editor.value = buffer.data.text; this.restoreSelection(buffer); }
-    this.resize(); this.render();
+    this.resize(); this.render(); this.finishFocusRequest();
   }
   resize(): void {
     if (this.destroyed || this.sizePending) return; this.sizePending = true;
     requestAnimationFrame(() => {
       this.sizePending = false;
       if (this.destroyed || !this.editor.isConnected) return;
+      const scrollTop = this.editor.scrollTop, scrollLeft = this.editor.scrollLeft;
       const style = getComputedStyle(this.editor); const line = Number.parseFloat(style.lineHeight);
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
       const short = matchMedia('(max-height: 599px)').matches;
@@ -256,6 +296,7 @@ export class Composer {
       this.editor.style.maxHeight = `${cap}px`;
       this.editor.style.height = this.manualHeight === undefined ? '0px' : `${Math.min(cap, Math.max(baseline, this.manualHeight))}px`;
       if (this.manualHeight === undefined) this.editor.style.height = `${Math.min(cap, Math.max(baseline, this.editor.scrollHeight + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth)))}px`;
+      this.editor.scrollTop = scrollTop; this.editor.scrollLeft = scrollLeft;
       this.sizedHeight = this.editor.offsetHeight;
     });
   }
@@ -266,7 +307,7 @@ export class Composer {
     this.renderControls();
     this.elements.send.disabled = !buffer || !this.ready || this.admissionBlocked || buffer.submitting || buffer.review || this.pendingBlocks(buffer) || !buffer.data.text.trim();
     const active = this.deliveryMode(mode);
-    for (const node of this.modes()) node.setAttribute('aria-pressed', String(node.dataset.mode === active));
+    const delivery = this.delivery(); if (delivery) delivery.value = active === 'followUp' ? 'followUp' : 'steer';
     setText(this.elements.save, this.saveSummary(buffer));
   }
   private renderControls(): void {
@@ -293,7 +334,9 @@ export class Composer {
     for (const pending of buffer.pending.values()) {
       if (draft.revision === pending.submission.draftRevision + 1 && draft.text === '') { pending.cleanup = draft; return; }
     }
-    buffer.data = receiveDraft(buffer.data, draft); buffer.state.draft = buffer.data.server;
+    const previous = buffer.data, save = previous.inFlight;
+    const ownSave = save && draft.revision === save.expectedRevision + 1 && draft.text === save.text && draft.mode === save.mode;
+    buffer.data = receiveDraft(buffer.data, draft); if (ownSave) this.rebaseSelection(buffer, previous); buffer.state.draft = buffer.data.server;
     if (buffer.data.conflict) this.conflict(buffer);
     else if (draftSaved(buffer.data)) buffer.saveError = undefined;
   }
@@ -314,7 +357,8 @@ export class Composer {
     const saving = (async () => {
       try {
         const draft = await request<DraftView>(`${this.base(buffer)}/draft`, 'PUT', {expectedRevision: sent.expectedRevision, text: sent.text, mode: sent.mode});
-        buffer.data = acknowledgeDraft(buffer.data, sent, draft);
+        const previous = buffer.data;
+        buffer.data = acknowledgeDraft(buffer.data, sent, draft); this.rebaseSelection(buffer, previous);
         if (draft.revision <= sent.expectedRevision || draft.text !== sent.text || draft.mode !== sent.mode) throw new Error('The saved draft did not match your input.');
         if (buffer.data.conflict) this.conflict(buffer);
         return draft;
@@ -349,8 +393,9 @@ export class Composer {
   }
   private choose(buffer: Buffer, choice: 'local' | 'server'): void {
     if (buffer.saving) return;
-    buffer.data = resolveDraftConflict(buffer.data, choice); buffer.review = false; buffer.localCopy = undefined; buffer.notice = ''; buffer.noticeDetails = undefined; buffer.saveError = undefined;
-    this.paint(buffer); this.receipt(buffer); this.flush(buffer);
+    this.rememberSelection(); const previous = buffer.data;
+    buffer.data = resolveDraftConflict(buffer.data, choice); this.rebaseSelection(buffer, previous, true); buffer.review = false; buffer.localCopy = undefined; buffer.notice = ''; buffer.noticeDetails = undefined; buffer.saveError = undefined;
+    this.paint(buffer); this.receipt(buffer); this.flush(buffer); if (this.current === buffer) this.focus();
   }
   private receipt(buffer?: Buffer): void {
     if (buffer) this.notifyRetained(buffer);
@@ -371,7 +416,7 @@ export class Composer {
     if (buffer.noticeDetails && !buffer.saveError) slot.append(this.details(buffer.noticeDetails));
     this.inputReceiptNotice(buffer, records.find(inputOperation), slot);
     if (!buffer.saveError || buffer.review) return;
-    const retry = button('Try again', () => { if (this.current !== buffer || this.admissionBlocked || buffer.saving) return; if (buffer.notice === buffer.saveError || buffer.noticeDetails === buffer.saveError) { buffer.notice = ''; buffer.noticeDetails = undefined; } buffer.saveError = undefined; this.render(); this.receipt(buffer); this.flush(buffer); });
+    const retry = cardAction('restart', 'Retry draft save', () => { if (this.current !== buffer || this.admissionBlocked || buffer.saving) return; if (buffer.notice === buffer.saveError || buffer.noticeDetails === buffer.saveError) { buffer.notice = ''; buffer.noticeDetails = undefined; } buffer.saveError = undefined; this.render(); this.receipt(buffer); this.flush(buffer); });
     retry.disabled = this.admissionBlocked || !!buffer.saving;
     slot.append(this.details(buffer.saveError), retry);
   }
@@ -401,7 +446,7 @@ export class Composer {
     for (const item of records) {
       if (inputOperation(item) || !['uncertain', 'rejected'].includes(item.state)) continue;
       slot.append(element('p', 'warning', operationLabel(item)));
-      if (item.state === 'uncertain') slot.append(button('Check action', () => {
+      if (item.state === 'uncertain') slot.append(cardAction('restart', 'Check action', () => {
         void request<OperationView>(`/api/operations/${encoded(item.id)}/reconcile`, 'POST', {}).then(result => this.hooks.submitted(result)).catch(error => this.failureNotice(buffer, 'Action not confirmed.', error));
       }));
     }
@@ -415,7 +460,7 @@ export class Composer {
     row.append(element('p', 'warning', 'Send not confirmed. Check before you send again.'),
       this.details(`${JSON.stringify(captured.target)}\n${captured.operationId}\n${captured.mode} · revision ${captured.draftRevision}`), this.details(captured.text, 'Review message'));
     if (pending.original?.textTruncated) row.append(element('p', 'secondary', 'Preview shortened. Copy or restore the full message.'));
-    row.append(button('Check delivery', () => { void this.check(buffer, pending); }), button('Copy', () => { void this.exact(buffer, pending).then(item => copy(item.text, row)).catch(error => this.recoveryError(buffer, error)); }), button('Restore to draft', () => {
+    row.append(cardAction('restart', 'Check delivery', () => { void this.check(buffer, pending); }), cardAction('copy', 'Copy original message', () => { void this.exact(buffer, pending).then(item => copy(item.text, row)).catch(error => this.recoveryError(buffer, error)); }), button('Restore to draft', () => {
       void this.exact(buffer, pending).then(item => {
         if (buffer.data.text && buffer.data.text !== item.text) row.append(element('p', undefined, 'Your newer draft is unchanged. Copy the original message or replace this draft.'), button('Replace draft with original', () => this.restore(buffer, item)));
         else this.restore(buffer, item);
@@ -442,7 +487,8 @@ export class Composer {
     return pending.submission;
   }
   private restore(buffer: Buffer, captured: Submission): void {
-    buffer.data = editDraft(buffer.data, captured.text, captured.mode); this.paint(buffer); this.flush(buffer);
+    const origin = document.activeElement; if (this.current === buffer) this.rememberSelection(); const previous = buffer.data;
+    buffer.data = editDraft(buffer.data, captured.text, captured.mode); this.rebaseSelection(buffer, previous, true); this.paint(buffer); this.flush(buffer); this.returnFocus(buffer, origin);
   }
   private async check(buffer: Buffer, pending: Pending): Promise<void> {
     try {
@@ -476,7 +522,9 @@ export class Composer {
     }
     const outcome = result.state;
     pending.settling = Promise.resolve().then(async () => {
-      pending.uncertain = false; buffer.data = settleSubmission(buffer.data, pending.submission, outcome);
+      pending.uncertain = false;
+      if (this.current === buffer) this.rememberSelection(); const previous = buffer.data;
+      buffer.data = settleSubmission(buffer.data, pending.submission, outcome); this.rebaseSelection(buffer, previous, outcome === 'accepted');
       buffer.notice = this.admissionNotice(result); buffer.noticeDetails = undefined;
       this.paint(buffer); this.receipt(buffer); announce(buffer.notice);
       if (outcome === 'accepted') await this.refreshAccepted(buffer, pending);
@@ -491,7 +539,7 @@ export class Composer {
       const draft = pending.cleanup ?? (await request<TargetState>(this.base(buffer))).draft;
       if (draft.text === '' && draft.revision === pending.submission.draftRevision + 1 && draft.revision >= buffer.data.server.revision) {
         const savedEdit = buffer.data.text === '' ? buffer.data.edit : buffer.data.savedEdit === buffer.data.edit ? -1 : buffer.data.savedEdit;
-        buffer.data = {...buffer.data, server: draft, savedEdit};
+        const previous = buffer.data; buffer.data = {...buffer.data, server: draft, savedEdit}; this.rebaseSelection(buffer, previous);
       } else this.receive(buffer, draft);
     } catch (error) { this.failureNotice(buffer, 'Draft could not be refreshed.', error); }
   }
@@ -510,6 +558,7 @@ export class Composer {
   }
   async send(literal = false): Promise<void> {
     const buffer = this.current; if (!buffer || this.blocked(buffer)) return;
+    this.rememberSelection(); const focusOrigin = document.activeElement;
     this.commandMenu?.close();
     const snapshot: Edit = {text: buffer.data.text, mode: buffer.state.target.kind === 'primary' && !this.busy ? 'prompt' : this.deliveryMode(buffer.data.mode) ?? buffer.data.mode, edit: buffer.data.edit};
     const confirmation = {target: {...buffer.state.target}, revision: buffer.data.server.revision, mode: buffer.data.mode};
@@ -518,7 +567,7 @@ export class Composer {
         buffer.data.edit === snapshot.edit && buffer.data.server.revision === confirmation.revision && buffer.data.mode === confirmation.mode) void this.send(true);
     })) return;
     // Mode is part of the saved payload, including an idle primary's prompt mode.
-    if (snapshot.mode !== buffer.data.mode) { buffer.data = editDraft(buffer.data, snapshot.text, snapshot.mode); snapshot.edit = buffer.data.edit; }
+    if (snapshot.mode !== buffer.data.mode) { const previous = buffer.data; buffer.data = editDraft(buffer.data, snapshot.text, snapshot.mode); this.rebaseSelection(buffer, previous); snapshot.edit = buffer.data.edit; }
     buffer.submitting = true; buffer.lastOperation = undefined; buffer.notice = 'Sending…'; buffer.noticeDetails = undefined; this.render(); this.receipt(buffer);
     const reservation = buffer.reservation;
     let pending: Pending | undefined;
@@ -530,7 +579,7 @@ export class Composer {
       if (result.id !== pending.submission.operationId || !sameTarget(pending.submission.target, result.target)) throw new Error('The response did not match the submitted operation.');
       await this.finish(buffer, pending, result); this.hooks.submitted(result);
     } catch (error) { this.sendError(buffer, pending, error); }
-    finally { buffer.submitting = false; this.paint(buffer); this.receipt(buffer); this.prepare(buffer); if (pending?.settling) this.flush(buffer); }
+    finally { buffer.submitting = false; this.paint(buffer); this.receipt(buffer); this.prepare(buffer); if (pending?.settling) this.flush(buffer); this.returnFocus(buffer, focusOrigin); }
   }
   private async confirmSaved(buffer: Buffer, snapshot: Edit): Promise<void> {
     if (buffer.saving) await buffer.saving;

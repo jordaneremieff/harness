@@ -159,8 +159,8 @@ test('roster has sibling native actions and preserves retained, idle and working
   const roster = new Roster(value => selected.push(value.identity), () => {});
   roster.set([row('stored', {availability: 'stored'}), row('idle', {state: 'idle'}), row('working')], undefined, 'idle'); fixture.flush();
   const [stored, idle, working] = fixture.node.children; assert.ok(stored); assert.ok(idle); assert.ok(working);
-  assert.equal(stored.query('row-state').textContent, '○');
-  assert.equal(idle.query('row-state').textContent, '○'); assert.equal(working.query('row-state').textContent, '●');
+  assert.equal(stored.query('row-state').dataset.glyph, '○');
+  assert.equal(idle.query('row-state').dataset.glyph, '○'); assert.equal(working.query('row-state').dataset.glyph, '●');
   assert.equal(stored.query('row-state').attributes['aria-hidden'], 'true');
   assert.equal(stored.query('row-state').dataset.state, 'retained');
   assert.equal(stored.query('row-name').textContent, 'Agent');
@@ -192,7 +192,7 @@ test('liveness attributes update on the same keyed row without a visible state w
   for (const availability of ['stored', 'unavailable', 'incompatible'] as const) {
     roster.set([row('one', {availability})]); f.flush();
     assert.equal(f.node.children[0], wrapper); assert.equal(wrapper.dataset.live, 'false');
-    assert.equal(wrapper.query('row-state').textContent, '○'); assert.equal(wrapper.query('row-state').dataset.state, 'retained');
+    assert.equal(wrapper.query('row-state').dataset.glyph, '○'); assert.equal(wrapper.query('row-state').dataset.state, 'retained');
     assert.match(wrapper.query('row-select').title, new RegExp(availability));
     assert.match(wrapper.query('row-select').attributes['aria-label'] ?? '', new RegExp(availability)); assert.throws(() => wrapper.query('row-word'));
   }
@@ -501,7 +501,7 @@ test('the visible scoped list uses a 20 pixel estimate and preserves selected vi
 test('status words stay in metadata while live glyphs remain visible', () => {
   const f = setup(); const roster = new Roster(() => {}, () => {});
   roster.set(['done', 'failed', 'idle', 'unknown'].map(state => row(state, {state}))); f.flush();
-  assert.deepEqual(f.node.children.map(child => child.query('row-state').textContent), ['✓', '!', '○', '○']);
+  assert.deepEqual(f.node.children.map(child => child.query('row-state').dataset.glyph), ['✓', '!', '○', '○']);
   assert.deepEqual(f.node.children.map(child => child.query('row-select').title), ['done', 'failed', 'idle', 'unknown']);
   for (const child of f.node.children) { assert.equal(child.dataset.live, 'true'); assert.throws(() => child.query('row-word')); }
 });

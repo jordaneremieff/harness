@@ -20,6 +20,7 @@ class FakeNode extends EventTarget {
   set textContent(value: string) {this.text = value; this.children = [];}
   set innerHTML(_value: string) {throw new Error('Unsafe HTML');}
   append(...nodes: FakeNode[]): void {this.children.push(...nodes);}
+  prepend(...nodes: FakeNode[]): void {this.children.unshift(...nodes);}
   replaceChildren(...nodes: FakeNode[]): void {this.text = ''; this.children = nodes;}
   setAttribute(name: string, value: string): void {this.attributes.set(name, value);}
   focus(): void {}
@@ -42,7 +43,7 @@ function response(data: unknown): Response {return {json: async () => ({ok: true
 const select: DialogView = {id: 'd', method: 'select', title: 'Pick', options: ['Safe label'], optionKeys: ['option:0']};
 function statusFixture() {
   const root = new FakeNode();
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new FakeNode(tag), getElementById: (id: string) => {assert.equal(id, 'extension-status'); return root;}}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => new FakeNode(tag), createElementNS: (_namespace: string, tag: string) => new FakeNode(tag), getElementById: (id: string) => {assert.equal(id, 'extension-status'); return root;}}});
   return root;
 }
 test('extension widgets use only the supplied target roots and leave another target untouched', () => {
@@ -63,12 +64,15 @@ test('compact extension status counts hidden cells and native expansion retains 
   const summary = disclosure.children[0]; const list = disclosure.children[1]; assert.ok(summary && list);
   // Expectations use the display labels while preserving source and action checks.
   assert.equal(summary.tag, 'summary'); assert.equal(summary.textContent, 'first · 2 more');
+  assert.equal(summary.children[0]?.tag, 'svg'); assert.equal(summary.children[0]?.attributes.get('viewBox'), '0 0 16 16');
+  assert.equal(summary.children[0]?.children[0]?.attributes.get('d'), 'M6 3l5 5-5 5');
   assert.match(summary.attributes.get('aria-label') ?? '', /3 extension statuses\. Expand for details\./);
   assert.equal(list.children.length, 0);
   disclosure.open = true; disclosure.dispatchEvent(new Event('toggle'));
   assert.deepEqual(list.children.map(node => node.textContent), Object.entries(statuses).flat());
   extensionStatus({...primary, extension: {statuses, widgets: {}}});
   assert.equal(root.children[0], disclosure); assert.equal(disclosure.open, true); assert.equal(disclosure.children[0], summary);
+  assert.equal(summary.children.filter(child => child.tag === 'svg').length, 1, 'Summary refresh retains exactly one shared SVG disclosure');
   extensionStatus({...primary, extension: {statuses: {...statuses, one: 'changed'}, widgets: {}}});
   assert.equal(root.children[0], disclosure); assert.equal(disclosure.open, true); assert.equal(list.children[1]?.textContent, 'changed');
 });

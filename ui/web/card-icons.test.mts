@@ -9,7 +9,7 @@ class Node {
   replaceChildren(...nodes: Node[]): void {this.children = nodes; this.textContent = '';}
   append(...nodes: Node[]): void { this.children.push(...nodes); }
   prepend(...nodes: Node[]): void { this.children.unshift(...nodes); }
-  setAttribute(name: string, value: string): void { this.attributes[name] = value; }
+  setAttribute(name: string, value: string): void { this.attributes[name] = value; if (name === 'class') this.className = value; }
   addEventListener(): void {}
   querySelector(selector: string): Node | undefined { return this.children.find(node => node.className.split(' ').includes(selector.slice(1))); }
 }
@@ -38,6 +38,8 @@ test('a disclosure keeps its label and uses a separate chevron', () => withDocum
   const summary = new Node(); summary.textContent = 'Arguments'; cardDisclosure(summary as unknown as HTMLElement);
   assert.equal(summary.textContent, 'Arguments'); assert.equal(summary.children.length, 1);
   assert.equal(summary.children[0]?.attributes.class, 'card-icon card-icon-chevron');
+  const icon = summary.children[0]; cardDisclosure(summary as unknown as HTMLElement);
+  assert.equal(summary.children.length, 1); assert.equal(summary.children[0], icon);
 }));
 
 test('shell controls reuse the vocabulary with an accessible name and tooltip', () => withDocument(() => {

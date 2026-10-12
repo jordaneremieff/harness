@@ -112,8 +112,9 @@ test('structured content uses readable prose, wrapped fields, compact tables and
   const summary = rule('.tool-source > summary, .tool-metadata > summary, .tool-fact > summary, .tool-row-content > summary, .session-events > summary');
   assert.match(summary, /font-size: 12px; overflow-wrap: anywhere/);
   assert.doesNotMatch(summary, /background:|border:|min-height:|max-height:|overflow: hidden/);
-  assert.match(rule('summary::before'), /content: ""; display: inline-block/);
-  assert.match(rule('details[open] > summary::before'), /transform: rotate\(45deg\)/);
+  assert.match(rule('summary::before'), /content: none/);
+  assert.match(rule('.card-disclosure > .card-icon-chevron'), /transform: rotate\(0deg\)/);
+  assert.match(rule('details[open] > .card-disclosure > .card-icon-chevron'), /transform: rotate\(90deg\)/);
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
   assert.match(rule('.tool-source > pre'), /white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.match(rule('.tool-shell .kv'), /grid-template-columns: minmax\(0,32%\) minmax\(0,1fr\)/);
@@ -302,8 +303,8 @@ test('visible controls carry labels and one icon stroke style', async () => {
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
   assert.match(factory, /const stop = element\('button', 'stop', 'Stop'\); stop\.id = `\$\{id\}-stop`; stop\.type = 'button'/);
-  assert.match(factory, /const send = element\('button', 'send', 'Send'\); send\.id = `\$\{id\}-send`; send\.type = 'submit'/);
-  assert.match(factory, /send\.setAttribute\('aria-label', 'Send'\)/);
+  assert.match(factory, /const send = element\('button', 'send'\); send\.id = `\$\{id\}-send`; send\.type = 'submit'/);
+  assert.match(factory, /controlIcon\(send, 'send', 'Send'\)/); assert.match(factory, /controlIcon\(stop, 'stop', 'Stop'\)/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /cardAction\('plus', 'New tab'/); assert.match(app, /plus\.setAttribute\('aria-haspopup', 'dialog'\)/);
   assert.doesNotMatch(html, /id="session-actions"|id="primary-send"|id="primary-stop"|id="notices-button"|window-actions/);

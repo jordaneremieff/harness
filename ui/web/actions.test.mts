@@ -79,6 +79,7 @@ class FakeNode extends EventTarget {
   title = ''; tagName = ''; children: FakeNode[] = []; textContent = ''; className = ''; type = ''; id = ''; value = ''; disabled = false; hidden = false; tabIndex = 0; dataset: Record<string, string> = {}; attributes = new Map<string, string>();
   classList = {add: (name: string) => {this.className = `${this.className} ${name}`.trim();}};
   append(...nodes: FakeNode[]): void {this.children.push(...nodes);}
+  prepend(...nodes: FakeNode[]): void {this.children.unshift(...nodes);}
   replaceChildren(...nodes: FakeNode[]): void {this.children = nodes;}
   open = false; isConnected = true; clientHeight = 0; offsetHeight = 0; scrollHeight = 0; clientTop = 0; scrollTop = 0; rowSize = 32;
   box = {top: 0, bottom: 0}; properties = new Map<string, string>(); styleWrites = 0;

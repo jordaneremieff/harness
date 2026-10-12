@@ -1,7 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { draftPresentation, SLOW_SAVE_MS } from './draft-presentation.ts';
-import type { DraftPresentation } from './draft-presentation.ts';
+import { clampSelection, draftPresentation, editorSelectionKey, readEditorSelection, SLOW_SAVE_MS } from './draft-presentation.ts';
+import type { DraftPresentation, EditorSelection } from './draft-presentation.ts';
+const range: EditorSelection = {start: 2, end: 5, direction: 'backward', text: 'sample', revision: 4, edit: 7, scrollTop: 48, scrollLeft: 12};
+test('editor checkpoint keys distinguish workspace, primary epoch and exact agent identity', () => {
+  const targets = [{kind: 'primary', key: 'a', epoch: 1}, {kind: 'primary', key: 'a', epoch: 2}, {kind: 'agent', identity: 'storage:1'}, {kind: 'agent', identity: 'storage:2'}] as const;
+  assert.equal(new Set(targets.flatMap(target => ['w1', 'w2'].map(workspace => editorSelectionKey(workspace, target)))).size, 8);
+});
+test('reload ranges require exact text, mode and revision and contain malformed offsets', () => {
+  const draft = {revision: 4, text: 'sample', mode: 'prompt', persisted: true} as const;
+  const raw = JSON.stringify({...range, mode: draft.mode});
+  assert.deepEqual(readEditorSelection(raw, draft), {...range, mode: 'prompt', edit: 0});
+  for (const patch of [{revision: 5}, {text: 'remote'}, {mode: 'steer'}]) assert.equal(readEditorSelection(raw, {...draft, ...patch}), undefined);
+  for (const patch of [{start: -1}, {end: 99}, {start: 5, end: 2}, {direction: 'invalid'}, {scrollTop: -1}, {scrollLeft: null}]) assert.equal(readEditorSelection(JSON.stringify({...range, mode: 'prompt', ...patch}), draft), undefined);
+  assert.equal(readEditorSelection('{', draft), undefined);
+});
+test('explicit replacement clamps selection and cleared drafts reset editor scroll', () => {
+  assert.deepEqual(clampSelection(range, 'abc', 5, 8), {...range, start: 2, end: 3, text: 'abc', revision: 5, edit: 8});
+  assert.deepEqual(clampSelection(range, '', 5, 8), {...range, start: 0, end: 0, scrollTop: 0, scrollLeft: 0, text: '', revision: 5, edit: 8});
+});
 const pending: DraftPresentation = {connected: true, unsaved: true, text: 'draft', failed: false, conflict: false, outstandingSince: 50};
 test('routine dirty, fast in-flight, and acknowledged states stay empty', () => {
   assert.equal(draftPresentation({...pending, outstandingSince: undefined}, 5000), '');

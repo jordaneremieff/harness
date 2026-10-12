@@ -200,7 +200,6 @@ const textProperties = new Set([
 	"text-emphasis",
 	"fill",
 	"stroke",
-	"caret-color",
 ]);
 const contrastEffects = new Set([
 	"background-image",
@@ -283,6 +282,14 @@ function textDeclaration(context: Context, property: string, value: string) {
 	const localBg = token(decl["background-color"] ?? decl.background ?? "");
 	if (localBg) measure("local-pair", `${source} ${property} on --${localBg}`, name, localBg, 4.5);
 }
+function caretDeclaration(context: Context, value: string) {
+  const {theme, source, issues, measure, decl} = context;
+  const name = token(value);
+  if (!name || !['accent', ...foregrounds].includes(name)) { issues.push(`${theme}: unmodeled caret color ${source}: ${value}`); return; }
+  for (const bg of surfaces) measure('caret-declaration', `${source} caret-color: ${value} / --${bg}`, name, bg, 3);
+  const localBg = token(decl['background-color'] ?? decl.background ?? '');
+  if (localBg) measure('caret-local-pair', `${source} caret-color on --${localBg}`, name, localBg, 3);
+}
 function inverseBackground(context: Context, fill: string) {
 	const { theme, source, decl, measure, issues } = context;
 	const fg = token(decl.color ?? "");
@@ -363,13 +370,15 @@ function auditDeclaration(context: Context, property: string, raw: string): bool
 		return false;
 	}
 	const text = textProperties.has(property);
+  const caret = property === 'caret-color';
 	const background = ["background", "background-color"].includes(property);
 	const edge = edgePattern.test(property);
-	if (rule.contexts.includes("@media (forced-colors:active)") && (text || background || edge)) {
+	if (rule.contexts.includes("@media (forced-colors:active)") && (text || caret || background || edge)) {
 		forcedDeclaration(context, property, value);
 		return false;
 	}
 	if (text) textDeclaration(context, property, value);
+  if (caret) caretDeclaration(context, value);
 	if (background) backgroundDeclaration(context, value);
 	if (edge) return edgeDeclaration(context, property, value);
 	if (contrastEffects.has(property))
@@ -466,6 +475,20 @@ test("regular user prose retains normal-text contrast and the left rule retains 
 		assert.equal(borders.length, surfaces.length, `${theme}: left rule needs every modeled surface`);
 		assert.ok(borders.every((row) => row.threshold === 3 && row.ratio >= 3));
 	}
+});
+test('native insertion caret is measured as graphics without weakening text or ignoring unknown colors', context => {
+  const rows = result.measurements.filter(row => row.kind === 'caret-declaration' && row.source.startsWith('.composer textarea '));
+  assert.equal(rows.length, surfaces.length * (2 + flavors.length));
+  assert.ok(rows.every(row => row.threshold === 3 && row.ratio >= 3));
+  for (const theme of ['dark', 'light']) {
+    const palette = result.themes[theme]; const measured = ratio(palette['--accent'], palette['--canvas']);
+    context.diagnostic(`${theme} native caret: ${palette['--accent']} on ${palette['--canvas']} = ${measured}:1`);
+    assert.ok(measured >= 4.5);
+  }
+  for (const value of ['#fff', 'transparent', 'auto', 'var(--unexpected)', 'var(--rule)', 'var(--accent, #fff)']) assert.ok(audit(`${css}\n.probe { caret-color: ${value}; }`).issues.some(issue => issue.includes('unmodeled caret color')), value);
+  const weakened = audit(css.replace('--accent: #74b6d8', '--accent: #16181b'));
+  assert.ok(weakened.measurements.some(row => row.kind === 'caret-declaration' && row.ratio < row.threshold));
+  assert.ok(audit(`${css}\n.probe { color: var(--accent); }`).issues.some(issue => issue.includes('non-token text color')));
 });
 test("all color declarations use modeled semantic tokens", () => assert.deepEqual(result.issues, []));
 test("graphic paint measures selected marks and divider hover/focus without opening a surface exception", () => {
