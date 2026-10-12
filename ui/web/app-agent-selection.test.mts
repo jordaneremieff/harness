@@ -64,18 +64,24 @@ test('whole agent views retain messages independently of running, idle and incom
     }
   } finally {globalThis.fetch = original;}
 });
-test('whole idle and incompatible views show one real read error with retained draft and read-only retry', async () => {
-  const original = globalThis.fetch;
+test('whole idle and incompatible views show one plain unreadable-history error with its diagnostic tooltip', async () => {
+  const original = globalThis.fetch, diagnostic = 'The retained source is unreadable.', plain = 'History unavailable: saved messages could not be read.';
   try {
     for (const theme of ['dark', 'light']) for (const availability of ['stored', 'incompatible'] as const) {
       hostDocument.documentElement.dataset.appearance = theme; const identity = `unreadable-${theme}-${availability}`, target = {kind: 'agent', identity} as const; let failed = true;
-      globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === `/api/agents/${identity}/history` ? failed ? Response.json({ok: false, error: {code: 'storage_unavailable', message: 'Permission denied for saved messages.', retry: 'read'}}) : Response.json({ok: true, data: {target, entries: [], nextBefore: null, coverage, revision: 'empty'}}) : original(input, init);
-      await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(identity, {availability, capabilities: {input: false}})], targets: [targetFixture(identity, target)]});
-      assertAgentComposition(); const rendered = visibleText(agentControl('root')); assert.equal((rendered.match(/Permission denied for saved messages/g) ?? []).length, 1); assert.equal(agentControl('send').disabled, true);
-      const editor = app.agentComposer().editor, before = transportLog.length; editor.setSelectionRange(1, 3); editor.focus(); failed = false; agentControl('history-retry').dispatch('click'); await settle();
-      assertAgentComposition(); assert.match(agentControl('agent-state-line').textContent, /^No messages yet/); assert.doesNotMatch(visibleText(agentControl('root')), /Permission denied/);
-      assert.equal(app.agentComposer().editor, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [1, 3]); assert.equal(hostDocument.activeElement, editor); assert.equal(agentControl('send').disabled, true);
-      assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+      const requests: Array<[string, string]> = [];
+      globalThis.fetch = async (input, init) => {
+        const path = new URL(String(input), 'http://ui.test').pathname; requests.push([init?.method ?? 'GET', path]);
+        return path === `/api/agents/${identity}/history` ? failed ? Response.json({ok: false, error: {code: 'source_unreadable', message: diagnostic, retry: 'none'}}) : Response.json({ok: true, data: {target, entries: [], nextBefore: null, coverage, revision: 'empty'}}) : original(input, init);
+      };
+      await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(identity, {availability, capabilities: {input: false}})], targets: [targetFixture(identity, target, {draft: {revision: 4, text: 'Exact unreadable-view draft', mode: 'followUp', persisted: true}})]});
+      assertAgentComposition(); const rendered = visibleText(agentControl('root')); assert.equal(rendered.split(plain).length - 1, 1); assert.doesNotMatch(rendered, /retained source|Permission denied/);
+      assert.equal(agentControl('agent-state-line').textContent, plain + (availability === 'stored' ? ' · Agent is not connected.' : ' · This host is incompatible; messages remain read-only.'));
+      assert.equal(agentControl('agent-state-line').title, diagnostic); assert.equal(agentControl('send').disabled, true);
+      const editor = app.agentComposer().editor, before = requests.length; assert.equal(editor.value, 'Exact unreadable-view draft'); editor.setSelectionRange(1, 3); editor.focus(); failed = false; agentControl('history-retry').dispatch('click'); await settle();
+      assertAgentComposition(); assert.match(agentControl('agent-state-line').textContent, /^No messages yet/); assert.doesNotMatch(visibleText(agentControl('root')), /saved messages could not be read|retained source/); assert.equal(agentControl('agent-state-line').title, '');
+      assert.equal(app.agentComposer().editor, editor); assert.equal(editor.value, 'Exact unreadable-view draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [1, 3]); assert.equal(hostDocument.activeElement, editor); assert.equal(agentControl('send').disabled, true);
+      assert.deepEqual(requests.slice(before), [['GET', `/api/agents/${identity}/history`]]);
     }
   } finally {globalThis.fetch = original;}
 });

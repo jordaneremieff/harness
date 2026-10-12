@@ -16,13 +16,24 @@ test('one status combines read truth with independent connection and admission s
   assert.equal(failed.text, 'History unavailable: the reader does not support this history format. · This host is incompatible; messages remain read-only.'); assert.equal(failed.detail, message); assert.equal(failed.start, false);
   assert.equal(agentViewStatus({...source, connected: false}).text, 'History unavailable: the browser is disconnected.');
   assert.equal(agentViewStatus({...source, availability: 'stored', ready: true, complete: true}).text, 'No messages yet. · Agent is not connected.');
-  assert.equal(agentViewStatus({...source, ready: true, complete: false}).text, 'History unavailable: the read did not confirm complete coverage.');
+  const incomplete = agentViewStatus({...source, ready: true, complete: false, reason: 'Earlier saved messages are missing.'});
+  assert.equal(incomplete.text, 'History unavailable: saved messages could not be confirmed.'); assert.equal(incomplete.detail, 'Earlier saved messages are missing.');
+  assert.equal(agentViewStatus({...source, ready: true}).text, incomplete.text);
+  assert.equal(agentViewStatus({...source, ready: true, complete: false, hasEntries: true}).text, '');
   assert.equal(agentViewStatus({...source, ready: true, complete: true}).text, 'No messages yet.');
   assert.equal(agentViewStatus({...source, hasEntries: true, connected: false}).text, 'The browser is disconnected.');
   assert.equal(agentViewStatus({...source, hasEntries: true, availability: 'stored'}).text, 'Agent is not connected.');
   assert.equal(agentViewStatus({...source, loading: true, hasEntries: true}).text, 'Updating messages…');
   const uncertain = agentViewStatus({...source, hasEntries: true, availability: 'stored', startAttempt: {pending: false, reason: 'Readiness timed out.'}});
   assert.equal(uncertain.start, false); assert.match(uncertain.text, /^Start not confirmed/); assert.equal(uncertain.detail, 'Readiness timed out.');
+});
+test('unreadable saved messages use plain text and retain the exact diagnostic', () => {
+  const message = 'The retained source is unreadable.';
+  for (const hasEntries of [false, true]) {
+    const view = agentViewStatus({hasEntries, connected: true, loading: false, ready: false, error: {code: 'source_unreadable', message}});
+    assert.equal(view.text, 'History unavailable: saved messages could not be read.'); assert.equal(view.detail, message);
+    assert.equal(view.start, false);
+  }
 });
 test('live negotiated input overrides unavailable catalog claims without inventing idle', () => {
   const connected = conversationPresentation({target, row, connected: true});

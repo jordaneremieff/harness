@@ -8,12 +8,13 @@ export function agentViewStatus(source: AgentViewState): {text: string; detail: 
   return {text, detail: [source.error?.message, source.startAttempt?.reason, source.connectionError, source.reason].filter(Boolean).join('\n'), start: source.availability === 'stored' && !source.startAttempt};
 }
 function agentHistoryStatus(source: AgentViewState): string {
+  if (source.error?.code === 'source_unreadable') return 'History unavailable: saved messages could not be read.';
   if (source.error) return ['contract_mismatch', 'incompatible'].includes(source.error.code ?? '') ? 'History unavailable: the reader does not support this history format.' : `History unavailable: ${source.error.message}`;
   if (source.loading) return source.hasEntries ? 'Updating messages…' : 'Loading messages…';
   if (source.hasEntries) return '';
   if (!source.connected) return 'History unavailable: the browser is disconnected.';
   if (!source.ready) return 'Loading messages…';
-  return source.complete ? 'No messages yet.' : 'History unavailable: the read did not confirm complete coverage.';
+  return source.complete ? 'No messages yet.' : 'History unavailable: saved messages could not be confirmed.';
 }
 function agentConnectionStatus(source: AgentViewState): string {
   if (source.startAttempt) return source.startAttempt.pending ? 'Starting agent…' : 'Start not confirmed. Retry only reads saved messages.';
