@@ -66,6 +66,8 @@ The backend owns private atomic files beneath `--state-dir`:
 
 Image bytes remain in private content-addressed storage. Authenticated routes bind each upload and preview to the exact workspace and recipient; browser snapshots carry metadata, not image bytes.
 
+Saved drafts and captured inputs require explicit image arrays, including empty arrays for text-only input. A record without this metadata is refused and produces a notice; its saved file remains unchanged. Valid text drafts and unrelated queue recovery remain available. Unknown image ownership disables image uploads and cleanup, preserving saved bytes. Queue recovery never rewrites a refused operation at the same identity.
+
 Directories are private and files are owner-only. Serialized mutations use compare-and-set revisions, adjacent exclusive temporary files, file sync, atomic rename, and directory sync before acknowledgment. There is no multi-file filesystem transaction. Do not remove a live or unknown state lock. Dead-lock recovery requires explicit local verification of its recorded owner; it never permits removal of an Agent writer claim.
 
 Operation reservations precede effects. A repeated issued key with the same body returns the retained state; a changed body or target conflicts. Unknown or expired keys never create work. The backend persists dispatch intent before an external write. Missing admission evidence becomes uncertain, not automatically replayed. Definite refusals retain the draft. Admission cleanup clears only the submitted revision, never newer edits. Handled-image responses retain the draft because they do not confirm image delivery.
