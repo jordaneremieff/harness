@@ -1991,6 +1991,27 @@ test('three exact owners isolate drafts, carets, roots and accepted frames throu
   byId('agent-message-close').click(); await settle(); assert.equal(forms[2]?.parentNode, roots[2]);
 });
 
+test('Message projection stays visible through a pending tab selection and layout-only refresh', async t => {
+  const target = {kind: 'agent' as const, identity: 'projected-recipient'};
+  const layout: ConversationLayout = {focusedPane: 'pane-1', root: {kind: 'pane', id: 'pane-1', tabs: [{kind: 'primary'}, target], active: tabKey(target)}};
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target, conversationLayout: layout}, primaries: [primaryFixture({epoch: 9503})], roster: [agentFixture(target.identity)],
+    targets: [targetFixture('projected-target', target, {draft: {revision: 2, text: 'Keep the exact draft', mode: 'prompt', persisted: true}})]});
+  const owner = controls(app.agentComposer()), root = owner('root'), editor = owner('editor'), form = owner('composer');
+  app.openTabActions('pane-1'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  editor.focus(); editor.setSelectionRange(3, 12, 'backward'); editor.dispatch('select');
+  const original = globalThis.fetch, held = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
+  t.after(() => {globalThis.fetch = original; held.resolve(); byId('agent-message-close').click();});
+  globalThis.fetch = async (input, init) => {if (String(input).includes('/selection')) {started.resolve(); await held.promise;} return original(input, init);};
+  app.applyLayout(activatePaneTab(layout, 'pane-1', 'primary')); await started.promise;
+  app.renderNavigation(); app.stableViews().sync();
+  assert.equal(root.hidden, false); assert.equal(root.inert, false); assert.equal(root.dataset.messageOnly, 'true');
+  assert.equal(hostDocument.activeElement, editor); assert.equal(form.parentNode, root); assert.equal(editor.value, 'Keep the exact draft');
+  assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [3, 12, 'backward']);
+  held.resolve(); await app.selectionQueue.drain(); app.applyLayout(layout); await app.selectionQueue.drain();
+  assert.equal(root.hidden, false); assert.equal(root.dataset.messageOnly, undefined); assert.equal(hostDocument.activeElement, editor);
+  assert.equal(messageControl('editor'), editor); assert.equal(form.parentNode, root);
+});
+
 test('focused footer retains the same ordered owner nodes and replaces them only on owner change', async () => {
   const identity = 'footer-owner-change'; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9501})], roster: [agentFixture(identity)]});
   const slot = byId('focused-composer-status'); const agentNodes = [...slot.children], moves = agentNodes.map(node => node.moves), writes = slot.writes;

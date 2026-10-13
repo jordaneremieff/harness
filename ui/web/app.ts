@@ -399,7 +399,7 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
-  if (target) { const owner = conversationController(target); stableViews().place(owner.root, pane.content); owner.root.dataset.paneId = leaf.id;
+  if (target) { const owner = conversationController(target); stableViews().place(owner.root, pane.content); owner.root.dataset.paneId = leaf.id; delete owner.root.dataset.messageOnly;
     if (messageTarget.current?.identity !== (target.kind === 'agent' ? target.identity : undefined)) stableViews().project(owner.elements.root);
   }
   return pane.node;
@@ -423,8 +423,10 @@ function retainPaneGeometry(): void {
   for (const controller of controllers.values()) {
     const pane = viewPane(controller.root);
     if (!controller.root.hidden && !controller.root.inert && !pane?.hidden && !pane?.inert) controller.geometry = controller.transcript.captureGeometry();
-    stableViews().place(controller.root); delete controller.root.dataset.paneId; delete controller.root.dataset.messageOnly;
-    if (messageTarget.current?.identity !== (controller.target.kind === 'agent' ? controller.target.identity : undefined)) stableViews().project(controller.elements.root);
+    const projected = messageTarget.current?.identity === (controller.target.kind === 'agent' ? controller.target.identity : undefined) && !!controller.elements.root.dataset.messagePanel;
+    stableViews().place(controller.root, projected ? byId('agent-message-panel') : undefined); delete controller.root.dataset.paneId;
+    if (projected) controller.root.dataset.messageOnly = 'true';
+    else {delete controller.root.dataset.messageOnly; stableViews().project(controller.elements.root);}
   }
 }
 function restorePaneGeometry(): void {
@@ -435,6 +437,7 @@ function refreshTreeGeometry(): void {
   const focusOnly = box.width < minimum.width || box.height < minimum.height; root.dataset.focusOnly = String(focusOnly);
   for (const [id, pane] of paneRegions) {pane.node.hidden = focusOnly && id !== layout.focusedPane; pane.node.inert = pane.node.hidden;}
   if (!focusOnly) refreshPaneSplit(layout.root);
+  for (const controller of controllers.values()) if (controller.elements.root.dataset.messagePanel) placeMessageRoot(controller, byId('agent-message-panel'));
   stableViews().sync();
   for (const controller of controllers.values()) controller.transcript.visibilityChanged();
 }
@@ -792,10 +795,13 @@ function renderMessageResume(identity: string): void {
   const index = [...state.targetIndex.values()].find(item => sameTarget(item.target, target)); const controller = controllers.get(controllerKey(workspace, target));
   roster.resume(identity, controller?.composer.retained(workspace, target, index) ?? (!!index?.hasDraft || !!index?.unconfirmedOperationIds.length));
 }
-function placeMessageEditor(controller: ConversationController, panel: HTMLElement): void {
-  let slot = panel.querySelector<HTMLElement>('.message-editor-slot'); if (!slot) {slot = element('div', 'message-editor-slot'); slot.id = 'agent-message-editor-slot'; panel.append(slot);}
+function placeMessageRoot(controller: ConversationController, panel: HTMLElement): void {
   const pane = viewPane(controller.root);
   if (!pane || pane.closest('[hidden],[inert]')) {stableViews().place(controller.root, panel); controller.root.dataset.messageOnly = 'true';}
+}
+function placeMessageEditor(controller: ConversationController, panel: HTMLElement): void {
+  let slot = panel.querySelector<HTMLElement>('.message-editor-slot'); if (!slot) {slot = element('div', 'message-editor-slot'); slot.id = 'agent-message-editor-slot'; panel.append(slot);}
+  placeMessageRoot(controller, panel);
   controller.elements.root.dataset.messagePanel = 'true'; stableViews().project(controller.elements.root, slot); stableViews().sync(); controller.composer.placement(true);
 }
 function renderMessagePanel(): void {

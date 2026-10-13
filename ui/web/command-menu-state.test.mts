@@ -56,6 +56,13 @@ test('ShiftEnter dismisses for a native newline and IME or modified keys never a
   for (const extra of [{repeat: true}, {ctrlKey: true}, {metaKey: true}]) assert.equal(menuKey(state, {key: 'Enter', ...extra}).action, 'handled');
   assert.equal(updateMenu(state, '/mo', 3, 3, inventory, true).open, false);
 });
+test('Shift wins over send modifiers and repeat for ready, loading and empty completion', () => {
+  const states = [open(), open('/missing'), updateMenu(emptyMenu(), '/', 1, 1, {state: 'loading', items: []})];
+  for (const state of states) for (const extra of [{ctrlKey: true}, {metaKey: true}, {altKey: true}, {ctrlKey: true, metaKey: true}, {repeat: true}]) {
+    const result = menuKey(state, {key: 'Enter', shiftKey: true, ...extra});
+    assert.equal(result.action, 'native'); assert.equal(result.state.open, false); assert.equal(result.state.suppressed, state.token?.name);
+  }
+});
 test('acceptance changes only the command token and its separator, preserves arguments and positions the caret', () => {
   for (const [text, expected] of [['/mo', '/model '], ['/mo keep  these\nlines', '/model keep  these\nlines'], ['/mo  spaced', '/model  spaced'], ['/mo\nnext', '/model \nnext']]) {
     const token = commandToken(text, 3); assert.ok(token);

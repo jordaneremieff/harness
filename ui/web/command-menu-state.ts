@@ -45,6 +45,7 @@ function arrowStep(key: string): number { return key === 'ArrowDown' ? 1 : key =
 type KeyResult = {state: MenuState; action: 'native' | 'handled' | 'accept'};
 function enterOverride(state: MenuState, key: MenuKey): KeyResult | undefined {
   if (key.key !== 'Enter') return;
+  if (key.shiftKey) return {state: {...state, open: false, suppressed: state.token?.name}, action: 'native'};
   if (key.ctrlKey || key.metaKey) return {state: {...state, open: false, suppressed: state.token?.name}, action: 'handled'};
   if (key.repeat) return {state, action: 'handled'};
 }
@@ -54,7 +55,6 @@ export function menuKey(state: MenuState, key: MenuKey): KeyResult {
   const override = enterOverride(state, key); if (override) return override;
   if (nativeKey(key)) return {state, action: 'native'};
   if (key.key === 'Escape') return {state: {...state, open: false, suppressed: state.token?.name}, action: 'handled'};
-  if (key.key === 'Enter' && key.shiftKey) return {state: {...state, open: false, suppressed: state.token?.name}, action: 'native'};
   if (key.shiftKey) return {state, action: 'native'};
   const direction = arrowStep(key.key);
   if (direction && state.matches.length) return {state: {...state, active: Math.max(0, Math.min(state.matches.length - 1, state.active + direction))}, action: 'handled'};

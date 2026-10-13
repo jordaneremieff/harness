@@ -687,7 +687,7 @@ pre.tool-document { font-family: var(--mono); }
 .composer-input { position: relative; padding: 10px 0 4px; border: 0; border-top: 1px solid var(--edge); border-radius: 0; background: var(--canvas); }
 .composer textarea { display: block; width: 100%; min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 15px; line-height: 1.6; resize: none; }
 .composer-surface { position: relative; }
-.composer-overlay { position: absolute; top: 0; left: 0; overflow: hidden; pointer-events: none; color: var(--fg); }
+.composer-overlay { position: absolute; top: 0; left: 0; overflow: auto; scrollbar-width: none; pointer-events: none; color: var(--fg); }
 .composer-colors { box-sizing: border-box; white-space: pre-wrap; overflow-wrap: break-word; }
 .composer-colors::highlight(composer-keyword) { color: var(--link); }
 .composer-colors::highlight(composer-string) { color: var(--success); }

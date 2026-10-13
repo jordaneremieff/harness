@@ -73,6 +73,7 @@ export class Composer {
   private commandMenu?: CommandMenu;
   private composing = false;
   private suppressEnter = false;
+  private compositionTurn?: ReturnType<typeof setTimeout>;
   private overlay?: ComposerOverlay;
   private textLimit = false;
   private focusRequest?: {origin: Element | null};
@@ -89,10 +90,17 @@ export class Composer {
     this.listen(this.editor, 'keydown', event => this.key(event));
     for (const event of ['select', 'keyup', 'blur', 'scroll'] as const) this.listen(this.editor, event, () => this.rememberSelection());
     this.listen(this.editor, 'focus', () => this.restoreSelection(this.current));
-    this.listen(this.editor, 'compositionstart', () => { this.composing = true; this.suppressEnter = true; });
-    this.listen(this.editor, 'compositionend', () => { this.composing = false; });
-    this.listen(this.editor, 'keyup', event => { if (event.key === 'Enter') this.suppressEnter = false; });
-    this.listen(this.editor, 'beforeinput', event => { if (!this.composing && !event.isComposing && event.inputType !== 'insertLineBreak' && event.inputType !== 'insertParagraph' && event.inputType !== 'insertCompositionText' && event.inputType !== 'insertFromComposition') this.suppressEnter = false; });
+    this.listen(this.editor, 'compositionstart', () => { this.releaseEnter(); this.composing = true; });
+    this.listen(this.editor, 'compositionend', () => {
+      this.composing = false;
+      if (this.suppressEnter) return;
+      // Cover compositionend-before-keydown ordering within the commit task.
+      this.suppressEnter = true;
+      this.compositionTurn = setTimeout(() => this.releaseEnter(), 0);
+    });
+    this.cleanup.push(() => this.releaseEnter());
+    this.listen(this.editor, 'keyup', event => { if (event.key === 'Enter' || event.code === 'Enter') this.releaseEnter(); });
+    this.listen(this.editor, 'beforeinput', event => { if (!this.composing && !event.isComposing && event.inputType !== 'insertLineBreak' && event.inputType !== 'insertParagraph' && event.inputType !== 'insertCompositionText' && event.inputType !== 'insertFromComposition') this.releaseEnter(); });
     const moreCommands = hooks.moreCommands;
     if (elements.commandMenu && hooks.commands) this.commandMenu = new CommandMenu(this.editor, elements.commandMenu, hooks.commands, (text, error, prepared) => {
       this.change(text);
@@ -251,14 +259,21 @@ export class Composer {
     if (buffer.insertionCopy !== undefined) {buffer.insertionCopy = undefined; buffer.notice = '';}
     if (text === previous.text) this.rebaseSelection(buffer, previous);
     this.textLimit = new TextEncoder().encode(text).length > LIMITS.textBytes;
-    if (this.textLimit) buffer.saveError = 'Text exceeds the saved text limit. Your draft is unchanged.';
-    else if (buffer.saveError === 'Text exceeds the saved text limit. Your draft is unchanged.') buffer.saveError = undefined;
+    if (this.textLimit) buffer.saveError = 'Text exceeds the saved text limit. The saved draft is unchanged. Shorten the text to save and send.';
+    else if (buffer.saveError === 'Text exceeds the saved text limit. The saved draft is unchanged. Shorten the text to save and send.') buffer.saveError = undefined;
     this.rememberSelection(); this.notifyRetained(buffer); this.resize(); this.render(); if (this.textLimit) this.receipt(buffer); this.commandMenu?.update(); this.flush(buffer);
   }
+  private releaseEnter(): void {
+    clearTimeout(this.compositionTurn); this.compositionTurn = undefined; this.suppressEnter = false;
+  }
   private compositionKey(event: KeyboardEvent): boolean {
-    if (this.composing || event.isComposing || event.keyCode === 229) { if (event.key === 'Enter' || event.keyCode === 229) this.suppressEnter = true; return true; }
-    if (event.key === 'Enter' && this.suppressEnter) { event.preventDefault(); return true; }
-    return false;
+    const enter = event.key === 'Enter' || event.code === 'Enter';
+    if (enter && (this.composing || event.isComposing || event.keyCode === 229 || this.suppressEnter)) {
+      clearTimeout(this.compositionTurn); this.compositionTurn = undefined; this.suppressEnter = true;
+      if (!this.composing && !event.isComposing && event.keyCode !== 229) event.preventDefault();
+      return true;
+    }
+    return this.composing || event.isComposing || event.keyCode === 229;
   }
   private key(event: KeyboardEvent): void {
     if (this.compositionKey(event)) return;
@@ -375,7 +390,7 @@ export class Composer {
   }
   private flush(buffer: Buffer): void {
     if (this.admissionBlocked || buffer.submitting || buffer.review || buffer.saving || buffer.saveError || draftSaved(buffer.data)) return;
-    if (new TextEncoder().encode(buffer.data.text).length > LIMITS.textBytes) {buffer.saveError = 'Text exceeds the saved text limit. Your draft is unchanged.'; this.receipt(buffer); return;}
+    if (new TextEncoder().encode(buffer.data.text).length > LIMITS.textBytes) {buffer.saveError = 'Text exceeds the saved text limit. The saved draft is unchanged. Shorten the text to save and send.'; this.receipt(buffer); return;}
     void this.save(buffer, buffer.data).then(() => this.flush(buffer), () => {});
   }
   private async save(buffer: Buffer, edit: Edit): Promise<DraftView> {

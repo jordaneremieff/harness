@@ -27,6 +27,13 @@ export class ComposerOverlay {
       const media = matchMedia(query); media.addEventListener('change', invalidate); this.cleanup.push(() => media.removeEventListener('change', invalidate));
     }
     window.addEventListener('resize', invalidate); this.cleanup.push(() => window.removeEventListener('resize', invalidate));
+    let density = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    const densityChanged = () => {
+      density.removeEventListener('change', densityChanged); density = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      density.addEventListener('change', densityChanged); invalidate();
+    };
+    density.addEventListener('change', densityChanged); this.cleanup.push(() => density.removeEventListener('change', densityChanged));
+    window.visualViewport?.addEventListener('resize', invalidate); this.cleanup.push(() => window.visualViewport?.removeEventListener('resize', invalidate));
     document.fonts?.addEventListener('loadingdone', invalidate); this.cleanup.push(() => document.fonts?.removeEventListener('loadingdone', invalidate));
   }
   invalidate(): void {
@@ -45,7 +52,7 @@ export class ComposerOverlay {
   private unprovenMetrics(style: CSSStyleDeclaration, text: string): boolean {
     const editor = this.editor, rect = editor.getBoundingClientRect();
     if (this.scaledAncestor()) return true;
-    if (editor.scrollHeight > editor.clientHeight || editor.scrollWidth > editor.clientWidth || window.devicePixelRatio !== 1 || (window.visualViewport?.scale ?? 1) !== 1 || Math.abs(rect.width - editor.offsetWidth) > 0.5) return true;
+    if (!Number.isInteger(window.devicePixelRatio) || (window.visualViewport?.scale ?? 1) !== 1 || Math.abs(rect.width - editor.offsetWidth) > 0.5) return true;
     const width = editor.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
     const canvas = document.createElement('canvas').getContext('2d'); if (!canvas || width <= 0) return true;
     canvas.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
@@ -76,10 +83,16 @@ export class ComposerOverlay {
     // One text run retains native shaping across color boundaries.
     const source = document.createTextNode(`${text}\n`);
     for (const metric of metrics) this.content.style[metric] = style[metric];
-    this.layer.style.width = `${this.editor.clientWidth}px`; this.layer.style.height = `${this.editor.clientHeight}px`;
-    this.content.style.width = `${this.editor.clientWidth}px`; this.content.style.transform = `translate(${-left}px, ${-top}px)`;
+    const rect = this.editor.getBoundingClientRect();
+    const width = rect.width - this.editor.offsetWidth + this.editor.clientWidth;
+    const height = rect.height - this.editor.offsetHeight + this.editor.clientHeight;
+    this.layer.style.width = `${width}px`; this.layer.style.height = `${height}px`;
+    this.content.style.width = `${width}px`;
     if (generation !== this.generation || text !== this.editor.value || top !== this.editor.scrollTop || left !== this.editor.scrollLeft) return;
-    this.content.replaceChildren(source); this.color(source, ranges); this.layer.hidden = false; this.editor.dataset.decorated = 'true';
+    this.content.replaceChildren(source); this.layer.hidden = false;
+    this.layer.scrollTop = top; this.layer.scrollLeft = left;
+    if (this.layer.scrollTop !== top || this.layer.scrollLeft !== left) {this.layer.hidden = true; return;}
+    this.color(source, ranges); this.editor.dataset.decorated = 'true';
   }
   destroy(): void {
     this.destroyed = true; if (this.frame !== undefined) cancelAnimationFrame(this.frame);

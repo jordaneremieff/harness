@@ -118,6 +118,29 @@ test('composition commit beforeinput cannot release the Enter latch', async () =
     await turn(); assert.equal(f.calls.length, 0);
   }
 });
+test('non-Enter composition commits release the task guard before the next deliberate Enter', async t => {
+  for (const candidate of ['pointer', ' ', '1']) {
+    const f = fixture(); f.connect(state('a', draft(1, 'saved'))); const editor = f.node('editor');
+    editor.fire('compositionstart');
+    if (candidate !== 'pointer') {editor.fire('keydown', Object.assign({key: candidate}, {keyCode: 229})); editor.fire('keyup', {key: candidate});}
+    editor.fire('compositionend');
+    f.node('composer').fire('submit'); await turn(); assert.equal(f.calls.length, 0);
+    t.mock.timers.tick(1);
+    assert.equal(editor.fire('keydown', {key: 'Enter'}).defaultPrevented, false); await turn(); assert.equal(f.calls.length, 0);
+  }
+});
+test('commit Enter keeps suppression across tasks until its matching keyup', async t => {
+  for (const afterEnd of [false, true]) {
+    const f = fixture('primary', undefined, true, undefined, () => true); f.connect(state('a', draft(1, 'saved'))); const editor = f.node('editor');
+    editor.fire('compositionstart');
+    if (!afterEnd) editor.fire('keydown', {key: 'Enter'});
+    editor.fire('compositionend');
+    if (afterEnd) editor.fire('keydown', {key: 'Enter'});
+    t.mock.timers.tick(1); f.node('composer').fire('submit');
+    assert.equal(editor.fire('keydown', {key: 'Enter', repeat: true}).defaultPrevented, true); await turn(); assert.equal(f.calls.length, 0);
+    editor.fire('keyup', {key: 'Enter'}); editor.fire('keydown', {key: 'Enter'}); await turn(); assert.ok(f.pick('POST', '/inputs'));
+  }
+});
 test('duplicate native input notifications keep one edit and one draft save', async () => {
   const f = fixture(); f.connect(); f.node('editor').value = 'one edit'; f.node('editor').fire('input');
   const retained = f.retained.length; f.node('editor').fire('input'); f.node('editor').fire('input');
@@ -160,9 +183,18 @@ test('modifier Enter closes active completion first and does not bypass loading 
     f.node('editor').fire('keydown', {key: 'Enter', ctrlKey: true}); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.node('command-menu').hidden, true);
   }
 });
+test('Shift Enter closes completion for native newline with any send modifier or repeat', async () => {
+  for (const modifier of [{metaKey: true}, {ctrlKey: true}, {altKey: true}, {repeat: true}]) {
+    const f = fixture('primary', () => ({state: 'ready', items: [{name: 'model', description: '', source: 'app'}]}), true, undefined, () => true);
+    f.connect(state('a', draft(1, '/mo'))); f.node('editor').setSelectionRange(3, 3); f.node('editor').focus();
+    assert.equal(f.node('editor').fire('keydown', {key: 'Enter', shiftKey: true, ...modifier}).defaultPrevented, false);
+    assert.equal(f.node('command-menu').hidden, true); await turn(); assert.equal(f.calls.length, 0);
+  }
+});
 test('over-byte native paste remains exact, unsaved and unsendable without a backend request', async () => {
   const f = fixture(); f.connect(); const value = 'é'.repeat(32769); f.node('editor').value = value; f.node('editor').fire('input');
   assert.equal(f.composer.editor.value, value); assert.equal(f.composer.unsaved, true); assert.equal(f.node('send').disabled, true); assert.equal(f.calls.length, 0);
+  assert.match(f.node('receipt').textContent, /The saved draft is unchanged\. Shorten the text to save and send\./);
   f.node('editor').fire('keydown', {key: 'Enter', ctrlKey: true}); await turn(); assert.equal(f.calls.length, 0);
   const retry = f.node('receipt').find('Retry draft save'); assert.ok(retry); assert.equal(retry.disabled, true);
   f.click('Retry draft save'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.composer.editor.value, value);
