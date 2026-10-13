@@ -81,6 +81,22 @@ test('an unindexed active target uses the existing preparation path before input
   };
   const result = await hydrateVisible(original, read); assert.equal(calls, 1); assert.equal(result.targets?.at(-1), saved);
 });
+test('an unindexed passive destination never prepares a target during snapshot hydration', async () => {
+  for (const destination of [{kind: 'agent' as const, identity: 'inspect'}, {kind: 'primary' as const, key: 'p', epoch: 2}]) {
+    const original = snapshot(); original.workspace.selectedTarget = destination;
+    if (destination.kind === 'primary') {original.targets = []; original.targetIndex = [];}
+    const seen: string[] = []; const result = await hydrateVisible(original, reader({}, seen), undefined, [destination]);
+    assert.deepEqual(seen, []); assert.equal(result.targets?.some(saved => saved.target.kind === 'agent'), false);
+    assert.equal(result.targets?.find(saved => JSON.stringify(saved.target) === JSON.stringify(destination)), undefined);
+  }
+});
+test('indexed passive hydration still reads the exact complete image draft without preparation', async () => {
+  const original = snapshot(); original.targets = [];
+  const images = [{name: 'saved.png', digest: 'a'.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1}];
+  const saved = {...target, draft: {...target.draft, images}}; const seen: string[] = [];
+  const result = await hydrateVisible(original, reader({'/api/workspaces/workspace/targets/p2': saved}, seen), undefined, [target.target]);
+  assert.deepEqual(seen, ['/api/workspaces/workspace/targets/p2']); assert.deepEqual(result.targets?.[0]?.draft, saved.draft);
+});
 test('a failed hydration never turns a missing draft into a blank saved draft', async () => {
   const original = {...snapshot(), targets: []};
   await assert.rejects(hydrateVisible(original, async () => {throw new Error('read unavailable');}), /read unavailable/);

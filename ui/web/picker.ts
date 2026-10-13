@@ -7,7 +7,7 @@ import { contextMenu, type ContextItem } from './context-menu.ts';
 import { duplicateIdentityTails } from './tabs.ts';
 import { absoluteTime, relativeTime } from './format.ts';
 import type { Modal } from './modal.ts';
-import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, type SessionList } from './picker-state.ts';
+import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel, type SessionList } from './picker-state.ts';
 import { operation, request } from './transport.ts';
 
 function pickerField(control: {label: HTMLLabelElement; field: HTMLElement}, visibleLabel = false): HTMLElement {
@@ -115,16 +115,19 @@ export class ProjectPicker {
     this.show(cwd);
   }
   openProject(origin?: HTMLElement): void { this.selectProject(origin); }
+  private sessionActions(project: string): void {
+    this.actions(...(this.inline ? [] : [cardAction('folder', 'Change working folder', () => this.selectProject())]), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); }));
+  }
   private show(project?: string): void {
     if (!project) { this.selectProject(); return; }
     const {body, token} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
     body.append(element('p', 'secondary', 'Loading sessions…'));
-    this.actions(cardAction('folder', 'Change working folder', () => this.selectProject()), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); }));
+    this.sessionActions(project);
     void this.sessions(project).catch(cause => {
       if (!this.owns(token)) return;
       body.replaceChildren(element('p', 'error', 'Sessions could not be loaded.'), cardAction('restart', 'Retry saved sessions', () => this.show(project)));
       if (this.inlineError && !this.inline) body.append(this.inlineError);
-      this.actions(cardAction('folder', 'Change working folder', () => this.selectProject()), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); })); this.error(cause, '');
+      this.sessionActions(project); this.error(cause, '');
     });
   }
   private selectProject(origin?: HTMLElement, cursor?: string): void {
@@ -208,7 +211,7 @@ export class ProjectPicker {
     const folderSummary = element('summary', 'secondary', 'Working folder'); cardDisclosure(folderSummary);
     projectDetails.append(folderSummary, element('p', 'identity', project));
     body.append(projectDetails);
-    this.actions(cardAction('folder', 'Change working folder', () => this.selectProject()), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); }));
+    this.sessionActions(project);
     const safety = element('p', 'secondary picker-safety', 'If a session is open in a terminal, close it there before opening it here.');
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow, safety);
@@ -232,10 +235,10 @@ export class ProjectPicker {
       const version = ++render; list.replaceChildren();
       if (!data) return;
       const matches = filterSessions(data.items, search.field.value);
-      const tails = duplicateIdentityTails(data.items.map(item => ({name: item.title, identity: item.id})));
+      const tails = duplicateIdentityTails(data.items.map(item => ({name: sessionLabel(item), identity: item.id})));
       if (focusedPath && !matches.some(item => item.path === focusedPath)) { search.field.focus(); error.textContent = 'The selected session is no longer in this loaded list.'; }
       updateCoverage(matches.length);
-      more.hidden = !data.nextCursor; safety.hidden = !matches.some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));
+      more.hidden = !data.nextCursor; safety.hidden = !file.open && !matches.some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));
       let offset = 0;
       const batch = () => {
         if (version !== render || !this.owns(token)) return;
@@ -279,7 +282,7 @@ export class ProjectPicker {
       } catch (cause) { if (!signal.aborted && this.owns(token)) { error.textContent = 'Some session titles did not load. Use Refresh.'; this.error(cause, ''); } }
     };
     const refresh = cardAction('restart', 'Refresh saved sessions', () => { void load(); }); searchRow.append(refresh);
-    const file = this.sessionFile(project, search.field); file.hidden = true;
+    const file = this.sessionFile(project, search.field, () => {safety.hidden = !file.open && !filterSessions(data?.items ?? [], search.field.value).some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));}); file.hidden = true;
     const options = cardAction('more', 'Saved session options', () => {
       const box = options.getBoundingClientRect();
       contextMenu.open(options, {x: box.left, y: box.bottom}, 'Saved session options', [
@@ -302,10 +305,12 @@ export class ProjectPicker {
   }
   private patchTitles(list: HTMLElement, data: SessionList): void {
     const items = new Map(data.items.map(item => [item.path, item]));
-    const tails = duplicateIdentityTails(data.items.map(item => ({name: item.title, identity: item.id})));
-    for (const select of list.querySelectorAll<HTMLButtonElement>('.picker-select')) {
+    const tails = duplicateIdentityTails(data.items.map(item => ({name: sessionLabel(item), identity: item.id})));
+    for (const row of list.querySelectorAll<HTMLElement>('.picker-session')) {
+      const select = row.querySelector<HTMLButtonElement>('.picker-select'); if (!select) continue;
       const item = items.get(select.dataset.sessionPath ?? ''); const title = select.querySelector('.picker-session-title');
-      if (item && title) { title.textContent = item.titleState === 'pending' ? 'Loading title…' : item.title;
+      if (item && title) { title.textContent = sessionLabel(item); select.title = item.title;
+        const full = row.querySelector('.picker-session-full-title'); if (full) full.textContent = item.title;
         const tail = tails.get(item.id);
         const identity = select.querySelector<HTMLElement>('.picker-session-tail'); if (identity) { identity.textContent = tail ?? ''; identity.hidden = !tail; }
       }
@@ -315,10 +320,11 @@ export class ProjectPicker {
     const row = element('div', 'picker-session');
     const opened = sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path);
     const select = button('', () => this.enter(item.project, item.path), 'picker-select');
-    select.dataset.sessionPath = item.path;
+    select.dataset.sessionPath = item.path; select.title = item.title;
     const heading = element('span', 'picker-session-heading'); const identity = element('span', 'picker-session-tail', tail ?? ''); identity.hidden = !tail;
-    heading.append(element('strong', 'picker-session-title', item.titleState === 'pending' ? 'Loading title…' : item.title), identity);
+    heading.append(element('strong', 'picker-session-title', sessionLabel(item)), identity);
     const metadata = element('span', 'picker-session-meta');
+    metadata.append(element('span', 'picker-session-folder', this.projectName(item.project)));
     if (opened) metadata.append(element('span', 'info', 'In this window'));
     else select.setAttribute('aria-description', 'If this session is active in a terminal, close it there first.');
     select.append(heading, metadata);
@@ -328,7 +334,7 @@ export class ProjectPicker {
     const age = button(relativeTime(item.modifiedAt, Date.now()), () => { absolute = !absolute; age.textContent = absolute ? formatted : relativeTime(item.modifiedAt, Date.now()); age.setAttribute('aria-pressed', String(absolute)); describeTime(); }, 'picker-age quiet');
     age.title = formatted; describeTime();
     const details = element('details', 'picker-session-details'); const summary = element('summary'); controlIcon(summary, 'info', `Details for ${item.title}`);
-    details.append(summary, element('p', 'identity', item.id), element('p', 'identity', item.path), element('p', 'secondary', sessionSize(item.size)));
+    details.append(summary, element('p', 'picker-session-full-title', item.title), element('p', 'identity', item.project), element('p', 'identity', item.id), element('p', 'identity', item.path), element('p', 'secondary', sessionSize(item.size)));
     if (!opened) details.append(element('p', 'secondary', 'If this session is active in a terminal, close it there first.'));
     row.append(select, age, details); return row;
   }
@@ -343,7 +349,7 @@ export class ProjectPicker {
     const index = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : event.key === 'ArrowDown' ? (current + 1) % rows.length : (current < 0 ? rows.length - 1 : (current - 1 + rows.length) % rows.length);
     rows[index]?.focus();
   }
-  private sessionFile(project: string, search: HTMLElement): HTMLDetailsElement {
+  private sessionFile(project: string, search: HTMLElement, changed: () => void): HTMLDetailsElement {
     const disclosure = element('details', 'picker-file'); const summary = element('summary', 'secondary', 'Session file…'); cardDisclosure(summary); disclosure.append(summary);
     const session = input('Session file'); session.field.id = 'picker-session-path'; session.label.htmlFor = session.field.id;
     const error = element('p', 'error'); error.id = 'picker-file-error'; error.setAttribute('role', 'alert'); session.field.setAttribute('aria-describedby', error.id);
@@ -352,8 +358,8 @@ export class ProjectPicker {
       if (!savedPathValid(session.field.value)) { error.textContent = 'Enter a saved session path that starts with /.'; session.field.focus(); return; }
       this.enter(project, session.field.value, cause => { error.textContent = cause instanceof Error ? cause.message : String(cause); session.field.focus(); });
     };
-    disclosure.append(pickerField(session, true), error, element('p', 'secondary', 'If this session is active in a terminal, close it there first.'), button('Resume session', resume, 'main-action'));
-    disclosure.addEventListener('toggle', () => { disclosure.hidden = !disclosure.open; if (disclosure.open) session.field.focus(); else search.focus(); });
+    disclosure.append(pickerField(session, true), error, button('Resume session', resume, 'main-action'));
+    disclosure.addEventListener('toggle', () => { changed(); disclosure.hidden = !disclosure.open; if (disclosure.open) session.field.focus(); else search.focus(); });
     session.field.addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter') { event.preventDefault(); resume(); } });
     return disclosure;
   }

@@ -1,7 +1,7 @@
 import {cardIcon} from './card-icons.ts';
 import { announce, button, element } from './dom.ts';
 import { tabKey } from './tabs.ts';
-import { canSplitPane, closePane, MAX_PANES, movePaneTab, paneById, paneLeaves, samePaneLayout, type PaneAxis, type PaneLayout, type PaneSpace, type PaneView } from './pane-layout.ts';
+import { canSplitPane, closePane, MAX_PANES, movePaneTab, paneById, paneLeaves, samePaneLayout, type PaneAxis, type PaneLayout, type PaneSpace } from './pane-layout.ts';
 
 export type ContextItem = {key?: string; label: string; run: () => void; enabled?: boolean; checked?: boolean; checkbox?: boolean; description?: string; disabledReason?: string; separatorBefore?: boolean; heading?: string};
 function itemRole(item: ContextItem): string { return item.checked === undefined ? 'menuitem' : item.checkbox ? 'menuitemcheckbox' : 'menuitemradio'; }
@@ -93,8 +93,8 @@ export type PaneMenuTarget = {paneId: string; tabKey?: string};
 export type PaneMenuHooks = {layout: () => PaneLayout; valid: () => boolean; space: (pane: string) => PaneSpace;
   label: (key: string) => string; change: (layout: PaneLayout) => void; newTab: (pane: string) => void;
   split: (pane: string, axis: PaneAxis, key: string | null) => void; closeTab: (key: string) => void;
-  activate: (pane: string, key: string) => void; view: (key: string) => PaneView; setView: (key: string, view: PaneView) => void;
-  overflow?: boolean; sessionItems?: ContextItem[]; purpose?: 'add' | 'context'};
+  activate: (pane: string, key: string) => void; conversation: (pane: string, key: string) => void;
+  overflow?: boolean; purpose?: 'add' | 'context'};
 type Guard = (run: () => void) => () => void;
 function moveChoices(layout: PaneLayout, paneId: string, key: string | null, hooks: PaneMenuHooks, guard: Guard): ContextItem[] {
   const leaves = paneLeaves(layout.root); const destinations = leaves.filter(leaf => leaf.id !== paneId);
@@ -103,11 +103,6 @@ function moveChoices(layout: PaneLayout, paneId: string, key: string | null, hoo
     const number = leaves.indexOf(destination) + 1; const name = destination.active ? hooks.label(destination.active) : 'Empty';
     return {label: `Move tab to ${name} (pane ${number})`, enabled: !!key, run: guard(() => {if (key) hooks.change(movePaneTab(layout, key, destination.id));})};
   });
-}
-function viewChoices(key: string | null, hooks: PaneMenuHooks, guard: Guard): ContextItem[] {
-  const view = key ? hooks.view(key) : 'chronological';
-  return ([['chronological', 'View: Conversation'], ['grouped', 'View: Grouped']] as const).map(([mode, label]) =>
-    ({label, checked: view === mode, enabled: !!key, separatorBefore: mode === 'chronological', run: guard(() => {if (key) hooks.setView(key, mode);})}));
 }
 function tabChoices(layout: PaneLayout, hooks: PaneMenuHooks, guard: Guard): ContextItem[] {
   return paneLeaves(layout.root).flatMap((leaf, index) => leaf.tabs.map((tab, tabIndex) => {
@@ -131,8 +126,7 @@ export function paneMenuItems(target: PaneMenuTarget, hooks: PaneMenuHooks): Con
   items.push(...moveChoices(layout, pane.id, key, hooks, guard));
   items.push({label: 'Close tab', enabled: !!key, run: guard(() => {if (key) hooks.closeTab(key);})},
     {label: 'Close pane', enabled: leaves.length > 1, run: guard(() => hooks.change(closePane(layout, pane.id)))});
-  items.push(...viewChoices(key, hooks, guard));
-  items.push(...(hooks.sessionItems ?? []).map((item, index) => ({...item, separatorBefore: index === 0 || item.separatorBefore, run: guard(item.run)})));
+  items.push({label: 'Conversation actions…', enabled: !!key, separatorBefore: true, run: guard(() => {if (key) hooks.conversation(pane.id, key);})});
   if (hooks.overflow) items.push(...tabChoices(layout, hooks, guard));
   return items;
 }

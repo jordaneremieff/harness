@@ -22,6 +22,7 @@ import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
 import { Roster } from './roster.ts';
+import {noticeGroups, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
 import { conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
 import type { UiEvent } from './state.ts';
@@ -84,7 +85,7 @@ let devNavigating = false;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>;
-  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'>; resizer?: Resizer};
+  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'>; resizer?: Resizer};
 const controllers = new Map<string, ConversationController>();
 let controllerSerial = 0;
 function controllerKey(workspace: string, target: Target): string { return JSON.stringify([workspace, targetIdentity(target)]); }
@@ -130,7 +131,7 @@ function conversationController(target: Target): ConversationController {
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
-  controller.composer = new Composer(elements, {imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
@@ -226,6 +227,7 @@ function requireCurrentPreparation(connection: EventSource | undefined): void {
 }
 async function prepareMessageTarget(workspaceId: string, target: Extract<Target, {kind: 'agent'}>): Promise<import('../shared/api.ts').TargetPreparation> {
   const captured = messageTarget.current, controller = conversationController(target), connection = source;
+  controller.passive = false;
   try {
     const prepared = await request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(workspaceId)}/targets`, 'POST', {target});
     requireCurrentPreparation(connection);
@@ -283,20 +285,21 @@ function refreshPaneSizes(): void {
 }
 
 let sidebarSectionWorkspace = '';
-const sidebarSections = {primary: false, agents: false};
-function sidebarSectionKey(section: 'primary' | 'agents'): string { return `ui:sections:${state.workspace?.id ?? ''}:${section}`; }
+const sidebarSections = {agents: true};
+function sidebarSectionKey(section: 'agents'): string { return `ui:sections:${state.workspace?.id ?? ''}:${section}`; }
 export function renderSidebarSections(): void {
   const workspace = state.workspace?.id ?? '';
   if (sidebarSectionWorkspace !== workspace) {
     sidebarSectionWorkspace = workspace;
-    for (const section of ['primary', 'agents'] as const) { try { sidebarSections[section] = sessionStorage.getItem(sidebarSectionKey(section)) === 'true'; } catch { sidebarSections[section] = false; } }
+    for (const section of ['agents'] as const) { try { sidebarSections[section] = sessionStorage.getItem(sidebarSectionKey(section)) !== 'false'; } catch { sidebarSections[section] = true; } }
   }
-  for (const section of ['primary', 'agents'] as const) {
+  for (const section of ['agents'] as const) {
+    byId('roster-section').dataset.collapsed = String(sidebarSections[section]);
     byId(`${section}-heading`).setAttribute('aria-expanded', String(!sidebarSections[section]));
     byId(`${section}-section-body`).hidden = sidebarSections[section];
   }
 }
-export function setSidebarSection(section: 'primary' | 'agents', collapsed: boolean): void {
+export function setSidebarSection(section: 'agents', collapsed: boolean): void {
   renderSidebarSections(); sidebarSections[section] = collapsed;
   try { sessionStorage.setItem(sidebarSectionKey(section), String(collapsed)); } catch { /* The current tab retains its in-memory section state. */ }
   renderSidebarSections(); roster.schedule();
@@ -369,6 +372,7 @@ export function applyLayout(layout: ConversationLayout): void {
 }
 function activateConversationTab(pane: string, key: string): void {
   const layout = activatePaneTab(currentLayout(), pane, key); if (paneById(layout, pane)?.active !== key) return;
+  const target = layoutTarget(layout, primaryTarget()); if (target) conversationController(target).passive = false;
   applyLayout(layout); focusEditor();
 }
 function moveRetained(node: HTMLElement, parent: HTMLElement): void {
@@ -508,7 +512,8 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
   try {
     const explicit = messageTarget.current;
     const read = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
-    const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateVisible(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined));
+    const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateVisible(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined,
+      [...controllers.values()].filter(controller => controller.workspaceId === value.workspace.id && controller.passive).map(controller => controller.target)));
     const current = await (signal ? waitForSignal(pending, signal) : pending); signal?.throwIfAborted();
     if (buffered.overflow) throw new Error('Current view changed too quickly during restore. Reconnect to request a fresh baseline.');
     updateDiagnostics(true); snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)}; renderAll();
@@ -657,6 +662,7 @@ export function renderNavigation(): void {
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation();
   tabStrip.render(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
+  byId('primary-section').hidden = !hasConversation(); byId('primary-section-body').hidden = byId('primary-row').hidden;
   byId('primary-row').setAttribute('aria-label', 'Return to Primary'); byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
   const navigation = byId('navigation-access'); const leading = paneRegions.get(layout.focusedPane)?.node.querySelector<HTMLElement>('.tab-bar') ?? byId('workspace');
   if (navigation.parentElement !== leading) leading.prepend(navigation);
@@ -671,7 +677,7 @@ function renderSessionEntry(hasTab: boolean): void {
 function focusEditor(): void { const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
   if (!matchMedia('(min-width: 900px)').matches) {
-    drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'session-open' : 'sidebar-show').focus(); return;
+    drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'project-button' : 'sidebar-show').focus(); return;
   }
   const applied = selection({sidebarVisible: visible});
   byId(visible ? 'project-button' : 'sidebar-show').focus();
@@ -730,6 +736,7 @@ function renderControllerEmpty(controller: ConversationController): void {
   controllerNode(controller, 'empty').hidden = !emptyView; setText(controllerNode(controller, 'empty-heading'), emptyView?.heading ?? ''); setText(controllerNode(controller, 'empty-caption'), emptyView?.caption ?? '');
 }
 function prepareController(controller: ConversationController): void {
+  if (controller.passive) {controller.composer.attachRetained(controller.workspaceId, controller.target); return;}
   if (controller.preparing || controller.abort.signal.aborted) return; controller.preparing = true;
   const connection = source;
   void request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(controller.workspaceId)}/targets`, 'POST', {target: controller.target}, undefined, controller.abort.signal).then(prepared => {
@@ -1000,6 +1007,7 @@ function renderAvailability(): void {
   if (messageTarget.current) renderMessagePanel(); renderIdentity(); tabStrip.render();
 }
 export async function selectAgent(row: AgentRow): Promise<void> {
+  conversationController({kind: 'agent', identity: row.identity}).passive = false;
   const origin = document.activeElement; drawerOpen = false;
   const applied = selection({panelVisible: true, selectedTarget: {kind: 'agent', identity: row.identity}});
   focusEditor(); await applied;
@@ -1159,11 +1167,24 @@ function noticesBadge(): void {
 }
 function notices(): void {
   state = markReadNotices(state); noticesBadge(); modal.open('Notifications'); if (!state.notices.length) modal.body.append(empty('No notifications'));
-  for (const notice of state.notices) {
-    const row = element('div', `notification ${notice.level}`); row.append(cardAction('close', 'Dismiss notification', () => { state = dismissNotice(state, notice.id); notices(); noticesBadge(); }), element('p', undefined, notice.message));
-    if (notice.target) row.append(element('p', 'target-label', presentation(notice.target).name), details('Details', rawText(notice.target)));
-    modal.body.append(row); references.decorate(row, () => state.noticeShelf.get(notice.id) === notice && !state.dismissedNotices.has(notice.id));
+  for (const group of noticeGroups(state.notices)) renderNoticeGroup(group);
+}
+function renderNoticeGroup(group: NoticeGroup): void {
+  const row = element('div', `notification ${group.level}`); row.dataset.noticeCount = String(group.items.length);
+  row.append(cardAction('close', group.items.length > 1 ? 'Dismiss these notifications' : 'Dismiss notification', () => {
+    for (const notice of group.items) state = dismissNotice(state, notice.id);
+    notices(); noticesBadge();
+  }), element('p', undefined, group.message), details('Details', rawText(group.items)));
+  const seen = new Set<string>(), workspace = state.workspace?.id, boot = state.bootId;
+  for (const notice of group.items) {
+    const target = noticeTarget(state, notice); if (!target || seen.has(targetIdentity(target))) continue;
+    seen.add(targetIdentity(target)); const epoch = target.kind === 'agent' ? state.agentEpochs.get(target.identity) : target.epoch;
+    const destination = button(`Open ${presentation(target).name}`, () => {
+      if (state.workspace?.id !== workspace || state.bootId !== boot || !noticeTarget(state, notice) || target.kind === 'agent' && state.agentEpochs.get(target.identity) !== epoch) {announce('This conversation is no longer available.'); return;}
+      modal.close(false); void navigateReference({target}).catch(showError);
+    }, 'notice-destination'); destination.dataset.noticeId = notice.id; row.append(destination);
   }
+  modal.body.append(row); references.decorate(row, () => group.items.every(notice => state.noticeShelf.get(notice.id) === notice && !state.dismissedNotices.has(notice.id)));
 }
 function showStatusError(node: HTMLElement, text: string, error: unknown, className = 'status-error'): void {
   const caption = element('span', className, text); caption.title = errorMessage(error); node.replaceChildren(caption);
@@ -1206,11 +1227,13 @@ async function navigateReference(destination: ReferenceDestination): Promise<voi
   if (!workspace) return;
   if (target.kind === 'agent') {
     if (!state.roster.has(target.identity) && selectedAgent() !== target.identity) return;
+    conversationController(target).passive = true;
     await selection({panelVisible: true, selectedTarget: target, conversationLayout: openTab(currentLayout(), {kind: 'agent', identity: target.identity})});
     if (workspace !== state.workspace?.id || selectedAgent() !== target.identity) return;
     focusReference(conversationController(target).transcript, entryId);
   } else {
     if (state.primaries.get(target.key)?.epoch !== target.epoch) return;
+    conversationController(target).passive = true;
     await selection({primaryKey: target.key, selectedTarget: target, conversationLayout: openTab(currentLayout(), {kind: 'primary'})});
     if (!referencePrimaryCurrent(workspace, target)) return;
     focusReference(conversationController(target).transcript, entryId);
@@ -1231,12 +1254,18 @@ function inspectAgent(identity = selectedAgent()): void {
     if (modal.owns(token)) modal.body.append(details('Reported activity', rawText(data)));
   }, false);
 }
-function primaryMenuItems(): ContextItem[] {
-  const target = primaryTarget(); const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
-  const entries = actions.sessionMenuEntries(); const shown = controller?.showThinking ?? false;
-  const toggle = entries.find(item => item.name === (shown ? 'Hide thinking' : 'Show thinking'));
-  return entries.filter(item => !['Sessions', 'Appearance', 'Help', 'Hide thinking'].includes(item.name))
-    .map(item => item.name === 'Show thinking' ? {label: 'Show thinking', checked: shown, checkbox: true, enabled: item.enabled, run: toggle?.run ?? item.run} : {label: item.name, enabled: item.enabled, run: item.run});
+function conversationMenuItems(target: Target): ContextItem[] {
+  const controller = conversationController(target), shown = controller.showThinking;
+  const local: Record<string, () => void> = {
+    ...(target.kind === 'primary' ? {'Conversation details': () => actions.sessionDetails(state.primaries.get(target.key))} : {}),
+    'Expand loaded tools': () => controller.transcript.expandLoaded(true, true),
+    'Collapse loaded tools': () => controller.transcript.expandLoaded(true, false),
+    'Show thinking': () => controller.transcript.expandLoaded(false, !shown),
+    'Find text': () => actions.find(query => !controller.abort.signal.aborted && controller.workspaceId === state.workspace?.id && controller.transcript.find(query)),
+  };
+  return actions.sessionMenuEntries(target.kind === 'agent').filter(item => !['Sessions', 'Appearance', 'Help', 'Hide thinking', 'Model', 'Thinking'].includes(item.name))
+    .map(item => ({label: item.name, enabled: local[item.name] ? true : item.enabled, run: local[item.name] ?? item.run,
+      ...(item.name === 'Show thinking' ? {checked: shown, checkbox: true} : {})}));
 }
 function agentMenuItems(identity: string): ContextItem[] {
   const row = agentRow(identity); if (!row) return [];
@@ -1248,7 +1277,21 @@ function agentMenuItems(identity: string): ContextItem[] {
     {label: 'Conversation details', run: () => actions.conversationDetails(identity)},
   ];
   if (row.capabilities?.inspect) items.push({label: 'View activity…', run: () => inspectAgent(identity)});
+  items.push(...conversationMenuItems({kind: 'agent', identity}).filter(item => !items.some(existing => existing.label === item.label)));
   return items;
+}
+export function openConversationActions(paneId: string = focusedPane, key?: string): void {
+  const workspace = state.workspace?.id, layout = currentLayout(), pane = paneById(layout, paneId);
+  const tab = pane?.tabs.find(tab => tabKey(tab) === (key ?? pane.active)), target = tab && controllerTarget(tab);
+  if (!workspace || !tab || !target) return;
+  const current = layout, owner = conversationController(target), trigger = paneRegions.get(paneId)?.menu;
+  if (!trigger) return;
+  const view = owner.transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological';
+  const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));
+  const entries = tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target);
+  const first = entries[0]; if (first) entries[0] = {...first, separatorBefore: true};
+  const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, {x: box.right, y: box.bottom}, 'Conversation actions', [...choices, ...entries, {label: 'Commands…', separatorBefore: true, run: () => actions.palette()}],
+    () => state.workspace?.id === workspace && samePaneLayout(currentLayout(), current) && sameTarget(controllerTarget(tab), target) && (target.kind === 'primary' || state.roster.has(target.identity)));
 }
 function paneSpace(id: string): {width: number; height: number; divider: number} { const box = paneRegions.get(id)?.node.getBoundingClientRect(); return {width: box?.width ?? 0, height: box?.height ?? 0, divider: 4}; }
 function paneTabChoices(leaf: PaneLeaf, layout: ConversationLayout): ContextItem[] {
@@ -1271,9 +1314,8 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
       const current = paneById(currentLayout(), pane); if (!current) return;
       if (key && current.tabs.length > 1) applyLayout(splitPane(currentLayout(), pane, axis, paneSpace(pane), key)); else choosePaneTarget(pane, axis);
     }, closeTab: key => applyLayout(closeTab(currentLayout(), key)), activate: activateConversationTab,
-    view: key => {const tab = paneLeaves(currentLayout().root).flatMap(pane => pane.tabs).find(tab => tabKey(tab) === key); const target = tab ? controllerTarget(tab) : undefined; return target ? conversationController(target).transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological' : 'chronological';},
-    setView: (key, view) => {const tab = paneLeaves(currentLayout().root).flatMap(pane => pane.tabs).find(tab => tabKey(tab) === key); const target = tab ? controllerTarget(tab) : undefined; if (target) conversationController(target).transcript.setView(view);},
-    overflow: purpose === 'context' && region.menu.dataset.overflow === 'true', sessionItems: tab?.kind === 'primary' ? primaryMenuItems() : tab?.kind === 'agent' ? agentMenuItems(tab.identity) : []});
+    conversation: openConversationActions,
+    overflow: purpose === 'context' && region.menu.dataset.overflow === 'true'});
   if (purpose === 'list' && leaf) {
     const first = items[0]; if (first) items[0] = {...first, heading: 'Pane actions', separatorBefore: true};
     items.unshift(...paneTabChoices(leaf, layout));
@@ -1333,7 +1375,7 @@ function bind(): void {
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
     if (count) node.append(count);
   }
-  for (const id of ['primary-heading', 'agents-heading']) byId(id).prepend(cardIcon('chevron'));
+  byId('agents-heading').prepend(cardIcon('chevron'));
   for (const name of ['input', 'change', 'keydown', 'pointerdown', 'select', 'scroll', 'compositionstart', 'compositionend'] as const) document.addEventListener(name, event => {if (event.isTrusted) devInteractionRevision++;}, {capture: true, passive: true});
   window.addEventListener('pagehide', event => {if (!event.persisted && !devNavigating) devReload?.destroy();});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
@@ -1356,7 +1398,6 @@ function bind(): void {
   byId('agent-refresh').addEventListener('click', refreshRoster);
   byId('agent-new').addEventListener('click', () => actions.prepareText('/agent new'));
 
-  byId('primary-heading').addEventListener('click', () => setSidebarSection('primary', !sidebarSections.primary));
   byId('agents-heading').addEventListener('click', () => setSidebarSection('agents', !sidebarSections.agents));
   byId('model-button').addEventListener('click', () => actions.modelPicker()); byId('thinking-button').addEventListener('click', () => actions.thinkingPicker());
   byId('agent-message-close').addEventListener('click', () => closeMessagePanel());

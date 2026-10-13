@@ -173,7 +173,7 @@ function paneFixture() {
   let valid = true; let space = {width: 1400, height: 1000, divider: 4}; const calls: string[] = [];
   const hooks: PaneMenuHooks = {layout:()=>layout, valid:()=>valid, space:()=>space, label:key=>key, change:next=>{layout=next; calls.push('change');},
     newTab:pane=>calls.push(`new:${pane}`), split:(pane,axis,key)=>calls.push(`split:${pane}:${axis}:${key}`), closeTab:key=>calls.push(`close:${key}`),
-    activate:(pane,key)=>calls.push(`activate:${pane}:${key}`), view:key=>key==='agent:b'?'grouped':'chronological', setView:(key,mode)=>calls.push(`view:${key}:${mode}`)};
+    activate:(pane,key)=>calls.push(`activate:${pane}:${key}`), conversation:(pane,key)=>calls.push(`conversation:${pane}:${key}`)};
   return {hooks,calls,layout:()=>layout,set:(next:typeof layout)=>{layout=next;}, invalidate:()=>{valid=false;}, small:()=>{space={...space,width:335,height:240};}};
 }
 test('plus and right-click use one action vocabulary, checked state, eligibility and exact captured target', () => {
@@ -181,8 +181,8 @@ test('plus and right-click use one action vocabulary, checked state, eligibility
   const plus = paneMenuItems(target,f.hooks); const right = paneMenuItems(target,f.hooks);
   const signature = (items:typeof plus) => items.map(({label,enabled,checked})=>({label,enabled,checked})); assert.deepEqual(signature(plus),signature(right));
   assert.deepEqual(plus.slice(0,3).map(item=>item.label),['New tab…','Split right','Split down']);
-  assert.equal(plus.find(item=>item.label==='View: Grouped')?.checked,true); plus.find(item=>item.label==='Split down')?.run(); plus.find(item=>item.label==='View: Conversation')?.run();
-  assert.deepEqual(f.calls,['split:pane-1:y:agent:b','view:agent:b:chronological']);
+  assert.equal(plus.some(item=>item.label.startsWith('View:')),false); plus.find(item=>item.label==='Split down')?.run(); plus.find(item=>item.label==='Conversation actions…')?.run();
+  assert.deepEqual(f.calls,['split:pane-1:y:agent:b','conversation:pane-1:agent:b']);
   assert.deepEqual(paneMenuItems({paneId:'missing'},f.hooks),[]); assert.deepEqual(paneMenuItems({paneId:'pane-1',tabKey:'missing'},f.hooks),[]);
 });
 test('fresh unsaved layouts admit pane actions while exact content changes remain stale', () => {
@@ -209,16 +209,17 @@ test('move, close and Tabs rows route captured stable keys, not current selectio
 test('captured pane actions and session actions refuse stale root or recipient revision', () => {
   const doc = new Doc(); Object.defineProperty(globalThis,'document',{configurable:true,value:doc});
   for (const cause of ['root','recipient']) {
-    const f=paneFixture(); const items=paneMenuItems({paneId:'pane-1'}, {...f.hooks,sessionItems:[{label:'Session action',run:()=>f.calls.push('session')}]});
+    const f=paneFixture(); const items=paneMenuItems({paneId:'pane-1'}, f.hooks);
     if (cause==='root') f.set(splitPane(f.layout(),'pane-1','x',{width:1400,height:1000,divider:4})); else f.invalidate();
-    items[0]?.run(); items.find(item=>item.label==='Close tab')?.run(); items.find(item=>item.label==='Session action')?.run(); assert.deepEqual(f.calls,[]); assert.match(doc.announcements.textContent,/This item changed/);
+    items[0]?.run(); items.find(item=>item.label==='Close tab')?.run(); items.find(item=>item.label==='Conversation actions…')?.run(); assert.deepEqual(f.calls,[]); assert.match(doc.announcements.textContent,/This item changed/);
   }
 });
 
 test('the small plus contains only new conversation and split actions', () => {
-  const f = paneFixture(); const items = paneMenuItems({paneId:'pane-1'}, {...f.hooks, purpose:'add', overflow:true, sessionItems:[{label:'Compact…',run(){}}]});
+  const f = paneFixture(); const items = paneMenuItems({paneId:'pane-1'}, {...f.hooks, purpose:'add', overflow:true});
   assert.deepEqual(items.map(item => item.label), ['New tab…', 'Split right', 'Split down']);
   items[0]?.run(); items[2]?.run(); assert.deepEqual(f.calls,['new:pane-1','split:pane-1:y:primary']);
-  const context = paneMenuItems({paneId:'pane-1'}, {...f.hooks, purpose:'context', sessionItems:[{label:'Compact…',run(){}}]});
-  for (const label of ['Close tab','Close pane','View: Conversation','View: Grouped','Compact…']) assert.ok(context.some(item => item.label === label));
+  const context = paneMenuItems({paneId:'pane-1'}, {...f.hooks, purpose:'context'});
+  for (const label of ['Close tab','Close pane','Conversation actions…']) assert.ok(context.some(item => item.label === label));
+  assert.equal(context.some(item => /^(View:|Compact|Model|Thinking)/.test(item.label)), false);
 });

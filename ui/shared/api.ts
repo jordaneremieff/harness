@@ -216,7 +216,7 @@ export const ROUTES = [
   'GET /api/workspaces/:id/unconfirmed/:operationId', 'POST /api/workspaces/:id/unconfirmed/:operationId/restore', 'DELETE /api/workspaces/:id/unconfirmed/:operationId',
 ] as const;
 
-export type SavedSession = {id: string; path: string; revision: string; project: string; title: string; titleState?: 'pending' | 'ready' | 'unavailable'; modifiedAt: string; size: number};
+export type SavedSession = {id: string; path: string; revision: string; project: string; title: string; titleSource?: 'name' | 'prompt'; titleState?: 'pending' | 'ready' | 'unavailable'; modifiedAt: string; size: number};
 export type RecentProject = {path: string; name: string; modifiedAt: string};
 export type SavedSessionPage = {items: SavedSession[]; total: number; omitted: number; nextCursor: string | null; titleCursor: string | null; observedAt: string};
 export type RecentProjectPage = {items: RecentProject[]; total: number; omitted: number; nextCursor: string | null; observedAt: string};

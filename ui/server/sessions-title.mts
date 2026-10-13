@@ -7,7 +7,7 @@ const CHUNK_BYTES = 64 * 1024;
 const FORWARD_BYTES = 2 * 1024 * 1024;
 const LINE_BYTES = 256 * 1024;
 const TITLE_CHARS = 200;
-export type SessionTitle = {title: string; titleState: 'ready' | 'unavailable'};
+export type SessionTitle = {title: string; titleSource?: 'name' | 'prompt'; titleState: 'ready' | 'unavailable'};
 type ScanState = {name: string; firstUser: string; seenUser: boolean};
 export function titleExcerpt(text: string): string {
   return safeText(text.slice(0, TITLE_CHARS * 2), TITLE_CHARS * 4).replace(/\s+/g, ' ').trim().slice(0, TITLE_CHARS);
@@ -154,6 +154,6 @@ export async function scanSessionTitle(path: string, size: number): Promise<Sess
     const scanned = await forward(file, size, state);
     await tail(file, size, scanned, state);
     const title = state.name || state.firstUser;
-    return title ? {title, titleState: 'ready'} : {title: '(title unavailable)', titleState: 'unavailable'};
+    return title ? {title, titleSource: state.name ? 'name' : 'prompt', titleState: 'ready'} : {title: '(title unavailable)', titleState: 'unavailable'};
   } finally { await file.close(); }
 }

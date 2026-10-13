@@ -21,7 +21,7 @@ test('two families: system sans for interface and prose, system monospace for co
 });
 test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headings 18', () => {
   const glyphs = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*font-size: (11px|16px);/g)].map(match => [match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), match[2]]);
-  assert.deepEqual(glyphs, [['.pane-actions', '16px'], ['.message-menu', '16px'], ['.communication-unverified', '11px'], ['.message-source-close', '16px']]);
+  assert.deepEqual(glyphs, [['.pane-actions', '16px'], ['.message-menu', '16px'], ['.message-source-close', '16px']]);
   assert.deepEqual([...new Set(declarations('font-size'))].filter(value => value !== '11px' && value !== '16px').sort(), ['12px', '13px', '14px', '15px', '18px', 'inherit']);
   assert.match(rule('.message-role'), /font-size: 13px; line-height: 18px; font-weight: 600/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 15px; line-height: 1\.6; font-weight: 400; font-style: normal/);
@@ -217,9 +217,10 @@ test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and 
   assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--edge\)/);
   assert.doesNotMatch(css, /content: "You"/);
   const circles = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*border-radius: 50%;/g)].map(match => match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim());
-  assert.deepEqual(circles, ['.tab-dot', '.communication-unverified::before']);
+  assert.deepEqual(circles, []);
   for (const value of declarations('border-radius')) if (value !== '50%') assert.doesNotMatch(value, /999|50%|9999/);
-  assert.match(rule('.communication-unverified::before'), /width: 14px; height: 14px; border: 1px solid currentColor; border-radius: 50%/);
+  assert.match(rule('.communication-unverified'), /display: inline-flex;[^}]*align-items: center;[^}]*width: auto/);
+  assert.match(rule('.communication-unverified > .card-action-label'), /white-space: nowrap/);
   assert.match(rule('.context-menu-item > .choice-check'), /top: 50%; left: 10px; margin-top: -8px/);
   assert.match(rule('.nav-row, .row-select'), /height: 26px;[^}]*white-space: nowrap/);
   assert.match(rule('.row-age, .row-message'), /position: absolute; top: 1px; right: 8px/);
@@ -403,8 +404,8 @@ test('editor text and prose share the pane gutter without horizontal correction 
   }
 });
 test('exceptional tab state remains readable and a sole tab fills its available width', () => {
-  assert.match(rule('.tab-state'), /flex: none; min-width: 0/);
-  assert.doesNotMatch(rule('.tab-state'), /overflow: hidden|text-overflow:/);
+  assert.match(rule('.tab-dot'), /flex: none; width: 14px; height: 14px/);
+  assert.doesNotMatch(css, /\.tab-state\s*\{/);
   assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 1 0 auto; max-width: none/);
   assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
   assert.match(rule('.tab-label'), /flex: 1 0 auto/);
@@ -419,8 +420,8 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
   assert.match(layout, /if \(node\.kind === 'pane'\) return \{width: MIN_PANE_WIDTH, height: MIN_PANE_HEIGHT\}/);
   assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
   assert.match(rule('.tab-label'), /min-width: 8ch; white-space: nowrap/);
-  assert.match(rule('.tab-state'), /color: var\(--muted\); font-size: 12px; font-weight: 400/);
-  assert.doesNotMatch(rule('.tab-state'), /background:|border:|border-radius:/);
+  assert.match(rule('.tab-dot'), /color: var\(--muted\)/);
+  assert.doesNotMatch(rule('.tab-dot'), /background:|border:|border-radius:/);
   assert.match(rule('.conversation-tab[aria-selected=true]'), /border-top-color: var\(--edge\); background: var\(--canvas\)/);
   assert.match(rule('.conversation-tab:hover .tab-close, .conversation-tab:focus-within .tab-close'), /opacity: 1/);
   assert.match(rule('.pane-tree'), /display: flex; flex: 1; min-width: 0; min-height: 0/);
@@ -447,13 +448,13 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
 test('full tab names remain intrinsic and every name keeps an eight-ch minimum', () => {
   const tab = rule('.conversation-tab');
   assert.match(tab, /flex: 0 0 auto/);
-  assert.match(tab, /min-width: calc\(8ch \+ var\(--tab-chrome,74px\) \+ var\(--tab-identity-width,0px\) \+ var\(--tab-state-width,0px\)\)/);
+  assert.match(tab, /min-width: calc\(8ch \+ var\(--tab-chrome,74px\) \+ var\(--tab-identity-width,0px\)\)/);
   assert.match(tab, /max-width: none/);
   assert.match(rule('.tab-label'), /flex: 1 0 auto; min-width: 8ch; white-space: nowrap/);
   assert.doesNotMatch(rule('.tab-label'), /text-overflow:|overflow:/);
-  assert.match(rule('.tab-dot'), /width: 6px; height: 6px/);
+  assert.match(rule('.tab-dot'), /width: 14px; height: 14px/);
   assert.match(media('@media (pointer:coarse)'), /\.conversation-tab \{ --tab-chrome: 90px; \}/);
-  assert.match(rule('.tab-state'), /flex: none; min-width: 0/);
+  assert.match(rule('.conversation-tabs'), /scrollbar-color: transparent transparent/);
   assert.match(rule('.tab-close'), /flex: none/);
   assert.match(rule('.conversation-tabs'), /overflow-x: auto/);
   assert.match(rule('.conversation-tab:hover .tab-close, .conversation-tab:focus-within .tab-close'), /opacity: 1/);

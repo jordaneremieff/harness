@@ -73,7 +73,7 @@ function scopedNodes(id: string, withMenu: boolean) {
   const elements = {root:node('composer'), editor:node('editor'), recipient:node('recipient'), receipt:node('receipt'), receiptDetails:node('receipt-details'), modes:node('modes'), send:node('send'), save:node('save'), attachments:node('attachments'), commandMenu:withMenu ? node('command-menu') : undefined} as unknown as ComposerElements;
   return {node, elements};
 }
-function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory, withMenu = prefix === 'primary', timing?: (start: number, end: number) => void, enterSends: () => boolean = () => false, imageInput = () => ({allowed: true, reason: ''})) {
+function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory, withMenu = prefix === 'primary', timing?: (start: number, end: number) => void, enterSends: () => boolean = () => false, imageInput = () => ({allowed: true, reason: ''}), prepareInput: () => boolean = () => true) {
   const scoped = scopedNodes(prefix, withMenu); const announcements = new NodeFake(); const lookups: string[] = [];
   const calls: Call[] = []; const arrivals = new Set<() => void>(); let sequence = 0; const frames: (() => void)[] = []; const copied: string[] = [];
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {execCommand: (_command: string, _ui: boolean, value: string) => {
@@ -97,7 +97,7 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
     const scope = scopedNodes(id, menu); const composer = new Composer(scope.elements, {submitted:result => submitted.push(result), unknownCommand:(text, send) => unknown(text, send), commands:inventory, retained:(workspace, target, value) => retained.push({workspace,target,value})});
     return {...scope, composer};
   };
-  const composer = new Composer(scoped.elements, {timing, enterSends, imageInput, submitted: result => submitted.push(result), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
+  const composer = new Composer(scoped.elements, {timing, enterSends, imageInput, prepareInput, submitted: result => submitted.push(result), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
   const node = scoped.node;
   const pick = (method: string, suffix: string) => { const call = calls.find(item => item.method === method && item.path.endsWith(suffix)); assert.ok(call, `${method} ${suffix}`); return call; };
   const ok = (call: Call, value: unknown) => { calls.splice(calls.indexOf(call), 1); call.resolve({ok: true, data: value}); };
@@ -119,6 +119,37 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
 }
 
 const image = (name = 'one.png', digit = 'a'): DraftImage => ({name, digest: digit.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1});
+test('passive attachment and availability never reserve input while explicit activation preserves the complete draft', async () => {
+  for (const kind of ['primary', 'agent'] as const) {
+    let active = false;
+    const f = fixture(kind, undefined, false, undefined, undefined, undefined, () => active);
+    const saved = state('passive', {...draft(2, 'Exact retained draft', kind === 'agent' ? 'followUp' : 'prompt'), images: [image(), image('two.png', 'b')]}, kind === 'agent');
+    f.connect(saved); await turn(); assert.equal(f.reservations(), 0);
+    const editor = f.composer.editor, parent = editor.parentElement;
+    f.node('editor').setSelectionRange(2, 7, 'backward'); f.composer.setManualHeight(140);
+    for (let i = 0; i < 3; i++) {
+      f.composer.attachRetained('w', saved.target); f.composer.availability(false, false, false);
+      f.composer.availability(true, true, false); f.composer.attach('w', saved);
+    }
+    await turn(); assert.equal(f.reservations(), 0); assert.equal(f.calls.length, 0);
+    assert.equal(f.composer.editor, editor); assert.equal(editor.parentElement, parent);
+    assert.equal(editor.value, saved.draft.text); assert.deepEqual(f.composer.state?.draft.images, saved.draft.images);
+    assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']);
+    active = true; f.composer.availability(true, true, false); await turn(); assert.equal(f.reservations(), 1);
+    f.composer.availability(true, true, false); await turn(); assert.equal(f.reservations(), 1);
+    assert.equal(editor.value, saved.draft.text); assert.deepEqual(f.composer.state?.draft.images, saved.draft.images);
+    f.composer.destroy();
+  }
+});
+test('explicit send reserves a passive draft and passive settlement never prepares another input', async () => {
+  const f = fixture('agent', undefined, false, undefined, undefined, undefined, () => false);
+  const saved = f.connect(state('passive-send', draft(2, 'Deliberate message', 'followUp'), true));
+  await turn(); assert.equal(f.reservations(), 0);
+  const sending = f.composer.send(); await f.waitCall('POST', '/inputs'); assert.equal(f.reservations(), 1);
+  f.admit(saved); await f.waitCall('GET', '/passive-send'); f.ok(f.pick('GET', '/passive-send'), state('passive-send', draft(3, '', 'followUp'), true));
+  await sending; assert.equal(f.reservations(), 1); assert.equal(f.submitted.length, 1); assert.equal(f.composer.editor.value, '');
+  f.composer.availability(true, true, false); await turn(); assert.equal(f.reservations(), 1); f.composer.destroy();
+});
 test('captured image send still checks image capability after a newer text-only edit', async () => {
   let allowed = true; const f = fixture('primary', undefined, true, undefined, () => false, () => ({allowed, reason: 'No image input'}));
   f.connect(state('a', {...draft(4, 'captured'), images: [image()]})); const sending = f.composer.send();

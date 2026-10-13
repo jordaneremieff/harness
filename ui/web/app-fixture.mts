@@ -379,7 +379,7 @@ async function arrive(next: Fixture, preserveMissingLayout = false): Promise<voi
   await app.reload();
   await settle();
 }
-function event(name: string, data: unknown, target?: {kind: 'primary'; key: string; epoch: number}): void {
+function event(name: string, data: unknown, target?: Target): void {
   cursorSequence = Math.max(cursorSequence + 1, ++eventSequence + 1000);
   app.receive({name: name as never, id: `boot:${cursorSequence}`, envelope: {at: '', ...(target ? {target} : {}), data} as never, bytes: 64});
 }

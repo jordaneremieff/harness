@@ -308,8 +308,8 @@ test('title completion preserves captured metadata and starts only current-page 
   const first = await store.sessions(project); assert.ok(first.titleCursor);
   assert.ok(first.items.every(item => item.titleState === 'pending'));
   const completed = await store.titles(project, first.titleCursor);
-  assert.equal(completed.titleCursor, null); assert.ok(completed.items.every(item => item.titleState === 'ready'));
-  const metadata = (items: typeof first.items) => items.map(({title: _title, titleState: _state, ...item}) => item);
+  assert.equal(completed.titleCursor, null); assert.ok(completed.items.every(item => item.titleState === 'ready' && item.titleSource === 'prompt'));
+  const metadata = (items: typeof first.items) => items.map(({title: _title, titleSource: _source, titleState: _state, ...item}) => item);
   assert.deepEqual(metadata(completed.items), metadata(first.items));
   assert.equal(completed.nextCursor, first.nextCursor); assert.equal(completed.observedAt, first.observedAt);
   const more = await store.sessions(project, first.nextCursor);

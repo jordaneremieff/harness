@@ -1,4 +1,12 @@
 import type { PrimaryView, SavedSession, SavedSessionPage } from '../shared/api.ts';
+import {previewText} from './format.ts';
+
+export function sessionLabel(item: SavedSession): string {
+  if (item.titleState === 'pending') return 'Loading title…';
+  if (item.titleSource !== 'prompt') return item.title;
+  const excerpt = previewText(item.title, 1, 64);
+  return excerpt.text + (excerpt.truncated ? '…' : '');
+}
 
 export type SessionList = SavedSessionPage & {pendingTitles: SavedSessionPage[]};
 export function mergeSessions(previous: SessionList | undefined, page: SavedSessionPage, append = false): SessionList {
@@ -13,7 +21,7 @@ export function mergeSessionTitles(list: SessionList, page: SavedSessionPage): S
   const items = list.items.map(item => {
     const update = updates.get(item.path);
     if (item.titleState === 'ready' && update?.titleState !== 'ready') return item;
-    return update?.revision === item.revision && update.modifiedAt === item.modifiedAt && update.size === item.size ? {...item, title: update.title, titleState: update.titleState} : item;
+    return update?.revision === item.revision && update.modifiedAt === item.modifiedAt && update.size === item.size ? {...item, title: update.title, titleSource: update.titleSource, titleState: update.titleState} : item;
   });
   const current = new Map(items.map(item => [item.path, item]));
   const pendingTitles = list.pendingTitles.filter(page => page.items.some(item => {

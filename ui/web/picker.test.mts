@@ -268,7 +268,7 @@ test('saved conversations keep title and duplicate tail first with searchable id
   const nodes = descendants(setup.body); const rows = nodes.filter(node => node.className === 'picker-select'); assert.equal(rows.length, 2);
   const first = rows[0]; assert.ok(first); assert.equal(first.children[0]?.className, 'picker-session-heading'); assert.equal(first.children[0]?.children[0]?.textContent, page.items[0]?.title);
   assert.equal(first.children[0]?.children[1]?.textContent, '0033'); assert.equal(rows[1]?.children[0]?.children[1]?.textContent, '0034');
-  assert.equal(first.children[1]?.className, 'picker-session-meta'); assert.equal(first.children[1]?.textContent, 'In this window');
+  assert.equal(first.children[1]?.className, 'picker-session-meta'); assert.equal(first.children[1]?.textContent, 'projectIn this window');
   const metadata = nodes.find(node => node.className === 'picker-session-details'); assert.ok(metadata);
   assert.match(metadata.textContent, /fixture0033.*10 B/);
   assert.equal(first.textContent.includes('fixture0033'), false);
@@ -346,7 +346,7 @@ test('chooser controls stay with their title, search and list disclosure while r
   const header = root.children[0]; assert.ok(header); assert.equal(header.className, 'picker-header');
   assert.equal(header.children[0]?.tag, 'h1'); assert.match(header.children[0]?.textContent ?? '', /Sessions in project/);
   assert.equal(header.children[1]?.className, 'dialog-actions');
-  assert.deepEqual(header.children[1]?.children.map(node => node.attributes['aria-label']), ['Change working folder', 'New session']);
+  assert.deepEqual(header.children[1]?.children.map(node => node.attributes['aria-label']), ['New session']);
   const nodes = descendants(root); const searchRow = nodes.find(node => node.className === 'picker-search-row'); assert.ok(searchRow);
   assert.equal(searchRow.children[0]?.className, 'picker-input-row'); assert.equal(searchRow.children[1]?.attributes['aria-label'], 'Refresh saved sessions');
   assert.equal(searchRow.children[2]?.attributes['aria-label'], 'Saved session options');
@@ -358,7 +358,7 @@ test('chooser controls stay with their title, search and list disclosure while r
   const row = nodes.find(node => node.className === 'picker-session'); assert.ok(row);
   assert.equal(row.children[0]?.className, 'picker-select'); assert.equal(row.children[1]?.className, 'picker-age quiet');
   const facts = row.children[2]; assert.ok(facts); assert.equal(facts.tag, 'details'); assert.equal(facts.children[0]?.attributes['aria-label'], 'Details for Saved title');
-  assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['s', '/project/s.jsonl', '10 B', 'If this session is active in a terminal, close it there first.']);
+  assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['Saved title', '/project', 's', '/project/s.jsonl', '10 B', 'If this session is active in a terminal, close it there first.']);
   file.open = true; file.dispatch('toggle');
   assert.ok(descendants(root).find(node => node.id === 'picker-session-path')); assert.equal(setup.modal.token, 0);
 });
@@ -435,6 +435,27 @@ test('an owned modal resume retains its host when a transient empty view request
   setup.picker.mount(inline as unknown as HTMLElement, '/project'); await settle();
   assert.ok(descendants(inline).find(node => node.id === 'picker-search'));
 });
+test('prompt excerpts retain full supplied details and the exact-file route has one global writer caution', async t => {
+  const title = 'Inspect this saved conversation '.repeat(6), item = saved.items[0]; assert.ok(item);
+  const setup = directPicker(t, active, {...saved, items: [{...item, title, titleSource: 'prompt'}, {...item, id: 'named', path: '/project/named.jsonl', title, titleSource: 'name'}]});
+  setup.picker.open(); await settle();
+  const rows = descendants(setup.body).filter(node => node.className === 'picker-session'); assert.equal(rows.length, 2);
+  assert.ok((rows[0]?.querySelector('.picker-session-title')?.textContent.length ?? 100) <= 65);
+  assert.equal(rows[0]?.querySelector('.picker-select')?.title, title); assert.equal(rows[0]?.querySelector('.picker-session-full-title')?.textContent, title);
+  assert.equal(rows[1]?.querySelector('.picker-session-title')?.textContent, title);
+  assert.equal(rows[0]?.querySelector('.picker-session-folder')?.textContent, 'project'); assert.ok(rows[0]?.querySelector('.picker-age'));
+  const file = descendants(setup.body).find(node => node.className === 'picker-file'); assert.ok(file); file.open = true; file.dispatch('toggle');
+  const warnings = descendants(setup.body).filter(node => node.className === 'secondary picker-safety'); assert.equal(warnings.length, 1); assert.equal(warnings[0]?.hidden, false);
+  assert.doesNotMatch(file.textContent, /terminal/); assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
+});
+test('different prompts with identical compact captions retain distinct exact-identity tails', async t => {
+  const item = saved.items[0]; assert.ok(item); const prefix = 'Same visible prompt '.repeat(5);
+  const setup = directPicker(t, active, {...saved, items: [{...item, id: 'prompt0033', title: `${prefix}first`, titleSource: 'prompt'}, {...item, id: 'prompt0034', path: '/project/second.jsonl', title: `${prefix}second`, titleSource: 'prompt'}]});
+  setup.picker.open(); await settle(); const rows = descendants(setup.body).filter(node => node.className === 'picker-select'); assert.equal(rows.length, 2);
+  assert.equal(rows[0]?.querySelector('.picker-session-title')?.textContent, rows[1]?.querySelector('.picker-session-title')?.textContent);
+  assert.equal(rows[0]?.querySelector('.picker-session-tail')?.textContent, '0033'); assert.equal(rows[1]?.querySelector('.picker-session-tail')?.textContent, '0034');
+  assert.notEqual(rows[0]?.title, rows[1]?.title);
+});
 test('chooser style bindings keep closed facts on the title line and separate list utilities', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
   assert.match(css, /\.picker-header \{[^}]*align-items: center;[^}]*justify-content: space-between;/);
@@ -451,7 +472,7 @@ test('picker SVG actions retain names and options reveal exact-file input withou
   const nodes = descendants(root), list = nodes.find(node => node.className === 'picker-sessions'), search = nodes.find(node => node.id === 'picker-search');
   assert.ok(list); assert.ok(search); search.value = 'Saved'; search.setSelectionRange(1, 3); search.dispatch('input');
   const rows = [...list.children];
-  for (const label of ['Change working folder', 'New session', 'Refresh saved sessions', 'Saved session options']) {
+  for (const label of ['New session', 'Refresh saved sessions', 'Saved session options']) {
     const action = nodes.find(node => node.attributes['aria-label'] === label); assert.ok(action, label);
     assert.equal(action.title, label); assert.equal(action.children[0]?.tag, 'svg');
     assert.equal(action.children[1]?.className, 'sr-only card-action-label');

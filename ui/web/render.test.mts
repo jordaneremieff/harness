@@ -1970,6 +1970,8 @@ test('unverified marker opens Source without inventing a sender and Copy keeps l
     view.set([communicationEntry('unavailable')]); flush(); const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
     assert.equal(card.querySelector('.communication-sender')?.hidden, true); assert.equal(card.querySelector('.communication-sender')?.textContent, '');
     const marker = card.querySelector('.communication-unverified'); assert.ok(marker); assert.equal(marker.hidden, false); assert.equal(marker.attributes['aria-label'], 'Source unverified'); assert.equal(marker.querySelectorAll('svg').length, 1);
+    assert.equal(marker.parentNode, card.querySelector('.message-header'));
+    const label = marker.querySelector('.card-action-label'); assert.ok(label); assert.equal(label.textContent, 'Source unverified'); assert.equal(label.classList.contains('sr-only'), false);
     const copy = messageAction(card, 'Copy'); assert.match(copy.description ?? '', /source unverified/); copy.run?.(); await Promise.resolve(); assert.deepEqual(writes, ['Original transport paragraph']);
     marker.click(); const region = card.querySelector('.message-source'); assert.ok(region); assert.equal(region.hidden, false); assert.match(region.textContent, /Original transport paragraph/);
     region.querySelector('.message-source-close')?.click(); assert.equal(fakeDocument.activeElement, marker);
@@ -2286,8 +2288,10 @@ test('mode and reference CSS retain direct controls, coarse targets and honest l
   assert.match(css, /\.pane-actions \{ display: inline-flex; flex: none;[^}]*min-width: 28px; min-height: 28px/);
   assert.match(css, /\.message-menu, \.communication-unverified, \.message-source-close, \.pane-actions, \.context-menu > \.context-menu-item \{ min-height: 44px; min-width: 44px/);
   const menu = readFileSync(new URL('./context-menu.ts', import.meta.url), 'utf8');
-  assert.match(menu, /\['chronological', 'View: Conversation'\], \['grouped', 'View: Grouped'\]/);
-  assert.match(menu, /checked: view === mode, enabled: !!key/); assert.match(menu, /hooks\.setView\(key, mode\)/);
+  const app = readFileSync(new URL('./app.ts', import.meta.url), 'utf8');
+  assert.match(app, /mode === 'chronological' \? 'View: Conversation' : 'View: Grouped'/);
+  assert.match(app, /checked: view === mode, run: \(\) => owner\.transcript\.setView\(mode\)/);
+  assert.match(menu, /label: 'Conversation actions…'/);
   assert.match(menu, /item\.checked === undefined \? 'menuitem' : item\.checkbox \? 'menuitemcheckbox' : 'menuitemradio'/); assert.match(menu, /row\.setAttribute\('aria-checked', String\(item\.checked\)\)/);
   assert.match(css, /a\.reference-link\[href\]\s*\{[^}]*text-decoration: underline/);
   assert.match(css, /\.reference-unresolved\s*\{[^}]*text-decoration: none; cursor: text/);

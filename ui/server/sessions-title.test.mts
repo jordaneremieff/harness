@@ -19,7 +19,7 @@ async function fixture(t: test.TestContext, body: string) {
 test('title scans skip giant system lines and return the first user excerpt up to 200 characters', async t => {
   const body = line({type: 'session', id: 'id', cwd: '/project'}) + message('system', 's'.repeat(600 * 1024)) + message('user', 'u'.repeat(300)) + message('user', 'later user');
   const {path, size} = await fixture(t, body);
-  assert.deepEqual(await scanSessionTitle(path, size), {title: 'u'.repeat(200), titleState: 'ready'});
+  assert.deepEqual(await scanSessionTitle(path, size), {title: 'u'.repeat(200), titleSource: 'prompt', titleState: 'ready'});
 });
 
 test('the forward cap skips later users while the tail still supplies the latest name or clear', async t => {
@@ -27,15 +27,15 @@ test('the forward cap skips later users while the tail still supplies the latest
   const late = await fixture(t, base + message('user', 'late outside cap'));
   assert.deepEqual(await scanSessionTitle(late.path, late.size), {title: '(title unavailable)', titleState: 'unavailable'});
   const named = await fixture(t, base + line({type: 'session_info', name: 'old'}) + line({type: 'session_info', name: 'latest'}));
-  assert.deepEqual(await scanSessionTitle(named.path, named.size), {title: 'latest', titleState: 'ready'});
+  assert.deepEqual(await scanSessionTitle(named.path, named.size), {title: 'latest', titleSource: 'name', titleState: 'ready'});
   const cleared = await fixture(t, message('user', 'first') + base + line({type: 'session_info', name: 'old'}) + line({type: 'session_info', name: ''}));
-  assert.deepEqual(await scanSessionTitle(cleared.path, cleared.size), {title: 'first', titleState: 'ready'});
+  assert.deepEqual(await scanSessionTitle(cleared.path, cleared.size), {title: 'first', titleSource: 'prompt', titleState: 'ready'});
 });
 
 test('chunk-spanning UTF-8 records and final non-newline user records preserve text', async t => {
   const body = message('system', 'é'.repeat(64000)) + message('user', 'First café').trimEnd();
   const {path, size} = await fixture(t, body);
-  assert.deepEqual(await scanSessionTitle(path, size), {title: 'First café', titleState: 'ready'});
+  assert.deepEqual(await scanSessionTitle(path, size), {title: 'First café', titleSource: 'prompt', titleState: 'ready'});
 });
 
 test('an oversized first user never becomes the short later user', async t => {

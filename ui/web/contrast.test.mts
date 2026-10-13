@@ -54,10 +54,12 @@ const decorativeHairlines = new Set([
 // Non-content paint: the dialog backdrop dims the page behind a dialog.
 const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)"]);
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
-const graphicBackgrounds = new Map([
+const graphicForegrounds = new Map([
   [".tab-dot", "muted"],
   [".tab-dot[data-state=working]", "link"],
   [".tab-dot[data-state=failed]", "error"],
+]);
+const graphicBackgrounds = new Map([
   [".pane-split > .pane-divider::after", "edge"],
   [".pane-split > .pane-divider:hover::after", "edge"],
   [".pane-split > .pane-divider:focus-visible::after", "accent"],
@@ -282,6 +284,8 @@ function textDeclaration(context: Context, property: string, value: string) {
 	}
 	for (const bg of surfaces)
 		measure("text-declaration", `${source} ${property}: ${value} / --${bg}`, name, bg, 4.5);
+  if (property === 'color' && graphicForegrounds.get(context.rule.selector) === name)
+    for (const bg of surfaces) measure('graphic-paint', `${source} ${property}: ${value} / --${bg}`, name, bg, 3);
 	const localBg = token(decl["background-color"] ?? decl.background ?? "");
 	if (localBg) measure("local-pair", `${source} ${property} on --${localBg}`, name, localBg, 4.5);
 }
@@ -500,7 +504,12 @@ test('native insertion caret is measured as graphics without weakening text or i
 test("all color declarations use modeled semantic tokens", () => assert.deepEqual(result.issues, []));
 test("graphic paint measures selected marks and divider hover/focus without opening a surface exception", () => {
   const rows = result.measurements.filter(row => row.kind === "graphic-paint");
-  assert.equal(rows.length, graphicBackgrounds.size * surfaces.length * (2 + flavors.length));
+  assert.equal(rows.length, (graphicBackgrounds.size + graphicForegrounds.size) * surfaces.length * (2 + flavors.length));
+  for (const selector of graphicForegrounds.keys()) {
+    const marks = rows.filter(row => row.source.startsWith(`${selector} color:`));
+    assert.equal(marks.length, surfaces.length * (2 + flavors.length));
+    assert.ok(marks.every(row => row.ratio >= row.threshold));
+  }
   assert.ok(rows.every(row => row.threshold === 3 && row.ratio >= 3));
   const checks = result.measurements.filter(row => row.kind === "text-declaration" && row.source.startsWith(".context-menu-item > .choice-check "));
   assert.equal(checks.length, surfaces.length * (2 + flavors.length));

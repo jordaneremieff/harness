@@ -487,7 +487,7 @@ test('Agent image controls reject stale capabilities without borrowing transcrip
 test('development checkpoint captures exact owners and rejects workspace, recipient and revision changes', async t => {
   const saved = await devHookFixture('dev-capture', 9660), original = globalThis.fetch;
   t.after(() => {globalThis.fetch = original; byId('agent-message-close').click();});
-  app.focusPane('primary-pane'); await settle(); app.openTabActions('agent-pane'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  app.focusPane('primary-pane'); await settle(); app.openConversationActions('agent-pane'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
   const editor = messageControl('editor'); editor.focus(); editor.setSelectionRange(2, 7, 'backward'); const checkpoint = devCheckpoint();
   assert.equal(checkpoint.workspaceId, 'dev-capture'); assert.equal(checkpoint.targets.length, 2); assert.equal(checkpoint.messageRecipient, saved.agent.targetKey); assert.deepEqual(checkpoint.focusedControl, {targetKey: saved.agent.targetKey, kind: 'message'});
   assert.deepEqual(checkpoint.targets.map(entry => entry.targetKey).sort(), [saved.primary.targetKey, saved.agent.targetKey].sort()); assert.doesNotMatch(JSON.stringify(checkpoint), /private draft|Development history/);
@@ -539,7 +539,7 @@ test('development drain waits for retained drafts, view preferences and selectio
   t.after(async () => {holding = false; await Promise.all(held.map(item => item.finish())); globalThis.fetch = original; await app.drainDev(new AbortController().signal);});
   const pe = p('editor'), ae = a('editor'); pe.value = 'Primary queued draft'; pe.dispatch('input'); ae.value = 'Agent queued draft'; ae.dispatch('input');
   const scroller = p('transcript'); scroller.scrollTop = 180; scroller.dispatch('scroll'); flushFrames(); scroller.dispatch('scrollend');
-  app.openTabActions('primary-pane'); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
+  app.openConversationActions('primary-pane'); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
   app.applyLayout(singlePane()); await settle(); assert.equal(agent.canDispose, false);
   const aborted = new AbortController(); aborted.abort(new Error('Drain cancelled')); await assert.rejects(app.drainDev(aborted.signal), /Drain cancelled/);
   let done = false; const drain = app.drainDev(new AbortController().signal).then(() => {done = true;}); await settle(); assert.equal(done, false);
@@ -1097,7 +1097,7 @@ test('hide cancels a queued recovery retry and refuses its late callback before 
 test('message panel moves the existing form outside the roster without changing the main view', async () => {
   const row=agentFixture('movable-message'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:706})],roster:[row]});
   const selected=app.state.workspace?.selectedTarget,agent=controls(app.agentComposer()),form=agent('composer'),editor=agent('editor'),root=agent('root'),saved=selectionSaves.length;
-  app.openTabActions('agent-pane'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  app.openConversationActions('agent-pane'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
   assert.equal(messageControl('composer'),form); assert.equal(messageControl('editor'),editor); assert.equal(form.parentNode,agentControl('root')); assert.equal(app.stableViews().slot(form as unknown as HTMLElement)?.id,'agent-message-editor-slot'); assert.equal(byId('roster').contains(form),false); assert.deepEqual(app.state.workspace?.selectedTarget,selected); assert.equal(selectionSaves.length,saved);
   byId('agent-message-close').click(); await settle(); assert.equal(form.parentNode,root);
 });
@@ -1109,7 +1109,7 @@ test('preference completions keep their captured request and leave a newer targe
     await arrive({workspace: {id:'w',revision:1,primaryKey:'p',selectedTarget:target}, primaries:[primaryFixture({epoch})],roster:[],targets:[targetFixture(key,target)]});
     let finish: (response: Response) => void = () => { throw new Error('No pending preference'); };
     preferenceSave = () => new Promise(resolve => { finish = resolve; });
-    const before = transportLog.length; app.openTabActions(); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
+    const before = transportLog.length; app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
     const call = transportLog.slice(before).find(item => item.path.endsWith('/presentation')); assert.ok(call);
     assert.equal(call.path, `/api/workspaces/w/targets/${key}/presentation`);
     assert.equal((call.body as Record<string,unknown>).transcriptView, 'grouped');
@@ -1122,7 +1122,7 @@ test('preference completions keep their captured request and leave a newer targe
   const target = {kind:'primary' as const,key:'p',epoch:8300};
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:target.epoch})],roster:[],targets:[targetFixture('preference-current',target)]});
   preferenceSave = async () => Response.json({ok:false,error:{code:'capacity',message:'Current preference refused',retry:'manual'}});
-  app.openTabActions(); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
+  app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
   assert.match(primaryControl('view-notice').textContent, /View preferences not saved/);
   assert.match(primaryControl('view-notice').textContent, /Restore saved view/);
 });
@@ -1134,7 +1134,7 @@ async function thinkingFixture(epoch: number, shown = false): Promise<TargetStat
   return saved;
 }
 function thinkingChoice(): HostNode {
-  app.openTabActions(); const choice = menuNode().children.find(node => node.textContent === 'Show thinking'); assert.ok(choice); return choice;
+  app.openConversationActions(); const choice = menuNode().children.find(node => node.textContent === 'Show thinking'); assert.ok(choice); return choice;
 }
 function thinkingDisclosure(): HostNode {
   const node = primaryControl('transcript').querySelector('.thinking'); assert.ok(node); return node;
@@ -1409,7 +1409,7 @@ test('a live agent with unavailable catalog metadata keeps title pane and compos
   const row=agentFixture('a', {state:'unavailable', availability:'live', name:'Worker'});
   await arrive({workspace:{id:'w',revision:1,selectedTarget:{kind:'agent',identity:'a'},panelVisible:true},primaries:[],roster:[row],targets:[targetFixture('agent-a',{kind:'agent',identity:'a'})]});
   assert.equal(hostDocument.title,'Pi · Worker · Connected'); assert.equal(byId('primary-row').hidden,true); assert.equal(byId('project-name').textContent,'project'); assert.equal(byId('project-button').title, 'Working folder: /fixture/project');
-  const active = tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true'); assert.ok(active); assert.equal(active.querySelector('.tab-state')?.textContent, 'Connected');
+  const active = tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true'); assert.ok(active); assert.equal(active.querySelector('.tab-state'), null); assert.match(active.getAttribute('aria-label') ?? '', /Connected/); assert.equal(active.querySelector('.tab-dot')?.title, 'Connected');
   assert.equal(agentControl('recipient').textContent,'Message Worker'); assert.equal(agentControl('send').disabled,true); assert.equal(agentControl('editor').disabled,false);
 });
 
@@ -1418,16 +1418,17 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   Reflect.set(globalThis, 'sessionStorage', {getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => {values.set(key, value);}});
   const workspace = (id: string): Workspace => ({id, revision: 1, primaryKey: 'p'});
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('primary-heading').attributes.get('aria-expanded'), 'true');
-  app.setSidebarSection('primary', true); app.setSidebarSection('agents', true);
-  assert.equal(byId('primary-section-body').hidden, true); assert.equal(byId('primary-heading').attributes.get('aria-expanded'), 'false');
-  assert.equal(values.get('ui:sections:w:primary'), 'true'); assert.equal(values.get('ui:sections:w:agents'), 'true');
+  app.renderSidebarSections(); assert.equal(byId('agents-heading').attributes.get('aria-expanded'), 'false');
+  assert.equal(byId('agents-section-body').hidden, true); assert.equal(byId('primary-section-body').hidden, true);
+  app.setSidebarSection('agents', false);
+  assert.equal(byId('agents-section-body').hidden, false); assert.equal(values.get('ui:sections:w:agents'), 'false');
+  app.setSidebarSection('agents', true); assert.equal(values.get('ui:sections:w:agents'), 'true');
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
   app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
   await arrive({workspace: workspace('other'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('primary-section-body').hidden, false);
+  app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('primary-section-body').hidden, true);
+  app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
   byId('sidebar').hidden = true; const before = frameCount; app.focusAgentSearch(); await settle();
   assert.equal(byId('sidebar').hidden, false); assert.equal(byId('agents-section-body').hidden, false);
   assert.equal(hostDocument.activeElement, byId('agent-search')); assert.ok(frameCount > before);
@@ -1436,8 +1437,9 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   assert.doesNotThrow(() => app.setSidebarSection('agents', true)); app.renderSidebarSections();
   assert.equal(byId('agents-section-body').hidden, true);
   Reflect.set(globalThis, 'sessionStorage', hostSessionStorage);
-  assert.match(html, /id="primary-heading" class="section-toggle"[^>]*aria-controls="primary-section-body">Sessions/);
-  assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">Agents/);
+  assert.doesNotMatch(html, /id="primary-heading"/);
+  assert.match(html, /id="session-open"[^>]*>Saved sessions/);
+  assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">Agent catalog/);
 });
 test('palette key aliases prevent browser defaults and preserve IME, repeat and open-dialog guards', async () => {
   const modalNode = byId('modal');
@@ -1487,7 +1489,7 @@ test('an addressed split retains Primary and agent owners without a permanent Sp
 test('Primary tool start and end refresh the pane and active tab without another state event', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({activity: 'running'})], roster: []});
   const target = {kind: 'primary' as const, key: 'p', epoch: 1};
-  const activeStatus = () => tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-state')?.textContent;
+  const activeStatus = () => tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title;
   assert.equal(activeStatus(), 'Working');
   event('primary.tool', {callId: 'chrome-tool', name: 'generic', phase: 'start', arguments: {value: {}, truncated: false}}, target);
   assert.equal(activeStatus(), 'Working · generic');
@@ -1580,8 +1582,8 @@ test('context menus capture inactive tabs and never close a later selection', as
   await arrive(base);const stale=tabsNode().querySelector('[data-tab-key="agent:menu-a"]');assert.ok(stale);pressContext(stale);const staleClose=menuNode().children.find(node=>node.textContent==='Close tab');assert.ok(staleClose);app.applyLayout(activatePaneTab(layout,'pane-1','agent:menu-b'));await settle();const saves=selectionSaves.length;staleClose.click();await settle();assert.equal(selectionSaves.length,saves);assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity:'menu-b'});assert.match(byId('announcements').textContent,/changed.*again/);
 });
 test('agent and Primary pane menus expose supported actions while text inputs keep native menus', async () => {
-  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:'context-agent'},conversationLayout:twoPanes('context-agent')},primaries:[primaryFixture({epoch:714})],roster:[agentFixture('context-agent',{capabilities:{input:true,inspect:true}})]});app.openTabActions('agent-pane');for(const label of ['Show conversation','Message','Copy agent ID','Conversation details','View activity…'])assert.ok(menuNode().children.some(node=>node.textContent===label));assert.equal(menuNode().children.some(node=>node.textContent==='New session'),false);contextMenu.close();assert.equal(hostDocument.activeElement,paneNode('agent-pane').querySelector('.pane-menu'));
-  pressContext(primaryControl('editor'));assert.equal(contextMenu.openNow,false);app.openTabActions('primary-pane');assert.equal(menuNode().children.some(node=>['Appearance','Help','Commands…','Refresh agent roster'].includes(node.textContent)),false); const thinking = menuNode().children.find(node=>node.textContent==='Show thinking'); assert.ok(thinking); assert.equal(thinking.getAttribute('role'),'menuitemcheckbox'); assert.equal(thinking.getAttribute('aria-checked'),'false'); assert.equal(menuNode().children.some(node=>node.textContent==='Hide thinking'),false);contextMenu.close();
+  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:'context-agent'},conversationLayout:twoPanes('context-agent')},primaries:[primaryFixture({epoch:714})],roster:[agentFixture('context-agent',{capabilities:{input:true,inspect:true}})]});app.openConversationActions('agent-pane');for(const label of ['Show conversation','Message','Copy agent ID','Conversation details','View activity…'])assert.ok(menuNode().children.some(node=>node.textContent===label));assert.equal(menuNode().children.some(node=>node.textContent==='New session'),false);contextMenu.close();assert.equal(hostDocument.activeElement,paneNode('agent-pane').querySelector('.pane-menu'));
+  pressContext(primaryControl('editor'));assert.equal(contextMenu.openNow,false);app.openConversationActions('primary-pane');assert.equal(menuNode().children.some(node=>['Appearance','Help','Model','Thinking','Refresh agent roster'].includes(node.textContent)),false); assert.ok(menuNode().children.some(node=>node.textContent==='Commands…')); const thinking = menuNode().children.find(node=>node.textContent==='Show thinking'); assert.ok(thinking); assert.equal(thinking.getAttribute('role'),'menuitemcheckbox'); assert.equal(thinking.getAttribute('aria-checked'),'false'); assert.equal(menuNode().children.some(node=>node.textContent==='Hide thinking'),false);contextMenu.close();
 });
 test('status settings label model and thinking while retaining picker accessible names', () => {
   app.primaryChrome({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'} as PrimaryView);
@@ -1638,8 +1640,8 @@ test('reselecting the active conversation entry closes a drawer without a deskto
 
 test('the desktop transition restores the hidden-sidebar preference and a visible focus target', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', sidebarVisible: false, selectedTarget: {kind: 'primary', key: 'p', epoch: 1}}, primaries: [primaryFixture()], roster: []});
-  host.viewport = 760; app.toggleSidebar(true); assert.equal(hostDocument.activeElement, byId('session-open'));
-  const sidebar = byId('sidebar'); const project = byId('session-open'), parent = project.parentNode, sibling = project.nextSibling; assert.ok(parent); sidebar.append(project);
+  host.viewport = 760; app.toggleSidebar(true); assert.equal(hostDocument.activeElement?.id, 'project-button');
+  const sidebar = byId('sidebar'); const project = byId('project-button'), parent = project.parentNode, sibling = project.nextSibling; assert.ok(parent); sidebar.append(project);
   host.viewport = 1100; app.renderNavigation(); assert.equal(app.drawerOpen, false); assert.equal(byId('sidebar').hidden, true); assert.equal(app.state.workspace?.sidebarVisible, false);
   assert.equal(hostDocument.activeElement, byId('sidebar-show')); parent.insertBefore(project, sibling); host.viewport = 1200;
 });
@@ -1685,7 +1687,7 @@ test('three direct utility icons preserve inventory, native button focus, destin
 });
 test('notifications produce existing semantic classes instead of unused prefixed classes', async () => {
   const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');
-  assert.match(source, /notification \$\{notice\.level\}/);
+  assert.match(source, /notification \$\{group\.level\}/);
   assert.match(css, /\.secondary, \.info \{ color: var\(--muted\)/);
   assert.match(css, /\.warning \{ color: var\(--warning\)/);
   assert.match(css, /\.error, button.danger \{ color: var\(--error\)/);
@@ -1938,9 +1940,9 @@ test('failed-session recovery leaves retained text and unconfirmed input under t
 test('accepted working activity owns the tool while retained settings stay composer-local', async () => {
   const row=agentFixture('tool-agent',{state:'working',currentTool:{name:'read',argument:'src/current-file.ts'},model:{provider:'fixture',modelId:'model'}});
   await arrive({workspace:{id:'w',revision:1,selectedTarget:{kind:'agent',identity:row.identity},panelVisible:true},primaries:[],roster:[row],observations:[observation(row.identity,{revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:true},coverage})]});
-  assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-state')?.textContent, 'Working'); assert.equal(byId('agent-status').textContent,'Model model (retained)');
+  assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title, 'Working'); assert.equal(byId('agent-status').textContent,'Model model (retained)');
   assert.equal(byId('agent-status').title,'fixture/model'); assert.doesNotMatch(html, /agent-pane-heading/);
-  app.openTabActions(); const menu = hostDocument.body.children.find(node => node.className === 'context-menu'); assert.ok(menu);
+  app.openConversationActions(); const menu = hostDocument.body.children.find(node => node.className === 'context-menu'); assert.ok(menu);
   const detailsAction = menu.children.find(node => node.textContent === 'Conversation details'); assert.ok(detailsAction); detailsAction.click();
   assert.match(byId('modal-body').textContent, /Last reported tool/); assert.match(byId('modal-body').textContent, /src\/current-file.ts/); byId('modal-close').click();
 });
@@ -2013,7 +2015,7 @@ test('three exact owners isolate drafts, carets, roots and accepted frames throu
   fixture = {...fixture, observations: [observation(a.identity, frame(a.identity, 1), 11), observation(b.identity, frame(b.identity, 1), 20)]};
   const restored = splitPane(app.state.workspace?.conversationLayout ?? moved, 'pane-a', 'y', {width: 760, height: 640, divider: 4}, tabKey(b)); app.applyLayout(restored); await settle();
   app.applyLayout(activatePaneTab(app.state.workspace?.conversationLayout ?? restored, 'pane-a', tabKey(a))); await settle();
-  const bPane = paneLeaves((app.state.workspace?.conversationLayout ?? restored).root).find(pane => pane.active === tabKey(b)); assert.ok(bPane); app.openTabActions(bPane.id); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  const bPane = paneLeaves((app.state.workspace?.conversationLayout ?? restored).root).find(pane => pane.active === tabKey(b)); assert.ok(bPane); app.openConversationActions(bPane.id); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
   assert.equal(messageControl('composer'), forms[2]); assert.equal(messageControl('editor'), editors[2]); assert.equal(forms[2]?.parentNode, roots[2]); assert.equal(app.stableViews().slot(forms[2] as unknown as HTMLElement)?.id,'agent-message-editor-slot'); assert.deepEqual(app.state.workspace?.selectedTarget, a); editors[2]?.focus();
   event('agent.frame', {identity: a.identity, connectionEpoch: 11, frame: frame(a.identity, 2)}); event('agent.frame', {identity: b.identity, connectionEpoch: 20, frame: frame(b.identity, 2)}); await settle();
   assert.match(ac('transcript').textContent, /three-a frame 2/); assert.doesNotMatch(ac('transcript').textContent, /three-b frame/);
@@ -2030,7 +2032,7 @@ test('Message projection stays visible through a pending tab selection and layou
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target, conversationLayout: layout}, primaries: [primaryFixture({epoch: 9503})], roster: [agentFixture(target.identity)],
     targets: [targetFixture('projected-target', target, {draft: {revision: 2, text: 'Keep the exact draft', mode: 'prompt', persisted: true}})]});
   const owner = controls(app.agentComposer()), root = owner('root'), editor = owner('editor'), form = owner('composer');
-  app.openTabActions('pane-1'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  app.openConversationActions('pane-1'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
   editor.focus(); editor.setSelectionRange(3, 12, 'backward'); editor.dispatch('select');
   const original = globalThis.fetch, held = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
   t.after(() => {globalThis.fetch = original; held.resolve(); byId('agent-message-close').click();});
@@ -2106,7 +2108,7 @@ test('queued view writes keep the old workspace acknowledgment despite a same-ke
     const scroller = primaryControl('transcript');
     const change = async (value: number) => {
       if (kind === 'reading') {scroller.scrollTop = value; scroller.dispatch('scroll'); flushFrames(); scroller.dispatch('scrollend');}
-      else {app.openTabActions(); const item = menuNode().children.find(node => node.textContent === (value === 120 ? 'View: Grouped' : 'View: Conversation')); assert.ok(item); item.click();}
+      else {app.openConversationActions(); const item = menuNode().children.find(node => node.textContent === (value === 120 ? 'View: Grouped' : 'View: Conversation')); assert.ok(item); item.click();}
       await settle();
     };
     await change(120); assert.equal(requests.length, 1); await change(240); assert.equal(requests.length, 1);

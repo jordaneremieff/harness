@@ -112,7 +112,8 @@ export class CommunicationCard {
     shell.node.classList.add('communication-card'); for (const name of ['user', 'tool-only', 'thinking-only']) shell.node.classList.remove(name);
     shell.header.classList.add('communication-header'); shell.heading.classList.add('communication-sender'); shell.body.classList.add('communication-body');
     this.unverified = cardAction('unknown', 'Source unverified', () => this.openSource(this.unverified), 'communication-unverified');
-    this.unverified.setAttribute('aria-label', 'Source unverified'); this.unverified.title = 'Source unverified'; shell.heading.after(this.unverified);
+    this.unverified.setAttribute('aria-label', 'Source unverified'); this.unverified.title = 'Source unverified';
+    this.unverified.querySelector('.card-action-label')?.classList.remove('sr-only'); shell.heading.after(this.unverified);
     this.close = cardAction('close', 'Close Source', () => { if (hooks.active()) this.setSourceOpen(false, true); }, 'message-source-close');
     this.close.setAttribute('aria-label', 'Close Source');
     const heading = element('div', 'message-source-header'); heading.append(element('h4', 'message-source-heading', 'Source'), this.close);

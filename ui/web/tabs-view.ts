@@ -27,8 +27,8 @@ export class TabStrip {
   private regions: TabRegions;
   constructor(hooks: TabHooks, regions: TabRegions) {
     this.hooks = hooks; this.regions = regions;
-    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'Conversations';
-    regions.conversations.setAttribute('aria-label', 'Conversations'); regions.conversations.append(this.heading);
+    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'Open conversations';
+    regions.conversations.setAttribute('aria-label', 'Open conversations'); regions.conversations.append(this.heading);
     this.observer = new ResizeObserver(() => {
       if (this.destroyed) return;
       this.fitStatuses();
@@ -80,6 +80,8 @@ export class TabStrip {
       host.dataset.sole = String(pane.tabs.length === 1);
       host.tabIndex = pane.tabs.length ? -1 : 0; host.dataset.focused = String(layout.focusedPane === pane.id);
     });
+    this.heading.hidden = !tabs.length;
+    for (const pane of panes) {const group = this.groups.get(pane.id); if (group) group.hidden = !pane.tabs.length;}
     this.fitStatuses(); if (reveal) this.revealActive();
     if (hadFocus) { if (focused && [...regions.map(region => region.tabs), this.regions.conversations].some(host => host.contains(focused))) focused.focus({preventScroll: true}); else this.focusActive(); }
   }
@@ -108,9 +110,6 @@ export class TabStrip {
     const identity = node.querySelector<HTMLElement>('.tab-identity');
     const tail = identity && !identity.hidden ? identity.offsetWidth + Number.parseFloat(getComputedStyle(node).columnGap) : 0;
     node.style.setProperty('--tab-identity-width', `${tail}px`);
-    const state = node.querySelector<HTMLElement>('.tab-state');
-    const stateWidth = state && !state.hidden ? state.scrollWidth + Number.parseFloat(getComputedStyle(node).columnGap) : 0;
-    node.style.setProperty('--tab-state-width', `${stateWidth}px`);
   }
   private paintTab(node: HTMLElement, tab: ConversationTab, selected: boolean): void {
     const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'agent' ? tab.identity : 'primary'); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
@@ -119,12 +118,11 @@ export class TabStrip {
     const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = label;
     this.paintDot(node, status.glyph, status.label);
     const identity = node.querySelector<HTMLElement>('.tab-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail;}
-    const state = node.querySelector<HTMLElement>('.tab-state'); if (state) {state.textContent = status.label === 'Ready' ? '' : status.label; state.hidden = !state.textContent; state.dataset.state = status.label.toLocaleLowerCase(); state.setAttribute('aria-hidden', 'true');}
     const close = node.querySelector<HTMLElement>('.tab-close'); if (close) {close.setAttribute('aria-label', `Close ${accessible} tab`); close.title = `Close ${accessible} tab`;}
   }
   private paintDot(node: HTMLElement, glyph: string, label: string): void {
     const dot = node.querySelector<HTMLElement>('.tab-dot'); if (!dot) return;
-    dot.dataset.state = glyph === '●' ? 'working' : glyph === '!' ? 'failed' : 'idle'; dot.title = label;
+    statusGlyph(dot, glyph); dot.dataset.state = glyph === '●' ? 'working' : glyph === '!' ? 'failed' : 'idle'; dot.title = label;
   }
   private navigate(key: string, event: KeyboardEvent): void {
     const pane = paneForTab(this.hooks.layout(), key); if (!pane) return;
@@ -137,7 +135,7 @@ export class TabStrip {
   private create(key: string): HTMLElement {
     const doc = this.regions.conversations.ownerDocument; const node = doc.createElement('div'); node.className = 'conversation-tab'; node.setAttribute('role', 'tab'); node.draggable = true; node.dataset.tabKey = key;
     const dot = doc.createElement('span'); dot.className = 'tab-dot'; dot.setAttribute('aria-hidden', 'true');
-    const label = doc.createElement('span'); label.className = 'tab-label'; const identity = doc.createElement('span'); identity.className = 'tab-identity'; const state = doc.createElement('span'); state.className = 'tab-state';
+    const label = doc.createElement('span'); label.className = 'tab-label'; const identity = doc.createElement('span'); identity.className = 'tab-identity';
     const close = doc.createElement('button'); close.className = 'tab-close'; close.type = 'button'; close.append(cardIcon('close', doc)); close.tabIndex = -1;
     const remove = () => {if (this.owner(key)) this.hooks.close(key);};
     close.addEventListener('click', event => {event.stopPropagation(); remove();}); node.addEventListener('click', () => this.activate(key));
@@ -152,7 +150,7 @@ export class TabStrip {
     node.addEventListener('dragover', event => {if (!this.dragging || !this.owner(this.dragging)) return; event.preventDefault(); event.stopPropagation(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; node.classList.add('tab-drop-target');});
     node.addEventListener('dragleave', () => node.classList.remove('tab-drop-target'));
     node.addEventListener('drop', event => {const pane = paneForTab(this.hooks.layout(), key); if (!pane || !this.dragging || !this.owner(this.dragging)) return; event.preventDefault(); event.stopPropagation(); this.hooks.move(this.dragging, pane.id, pane.tabs.findIndex(tab => tabKey(tab) === key)); this.clearDrag();});
-    node.addEventListener('dragend', () => this.clearDrag()); node.append(label, identity, dot, state, close); return node;
+    node.addEventListener('dragend', () => this.clearDrag()); node.append(label, identity, dot, close); return node;
   }
   private group(id: string): HTMLElement {
     let group = this.groups.get(id); if (group) return group;

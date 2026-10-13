@@ -366,7 +366,7 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({name: agentName(row), tail: tails.get(row.identity), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'View activity…', 'Saved drafts and messages', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'View activity…', 'Saved drafts and messages', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {
@@ -514,9 +514,9 @@ export class Actions {
     }
     rows.addEventListener('keydown', event => navigateOptions(event, rows)); modal.body.append(rows); selected?.focus();
   }
-  find(): void {
+  find(findTarget: (query: string) => void = this.ctx.find): void {
     const modal = this.ctx.modal; modal.open('Find text'); const query = input('Text'); modal.body.append(query.label, query.field);
-    const find = () => { this.ctx.find(query.field.value); modal.close(); };
+    const find = () => { findTarget(query.field.value); modal.close(); };
     query.field.addEventListener('keydown', raw => {const event = raw as KeyboardEvent; if (event.key === 'Enter' && !event.isComposing) {event.preventDefault(); find();}});
     modal.actions(cardAction('search', 'Find text', find)); query.field.focus();
   }
