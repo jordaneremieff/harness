@@ -68,7 +68,7 @@ for (const failed of [false, true]) test(`service shutdown ${failed ? "reports f
     close:async()=>{events.push("disconnect");connected=false;pending.reject(new AgentError("host_unavailable","Link closed"));},
   } as unknown as HostLink;
   t.mock.method(HostLink,"connect",async()=>link);
-  const service=new AgentService({store:"/backend",installationId:"fixture"},()=>({get:()=>record,close:async()=>{catalogClosed=true;}} as unknown as AgentCatalog),
+  const service=new AgentService({store:"/backend",stateDir:"/fixture/state",installationId:"fixture"},()=>({get:()=>record,close:async()=>{catalogClosed=true;}} as unknown as AgentCatalog),
     ()=>({close:async()=>{readerClosed=true;}} as unknown as RetainedReader));
   const selected=service.select("w",ROOT,1);const setupRejected=assert.rejects(selected,{code:"host_unavailable"});await subscribed.promise;await turn();
   const closed=service.close();const outcome=Promise.allSettled([closed]);
