@@ -3,6 +3,7 @@ import { button, element } from './dom.ts';
 import { highlight, languageFromPath } from './highlight.ts';
 import { markdownDom } from './safe-markdown.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
+import { suppliedDifference, differenceNotice } from './supplied-difference.ts';
 
 const SCAN = 2048;
 const DEPTH = 8;
@@ -18,7 +19,7 @@ const NOTICE_CHARS = 112;
 // Reserve all notice controls before saved-output actions become available.
 const NOTICE_NODES = 8;
 export function previewLimits(): string {
-  return `Structured previews: at most ${DOC_CHARS} characters and ${DOC_LINES} lines per document, ${TEXT_CHARS} total characters (${NOTICE_CHARS} reserved for the notice), ${FIELDS} fields per object, ${ROWS} rows per array, ${COLS} table columns, depth ${DEPTH}, ${NODES} visited values, ${SCAN} scanned fields, and ${DOM_NODES} display nodes. Arguments, output, and expanded details share these limits.`;
+  return `Structured previews: at most ${DOC_CHARS} characters and ${DOC_LINES} lines per document, ${TEXT_CHARS} total characters (${NOTICE_CHARS} reserved for the notice), ${FIELDS} fields per object, ${ROWS} rows per array, ${COLS} table columns, depth ${DEPTH}, ${NODES} visited values, ${SCAN} scanned fields, and ${DOM_NODES} display nodes. Arguments, output, and expanded details share these limits. Collapsed summaries use at most 240 characters and 2 lines, ${FIELDS} own fields per object, ${NODES} scanned fields in total, and depth ${DEPTH}.`;
 }
 type PreviewOmission = 'text' | 'fields' | 'rows' | 'nested values';
 const sourceKey = /(?:^|[_-])(command|program|code|script)$/i;
@@ -73,8 +74,9 @@ function prefix(text: string, chars: number, lines = DOC_LINES): string {
   if (end && /[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
   return text.slice(0, end) + (cut && chars > 0 ? '…' : '');
 }
-function summaryFact(key: string, value: unknown): string {
+function summaryFact(key: string, value: unknown, truncated: boolean): string {
   const name = prefix(key, 80, 1).replace(/[\r\n\t]/g, ' ');
+  if (Array.isArray(value)) return `${name}: ${summaryArray(value, truncated)}`;
   const literal = value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
   return literal ? `${name}: ${prefix(scalar(value), 80, 1).replace(/[\r\n\t]/g, ' ')}` : name;
 }
@@ -83,20 +85,66 @@ function summaryArray(value: unknown[], truncated: boolean): string {
   if (truncated) return 'Array preview limited';
   return `${value.length} ${value.length === 1 ? 'item' : 'items'}`;
 }
-/** Summarize only the decoded value supplied by the output projection. */
+type SummaryField = {key: string; value: unknown; rank: number};
+function summaryPayload(value: unknown): boolean { return typeof value === 'string' && value.length > 0 || container(value); }
+function summaryFlag(value: unknown): boolean { return value === true || typeof value === 'number' && value > 0 || summaryPayload(value); }
+function summaryRank(key: string, value: unknown, metadata: boolean): number {
+  if (explicitKey(key)) return summaryFlag(value) ? 0 : 4;
+  if (metadataKey(key)) return 4;
+  if (payloadKey.test(key) && summaryPayload(value)) return 1;
+  if (typeof value === 'string' && (multiline(value.slice(0, 81)) || !metadata && value.length > 80)) return 1;
+  return metadata ? 4 : 3;
+}
+class ResultSummary {
+  private scanned = 0;
+  private limited = false;
+  private readonly seen = new WeakSet<object>();
+  private readonly facts: SummaryField[] = [];
+  private entries(value: Record<string, unknown>, metadata: boolean): SummaryField[] {
+    const fields: SummaryField[] = []; let visited = 0;
+    for (const key in value) {
+      if (visited++ >= FIELDS || this.scanned >= NODES) {this.limited = true; break;}
+      this.scanned++;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor) continue;
+      const child = 'value' in descriptor ? descriptor.value : undefined;
+      fields.push({key, value: child, rank: summaryRank(key, child, metadata)});
+    }
+    return fields.sort((a, b) => a.rank - b.rank);
+  }
+  private collect(value: Record<string, unknown>, path: string, depth: number, metadata: boolean, flag: boolean): void {
+    if (depth > DEPTH || this.seen.has(value)) {this.limited = true; return;}
+    this.seen.add(value);
+    for (const field of this.entries(value, metadata)) this.collectField(field, path, depth, metadata, flag);
+  }
+  private collectField(field: SummaryField, path: string, depth: number, metadata: boolean, flag: boolean): void {
+    const key = pathFor(path, prefix(field.key, 80, 1)); const rank = flag ? 0 : field.rank;
+    const fact = {key, value: field.value, rank};
+    if (!depth || rank <= 1) this.facts.push(fact);
+    if (!record(field.value)) return;
+    const before = this.facts.length;
+    this.collect(field.value, key, depth + 1, metadata || metadataKey(field.key), flag || rank === 0);
+    if (this.facts.length > before) {
+      const index = this.facts.indexOf(fact); if (index !== -1) this.facts.splice(index, 1);
+    }
+  }
+  text(value: Record<string, unknown>, truncated: boolean): string {
+    this.collect(value, '', 0, false, false);
+    const useful = this.facts.some(field => field.rank < 4);
+    const facts = this.facts.filter(field => !useful || field.rank < 4).sort((a, b) => a.rank - b.rank).slice(0, 3).map(field => summaryFact(field.key, field.value, truncated));
+    const notice = [truncated ? 'Partial preview.' : '', this.limited ? 'Summary scan limited.' : ''].filter(Boolean).join(' ');
+    const suffix = notice ? ` · ${notice}` : '';
+    return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240 - suffix.length, 2) + suffix;
+  }
+}
+/** Summarize only decoded own data; bounded classification never parses raw output. */
 export function structuredResultPreview(display: JsonDisplay | undefined): string | undefined {
   if (!record(display)) return undefined;
-  const value = own(display, 'value');
+  const value = own(display, 'value'); const truncated = own(display, 'truncated') === true;
   if (value === undefined) return undefined;
-  if (Array.isArray(value)) return summaryArray(value, own(display, 'truncated') === true);
-  if (!record(value)) return prefix(scalar(value), 240, 2);
-  const facts: string[] = [];
-  for (const key in value) {
-    if (!Object.hasOwn(value, key)) continue;
-    facts.push(summaryFact(key, own(value, key)));
-    if (facts.length === 3) break;
-  }
-  return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240, 2);
+  if (Array.isArray(value)) return summaryArray(value, truncated);
+  if (record(value)) return new ResultSummary().text(value, truncated);
+  const suffix = truncated ? ' · Partial preview.' : '';
+  return prefix(scalar(value), 240 - suffix.length, 2) + suffix;
 }
 function countNodes(node: Node, limit = DOM_NODES): number {
   let count = 0; const pending = [node];
@@ -449,27 +497,38 @@ class Preview {
       if (!this.append(body, tr)) break;
     }
   }
-  private editSide(frame: HTMLElement, value: string, sign: string, className: string): void {
+  private editSide(frame: HTMLElement, value: string, sign: string, className: string, empty: boolean): void {
     if (!this.budget.text) { this.limit(); return; }
-    const shown = prefix(value, Math.min(DOC_CHARS, Math.max(0, this.budget.text - 240)));
-    if (shown.length < value.length) this.limit('text');
-    const signed = shown.split(/\r\n|\r|\n/).map(line => `${sign} ${line}`).join('\n');
+    const signed = empty ? `${sign === '-' ? 'Old' : 'New'} text: empty` : value.split(/\r\n|\r|\n/).map(line => `${sign} ${line}`).join('\n');
     const text = this.take(signed, DOC_CHARS);
-    if (text) frame.append(element('span', className, text), document.createTextNode(this.take('\n', 1)));
+    if (text) frame.append(empty ? document.createTextNode(text) : element('span', className, text), document.createTextNode(this.take('\n', 1)));
+  }
+  private replacementFrame(old: string, next: string): HTMLPreElement {
+    const comparison = suppliedDifference(old, next, Math.min(DOC_CHARS - DOC_LINES * 2, Math.max(0, Math.floor((this.budget.text - 240) / 2))), DOC_LINES);
+    const {pre, frame} = framedPre();
+    if (comparison.omittedBefore) frame.append(document.createTextNode(this.take('Earlier context omitted.\n', 32, 2)));
+    this.editSide(frame, comparison.oldText, '-', 'diff-del', old === '');
+    this.editSide(frame, comparison.newText, '+', 'diff-add', next === '');
+    const notice = differenceNotice(comparison); if (notice) frame.append(document.createTextNode(this.take(notice, 160, 1)));
+    if (comparison.omittedBefore || comparison.omittedAfter || comparison.scanLimited) this.limit('text');
+    if (countNodes(pre) > this.room()) frame.textContent = pre.textContent;
+    return pre;
   }
   private edits(parent: HTMLElement, values: unknown[]): void {
     this.caption(parent, 'Supplied replacement');
-    for (let i = 0; i < Math.min(values.length, 8) && this.budget.text; i++) {
+    let inspected = 0;
+    while (inspected < Math.min(values.length, 8) && this.budget.text > 240) {
       if (this.budget.visits + 3 > NODES) { this.limit(); break; }
       this.budget.visits += 3; this.spentVisits += 3;
-      const edit = own(values, String(i)); if (!record(edit)) { this.limit(); continue; }
+      const edit = own(values, String(inspected++)); if (!record(edit)) { this.limit(); continue; }
       const old = own(edit, 'oldText'); const next = own(edit, 'newText');
       if (typeof old !== 'string' || typeof next !== 'string') { this.limit(); continue; }
-      const {pre, frame} = framedPre(); this.editSide(frame, old, '-', 'diff-del'); this.editSide(frame, next, '+', 'diff-add');
-      if (countNodes(pre) > this.room()) frame.textContent = pre.textContent;
-      if (!this.append(parent, pre)) break;
+      if (!this.append(parent, this.replacementFrame(old, next))) break;
     }
-    if (values.length > 8) this.limit();
+    if (inspected < values.length) {
+      const remaining = values.length - inspected;
+      this.caption(parent, `${remaining} more ${remaining === 1 ? 'replacement' : 'replacements'} in Arguments.`); this.limit();
+    }
   }
   private path(parent: string, key: string): string {
     if (key.length + parent.length + (parent ? 1 : 0) > 240 || multiline(key)) this.limit();

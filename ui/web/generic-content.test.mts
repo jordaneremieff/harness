@@ -66,12 +66,49 @@ function setup(): PresentationContext {
 function result(value: unknown, context = setup()): DomNode { return cast(presentResult({value, truncated: false}, context)); }
 function args(value: unknown, context = setup()): DomNode { return cast(presentArguments({value, truncated: false}, context)); }
 
-test('structured collapsed summaries use at most three top-level supplied facts or an array count', () => {
+test('collapsed summaries prefer useful payloads and explicit facts over reordered transport metadata', () => {
+  for (const value of [
+    {cursor: 'next', digest: 'hash', coverage: {complete: true}, document: '# Actual document\nUseful excerpt', count: 2},
+    {document: '# Actual document\nUseful excerpt', count: 2, coverage: {complete: true}, digest: 'hash', cursor: 'next'},
+  ]) {
+    const before = JSON.stringify(value), shown = structuredResultPreview({value, truncated: false}); assert.ok(shown);
+    assert.match(shown, /document: # Actual document/); assert.match(shown, /count: 2/);
+    assert.doesNotMatch(shown, /cursor|digest|coverage/); assert.equal(JSON.stringify(value), before);
+  }
+  const shown = structuredResultPreview({value: {cursor: 'next', metadata: {digest: 'hash', document: 'Actual nested content', warning: 'Source incomplete'}, count: 3}, truncated: false});
+  assert.match(shown ?? '', /metadata\.warning: Source incomplete/); assert.match(shown ?? '', /metadata\.document: Actual nested content/);
+  assert.match(shown ?? '', /count: 3/); assert.doesNotMatch(shown ?? '', /digest|cursor/);
+});
+test('summary warnings, outcomes and array counts remain supplied facts with explicit partial coverage', () => {
+  const shown = structuredResultPreview({value: {cursor: 'next', document: 'Useful document', error: {message: 'Request refused'}, status: 'failed'}, truncated: false});
+  assert.match(shown ?? '', /error\.message: Request refused/); assert.match(shown ?? '', /document: Useful document/); assert.match(shown ?? '', /status: failed/);
+  assert.equal(structuredResultPreview({value: {cursor: 'next', rows: [{id: 1}, {id: 2}]}, truncated: false}), 'rows: 2 items');
+  const partial = structuredResultPreview({value: {cursor: 'next', records: [{id: 1}]}, truncated: true});
+  assert.match(partial ?? '', /records: Array preview limited/); assert.match(partial ?? '', /Partial preview/); assert.doesNotMatch(partial ?? '', /1 item/);
+  assert.match(structuredResultPreview({value: 'retained scalar', truncated: true}) ?? '', /retained scalar · Partial preview/);
+});
+test('summary selection bounds field scans and depth, never evaluates getters, and names incomplete search', () => {
+  const value = Object.fromEntries(Array.from({length: 24}, (_, i) => [`cursor_${i}`, i]));
+  Object.defineProperty(value, 'outside', {enumerable: true, get: () => {throw new Error('Outside scan');}});
+  const shown = structuredResultPreview({value, truncated: false}); assert.ok(shown);
+  assert.match(shown, /Summary scan limited/); assert.doesNotMatch(shown, /outside/); assert.ok(shown.length <= 240);
+  const cycle: Record<string, unknown> = {body: 'Retained cycle document'}; cycle.again = cycle;
+  assert.match(structuredResultPreview({value: cycle, truncated: false}) ?? '', /body: Retained cycle document.*Summary scan limited/);
+  let nested: unknown = {body: 'Outside depth'};
+  for (let i = 0; i < 10; i++) nested = {payload: nested};
+  const deep = structuredResultPreview({value: nested, truncated: false}); assert.ok(deep);
+  assert.match(deep, /Summary scan limited/); assert.doesNotMatch(deep, /Outside depth/);
+  let reads = 0; const broad = Object.fromEntries(Array.from({length: 24}, (_, i) => [`metadata_${i}`, Object.fromEntries(Array.from({length: 24}, (_, j) => [`metadata_${j}`, j]))]));
+  const guarded = new Proxy(broad, {getOwnPropertyDescriptor: (target, key) => {reads++; return Reflect.getOwnPropertyDescriptor(target, key);}});
+  const limited = structuredResultPreview({value: guarded, truncated: false}); assert.ok(limited);
+  assert.match(limited, /Summary scan limited/); assert.ok(reads <= 49);
+});
+test('structured collapsed summaries use at most three supplied facts or an array count', () => {
   const display = (value: unknown): JsonDisplay => ({value, truncated: false});
   assert.equal(structuredResultPreview(undefined), undefined);
   assert.equal(structuredResultPreview(display(undefined)), undefined);
   assert.equal(structuredResultPreview(display({alpha: 'kept', count: 0, ready: false, ignored: 'only after expansion'})), 'alpha: kept · count: 0 · ready: false');
-  assert.equal(structuredResultPreview(display({nested: {role: 'assistant'}, records: [1, 2], nullable: null})), 'nested · records · nullable: null');
+  assert.equal(structuredResultPreview(display({nested: {role: 'assistant'}, records: [1, 2], nullable: null})), 'records: 2 items · nested · nullable: null');
   assert.equal(structuredResultPreview(display([])), '0 items'); assert.equal(structuredResultPreview(display([{}])), '1 item');
   assert.equal(structuredResultPreview(display([{}, {}, {}])), '3 items');
   assert.equal(structuredResultPreview(display({})), 'Empty object');
@@ -99,7 +136,7 @@ test('limited array summaries do not present a projected length as the original 
 test('structured summaries never decode text or derive a role or lifecycle state', () => {
   const text = '{"role":"assistant","status":"success"}';
   assert.equal(structuredResultPreview({value: text, truncated: false}), text);
-  assert.equal(structuredResultPreview({value: {message: text}, truncated: true}), `message: ${text}`);
+  assert.equal(structuredResultPreview({value: {message: text}, truncated: true}), `message: ${text} · Partial preview.`);
   assert.equal(structuredResultPreview({value: {role: 'assistant', status: 'success'}, truncated: false}), 'role: assistant · status: success');
 });
 test('structured summaries bound keys and strings without evaluating getters or nested values', () => {
@@ -541,6 +578,34 @@ test('supplied edits use at most eight old and new pairs without an inferred dif
   assert.match(node.textContent, /Supplied replacement/); assert.match(node.textContent, /Preview shortened/); bounded(node);
 });
 
+test('expanded supplied replacements locate later changes and preserve their shared content budget', () => {
+  const context = setup();
+  const prefix = 'same\r\n'.repeat(2000);
+  const value = {oldText: `${prefix}OLD\r\n${'tail\r\n'.repeat(100)}`, newText: `${prefix}NEW\r\n${'tail\r\n'.repeat(100)}`, path: 'source.ts'};
+  const retained = JSON.stringify(value), budget = new PreviewBudget();
+  const node = cast(presentArguments({value, truncated: false}, context, budget, {replacement: true}));
+  assert.match(node.textContent, /Earlier context omitted/); assert.match(node.textContent, /- OLD/); assert.match(node.textContent, /\+ NEW/);
+  assert.match(node.textContent, /Later context omitted/); assert.match(node.textContent, /Preview shortened/);
+  assert.equal(JSON.stringify(value), retained); assert.equal(node.querySelectorAll('button').length, 0); bounded(node);
+  const result = cast(presentResult({value: {body: '# Result\nRetained outcome', metadata: {digest: 'hash'}}, truncated: false}, context, budget));
+  const meta = classes(result, 'tool-metadata')[0]; if (meta) open(meta);
+  assert.ok(node.textContent.length + result.textContent.length <= 16384);
+  assert.ok(descendants(node).length + descendants(result).length <= 512); bounded(node); bounded(result);
+});
+test('expanded supplied comparisons retain empty sides, Unicode, replacement counts and scan-limit truth', () => {
+  const context = setup();
+  for (const value of [{oldText: '', newText: 'added'}, {oldText: 'deleted', newText: ''}, {oldText: '', newText: ''}]) {
+    const node = cast(presentArguments({value, truncated: false}, context, undefined, {replacement: true}));
+    if (!value.oldText) assert.match(node.textContent, /Old text: empty/);
+    if (!value.newText) assert.match(node.textContent, /New text: empty/); bounded(node);
+  }
+  const prefix = '😀'.repeat(5000);
+  const node = args({edits: Array.from({length: 10}, () => ({oldText: `${prefix}OLD`, newText: `${prefix}NEW`}))});
+  assert.match(node.textContent, /- [^\n]*OLD/); assert.match(node.textContent, /\+ [^\n]*NEW/);
+  assert.match(node.textContent, /2 more replacements in Arguments/); bounded(node);
+  const exhausted = args({edits: [{oldText: `${'x'.repeat(65536)}old`, newText: `${'x'.repeat(65536)}new`}]});
+  assert.match(exhausted.textContent, /First difference not located within scan limit/); assert.doesNotMatch(exhausted.textContent, /No differing text/); bounded(exhausted);
+});
 test('argument documents preserve exact supplied lines and generic highlighting hints', () => {
   const content = '# Supplied heading\n\nconst value = 1;\nreturn value;\n<script>inert</script>';
   for (const extra of [{language: 'ts'}, {lang: 'typescript'}, {path: 'source.ts'}, {file_path: 'source.mts'}]) {

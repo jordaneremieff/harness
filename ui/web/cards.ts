@@ -4,28 +4,29 @@ import { structuredResultPreview } from './generic-content.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 import { previewText } from './format.ts';
 import { highlight, languageFromPath } from './highlight.ts';
+import { suppliedDifference, differenceNotice } from './supplied-difference.ts';
 
 const PREVIEW_CHARS = 8192;
 const TOTAL_CHARS = 16384;
 const PREVIEW_LINES = 80;
 const EDITS = 8;
 export function cardPreviewLimits(): string {
-  return `Write and edit previews: at most ${PREVIEW_CHARS} characters and ${PREVIEW_LINES} lines per text, ${TOTAL_CHARS} characters of supplied text in total, and ${EDITS} replacements. Replacement sides share the remaining text budget.`;
+  return `Write and edit previews: at most ${PREVIEW_CHARS} characters and ${PREVIEW_LINES} lines per text, ${TOTAL_CHARS} characters of supplied text in total, and ${EDITS} replacements. Replacement sides share the remaining text budget. Comparisons inspect at most 65536 characters per side to locate the first difference.`;
 }
 type Replacement = {oldText: string; newText: string};
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
-function replacements(args: Record<string, unknown>): Replacement[] | undefined {
+function replacements(args: Record<string, unknown>): {edits: Replacement[]; count: number} | undefined {
   const edits = Array.isArray(args.edits) ? args.edits : [args];
   if (!edits.length) return undefined;
   const result: Replacement[] = [];
-  for (const value of edits) {
+  for (const value of edits.slice(0, EDITS)) {
     const edit = record(value);
     if (typeof edit.oldText !== 'string' || typeof edit.newText !== 'string') return undefined;
     result.push({oldText: edit.oldText, newText: edit.newText});
   }
-  return result;
+  return {edits: result, count: edits.length};
 }
 function preview(text: string, maxChars: number, maxLines = PREVIEW_LINES): {text: string; limited: boolean} {
   let end = Math.min(text.length, Math.max(0, Math.floor(maxChars))); let lines = 1;
@@ -36,10 +37,15 @@ function preview(text: string, maxChars: number, maxLines = PREVIEW_LINES): {tex
   return {text: text.slice(0, end), limited: end < text.length};
 }
 function replacementPreview(edit: Replacement, budget: number): {text: string; limited: boolean} {
-  const before = preview(edit.oldText, Math.min(PREVIEW_CHARS, Math.floor(budget / 2)));
-  const after = preview(edit.newText, Math.min(PREVIEW_CHARS, Math.floor(budget / 2)));
-  const prefix = (text: string, sign: string) => text.split('\n').map(line => `${sign} ${line}`).join('\n');
-  return {text: [edit.oldText === '' ? 'Old text: empty' : prefix(before.text, '-'), edit.newText === '' ? 'New text: empty' : prefix(after.text, '+')].join('\n'), limited: before.limited || after.limited};
+  const comparison = suppliedDifference(edit.oldText, edit.newText, Math.max(0, Math.min(PREVIEW_CHARS, Math.floor((budget - 240) / 2) - PREVIEW_LINES * 2)), PREVIEW_LINES);
+  const prefix = (text: string, sign: string) => text.split(/\r\n|\r|\n/).map(line => `${sign} ${line}`).join('\n');
+  const notice = differenceNotice(comparison);
+  return {text: [
+    ...(comparison.omittedBefore ? ['Earlier context omitted.'] : []),
+    edit.oldText === '' ? 'Old text: empty' : prefix(comparison.oldText, '-'),
+    edit.newText === '' ? 'New text: empty' : prefix(comparison.newText, '+'),
+    ...(notice ? [notice] : []),
+  ].join('\n'), limited: comparison.omittedBefore || comparison.omittedAfter || comparison.scanLimited};
 }
 function writePreview(source: ToolPresentationSource, text: string, className?: string): HTMLElement {
   const args = record(source.args?.value); const pre = element('pre', className);
@@ -73,7 +79,7 @@ function replacementBlock(text: string): HTMLElement {
   }
   return block;
 }
-function edited(edits: Replacement[], context: PresentationContext): HTMLElement {
+function edited(edits: Replacement[], context: PresentationContext, count: number): HTMLElement {
   const node = element('section', 'tool-content');
   node.append(element('p', 'secondary tool-caption', 'Supplied replacement'));
   let budget = TOTAL_CHARS;
@@ -86,7 +92,7 @@ function edited(edits: Replacement[], context: PresentationContext): HTMLElement
       context.inspection(`Replacement ${index + 1}: old text`, () => edit.oldText),
       context.inspection(`Replacement ${index + 1}: new text`, () => edit.newText));
   }
-  if (edits.length > EDITS) node.append(element('p', 'secondary', `${edits.length - EDITS} more replacements in Arguments.`));
+  if (count > EDITS) node.append(element('p', 'secondary', `${count - EDITS} more replacements in Arguments.`));
   return node;
 }
 export function readRange(args: Record<string, unknown>): string {
@@ -112,6 +118,21 @@ export function resultPreview(parts: readonly PartView[]): string {
   return '';
 }
 
+function collapsedReplacement(source: ToolPresentationSource, args: Record<string, unknown>): HTMLElement | undefined {
+  const supplied = replacements(args); const edit = supplied?.edits[0]; if (!edit || !supplied) return undefined;
+  const comparison = suppliedDifference(edit.oldText, edit.newText, 500, 2);
+  const remaining = supplied.count - 1;
+  const notice = [differenceNotice(comparison), remaining ? `${remaining} more ${remaining === 1 ? 'replacement' : 'replacements'} in Arguments.` : '',
+    source.args?.truncated ? 'Some arguments are unavailable.' : ''].filter(Boolean).join(' ');
+  const block = replacementBlock([
+    ...(comparison.omittedBefore ? ['Earlier context omitted.'] : []),
+    edit.oldText === '' ? 'Old text: empty' : comparison.oldText.split(/\r\n|\r|\n/).map(line => `- ${line}`).join('\n'),
+    edit.newText === '' ? 'New text: empty' : comparison.newText.split(/\r\n|\r|\n/).map(line => `+ ${line}`).join('\n'),
+    ...(notice ? [notice] : []),
+  ].join('\n'));
+  block.className = 'tool-content-preview'; return block;
+}
+
 /** Compact supplied text keeps write and edit calls useful before expansion. */
 export function presentToolPreview(source: ToolPresentationSource): HTMLElement | undefined {
   if (source.status === 'error') return undefined;
@@ -120,15 +141,7 @@ export function presentToolPreview(source: ToolPresentationSource): HTMLElement 
     const text = previewText(args.content, 6, 1199);
     return args.content === '' ? element('pre', 'tool-content-preview', '(empty content)') : writePreview(source, `${text.text}${text.truncated ? '…' : ''}`, 'tool-content-preview');
   }
-  if (source.name !== 'edit') return undefined;
-  const edit = replacements(args)?.[0]; if (!edit) return undefined;
-  const before = previewText(edit.oldText, 2, 500); const after = previewText(edit.newText, 2, 500);
-  const block = replacementBlock([
-    edit.oldText === '' ? 'Old text: empty' : before.text.split('\n').map(line => `- ${line}`).join('\n'),
-    edit.newText === '' ? 'New text: empty' : after.text.split('\n').map(line => `+ ${line}`).join('\n'),
-    ...(before.truncated || after.truncated || (Array.isArray(args.edits) && args.edits.length > 1) ? ['…'] : []),
-  ].join('\n'));
-  block.className = 'tool-content-preview'; return block;
+  return source.name === 'edit' ? collapsedReplacement(source, args) : undefined;
 }
 
 /** Expanded content comes from supplied arguments, never a guessed file diff. */
@@ -141,7 +154,7 @@ export function presentTool(source: ToolPresentationSource, context: Presentatio
   }
   if (source.name === 'write' && typeof args.content === 'string') node = written(source, args.content, context);
   if (source.name === 'edit') {
-    const edits = replacements(args); if (edits) node = edited(edits, context);
+    const supplied = replacements(args); if (supplied) node = edited(supplied.edits, context, supplied.count);
   }
   if (node && source.args?.truncated) node.append(element('p', 'warning', 'Some arguments are not available. This preview is not a complete file diff.'));
   return node;

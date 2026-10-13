@@ -104,7 +104,7 @@ test('collapsed write and edit previews expose supplied content with diff classe
   setup();
   const edit = node(presentToolPreview(source('edit', {edits: [{oldText: '<script>\nold', newText: 'new\ntext'}, {oldText: 'x', newText: 'y'}]})));
   assert.deepEqual(edit.children.filter(child => child.tag === 'span').map(child => child.className), ['diff-del', 'diff-del', 'diff-add', 'diff-add']);
-  assert.match(edit.textContent, /- <script>\n- old\n\+ new\n\+ text\n…/);
+  assert.match(edit.textContent, /- <script>\n- old\n\+ new\n\+ text\n1 more replacement in Arguments\./);
   assert.equal(edit.className, 'tool-content-preview');
   const write = node(presentToolPreview(source('write', {content: 'one\ntwo\nthree'})));
   assert.equal(write.textContent, "one\ntwo\nthree");
@@ -126,6 +126,39 @@ test('write previews highlight by extension and preserve exact supplied text and
   const lines = edit.children.filter(child => child.tag === 'pre').flatMap(child => child.children).filter(child => child.tag === 'span');
   assert.equal(lines.every(child => child.className === 'diff-del' || child.className === 'diff-add'), true);
   assert.equal(lines.every(child => child.children.length === 0), true);
+});
+test('collapsed supplied comparisons reveal later changes with bounded context and remaining counts', () => {
+  setup();
+  for (const prefix of ['same\n'.repeat(2000), '😀'.repeat(5000)]) {
+    const call = source('edit', {edits: [{oldText: `${prefix}OLD\n${'tail\n'.repeat(20)}`, newText: `${prefix}NEW\n${'tail\n'.repeat(20)}`}, {oldText: 'x', newText: 'y'}]});
+    assert.ok(call.args); call.args = {...call.args, truncated: true}; const retained = JSON.stringify(call);
+    const preview = node(presentToolPreview(call));
+    assert.match(preview.textContent, /Earlier context omitted/); assert.match(preview.textContent, /- [^\n]*OLD/); assert.match(preview.textContent, /\+ [^\n]*NEW/);
+    assert.match(preview.textContent, /Later context omitted/); assert.match(preview.textContent, /1 more replacement in Arguments/);
+    assert.match(preview.textContent, /Some arguments are unavailable/);
+    assert.ok(preview.textContent.length <= 1200); assert.ok(preview.textContent.trimEnd().split('\n').length <= 6);
+    assert.equal(preview.textContent.isWellFormed(), true); assert.equal(JSON.stringify(call), retained);
+  }
+  const exhausted = node(presentToolPreview(source('edit', {oldText: `${'x'.repeat(65536)}old`, newText: `${'x'.repeat(65536)}new`})));
+  assert.match(exhausted.textContent, /First difference not located within scan limit/); assert.doesNotMatch(exhausted.textContent, /No differing text/);
+});
+test('bounded expanded comparisons keep exact lazy inspections and never scan replacement tails', () => {
+  const {context, inspections} = setup();
+  const prefix = 'same\n'.repeat(2000), oldText = `${prefix}OLD\n${'old-tail\n'.repeat(100)}`, newText = `${prefix}NEW\n${'new-tail\n'.repeat(100)}`;
+  const edited = node(presentTool(source('edit', {oldText, newText}), context));
+  assert.match(edited.textContent, /- OLD/); assert.match(edited.textContent, /\+ NEW/); assert.match(edited.textContent, /Earlier context omitted/);
+  assert.equal(inspections[0]?.source(), oldText); assert.equal(inspections[1]?.source(), newText);
+  const edits = Array.from({length: 8}, () => ({oldText: 'old', newText: 'new'}));
+  Object.defineProperty(edits, 8, {get: () => {throw new Error('Unvisited replacement tail');}}); edits.length = 10000;
+  const card = node(presentTool(source('edit', {edits}), context));
+  assert.equal(card.children.filter(child => child.tag === 'pre').length, 8); assert.match(card.textContent, /9992 more replacements in Arguments/);
+});
+test('collapsed summaries preserve redacted literal sources while preferring supplied warnings and documents', () => {
+  const parts: PartView[] = [{type: 'text', text: 'original JSON text', structured: {value: {cursor: 'next', digest: 'hash', coverage: {}, document: 'Actual document', warning: 'Some results omitted'}, truncated: true}}];
+  const retained = JSON.stringify(parts), shown = resultPreview(parts);
+  assert.match(shown, /warning: Some results omitted/); assert.match(shown, /document: Actual document/); assert.match(shown, /Partial preview/);
+  assert.doesNotMatch(shown, /cursor|digest|coverage/); assert.equal(JSON.stringify(parts), retained);
+  assert.equal(resultPreview([{...parts[0], type: 'text', text: '[protected text]', redacted: true}]), '[protected text]');
 });
 test('card preview limits describe the applied bounds for tool details', () => {
   assert.match(cardPreviewLimits(), /8192 characters and 80 lines per text/);
