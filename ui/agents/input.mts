@@ -25,7 +25,7 @@ function plain(value: unknown, keys: readonly string[]): void {
 }
 export function validateSubmitInput(input: SubmitInput): void {
   plain(input, ["operationId", "message", "mode", "targetKey", "images"]);
-  if (typeof input.operationId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/.test(input.operationId)
+  if (typeof input.operationId !== "string" || !/^[a-zA-Z0-9._:-]{1,125}$/.test(input.operationId)
     || typeof input.targetKey !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(input.targetKey)
     || typeof input.message !== "string" || Buffer.byteLength(input.message) > LIMITS.textBytes
     || !["steer", "followUp"].includes(input.mode) || !Array.isArray(input.images)

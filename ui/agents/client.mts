@@ -117,7 +117,7 @@ export class HostLink {
     }
   }
   submit(identity: string, input: NativeSubmitInput, installationId: string, signal?: AbortSignal): Promise<Admission> {
-    if (!input || typeof input.operationId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/.test(input.operationId)
+    if (!input || typeof input.operationId !== "string" || !/^[a-zA-Z0-9._:-]{1,125}$/.test(input.operationId)
       || !["steer", "followUp"].includes(input.mode)) return Promise.reject(new AgentError("invalid_request", "Invalid native input."));
     const requestId = `ui:${input.operationId}`;
     const params = { sessionId: identity, message: input.message, origin: "operator", requester: `ui:${installationId}`, replyTo: identity, requestId, whenBusy: input.mode };

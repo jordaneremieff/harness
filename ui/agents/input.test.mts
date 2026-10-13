@@ -13,7 +13,7 @@ const envelope = (message: unknown) => ({sessionId: CHILD, origin: "operator", r
 test("metadata input strictly validates the complete tuple and captures image references deeply", () => {
   const captured = captureSubmitInput(input);
   assert.deepEqual(captured, input); assert.notEqual(captured.images, input.images); assert.notEqual(captured.images[0], image);
-  for (const patch of [{images: undefined}, {operationId: "key\n"}, {targetKey: `${input.targetKey}\n`}, {images: [{...image, digest: `${image.digest}\n`}]}, {targetKey: "../escape"}, {root: "/other"}, {message: "x".repeat(LIMITS.textBytes + 1)}, {mode: "reject"}, {images: [image, image]}, {images: [{...image, data: "AAAA"}]}, {images: [{...image, name: "../x"}]}, {images: [{...image, width: 8193}]}, {images: [{...image, bytes: LIMITS.imageBytes + 1}]}]) {
+  for (const patch of [{images: undefined}, {operationId: "key\n"}, {operationId: "x".repeat(126)}, {targetKey: `${input.targetKey}\n`}, {images: [{...image, digest: `${image.digest}\n`}]}, {targetKey: "../escape"}, {root: "/other"}, {message: "x".repeat(LIMITS.textBytes + 1)}, {mode: "reject"}, {images: [image, image]}, {images: [{...image, data: "AAAA"}]}, {images: [{...image, name: "../x"}]}, {images: [{...image, width: 8193}]}, {images: [{...image, bytes: LIMITS.imageBytes + 1}]}]) {
     assert.throws(() => captureSubmitInput({...input, ...patch} as SubmitInput), {code: "invalid_request"});
   }
   assert.throws(() => captureSubmitInput({...input, images: []}), {code: "invalid_request"});
