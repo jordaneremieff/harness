@@ -676,9 +676,21 @@ export class StateStore {
     for (const record of this.operationRecords.values()) this.addInputImagePins(record, add);
     graph.references = [...entries.values()]; return graph;
   }
+  private checkAcknowledgedImageReferences(index: BlobIndex, graph: BlobReferenceGraph): void {
+    index.unavailable = [];
+    for (const reference of graph.references) {
+      const entry = index.entries.find(value => value.targetKey === reference.targetKey && value.image.digest === reference.image.digest);
+      if (entry && sameImageContent(entry.image, reference.image)) continue;
+      index.unavailable.push({targetKey: reference.targetKey, digest: reference.image.digest});
+      if (entry) index.error ??= 'Stored image metadata disagrees with its acknowledged reference; no cleanup or upload is permitted.';
+    }
+  }
   private async refreshImageIndex(): Promise<void> {
-    try { this.imageIndex = await this.images.scan(this.imageGraphForMutation()); }
-    catch { this.imageIndex.error = 'Image storage index is unavailable. No cleanup or upload is permitted.'; }
+    try {
+      const graph = this.imageGraphForMutation();
+      const index = await this.images.scan({targetKeys: graph.targetKeys, references: []});
+      this.checkAcknowledgedImageReferences(index, graph); this.imageIndex = index;
+    } catch { this.imageIndex.error = 'Image storage index is unavailable. No cleanup or upload is permitted.'; }
   }
   private async cleanupImagesForMutation(): Promise<void> {
     if (this.imageIndex.error) await this.refreshImageIndex();
@@ -696,7 +708,7 @@ export class StateStore {
     }
   }
   private imageReady(targetKey: string, image: ValidatedImage): boolean {
-    return !this.imageIndex.error && this.imageIndex.entries.some(entry => entry.targetKey === targetKey && sameImageContent(entry.image, image));
+    return !this.imageIndex.error && !this.imageIndex.unavailable?.some(entry => entry.targetKey === targetKey && entry.digest === image.digest) && this.imageIndex.entries.some(entry => entry.targetKey === targetKey && sameImageContent(entry.image, image));
   }
   validateDraftImageReferences(targetKey: string, images: readonly DraftImage[]): void {
     if (!images.length) return;
@@ -753,12 +765,15 @@ export class StateStore {
       const value = this.requireTarget(held.workspaceId, held.targetKey); guard();
       if (!sameTarget(value.target, held.target) || image.bytes > held.maxBytes || held.declaredBytes !== undefined && image.bytes !== held.declaredBytes || image.mimeType !== held.mimeType) throw new StateError('invalid_image_reference', 'The image intake does not match its reservation');
       normalizeDraftImages([{...image, name: held.name}]);
+      const reference = this.imageGraphForMutation().references.find(entry => entry.targetKey === held.targetKey && entry.image.digest === image.digest);
+      if (reference && !sameImageContent(reference.image, image)) throw new StateError('invalid_image_reference', 'Replacement bytes disagree with their acknowledged metadata', 409);
       try { await this.images.publish(held, image); } catch (error) { this.imageIndex.error = 'Image publication is uncertain; no cleanup or upload is permitted until storage is verified.'; throw error; }
       if (!this.imageIndex.entries.some(entry => entry.targetKey === held.targetKey && entry.image.digest === image.digest)) this.imageIndex.entries.push({targetKey: held.targetKey, image: structuredClone(image)});
       guard();
       const expiresAt = new Date(this.now() + LIMITS.imageLeaseMs).toISOString();
       const imageLeases = (value.imageLeases ?? []).filter(lease => lease.image.digest !== image.digest && Date.parse(lease.expiresAt) > this.now()); imageLeases.push({image: structuredClone(image), expiresAt});
       await this.writeTarget({...value, imageLeases}); this.uploads.delete(held.id);
+      this.imageIndex.unavailable = this.imageIndex.unavailable?.filter(entry => entry.targetKey !== held.targetKey || entry.digest !== image.digest);
       return {targetKey: held.targetKey, target: structuredClone(held.target), image: {...image, name: held.name}, leaseExpiresAt: expiresAt};
     });
   }

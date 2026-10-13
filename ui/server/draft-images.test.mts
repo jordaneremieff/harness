@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, rm, stat, unlink, writeFile} from 'node:fs/promises';
+import {mkdtemp, readFile, rm, stat, unlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
@@ -316,6 +316,101 @@ test('missing acknowledged bytes preserve labels, refuse Send and prevent pre-cl
   await assert.rejects(f.operations().beginQueueClear(f.workspace.id, f.target, 1), {code: 'image_unavailable'});
   await f.store.restoreRetainedInput(f.workspace.id, id, state.draft.revision);
   assert.throws(() => f.store.validateDraftImageReferences(f.saved.targetKey, [staged.image]), {code: 'image_unavailable'});
+});
+
+test('exact-byte reattachment repairs only the acknowledged target image and preserves retained content', async t => {
+  const f = await fixture(t), staged = await f.upload(), id = await admitted(f, f.workspace.id, f.saved.targetKey, staged.image);
+  const copy = await f.store.getRetainedInput(f.workspace.id, id);
+  const draft = await f.store.restoreRetainedInput(f.workspace.id, id, (await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft.revision);
+  await f.store.close(); await unlink(join(f.root, 'images', f.saved.targetKey, `${staged.image.digest}.bin`));
+  f.advance(LIMITS.imageLeaseMs + 1); await f.reopen();
+  assert.deepEqual(await f.store.getRetainedInput(f.workspace.id, id), copy);
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).imageAvailability[0]?.state, 'unavailable');
+  await assert.rejects(f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: draft.revision, text: draft.text, mode: draft.mode, images: draft.images}), {code: 'image_unavailable'});
+  const replacement = await f.upload(undefined, undefined, 'reattached.png');
+  assert.equal(replacement.image.digest, staged.image.digest);
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).imageAvailability[0]?.state, 'ready');
+  const saved = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: draft.revision, text: draft.text, mode: draft.mode, images: draft.images});
+  assert.ok(sameDraftTuple(saved, draft));
+  assert.deepEqual(await f.store.getRetainedInput(f.workspace.id, id), copy);
+  assert.equal(f.store.retainedInputCount(), 1); await assert.rejects(f.operations().remove(id), {code: 'operation_conflict'});
+  assert.deepEqual(Buffer.from((await f.store.readDraftImage(f.workspace.id, f.saved.targetKey, staged.image.digest)).data), bytes);
+  f.advance(LIMITS.imageLeaseMs + 1); await f.reopen();
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).imageAvailability[0]?.state, 'ready');
+  assert.deepEqual(await f.store.getRetainedInput(f.workspace.id, id), copy);
+  assert.equal(f.store.records().length, 1);
+});
+
+test('replacement availability stays local to one digest and target', async t => {
+  const f = await fixture(t), other = await f.store.createWorkspace(), target = await f.store.target(other.id, f.target);
+  const alternate = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64');
+  const a = await f.upload(), b = await f.upload(undefined, undefined, 'other.png', alternate), c = await f.upload(other.id, target.targetKey);
+  const draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: 'caption', mode: 'prompt', images: [a.image, b.image]});
+  const otherDraft = await f.store.putDraft(other.id, target.targetKey, {expectedRevision: 0, text: '', mode: 'prompt', images: [c.image]});
+  assert.notEqual(a.image.digest, b.image.digest); assert.equal(a.image.digest, c.image.digest);
+  await f.store.close();
+  for (const [key, image] of [[f.saved.targetKey, a.image], [f.saved.targetKey, b.image], [target.targetKey, c.image]] as const) await unlink(join(f.root, 'images', key, `${image.digest}.bin`));
+  f.advance(LIMITS.imageLeaseMs + 1); await f.reopen();
+  await f.upload(undefined, undefined, 'replacement.png', alternate);
+  assert.throws(() => f.store.validateDraftImageReferences(f.saved.targetKey, draft.images), {code: 'image_unavailable', details: {targetKey: f.saved.targetKey, missingIndexes: [0]}});
+  assert.throws(() => f.store.validateDraftImageReferences(target.targetKey, otherDraft.images), {code: 'image_unavailable'});
+  await f.upload(other.id, target.targetKey);
+  f.store.validateDraftImageReferences(target.targetKey, otherDraft.images);
+  assert.throws(() => f.store.validateDraftImageReferences(f.saved.targetKey, draft.images), {code: 'image_unavailable'});
+  assert.deepEqual((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft, draft);
+  await f.upload(); f.store.validateDraftImageReferences(f.saved.targetKey, draft.images);
+  assert.deepEqual((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft, draft);
+  await assert.rejects(f.store.putDraft(other.id, target.targetKey, {expectedRevision: otherDraft.revision, text: '', mode: 'prompt', images: [b.image]}), {code: 'unknown_image_digest'});
+  assert.equal(f.store.records().length, 0);
+});
+
+test('failed lease publication does not release an unavailable reference before a verified retry', async t => {
+  const f = await fixture(t), staged = await f.upload();
+  const draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: '', mode: 'prompt', images: [staged.image]});
+  await f.store.close(); await unlink(join(f.root, 'images', f.saved.targetKey, `${staged.image.digest}.bin`)); await f.reopen();
+  const writer = f.store as unknown as {atomic(path: string, value: unknown, max: number): Promise<void>};
+  const atomic = writer.atomic.bind(f.store); let fail = true;
+  t.mock.method(writer, 'atomic', async (path: string, value: unknown, max: number) => {if (fail && path === `targets/${f.saved.targetKey}.json`) {fail = false; throw new Error('lease write failed');} await atomic(path, value, max);});
+  await assert.rejects(f.upload(), /lease write failed/);
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).imageAvailability[0]?.state, 'unavailable');
+  assert.throws(() => f.store.validateDraftImageReferences(f.saved.targetKey, draft.images), {code: 'image_unavailable'});
+  assert.deepEqual(Buffer.from((await f.store.readDraftImage(f.workspace.id, f.saved.targetKey, staged.image.digest)).data), bytes);
+  await f.upload(); f.store.validateDraftImageReferences(f.saved.targetKey, draft.images);
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).imageAvailability[0]?.state, 'ready');
+});
+
+test('failed blob publication keeps unavailable metadata and corrupt storage guards', async t => {
+  const f = await fixture(t), staged = await f.upload(), file = join(f.root, 'images', f.saved.targetKey, `${staged.image.digest}.bin`);
+  const draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: 'caption', mode: 'prompt', images: [staged.image]});
+  await f.store.close(); await unlink(file); await f.reopen();
+  const held = await f.store.reserveImageUpload(f.workspace.id, f.saved.targetKey, {name: 'pixel.png', mimeType: 'image/png', epoch: 1, declaredBytes: bytes.length}, () => {});
+  const intake = await f.store.beginImageUpload(held); await intake.write(bytes); const image = await intake.finish();
+  await writeFile(file, 'corrupt');
+  try { await assert.rejects(f.store.finishImageUpload(held, image, () => {}), {code: 'image_unavailable'}); }
+  finally { await f.store.cancelImageUpload(held); }
+  assert.deepEqual((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft, draft);
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).imageAvailability[0]?.state, 'unavailable');
+  assert.throws(() => f.store.validateDraftImageReferences(f.saved.targetKey, draft.images), {code: 'image_unavailable'});
+  await assert.rejects(f.upload(), {code: 'image_storage_unavailable'});
+  assert.equal((await stat(file)).size, 7);
+});
+
+test('replacement bytes must agree with acknowledged intrinsic metadata', async t => {
+  const f = await fixture(t), staged = await f.upload();
+  const draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: '', mode: 'prompt', images: [staged.image]});
+  const targetFile = join(f.root, 'targets', `${f.saved.targetKey}.json`), imageFile = join(f.root, 'images', f.saved.targetKey, `${staged.image.digest}.bin`);
+  await f.store.close();
+  const target = JSON.parse(await readFile(targetFile, 'utf8'));
+  target.draft.images[0].width = 2;
+  await writeFile(targetFile, JSON.stringify(target)); await unlink(imageFile); f.advance(LIMITS.imageLeaseMs + 1); await f.reopen();
+  await assert.rejects(f.upload(), {code: 'invalid_image_reference'});
+  await assert.rejects(stat(imageFile), {code: 'ENOENT'});
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft.images[0]?.width, 2);
+  assert.throws(() => f.store.validateDraftImageReferences(f.saved.targetKey, draft.images), {code: 'image_unavailable'});
+  await writeFile(imageFile, bytes); await f.reopen();
+  assert.ok((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).imageStorageError);
+  await assert.rejects(f.upload(), {code: 'image_storage_unavailable'});
+  assert.deepEqual(await readFile(imageFile), bytes);
 });
 
 test('unknown storage entries block intake and deletion while text drafts remain usable', async t => {
