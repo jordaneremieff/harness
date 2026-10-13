@@ -13,10 +13,10 @@ export function readEditorSelection(raw: string | null, draft: StoredDraft): Edi
   if (!raw) return;
   try {
     const value = JSON.parse(raw);
-    if (!value || value.text !== draft.text || value.revision !== draft.revision || value.mode !== draft.mode || (value.imageFingerprint ?? draftImageFingerprint([])) !== draftImageFingerprint(draft.images ?? []) ||
+    if (!value || value.text !== draft.text || value.revision !== draft.revision || value.mode !== draft.mode || typeof value.imageFingerprint !== 'string' || value.imageFingerprint !== draftImageFingerprint(draft.images) ||
       !Number.isSafeInteger(value.start) || !Number.isSafeInteger(value.end) || value.start < 0 || value.end < value.start || value.end > draft.text.length ||
       !['forward', 'backward', 'none'].includes(value.direction) || !Number.isFinite(value.scrollTop) || value.scrollTop < 0 || !Number.isFinite(value.scrollLeft) || value.scrollLeft < 0) return;
-    return {...value, edit: 0, imageFingerprint: draftImageFingerprint(draft.images ?? [])};
+    return {...value, edit: 0};
   } catch { return; }
 }
 
