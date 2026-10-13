@@ -284,10 +284,20 @@ missing string tag, and an invalid initial hello before Chord dispatch.
 Chord validates its remaining frame protocol. Chord owns its hello, call, result, cancellation,
 subscription, and state protocol. No retired Pi service envelope is accepted.
 
-The default frame bound is 16 MiB of UTF-8 JSON, excluding LF. The default
-outgoing queue bound is 64 MiB of encoded bytes, including LF. Before receiver
-registration, the queue bound counts JSON frame bytes without LF. Both
-`connectTransport` and `createTransportServer` accept `maxFrameBytes` and
+The default frame bound is 16 MiB of UTF-8 JSON, excluding LF. `maxFrameBytes`
+bounds received frames. `maxSendFrameBytes` independently bounds outgoing JSON
+frames, excluding LF, and defaults to `maxFrameBytes`. A consumer with a complete
+socket-record budget of `N` bytes sets `maxSendFrameBytes: N - 1` to reserve LF.
+Independent bounds let clients accept large observations while limiting smaller
+requests without changing the wire contract.
+
+The default outgoing queue bound is 64 MiB of encoded bytes, including LF.
+Every socket write stays charged until its write callback completes, even when
+`socket.writableLength` is zero. This includes call and control frames; a
+successful callback releases exactly that write's encoded bytes. Write errors
+close the Link without proving non-admission. Before receiver registration, the
+queue bound counts JSON frame bytes without LF. Both `connectTransport` and
+`createTransportServer` accept `maxFrameBytes`, `maxSendFrameBytes`, and
 `maxQueueBytes`; the listener forwards its limits to each accepted Link.
 These are encoded-byte limits, not universal maxima on user messages, native
 values, or complete observations. JSON escaping changes the encoded size;
@@ -314,6 +324,23 @@ Link loss is a separate failure. Do not encode an error code in its message.
 The Unix Link closes on a received `bye` instead of forwarding it. Sending
 after close is a no-op. Serialization or queue overflow closes the Link and
 returns from its void `send()` without a throw or a partial offending frame.
+The public `UnixLink.onSendRefusal` event supplies that unsent frame and a
+`LocalTransportRefusal` before close notification. Its `code` is
+`"transport-local-refusal"`; its `reason` is `"frame-limit"`, `"queue-limit"`, or
+`"serialization"`. Its optional `encodedBytes` is the UTF-8 JSON size excluding
+LF, absent when serialization fails. Sending after close produces no refusal.
+
+`TransportClient.request` throws that exported class only for the exact
+Endpoint call that the adapter refused before socket write. Correlation uses
+the local invocation's async scope, the Endpoint hold, and the `request` call
+member, not cloned argument identity, application request IDs, error text, or
+another control frame. Concurrent already-written requests interrupted by that
+close retain link-loss errors: their admission and side effects remain uncertain.
+Incoming overflow, remote errors, cancellation, and synchronous or asynchronous
+socket write failures do not acquire the local-refusal classification. This
+allows each client to distinguish definite local non-admission from uncertain
+loss without replaying a mutation automatically.
+
 Close attempts a bounded `bye` and ends the socket. The listener refuses an
 existing path. It binds a private unpublished name and publishes a hard link
 without replacement, so Node's own close cannot unlink a substituted public

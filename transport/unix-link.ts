@@ -21,7 +21,26 @@ export interface UnixLinkOptions {
 	readonly expectedName?: string;
 	readonly expectedKind: "host" | "client";
 	readonly maxFrameBytes?: number;
+	readonly maxSendFrameBytes?: number;
 	readonly maxQueueBytes?: number;
+}
+
+export type LocalTransportRefusalReason = "frame-limit" | "queue-limit" | "serialization";
+/** The adapter refused this frame before any socket write. This is not peer admission evidence for other frames. */
+export class LocalTransportRefusal extends Error {
+	readonly code = "transport-local-refusal";
+	readonly reason: LocalTransportRefusalReason;
+	readonly encodedBytes: number | undefined;
+	constructor(reason: LocalTransportRefusalReason, message: string, encodedBytes?: number) {
+		super(message);
+		this.name = "LocalTransportRefusal";
+		this.reason = reason;
+		this.encodedBytes = encodedBytes;
+	}
+}
+
+export interface UnixLink extends Link {
+	onSendRefusal(handler: (frame: Frame, error: LocalTransportRefusal) => void): () => void;
 }
 
 function isFrameObject(raw: unknown): raw is Frame {
@@ -31,20 +50,23 @@ function matchingHello(frame: Frame, options: UnixLinkOptions): boolean {
 	return frame.t === "hello" && frame.kind === options.expectedKind && typeof frame.name === "string" && Number.isSafeInteger(frame.epoch) && frame.epoch >= 0 && (options.expectedName === undefined || frame.name === options.expectedName);
 }
 
-function unixLimits(options: Pick<UnixLinkOptions, "maxFrameBytes" | "maxQueueBytes">): { frameLimit: number; queueLimit: number } {
+function unixLimits(options: Pick<UnixLinkOptions, "maxFrameBytes" | "maxSendFrameBytes" | "maxQueueBytes">): { frameLimit: number; sendFrameLimit: number; queueLimit: number } {
 	const frameLimit = options.maxFrameBytes ?? UNIX_FRAME_BYTES;
+	const sendFrameLimit = options.maxSendFrameBytes ?? frameLimit;
 	const queueLimit = options.maxQueueBytes ?? UNIX_QUEUE_BYTES;
-	if (!Number.isSafeInteger(frameLimit) || frameLimit < 1 || !Number.isSafeInteger(queueLimit) || queueLimit < 1) throw new RangeError("Unix frame and queue bounds must be positive safe integers");
-	return { frameLimit, queueLimit };
+	if ([frameLimit, sendFrameLimit, queueLimit].some((limit) => !Number.isSafeInteger(limit) || limit < 1)) throw new RangeError("Unix frame and queue bounds must be positive safe integers");
+	return { frameLimit, sendFrameLimit, queueLimit };
 }
 
-export function createUnixLink(socket: Socket, options: UnixLinkOptions): Link {
-	const { frameLimit, queueLimit } = unixLimits(options);
+export function createUnixLink(socket: Socket, options: UnixLinkOptions): UnixLink {
+	const { frameLimit, sendFrameLimit, queueLimit } = unixLimits(options);
 	let closed = false;
 	let reason = "closed";
 	let greeted = false;
 	let receiver: ((frame: Frame) => void) | undefined;
 	const listeners = new Set<(reason: string) => void>();
+	const refusals = new Set<(frame: Frame, error: LocalTransportRefusal) => void>();
+	let pendingBytes = 0;
 	const early: { frame: Frame; bytes: number }[] = [];
 	let earlyBytes = 0;
 	let input = Buffer.alloc(0);
@@ -67,6 +89,23 @@ export function createUnixLink(socket: Socket, options: UnixLinkOptions): Link {
 		} else socket.destroy();
 		for (const listener of listeners) { try { listener(message); } catch { /* Each close listener owns its errors. */ } }
 		listeners.clear();
+		refusals.clear();
+	};
+	const refuse = (frame: Frame, error: LocalTransportRefusal): void => {
+		for (const listener of refusals) { try { listener(frame, error); } catch { /* Refusal listeners do not own link cleanup. */ } }
+		finish(error.message);
+	};
+	const write = (encoded: string, bytes: number): void => {
+		pendingBytes += bytes;
+		let completed = false;
+		try {
+			socket.write(encoded, (error) => {
+				if (completed) return;
+				completed = true;
+				pendingBytes -= bytes;
+				if (error) finish(error.message);
+			});
+		} catch { finish("Unix socket write failed"); }
 	};
 	const deliver = (bytes: Buffer): void => {
 		let raw: unknown;
@@ -111,14 +150,15 @@ export function createUnixLink(socket: Socket, options: UnixLinkOptions): Link {
 		get closed() { return closed; },
 		send(frame) {
 			if (closed) return;
-			try {
-				const encoded = JSON.stringify(frame);
-				const bytes = Buffer.byteLength(encoded, "utf8");
-				if (bytes > frameLimit) { finish("Unix frame exceeds its byte bound"); return; }
-				if (socket.writableLength + bytes + 1 > queueLimit) { finish("Unix write queue exceeds its byte bound"); return; }
-				socket.write(`${encoded}\n`);
-			} catch { finish("Unix frame serialization failed"); }
+			let encoded: string;
+			try { encoded = JSON.stringify(frame); if (typeof encoded !== "string") throw new TypeError("No encoded frame"); }
+			catch { refuse(frame, new LocalTransportRefusal("serialization", "Unix frame serialization failed")); return; }
+			const bytes = Buffer.byteLength(encoded, "utf8");
+			if (bytes > sendFrameLimit) { refuse(frame, new LocalTransportRefusal("frame-limit", "Unix frame exceeds its byte bound", bytes)); return; }
+			if (pendingBytes + bytes + 1 > queueLimit) { refuse(frame, new LocalTransportRefusal("queue-limit", "Unix write queue exceeds its byte bound", bytes)); return; }
+			write(`${encoded}\n`, bytes + 1);
 		},
+		onSendRefusal(handler) { if (!closed) refusals.add(handler); return () => { refusals.delete(handler); }; },
 		receive(handler) {
 			receiver = handler;
 			for (const item of early.splice(0)) { earlyBytes -= item.bytes; if (!closed) handler(item.frame); }
@@ -128,13 +168,14 @@ export function createUnixLink(socket: Socket, options: UnixLinkOptions): Link {
 			if (closed) return;
 			const bye = `${JSON.stringify({ t: "bye", reason: message })}\n`;
 			const bytes = Buffer.byteLength(bye);
-			if (bytes - 1 > frameLimit || socket.writableLength + bytes > queueLimit) { finish(message); return; }
-			try { socket.write(bye); finish(message, true); } catch { finish(message); }
+			if (bytes - 1 > sendFrameLimit || pendingBytes + bytes > queueLimit) { finish(message); return; }
+			write(bye, bytes);
+			finish(message, true);
 		},
 	};
 }
 
-export async function connectUnixLink(path: string, options: UnixLinkOptions & { readonly signal?: AbortSignal }): Promise<Link> {
+export async function connectUnixLink(path: string, options: UnixLinkOptions & { readonly signal?: AbortSignal }): Promise<UnixLink> {
 	options.signal?.throwIfAborted();
 	unixLimits(options);
 	const socket = createConnection({ path });
@@ -160,7 +201,7 @@ function privateDirectory(path: string): void {
 	chmodSync(path, 0o700);
 }
 
-export function listenUnixLinks(path: string, onLink: (link: Link) => void, options: Pick<UnixLinkOptions, "maxFrameBytes" | "maxQueueBytes"> = {}): { start(): Promise<void>; close(): Promise<void> } {
+export function listenUnixLinks(path: string, onLink: (link: Link) => void, options: Pick<UnixLinkOptions, "maxFrameBytes" | "maxSendFrameBytes" | "maxQueueBytes"> = {}): { start(): Promise<void>; close(): Promise<void> } {
 	unixLimits(options);
 	const links = new Set<Link>();
 	let identity: { dev: number; ino: number } | undefined;

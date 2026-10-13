@@ -1,8 +1,9 @@
 /** Chord contracts for local host operations and connection-owned state feeds. */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { ChordError, cell, createHost, invalid, isChordError, isJsonValue, method, remote, resource, type Handle, type Host, type Link } from "@earendil-works/chord";
+import { ChordError, cell, createHost, invalid, isChordError, isJsonValue, method, remote, resource, type Handle, type Host } from "@earendil-works/chord";
 import { Type } from "typebox";
-import { connectUnixLink, listenUnixLinks } from "./unix-link.ts";
+import { connectUnixLink, listenUnixLinks, type LocalTransportRefusal, type UnixLink } from "./unix-link.ts";
 
 export const Endpoint = remote("pi.agent.endpoint", {
 	version: 1,
@@ -36,6 +37,7 @@ export interface TransportServerOptions {
 	readonly serverId: string;
 	readonly path: string;
 	readonly maxFrameBytes?: number;
+	readonly maxSendFrameBytes?: number;
 	readonly maxQueueBytes?: number;
 	readonly request: (request: TransportRequest, peerId: string, signal: AbortSignal) => Promise<unknown>;
 	readonly subscribe?: (kind: FeedKind, token: string | undefined, peerId: string, publish: (value: unknown) => void) => Promise<{ value: unknown; close: () => void }> | { value: unknown; close: () => void };
@@ -111,29 +113,42 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	});
 }
 
-export async function connectTransport(options: { readonly serverId: string; readonly path: string; readonly timeoutMs?: number; readonly maxFrameBytes?: number; readonly maxQueueBytes?: number }): Promise<TransportClient> {
+export async function connectTransport(options: { readonly serverId: string; readonly path: string; readonly timeoutMs?: number; readonly maxFrameBytes?: number; readonly maxSendFrameBytes?: number; readonly maxQueueBytes?: number }): Promise<TransportClient> {
 	const deadline = AbortSignal.timeout(options.timeoutMs ?? 5000);
-	const link = await connectUnixLink(options.path, { expectedName: options.serverId, expectedKind: "host", signal: deadline, maxFrameBytes: options.maxFrameBytes, maxQueueBytes: options.maxQueueBytes });
+	const link = await connectUnixLink(options.path, { expectedName: options.serverId, expectedKind: "host", signal: deadline, maxFrameBytes: options.maxFrameBytes, maxSendFrameBytes: options.maxSendFrameBytes, maxQueueBytes: options.maxQueueBytes });
+	let endpointHold: number | undefined;
+	const send = link.send.bind(link);
+	link.send = (frame) => {
+		if (frame.t === "hold" && frame.at === options.serverId && frame.token.name === Endpoint.name) endpointHold = frame.id;
+		send(frame);
+	};
 	const host = createHost({ kind: "client", upstream: link });
 	const endpoint = host.get(Endpoint, { serverId: options.serverId }, { at: options.serverId });
 	const disconnected = new AbortController();
 	link.onClose((reason) => disconnected.abort(new Error(`The host link closed during connection: ${reason}`)));
 	try { await abortable(endpoint.ready, AbortSignal.any([deadline, disconnected.signal])); }
 	catch (error) { link.close("identity handshake failed"); await host.close(); throw error; }
-	return new ConnectedTransport(host, link, endpoint, options.serverId);
+	return new ConnectedTransport(host, link, endpoint, options.serverId, () => endpointHold);
 }
 
 class ConnectedTransport implements TransportClient {
 	private readonly host: Host;
-	private readonly link: Link;
+	private readonly link: UnixLink;
+	private readonly attempts = new AsyncLocalStorage<{ refusal?: LocalTransportRefusal }>();
 	private readonly endpoint: Handle<typeof Endpoint>;
 	private readonly serverId: string;
 	private readonly closedListeners = new Set<(reason: string) => void>();
 	private reason = "closed";
 	private readonly disconnected = new AbortController();
 	private closing: Promise<void> | undefined;
-	constructor(host: Host, link: Link, endpoint: Handle<typeof Endpoint>, serverId: string) {
+	constructor(host: Host, link: UnixLink, endpoint: Handle<typeof Endpoint>, serverId: string, endpointHold: () => number | undefined) {
 		this.host = host; this.link = link; this.endpoint = endpoint; this.serverId = serverId;
+		link.onSendRefusal((frame, error) => {
+			const attempt = this.attempts.getStore();
+			// Each scope invokes exactly one Endpoint request. Chord clones args before send;
+			// application request IDs and payload identity do not identify that invocation.
+			if (attempt && frame.t === "call" && frame.hold === endpointHold() && frame.member === "request") attempt.refusal = error;
+		});
 		link.onClose((reason) => {
 			this.reason = reason;
 			this.disconnected.abort(new ChordError("unavailable", reason, { reason: "transport" }));
@@ -149,8 +164,13 @@ class ConnectedTransport implements TransportClient {
 	async request(request: TransportRequest, signal?: AbortSignal): Promise<unknown> {
 		if (this.link.closed) throw new Error("The host link is closed");
 		jsonValue(request);
-		const result = await this.host.root((ctx) => this.endpoint.request(request, ctx), signal ? { signal } : undefined);
-		return result.value;
+		const attempt: { refusal?: LocalTransportRefusal } = {};
+		return this.attempts.run(attempt, async () => {
+			try {
+				const result = await this.host.root((ctx) => this.endpoint.request(request, ctx), signal ? { signal } : undefined);
+				return result.value;
+			} catch (error) { throw attempt.refusal ?? error; }
+		});
 	}
 	async subscribe(kind: FeedKind, token: string | undefined, listener: (value: unknown) => void, signal?: AbortSignal): Promise<TransportSubscription> {
 		if (this.link.closed) throw new Error("The host link is closed");
