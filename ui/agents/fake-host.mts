@@ -2,17 +2,8 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	decodeServiceControlCall,
-	type Context,
-	type JsonValue,
-	RemoteServiceError,
-	type ServiceCall,
-	type ServiceProviderUpdate,
-} from "@earendil-works/chord";
-import { Server, type ServerHost } from "@earendil-works/pi-server";
-type ByteConnection = Parameters<Server["accept"]>[0];
-import { createUnixListener } from "@earendil-works/pi-server/unix";
+import { ChordError, type JsonValue } from "@earendil-works/chord";
+import { createTransportServer, type FeedKind, type TransportRequest, type TransportServer } from "../../transport/index.ts";
 
 export const STORAGE = "00000000-0000-4000-8000-000000000001";
 export const CHILD = `${STORAGE}:2`;
@@ -22,7 +13,8 @@ export interface FakeCall {
 	member: string;
 	params: JsonObject | null;
 	wireRequestId: string;
-	expected: JsonValue;
+	expected: unknown;
+	signal: AbortSignal;
 }
 export function deferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
@@ -113,44 +105,201 @@ export async function descriptor(): Promise<JsonObject> {
 		await readFile(new URL("../../node_modules/@earendil-works/pi-durable/package.json", import.meta.url), "utf8"),
 	);
 	const durable: string = metadata.version;
-	const operations: JsonObject = {};
-	for (const member of ["abort", "observe-close", "changes"]) {
-		operations[member] = { request: `${member}/1.0.0`, response: `${member}/1.0.0` };
-	}
-	for (const member of ["snapshot", "observe-open", "observe-frame"]) {
-		operations[member] = { request: `${member}/1.0.0`, response: `${member}/2.0.0`, durable };
-	}
-	operations["task-submit"] = { request: "task-submit/1.0.0", response: "task-submit/1.2.0" };
-	operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
-	operations.inspect = {
-		request: "inspect/1.1.0",
-		response: "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a",
-		durable,
-	};
-	operations.dashboard = {
-		request: "dashboard/1.0.0",
-		response: "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241",
-	};
 	return {
-		format: "pi.agent.contract/1",
-		release: "1.0.0",
-		upstream: { codingAgent: "1.1.0", durable },
-		requires: { codingAgent: "1.0.0", durable: "1.0.0" },
-		operations,
-	};
+	"format": "pi.agent.contract/1",
+	"release": "1.0.0",
+	"upstream": {
+		"codingAgent": "1.2.0",
+		"durable": durable
+	},
+	"requires": {
+		"codingAgent": "1.2.0",
+		"durable": durable
+	},
+	"operations": {
+		"close": {
+			"request": "close/1.0.0",
+			"response": "close/1.0.0"
+		},
+		"recovery-state": {
+			"request": "recovery-state/1.0.0",
+			"response": "recovery-state/1.1.0"
+		},
+		"submit": {
+			"request": "submit/1.3.0",
+			"response": "submit/1.1.0"
+		},
+		"passive-submit": {
+			"request": "passive-submit/1.1.0",
+			"response": "passive-submit/1.0.0"
+		},
+		"spawn": {
+			"request": "spawn/2.0.0",
+			"response": "spawn/2.0.0"
+		},
+		"place": {
+			"request": "place/2.0.0",
+			"response": "place/2.0.0"
+		},
+		"attach": {
+			"request": "attach/1.0.0",
+			"response": "attach/1.0.0"
+		},
+		"receipts": {
+			"request": "receipts/1.1.0",
+			"response": "receipts/1.2.0",
+			"durable": durable
+		},
+		"report": {
+			"request": "report/1.0.0",
+			"response": "report/1.0.0"
+		},
+		"acknowledge": {
+			"request": "acknowledge/1.0.0",
+			"response": "acknowledge/1.0.0"
+		},
+		"inspect": {
+			"request": "inspect/1.1.0",
+			"response": "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b",
+			"durable": durable
+		},
+		"status": {
+			"request": "status/1.0.0",
+			"response": "294bb95f3d60b9c9ae2976f291e4f8d41c11d00ec517c1aebcfd9c7af40a3087",
+			"durable": durable
+		},
+		"list": {
+			"request": "list/1.0.0",
+			"response": "76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600"
+		},
+		"fork": {
+			"request": "fork/1.0.0",
+			"response": "fork/1.0.0",
+			"durable": durable
+		},
+		"rewind": {
+			"request": "rewind/1.1.0",
+			"response": "rewind/1.0.0",
+			"durable": durable
+		},
+		"abort": {
+			"request": "abort/1.0.0",
+			"response": "abort/1.0.0"
+		},
+		"compact": {
+			"request": "compact/1.0.0",
+			"response": "compact/1.0.0",
+			"durable": durable
+		},
+		"configure": {
+			"request": "configure/1.3.0",
+			"response": "configure/1.3.0"
+		},
+		"command": {
+			"request": "command/1.1.0",
+			"response": "command/1.0.0",
+			"durable": durable
+		},
+		"reset": {
+			"request": "reset/1.0.0",
+			"response": "reset/1.0.0"
+		},
+		"timer-schedule": {
+			"request": "timer-schedule/1.1.0",
+			"response": "timer-schedule/1.0.0"
+		},
+		"timer-list": {
+			"request": "timer-list/1.0.0",
+			"response": "timer-list/1.0.0"
+		},
+		"timer-cancel": {
+			"request": "timer-cancel/1.0.0",
+			"response": "timer-cancel/1.0.0"
+		},
+		"dashboard": {
+			"request": "dashboard/1.0.0",
+			"response": "a89f98f3eb28c78f115c0010581107073600bfb9ec44934ad622aeb5d1cffcd7"
+		},
+		"snapshot": {
+			"request": "snapshot/1.0.0",
+			"response": "snapshot/2.0.0",
+			"durable": durable
+		},
+		"observe-open": {
+			"request": "observe-open/1.0.0",
+			"response": "observe-open/2.0.0",
+			"durable": durable
+		},
+		"observe-frame": {
+			"request": "observe-frame/1.0.0",
+			"response": "observe-frame/2.0.0",
+			"durable": durable
+		},
+		"observe-close": {
+			"request": "observe-close/1.0.0",
+			"response": "observe-close/1.0.0"
+		},
+		"changes": {
+			"request": "changes/1.0.0",
+			"response": "changes/1.0.0"
+		},
+		"collaboration-list": {
+			"request": "collaboration-list/1.0.0",
+			"response": "collaboration-list/1.0.0"
+		},
+		"collaboration-read": {
+			"request": "collaboration-read/1.0.0",
+			"response": "collaboration-read/1.0.0"
+		},
+		"collaboration-mutate": {
+			"request": "collaboration-mutate/1.0.0",
+			"response": "collaboration-mutate/1.0.0"
+		},
+		"profile-read": {
+			"request": "profile-read/1.0.0",
+			"response": "b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889"
+		},
+		"profile-update": {
+			"request": "profile-update/1.0.0",
+			"response": "7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4"
+		},
+		"profile-list": {
+			"request": "profile-list/1.0.0",
+			"response": "0eb5c60290d491535a1dd158e5d5ed4432eb8f89fe26a496a395e08b58ff4db4"
+		},
+		"resolve-agent": {
+			"request": "resolve-agent/2.0.0",
+			"response": "resolve-agent/2.0.0"
+		},
+		"task-submit": {
+			"request": "task-submit/1.0.0",
+			"response": "task-submit/1.2.0"
+		},
+		"await-state": {
+			"request": "await-state/1.1.0",
+			"response": "await-state/1.1.0"
+		},
+		"await-release": {
+			"request": "await-release/1.0.0",
+			"response": "await-release/1.0.0"
+		}
+	}
+};
 }
 interface OwnedObservation {
 	frame: JsonObject;
 }
 interface Subscription {
-	token: string;
-	publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => unknown;
-	context: Context;
+	kind: FeedKind;
+	token?: string;
+	publish: (value: unknown) => void;
 }
 interface Peer {
 	id: number;
+	key: string;
 	tokens: Map<string, OwnedObservation>;
-	subscriptions: Map<string, Subscription>;
+	subscriptions: Set<Subscription>;
+	releases: Map<string, Promise<void>>;
 }
 export interface FakeHostOptions {
 	/** An injected socket directory remains caller-owned; close removes only this host's private directory. */
@@ -161,6 +310,10 @@ export interface FakeHostOptions {
 	subscriptionFrame?: (identity: string) => JsonObject;
 	subscriptionGate?: Promise<void>;
 	onSubscribe?: () => void;
+	observationReleaseGate?: Promise<void>;
+	onObservationRelease?: () => void;
+	maxFrameBytes?: number;
+	maxQueueBytes?: number;
 	handler?: (call: FakeCall) => JsonValue | undefined | Promise<JsonValue | undefined>;
 }
 
@@ -174,12 +327,13 @@ export class FakeHost {
 	readonly directory: string;
 	readonly contract: JsonValue;
 	readonly #options: FakeHostOptions;
-	readonly #peers = new Map<number, Peer>();
-	readonly #connections = new Set<ByteConnection>();
+	readonly #peers = new Map<string, Peer>();
 	readonly #waiters: { predicate: (call: FakeCall) => boolean; resolve: (call: FakeCall) => void }[] = [];
 	readonly #releaseWaiters: { count: number; resolve: () => void }[] = [];
-	readonly #server: Server;
+	#server: TransportServer;
 	#released = 0;
+	#revision = 0;
+	#nextPeer = 0;
 	#closed = false;
 
 	private constructor(directory: string, contract: JsonValue, options: FakeHostOptions) {
@@ -191,36 +345,14 @@ export class FakeHost {
 			serverId: this.serverId,
 			socketPath: options.endpoint?.socketPath ?? join(directory, "host.sock"),
 		};
-		const unix = createUnixListener({ path: this.endpoint.socketPath, mode: 0o600 });
-		const host: ServerHost = {
-			serverServices: { attachClient: () => this.#attach() },
-			resolveSession: async () => {
-				throw new Error("Fake host has no native sessions");
-			},
-			openSession: async () => {
-				throw new Error("Fake host never opens a runtime");
-			},
-		};
-		this.#server = new Server(host, {
-			serverId: this.serverId,
-			onError: (error) => this.errors.push(error),
-			listeners: [
-				{
-					start: (accept) =>
-						unix.start((connection) => {
-							this.#connections.add(connection);
-							const handler = accept(connection);
-							return {
-								...handler,
-								onClose: () => {
-									this.#connections.delete(connection);
-									handler.onClose();
-								},
-							};
-						}),
-					close: () => unix.close(),
-				},
-			],
+		this.#server = this.#createServer();
+	}
+	#createServer(): TransportServer {
+		return createTransportServer({ serverId: this.serverId, path: this.endpoint.socketPath,
+			maxFrameBytes: this.#options.maxFrameBytes, maxQueueBytes: this.#options.maxQueueBytes,
+			request: (request, key, signal) => this.#invoke(this.#peer(key), request, signal),
+			subscribe: (kind, token, key, publish) => this.#subscribe(this.#peer(key), kind, token, publish),
+			release: key => { const peer = this.#peers.get(key); if (peer) this.#release(peer); },
 		});
 	}
 	static async start(options: FakeHostOptions = {}): Promise<FakeHost> {
@@ -256,7 +388,10 @@ export class FakeHost {
 		return new Promise((resolve) => this.#releaseWaiters.push({ count, resolve }));
 	}
 	async disconnect(): Promise<void> {
-		await Promise.all([...this.#connections].map((connection) => connection.close()));
+		await this.#server.close();
+		if (this.#closed) return;
+		this.#server = this.#createServer();
+		await this.#server.start();
 	}
 	async close(): Promise<void> {
 		if (this.#closed) return;
@@ -268,96 +403,87 @@ export class FakeHost {
 		}
 	}
 	async publish(value: JsonObject): Promise<void> {
-		const pending: unknown[] = [];
 		for (const peer of this.#peers.values()) {
-			for (const [id, subscription] of peer.subscriptions) {
-				const observation = peer.tokens.get(subscription.token);
-				if (!observation || observation.frame.conversationId !== value.conversationId) continue;
-				observation.frame = value;
-				pending.push(
-					subscription.publish(
-						id,
-						{ type: "state", member: "frame", sequence: Number(value.revision), ops: [["r", value]] },
-						subscription.context,
-					),
-				);
+			for (const observation of peer.tokens.values()) {
+				if (observation.frame.conversationId === value.conversationId) observation.frame = value;
+			}
+			for (const subscription of peer.subscriptions) {
+				const observation = subscription.token === undefined ? undefined : peer.tokens.get(subscription.token);
+				if (observation?.frame.conversationId === value.conversationId) subscription.publish(value);
 			}
 		}
-		await Promise.all(pending);
 	}
-	#attach() {
-		const id = this.lifecycle.filter((event) => event.kind === "connect").length + 1;
-		const peer: Peer = { id, tokens: new Map(), subscriptions: new Map() };
-		this.#peers.set(id, peer);
-		this.lifecycle.push({ kind: "connect", connection: id });
-		return {
-			invokeService: (call: ServiceCall, publish: Subscription["publish"], context: Context) =>
-				this.#invoke(peer, call, publish, context),
-			release: () => this.#release(peer),
-		};
-	}
-	async #invoke(peer: Peer, call: ServiceCall, publish: Subscription["publish"], context: Context): Promise<JsonValue> {
-		const control = decodeServiceControlCall(call);
-		if (control?.type === "unsubscribe") {
-			peer.subscriptions.delete(control.subscriptionId);
-			this.lifecycle.push({ kind: "unsubscribe", connection: peer.id });
-			return null;
+	publishChanges(revision = this.#revision + 1): void {
+		this.#revision = revision;
+		for (const peer of this.#peers.values()) for (const subscription of peer.subscriptions) {
+			if (subscription.kind === "changes") subscription.publish({ revision });
 		}
-		if (control?.type === "subscribe") return this.#subscribe(peer, control, publish, context);
-		if (call.serviceId !== "pi.agent.host") throw new RemoteServiceError("service_invalid_value", "Unknown service");
-		if (call.member === "runtime-contract") return this.contract;
-		const captured = this.#capture(peer, call);
+	}
+	unavailable(token: string): void {
+		for (const peer of this.#peers.values()) for (const subscription of peer.subscriptions) {
+			if (subscription.token === token) subscription.publish(null);
+		}
+	}
+	#peer(key: string): Peer {
+		const existing = this.#peers.get(key);
+		if (existing) return existing;
+		const peer: Peer = { id: ++this.#nextPeer, key, tokens: new Map(), subscriptions: new Set(), releases: new Map() };
+		this.#peers.set(key, peer);
+		this.lifecycle.push({ kind: "connect", connection: peer.id });
+		return peer;
+	}
+	async #invoke(peer: Peer, request: TransportRequest, signal: AbortSignal): Promise<unknown> {
+		if (request.method === "runtime-contract") return this.contract;
+		const captured = this.#capture(peer, request, signal);
 		const override = await this.#options.handler?.(captured);
+		if (captured.member === "observe-close") await peer.releases.get(String(captured.params?.token));
 		return override !== undefined ? override : this.#operate(peer, captured);
 	}
-	async #subscribe(
-		peer: Peer,
-		control: { serviceId: string; subscriptionId: string },
-		publish: Subscription["publish"],
-		context: Context,
-	): Promise<JsonValue> {
-		const token = control.serviceId.replace("pi.agent.host.observe:", "");
-		const owned = peer.tokens.get(token);
-		if (!owned)
-			throw new RemoteServiceError("service_invalid_value", "Observation token belongs to another connection");
-		const identity = (owned.frame.status as JsonObject).identity as string;
-		const baseline = this.#options.subscriptionFrame?.(identity) ?? owned.frame;
-		owned.frame = baseline;
-		peer.subscriptions.set(control.subscriptionId, { token, publish, context });
-		this.lifecycle.push({ kind: "subscribe", connection: peer.id, token });
+	async #subscribe(peer: Peer, kind: FeedKind, token: string | undefined, publish: Subscription["publish"]): Promise<{ value: unknown; close: () => void }> {
+		let baseline: unknown = { revision: this.#revision };
+		if (kind === "observation") {
+			const owned = token === undefined ? undefined : peer.tokens.get(token);
+			if (!owned) throw new ChordError("invalid", "Observation token belongs to another connection", { reason: "token" });
+			const identity = (owned.frame.status as JsonObject).identity as string;
+			baseline = this.#options.subscriptionFrame?.(identity) ?? owned.frame;
+			owned.frame = baseline as JsonObject;
+		}
+		const subscription: Subscription = { kind, ...(token === undefined ? {} : { token }), publish };
+		peer.subscriptions.add(subscription);
+		this.lifecycle.push({ kind: "subscribe", connection: peer.id, ...(token === undefined ? {} : { token }) });
 		this.#options.onSubscribe?.();
 		await this.#options.subscriptionGate;
-		return {
-			serviceId: "pi.agent.host.observe",
-			mode: "singleton",
-			instances: [
-				{
-					members: [
-						{
-							name: "frame",
-							kind: "state",
-							sequence: Number(baseline.revision),
-							ops: [["r", baseline]],
-						},
-					],
-				},
-			],
-		};
+		return { value: baseline, close: () => {
+			if (!peer.subscriptions.delete(subscription)) return;
+			this.lifecycle.push({ kind: "unsubscribe", connection: peer.id });
+			if (token !== undefined) void this.#releaseObservation(peer, token).catch(error => this.errors.push(error instanceof Error ? error : new Error(String(error))));
+		} };
 	}
-	#capture(peer: Peer, call: ServiceCall): FakeCall {
-		const [params, wireRequestId, expected] = call.args ?? [];
+	#releaseObservation(peer: Peer, token: string): Promise<void> {
+		const previous = peer.releases.get(token);
+		if (previous) return previous;
+		const release = (async () => {
+			this.#options.onObservationRelease?.();
+			await this.#options.observationReleaseGate;
+			peer.tokens.delete(token);
+		})().finally(() => peer.releases.delete(token));
+		peer.releases.set(token, release);
+		return release;
+	}
+	#capture(peer: Peer, request: TransportRequest, signal: AbortSignal): FakeCall {
 		const advertised = (this.contract as JsonObject).operations as JsonObject;
-		const local = advertised?.[call.member] as JsonObject | undefined;
-		const supplied = expected as JsonObject | undefined;
+		const local = advertised?.[request.method] as JsonObject | undefined;
+		const supplied = request.contract as JsonObject | undefined;
 		if (!local || !supplied || ["request", "response", "durable"].some((key) => supplied[key] !== local[key])) {
-			throw new RemoteServiceError("service_invalid_value", "Operation contract mismatch");
+			throw new ChordError("unavailable", "Operation contract mismatch", { reason: "version" });
 		}
 		const captured: FakeCall = {
 			connection: peer.id,
-			member: call.member,
-			params: params as JsonObject | null,
-			wireRequestId: String(wireRequestId),
-			expected,
+			member: request.method,
+			params: request.params as JsonObject | null,
+			wireRequestId: String(request.requestId),
+			expected: request.contract,
+			signal,
 		};
 		this.calls.push(captured);
 		for (const waiter of [...this.#waiters]) {
@@ -376,6 +502,9 @@ export class FakeHost {
 				return this.#open(peer, input);
 			case "observe-close": {
 				const token = String(input.token);
+				for (const other of this.#peers.values()) {
+					if (other !== peer && other.tokens.has(token)) throw new ChordError("invalid", "Observation token belongs to another connection", { reason: "token" });
+				}
 				const closed = peer.tokens.delete(token);
 				this.lifecycle.push({ kind: "close", connection: peer.id, token });
 				return { closed };
@@ -397,7 +526,8 @@ export class FakeHost {
 	#open(peer: Peer, input: JsonObject): JsonValue {
 		const token = String(input.token);
 		const value = this.#options.openFrame?.(String(input.sessionId)) ?? frame(1, String(input.sessionId));
-		if (peer.tokens.has(token)) throw new RemoteServiceError("service_invalid_value", "Duplicate observation token");
+		if (!this.#peers.has(peer.key)) throw new ChordError("unavailable", "Observation connection closed", { reason: "transport" });
+		if (peer.tokens.has(token)) throw new ChordError("invalid", "Duplicate observation token", { reason: "token" });
 		peer.tokens.set(token, { frame: value });
 		this.lifecycle.push({ kind: "open", connection: peer.id, token });
 		return this.#options.openResult?.(token, value) ?? { token, frame: value };
@@ -405,7 +535,7 @@ export class FakeHost {
 	#release(peer: Peer): void {
 		peer.tokens.clear();
 		peer.subscriptions.clear();
-		this.#peers.delete(peer.id);
+		this.#peers.delete(peer.key);
 		this.lifecycle.push({ kind: "release", connection: peer.id });
 		this.#released++;
 		for (const waiter of [...this.#releaseWaiters]) {

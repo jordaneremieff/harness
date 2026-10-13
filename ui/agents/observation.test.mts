@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setImmediate as turn } from "node:timers/promises";
 import type { JsonValue } from "@earendil-works/chord";
-import { HostLink } from "./client.mts";
+import { AgentError, HostLink } from "./client.mts";
 import type { ConversationFrame } from "./contract.mts";
 import { CHILD, deferred, descriptor, FakeHost, frame, snapshot, STORAGE } from "./fake-host.mts";
 import { ObservationManager, type AvailabilityState } from "./observation.mts";
@@ -270,19 +270,20 @@ test("malformed open receipt closes the original owned token", async (t) => {
 });
 
 function memoryLink() {
-  let connected = true; let closes = 0; let failClose = false;
+  let connected = true; let closes = 0; let failClose = false; let failDispose = false;
   const subscriptions: {identity:string; receive:(value:ConversationFrame)=>void; fail:(error:Error)=>void; disposed:boolean}[] = [];
+  const lifecycle:string[]=[];
   const calls: {member:string; params:Record<string,unknown>}[] = [];
   const link = {
     get connected() {return connected;}, require: () => {}, capabilities: () => ({snapshot:true,'observe-open':true,'observe-frame':true,'observe-close':true}),
     onDisconnect: () => () => {},
-    request: async (member:string, params:Record<string,unknown>) => {calls.push({member,params}); if(member==='observe-close' && failClose) throw Error('Uncertain close'); return {};},
+    request: async (member:string, params:Record<string,unknown>) => {calls.push({member,params}); lifecycle.push(member); if(member==='observe-close' && failClose) throw Error('Invalid close response'); return {};},
     subscribeObservation: async (_token:string, receive:(value:ConversationFrame)=>void, identity:string, fail:(error:Error)=>void) => {
       const subscription = {identity,receive,fail,disposed:false}; subscriptions.push(subscription);
-      return {baseline:frame(1,identity) as unknown as ConversationFrame,start:()=>{},dispose:async()=>{subscription.disposed=true;}};
+      return {baseline:frame(1,identity) as unknown as ConversationFrame,start:()=>{},dispose:async()=>{lifecycle.push('release');if(failDispose) throw Error('Release failed');subscription.disposed=true;}};
     }, close: async () => {closes++; connected=false;},
   } as unknown as HostLink;
-  return {link,calls,subscriptions,get closes(){return closes;},set failClose(value:boolean){failClose=value;}};
+  return {link,calls,subscriptions,lifecycle,get closes(){return closes;},set failClose(value:boolean){failClose=value;},set failDispose(value:boolean){failDispose=value;}};
 }
 test('pure concurrent observations isolate targets, workspace lifetimes, reconnect and late callbacks', async () => {
   const memory = memoryLink(); const seen:Seen[]=[]; const states:{identity:string;epoch:number;state:AvailabilityState}[]=[];
@@ -329,14 +330,114 @@ test('pure concurrent late native open closes its original token after early dis
   assert.equal(closeCalls,1);release.resolve();await setup;await turn();
   assert.equal(closeCalls,2);assert.equal(tokens.size,0);assert.equal(seen,0);assert.equal(memory.subscriptions.length,0);await manager.close();
 });
-test('pure concurrent failed token cleanup preserves shared links and reserves bounded capacity', async () => {
-  const memory=memoryLink(); const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+test('manager close reports failed cleanup after a late native open', async context => {
+  const memory=memoryLink();const entered=deferred<void>();const opened=deferred<void>();const earlyClose=deferred<void>();let closes=0;
+  context.mock.method(memory.link,'request',async (member:string)=> {
+    if(member==='observe-open') {entered.resolve();await opened.promise;}
+    if(member==='observe-close') {
+      if(++closes===1) {earlyClose.resolve();return {closed:false};}
+      throw Error('Late token close failed');
+    }
+    return {};
+  });
+  const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  const setup=manager.select('w',STORAGE,1);await entered.promise;
+  const setupRejected=assert.rejects(setup,/Late token close failed/);
+  const closed=manager.close();const closeRejected=assert.rejects(closed,/Late token close failed/);
+  await earlyClose.promise;opened.resolve();await setupRejected;await closeRejected;
+  assert.equal(closes,2);assert.equal(memory.subscriptions.length,0);
+});
+for(const rejected of [false,true]) test(`manager close joins ${rejected?'rejected':'acknowledged'} cleanup after hide`, async context => {
+  const memory=memoryLink();const entered=deferred<void>();const release=deferred<void>();let closeDone=false;
+  context.mock.method(memory.link,'request',async (member:string)=> {
+    if(member==='observe-close') {
+      entered.resolve();await release.promise;
+      if(rejected) throw Error('Hidden token close failed');
+      return {closed:false};
+    }
+    return {};
+  });
+  const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  await manager.select('w',STORAGE,1);const hidden=manager.hide('w');await entered.promise;
+  const closed=manager.close();void closed.then(()=>{closeDone=true;},()=>{closeDone=true;});
+  const outcomes=Promise.allSettled([hidden,closed]);
   try {
-    await manager.select('healthy',STORAGE,1); memory.failClose=true;
-    for(let i=0;i<15;i++) {await manager.select(`retired${i}`,CHILD,i+2); await manager.hide(`retired${i}`,CHILD);}
-    assert.equal(memory.closes,0); assert.equal(memory.link.connected,true); assert.deepEqual(manager.identities(),[STORAGE]);
-    await assert.rejects(manager.select('full',CHILD,17),{code:'capacity'});
-    await memory.link.close(); memory.failClose=false;
-    await manager.select('fresh',CHILD,18);
+    await turn();assert.equal(closeDone,false);assert.equal(memory.subscriptions[0].disposed,true);
+    release.resolve();const results=await outcomes;
+    assert.deepEqual(results.map(result=>result.status),rejected?['rejected','rejected']:['fulfilled','fulfilled']);
+    if(rejected) for(const result of results) assert.ok(result.status==='rejected' && /Hidden token close failed/.test(String(result.reason)));
+  } finally {release.resolve();await outcomes;}
+});
+for(const code of ['host_unavailable','protocol_error']) test(`late token cleanup distinguishes disconnected ${code} from native refusal`, async context => {
+  const memory=memoryLink();const entered=deferred<void>();const opened=deferred<void>();const lateClose=deferred<void>();const cancelled=deferred<void>();let closes=0;
+  context.mock.method(memory.link,'request',async(member:string)=>{
+    if(member==='observe-open') {entered.resolve();await opened.promise;}
+    if(member==='observe-close' && ++closes===2) {lateClose.resolve();await cancelled.promise;throw new AgentError(code,'Late close rejected');}
+    return {closed:false};
+  });
+  const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  const setup=manager.select('w',STORAGE,1);await entered.promise;const setupOutcome=Promise.allSettled([setup]);
+  const closed=manager.close(async()=>{opened.resolve();await lateClose.promise;await memory.link.close();cancelled.resolve();});
+  const closeOutcome=Promise.allSettled([closed]);const results=[...(await setupOutcome),...(await closeOutcome)];
+  assert.deepEqual(results.map(result=>result.status),code==='host_unavailable'?['fulfilled','fulfilled']:['rejected','rejected']);
+  if(code==='protocol_error') for(const result of results) assert.ok(result.status==='rejected' && result.reason.code===code);
+});
+test('manager close does not convert a pending setup refusal into a cleanup error', async () => {
+  const held=deferred<HostLink>();const manager=new ObservationManager({getLink:()=>held.promise,onFrame:()=>{}});
+  const setup=manager.select('w',STORAGE,1);const setupRejected=assert.rejects(setup,/Setup refused/);
+  const closed=manager.close();held.reject(Error('Setup refused'));await setupRejected;await closed;
+});
+test('Feed disposal precedes acknowledged token close and false receipts release capacity', async context => {
+  const memory=memoryLink();const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  const request=memory.link.request.bind(memory.link);
+  context.mock.method(memory.link,'request',async (...args:Parameters<HostLink['request']>)=>{await request(...args);return {closed:false};});
+  try {
+    for(let index=0;index<20;index++) {
+      await manager.select(`w${index}`,STORAGE,index+1);await manager.hide(`w${index}`);
+      assert.deepEqual(memory.lifecycle.slice(-2),['release','observe-close']);
+    }
+    assert.equal(memory.closes,0);assert.equal(memory.link.connected,true);
   } finally {await manager.close();}
+});
+test('hide awaits the explicit close acknowledgement after Feed disposal', async context => {
+  const memory=memoryLink();const entered=deferred<void>();const acknowledged=deferred<void>();let hidden=false;
+  const request=memory.link.request.bind(memory.link);
+  context.mock.method(memory.link,'request',async (...args:Parameters<HostLink['request']>)=>{
+    await request(...args);
+    if(args[0]==='observe-close') {entered.resolve();await acknowledged.promise;return {closed:false};}
+    return {};
+  });
+  const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  try {
+    await manager.select('w',STORAGE,1);const hide=manager.hide('w').then(()=>{hidden=true;});
+    await entered.promise;assert.equal(memory.subscriptions[0].disposed,true);assert.equal(hidden,false);
+    acknowledged.resolve();await hide;assert.equal(hidden,true);
+  } finally {acknowledged.resolve();await manager.close();}
+});
+test('disconnected links need no explicit token close', async () => {
+  const memory=memoryLink();const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  try {
+    await manager.select('w',STORAGE,1);await memory.link.close();await manager.hide('w');
+    assert.equal(memory.calls.filter(call=>call.member==='observe-close').length,0);
+  } finally {await manager.close();}
+});
+test('rejected token cleanup stays visible and reserves capacity despite local Feed disposal', async () => {
+  const memory=memoryLink();const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  try {
+    memory.failClose=true;
+    for(let index=0;index<16;index++) {
+      await manager.select(`w${index}`,STORAGE,index+1);await assert.rejects(manager.hide(`w${index}`),/Invalid close response/);
+      assert.equal(memory.subscriptions.at(-1)?.disposed,true);
+    }
+    await assert.rejects(manager.select('full',CHILD,17),{code:'capacity'});assert.equal(memory.closes,0);
+    await memory.link.close();memory.failClose=false;
+  } finally {await manager.close();}
+});
+test('local Feed disposal failure does not bypass explicit native close', async () => {
+  const memory=memoryLink();const manager=new ObservationManager({getLink:async()=>memory.link,onFrame:()=>{}});
+  try {
+    memory.failDispose=true;await manager.select('w',STORAGE,1);
+    await assert.rejects(manager.hide('w'),/Release failed/);
+    assert.deepEqual(memory.lifecycle.slice(-2),['release','observe-close']);assert.equal(memory.closes,0);
+  } finally {memory.failDispose=false;await manager.close();}
 });

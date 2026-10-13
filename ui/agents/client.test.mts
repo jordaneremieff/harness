@@ -191,6 +191,7 @@ test("observation tokens belong to their opening connection and subscription bas
 for (const member of ["task-submit", "abort"] as const) {
 	test(`disconnect makes ${member} uncertain without automatic replay`, async (t) => {
 		const held = deferred<JsonValue>();
+		t.after(() => held.resolve({}));
 		const host = await FakeHost.start({ handler: (call) => (call.member === member ? held.promise : undefined) });
 		t.after(() => host.close());
 		const link = await HostLink.connect(host.endpoint);
@@ -203,10 +204,11 @@ for (const member of ["task-submit", "abort"] as const) {
 				: link.request(member, { sessionId: CHILD }, { identity: CHILD });
 		const refused = assert.rejects(request, code("host_unavailable", true));
 		await host.waitForCall((call) => call.member === member);
-		await host.disconnect();
+		const disconnecting = host.disconnect();
 		await disconnected.promise;
 		await refused;
 		held.resolve({});
+		await disconnecting;
 		await host.waitForRelease();
 		await turn();
 		assert.equal(host.calls.filter((call) => call.member === member).length, 1);
@@ -292,7 +294,7 @@ test("current inspect activity and result facts pass the negotiated transport", 
 	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "activity" }, { identity: CHILD }), activity(CHILD));
 	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "result", submissionId: 7 }, { identity: CHILD }), blockedResult(CHILD));
 	assert.deepEqual(host.calls[0].expected, { request: "inspect/1.1.0",
-		response: "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a", durable: link.descriptor.upstream.durable });
+		response: "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b", durable: link.descriptor.upstream.durable });
 });
 
 test("missing-request results preserve exact selectors and keep inspect available", async t => {

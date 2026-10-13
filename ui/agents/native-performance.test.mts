@@ -183,7 +183,7 @@ test("worker Unix host measures large native decode and projection on the backen
 	t.diagnostic(JSON.stringify({ fixture: { snapshotJsonBytes: info.snapshotJsonBytes, snapshotTextBytes: info.snapshotTextBytes,
 		liveJsonBytes: info.liveJsonBytes, liveTextBytes: info.liveTextBytes, burstFrames: info.burstFrames },
 		sampleCount: SAMPLES, snapshot: summary(snapshots), liveBurst: summary(bursts),
-		note: "Transport spans time the public onData callback; validation and projection have separate spans. Timer gaps include scheduler delay." }));
+		note: "Validation spans time decoded operation and Feed values; projection has separate spans. No wire-decode span is measured. Timer gaps include scheduler delay." }));
 	await fixture.check();
 });
 

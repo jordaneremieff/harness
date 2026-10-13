@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { hostname } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { unixSocketPath } from "../../transport/index.ts";
 import { decodePublication } from "./contract.mts";
 
 export type Publication = ReturnType<typeof decodePublication>;
@@ -177,10 +178,7 @@ export function deriveEndpoint(record: Pick<CatalogRecord, "storageId" | "cwd" |
 	const hash = sha(`pi.agent.host\0${storageId}\0${cwd}`);
 	const variant = ((Number.parseInt(hash[16] ?? "0", 16) & 3) | 8).toString(16);
 	const serverId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-${variant}${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
-	const socketPath = [join(agentDir, "durable-hosts"), join(tmpdir(), "pi-hosts"), "/tmp/pi-hosts"]
-		.map((dir) => join(dir, `${serverId}.sock`))
-		.find((candidate) => Buffer.byteLength(candidate) <= 100);
-	if (!socketPath) throw new Error("No bounded socket path");
+	const socketPath = unixSocketPath(serverId, join(agentDir, "durable-hosts"));
 	const claimPath = join(
 		agentDir,
 		"durable-hosts",

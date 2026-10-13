@@ -191,6 +191,7 @@ test("live workspaces pool one endpoint and release only their own observations"
 
 test("uncertain input reconnects and retries only through the explicit original key action", async t => {
   const held = deferred<ReturnType<typeof receipt>>();
+  t.after(async () => { held.resolve(receipt(storageId, `ui:${input.operationId}`)); });
   let first = true;
   const { service, host } = await liveFixture(t, { handler: call => {
     if (call.member === "task-submit" && first) { first = false; return held.promise; }
@@ -200,9 +201,9 @@ test("uncertain input reconnects and retries only through the explicit original 
   const pending = service.submit(storageId, input);
   const rejected = assert.rejects(pending, hasCode("host_unavailable"));
   await host.waitForCall(call => call.member === "task-submit");
-  await host.disconnect(); await rejected;
+  const disconnecting = host.disconnect(); await rejected;
   held.resolve(receipt(storageId, `ui:${input.operationId}`));
-  await host.waitForRelease();
+  await disconnecting; await host.waitForRelease();
   await assert.rejects(service.submit(storageId, input), hasCode("host_unavailable"));
   assert.equal(host.calls.filter(call => call.member === "task-submit").length, 1);
   await service.reconnect("workspace", storageId);
@@ -247,6 +248,7 @@ test("explicit target reconnect opens a fresh connection and epoch after idempot
 
 test("close rejects pending snapshot setup without waiting for its host response", { timeout: 10000 }, async t => {
   const held = deferred<Record<string, never>>();
+  t.after(async () => { held.resolve({}); });
   const { service, host } = await liveFixture(t, { handler: call => call.member === "snapshot" ? held.promise : undefined });
   const selected = service.select("workspace", storageId);
   const rejected = assert.rejects(selected, hasCode("host_unavailable"));

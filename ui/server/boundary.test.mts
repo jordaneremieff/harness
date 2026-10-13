@@ -8,6 +8,8 @@ import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const ui = path.join(root, 'ui');
+const transport = path.join(root, 'transport');
+const publicTransport = path.join(transport, 'index.ts');
 type Edge = {specifier: string; typeOnly: boolean};
 type Analysis = {edges: Edge[]; errors: string[]};
 function literal(node: ts.Node | undefined): string | undefined {
@@ -88,14 +90,20 @@ function target(filename: string, specifier: string, files: Map<string, string>)
   const source = base.replace(`${path.join(ui, 'dist')}${path.sep}`, `${ui}${path.sep}`);
   return [base, base.replace(/\.js$/, '.ts'), base.replace(/\.mjs$/, '.mts'), source.replace(/\.js$/, '.ts'), `${base}.ts`, `${base}.mts`, path.join(base, 'index.ts')].find(p => files.has(p));
 }
+function checkLocal(filename: string, specifier: string, files: Map<string, string>): string | undefined {
+  const resolved = path.resolve(path.dirname(filename), specifier);
+  if (filename.startsWith(`${transport}${path.sep}`)) {
+    if (!resolved.startsWith(`${transport}${path.sep}`)) return `transport escape: ${specifier}`;
+  } else if (!resolved.startsWith(`${ui}${path.sep}`)) {
+    const publicAgentTransport = filename.startsWith(`${path.join(ui, 'agents')}${path.sep}`) && specifier === '../../transport/index.ts' && resolved === publicTransport;
+    if (!publicAgentTransport) return `harness escape: ${specifier}`;
+  }
+  return target(filename, specifier, files) ? undefined : `missing local source: ${specifier}`;
+}
 function checkEdge(filename: string, edge: Edge, files: Map<string, string>, runtime: Set<string>, dev: Set<string>): string | undefined {
   const specifier = edge.specifier;
   if (path.isAbsolute(specifier) || path.win32.isAbsolute(specifier) || specifier.includes('\\') || /^(?:file|data|https?):/.test(specifier)) return `absolute loader: ${specifier}`;
-  if (specifier.startsWith('.')) {
-    const resolved = path.resolve(path.dirname(filename), specifier);
-    if (!resolved.startsWith(`${ui}${path.sep}`)) return `harness escape: ${specifier}`;
-    return target(filename, specifier, files) ? undefined : `missing local source: ${specifier}`;
-  }
+  if (specifier.startsWith('.')) return checkLocal(filename, specifier, files);
   if (isBuiltin(specifier)) return;
   const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0] ?? '';
   if (runtime.has(name)) return;
@@ -135,7 +143,7 @@ async function sources() {
     assert.ok(depth < 8, 'source depth bound');
     for (const entry of await readdir(directory, {withFileTypes: true})) {
       assert.ok(++visits <= 256, 'source visit bound');
-      if (entry.name.startsWith('.') || ['dist', 'node_modules'].includes(entry.name)) continue;
+      if (entry.name.startsWith('.') || ['dist', 'node_modules'].includes(entry.name) || directory.startsWith(transport) && entry.name.endsWith('.test.mts')) continue;
       const filename = path.join(directory, entry.name);
       assert.ok(!entry.isSymbolicLink(), 'source tree contains no links');
       if (entry.isDirectory()) await walk(filename, depth + 1);
@@ -145,7 +153,9 @@ async function sources() {
       }
     }
   }
-  await walk(ui); return files;
+  await walk(ui);
+  await walk(transport);
+  return files;
 }
 
 test('UI loaders remain local or declared; browser graph has no Node/server code', async () => {
@@ -175,6 +185,26 @@ test('boundary rejects absolute paths, harness source escapes, and undeclared/de
     const files = new Map([[filename, `import ${JSON.stringify(specifier)};`]]);
     assert.ok(check(files, new Set(), new Set(['typescript'])).length, specifier);
   }
+});
+
+test('only the named public transport entrypoint crosses the agent UI boundary', () => {
+  const agent = path.join(ui, 'agents', 'fixture.mts');
+  const internal = path.join(transport, 'endpoint.ts');
+  const files = new Map([[agent, "import '../../transport/index.ts';"],
+    [publicTransport, "export * from './endpoint.ts';"], [internal, "import '@earendil-works/chord'; import 'typebox';"]]);
+  const runtime = new Set(['@earendil-works/chord', 'typebox']);
+  assert.deepEqual(check(files, runtime, new Set()), []);
+  for (const specifier of ['../../transport/endpoint.ts', '../../transport/unix-link.ts', '../../transport', '../../transport/./index.ts']) {
+    files.set(agent, `import ${JSON.stringify(specifier)};`);
+    assert.ok(check(files, runtime, new Set()).some(error => error.includes('harness escape')), specifier);
+  }
+  files.set(agent, "import '../../transport/index.ts';");
+  files.set(internal, "import 'typescript';");
+  assert.ok(check(files, runtime, new Set(['typescript'])).includes('dev-only runtime dependency: typescript'));
+  files.set(internal, "import '../extensions/agent/index.ts';");
+  assert.ok(check(files, runtime, new Set()).some(error => error.includes('transport escape')));
+  files.set(path.join(ui, 'web', 'fixture.ts'), "import '../../transport/index.ts';");
+  assert.ok(check(files, runtime, new Set()).some(error => error.includes('browser server graph')));
 });
 
 test('unshipped browser test support is not an entrypoint but runtime imports still traverse it', () => {

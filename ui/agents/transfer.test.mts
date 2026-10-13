@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { projectEntry, projectFrame } from "../server/projection.mts";
-import type { ConversationFrame, Snapshot } from "./contract.mts";
+import { decodeFrame, type ConversationFrame, type Snapshot } from "./contract.mts";
 import { frame } from "./fake-host.mts";
 import { transferFrame, transferInspect, transferSnapshot } from "./transfer.mts";
 
@@ -83,6 +83,45 @@ test("frame transfer omits raw instructions, inbox payloads, signatures and malf
   assert.equal(result.conversationId, source.conversationId);
   assert.deepEqual(nativeFacts(result.coverage), source.coverage);
   assert.ok(bytes(result) <= 256 * 1024);
+});
+
+test("nested tools and compactions survive the worker boundary and downstream projection", () => {
+  const source = frame(3) as ConversationFrame;
+  source.coverage = {...sourceCoverage};
+  source.live = [{id: "live:tool:outer/inner", kind: "pi.tool-result", data: {live: true, nestedTool: {
+    callId: "outer/inner", name: "custom", taskId: 4, parentTaskId: 3, parentCallId: "outer", status: "done",
+    arguments: {value: "input", secret: "private-argument"}, output: "output", droppedBytes: 1, summary: {isError: false, durationMs: 0},
+  }}}];
+  source.status.live = {compactions: [{taskId: 5, reason: "threshold", attempt: 1, blocking: true, retry: {at: 1, error: "retry"}}],
+    compactionFailure: {taskId: 6, reason: "manual", error: "Bearer private-token"}};
+  const direct = projectFrame(source), transferred = transferFrame(source), result = projectFrame(transferred);
+  assert.deepEqual(result.live, direct.live); assert.deepEqual(result.status.compactions, direct.status.compactions);
+  assert.deepEqual(result.status.compactionFailure, direct.status.compactionFailure); assert.equal(result.coverage.truncated, true);
+  assert.equal(result.live[0].messages, undefined); assert.equal(result.live[0].tool?.durationMs, 0);
+  assert.equal(result.live[0].tool?.output?.truncation?.truncated, true);
+  assert.doesNotMatch(JSON.stringify(transferred), /private-argument|private-token/);
+  assert.equal(Object.hasOwn(result.status.compactionFailure?.value as object, "at"), false);
+  assert.ok(bytes(transferred) <= 256 * 1024);
+});
+
+for (const field of ["diagnostic", "summary"] as const) test(`nested ${field} clipping stays visible through worker transfer and repeat projection`, () => {
+  const source = frame(3) as ConversationFrame;
+  source.coverage = {...sourceCoverage, entries: 0};
+  const nestedTool = {callId: "outer/inner", name: "custom", taskId: 4, parentTaskId: 3, parentCallId: "outer",
+    status: "done", arguments: {}, diagnostics: field === "diagnostic" ? [{severity: "warn", message: "x".repeat(2048)}] : [],
+    summary: {isError: true, durationMs: 0, ...(field === "summary" ? {error: "界".repeat(500)} : {})}};
+  source.live = [{id: "live:tool:outer/inner", kind: "pi.tool-result", data: {live: true, nestedTool}}];
+  source.status.live = {nestedTools: [nestedTool]};
+  assert.deepEqual(decodeFrame(source), source);
+  const direct = projectFrame(source), transferred = transferFrame(source), displayed = projectFrame(transferred);
+  for (const view of [direct, displayed, projectFrame(direct)]) {
+    assert.equal(view.live[0].tool?.coverage.truncated, true);assert.equal(view.live[0].tool?.coverage.complete, false);
+    assert.equal(view.coverage.truncated, true);assert.equal(view.coverage.complete, false);
+    assert.ok(bytes(view.live[0]) <= 60 * 1024);
+    assert.ok((view.live[0].tool?.parts?.[0].type === "text" ? view.live[0].tool.parts[0].text : "").includes("[truncated]"));
+  }
+  assert.equal(transferred.coverage.complete, true);assert.equal(transferred.coverage.uiComplete, false);
+  assert.equal(transferred.coverage.truncated, true);assert.ok(bytes(transferred) <= 256 * 1024);
 });
 
 test("status row truncation preserves native coverage while marking UI completeness false", () => {

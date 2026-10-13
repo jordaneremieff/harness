@@ -938,6 +938,8 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): {key: string; label
   if (!frame && row?.latestReply) facts.push({key: 'reply', label: 'Last reply · retained metadata', text: row.latestReply});
   if (frame?.status.tasks) facts.push({key: 'tasks', label: 'Reported tasks', text: rawText(frame.status.tasks.value)});
   if (frame?.status.submissions) facts.push({key: 'submissions', label: 'Reported submissions', text: rawText(frame.status.submissions.value)});
+  if (frame?.status.compactions) facts.push({key: 'compactions', label: 'Context compaction', text: rawText(frame.status.compactions.value)});
+  if (frame?.status.compactionFailure) facts.push({key: 'compaction-failure', label: 'Last compaction error', text: rawText(frame.status.compactionFailure.value)});
   if (row?.currentTool) facts.push({key: 'tool', label: 'Last reported tool', text: `${row.currentTool.name} · ${row.currentTool.argument}`});
   facts.push({key: 'context', label: 'Context', text: 'Context not reported'});
   return facts;

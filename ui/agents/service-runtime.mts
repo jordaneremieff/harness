@@ -222,9 +222,14 @@ export class AgentService {
     if (this.#closing) return this.#closing;
     this.#closed = true;
     this.#closing = (async () => {
-      await Promise.all([this.#observations.close(), this.#reader.close(),
-        ...[...this.#links.values()].map(pending => pending.then(link => link.close(), () => {}))]);
-      this.#links.clear(); await this.#catalog.close();
+      try {
+        await this.#observations.close(async () => {
+          const closed = await Promise.allSettled([this.#reader.close(),
+            ...[...this.#links.values()].map(pending => pending.then(link => link.close(), () => {}))]);
+          const failed = closed.find(result => result.status === "rejected");
+          if (failed?.status === "rejected") throw failed.reason;
+        });
+      } finally { this.#links.clear(); await this.#catalog.close(); }
     })();
     return this.#closing;
   }

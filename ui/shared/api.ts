@@ -60,7 +60,11 @@ export type CommunicationPresentation = {state: 'ready'; origin: NativeOrigin | 
 /** Stable adapter ID, not an array index. Final messages replace partial messages. */
 export type MessageView = {id: string; role: string; timestamp?: number; parts: PartView[];
   state: 'partial' | 'final'; stopReason?: string; error?: string; coverage: DisplayCoverage; usage?: AssistantUsage; communication?: CommunicationPresentation};
-export type EntryView = {id: string; kind: string; messages?: MessageView[]; data?: JsonDisplay; head?: string};
+/** A native nested task is not a model-issued message. Its status and links come from the host. */
+export type NestedToolView = {callId: string; name: string; taskId: number; parentTaskId: number; parentCallId: string;
+  status: 'pending' | 'running' | 'done'; arguments: JsonDisplay; parts?: PartView[]; isError?: boolean;
+  durationMs?: number; output?: ToolOutputInfo; coverage: DisplayCoverage};
+export type EntryView = {id: string; kind: string; messages?: MessageView[]; data?: JsonDisplay; head?: string; tool?: NestedToolView};
 export type ModelChoice = {provider: string; id: string; name: string; reasoning: boolean; input: string[]; thinkingLevels?: string[]};
 export type CommandView = {name: string; description: string; source: 'extension' | 'skill' | 'prompt'};
 export type DialogView = {id: string; method: 'select' | 'confirm' | 'input' | 'editor'; title: string;
@@ -115,7 +119,8 @@ export type ScanView = {state: 'not-started' | 'running' | 'ready' | 'failed'; c
 export type CachedRoster = {rows: AgentRow[]; nextCursor?: string | null; observedAt?: string; scan: ScanView; stale: boolean; error?: ErrorView};
 export type ProjectedFrame = {revision: number; observedAt: string; entries: EntryView[]; live: EntryView[];
   nextBefore: number | null; status: {busy: boolean; name?: string; model?: {provider: string; modelId: string};
-  thinkingLevel?: string; lastText?: string; tasks?: JsonDisplay; submissions?: JsonDisplay}; coverage: DisplayCoverage};
+  thinkingLevel?: string; lastText?: string; tasks?: JsonDisplay; submissions?: JsonDisplay;
+  compactions?: JsonDisplay; compactionFailure?: JsonDisplay}; coverage: DisplayCoverage};
 export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
   'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure';
 /** Admission is separate from the eventual answer. Completed is a local control response. */

@@ -14,7 +14,7 @@ interface Selection {
   identity: string; epoch: number; disposed: boolean; link?: HostLink; token: string;
   opened: boolean; subscription?: ObservationSubscription; unsubscribe?: () => void;
   pending?: ConversationFrame; flush?: ReturnType<typeof setImmediate>; revision?: number;
-  cleanup?: Promise<void>; setup?: Promise<void>; settingUp: boolean; unreleased?: boolean;
+  cleanup?: Promise<void>; cleanupFailure?: unknown; setup?: Promise<void>; settingUp: boolean; unreleased?: boolean;
 }
 const dependencies = ["snapshot", "observe-open", "observe-frame", "observe-close"] as const;
 
@@ -80,7 +80,13 @@ export class ObservationManager {
     const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
     const state = code === "contract_mismatch" ? "incompatible" : code === "stored" ? "stored" : "unavailable";
     this.#options.onAvailability?.(workspaceId, selected.identity, selected.epoch, state, reason, selected.link?.capabilities());
-    void this.#release(selected);
+    this.#backgroundRelease(workspaceId, selected);
+  }
+  #backgroundRelease(workspaceId: string, selected: Selection): void {
+    void this.#release(selected).catch(error => {
+      this.#options.onAvailability?.(workspaceId, selected.identity, selected.epoch, "unavailable",
+        error instanceof Error ? error.message : "Observation cleanup failed.", selected.link?.capabilities());
+    });
   }
   async #installSubscription(workspaceId: string, selected: Selection, link: HostLink): Promise<void> {
     const subscription = await link.subscribeObservation(selected.token, frame => {
@@ -133,7 +139,7 @@ export class ObservationManager {
     if (Buffer.byteLength(JSON.stringify(frame)) > 1024 * 1024) {
       selected.disposed = true;
       this.#options.onAvailability?.(workspaceId, selected.identity, selected.epoch, "unavailable", "Host frame exceeds the selected observation memory bound.", selected.link?.capabilities());
-      void this.#release(selected); return;
+      this.#backgroundRelease(workspaceId, selected); return;
     }
     selected.pending = frame;
     if (selected.flush) return;
@@ -146,31 +152,45 @@ export class ObservationManager {
   async #release(selected: Selection): Promise<void> {
     if (selected.flush) { clearImmediate(selected.flush); selected.flush = undefined; }
     selected.pending = undefined; selected.unsubscribe?.(); selected.unsubscribe = undefined;
-    if (selected.cleanup) await selected.cleanup;
+    let previousFailure: unknown;
+    if (selected.cleanup) try { await selected.cleanup; } catch (error) { previousFailure = error; }
     // Setup may finish after an earlier cleanup; release whichever reference arrived last.
     const subscription = selected.subscription; selected.subscription = undefined;
     const opened = selected.opened; selected.opened = false;
-    if (!subscription && !opened) return;
-    selected.cleanup = (async () => {
+    if (!subscription && !opened) { if (previousFailure) throw previousFailure; return; }
+    const cleanup = (async () => {
+      let failure: unknown = previousFailure;
+      try { await subscription?.dispose(); } catch (error) { failure = error; }
       try {
-        try { await subscription?.dispose(); }
-        finally {
-          if (opened && selected.link?.connected) await selected.link.request("observe-close", { token: selected.token }, { token: selected.token });
+        // Feed disposal is local. Both true and false close receipts acknowledge native cleanup.
+        if (opened) {
+          if (selected.link?.connected) await selected.link.request("observe-close", { token: selected.token }, { token: selected.token });
+          selected.unreleased = false;
         }
-      } catch {
-        // An uncertain token keeps its capacity reservation without closing other observers' transport.
-        selected.unreleased = true;
+      } catch (error) {
+        if (selected.link?.connected === false && error instanceof AgentError && error.code === "host_unavailable") selected.unreleased = false;
+        else { selected.unreleased = true; failure = error; }
       }
+      selected.cleanupFailure = failure;
+      if (failure) throw failure;
     })();
-    try { await selected.cleanup; }
-    finally { selected.cleanup = undefined; this.#prune(); }
+    selected.cleanup = cleanup;
+    try { await cleanup; }
+    finally { if (selected.cleanup === cleanup) selected.cleanup = undefined; this.#prune(); }
   }
-  async close(): Promise<void> {
+  async close(afterRelease?: () => Promise<void>): Promise<void> {
     this.#closed = true;
-    const selected = [...this.#selected.values()].flatMap(values => [...values.values()]); this.#selected.clear();
+    const selected = [...this.#lifetimes]; this.#selected.clear();
+    const pending = selected.filter(value => value.settingUp);
     for (const value of selected) value.disposed = true;
-    await Promise.all(selected.map(value => this.#release(value)));
+    const releases = await Promise.allSettled(selected.map(value => this.#release(value)));
+    // The owner closes links after token acknowledgement to cancel link-dependent setup waits.
+    const teardown = await Promise.allSettled(afterRelease ? [afterRelease()] : []);
     await Promise.allSettled([...this.#setups]);
     this.#lifetimes.clear();
+    const failed = [...releases, ...teardown].find(result => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    const lateFailure = pending.find(value => value.cleanupFailure !== undefined);
+    if (lateFailure) throw lateFailure.cleanupFailure;
   }
 }

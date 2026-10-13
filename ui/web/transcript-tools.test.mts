@@ -8,6 +8,22 @@ function entry(id: string, parts: PartView[]): EntryView { return {id, kind: 'me
 const call = (id: string): PartView => ({type: 'toolCall', callId: id, name: 'read', arguments: {value: {}, truncated: false}});
 const result = (id: string, text: string): PartView => ({type: 'toolResult', callId: id, name: 'read', isError: false, parts: [{type: 'text', text}]});
 
+test('native nested tasks use supplied status and duration without a model call or start clock', () => {
+  const tool: NonNullable<EntryView['tool']> = {callId: 'parent/child', name: 'read', taskId: 3, parentTaskId: 2, parentCallId: 'parent',
+    status: 'running', arguments: {value: {path: 'notes.md'}, truncated: false}, parts: [{type: 'text', text: 'partial'}], coverage};
+  const nested = (value = tool): EntryView => ({id: 'live:tool:parent/child', kind: 'pi.tool-result', tool: value});
+  const index = new TranscriptIndex(); index.update([nested()], new Map());
+  const joined = index.joined.get(tool.callId); assert.ok(joined); assert.equal(joined.status, 'working'); assert.equal(joined.parentCallId, 'parent');
+  assert.equal(joined.taskId, 3); assert.equal(joined.parentTaskId, 2); assert.equal(joined.observedStart, undefined); assert.equal(toolTime(joined), '');
+  assert.equal(index.sessions.size, 0); assert.equal(index.disclosures.get('tool:parent/child'), 'live:tool:parent/child');
+  for (const [value, status] of [[{...tool, status: 'pending' as const}, 'pending'], [{...tool, status: 'done' as const}, 'ended'],
+    [{...tool, status: 'done' as const, isError: false, durationMs: 0}, 'success'], [{...tool, status: 'done' as const, isError: true}, 'error']] as const) {
+    index.update([nested(value)], new Map()); assert.equal(index.joined.get(tool.callId)?.status, status);
+    assert.equal(index.joined.get(tool.callId)?.duration, 'durationMs' in value ? 0 : undefined);
+  }
+  index.update([], new Map()); assert.equal(index.joined.size, 0); assert.equal(index.disclosures.size, 0);
+});
+
 test('communication disclosures follow their message owner and clear on source removal', () => {
   const index = new TranscriptIndex(); const source = entry('peer', []); const message = source.messages?.[0]; assert.ok(message); message.communication = {state: 'unresolved'};
   const keys = communicationDisclosureKeys('peer', 'peer');

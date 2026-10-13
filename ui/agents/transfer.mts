@@ -7,6 +7,7 @@ import type { ConversationFrame, InspectResult, JsonObject, Snapshot } from "./c
 function nativeEntry(entry: EntryView): JsonObject {
   const result: Record<string, unknown> = { id: entry.id, kind: entry.kind };
   if (entry.messages) result.model = entry.messages;
+  if (entry.tool) result.tool = entry.tool;
   if (entry.data) result.data = entry.data;
   if (entry.head !== undefined) result.head = entry.head;
   return result as JsonObject;
@@ -19,11 +20,11 @@ function status(source: ConversationFrame, display: ReturnType<typeof projectFra
     agent: { thinkingLevel: display.status.thinkingLevel ?? "", extensions: [], tools: [] },
     tasks: display.status.tasks?.value ?? [], submissions: display.status.submissions?.value ?? [],
   };
-  for (const key of ["name", "model", "thinkingLevel"] as const) if (display.status[key] !== undefined) result[key] = display.status[key];
+  for (const key of ["name", "model", "thinkingLevel", "compactions", "compactionFailure"] as const) if (display.status[key] !== undefined) result[key] = display.status[key];
   return result as JsonObject;
 }
 function sourceCoverage(source: ConversationFrame["coverage"], display: ReturnType<typeof projectFrame>): ConversationFrame["coverage"] {
-  const statusTruncated = display.status.tasks?.truncated || display.status.submissions?.truncated;
+  const statusTruncated = display.status.tasks?.truncated || display.status.submissions?.truncated || display.status.compactions?.truncated || display.status.compactionFailure?.truncated;
   return { complete: source.complete, entries: source.entries, bytes: source.bytes, hiddenExcluded: source.hiddenExcluded,
     entryLimitReached: source.entryLimitReached, byteLimitReached: source.byteLimitReached,
     truncated: display.coverage.truncated || statusTruncated === true,

@@ -300,6 +300,47 @@ test('hidden public custom messages never expose content or details across proje
   assert.equal(projectMessage({...raw, errorMessage: 'reported failure'}, 'error').error, 'reported failure');
 });
 
+test('nested native tools project as tasks without model messages or invented timing', () => {
+  const nestedTool = {callId: 'parent/child', name: 'read', taskId: 3, parentTaskId: 2, parentCallId: 'parent',
+    arguments: {path: 'notes.md', password: 'private-argument'}, status: 'running', output: 'partial output', droppedLines: 2};
+  const live = {id: 'live:tool:parent/child', kind: 'pi.tool-result', data: {live: true, nestedTool}};
+  const frame = projectFrame({live: [live], entries: [], status: {busy: true}, coverage: {complete: true}});
+  const entry = frame.live[0]; assert.ok(entry?.tool);
+  assert.equal(entry.messages, undefined); assert.equal(entry.tool.status, 'running'); assert.equal(entry.tool.parentCallId, 'parent');
+  assert.equal(entry.tool.taskId, 3); assert.equal(entry.tool.parentTaskId, 2); assert.equal(entry.tool.durationMs, undefined);
+  assert.equal(entry.tool.isError, undefined); assert.equal(entry.tool.output?.truncation?.truncated, true);
+  assert.deepEqual(entry.tool.parts, [{type: 'text', text: 'partial output'}]); assert.equal(frame.coverage.truncated, true);
+  assert.doesNotMatch(JSON.stringify(frame), /private-argument|timestamp|observedStart/);
+  const done = projectEntry({...live, data: {live: true, nestedTool: {...nestedTool, status: 'done', summary: {isError: true, durationMs: 0, error: 'failed'}}}});
+  assert.equal(done.tool?.isError, true); assert.equal(done.tool?.durationMs, 0); assert.equal(done.tool?.status, 'done');
+  const unknown = projectEntry({...live, data: {live: true, nestedTool: {...nestedTool, status: 'done'}}}); assert.equal(unknown.tool?.isError, undefined);
+  const malformed = projectEntry({...live, data: {live: true, nestedTool: {...nestedTool, taskId: 0}}}); assert.equal(malformed.tool, undefined);
+  const large = projectEntry({...live, data: {live: true, nestedTool: {...nestedTool, output: 'x'.repeat(100_000)}}}); assert.ok(bytes(large) <= 60 * 1024);
+  assert.ok(large.tool); assert.equal(large.tool.coverage.truncated, true);
+  assert.deepEqual(projectEntry(entry), entry); assert.deepEqual(projectEntry(large), large);
+});
+test('compaction state preserves retries and absent failure timestamps under display bounds', () => {
+  const compactions = [{taskId: 4, reason: 'threshold', blocking: true, attempt: 1, retry: {at: 2000, error: 'retry'}}];
+  const compactionFailure = {taskId: 5, reason: 'manual', error: 'Bearer private-token'};
+  const frame = projectFrame({entries: [], live: [], status: {busy: true, live: {compactions, compactionFailure}}, coverage: {complete: true}});
+  assert.deepEqual(JSON.parse(JSON.stringify(frame.status.compactions?.value)), compactions);
+  assert.deepEqual(JSON.parse(JSON.stringify(frame.status.compactionFailure?.value)), {taskId: 5, reason: 'manual', error: 'Bearer [redacted]'});
+  assert.equal(Object.hasOwn(frame.status.compactionFailure?.value as object, 'at'), false);
+  const next = projectFrame({entries: [], live: [], status: {busy: false, live: {}}, coverage: {complete: true}});
+  assert.equal(next.status.compactions, undefined); assert.equal(next.status.compactionFailure, undefined);
+  const bounded = projectFrame({status: {live: {compactions: Array(500).fill({...compactions[0], retry: {at: 1, error: 'x'.repeat(20000)}})}}});
+  assert.ok(bytes(bounded.status.compactions) < 8300); assert.equal(bounded.status.compactions?.truncated, true);
+  assert.equal(bounded.coverage.truncated, true); assert.equal(bounded.coverage.complete, false);
+});
+test('native execution channels do not replace the public model message content', () => {
+  const entry = projectEntry({id: '8', kind: 'pi.tool-result', model: [{role: 'toolResult', toolCallId: 'call', toolName: 'custom',
+    content: [{type: 'text', text: 'model output'}], isError: false, timestamp: 12}], data: {diagnostics: []}});
+  assert.equal(resultText(entry.messages?.[0]).text, 'model output');
+  const direct = projectMessage({role: 'toolResult', toolCallId: 'call', toolName: 'custom',
+    output: [{type: 'text', text: 'execution-only output'}], structuredOutput: {secret: 'program-only result'}}, 'unsupported');
+  assert.doesNotMatch(JSON.stringify(direct), /execution-only|program-only/);
+});
+
 test('native frames whitelist status, bound oversized entries, and retain partial output separately', () => {
   const frame = projectFrame({revision: 12, observedAt: 'now', entries: Array.from({length: 1000}, (_, index) => ({id: String(index), kind: 'custom', data: {text: 'x'.repeat(20_000)}})),
     live: [{id: 'live:1', kind: 'model', model: [{role: 'assistant', content: 'stream text'}]}], nextBefore: 2,

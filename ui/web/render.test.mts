@@ -292,6 +292,33 @@ test('reset keeps both earlier controls connected and discoverable before the ne
     } finally { fakeDocument.getElementById = lookup; }
   }
 });
+test('native nested tool cards retain parent context without fabricated messages or start times', () => {
+  setup(); const view = transcript();
+  const tool: NonNullable<EntryView['tool']> = {callId: 'parent/child', name: 'read', taskId: 3, parentTaskId: 2, parentCallId: 'parent',
+    status: 'running', arguments: {value: {path: 'notes.md'}, truncated: false}, parts: [{type: 'text', text: 'partial output'}],
+    coverage: {complete: true, truncated: false, omitted: 0}};
+  const nested = (value = tool): EntryView => ({id: 'live:tool:parent/child', kind: 'pi.tool-result', tool: value});
+  view.set([nested()]); flush(); const root = node('primary-transcript'), card = root.querySelector('.tool-card'); assert.ok(card);
+  assert.equal(root.querySelectorAll('.message').length, 0); assert.equal(root.querySelectorAll('.session-events').length, 0);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'read'); assert.equal(card.querySelector('.tool-target')?.textContent, 'notes.md');
+  assert.equal(card.querySelector('.tool-status')?.textContent, 'Working'); assert.equal(card.querySelector('.tool-secondary')?.textContent, 'Within parent');
+  assert.match(card.textContent, /partial output/); assert.doesNotMatch(card.textContent, /elapsed|ms/);
+  view.set([nested({...tool, status: 'done', isError: true, durationMs: 7})]); flush();
+  assert.equal(root.querySelector('.tool-card'), card); assert.equal(card.querySelector('.tool-status')?.textContent, 'Error');
+  assert.equal(card.querySelector('.tool-secondary')?.textContent, 'Within parent · 7 ms');
+  view.set([]); flush(); assert.equal(root.querySelector('.tool-card'), null);
+});
+for (const status of ['pending', 'done'] as const) test(`empty native ${status} cards do not invent successful completion`, () => {
+  setup(); const view = transcript();
+  const tool: NonNullable<EntryView['tool']> = {callId: 'parent/child', name: 'custom', taskId: 3, parentTaskId: 2, parentCallId: 'parent',
+    status, arguments: {value: {}, truncated: false}, coverage: {complete: true, truncated: false, omitted: 0}};
+  view.set([{id: 'live:tool:parent/child', kind: 'pi.tool-result', tool}]); flush();
+  const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  assert.equal(card.querySelector('.tool-status')?.textContent, status === 'pending' ? 'Pending' : 'Ended');
+  card.open = true; card.dispatch('toggle'); flush();
+  assert.match(card.textContent, status === 'pending' ? /The tool has not started\./ : /The tool ended\. No outcome is available\./);
+  assert.doesNotMatch(card.textContent, /completed without output|success|Success/);
+});
 test('callId joins call and results across entries with one bounded disclosure and raw output', () => {
   setup(); const view = transcript();
   const call = {type: 'toolCall' as const, callId: 'call-1', name: 'read', arguments: {value: {path: '/full/path', offset: 1, limit: 10}, truncated: false}};

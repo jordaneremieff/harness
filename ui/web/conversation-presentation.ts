@@ -53,11 +53,14 @@ function agentSettings(row?: AgentRow, frame?: ProjectedFrame): Pick<Conversatio
 }
 function agentActivity(state: AgentRow['availability'], input: boolean, frame?: ProjectedFrame): string {
   if (state !== 'live') return {stored: 'Not connected', incompatible: 'Connection unavailable', unavailable: 'Unavailable'}[state];
+  if (Array.isArray(frame?.status.compactions?.value) && frame.status.compactions.value.length) return 'Compacting…';
   if (frame?.status.busy) return 'Working';
   return frame && input ? 'Ready' : 'Connected';
 }
 function frameTool(frame?: ProjectedFrame): AgentRow['currentTool'] {
   if (!frame?.status.busy) return undefined;
+  const nested = frame.live.findLast(entry => entry.tool?.status === 'running')?.tool;
+  if (nested) return {name: nested.name, argument: JSON.stringify(nested.arguments.value) ?? ''};
   const completed = new Set([...frame.entries, ...frame.live].flatMap(entry => (entry.messages ?? []).flatMap(message => message.parts.filter(part => part.type === 'toolResult').map(part => part.callId))));
   const calls = frame.live.flatMap(entry => (entry.messages ?? []).flatMap(message => message.parts.filter(part => part.type === 'toolCall')));
   const call = calls.findLast(part => !completed.has(part.callId));

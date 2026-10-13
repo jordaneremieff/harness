@@ -40,11 +40,11 @@ const nativeMetadata = JSON.parse(readFileSync(createRequire(import.meta.url).re
 const D = nativeMetadata.version as string;
 function descriptor(): JsonObject {
 	return {
-		format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: "1.1.0", durable: D },
-		requires: { codingAgent: "1.0.0", durable: "1.0.0" }, operations: {
-			dashboard: { request: "dashboard/1.0.0", response: "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241" },
+		format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: "1.2.0", durable: D },
+		requires: { codingAgent: "1.2.0", durable: "1.2.0" }, operations: {
+			dashboard: { request: "dashboard/1.0.0", response: "a89f98f3eb28c78f115c0010581107073600bfb9ec44934ad622aeb5d1cffcd7" },
 			snapshot: { request: "snapshot/1.0.0", response: "snapshot/2.0.0", durable: D },
-			inspect: { request: "inspect/1.1.0", response: "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a", durable: D },
+			inspect: { request: "inspect/1.1.0", response: "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b", durable: D },
 			"observe-open": { request: "observe-open/1.0.0", response: "observe-open/2.0.0", durable: D },
 			"observe-frame": { request: "observe-frame/1.0.0", response: "observe-frame/2.0.0", durable: D },
 			"observe-close": { request: "observe-close/1.0.0", response: "observe-close/1.0.0" },
@@ -82,7 +82,7 @@ for (const member of Object.keys(supportedOperations) as OperationName[]) {
 
 test("literal consumer identities match the documented contract and reject superseded contracts", () => {
 	for (const member of Object.keys(supportedOperations) as OperationName[]) {
-		if (member !== "configure") assert.deepEqual(supportedOperations[member], documentedOperation(member));
+		assert.deepEqual(supportedOperations[member], documentedOperation(member));
 	}
 	for (const member of ["snapshot", "observe-open", "observe-frame", "inspect"] as OperationName[]) {
 		const value = descriptor(); const operation = (value.operations as JsonObject)[member] as JsonObject;
@@ -125,7 +125,7 @@ test("operation mutations refuse only the affected operation", () => {
 test("inspect requires the supplied schema identity and current fake host operations", async () => {
 	const remote = decodeDescriptor(await fakeDescriptor());
 	for (const member of ["snapshot", "observe-open", "observe-frame", "inspect"] as const) assertOperation(remote, member);
-	assert.equal(assertOperation(remote, "inspect").response, "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a");
+	assert.equal(assertOperation(remote, "inspect").response, "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b");
 	for (const response of ["3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", "inspect/2.0.0"]) {
 		const changed = descriptor(); ((changed.operations as JsonObject).inspect as JsonObject).response = response;
 		refusal(() => assertOperation(decodeDescriptor(changed), "inspect"), "incompatible");
@@ -185,15 +185,15 @@ test("unknown members never inherit an operation from object prototypes", () => 
 });
 
 test("current operator-input fixture validates as a text request", () => {
-	const envelope = fixture("operator-input"); const args = envelope.args as JsonObject[];
-	assert.equal(envelope.member, "task-submit"); assert.equal(envelope.serviceId, "pi.agent.host");
-	assert.deepEqual(decodeOperatorInput(args[0]), args[0]);
-	assert.deepEqual(decodeInput("task-submit", args[0], { identity: storageId, requestId }), args[0]);
-	assert.deepEqual(supportedOperations["task-submit"], args[2]);
+	const envelope = fixture("operator-input"); const input = envelope.params as JsonObject;
+	assert.equal(envelope.method, "task-submit"); assert.equal(envelope.requestId, requestId);
+	assert.deepEqual(decodeOperatorInput(input), input);
+	assert.deepEqual(decodeInput("task-submit", input, { identity: storageId, requestId: envelope.requestId as string }), input);
+	assert.deepEqual(supportedOperations["task-submit"], envelope.contract);
 });
 
 test("operator-input mutations refuse admission", () => {
-	const input = (fixture("operator-input").args as JsonObject[])[0];
+	const input = fixture("operator-input").params as JsonObject;
 	for (const [key, value] of Object.entries({ origin: "model", requester: "", replyTo: "ui:foreign", message: [],
 		sessionId: `${storageId}:0`, requestId: "", whenBusy: "interrupt", checkInMinutes: -1, senderIdentity: storageId })) {
 		refusal(() => decodeOperatorInput({ ...input, [key]: value }));
@@ -247,10 +247,10 @@ test("empty-publication fixture and native dashboard are different shapes", () =
 	refusal(() => decodePublication({ ...value, rows: [{ ...row(), owner: "remote" }] }, storageId));
 });
 
-test("change-state documentation fixture requires a correlated root replacement", () => {
-	const value = fixture("change-state"); assert.deepEqual(decodeResponse("changes", value), value);
-	for (const changed of [{ ...value, member: "frame" }, { ...value, sequence: 2 }, { ...value, ops: [["u", { revision: 1 }]] },
-		{ ...value, ops: [["r", { revision: -1 }]] }, { ...value, ops: [] }]) refusal(() => decodeResponse("changes", changed));
+test("change feed accepts a complete revision value without a transport envelope", () => {
+	for (const revision of [0, 1, 7]) assert.deepEqual(decodeResponse("changes", {revision}), {revision});
+	for (const changed of [{revision: -1}, {revision: 0.5}, {revision: "1"}, {revision: 1, sequence: 1}, {},
+		{type: "state", member: "change", sequence: 1, ops: [["r", {revision: 1}]]}]) refusal(() => decodeResponse("changes", changed));
 });
 
 test("conversation frames bind storage, conversation, token, and native status", () => {
@@ -299,6 +299,45 @@ test("native timing fields survive frame and inspect decoding without elapsed su
 	for (const durationMs of [-1, 0.5, "7"]) {
 		const changed = { ...history, entries: [{ ...history.entries[0], toolResults: [{ ...result, durationMs }] }] };
 		refusal(() => decodeResponse("inspect", changed));
+	}
+});
+
+test("native nested tool and compaction fields preserve absent timing and reject malformed state", () => {
+	const value = frame();
+	const nested = {callId: "parent/child", name: "read", taskId: 3, parentCallId: "parent", parentTaskId: 2,
+		arguments: {path: "document.md"}, status: "running", output: "partial", droppedBytes: 0, droppedLines: 0};
+	const compaction = {taskId: 4, reason: "threshold", blocking: true, attempt: 1, retry: {at: 1000, error: "retry"}};
+	const live = {nestedTools: [nested], compactions: [compaction], compactionFailure: {taskId: 5, reason: "manual", error: "failed"}};
+	(value.status as JsonObject).live = live;
+	value.live = [{id: "live:tool:parent/child", kind: "pi.tool-result", data: {live: true, nestedTool: nested}}];
+	assert.deepEqual(decodeFrame(value), value);
+	assert.equal(Object.hasOwn(live.compactionFailure, "at"), false);
+	for (const change of [{taskId: 0}, {parentTaskId: "2"}, {parentCallId: 4}, {status: "working"}, {output: []}, {summary: {isError: "false"}}]) {
+		refusal(() => decodeFrame({...value, status: {...value.status as JsonObject, live: {...live, nestedTools: [{...nested, ...change}]}}}));
+	}
+	for (const change of [{reason: "other"}, {blocking: 1}, {attempt: -1}, {retry: {at: "1000", error: "retry"}}]) {
+		refusal(() => decodeFrame({...value, status: {...value.status as JsonObject, live: {...live, compactions: [{...compaction, ...change}]}}}));
+	}
+	refusal(() => decodeFrame({...value, live: [{id: "live:tool:wrong", kind: "pi.tool-result", data: {live: true, nestedTool: nested}}]}));
+});
+
+test("dashboard compaction failures accept an absent timestamp without substitution", () => {
+	for (const compactionFailure of [{reason: "manual"}, {reason: "overflow", errorMessage: "failed"}, {reason: "threshold", at: "2026-01-01T00:00:00.000Z"}]) {
+		const rows = [{...row(), health: {compactionFailure}}];
+		assert.deepEqual(decodeResponse("dashboard", rows), rows);
+		assert.deepEqual(decodePublication({...fixture("empty-publication"), rows}, storageId).rows, rows);
+	}
+	refusal(() => decodeResponse("dashboard", [{...row(), health: {compactionFailure: {reason: "manual", at: 0}}}]));
+});
+
+test("activity metadata keeps native nested task identities without inventing elapsed time", () => {
+	const running = {toolCallId: "parent/child", name: "read", taskId: 3, parentTaskId: 2, parentToolCallId: "parent"};
+	const value = {...inspectBase("activity"), format: "compact", turns: [], nextCursor: null, detail: "",
+		metadata: {owner: "here", live: true, operation: 1, pending: null, runningTools: [running], compactionFailure: {reason: "manual", errorMessage: "failed"}},
+		coverage: {scannedEntries: 0, scannedBytes: 0, complete: true, entryLimitReached: false, scanByteLimitReached: false, byteLimitReached: false, bytes: 0, omittedEntries: 0, metadataTruncated: false}};
+	assert.deepEqual(decodeResponse("inspect", value), value);
+	for (const change of [{taskId: 0}, {parentTaskId: "2"}, {parentToolCallId: 7}, {elapsedMs: -1}]) {
+		refusal(() => decodeResponse("inspect", {...value, metadata: {...value.metadata, runningTools: [{...running, ...change}]}}));
 	}
 });
 

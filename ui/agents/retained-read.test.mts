@@ -10,9 +10,9 @@ import { decodeRetainedDescriptor, decodeRetainedParams, decodeRetainedResponse 
 const ROOT = "00000000-0000-4000-8000-000000000001";
 const CHILD = `${ROOT}:2`;
 // Literal public wire examples are independent of the producer and supportedOperations.
-const descriptor = {version:"retained-read/1.0.0",upstream:{codingAgent:"1.1.0",durable:"1.1.0"},operations:{
-  snapshot:{request:"snapshot/1.0.0",response:"snapshot/2.0.0",durable:"1.1.0"},
-  inspect:{request:"inspect/1.1.0",response:"9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a",durable:"1.1.0"}}};
+const descriptor = {version:"retained-read/1.0.0",upstream:{codingAgent:"1.2.0",durable:"1.2.0"},operations:{
+  snapshot:{request:"snapshot/1.0.0",response:"snapshot/2.0.0",durable:"1.2.0"},
+  inspect:{request:"inspect/1.1.0",response:"d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b",durable:"1.2.0"}}};
 const empty = {entries:[],partial:false,revision:"empty",nextBefore:null,
   coverage:{complete:true,entries:0,bytes:0,hiddenExcluded:0,entryLimitReached:false,byteLimitReached:false}};
 const history = {view:"history",sessionId:CHILD,conversationId:2,format:"compact",order:"newestFirst",entries:[],nextCursor:null,detail:""};

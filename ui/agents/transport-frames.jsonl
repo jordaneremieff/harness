@@ -1,0 +1,8 @@
+{"t":"hello","name":"fixture-host","kind":"host","epoch":0}
+{"t":"call","id":1,"hold":1,"member":"request","args":{"method":"task-submit","params":{"sessionId":"00000000-0000-4000-8000-000000000001","message":"Line one.\nQuote: \"雪\".","origin":"operator","requester":"ui:fixture","replyTo":"00000000-0000-4000-8000-000000000001","requestId":"ui:fixture-input","whenBusy":"steer"},"requestId":"ui:fixture-input","contract":{"request":"task-submit/1.0.0","response":"task-submit/1.2.0"}}}
+{"t":"result","id":1,"value":{"value":{"submissionId":7,"conversationId":1,"deduped":false,"identity":"00000000-0000-4000-8000-000000000001","result":{"sessionId":"00000000-0000-4000-8000-000000000001","submissionId":7,"requestId":"ui:fixture-input"}}}}
+{"t":"state","id":2,"snap":{"ready":true,"value":{"revision":1}}}
+{"t":"result","id":3,"error":{"code":"unavailable","message":"unavailable/version: Operation contract mismatch","reason":"version"}}
+{"t":"cancel","id":4}
+{"t":"result","id":5,"value":{}}
+{"t":"result","id":6,"value":{"value":null}}

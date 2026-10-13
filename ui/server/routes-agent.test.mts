@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { ChildProcess } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -102,6 +102,12 @@ test('missing readiness retains the request outcome while check attaches without
 
 test('server handshake mismatch cannot produce an input-ready preparation',{timeout:10000},async t=> {
   const f = await fixture(t,true);
-  await assert.rejects(f.registry.dispatch(f.context('mismatch')),{code:'not_ready'});assert.equal(f.launches,1);
-  assert.equal(f.host.calls.filter(call=>call.member==='task-submit').length,0);
+  const prepared = await f.registry.dispatch(f.context('mismatch')) as TargetPreparation;
+  assert.equal(prepared.availability,'unavailable');assert.equal(prepared.capabilities.input,false);assert.equal(f.launches,1);
+  assert.match(prepared.reason ?? '',/identity handshake failed/);
+  assert.equal(f.host.serverId,'00000000-0000-4000-8000-000000000099');assert.notEqual(f.host.serverId,f.endpoint.serverId);
+  assert.equal(f.host.endpoint.socketPath,f.endpoint.socketPath);
+  const claim = JSON.parse(await readFile(f.endpoint.claimPath,'utf8'));
+  assert.equal(claim.sessionId,STORAGE);assert.equal(claim.pid,process.pid);
+  assert.deepEqual(f.host.calls,[]);
 });

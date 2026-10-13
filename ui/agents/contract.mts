@@ -136,14 +136,14 @@ function contract(member: string, version = "1.0.0", response = `${member}/${ver
 	return Object.freeze({ request: `${member}/${version}`, response, ...(native && durable ? { durable } : {}) });
 }
 export const supportedOperations: Readonly<Record<OperationName, OperationContract>> = Object.freeze({
-	dashboard: contract("dashboard", "1.0.0", "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241"),
+	dashboard: contract("dashboard", "1.0.0", "a89f98f3eb28c78f115c0010581107073600bfb9ec44934ad622aeb5d1cffcd7"),
 	snapshot: contract("snapshot", "1.0.0", "snapshot/2.0.0", true),
-	inspect: contract("inspect", "1.1.0", "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a", true),
+	inspect: contract("inspect", "1.1.0", "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b", true),
 	"observe-open": contract("observe-open", "1.0.0", "observe-open/2.0.0", true),
 	"observe-frame": contract("observe-frame", "1.0.0", "observe-frame/2.0.0", true),
 	"observe-close": contract("observe-close"), changes: contract("changes"),
 	"task-submit": contract("task-submit", "1.0.0", "task-submit/1.2.0"), abort: contract("abort"),
-	configure: contract("configure", "1.2.0"),
+	configure: contract("configure", "1.3.0"),
 });
 function operation(value: JsonValue): OperationContract {
 	const o = object(value); only(o, ["request", "response", "durable"]);
@@ -264,7 +264,7 @@ function health(value: JsonValue, maxText: number): void {
 	const o = object(value); optional(o, ["lastError"], v => string(v, maxText, true));
 	if (o.compactionFailure !== undefined) {
 		const c = object(o.compactionFailure); fields(c, ["reason"], v => string(v, maxText, true));
-		string(c.at, 64); optional(c, ["errorMessage"], v => string(v, maxText, true));
+		optional(c, ["at"], v => string(v, 64)); optional(c, ["errorMessage"], v => string(v, maxText, true));
 	}
 	if (o.autoRetry !== undefined) {
 		const r = object(o.autoRetry); fields(r, ["attempt", "maxAttempts", "delayMs"], v => integer(v));
@@ -285,6 +285,13 @@ function entry(value: JsonValue, live = false): void {
 	if (live) requireValue(/^live:(generation|tool:.+)$/.test(o.id), "Invalid live entry ID");
 	else { requireValue(/^[1-9]\d*$/.test(o.id), "Invalid committed entry ID"); integer(Number(o.id), 1); }
 	requireValue(o.kind !== "system", "Hidden system entry"); optional(o, ["head"], v => string(v, 16 * 1024 * 1024, true));
+	if (live && o.data !== undefined) {
+		const data = object(o.data);
+		if (data.nestedTool !== undefined) {
+			nestedTool(data.nestedTool);
+			requireValue(data.live === true && o.kind === "pi.tool-result" && o.id === `live:tool:${object(data.nestedTool).callId}`, "Invalid nested tool entry");
+		}
+	}
 	if (o.model !== undefined) array(o.model, v => {
 		const message = object(v); string(message.role, 128);
 		if (message.role === "assistant" || message.role === "toolResult") optional(message, ["durationMs"], v => integer(v));
@@ -306,9 +313,44 @@ function status(value: JsonValue, expected: string): void {
 	const o = object(value); target(o, "identity", { identity: expected }); boolean(o.busy);
 	if (o.lastText !== null) string(o.lastText, 16 * 1024 * 1024, true);
 	requireValue("live" in o && "inbox" in o, "Missing native status");
+	if (o.live !== null) liveState(o.live);
 	const agent = object(o.agent); string(agent.thinkingLevel, 256, true);
 	fields(agent, ["extensions", "tools"], v => array(v, x => string(x, 512)));
 	optional(agent, ["model"], model); array(o.tasks, task); array(o.submissions, submission);
+}
+function toolProgress(o: JsonObject): void {
+	fields(o, ["callId", "name"], v => string(v, 512)); choice(o.status, ["pending", "running", "done"]);
+	optional(o, ["taskId", "entry"], v => integer(v, 1)); optional(o, ["output"], v => string(v, 16 * 1024 * 1024, true));
+	optional(o, ["droppedBytes", "droppedLines"], v => integer(v));
+	if (o.diagnostics !== undefined) array(o.diagnostics, value => {
+		const d = object(value); choice(d.severity, ["info", "warn", "error"]); string(d.message, 16 * 1024 * 1024, true);
+		optional(d, ["code"], v => string(v, 512, true));
+	});
+}
+function nestedTool(value: JsonValue): void {
+	const o = object(value); toolProgress(o); integer(o.taskId, 1); integer(o.parentTaskId, 1);
+	string(o.parentCallId, 512); object(o.arguments);
+	if (o.summary !== undefined) {
+		const s = object(o.summary); boolean(s.isError);
+		optional(s, ["durationMs"], v => requireValue(typeof v === "number" && v >= 0, "Invalid tool duration"));
+		optional(s, ["error"], v => string(v, 16 * 1024 * 1024, true));
+	}
+}
+function compaction(value: JsonValue, failure = false): void {
+	const o = object(value); integer(o.taskId, 1); choice(o.reason, ["manual", "threshold", "overflow"]);
+	if (failure) { string(o.error, 16 * 1024 * 1024, true); return; }
+	boolean(o.blocking); integer(o.attempt);
+	if (o.retry !== undefined) {
+		const r = object(o.retry); requireValue(typeof r.at === "number", "Invalid retry timestamp");
+		string(r.error, 16 * 1024 * 1024, true);
+	}
+}
+function liveState(value: JsonValue): void {
+	const o = object(value);
+	if (o.tools !== undefined) array(o.tools, v => toolProgress(object(v)));
+	if (o.nestedTools !== undefined) array(o.nestedTools, nestedTool);
+	if (o.compactions !== undefined) array(o.compactions, v => compaction(v));
+	if (o.compactionFailure !== undefined) compaction(o.compactionFailure, true);
 }
 function task(value: JsonValue): void {
 	const o = object(value); integer(o.id, 1); fields(o, ["kind", "status"], v => string(v, 128));
@@ -421,15 +463,17 @@ function scanCoverage(o: JsonObject): void { fields(o, ["scannedEntries", "scann
 function activityMetadata(value: JsonValue): void {
 	const o = object(value); choice(o.owner, ["here", "unavailable", "unknown"]); boolean(o.live);
 	fields(o, ["operation", "pending"], v => { if (v !== null) integer(v); });
-	array(o.runningTools, value => { const t = object(value); fields(t, ["toolCallId", "name"], v => string(v, 512)); });
+	array(o.runningTools, value => {
+		const t = object(value); fields(t, ["toolCallId", "name"], v => string(v, 512));
+		optional(t, ["taskId", "parentTaskId"], v => integer(v, 1)); optional(t, ["parentToolCallId"], v => string(v, 512));
+		optional(t, ["issuedAt"], v => string(v, 64)); optional(t, ["elapsedMs"], v => integer(v));
+		optional(t, ["elapsedFrom"], v => choice(v, ["tool-call-entry"]));
+	});
+	health(o, 16 * 1024 * 1024);
 	optional(o, ["streamedText", "lastError"], v => string(v, 16 * 1024 * 1024, true));
 }
 function changes(value: JsonValue): JsonObject {
-	const o = object(value); requireValue(o.type === "state" && o.member === "change", "Invalid change state"); integer(o.sequence);
-	requireValue(Array.isArray(o.ops) && o.ops.length === 1, "Invalid change operations");
-	const op = o.ops[0]; requireValue(Array.isArray(op) && op.length === 2 && op[0] === "r", "Expected root replacement");
-	const state = object(op[1]); only(state, ["revision"]); integer(state.revision);
-	requireValue(state.revision === o.sequence, "Change sequence mismatch"); return o;
+	const o = object(value); only(o, ["revision"]); integer(o.revision); return o;
 }
 function admission(value: JsonValue, context: Context): Admission {
 	const o = object(value); target(o, "identity", context); integer(o.submissionId, 1); boolean(o.deduped);

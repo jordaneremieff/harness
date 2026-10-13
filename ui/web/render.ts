@@ -742,6 +742,7 @@ export class Transcript {
     if (session) this.updateSession(cached, session);
     else { if (cached.session) cached.custom = undefined; cached.session = undefined; this.updateCustom(cached, entry); }
     const children: HTMLElement[] = cached.custom ? [cached.custom] : [];
+    children.push(...this.entryToolChildren(entry));
     const ids = new Set<string>();
     for (const message of entry.messages ?? []) {
       if (!presentMessage(message).visible || this.joinedMessage(entry.id, message)) continue;
@@ -751,6 +752,13 @@ export class Transcript {
     setEntryRhythm(cached.node, children, session !== undefined);
     const header = this.groupHeader(cached, entry.id); if (header) children.unshift(header);
     reconcileChildren(cached.node, children); this.registerContent(cached.node); cached.source = entry; return cached.node;
+  }
+  private entryToolChildren(entry: EntryView): HTMLElement[] {
+    if (!entry.tool) return [];
+    const children: HTMLElement[] = [], tool = this.joined.get(entry.tool.callId);
+    if (tool?.owner === entry.id) children.push(this.updateTool(tool));
+    if (entry.tool.coverage.truncated) children.push(element('p', 'secondary message-coverage', 'Some tool output or arguments are not shown.'));
+    return children;
   }
   private groupHeader(cached: EntryNode, entryId: string): HTMLElement | undefined {
     const group = this.view === 'grouped' ? this.groups.header(entryId) : undefined;
@@ -849,7 +857,7 @@ export class Transcript {
     if (session.details.open) { this.renderEventPage(session.events, group.entries, 32); session.details.append(session.events.node); }
   }
   private updateCustom(cached: EntryNode, entry: EntryView): void {
-    if (!entry.data && entry.messages?.length) { cached.custom = undefined; return; }
+    if (entry.tool || !entry.data && entry.messages?.length) { cached.custom = undefined; return; }
     if (cached.source === entry) return;
     if (cached.source?.data !== entry.data || cached.source?.head !== entry.head || !cached.custom) {
       if (cached.custom) this.releaseFrames(cached.custom);
@@ -1150,6 +1158,8 @@ export class Transcript {
       case 'success': return 'Done';
       case 'error': return 'Error';
       case 'working': return 'Working';
+      case 'pending': return 'Pending';
+      case 'ended': return 'Ended';
       case 'available': return 'Result available';
       default: return 'No result recorded';
     }
@@ -1163,7 +1173,7 @@ export class Transcript {
     cardActionLabel(tool.copy, incomplete ? 'Copy available output' : 'Copy output', incomplete ? 'Copy retained output only. Some original output is unavailable or not loaded.' : 'Copy retained tool output');
   }
   private toolMetadata(tool: ToolNode, source: JoinedTool): void {
-    setText(tool.meta, [source.name === 'read' ? readRange(record(source.args)) : '', toolTime(source)].filter(Boolean).join(' · '));
+    setText(tool.meta, [source.parentCallId ? `Within ${source.parentCallId}` : '', source.name === 'read' ? readRange(record(source.args)) : '', toolTime(source)].filter(Boolean).join(' · '));
     tool.meta.hidden = !tool.meta.textContent;
   }
   private paintElapsed(): boolean {
@@ -1307,6 +1317,8 @@ export class Transcript {
   private emptyToolResult(status: string): string {
     switch (status) {
       case 'working': return 'Working';
+      case 'pending': return 'The tool has not started.';
+      case 'ended': return 'The tool ended. No outcome is available.';
       case 'error': return 'The tool failed. No output is available.';
       case 'missing': return 'No result recorded.';
       case 'available': return 'No result text available.';

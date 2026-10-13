@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { unixSocketPath } from "../../transport/index.ts";
 import { AgentCatalog, deriveEndpoint, readClaim } from "./catalog.mts";
 import { CACHE_BYTES, CACHE_ROWS, decodeRecord, readJson, readRecord, RECORD_BYTES } from "./catalog-record.mts";
 import type { CatalogRecord } from "./catalog-record.mts";
@@ -193,6 +194,14 @@ test("endpoint hashes bind cwd and storage; socket paths use the documented byte
 	const long = deriveEndpoint({ ...record, agentDir: `/${"é".repeat(100)}` });
 	assert.ok(Buffer.byteLength(long.socketPath) <= 100);
 	assert.ok(!long.socketPath.startsWith("/é"));
+	const longAgentDir = `/${"é".repeat(100)}`;
+	assert.equal(long.socketPath, unixSocketPath(long.serverId, join(longAgentDir, "durable-hosts")));
+	assert.equal(long.claimPath, join(longAgentDir, "durable-hosts", sha(`${storageId}\0${record.cwd}`), ".claims", `${sha(JSON.stringify([record.cwd, storageId]))}.lock`));
+	const otherDirectory = deriveEndpoint({ ...record, agentDir: `/${"ø".repeat(100)}` });
+	assert.equal(otherDirectory.serverId, long.serverId);
+	assert.notEqual(otherDirectory.socketPath, long.socketPath);
+	const short = deriveEndpoint({ ...record, agentDir: "/a" });
+	assert.equal(short.socketPath, join("/a/durable-hosts", `${short.serverId}.sock`));
 });
 
 test("claim probes classify success and EPERM live, ESRCH dead, foreign and unexpected unknown", async (t) => {

@@ -38,8 +38,8 @@ test('unreadable saved messages use plain text and retain the exact diagnostic',
   }
 });
 test('read and connection diagnostics stay in detail without changing admission or retained history', () => {
-  const message = 'retained-read/1.0.0 request failed at host endpoint: ' + 'technical diagnostic '.repeat(80);
-  const connectionError = 'task-submit/1.2.0 host unavailable: ' + 'connection diagnostic '.repeat(80);
+  const message = `retained-read/1.0.0 request failed at host endpoint: ${'technical diagnostic '.repeat(80)}`;
+  const connectionError = `task-submit/1.2.0 host unavailable: ${'connection diagnostic '.repeat(80)}`;
   for (const hasEntries of [false, true]) {
     const source = {hasEntries, connected: true, loading: false, ready: false, error: {code: 'host_unavailable', message}, connectionError};
     const view = agentViewStatus(source);
@@ -75,6 +75,19 @@ test('only accepted live tool calls supply current tools and completed calls dis
   assert.deepEqual(conversationPresentation({target, row: stale, negotiated, frame: current, connected: true}).tool, {name: 'read', argument: '{"path":"current.ts"}'});
   current.entries = [{id: 'result', kind: 'message', messages: [{id: 'r', role: 'toolResult', state: 'final', coverage: current.coverage, parts: [{type: 'toolResult', callId: 'call', name: 'read', parts: [], isError: false}]}]}];
   assert.equal(conversationPresentation({target, row: stale, negotiated, frame: current, connected: true}).tool, undefined);
+});
+
+test('native compaction and nested tasks describe only the accepted current frame', () => {
+  const current = frame(true); current.status.compactions = {value: [{taskId: 4, reason: 'manual', blocking: true, attempt: 0}], truncated: false};
+  assert.equal(conversationPresentation({target, row, negotiated, frame: current, connected: true}).activity, 'Compacting…');
+  current.live = [{id: 'live:tool:parent/child', kind: 'pi.tool-result', tool: {callId: 'parent/child', name: 'read', taskId: 3, parentTaskId: 2, parentCallId: 'parent',
+    status: 'running', arguments: {value: {path: 'notes.md'}, truncated: false}, coverage: current.coverage}}];
+  assert.deepEqual(conversationPresentation({target, row, negotiated, frame: current, connected: true}).tool, {name: 'read', argument: '{"path":"notes.md"}'});
+  const tool = current.live[0].tool; assert.ok(tool); tool.status = 'done'; assert.equal(conversationPresentation({target, row, negotiated, frame: current, connected: true}).tool, undefined);
+  const disconnected = conversationPresentation({target, row, negotiated: {...negotiated, availability: 'unavailable'}, frame: current, connected: true});
+  assert.equal(disconnected.activity, 'Unavailable'); assert.equal(disconnected.tool, undefined);
+  current.status.compactions = {value: [], truncated: false};
+  assert.equal(conversationPresentation({target, row, negotiated, frame: current, connected: true}).activity, 'Working');
 });
 
 test('status glyphs distinguish ready, working, stored, stopped and unknown without changing words', () => {

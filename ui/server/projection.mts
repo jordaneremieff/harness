@@ -45,7 +45,7 @@ const STRUCTURED_INPUT_BYTES = 128 * 1024;
 const STRUCTURED_OUTPUT_BYTES = 16 * 1024;
 type StructuredBudget = {input: number; output: number; nodes: number; scan?: number};
 /** Trust is selected by an internal caller, never by a field in a native result. */
-type ProjectionOptions = {trustedStructured?: boolean; structuredText?: boolean; retainedText?: ReadonlyMap<number, string>; budget?: StructuredBudget; deferred?: (() => void)[]; communicationSource?: CommunicationSource};
+type ProjectionOptions = {displayBytes?: number; trustedStructured?: boolean; structuredText?: boolean; retainedText?: ReadonlyMap<number, string>; budget?: StructuredBudget; deferred?: (() => void)[]; communicationSource?: CommunicationSource};
 function structuredBudget(): StructuredBudget { return {input: STRUCTURED_INPUT_BYTES, output: STRUCTURED_OUTPUT_BYTES, nodes: 0}; }
 function structuredPriority(key: string, value: unknown): number {
   const name = safeText(key, 256).replace(/[_\s-]/g, '').toLowerCase();
@@ -190,6 +190,7 @@ class MessageProjector {
   private changed = false;
   constructor(privateDepth = 0, source?: Pick<ImageSource, 'entryId' | 'message'>, options: ProjectionOptions = {}) {
     this.depth = privateDepth; this.source = source; this.options = options; this.budget = options.budget ?? structuredBudget();
+    if (options.displayBytes !== undefined) this.remaining = Math.max(256, Math.min(this.remaining, options.displayBytes));
   }
   private readonly depth: number;
   private readonly source?: Pick<ImageSource, 'entryId' | 'message'>;
@@ -348,10 +349,57 @@ function entryImageSource(id: string, message: number, raw: unknown): Pick<Image
   try { const source = imageSource({entryId: id, message, part: 0}); return {entryId: source.entryId, message: source.message}; }
   catch { return undefined; }
 }
+function nestedToolIdentity(source: Record<string, unknown>): boolean {
+  return typeof source.callId === 'string' && typeof source.name === 'string' && typeof source.parentCallId === 'string' &&
+    Number.isSafeInteger(source.taskId) && Number(source.taskId) > 0 && Number.isSafeInteger(source.parentTaskId) && Number(source.parentTaskId) > 0 &&
+    ['pending', 'running', 'done'].includes(String(source.status));
+}
+function nestedToolContent(source: Record<string, unknown>, summary: Record<string, unknown>, projected: boolean): {content: unknown[]; truncated: boolean} {
+  const content: unknown[] = projected && Array.isArray(source.parts) ? [...source.parts] : [];
+  let textTruncated = false;
+  const boundedText = (value: string, bytes: number): string => {
+    const text = safeText(value, bytes); textTruncated ||= text !== value; return text;
+  };
+  if (!projected && typeof source.output === 'string') content.push({type: 'text', text: source.output});
+  if (Array.isArray(source.diagnostics)) for (const raw of source.diagnostics.slice(0, 16)) {
+    const d = object(raw); if (typeof d.message === 'string') content.push({type: 'text', text: `[${safeText(d.severity, 16)}] ${boundedText(d.message, 1024)}`});
+  }
+  if (typeof summary.error === 'string') content.push({type: 'text', text: boundedText(summary.error, 1024)});
+  return {content, truncated: textTruncated || Array.isArray(source.diagnostics) && source.diagnostics.length > 16};
+}
+function nestedToolSummary(tool: NonNullable<EntryView['tool']>, summary: Record<string, unknown>): void {
+  if (typeof summary.isError === 'boolean') tool.isError = summary.isError;
+  if (typeof summary.durationMs === 'number' && Number.isFinite(summary.durationMs) && summary.durationMs >= 0) tool.durationMs = summary.durationMs;
+}
+/** A nested slot supplies execution facts, not a model message or a start timestamp. */
+function nestedToolView(raw: unknown, projected = false): EntryView['tool'] {
+  const source = object(raw); if (!nestedToolIdentity(source)) return undefined;
+  const args = projected ? displayData(source.arguments, 8192) : jsonDisplay(source.arguments, 8192), summary = projected ? source : object(source.summary);
+  const {content, truncated} = nestedToolContent(source, summary, projected);
+  const display = projectMessage({role: 'toolResult', toolCallId: source.callId, toolName: source.name, content,
+    details: projected ? source.output : source.details, ...(projected ? {coverage: source.coverage} : {})}, 'nested-output', 'final', undefined,
+    {displayBytes: 40 * 1024, trustedStructured: projected});
+  const result = display.parts[0], dropped = [source.droppedBytes, source.droppedLines].some(value => Number(value) > 0);
+  const tool: NonNullable<EntryView['tool']> = {callId: safeText(source.callId, 512), name: safeText(source.name, 256), taskId: Number(source.taskId),
+    parentTaskId: Number(source.parentTaskId), parentCallId: safeText(source.parentCallId, 512), status: source.status as 'pending' | 'running' | 'done', arguments: args,
+    coverage: coverage(args.truncated || display.coverage.truncated || truncated || dropped)};
+  if (result?.type === 'toolResult') { if (content.length) tool.parts = result.parts; if (result.output) tool.output = result.output; }
+  const truncation = projected ? outputTruncation(object(source.output).truncation) : dropped ? {truncated: true as const} : undefined;
+  if (truncation) tool.output = {...tool.output, truncation};
+  nestedToolSummary(tool, summary); return tool;
+}
+function entryTool(source: Record<string, unknown>, id: string, kind: string): EntryView['tool'] {
+  if (kind !== 'pi.tool-result' || !id.startsWith('live:tool:')) return undefined;
+  const data = object(source.data);
+  const tool = data.live === true ? nestedToolView(data.nestedTool) : nestedToolView(source.tool, true);
+  return tool && id === `live:tool:${tool.callId}` ? tool : undefined;
+}
 function displayEntry(raw: unknown, fallbackId: string, options: ProjectionOptions = {}): EntryView {
   const source = object(raw);
   const id = safeText(typeof source.id === 'string' || typeof source.id === 'number' ? String(source.id) : fallbackId, 256);
   const kind = safeText(source.type ?? source.kind, 256) || 'unknown'; const result: EntryView = {id, kind};
+  const tool = entryTool(source, id, kind);
+  if (tool) { result.tool = tool; return finishEntry(result, structuredBudget(), []); }
   const hiddenCustom = kind === 'custom_message' && source.display === false;
   const messages = hiddenCustom ? [{...source, role: 'custom', content: []}] : entryMessages(source);
   const budget = options.budget ?? structuredBudget(), deferred: (() => void)[] = [];
@@ -446,6 +494,14 @@ function frameStatus(raw: unknown): ProjectedFrame['status'] {
   if (typeof source.lastText === 'string') status.lastText = safeText(source.lastText, 1024);
   const tasks = scalarRows(source.tasks), submissions = scalarRows(source.submissions);
   if (tasks) status.tasks = tasks; if (submissions) status.submissions = submissions;
+  const live = object(source.live);
+  if (source.compactions !== undefined) status.compactions = displayData(source.compactions, 8192);
+  else if (Array.isArray(live.compactions)) {
+    status.compactions = jsonDisplay(live.compactions.slice(0, 32), 8192);
+    status.compactions.truncated ||= live.compactions.length > 32;
+  }
+  if (source.compactionFailure !== undefined) status.compactionFailure = displayData(source.compactionFailure, 4096);
+  else if (live.compactionFailure !== undefined) status.compactionFailure = jsonDisplay(live.compactionFailure, 4096);
   return status;
 }
 function unavailableLiveImages(parts: PartView[]): void {
@@ -468,7 +524,7 @@ class FrameProjector {
       const size = sizeOf(entry);
       if (this.bytes + size > 230 * 1024) { this.omitted += index + 1; break; }
       this.bytes += size; rows.push(entry);
-      this.truncated ||= entry.data?.truncated === true || entry.messages?.some(message => message.coverage.truncated) === true;
+      this.truncated ||= entry.data?.truncated === true || entry.tool?.coverage.truncated === true || entry.messages?.some(message => message.coverage.truncated) === true;
     }
     return rows.reverse();
   }
@@ -484,9 +540,11 @@ export function projectFrame(raw: unknown): ProjectedFrame {
     const source = object(raw), projector = new FrameProjector();
     const communicationSource: CommunicationSource = {storageId: typeof source.storageId === 'string' ? source.storageId : undefined, conversationId: typeof source.conversationId === 'number' ? source.conversationId : undefined};
     const live = projector.collect(source.live ?? [], true, communicationSource), entries = projector.collect(source.entries ?? [], false, communicationSource);
+    const status = frameStatus(source.status);
+    projector.truncated ||= status.compactions?.truncated === true || status.compactionFailure?.truncated === true;
     return {revision: Number.isSafeInteger(source.revision) ? Number(source.revision) : 0, observedAt: safeText(source.observedAt, 256), entries, live,
       nextBefore: Number.isSafeInteger(source.nextBefore) && Number(source.nextBefore) > 0 ? Number(source.nextBefore) : null,
-      status: frameStatus(source.status), coverage: frameCoverage(source.coverage, projector)};
+      status, coverage: frameCoverage(source.coverage, projector)};
   } catch { return {revision: 0, observedAt: '', entries: [], live: [], nextBefore: null, status: {busy: false}, coverage: coverage(true, 1)}; }
 }
 function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {

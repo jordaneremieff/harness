@@ -2,7 +2,7 @@ import type { EntryView, JsonDisplay, PartView, ToolOutputInfo } from '../shared
 import type { ToolState } from './state.ts';
 import { TranscriptGroups } from './transcript-groups.ts';
 
-export type JoinedTool = {callId: string; name: string; owner: string; slot: string; args?: JsonDisplay; result?: PartView[]; output?: ToolOutputInfo; status: string; duration?: number; observedStart?: number; argumentText?: string};
+export type JoinedTool = {callId: string; name: string; owner: string; slot: string; args?: JsonDisplay; result?: PartView[]; output?: ToolOutputInfo; status: string; duration?: number; observedStart?: number; argumentText?: string; parentCallId?: string; taskId?: number; parentTaskId?: number};
 /** Elapsed time starts at receipt of a tool start, not at a history timestamp. */
 export function toolTime(tool: JoinedTool, now = Date.now()): string {
   if (tool.status !== 'working') return tool.duration === undefined ? '' : `${tool.duration} ms`;
@@ -21,7 +21,7 @@ export class ToolElapsedClock {
   }
   stop(): void { if (this.timer !== undefined) clearInterval(this.timer); this.timer = undefined; }
 }
-type ToolPart = {part: Extract<PartView, {type: 'toolCall' | 'toolResult'}>; owner: string; slot: string; sequence: number};
+type ToolPart = {part: Extract<PartView, {type: 'toolCall' | 'toolResult'}> | (NonNullable<EntryView['tool']> & {type: 'execution'}); owner: string; slot: string; sequence: number};
 type EntryParts = {tools: ToolPart[]; thinking: string[]; communication: string[]};
 export function slot(entry: string, message: string, index: number): string { return JSON.stringify([entry, message, index]); }
 export function toolDisclosureKeys(id: string): string[] { return [`tool:${id}`, `arguments:${id}`, `raw-output:${id}`]; }
@@ -33,7 +33,18 @@ export function communicationDisclosureKeys(entry: string, message: string): [st
 }
 function sameTool(a: JoinedTool | undefined, b: JoinedTool): boolean {
   return !!a && a.name === b.name && a.owner === b.owner && a.slot === b.slot && a.args === b.args &&
-    a.result === b.result && a.output === b.output && a.status === b.status && a.duration === b.duration && a.observedStart === b.observedStart && a.argumentText === b.argumentText;
+    a.result === b.result && a.output === b.output && a.status === b.status && a.duration === b.duration && a.observedStart === b.observedStart && a.argumentText === b.argumentText &&
+    a.parentCallId === b.parentCallId && a.taskId === b.taskId && a.parentTaskId === b.parentTaskId;
+}
+function executionStatus(part: NonNullable<EntryView['tool']>): string {
+  if (part.status === 'pending') return 'pending';
+  if (part.status === 'running') return 'working';
+  return part.isError === true ? 'error' : part.isError === false ? 'success' : 'ended';
+}
+function applyExecution(tool: JoinedTool, part: NonNullable<EntryView['tool']>): void {
+  tool.args = part.arguments; tool.result = part.parts; tool.output = part.output; tool.duration = part.durationMs;
+  tool.parentCallId = part.parentCallId; tool.taskId = part.taskId; tool.parentTaskId = part.parentTaskId;
+  tool.status = executionStatus(part);
 }
 function combineParts(id: string, parts: ToolPart[]): JoinedTool | undefined {
     let tool: JoinedTool | undefined; let called = false;
@@ -41,6 +52,7 @@ function combineParts(id: string, parts: ToolPart[]): JoinedTool | undefined {
       const part = item.part;
       tool ??= {callId: id, name: part.name, owner: item.owner, slot: item.slot, status: 'missing'};
       if (part.type === 'toolCall') { tool.args = part.arguments; if (!called) { tool.name = part.name; tool.owner = item.owner; tool.slot = item.slot; called = true; } }
+      else if (part.type === 'execution') applyExecution(tool, part);
       else { tool.result = part.parts; tool.output = part.output; tool.status = part.isError ? 'error' : 'success'; }
     }
   return tool;
@@ -64,7 +76,7 @@ export function actionableEntry(entry: EntryView): boolean {
   const actions = own('actions'); const error = own('error');
   return Array.isArray(actions) && actions.length > 0 || error !== undefined && error !== null && error !== false && error !== '';
 }
-function sessionEvent(entry: EntryView): boolean { return entry.kind !== 'message' && !entry.messages?.length; }
+function sessionEvent(entry: EntryView): boolean { return entry.kind !== 'message' && !entry.messages?.length && !entry.tool; }
 function sessionGroup(old: SessionGroup | undefined, id: string, members: EntryView[]): SessionGroup {
   if (old && old.entries.length === members.length && old.entries.every((entry, index) => entry === members[index])) return old;
   return {id, entries: members, notices: members.filter(actionableEntry)};
@@ -146,6 +158,7 @@ export class TranscriptIndex {
   }
   private entryParts(entry: EntryView): EntryParts {
     const parts: EntryParts = {tools: [], thinking: [], communication: []};
+    if (entry.tool) parts.tools.push({part: {...entry.tool, type: 'execution'}, owner: entry.id, slot: slot(entry.id, 'tool', 0), sequence: 0});
     for (const message of entry.messages ?? []) {
       if (message.communication) parts.communication.push(...communicationDisclosureKeys(entry.id, message.id));
       message.parts.forEach((part, at) => {

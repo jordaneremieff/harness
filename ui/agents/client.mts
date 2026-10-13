@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import type { JsonValue, ServiceProviderUpdate, ServiceSubscriptionSnapshot } from "@earendil-works/chord";
-import { Client, DisconnectedError, type ServiceSubscription } from "@earendil-works/pi-client";
-import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
+import { connectTransport, type FeedKind, type TransportClient, type TransportSubscription } from "../../transport/index.ts";
 import { assertOperation, decodeDescriptor, decodeFrame, decodeInput, decodeResponse, supportedOperations, type Admission, type ConversationFrame, type JsonObject, type OperationName, type RuntimeDescriptor } from "./contract.mts";
 
 export interface HostEndpoint { serverId: string; socketPath: string }
@@ -24,7 +22,7 @@ const mutations = new Set<OperationName>(["task-submit", "abort", "configure"]);
 export class HostLink {
   readonly endpoint: HostEndpoint;
   readonly descriptor: RuntimeDescriptor;
-  readonly #client: Client;
+  readonly #client: TransportClient;
   readonly #maxPending: number;
   readonly #onMeasure?: LinkOptions["onMeasure"];
   #pending = 0;
@@ -32,16 +30,16 @@ export class HostLink {
   #closePromise?: Promise<void>;
   readonly #disabled = new Set<OperationName>();
   readonly #disconnectListeners = new Set<(error: Error) => void>();
-  readonly #subscriptions = new Set<ServiceSubscription>();
+  readonly #subscriptions = new Set<{ dispose(): Promise<void> }>();
   readonly #inputs = new Map<string, { digest: string; promise: Promise<Admission> }>();
   readonly #unsubscribe: () => void;
 
-  private constructor(endpoint: HostEndpoint, client: Client, descriptor: RuntimeDescriptor, options: LinkOptions) {
+  private constructor(endpoint: HostEndpoint, client: TransportClient, descriptor: RuntimeDescriptor, options: LinkOptions) {
     this.endpoint = endpoint; this.#client = client; this.descriptor = descriptor;
     this.#maxPending = options.maxPending ?? 32; this.#onMeasure = options.onMeasure;
-    this.#unsubscribe = client.onConnectionStateChange(change => {
-      if (change.state !== "disconnected") return;
-      const error = change.error ?? new AgentError("host_unavailable", "Host connection closed. Accepted work continues independently.");
+    this.#unsubscribe = client.onClose(reason => {
+      const error = new AgentError("host_unavailable", `Host connection closed: ${reason}. Accepted work continues independently.`);
+      for (const subscription of this.#subscriptions) void subscription.dispose();
       for (const listener of this.#disconnectListeners) listener(error);
     });
   }
@@ -50,29 +48,25 @@ export class HostLink {
     if (!Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 32) throw new AgentError("invalid_request", "Invalid host concurrency bound.");
     const timeout = options.handshakeTimeoutMs ?? 5000;
     if (!Number.isFinite(timeout) || timeout < 1 || timeout > 30000) throw new AgentError("invalid_request", "Invalid handshake deadline.");
-    const unix = createUnixTransportFactory({ path: endpoint.socketPath, maxPendingBytes: 1024 * 1024 });
-    const client = new Client({ serverId: endpoint.serverId, transportFactory: handlers => unix({ ...handlers, onData: chunk => {
-      const started = performance.now();
-      try { handlers.onData(chunk); } finally { options.onMeasure?.("native.transport.decode", performance.now() - started); }
-    } }), maxFrameLength: 16 * 1024 * 1024 });
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let client: TransportClient | undefined;
     const controller = new AbortController();
-    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => {
-      controller.abort(); client.disconnect("Host handshake deadline");
-      reject(new AgentError("host_unavailable", "Host handshake or negotiation exceeded its deadline."));
-    }, timeout); });
+    const expired = new AgentError("host_unavailable", "Host handshake or negotiation exceeded its deadline.");
+    const timer = setTimeout(() => { controller.abort(expired); void client?.dispose(); }, timeout);
     try {
-      const descriptor = await Promise.race([(async () => {
-        await client.connect();
-        return decodeDescriptor(await client.request({ serverId: endpoint.serverId }, { serviceId: "pi.agent.host", member: "runtime-contract", args: [] }, controller.signal));
-      })(), deadline]);
+      client = await connectTransport({ serverId: endpoint.serverId, path: endpoint.socketPath,
+        timeoutMs: timeout, maxFrameBytes: 16 * 1024 * 1024, maxQueueBytes: 1024 * 1024 });
+      controller.signal.throwIfAborted();
+      const descriptor = decodeDescriptor(await client.request({ method: "runtime-contract" }, controller.signal));
+      controller.signal.throwIfAborted();
       return new HostLink(endpoint, client, descriptor, options);
     } catch (error) {
-      await client.dispose();
-      if (error instanceof DisconnectedError) throw new AgentError("host_unavailable", error.message);
+      const unavailable = !client?.connected;
+      await client?.dispose();
+      if (controller.signal.aborted) throw expired;
+      if (unavailable) throw new AgentError("host_unavailable", error instanceof Error ? error.message : "Host connection failed.");
       throw contractFailure(error);
     }
-    finally { if (timer) clearTimeout(timer); }
+    finally { clearTimeout(timer); }
   }
   get connected(): boolean { return !this.#closed && this.#client.connected; }
   supports(member: OperationName): boolean {
@@ -97,22 +91,14 @@ export class HostLink {
   onDisconnect(listener: (error: Error) => void): () => void {
     this.#disconnectListeners.add(listener); return () => this.#disconnectListeners.delete(listener);
   }
-  async request(member: OperationName, params: JsonObject | null, context: RequestContext = {}): Promise<unknown> {
+  async request(member: OperationName, params: JsonObject | null, context: RequestContext = {}, signal?: AbortSignal): Promise<unknown> {
     this.require([member]);
     if (!this.connected) throw new AgentError("host_unavailable", "Host connection is unavailable. Reconnect explicitly.");
     try { decodeInput(member, params ?? {}, context); } catch (error) { throw new AgentError("invalid_request", error instanceof Error ? error.message : "Invalid host operation input."); }
+    if (signal?.aborted) throw new AgentError("cancelled", "Host request wait was cancelled before dispatch.");
     this.#reserve();
     try {
-      let value: unknown;
-      try {
-        value = await this.#client.request({ serverId: this.endpoint.serverId }, {
-          serviceId: "pi.agent.host", member,
-          args: [params as JsonValue, context.wireRequestId ?? randomUUID(), supportedOperations[member] as unknown as JsonValue],
-        });
-      } catch (error) {
-        if (!this.connected) throw new AgentError("host_unavailable", "Host connection lost. Remote admission is not known.", mutations.has(member));
-        throw error;
-      }
+      const value = await this.#send(member, params, context, signal);
       const decodeStarted = performance.now();
       try {
         const decoded = decodeResponse(member, value, context);
@@ -125,7 +111,17 @@ export class HostLink {
       } finally { this.#onMeasure?.(`native.${member}.validate`, performance.now() - decodeStarted); }
     } finally { this.#pending--; }
   }
-  submit(identity: string, input: SubmitInput, installationId: string): Promise<Admission> {
+  async #send(member: OperationName, params: JsonObject | null, context: RequestContext, signal?: AbortSignal): Promise<unknown> {
+    try {
+      return await this.#client.request({ method: member, params,
+        requestId: context.wireRequestId ?? randomUUID(), contract: supportedOperations[member] }, signal);
+    } catch (error) {
+      if (!this.connected) throw new AgentError("host_unavailable", "Host connection lost. Remote admission is not known.", mutations.has(member));
+      if (signal?.aborted) throw new AgentError("cancelled", "Host request wait was cancelled. Accepted work continues independently.", mutations.has(member));
+      throw error;
+    }
+  }
+  submit(identity: string, input: SubmitInput, installationId: string, signal?: AbortSignal): Promise<Admission> {
     try { validateSubmitInput(input); } catch (error) { return Promise.reject(error); }
     const requestId = `ui:${input.operationId}`;
     const params = { sessionId: identity, message: input.message, origin: "operator", requester: `ui:${installationId}`, replyTo: identity, requestId, whenBusy: input.mode };
@@ -136,13 +132,13 @@ export class HostLink {
       return previous.promise;
     }
     if (this.#inputs.size >= 2048) return Promise.reject(new AgentError("capacity", "Host input receipt cache is full."));
-    const promise = this.request("task-submit", params, { identity, requestId, wireRequestId: requestId }) as Promise<Admission>;
+    const promise = this.request("task-submit", params, { identity, requestId, wireRequestId: requestId }, signal) as Promise<Admission>;
     this.#inputs.set(requestId, { digest, promise });
     return promise;
   }
   async subscribeObservation(token: string, onFrame: (frame: ConversationFrame) => void, identity?: string, onError?: (error: Error) => void): Promise<ObservationSubscription> {
     this.require(["observe-open", "observe-frame", "observe-close"]);
-    return this.#subscribe(`pi.agent.host.observe:${token}`, "pi.agent.host.observe", "frame", value => {
+    return this.#subscribe("observation", token, value => {
       const started = performance.now();
       try {
         const frame = decodeFrame(value, { identity });
@@ -157,31 +153,60 @@ export class HostLink {
       if (!value || typeof value !== "object" || !("revision" in value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) throw new AgentError("protocol_error", "Invalid host change state.");
       return value.revision as number;
     };
-    const sub = await this.#subscribe("pi.agent.host.changes", "pi.agent.host.changes", "change", decode, onChange, onError);
+    const sub = await this.#subscribe("changes", undefined, decode, onChange, onError);
     onChange(sub.baseline); return sub;
   }
-  async #subscribe<T>(serviceId: string, baselineService: string, member: string, decode: (value: unknown) => T, receive: (value: T) => void, onError?: (error: Error) => void): Promise<{ baseline: T; start(): void; dispose(): Promise<void> }> {
+  async #subscribe<T>(kind: FeedKind, token: string | undefined, decode: (value: unknown) => T, receive: (value: T) => void, onError?: (error: Error) => void): Promise<{ baseline: T; start(): void; dispose(): Promise<void> }> {
     this.#reserve();
-    let sub: ServiceSubscription | undefined;
+    let sub: TransportSubscription | undefined;
+    let started = false;
+    let disposed = false;
+    let pending: { value: T } | undefined;
+    let failure: Error | undefined;
+    const dispose = async () => {
+      disposed = true; pending = undefined;
+      this.#subscriptions.delete(owned);
+      await sub?.dispose();
+    };
+    const owned = { dispose };
     const fail = (error: unknown) => {
-      if (!(error instanceof AgentError && error.code === "host_unavailable")) this.#disabled.add(member === "frame" ? "observe-frame" : "changes");
-      const cause = error instanceof Error ? error : new AgentError("protocol_error", "Invalid subscription state.");
-      if (onError) onError(cause); else this.#client.disconnect("Malformed subscription state");
+      if (disposed) return;
+      failure = subscriptionFailure(error);
+      if (!(failure instanceof AgentError && failure.code === "host_unavailable")) this.#disabled.add(kind === "observation" ? "observe-frame" : "changes");
+      void dispose();
+      if (onError) onError(failure); else void this.close();
+    };
+    const current = (value: unknown): T => {
+      if (value === null) throw new AgentError("host_unavailable", "Host observation is unavailable.");
+      return decode(value);
     };
     try {
-      sub = await this.#client.subscribeService({ serverId: this.endpoint.serverId }, serviceId, "singleton", update => {
+      sub = await this.#client.subscribe(kind, token, value => {
+        if (disposed || !this.connected) return;
         try {
-          if (update.type === "unavailable") throw new AgentError("host_unavailable", "Host observation is unavailable.");
-          const raw = update.type === "reset" ? snapshotValue(update.snapshot, baselineService, member) : updateValue(update, member);
-          receive(decode(raw));
+          const decoded = current(value);
+          if (started) receive(decoded); else pending = { value: decoded };
         } catch (error) { fail(error); }
       });
-      const baseline = decode(snapshotValue(sub.snapshot, baselineService, member));
-      this.#subscriptions.add(sub);
-      const owned = sub;
-      return { baseline, start: () => owned.start(), dispose: async () => { this.#subscriptions.delete(owned); await owned.dispose(); } };
-    } catch (error) { if (sub) { await sub.dispose(); fail(error); } throw error; }
-    finally { this.#pending--; }
+      if (failure) throw failure;
+      if (!this.connected) throw new AgentError("host_unavailable", "Host connection closed during subscription.");
+      let baseline: T;
+      try { baseline = current(sub.value); } catch (error) { fail(error); throw failure; }
+      // The hydrated value includes changes received before subscribe() returns.
+      pending = undefined;
+      this.#subscriptions.add(owned);
+      return { baseline, start: () => {
+        if (disposed || started) return;
+        started = true;
+        const next = pending; pending = undefined;
+        if (next) { try { receive(next.value); } catch (error) { fail(error); } }
+      }, dispose };
+    } catch (error) {
+      await dispose();
+      if (failure) throw failure;
+      if (!this.connected) throw new AgentError("host_unavailable", "Host connection closed during subscription.");
+      throw error;
+    } finally { this.#pending--; }
   }
   #reserve(): void {
     if (!this.connected) throw new AgentError("host_unavailable", "Host connection is unavailable. Reconnect explicitly.");
@@ -194,6 +219,7 @@ export class HostLink {
     for (const listener of this.#disconnectListeners) listener(new AgentError("host_unavailable", "Host link closed. Accepted work remains independent."));
     this.#closePromise = (async () => {
       this.#unsubscribe();
+      await Promise.all([...this.#subscriptions].map(subscription => subscription.dispose()));
       await this.#client.dispose();
       this.#subscriptions.clear(); this.#disconnectListeners.clear();
     })();
@@ -218,23 +244,11 @@ function assertResponseContext(member: OperationName, value: unknown, params: Js
     if (params.view === "exact") { equal("entryId", params.entryId); equal("offset", params.offset ?? 0); }
   }
 }
+function subscriptionFailure(error: unknown): AgentError {
+  if (error instanceof AgentError) return error;
+  return new AgentError("protocol_error", error instanceof Error ? error.message : "Invalid subscription state.");
+}
 function contractFailure(error: unknown): unknown {
   if (error && typeof error === "object" && "code" in error && (error.code === "incompatible" || error.code === "unavailable" || error.code === "malformed")) return new AgentError(error.code === "malformed" ? "protocol_error" : "contract_mismatch", error instanceof Error ? error.message : "Host contract is unavailable.");
   return error;
-}
-function rootValue(ops: readonly unknown[]): unknown {
-  if (ops.length !== 1 || !Array.isArray(ops[0]) || ops[0].length !== 2 || ops[0][0] !== "r") throw new AgentError("protocol_error", "Host subscription requires root replacement state.");
-  return ops[0][1];
-}
-function snapshotValue(snapshot: ServiceSubscriptionSnapshot, serviceId: string, member: string): unknown {
-  if (snapshot.serviceId !== serviceId || snapshot.mode !== "singleton" || snapshot.instances.length !== 1) throw new AgentError("protocol_error", "Invalid host subscription baseline.");
-  const instance = snapshot.instances[0];
-  if (!instance || instance.instance || instance.members.length !== 1) throw new AgentError("protocol_error", "Invalid host singleton baseline.");
-  const state = instance.members[0];
-  if (state?.kind !== "state" || state.name !== member) throw new AgentError("protocol_error", "Invalid host subscription member.");
-  return rootValue(state.ops);
-}
-function updateValue(update: ServiceProviderUpdate, member: string): unknown {
-  if (update.type !== "state" || update.member !== member || update.instance) throw new AgentError("protocol_error", "Invalid host subscription update.");
-  return rootValue(update.ops);
 }

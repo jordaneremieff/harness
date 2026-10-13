@@ -4,9 +4,11 @@ import { syncBuiltinESMExports } from "node:module";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { setImmediate as turn } from "node:timers/promises";
 import { AgentService, HostLink, AgentError, deriveEndpoint, readClaim, type AgentCatalog, type CatalogRecord } from "./service-runtime.mts";
-import { FakeHost } from "./fake-host.mts";
+import { deferred, FakeHost, frame } from "./fake-host.mts";
 import type { RetainedReader } from "./retained-read.mts";
+import type { ConversationFrame, Snapshot } from "./contract.mts";
 
 const ROOT="00000000-0000-4000-8000-000000000001";
 const CHILD=`${ROOT}:2`;
@@ -47,6 +49,39 @@ test("compatible live snapshot preserves the live path without a reader call",as
   const service=new AgentService({store:"/backend",installationId:"fixture"},()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog),()=>({request:()=>{throw Error("No cold reader for compatible live read");},close:async()=>{}} as unknown as RetainedReader));
   t.after(()=>service.close());assert.deepEqual(await service.history(ROOT),snapshot);assert.deepEqual(calls,["snapshot"]);
 });
+for (const failed of [false, true]) test(`service shutdown ${failed ? "reports failed" : "awaits acknowledged"} token cleanup before link cancellation`, async t => {
+  const record:CatalogRecord={storageId:ROOT,cwd:"/project",agentDir:"/agent",packageDir:"/package",storagePath:"/project.sqlite",model:{provider:"fixture",modelId:"inert"},thinkingLevel:"off",createdAt:"2026-01-01T00:00:00.000Z"};
+  const claim=Buffer.from(JSON.stringify({sessionId:ROOT,cwd:record.cwd,host:hostname(),createdAt:record.createdAt,pid:1}));
+  const opened=t.mock.method(fs,"open",async()=>({stat:async()=>({isFile:()=>true,size:claim.length}),read:async(buffer:Buffer,offset:number,length:number,position:number)=>({bytesRead:claim.copy(buffer,offset,position,position+length),buffer}),close:async()=>{}}));
+  syncBuiltinESMExports();t.after(()=>{opened.mock.restore();syncBuiltinESMExports();});t.mock.method(process,"kill",()=>true);
+  const pending=deferred<Snapshot>();const subscribed=deferred<void>();const entered=deferred<void>();const acknowledgement=deferred<void>();
+  const events:string[]=[];let connected=true;let catalogClosed=false;let readerClosed=false;
+  const link={get connected(){return connected;},require:()=>{},capabilities:()=>({}),onDisconnect:()=>()=>{},
+    request:async(member:string)=>{
+      if(member==="snapshot") return pending.promise;
+      if(member==="observe-close") {events.push("observe-close");entered.resolve();await acknowledgement.promise;
+        if(!connected) throw new AgentError("host_unavailable","Link closed during cleanup");
+        if(failed) throw Error("Native cleanup failed");events.push("acknowledged");return {closed:false};}
+      return {};
+    },
+    subscribeObservation:async()=>({baseline:frame(1) as ConversationFrame,start:()=>{subscribed.resolve();},dispose:async()=>{events.push("release");}}),
+    close:async()=>{events.push("disconnect");connected=false;pending.reject(new AgentError("host_unavailable","Link closed"));},
+  } as unknown as HostLink;
+  t.mock.method(HostLink,"connect",async()=>link);
+  const service=new AgentService({store:"/backend",installationId:"fixture"},()=>({get:()=>record,close:async()=>{catalogClosed=true;}} as unknown as AgentCatalog),
+    ()=>({close:async()=>{readerClosed=true;}} as unknown as RetainedReader));
+  const selected=service.select("w",ROOT,1);const setupRejected=assert.rejects(selected,{code:"host_unavailable"});await subscribed.promise;await turn();
+  const closed=service.close();const outcome=Promise.allSettled([closed]);
+  try {
+    await entered.promise;assert.equal(connected,true);assert.deepEqual(events,["release","observe-close"]);
+    acknowledgement.resolve();const [result]=await outcome;await setupRejected;
+    if(failed) {assert.equal(result.status,"rejected");if(result.status==="rejected") assert.match(String(result.reason),/Native cleanup failed/);}
+    else assert.equal(result.status,"fulfilled");
+    assert.equal(connected,false);assert.equal(catalogClosed,true);assert.equal(readerClosed,true);
+    assert.deepEqual(events,failed?["release","observe-close","disconnect"]:["release","observe-close","acknowledged","disconnect"]);
+  } finally {acknowledgement.resolve();await outcome;await setupRejected;}
+});
+
 async function claimedService(t: TestContext) {
   const dir=await fs.mkdtemp(join(tmpdir(),"ui-retained-link-"));
   const record:CatalogRecord={storageId:ROOT,cwd:dir,agentDir:dir,packageDir:dir,storagePath:join(dir,`${ROOT}.sqlite`),model:{provider:"fixture",modelId:"inert"},thinkingLevel:"off",createdAt:"2026-01-01T00:00:00.000Z"};
