@@ -147,8 +147,8 @@ The command classifies every commit in each selected `main..<branch>` range:
 - a commit touching only development records stays on the branch;
 - a commit touching both is replayed with the development records dropped.
 
-Development records are `AGENTS.md`, `LOG.md`, `PLAN.md`, `REWRITE-SPEC.md`,
-`SOLUTION.md`, and `*FINDINGS.md` directly under the slice's dev-record root.
+Development records are `AGENTS.md`, `DESIGN.md`, `LOG.md`, `PLAN.md`,
+`REWRITE-SPEC.md`, `SOLUTION.md`, and `*FINDINGS.md` directly under the slice's dev-record root.
 The roots are `extensions/<name>/` and `skills/<name>/` for those kinds, and
 `<name>/` for features. A prompt slice is a single file with no dev records;
 every prompt commit ships. A batch filters development records from all selected

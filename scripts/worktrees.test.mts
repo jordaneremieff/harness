@@ -205,6 +205,17 @@ describe("development record classification", () => {
 		}
 	});
 
+	it("holds root design records and ships nested design documents", () => {
+		for (const root of ["ui", "extensions/demo", "skills/demo"]) {
+			const record = `${root}/DESIGN.md`;
+			const nested = `${root}/docs/DESIGN.md`;
+			assert.equal(isDevRecordPath(record, root), true, record);
+			assert.equal(classifyCommitFiles([record], root).kind, "held");
+			assert.equal(isDevRecordPath(nested, root), false, nested);
+			assert.equal(classifyCommitFiles([nested], root).kind, "ship");
+		}
+	});
+
 	it("ships everything from a prompt slice (no dev records)", () => {
 		for (const path of ["prompts/drift.md", "prompts/AGENTS.md", "docs/prompts.md"]) {
 			assert.equal(isDevRecordPath(path, null), false, path);

@@ -250,7 +250,7 @@ function escapeRegExp(text: string): string {
 function devRecordPatterns(root: string): RegExp[] {
 	const base = escapeRegExp(root);
 	return [
-		new RegExp(`^${base}/(?:AGENTS|LOG|PLAN|REWRITE-SPEC|SOLUTION)\\.md$`),
+		new RegExp(`^${base}/(?:AGENTS|DESIGN|LOG|PLAN|REWRITE-SPEC|SOLUTION)\\.md$`),
 		new RegExp(`^${base}/[^/]*FINDINGS\\.md$`),
 	];
 }
