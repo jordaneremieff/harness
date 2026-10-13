@@ -87,35 +87,33 @@ export function createMemoryContribution(
 			const searchResult = (details: Record<string, unknown>) => {
 				const structured = details as Durable.JsonObject;
 				return {
-					content: [{ type: "text" as const, text: JSON.stringify(details) }],
-					details: { ...structured, structuredContent: structured },
+					output: [{ type: "text" as const, text: JSON.stringify(details) }],
+					structuredOutput: structured,
+					details: structured,
 				};
 			};
 			// The other ordinary reads return the page as details only.
 			const plainResult = (details: Record<string, unknown>) => ({
-				content: [{ type: "text" as const, text: JSON.stringify(details) }],
+				output: [{ type: "text" as const, text: JSON.stringify(details) }],
 				details: details as Durable.JsonObject,
 			});
 			const mutationResult = (root: string, details: WriteReceipt) => ({
-				content: [{ type: "text" as const, text: memoryMutationText(root, details) }],
+				output: [{ type: "text" as const, text: memoryMutationText(root, details) }],
 				details: details as unknown as Durable.JsonObject,
 			});
 			const onCorpusLock = (root: string, operation: () => WriteReceipt): Promise<WriteReceipt> =>
 				withFileMutationQueue(join(root, ".memory-write.lock"), async () => operation());
-			const searchTool = {
-				...defineTool({
-					name: "memory_search",
-					description: MEMORY_TOOL_DESCRIPTIONS.search,
-					parameters: memorySearchParameters,
-					replay: "safe",
-					execute: async (args, _api, context) => {
-						const details = await searchMemory(memoryRoot(configuredDir()), args, context.abortSignal);
-						return searchResult(details);
-					},
-				}),
-				// pi-durable ignores the extra property; nested-call declarations read it.
-				outputSchema: memorySearchOutputSchema,
-			};
+			const searchTool = defineTool({
+				name: "memory_search",
+				description: MEMORY_TOOL_DESCRIPTIONS.search,
+				parameters: memorySearchParameters,
+				structuredOutputSchema: memorySearchOutputSchema,
+				replay: "safe",
+				execute: async (args, _api, context) => {
+					const details = await searchMemory(memoryRoot(configuredDir()), args, context.abortSignal);
+					return searchResult(details);
+				},
+			});
 			return defineExtension({
 				name: "memory",
 				sections: [

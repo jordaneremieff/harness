@@ -555,14 +555,19 @@ usage guidelines that the ordinary tools declare as `promptGuidelines`.
 `before_agent_start` hook. Durable renders sections before every request, but
 the index text depends only on corpus content, so an unchanged corpus produces
 identical bytes and adds no system-prompt delta; a changed corpus reaches the
-next request. Tool result details equal the ordinary tool details.
-`memory_search` adds its structured page beside them as
-`details.structuredContent` and keeps its declared output schema.
+next request. Native results use `output` for model-visible text and `details`
+for the ordinary tool details. `memory_search` declares `structuredOutputSchema`
+and returns its bounded page as `structuredOutput` for nested callers. Other
+memory tools have no structured schema; nested callers receive their bounded text.
+The ordinary form retains `content`, `outputSchema`, and `structuredContent`.
 
 `durable.test.mts` runs the contribution in a real Harness over `MemoryStorage`
 with the pi-ai faux provider. It drives a model-issued call for each tool,
 checks the corpus effect of each mutation, checks the two prompt sections, and
-checks the replay policy recorded in the durable tool intent.
+checks the replay policy recorded in the durable tool intent. Public native
+codemode tests also check structured pages, schema-less text, rejected read and
+blocked mutation errors, data-bearing schema errors, distinct nested tool tasks,
+and guidance through the following model request. All stores are isolated fixtures.
 
 ## Technical examples and credential refusals
 

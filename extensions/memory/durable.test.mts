@@ -1,7 +1,7 @@
 import { isolateMachineSettings } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -11,6 +11,8 @@ import type { JsonValue, ToolResultMessage, TranscriptContext } from "@earendil-
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import type { AgentSessionServices, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { MemoryDurableContribution, MemoryDurableContributionHost } from "./durable.ts";
 import memory from "./index.ts";
@@ -156,12 +158,11 @@ test("the ordinary factory emits one memory contribution with native contracts",
 				["memory_retire", "unsafe"],
 			],
 		);
-		const search = (extension.tools ?? []).find((tool) => tool.name === "memory_search") as
-			| { outputSchema?: unknown }
-			| undefined;
-		assert.equal(search?.outputSchema, memorySearchOutputSchema);
+		const search = (extension.tools ?? []).find((tool) => tool.name === "memory_search");
+		assert.equal(search?.structuredOutputSchema, memorySearchOutputSchema);
 		for (const tool of extension.tools ?? []) {
-			if (tool.name !== "memory_search") assert.equal(Object.hasOwn(tool, "outputSchema"), false);
+			assert.equal(Object.hasOwn(tool, "outputSchema"), false);
+			if (tool.name !== "memory_search") assert.equal(tool.structuredOutputSchema, undefined);
 		}
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
@@ -292,8 +293,8 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 
 		const searchPage = JSON.parse(messageText(search)) as Record<string, unknown>;
 		assert.equal(searchPage.kind, "index");
-		assert.deepEqual(nativeDetails(search).structuredContent, searchPage);
-		assert.deepEqual(nativeDetails(search), { ...searchPage, structuredContent: searchPage });
+		assert.deepEqual(nativeDetails(search), searchPage);
+		assert.equal(Object.hasOwn(nativeDetails(search), "structuredContent"), false);
 
 		const readPage = JSON.parse(messageText(read)) as Record<string, unknown>;
 		assert.equal(readPage.kind, "note");
@@ -329,6 +330,148 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 		]);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
+		if (previous === undefined) delete process.env.PI_MEMORY_DIR;
+		else process.env.PI_MEMORY_DIR = previous;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("native codemode receives memory pages and errors through nested tool tasks and hooks", async () => {
+	const root = mkdtempSync(join(tmpdir(), "memory-native-codemode-"));
+	const corpus = join(root, "corpus");
+	mkdirSync(corpus);
+	writeFileSync(join(corpus, "README.md"), "# Memory corpus\n");
+	writeFileSync(join(corpus, "editor-choice.md"), note("Editor choice"));
+	const previous = process.env.PI_MEMORY_DIR;
+	process.env.PI_MEMORY_DIR = corpus;
+	const faux = fauxProvider();
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const reports: unknown[] = [];
+	const harness = await Durable.Harness.open(
+		new Durable.MemoryStorage(),
+		{
+			models,
+			registry,
+			onReport: (error) => {
+				reports.push(error);
+			},
+		},
+		BACKGROUND_CONTEXT,
+	);
+	const sandbox = new CodemodeSandbox();
+	const calls: Array<{ name: string; parent: string; taskId: Durable.TaskId }> = [];
+	let searchError = false;
+	try {
+		const contribution = emitContribution();
+		registry.install(await contribution.create(hostFor(contribution, root, harness)));
+		const codemode = createCodemodeExtension({ sandbox, models: false });
+		registry.install(codemode);
+		registry.install(
+			Durable.defineExtension({
+				name: "memory-hook-probe",
+				hooks: [
+					Durable.hook(Durable.ToolTask, {
+						beforeTool: async (call, api) => {
+							if (!call.parent) return undefined;
+							calls.push({ name: call.name, parent: call.parent.callId, taskId: api.taskId });
+							if (call.name === "memory_write") return { block: "Corpus writes blocked by test hook" };
+							return undefined;
+						},
+						afterTool: async (call, result) => {
+							if (call.name !== "memory_search" || !call.parent) return undefined;
+							assert.ok(result.output?.[0]?.type === "text");
+							assert.deepEqual(result.structuredOutput, JSON.parse(result.output[0].text));
+							assert.deepEqual(result.details, result.structuredOutput);
+							return searchError ? { ...result, isError: true } : undefined;
+						},
+					}),
+				],
+			}),
+		);
+		const conversation = await harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: codemode.tools },
+		});
+		const requests: TranscriptContext[] = [];
+		const drive = async (code: string) => {
+			faux.setResponses([
+				(context) => {
+					requests.push(context);
+					return fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" });
+				},
+				(context) => {
+					requests.push(context);
+					return fauxAssistantMessage("done");
+				},
+			]);
+			const settled = await (
+				await conversation.submit({ type: "input", content: "Read the corpus" }, BACKGROUND_CONTEXT)
+			).wait(BACKGROUND_CONTEXT);
+			assert.equal(settled.status, "done");
+		};
+		await drive(
+			'const page = await tools.memory_search({}); const read = await tools.memory_read({ slug: "editor-choice" }); text({ kind: page.kind, slug: page.notes[0].slug, readKind: JSON.parse(read).kind });',
+		);
+		searchError = true;
+		await drive("const page = await tools.memory_search({}); text({ kind: page.kind, slug: page.notes[0].slug });");
+		await drive(
+			'try { await tools.memory_read({ slug: "missing-note" }); throw new Error("Read unexpectedly succeeded"); } catch (error) { text(String(error)); }',
+		);
+		await drive(
+			'try { await tools.memory_write({ slug: "blocked-note", title: "Blocked note", tags: [], summary: "Summary", details: "Details", sources: "Test", verified: false }); throw new Error("Write unexpectedly succeeded"); } catch (error) { text(String(error)); }',
+		);
+		const results = await toolResults(conversation);
+		assert.deepEqual(
+			results.map((result) => result.name),
+			["codemode", "codemode", "codemode", "codemode"],
+		);
+		for (const result of results) assert.equal(result.message.isError, false);
+		assert.match(messageText(results[0].message), /"kind":\s*"index"/);
+		assert.match(messageText(results[0].message), /"slug":\s*"editor-choice"/);
+		assert.match(messageText(results[0].message), /"readKind":\s*"note"/);
+		assert.match(messageText(results[1].message), /"kind":\s*"index"/);
+		assert.match(messageText(results[2].message), /missing-note/);
+		assert.doesNotMatch(messageText(results[2].message), /Read unexpectedly succeeded/);
+		assert.match(messageText(results[3].message), /Corpus writes blocked by test hook/);
+		assert.equal(existsSync(join(corpus, "blocked-note.md")), false);
+		const details = results.map(
+			(result) => nativeDetails(result.message) as { calls: Array<{ name: string; status: string }> },
+		);
+		assert.deepEqual(
+			details[0].calls.map((call) => [call.name, call.status]),
+			[
+				["memory_search", "ok"],
+				["memory_read", "ok"],
+			],
+		);
+		assert.deepEqual(
+			details[1].calls.map((call) => [call.name, call.status]),
+			[["memory_search", "error"]],
+		);
+		assert.deepEqual(
+			details[2].calls.map((call) => [call.name, call.status]),
+			[["memory_read", "error"]],
+		);
+		assert.deepEqual(
+			details[3].calls.map((call) => [call.name, call.status]),
+			[["memory_write", "error"]],
+		);
+		assert.deepEqual(
+			calls.map((call) => call.name),
+			["memory_search", "memory_read", "memory_search", "memory_read", "memory_write"],
+		);
+		assert.equal(new Set(calls.map((call) => call.taskId)).size, calls.length);
+		assert.ok(calls.every((call) => call.parent.length > 0));
+		for (const request of requests) {
+			const sections = sectionsOf(request.messages);
+			assert.match(sections.memory ?? "", /Consult memory before/);
+			assert.match(sections.memory_index ?? "", /editor-choice: Editor choice/);
+		}
+		assert.deepEqual(reports, []);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+		await sandbox.close();
 		if (previous === undefined) delete process.env.PI_MEMORY_DIR;
 		else process.env.PI_MEMORY_DIR = previous;
 		rmSync(root, { recursive: true, force: true });
