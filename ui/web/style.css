@@ -345,6 +345,8 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .stable-views { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 .stable-views > * { pointer-events: auto; }
 .stable-views > .conversation { overflow: visible; }
+.conversation[data-message-only=true] { pointer-events: none; }
+.conversation[data-message-only=true] > .composer { pointer-events: auto; }
 .conversation[data-message-only=true] > :not(.composer) { display: none; }
 
 /* Workspace and conversation column */

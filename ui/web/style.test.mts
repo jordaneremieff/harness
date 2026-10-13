@@ -31,6 +31,12 @@ test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headin
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== 'inherit'), []);
 });
+test('off-pane Message roots pass header pointers through while the original composer stays interactive', () => {
+  assert.match(rule('.stable-views > *'), /pointer-events: auto/);
+  assert.match(rule('.conversation[data-message-only=true]'), /pointer-events: none/);
+  assert.match(rule('.conversation[data-message-only=true] > .composer'), /pointer-events: auto/);
+  assert.match(rule('.conversation[data-message-only=true] > :not(.composer)'), /display: none/);
+});
 test('saved drafts and message choices retain full-width readable rows with separated values', () => {
   assert.match(rule('.recovery-target'), /display: grid; grid-template-columns: minmax\(0,1fr\) minmax\(12ch,20ch\);[^}]*gap: 12px/);
   assert.match(rule('.recovery-name, .recovery-count'), /min-width: 0; overflow-wrap: anywhere/);
