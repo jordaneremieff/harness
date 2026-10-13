@@ -69,6 +69,7 @@ test("large verified image input crosses the worker and Unix host above one MiB"
 });
 test("uncertain images preserve their key and require explicit retry with freshly verified bytes", {timeout: 15000}, async t => {
   const held = deferred<ReturnType<typeof receipt>>(); let attempts = 0;
+  t.after(() => held.resolve(receipt(CHILD, "ui:uncertain-image")));
   const f = await fixture(t, {handler: call => {
     if (call.member !== "task-submit") return;
     attempts++; return attempts === 1 ? held.promise : {...receipt(CHILD, "ui:uncertain-image"), deduped: true};
@@ -76,8 +77,10 @@ test("uncertain images preserve their key and require explicit retry with freshl
   const saved = await f.saved(), input = submitted([saved.image], "uncertain-image");
   await f.service.prepare(CHILD);
   const first = f.service.submit(CHILD, input), failed = assert.rejects(first, {code: "host_unavailable", uncertain: true});
-  await f.host.waitForCall(call => call.member === "task-submit"); await f.host.disconnect(); await failed;
+  await f.host.waitForCall(call => call.member === "task-submit");
+  const disconnected = f.host.disconnect(); await failed;
   assert.equal(f.service.imageInputAvailable(CHILD), false); held.resolve(receipt(CHILD, "ui:uncertain-image"));
+  await disconnected;
   await f.service.prepare(CHILD); await f.service.history(CHILD);
   await assert.rejects(f.service.submit(CHILD, input), {uncertain: true}); assert.equal(attempts, 1);
   await assert.rejects(f.service.retrySubmit(CHILD, {...input, images: [{...saved.image, name: "changed.png"}]}), {code: "operation_conflict"});

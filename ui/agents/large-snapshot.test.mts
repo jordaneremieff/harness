@@ -14,5 +14,5 @@ test("a large first snapshot entry retains its native continuation and coverage"
   assert.equal(decoded.nextBefore, 10);
   assert.equal(decoded.coverage.complete, false);
   assert.equal(decoded.entries.length, 1);
-  t.diagnostic(`Native decoder cost for an 8 MiB first entry: ${elapsed.toFixed(3)} ms. This excludes Unix/CBOR and browser projection.`);
+  t.diagnostic(`Native decoder cost for an 8 MiB first entry: ${elapsed.toFixed(3)} ms. This excludes Unix transport and browser projection.`);
 });
