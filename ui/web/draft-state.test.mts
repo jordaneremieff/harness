@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { DraftView, Target } from '../shared/api.ts';
+import type { DraftView, StoredDraft, Target } from '../shared/api.ts';
 import { acknowledgeDraft, applyEditorSuggestion, beginDraftSave, captureSubmission, createDraft, draftSaved,
   editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, settleSubmission, useEditorSuggestion } from './draft-state.ts';
 const view = (revision = 0, text = '', mode = 'prompt'): DraftView => ({revision, text, mode, images: [], persisted: true});
@@ -97,6 +97,18 @@ test('an admission clear event also clears an unchanged submitted edit once', ()
 });
 
 const image = {digest: 'a'.repeat(64), mimeType: 'image/png' as const, bytes: 64, width: 1, height: 1, name: 'a.png'};
+test('missing or malformed saved image arrays refuse without replacing the existing draft', () => {
+  const state = editDraft(createDraft({...view(4, 'saved text', 'steer'), images: [image]}), 'local text');
+  const before = structuredClone(state);
+  const {images: _images, ...obsolete} = view(5, 'remote text');
+  for (const raw of [obsolete, ...[undefined, null, false, 0, '', {}, [null]].map(images => ({...obsolete, images}))]) {
+    const draft = raw as unknown as StoredDraft;
+    assert.throws(() => createDraft(draft), TypeError);
+    assert.throws(() => receiveDraft(state, draft), TypeError);
+    assert.deepEqual(state, before);
+  }
+  assert.deepEqual(receiveDraft(createDraft(view(4, 'saved text')), view(5, 'current text')).images, []);
+});
 test('image-only tuples save, conflict and capture without merging or sharing mutable arrays', () => {
   const initial = {...view(1), images: [image]}; let state = createDraft(initial);
   initial.images[0] = {...image, name: 'outside.png'}; assert.equal(state.images[0]?.name, 'a.png');

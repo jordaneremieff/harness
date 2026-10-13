@@ -13,7 +13,7 @@ function imageCopy(images: readonly DraftImage[]): DraftImage[] {
   return images.map(image => ({...image}));
 }
 function view(draft: StoredDraft): DraftView {
-  const result: DraftView = {...draft, images: imageCopy(draft.images ?? [])};
+  const result: DraftView = {...draft, images: imageCopy(draft.images)};
   if (result.recoveryOrigin) result.recoveryOrigin = {...result.recoveryOrigin};
   if (result.recoverySendGuard) result.recoverySendGuard = {...result.recoverySendGuard};
   return result;
