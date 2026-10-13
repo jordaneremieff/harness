@@ -130,11 +130,12 @@ test('timeout, epoch replacement and exit release select originals and refuse ol
   await assert.rejects(session.respond('epoch-0', { epoch: 2, value: oldKey }), { code: 'invalid_request' }); await session.close();
 });
 test('stop cancels dialogs, clears queue before abort and preserves exact recovered text', async () => {
-  const { child, session } = create(); await session.start();
+  const stored: unknown[] = [];
+  const { child, session } = create({onBeforeClearQueue: async () => 'clear', onRecoveredQueue: async (_id, queue) => { stored.push(queue); }, onQueueClearFailed: async () => {}}); await session.start(); child.pendingMessageCount = 2;
   child.event({ type: 'extension_ui_request', id: 'q', method: 'input', title: 'Input' });
   child.onCommand = (record) => record.type === 'clear_queue' ? child.response(record, { steering: ['exact  text'], followUp: ['next\nline'] }) : child.defaults(record);
-  await session.stop(); assert.deepEqual(child.writes.slice(-3).map((record) => record.type), ['extension_ui_response', 'clear_queue', 'abort']);
-  assert.deepEqual(session.recoveredQueue, { steering: ['exact  text'], followUp: ['next\nline'] }); child.onCommand = (record) => child.defaults(record); await session.close();
+  await session.stop(); assert.deepEqual(child.writes.slice(-4).map((record) => record.type), ['extension_ui_response', 'get_state', 'clear_queue', 'abort']);
+  assert.deepEqual(stored, [{ steering: ['exact  text'], followUp: ['next\nline'] }]); child.onCommand = (record) => child.defaults(record); await session.close();
 });
 test('agent_end and retry do not produce idle until agent_settled', async () => {
   const { child, session } = create(); await session.start();

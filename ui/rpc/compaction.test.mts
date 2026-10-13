@@ -42,7 +42,7 @@ test('manual compact refusal refreshes idle without agent_settled and retains th
 });
 test('manual refusal preserves authoritative concurrent streaming activity', async () => {
   const { child, session } = await create();
-  refusing(child, (record) => child.response(record, { sessionId: 'fixture', isStreaming: true, isCompacting: false }));
+  refusing(child, (record) => child.response(record, { sessionId: 'fixture', isStreaming: true, isCompacting: false, pendingMessageCount: 0 }));
   await assert.rejects(session.control({ action: 'compact', epoch: 1 }), { message: refusal });
   assert.equal(session.view.activity, 'running'); await session.close();
 });
@@ -63,7 +63,7 @@ test('recovery end invalidates a state read issued before the end event', async 
   child.onCommand = (record) => { if (record.type === 'get_state') { held = record; read(); } else child.defaults(record); };
   const refresh = session.refreshState(); await requested;
   assert.ok(held); compactEnd(child);
-  child.defaults(held); await refresh; assert.equal(session.view.activity, 'compacting'); await session.close();
+  child.defaults(held); await refresh; assert.equal(session.view.activity, 'compacting'); child.onCommand = record => child.defaults(record); await session.close();
 });
 for (const reason of ['threshold', 'overflow']) {
   test(`automatic ${reason} recovery end is not settlement or a manual state refresh`, async () => {
@@ -79,7 +79,7 @@ test('failed refusal refresh preserves the refusal and marks state synchronizati
   const { child, session } = await create(); refusing(child, (record) => child.response(record, { sessionId: 'fixture' }));
   await assert.rejects(session.control({ action: 'compact', epoch: 1 }), { message: refusal });
   assert.equal(session.view.lastError?.code, 'protocol_error'); assert.equal(session.client.synchronized, false);
-  await session.close();
+  child.onCommand = record => child.defaults(record); await session.close();
 });
 test('late state response cannot change activity after lifecycle closure', async () => {
   const { child, session } = await create(); let held: RpcRecord | undefined;
@@ -88,7 +88,7 @@ test('late state response cannot change activity after lifecycle closure', async
   const refresh = session.refreshState(); const rejected = assert.rejects(refresh, { code: 'not_ready' });
   await requested; assert.ok(held);
   session.view.lifecycle = 'stopping'; session.view.activity = 'unknown'; child.defaults(held); await rejected;
-  assert.equal(session.view.activity, 'unknown'); await session.close();
+  assert.equal(session.view.activity, 'unknown'); child.onCommand = record => child.defaults(record); await session.close();
 });
 test('RPC refusal text removes controls and credentials and stays within a Unicode-safe byte bound', async () => {
   const child = new FakeChild(); const client = new RpcClient({ executable: 'pi', cwd: process.cwd(), spawnChild: child.spawn }); client.start();

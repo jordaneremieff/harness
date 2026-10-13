@@ -4,13 +4,15 @@ import { PrimarySession } from './session.mts';
 import { FakeChild } from './fake-child.mts';
 
 function create(extra: Partial<ConstructorParameters<typeof PrimarySession>[0]> = {}) {
-  const child = new FakeChild(); child.onCommand = (record) => child.defaults(record);
-  const session = new PrimarySession({ key: 'key', executable: 'pi', cwd: process.cwd(), spawnChild: child.spawn, publish: () => {}, ...extra });
+  const child = new FakeChild(); child.pendingMessageCount = 1; child.onCommand = (record) => child.defaults(record);
+  let clear = 0;
+  const session = new PrimarySession({ key: 'key', executable: 'pi', cwd: process.cwd(), spawnChild: child.spawn, publish: () => {},
+    onBeforeClearQueue: async () => `clear-${++clear}`, onRecoveredQueue: async () => {}, onQueueClearFailed: async () => {}, ...extra });
   return { child, session };
 }
 test('cleared queue persistence precedes abort and successful persistence releases local copies', async () => {
   let persist!: () => void; let seen = false;
-  const { child, session } = create({ onRecoveredQueue: async (queue) => {
+  const { child, session } = create({ onRecoveredQueue: async (_id, queue) => {
     assert.deepEqual(queue, { steering: ['exact'], followUp: [] }); seen = true; await new Promise<void>((resolve) => { persist = resolve; });
   } });
   await session.start(); child.onCommand = (record) => record.type === 'clear_queue' ? child.response(record, { steering: ['exact'], followUp: [] }) : child.defaults(record);
@@ -49,7 +51,7 @@ test('extension aggregate bounds restore the previous status state on refusal', 
 });
 test('failed recovered queue persists on the next stop before another native clear', async () => {
   let fail = true; const stored: unknown[] = [];
-  const { child, session } = create({ onRecoveredQueue: async (queue) => { if (fail) throw new Error('disk'); stored.push(queue); } });
+  const { child, session } = create({ onRecoveredQueue: async (_id, queue) => { if (fail) throw new Error('disk'); stored.push(queue); } });
   await session.start(); child.onCommand = (record) => record.type === 'clear_queue' ? child.response(record, { steering: ['intent'], followUp: [] }) : child.defaults(record);
   await assert.rejects(session.stop()); assert.deepEqual(session.recoveredQueue.steering, ['intent']); fail = false;
   await session.stop(); assert.deepEqual(stored, [{ steering: ['intent'], followUp: [] }, { steering: ['intent'], followUp: [] }]);

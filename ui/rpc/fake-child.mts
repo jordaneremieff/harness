@@ -13,6 +13,9 @@ export class FakeChild extends EventEmitter {
   onCommand?: (record: RpcRecord) => void;
   autoExit = true;
   blocked = false;
+  pendingMessageCount = 0;
+  modelInput = ['text'];
+  sessionFile?: string;
   release?: () => void;
   spawnArgs?: string[];
   constructor() {
@@ -40,7 +43,7 @@ export class FakeChild extends EventEmitter {
   defaults(record: RpcRecord): void {
     switch (record.type) {
       case 'extension_ui_response': break;
-      case 'get_state': this.response(record, { sessionId: 'fixture', isStreaming: false, isCompacting: false, model: { provider: 'acceptance-fixture', id: 'test', name: 'Fixture', reasoning: true, input: ['text'] } }); break;
+      case 'get_state': this.response(record, { sessionId: 'fixture', sessionFile: this.sessionFile, isStreaming: false, isCompacting: false, pendingMessageCount: this.pendingMessageCount, model: { provider: 'acceptance-fixture', id: 'test', name: 'Fixture', reasoning: true, input: this.modelInput } }); break;
       case 'get_session_stats': this.response(record, { tokens: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 }, cost: 0, contextUsage: { tokens: 10, contextWindow: 1000, percent: 1 } }); break;
       case 'get_commands': this.response(record, { commands: [{ name: 'fixture', description: 'Fixture command', source: 'extension' }] }); break;
       case 'get_available_models': this.response(record, { models: [{ provider: 'acceptance-fixture', id: 'test', name: 'Fixture', reasoning: true, input: ['text'] }] }); break;

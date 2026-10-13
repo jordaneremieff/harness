@@ -49,7 +49,7 @@ test('starting-session hydration creates and closes the saved-file worker normal
   ];
   await writeFile(path, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
   const child = new FakeChild(); child.onCommand = (record) => {
-    if (record.type === 'get_state') child.response(record, { sessionId: 'fixture', sessionFile: path, isStreaming: false, isCompacting: false });
+    if (record.type === 'get_state') child.response(record, { sessionId: 'fixture', sessionFile: path, isStreaming: false, isCompacting: false, pendingMessageCount: 0 });
     else if (record.type === 'get_entries') child.response(record, { entries: [], leafId: 'message' });
     else child.defaults(record);
   };

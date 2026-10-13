@@ -2,6 +2,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { Worker } from 'node:worker_threads';
 import { safeText } from '../server/projection.mts';
+import { LIMITS } from '../shared/api.ts';
+
+export type PreparedLine = {line: string; bytes: number};
+let preparedRequests = 0;
 
 export type RpcRecord = Record<string, unknown> & { type: string };
 export type SpawnChild = (executable: string, args: string[], options: { cwd: string; stdio: ['pipe', 'pipe', 'pipe']; shell: false }) => ChildProcessWithoutNullStreams;
@@ -31,6 +35,7 @@ export class RpcClient {
   private pending = new Map<string, Pending>();
   private counter = 0;
   private receiptCounter = 0;
+  private decodeCounter = 0;
   private accumulator = Buffer.alloc(0);
   private bytes = 0;
   private discarding = false;
@@ -96,13 +101,55 @@ export class RpcClient {
     });
     return result;
   }
+  async requestPrepared(type: 'prompt', prepare: (id: string) => Promise<PreparedLine>, beforeWrite: () => void): Promise<unknown> {
+    if (!this.available) throw new RpcError('not_ready', 'RPC process is not available.');
+    if (this.pending.size >= LIMITS.rpcPending) throw new RpcError('capacity', 'Too many outstanding RPC commands.');
+    if (!this.synchronized) throw new RpcError('protocol_error', 'RPC synchronization requires an explicit refresh.');
+    if (preparedRequests >= LIMITS.imagePreparations) throw new RpcError('capacity', 'Another image message is still being prepared or written.');
+    preparedRequests++;
+    const id = `rpc-${++this.counter}`;
+    let dispatched = false;
+    const result = new Promise<unknown>((resolve, reject) => this.pending.set(id, {type, resolve, reject, dispatched: false, at: 0}));
+    // Responses can precede pipe drainage. The write owns the prepared-byte reservation.
+    void result.catch(() => {});
+    const write = this.writeLine(async () => {
+      if (!this.pending.has(id)) throw new RpcError('not_ready', 'RPC command no longer pending.');
+      beforeWrite();
+      this.options.measure?.('rpc.prepare.start', id, performance.now());
+      const prepared = await prepare(id);
+      if (!Number.isSafeInteger(prepared.bytes) || prepared.bytes > LIMITS.inputFrameBytes || prepared.bytes > LIMITS.preparedInputBytes || prepared.bytes < 1 ||
+          typeof prepared.line !== 'string' || !prepared.line.endsWith('\n') || Buffer.byteLength(prepared.line) !== prepared.bytes)
+        throw new RpcError('payload_too_large', 'Prepared input exceeds its frame limit or has invalid framing.');
+      this.options.measure?.('rpc.prepare.end', id, performance.now(), prepared.bytes);
+      return prepared;
+    }, bytes => {
+      const pending = this.pending.get(id);
+      if (!pending) throw new RpcError('not_ready', 'RPC command no longer pending.');
+      beforeWrite();
+      dispatched = true; pending.dispatched = true; pending.at = performance.now(); this.options.measure?.('rpc.dispatch', id, pending.at, bytes);
+    });
+    try { await write; this.options.measure?.('rpc.write.end', id, performance.now()); }
+    catch (error) {
+      const pending = this.pending.get(id);
+      this.pending.delete(id);
+      const failure = new RpcError(error instanceof RpcError ? error.code : 'delivery_uncertain', error instanceof RpcError ? error.message : 'RPC preparation or write failed.', dispatched);
+      pending?.reject(failure); throw failure;
+    } finally { preparedRequests--; }
+    return result;
+  }
   sendUI(record: Record<string, unknown>): Promise<void> { return this.write({ ...record, type: 'extension_ui_response' }); }
   markSynchronized(): void { this.synchronized = true; }
   private write(record: Record<string, unknown>, before?: (bytes: number) => void): Promise<void> {
     const line = `${JSON.stringify(record)}\n`;
+    return this.writeLine(() => ({line, bytes: Buffer.byteLength(line)}), before);
+  }
+  private writeLine(prepare: () => PreparedLine | Promise<PreparedLine>, before?: (bytes: number) => void): Promise<void> {
     const job = this.writeTail.then(async () => {
       if (!this.child || this.ended || this.closing) throw new RpcError('not_ready', 'RPC process is not available.');
-      before?.(Buffer.byteLength(line));
+      const prepared = prepare();
+      const {line, bytes} = prepared instanceof Promise ? await prepared : prepared;
+      if (!this.child || this.ended || this.closing) throw new RpcError('not_ready', 'RPC process is not available.');
+      before?.(bytes);
       const input = this.child.stdin;
       await new Promise<void>((resolve, reject) => {
         let flushed = false; let drained = true;
@@ -185,12 +232,14 @@ export class RpcClient {
     if (this.ended) return Promise.reject(new RpcError('not_ready', 'RPC decoder is closed.'));
     this.worker ??= new Worker(new URL('./decode-worker.mts', import.meta.url));
     const worker = this.worker;
+    const decodeId = `decode-${++this.decodeCounter}`;
+    this.options.measure?.('rpc.decode.start', decodeId, performance.now(), bytes.length);
     return new Promise((resolve, reject) => {
       const cleanup = () => { worker.off('message', message); worker.off('error', fail); worker.off('exit', fail); };
       const fail = () => { cleanup(); reject(new RpcError('protocol_error', 'RPC decoder failed.')); };
       const message = (result: { record?: unknown; error?: boolean }) => { cleanup(); if (result.error) reject(new RpcError('protocol_error', 'RPC decode failed.')); else resolve(result.record); };
       worker.once('message', message); worker.once('error', fail); worker.once('exit', fail); worker.postMessage({ bytes, windows: [...this.pending].filter(([, p]) => p.beforeEntryId !== undefined).map(([id, p]) => [id, p.beforeEntryId]), incremental: [...this.pending].filter(([, p]) => p.since !== undefined).map(([id]) => id) });
-    });
+    }).finally(() => this.options.measure?.('rpc.decode.end', decodeId, performance.now(), bytes.length));
   }
   private record(value: unknown): void {
     if (this.ended) return;

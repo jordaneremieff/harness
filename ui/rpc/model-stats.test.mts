@@ -13,7 +13,7 @@ test('model acknowledgment invalidates old statistics before metadata and refres
     if (record.type === 'get_session_stats') signals.emit('request', record);
     else if (record.type === 'set_model') { changedModel = true; child.response(record, alternate); }
     else if (record.type === 'get_available_thinking_levels' && changedModel) signals.emit('levels', record);
-    else if (record.type === 'get_state' && changedModel) child.response(record, { sessionId: 'fixture', isStreaming: false, isCompacting: false, model: alternate });
+    else if (record.type === 'get_state' && changedModel) child.response(record, { sessionId: 'fixture', isStreaming: false, isCompacting: false, pendingMessageCount: 0, model: alternate });
     else child.defaults(record);
   };
   const session = new PrimarySession({ key: 'key', executable: 'pi', cwd: process.cwd(), spawnChild: child.spawn,

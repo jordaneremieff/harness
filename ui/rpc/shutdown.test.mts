@@ -56,8 +56,11 @@ test('malformed startup keeps the live writer owned through a blocked close and 
   const { child, session, states } = sessionFixture(); child.autoExit = false;
   child.onCommand = (record) => { if (record.type === 'get_state') child.stdout.write('{bad}\n'); else child.defaults(record); };
   await assert.rejects(session.start(), { code: 'protocol_error' }); assert.equal(session.client.exited, false); assert.equal(session.view.lifecycle, 'failed');
-  await assert.rejects(session.close(), { code: 'handoff_blocked' }); assert.equal(session.client.exited, false);
-  child.exit(0); assert.equal(session.client.exited, true); assert.equal(session.view.lifecycle, 'stopped'); assert.equal(states.at(-1)?.lifecycle, 'stopped');
+  await assert.rejects(session.close(), { code: 'protocol_error' }); assert.equal(session.client.exited, false);
+  assert.equal(child.writes.some(record => record.type === 'clear_queue' || record.type === 'abort'), false);
+  assert.equal(child.stdin.writableEnded, false);
+  child.exit(0); assert.equal(session.client.exited, true); assert.equal(session.view.lifecycle, 'failed'); assert.equal(states.at(-1)?.lifecycle, 'failed');
+  assert.equal(session.view.lastError?.code, 'delivery_uncertain');
 });
 test('session close uses EOF after a transport failure and still publishes verified termination', async () => {
   const { child, session, states } = sessionFixture(); await session.start(); await session.refreshState();
