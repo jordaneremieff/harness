@@ -7,12 +7,14 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AssistantMessage, getCurrentSystemPrompt, getCurrentTools, type Message } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, getCurrentTools, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
 import { createEventBus, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DISTILL_SYSTEM_PROMPT } from "./distill.ts";
 import { type StashDurableContribution, type StashDurableHost, stashDurableContribution } from "./durable.ts";
@@ -43,6 +45,7 @@ interface TestHarness {
 async function startHarness(
 	t: { after(fn: () => void | Promise<void>): void },
 	contextWindow?: number,
+	codemode = false,
 ): Promise<TestHarness> {
 	const launches: IndependentCommandInput[] = [];
 	const storeDir = await mkdtemp(join(tmpdir(), "stash-durable-store-"));
@@ -78,6 +81,11 @@ async function startHarness(
 	const extension = contribution.create(host);
 	const registry = createRegistry();
 	registry.install(extension);
+	if (codemode) {
+		const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
+		t.after(() => sandbox.close());
+		registry.install(createCodemodeExtension({ sandbox, models: false }));
+	}
 	const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
 	const root = await harness.root(context, {
 		agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: workdir },
@@ -114,7 +122,7 @@ async function toolResults(
 async function answerWith(
 	conversation: Durable.Conversation,
 	faux: ReturnType<typeof fauxProvider>,
-	responses: AssistantMessage[],
+	responses: FauxResponseStep[],
 	prompt: string,
 ): Promise<void> {
 	faux.setResponses(responses);
@@ -320,7 +328,7 @@ test("declares an explicit replay class for every tool", async (t) => {
 	assert.equal(classes.get("stash_rotate"), "unsafe");
 });
 
-test("carries the native structured list result on details.structuredContent", { timeout: 30000 }, async (t) => {
+test("keeps native list text and UI details separate from structured output", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t);
 	capacityOff(t);
 	await answerWith(
@@ -337,7 +345,15 @@ test("carries the native structured list result on details.structuredContent", {
 	await answerWith(
 		h.root,
 		h.faux,
-		[fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("listed")],
+		[
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			(request) => {
+				const result = request.messages.findLast((message) => message.role === "toolResult");
+				assert.ok(result && result.role === "toolResult" && result.toolName === "stash_list");
+				assert.match(messageText(result), /Structured record/);
+				return fauxAssistantMessage("listed");
+			},
+		],
 		"list",
 	);
 	const view = await h.root.context(context);
@@ -346,11 +362,67 @@ test("carries the native structured list result on details.structuredContent", {
 	);
 	assert.ok(listResult && listResult.role === "toolResult");
 	assert.equal(listResult.isError, false);
-	const details = (
-		listResult as unknown as { details?: { structuredContent?: { kind?: string; records?: unknown[] } } }
-	).details;
-	assert.equal(details?.structuredContent?.kind, "recent");
-	assert.equal(details?.structuredContent?.records?.length, 1);
+	const details = (listResult as unknown as { details?: { count?: number } }).details;
+	assert.equal(details?.count, 1);
+	assert.ok(!JSON.stringify(listResult).includes("structuredContent"));
+	assert.match(messageText(listResult), /Structured record/);
+	const listTool = h.extension.tools?.find((tool) => tool.name === "stash_list");
+	assert.ok(listTool?.structuredOutputSchema);
+	assert.equal("outputSchema" in listTool, false);
+	for (const tool of h.extension.tools ?? []) {
+		if (tool.name !== "stash_list") assert.equal(tool.structuredOutputSchema, undefined);
+	}
+});
+
+test("native codemode receives list objects, text results, and both error forms", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, undefined, true);
+	capacityOff(t);
+	const code = `
+const empty = await tools.stash_list({});
+const written = await tools.stash_write({title: "Nested handover", summary: "Nested fixture body."});
+const recent = await tools.stash_list({});
+const id = recent.records[0].id;
+const search = await tools.stash_list({query: "Nested fixture body."});
+const read = await tools.stash_read({id});
+const error = await tools.stash_list({cursor: "invalid"});
+let rejection = "";
+try { await tools.stash_read({id: "missing-artifact"}); }
+catch (e) { rejection = e.message; }
+text("NATIVE_RESULT=" + JSON.stringify({empty, written, recent, search, read, error, rejection}));
+`;
+	await answerWith(h.root, h.faux, [
+		fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
+		fauxAssistantMessage("done"),
+	], "Create, discover, and read a handover through code mode.");
+	const results = await toolResults(h.root);
+	const result = results.findLast((item) => item.name === "codemode");
+	assert.ok(result && !result.isError, result?.text);
+	const payload = result.text.match(/NATIVE_RESULT=(.+)/)?.[1];
+	assert.ok(payload, result.text);
+	const parsed = JSON.parse(payload);
+	assert.equal(parsed.empty.kind, "recent");
+	assert.deepEqual(parsed.empty.records, []);
+	assert.equal(parsed.empty.coverage.complete, null);
+	assert.equal(typeof parsed.written, "string");
+	assert.match(parsed.written, /Stashed "Nested handover"/);
+	assert.equal(parsed.recent.kind, "recent");
+	assert.equal(parsed.recent.records.length, 1);
+	assert.equal(parsed.recent.records[0].title, "Nested handover");
+	assert.equal(parsed.recent.coverage.complete, null);
+	assert.ok(parsed.search.matches.some((match: { id: string }) => match.id === parsed.recent.records[0].id));
+	assert.equal(parsed.search.coverage.complete, true);
+	assert.equal(typeof parsed.read, "string");
+	assert.match(parsed.read, /Nested fixture body\./);
+	assert.equal(parsed.error.kind, "error");
+	assert.equal(parsed.error.coverage.complete, false);
+	assert.match(parsed.error.error, /cursor requires query/);
+	assert.match(parsed.rejection, /no stash matches "missing-artifact"/);
+	assert.deepEqual(results.map((item) => item.name), ["codemode"], "nested results stay out of model context");
+	const view = await h.root.context(context);
+	const message = view.messages.findLast((item) => item.role === "toolResult");
+	const details = (message as unknown as { details: { calls: Array<{ name: string; status: string }> } }).details;
+	assert.equal(details.calls.findLast((call) => call.name === "stash_list")?.status, "error");
+	assert.equal(details.calls.findLast((call) => call.name === "stash_read")?.status, "error");
 });
 
 test("issues one capacity notice per threshold crossing and re-arms through the command", {

@@ -122,7 +122,7 @@ const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
 
 /** Copy tool details into JSON-closed values without undefined-valued keys. */
-function jsonDetails(value: Record<string, unknown>): Durable.JsonObject {
+function jsonDetails(value: unknown): Durable.JsonObject {
 	return JSON.parse(JSON.stringify(value)) as Durable.JsonObject;
 }
 
@@ -645,12 +645,11 @@ async function searchListResult(
 	signal: AbortSignal | undefined,
 ) {
 	const page = await searchStashes(storeDir, params, signal);
+	const data = jsonDetails({ ...page });
 	return {
-		content: [{ type: "text" as const, text: JSON.stringify(page) }],
-		details: jsonDetails({
-			...page,
-			structuredContent: { ...page, matches: page.matches.map((match) => ({ ...match })) },
-		}),
+		output: [{ type: "text" as const, text: JSON.stringify(page) }],
+		structuredOutput: data,
+		details: data,
 	};
 }
 
@@ -659,8 +658,9 @@ async function recentListResultFor(storeDir: string, params: ListToolParams) {
 	const entries = await listStashes(storeDir, { limit, tag: params.tag, state: params.state });
 	const result = recentListResult(entries, limit, emptyListText(params.tag, params.state));
 	return {
-		content: result.content,
-		details: jsonDetails({ ...(result.details ?? {}), structuredContent: result.structuredContent }),
+		output: result.content,
+		structuredOutput: jsonDetails(result.structuredContent),
+		details: jsonDetails(result.details ?? {}),
 		...(result.isError === undefined ? {} : { isError: result.isError }),
 	};
 }
@@ -669,15 +669,13 @@ function listErrorResult(error: unknown, signal: AbortSignal | undefined) {
 	if (signal?.aborted) throw error;
 	const text = boundedOutput(error instanceof Error ? error.message : String(error)).text;
 	return {
-		content: [{ type: "text" as const, text }],
-		details: jsonDetails({
-			structuredContent: {
-				kind: "error",
-				error: Array.from(safe(text)).slice(0, 1024).join(""),
-				coverage: { complete: false },
-				nextCursor: null,
-			},
-		}),
+		output: [{ type: "text" as const, text }],
+		structuredOutput: {
+			kind: "error",
+			error: Array.from(safe(text)).slice(0, 1024).join(""),
+			coverage: { complete: false },
+			nextCursor: null,
+		},
 		isError: true,
 	};
 }
@@ -765,7 +763,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 				);
 				if (params.checkpoint) {
 					return {
-						content: [
+						output: [
 							{
 								type: "text" as const,
 								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nRead this file to recover the synthesis. It is not listed by stash_list and has no /stash pickup shortcut.${redactions.count ? `\n${redactionNotice(redactions)}` : ""}`,
@@ -783,7 +781,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 					...(redactions.count ? [redactionNotice(redactions)] : []),
 				].join("\n");
 				return {
-					content: [{ type: "text" as const, text }],
+					output: [{ type: "text" as const, text }],
 					details: jsonDetails({ id: record.id, path, state: record.state, redactions }),
 				};
 			} catch (error) {
@@ -796,6 +794,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		name: "stash_list",
 		description: STASH_LIST_DESCRIPTION,
 		parameters: ListParams,
+		structuredOutputSchema: ListOutputSchema,
 		replay: "safe",
 		execute: async (params, _api, context) => {
 			try {
@@ -819,7 +818,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 			const result = await readStash(storeDir, params.id);
 			if ("error" in result) throw readFailure(result);
 			const read = readStashResult(result);
-			return { content: read.content, details: jsonDetails(read.details) };
+			return { output: read.content, details: jsonDetails(read.details) };
 		},
 	});
 
@@ -834,7 +833,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 				editStash(dir, targetId, params, context.abortSignal),
 			);
 			return {
-				content: [
+				output: [
 					{
 						type: "text" as const,
 						text: [
@@ -868,7 +867,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 				transitionStash(dir, targetId, { action: "close", outcome: params.outcome }),
 			);
 			return {
-				content: [
+				output: [
 					{
 						type: "text" as const,
 						text: `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? params.outcome.trim())}${transitioned.redactions.count ? `\n${redactionNotice(transitioned.redactions)}` : ""}`,
@@ -897,7 +896,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 				rotateStash(dir, targetId),
 			);
 			return {
-				content: [{ type: "text" as const, text: `Rotated stash ${rotated.id} to the stash archive.` }],
+				output: [{ type: "text" as const, text: `Rotated stash ${rotated.id} to the stash archive.` }],
 				details: jsonDetails({ id: rotated.id, state: rotated.state, archivePath: rotated.archivePath }),
 			};
 		},
@@ -1074,7 +1073,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 	return host.durable.defineExtension({
 		name: "stash",
 		sections: [host.durable.section("stash", () => STASH_SECTION_TEXT)],
-		tools: [writeTool, { ...listTool, outputSchema: ListOutputSchema }, readTool, editTool, completeTool, rotateTool],
+		tools: [writeTool, listTool, readTool, editTool, completeTool, rotateTool],
 		hooks: [
 			host.durable.hook(host.durable.GenerationTask, {
 				beforeRequest: async (request, api, context) => {

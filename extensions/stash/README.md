@@ -602,10 +602,15 @@ control/outcome state. Each tool declares its replay class explicitly:
 | `stash_complete` | `unsafe` | A lifecycle mutation. An interrupted call leaves the model an interrupted result and is never rerun; the store's own identity checks protect the artifact. |
 | `stash_rotate` | `unsafe` | A lifecycle mutation with the same boundary as completion. |
 
-`stash_list` carries the native structured result that the ordinary tool
-returns as `structuredContent` on `details.structuredContent`, and declares the
-same `outputSchema` for nested-call consumers. `stash_edit`, `stash_complete`,
-and `stash_rotate` use sequential execution. An edit error does not always mean
+Native tools return model-visible blocks through `output` and UI metadata
+through `details`. `stash_list` declares `structuredOutputSchema` with the same
+schema as the ordinary tool's `outputSchema`, and returns its bounded recent,
+search, or error value through `structuredOutput`. Native code mode scripts
+receive that value, including data-bearing list errors. Other stash tools declare
+no structured schema: successful nested calls return bounded text, and failed
+calls reject in scripts. The ordinary tools retain `content` and
+`structuredContent`. `stash_edit`, `stash_complete`, and `stash_rotate` use
+sequential execution. An edit error does not always mean
 no write: lock cleanup can fail after publication. Read the current artifact
 before repair or retry; the [edit contract](#edit-a-saved-handover) owns revision
 checks and the cooperating-writer limit.
