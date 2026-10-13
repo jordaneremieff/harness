@@ -230,14 +230,18 @@ test("explicit target reconnect opens a fresh connection and epoch after idempot
   await mkdir(dirname(endpoint.claimPath), { recursive: true });
   await writeFile(endpoint.claimPath, JSON.stringify({ sessionId: storageId, cwd: directory,
     host: hostname(), createdAt: "2026-01-01T00:00:00.000Z", pid: process.pid }));
+  const first = deferred<void>();
   const next = deferred<void>();
   const service = createAgentService({ store: directory, stateDir: directory, installationId: "fixture-installation", onFrame: (_workspace, _identity, epoch) => {
-    epochs.push(epoch); if (epochs.length === 2) next.resolve();
+    epochs.push(epoch);
+    if (epochs.length === 1) first.resolve();
+    if (epochs.length === 2) next.resolve();
   } });
   const host = await FakeHost.start({ endpoint, subscriptionFrame: () => frame(3) });
   t.after(async () => { await service.close(); await host.close(); await rm(directory, { recursive: true, force: true }); await rm(agentDir, { recursive: true, force: true }); });
   await service.refresh(); await service.select("workspace", storageId);
-  await new Promise<void>(resolve => setImmediate(resolve));
+  await first.promise;
+  assert.deepEqual(epochs, [1]);
   await host.disconnect(); await host.waitForRelease();
   await service.select("workspace", storageId);
   assert.deepEqual(epochs, [1]); assert.equal(host.connectionCount, 0);
