@@ -349,12 +349,13 @@ const nativeSetTimeout = globalThis.setTimeout;
 const nativeSetInterval = globalThis.setInterval;
 const intervals = new Set<ReturnType<typeof setInterval>>();
 const timers = new Set<ReturnType<typeof setTimeout>>();
+let hostClosed = false;
 Object.assign(globalThis, {setTimeout: (callback: () => void, delay = 0) => {
   const timer = nativeSetTimeout(() => {timers.delete(timer); callback();}, delay); timers.add(timer); return timer;
 }, setInterval: (callback: () => void, delay = 0) => {
   const timer = nativeSetInterval(callback, delay); intervals.add(timer); return timer;
 }});
-after(() => {for (const timer of timers) clearTimeout(timer); for (const timer of intervals) clearInterval(timer); timers.clear(); intervals.clear(); frames = [];});
+after(() => {hostClosed = true; for (const timer of timers) clearTimeout(timer); for (const timer of intervals) clearInterval(timer); timers.clear(); intervals.clear(); frames = [];});
 hostDocument.hidden = true;
 const startupMetadata = ['ui-generation', 'ui-client'].map((name, index) => {
   const meta = new HostNode('meta'), content = (index ? 'c' : 'a').repeat(index ? 24 : 64);
@@ -416,7 +417,7 @@ function event(name: string, data: unknown, target?: {kind: 'primary'; key: stri
 }
 function descendants(node: HostNode): HostNode[] { return [...node.children, ...node.children.flatMap(descendants)]; }
 
-await test('initial hidden startup and its retired ready wait initialize once after fresh ready and restored checkpoint', async t => {
+test('initial hidden startup and its retired ready wait initialize once after fresh ready and restored checkpoint', async t => {
   const fetch = globalThis.fetch, restore = Promise.withResolvers<Response>(), ack = Promise.withResolvers<Response>();
   const devResponse = () => Response.json({ok: true, data: {revision: 1, generation: 'a'.repeat(64), previous: null, change: 'reload', status: 'ready', code: 'none'}});
   let armed = false, restoreReads = 0, acknowledgments = 0; let restoredResponse: Response | undefined;
@@ -454,6 +455,9 @@ function devCheckpoint(): import('./dev-reload.ts').DevReloadCheckpoint {
 
 const attachedImage = (name = 'one.png', digit = 'a'): import('../shared/api.ts').DraftImage => ({name, digest: digit.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1});
 test('development checkpoint rejects changed image order at the same text and revision', async t => {
+  assert.equal(hostClosed, false, 'The browser host must remain active after startup.');
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  assert.equal(hostClosed, false, 'The browser host must retain its scheduled work until tests finish.');
   const images = [attachedImage(), attachedImage('two.png', 'b')], saved = await devHookFixture('image-order', 9770, images), checkpoint = devCheckpoint(), original = globalThis.fetch;
   t.after(() => {globalThis.fetch = original;});
   assert.equal(checkpoint.targets.find(item => item.targetKey === saved.agent.targetKey)?.imageFingerprint, draftImageFingerprint(images));

@@ -2144,7 +2144,7 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /element\('select'\)/);
   assert.match(factory, /const modes = element\('div', 'modes'\); modes\.id = `\$\{id\}-modes`/);
   assert.match(factory, /const recipient = element\('label', 'sr-only', 'Message'\); recipient\.id = `\$\{id\}-recipient`; recipient\.htmlFor = editor\.id/);
-  assert.match(factory, /root\.append\(resize, receipt, input, line\)/); assert.match(factory, /bar\.append\(modes, stop, send\)/);
+  assert.match(factory, /root\.append\(resize, receipt, input, line\)/); assert.match(factory, /bar\.append\(attach, picker, modes, stop, send\)/);
   assert.doesNotMatch(factory, /composer-settings|composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });

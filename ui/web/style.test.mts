@@ -31,6 +31,11 @@ test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headin
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== 'inherit'), []);
 });
+test('attachment metadata uses the fixed scale and preview inherits the dialog hairline', () => {
+  assert.match(rule('.attachment-digest'), /font-size: 12px; color: var\(--muted\)/);
+  assert.match(rule('dialog'), /border: 1px solid var\(--rule\)/);
+  assert.doesNotMatch(rule('.attachment-dialog'), /\bborder(?:-[\w-]+)?:/);
+});
 test('off-pane Message roots pass header pointers through while the original composer stays interactive', () => {
   assert.match(rule('.stable-views > *'), /pointer-events: auto/);
   assert.match(rule('.conversation[data-message-only=true]'), /pointer-events: none/);
@@ -469,7 +474,7 @@ test('one workbench footer owns wrapped facts without composer-local settings', 
   assert.match(factory, /const root = element\('form', 'composer'\); root\.id = id/);
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
   assert.match(factory, /root\.append\(resize, receipt, input, line\)/);
-  assert.match(factory, /bar\.append\(modes, stop, send\)/);
+  assert.match(factory, /bar\.append\(attach, picker, modes, stop, send\)/);
   assert.doesNotMatch(factory, /composer-settings|usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');

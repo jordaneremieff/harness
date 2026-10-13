@@ -708,8 +708,8 @@ pre.tool-document { font-family: var(--mono); }
 .attachment-preview img { display: block; width: 40px; height: 40px; object-fit: contain; }
 .attachment-summary { width: 100%; margin: 4px 0; padding-left: 18px; }
 .attachment-summary li { overflow-wrap: anywhere; }
-.attachment-digest { display: block; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
-.attachment-dialog { max-width: min(90vw,900px); max-height: 90dvh; padding: 16px; border: 1px solid var(--rule); background: var(--canvas); color: var(--fg); }
+.attachment-digest { display: block; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.attachment-dialog { max-width: min(90vw,900px); max-height: 90dvh; padding: 16px; background: var(--canvas); color: var(--fg); }
 .attachment-dialog > img { display: block; max-width: 100%; max-height: 65dvh; margin: 8px auto; object-fit: contain; }
 .attach { width: 28px; height: 28px; padding: 0; }
 @media (pointer: coarse) { .attach, .attachment-row button, .attachment-dialog button { min-width: 44px; min-height: 44px; } }
