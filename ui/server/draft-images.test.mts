@@ -139,8 +139,174 @@ test('partial row publication resumes by clear ID and position without duplicate
   t.mock.method(f.store, 'writeOperation', async (record: OperationRecord) => {if (fail && record.queueRecovery?.index === 1) {fail = false; throw new Error('before publication');} await write(record);});
   const rows = {steering: ['identical', 'identical'], followUp: []};
   await assert.rejects(operations.retainQueue(id, rows), /before publication/); assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).unconfirmed.length, 1);
-  await operations.settleQueueClearFailure(id, true); await operations.retainQueue(id, rows); await operations.retainQueue(id, rows);
+  await operations.settleQueueClearFailure(id, true); await f.reopen();
+  assert.equal(f.store.retainedInputCount(), 2);
+  await f.operations().retainQueue(id, rows); await f.operations().retainQueue(id, rows);
   const state = await f.store.getTarget(f.workspace.id, f.saved.targetKey); assert.equal(state.unconfirmed.length, 2); assert.equal(new Set(state.unconfirmed.map(row => row.operationId)).size, 2);
+});
+
+test('unused clear records release independently of retained images', async t => {
+  for (const outcome of ['empty', 'refused', 'uncertain'] as const) {
+    const f = await fixture(t), staged = await f.upload(), imageId = await admitted(f, f.workspace.id, f.saved.targetKey, staged.image);
+    const copy = await f.store.getRetainedInput(f.workspace.id, imageId);
+    const id = await f.operations().beginQueueClear(f.workspace.id, f.target, outcome === 'uncertain' ? 2 : 0);
+    if (outcome === 'empty') await f.operations().retainQueue(id, {steering: [], followUp: []});
+    else await f.operations().settleQueueClearFailure(id, outcome === 'uncertain');
+    f.advance(LIMITS.imageLeaseMs + 1); await f.reopen();
+    assert.equal(f.store.retainedInputCount(), outcome === 'uncertain' ? 3 : 1);
+    await f.operations().remove(id);
+    assert.throws(() => f.store.record(id), {code: 'unknown_operation'});
+    assert.equal(f.store.retainedInputCount(), 1);
+    assert.deepEqual(await f.store.getRetainedInput(f.workspace.id, imageId), copy);
+    await assert.rejects(f.operations().remove(imageId), {code: 'operation_conflict'});
+    assert.deepEqual(Buffer.from((await f.store.readDraftImage(f.workspace.id, f.saved.targetKey, staged.image.digest)).data), bytes);
+    await f.reopen(); assert.equal(f.store.retainedInputCount(), 1);
+    await f.store.discardRetainedInput(f.workspace.id, imageId); await f.operations().remove(imageId);
+  }
+});
+
+for (const absence of ['missing', 'discarded'] as const) test(`completed queue publication stays final after a ${absence} row`, async t => {
+  const f = await fixture(t), queue = {steering: ['retained text'], followUp: []};
+  const id = await f.operations().beginQueueClear(f.workspace.id, f.target, 1);
+  await f.operations().retainQueue(id, queue);
+  const row = f.store.records().find(record => record.queueRecovery?.clearOperationId === id); assert.ok(row);
+  const anchor = f.store.record(id);
+  if (absence === 'missing') { await f.store.close(); await unlink(join(f.root, 'operations', `${row.view.id}.json`)); }
+  else { await f.store.discardRetainedInput(f.workspace.id, row.view.id); await f.operations().remove(row.view.id); }
+  await f.reopen();
+  for (const uncertain of [true, false, true]) {
+    await assert.rejects(f.operations().retainQueue(id, queue), {code: 'queue_recovery_provenance'});
+    assert.deepEqual(f.store.record(id), anchor);
+    await f.operations().settleQueueClearFailure(id, uncertain); await f.reopen();
+    await assert.rejects(f.operations().retainQueue(id, queue), {code: 'queue_recovery_provenance'});
+    assert.deepEqual(f.store.record(id), anchor);
+    assert.throws(() => f.store.record(row.view.id), {code: 'unknown_operation'});
+    assert.equal(f.store.retainedInputCount(), 0);
+  }
+});
+
+test('completed queue verification preserves resolved rows and rejects changed content without writes', async t => {
+  const f = await fixture(t), queue = {steering: ['text'], followUp: ['next']};
+  const id = await f.operations().beginQueueClear(f.workspace.id, f.target, 2);
+  await f.operations().retainQueue(id, queue);
+  const row = f.store.records().find(record => record.queueRecovery?.clearOperationId === id); assert.ok(row);
+  await f.store.discardRetainedInput(f.workspace.id, row.view.id); await f.reopen();
+  const records = f.store.records();
+  const write = t.mock.method(f.store, 'writeOperation', async () => {throw new Error('unexpected write');});
+  await f.operations().retainQueue(id, queue);
+  await f.operations().settleQueueClearFailure(id, true);
+  const changed = {steering: ['text'], followUp: ['next']};
+  if (row.queueRecovery?.mode === 'steer') changed.followUp = ['changed']; else changed.steering = ['changed'];
+  await assert.rejects(f.operations().retainQueue(id, changed), {code: 'queue_recovery_provenance'});
+  await assert.rejects(f.operations().retainQueue(id, {steering: [], followUp: []}), {code: 'queue_recovery_provenance'});
+  assert.equal(write.mock.callCount(), 0); assert.deepEqual(f.store.records(), records);
+});
+
+test('partial publication retains release evidence and its remaining reservation across restart', async t => {
+  const f = await fixture(t), queue = {steering: ['first', 'second'], followUp: []};
+  const id = await f.operations().beginQueueClear(f.workspace.id, f.target, 2);
+  const write = f.store.writeOperation.bind(f.store);
+  t.mock.method(f.store, 'writeOperation', async (record: OperationRecord) => {if (record.queueRecovery?.index === 1) throw new Error('row write failed'); await write(record);});
+  await assert.rejects(f.operations().retainQueue(id, queue), /row write failed/);
+  const row = f.store.records().find(record => record.queueRecovery?.clearOperationId === id); assert.ok(row);
+  await f.store.discardRetainedInput(f.workspace.id, row.view.id);
+  await assert.rejects(f.operations().remove(row.view.id), {code: 'operation_conflict'});
+  await f.operations().settleQueueClearFailure(id, true); await f.reopen();
+  assert.equal(f.store.retainedInputCount(), 1);
+  await assert.rejects(f.operations().remove(id), {code: 'operation_conflict'});
+  await f.operations().retainQueue(id, queue); await f.operations().retainQueue(id, queue);
+  assert.equal(f.store.record(row.view.id).input, undefined);
+  assert.equal(f.store.record(row.view.id).inputResolved, true);
+  assert.equal(f.store.retainedInputCount(), 1);
+  assert.equal(f.store.records().filter(record => record.queueRecovery?.clearOperationId === id).length, 2);
+});
+
+test('an empty return with an unfinished final write stays protected until publication completes', async t => {
+  const f = await fixture(t), id = await f.operations().beginQueueClear(f.workspace.id, f.target, 0);
+  const write = f.store.writeOperation.bind(f.store);
+  t.mock.method(f.store, 'writeOperation', async (record: OperationRecord) => {if (record.queueClear?.phase === 'retained') throw new Error('completion write failed'); await write(record);});
+  await assert.rejects(f.operations().retainQueue(id, {steering: [], followUp: []}), /completion write failed/);
+  await f.reopen();
+  assert.equal(f.store.operationMetadata().find(record => record.view.id === id)?.protected, true);
+  await assert.rejects(f.operations().remove(id), {code: 'operation_conflict'});
+  await f.operations().retainQueue(id, {steering: [], followUp: []}); await f.operations().remove(id);
+});
+
+test('invalid member evidence prevents anchor removal and reservation release', async t => {
+  for (const defect of ['missing', 'workspace', 'target', 'release'] as const) {
+    const f = await fixture(t), staged = await f.upload(), imageId = await admitted(f, f.workspace.id, f.saved.targetKey, staged.image);
+    const id = await f.operations().beginQueueClear(f.workspace.id, f.target, 1);
+    await f.operations().settleQueueClearFailure(id, true);
+    if (defect === 'missing') { await f.store.close(); await unlink(join(f.root, 'operations', `${imageId}.json`)); }
+    else await f.store.transaction(async () => {
+      const record = f.store.record(id), member = record.queueClear?.imageCopies[0]; assert.ok(member);
+      if (defect === 'workspace') member.workspaceId = crypto.randomUUID();
+      if (defect === 'target') record.view.target = {...f.target, epoch: 2};
+      if (defect === 'release') {
+        const copy = f.store.record(imageId); delete copy.input; delete copy.retainedInput; copy.inputResolved = false;
+        await f.store.writeOperation(copy);
+      }
+      await f.store.writeOperation(record);
+    });
+    f.advance(LIMITS.imageLeaseMs + 1); await f.reopen();
+    const anchor = f.store.record(id);
+    assert.equal(f.store.canDiscardUnknownQueueClear(id), false);
+    await assert.rejects(f.operations().remove(id), {code: 'operation_conflict'});
+    assert.deepEqual(f.store.record(id), anchor);
+    assert.equal(f.store.record(id).queueClear?.rowBudget, 1);
+    assert.throws(() => f.store.imageGraphForMutation(), {code: 'image_storage_unavailable'});
+    assert.equal((await stat(join(f.root, 'images', f.saved.targetKey, `${staged.image.digest}.bin`))).size, bytes.length);
+  }
+});
+
+test('pending input backlinks retain clear evidence after the source and draft are released', async t => {
+  const f = await fixture(t), staged = await f.upload(), imageId = await admitted(f, f.workspace.id, f.saved.targetKey, staged.image);
+  const id = await f.operations().beginQueueClear(f.workspace.id, f.target, 1);
+  await f.operations().retainQueue(id, {steering: ['review text'], followUp: []});
+  const row = f.store.records().find(record => record.queueRecovery?.clearOperationId === id); assert.ok(row);
+  const draft = await f.store.restoreRetainedInput(f.workspace.id, row.view.id, (await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft.revision);
+  const request = {workspaceId: f.workspace.id, kind: 'primary.input' as const, target: f.target, body: {message: draft.text, differentMessage: true}, input: {targetKey: f.saved.targetKey, text: draft.text, mode: draft.mode, images: [], draftRevision: draft.revision, differentMessage: true as const}};
+  const pending = await f.operations().reserve(f.workspace.id, 'primary.input', f.target);
+  await f.operations().execute(pending.id, request, async () => {throw new Error('receipt lost');});
+  const accepted = await f.operations().reserve(f.workspace.id, 'primary.input', f.target);
+  await f.operations().execute(accepted.id, request, async () => ({state: 'accepted', receipt: {kind: 'rpc', disposition: 'started'}}));
+  await f.store.discardRetainedInput(f.workspace.id, row.view.id); await f.store.discardRetainedInput(f.workspace.id, imageId); await f.reopen();
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft.recoveryOrigin, undefined);
+  for (const protectedId of [id, row.view.id, imageId]) await assert.rejects(f.operations().remove(protectedId), {code: 'operation_conflict'});
+  const origin = f.store.record(pending.id).input?.recoveryOrigin; assert.ok(origin);
+  f.store.assertRecoverySendAllowed(origin);
+  await f.store.discardRetainedInput(f.workspace.id, pending.id);
+  await f.operations().remove(id); await f.operations().remove(row.view.id); await f.operations().remove(imageId); await f.operations().remove(pending.id);
+});
+
+test('operation capacity prunes unused anchors before retained copies or live recovery evidence', async t => {
+  const f = await fixture(t), staged = await f.upload(), imageId = await admitted(f, f.workspace.id, f.saved.targetKey, staged.image);
+  const releasedId = await admitted(f, f.workspace.id, f.saved.targetKey, staged.image);
+  const liveId = await f.operations().beginQueueClear(f.workspace.id, f.target, 1);
+  await f.operations().retainQueue(liveId, {steering: ['review'], followUp: []});
+  const row = f.store.records().find(record => record.queueRecovery?.clearOperationId === liveId); assert.ok(row);
+  await f.store.restoreRetainedInput(f.workspace.id, row.view.id, (await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft.revision);
+  await f.store.discardRetainedInput(f.workspace.id, row.view.id); await f.store.discardRetainedInput(f.workspace.id, releasedId);
+  f.advance(1);
+  const emptyId = await f.operations().beginQueueClear(f.workspace.id, f.target, 0);
+  await f.operations().retainQueue(emptyId, {steering: [], followUp: []});
+  f.advance(1);
+  const refusedId = await f.operations().beginQueueClear(f.workspace.id, f.target, 0);
+  await f.operations().settleQueueClearFailure(refusedId, false);
+  await f.store.transaction(async () => {
+    while (f.store.operationStoreCount() < LIMITS.operations) {
+      const at = '2099-01-01T00:00:00.000Z';
+      await f.store.writeOperation({workspaceId: f.workspace.id, view: {id: crypto.randomUUID(), kind: 'primary.control', target: f.target, state: 'completed', createdAt: at, updatedAt: at}});
+    }
+  });
+  f.advance(LIMITS.imageLeaseMs + 1); await f.reopen();
+  await f.operations().reserve(f.workspace.id, 'primary.control', f.target);
+  await f.operations().reserve(f.workspace.id, 'primary.control', f.target);
+  assert.equal(f.store.operationStoreCount(), LIMITS.operations);
+  for (const id of [emptyId, refusedId]) assert.throws(() => f.store.record(id), {code: 'unknown_operation'});
+  for (const id of [imageId, releasedId, liveId, row.view.id]) assert.equal(f.store.operationMetadata().find(record => record.view.id === id)?.protected, true);
+  assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft.recoverySendGuard?.state, 'blocked');
+  assert.deepEqual(Buffer.from((await f.store.readDraftImage(f.workspace.id, f.saved.targetKey, staged.image.digest)).data), bytes);
 });
 
 test('missing acknowledged bytes preserve labels, refuse Send and prevent pre-clear effects', async t => {

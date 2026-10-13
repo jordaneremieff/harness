@@ -573,13 +573,17 @@ export class StateStore {
     if (this.recoveryGuard(origin).state === 'unavailable') throw new StateError('queue_recovery_provenance', 'Recovery provenance is unavailable', 409);
     return origin;
   }
+  private clearImageMember(anchor: OperationRecord, member: QueueClearRecord['imageCopies'][number]): OperationRecord | undefined {
+    const copy = this.operationRecords.get(member.operationId);
+    return copy && copy.workspaceId === member.workspaceId && sameTarget(copy.view.target, anchor.view.target) && (copy.input || copy.inputResolved === true) ? copy : undefined;
+  }
   private recoveryGuard(origin: RecoveryOrigin): RecoverySendGuard {
     const source = this.operationRecords.get(origin.recoveryOperationId), anchor = this.operationRecords.get(origin.clearOperationId);
     if (!source?.queueRecovery || source.queueRecovery.clearOperationId !== origin.clearOperationId || !anchor?.queueClear || !sameTarget(source.view.target, anchor.view.target) || source.workspaceId !== anchor.queueClear.recoveryWorkspaceId) return {state: 'unavailable', imageCopies: 0};
     let imageCopies = 0;
     for (const member of anchor.queueClear.imageCopies) {
-      const record = this.operationRecords.get(member.operationId);
-      if (!record || record.workspaceId !== member.workspaceId || !sameTarget(record.view.target, anchor.view.target) || !record.input && record.inputResolved !== true) return {state: 'unavailable', imageCopies};
+      const record = this.clearImageMember(anchor, member);
+      if (!record) return {state: 'unavailable', imageCopies};
       if (record.input?.images?.length && record.retainedInput !== 'refused' && (!record.inputResolved || record.retainedInput)) imageCopies++;
     }
     return {state: imageCopies ? 'blocked' : 'clear', imageCopies};
@@ -612,7 +616,7 @@ export class StateStore {
   }
   private protectInputRecord(ids: Set<string>, record: OperationRecord): void {
     if (record.retainedInput) ids.add(record.view.id);
-    if (record.queueClear && !['retained', 'refused'].includes(record.queueClear.phase) && record.queueClear.rowBudget) ids.add(record.view.id);
+    if (record.queueClear && !['retained', 'refused'].includes(record.queueClear.phase) && (record.queueClear.rowBudget || record.queueClear.returned)) ids.add(record.view.id);
     if (!record.input || record.inputResolved && !record.retainedInput) return;
     if (record.queueRecovery) ids.add(record.queueRecovery.clearOperationId);
     this.protectOrigin(ids, record.input.recoveryOrigin);
@@ -621,8 +625,7 @@ export class StateStore {
     if (!record.queueClear) return;
     for (const member of record.queueClear.imageCopies) {
       ids.add(member.operationId);
-      const copy = this.operationRecords.get(member.operationId);
-      if (!copy || copy.input && (!copy.inputResolved || copy.retainedInput)) ids.add(record.view.id);
+      if (!this.clearImageMember(record, member)) ids.add(record.view.id);
     }
   }
   private protectedOperationIds(): Set<string> {
@@ -636,8 +639,7 @@ export class StateStore {
   private assertClearImageProvenance(record: OperationRecord): void {
     if (!record.queueClear) return;
     for (const member of record.queueClear.imageCopies) {
-      const copy = this.operationRecords.get(member.operationId);
-      if (!copy || copy.workspaceId !== member.workspaceId || !sameTarget(copy.view.target, record.view.target) || !copy.input && copy.inputResolved !== true) throw new StateError('image_storage_unavailable', 'A clear-event image reference is incomplete; image deletion is not permitted', 503);
+      if (!this.clearImageMember(record, member)) throw new StateError('image_storage_unavailable', 'A clear-event image reference is incomplete; image deletion is not permitted', 503);
     }
   }
   private assertInputImageProvenance(record: OperationRecord): void {
@@ -794,6 +796,7 @@ export class StateStore {
   canDiscardUnknownQueueClear(id: string): boolean {
     const record = this.operationRecords.get(id);
     if (!record?.queueClear || record.view.state !== 'uncertain' || record.queueClear.returned) return false;
+    if (record.queueClear.imageCopies.some(member => !this.clearImageMember(record, member))) return false;
     return ![...this.operationRecords.values()].some(value => value.queueRecovery?.clearOperationId === id || value.input?.recoveryOrigin?.clearOperationId === id) && ![...this.targetRecords.values()].some(value => value.draft.recoveryOrigin?.clearOperationId === id);
   }
   draftForOperation(wid: string, key: string): TargetState { return this.targetView(this.requireTarget(wid, key)); }

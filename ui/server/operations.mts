@@ -226,13 +226,13 @@ export class Operations {
     await this.store.transaction(async () => {
       const anchor = this.store.record(clearOperationId), clear = anchor.queueClear, target = anchor.view.target;
       if (!clear || target?.kind !== 'primary' || clear.phase === 'refused') throw new StateError('queue_recovery_provenance', 'No usable clear event exists', 409);
-      const previouslyRetained = clear.phase === 'retained';
       const counts = {steering: queue.steering.length, followUp: queue.followUp.length};
       if (clear.returned && (clear.returned.steering !== counts.steering || clear.returned.followUp !== counts.followUp)) throw new StateError('queue_recovery_provenance', 'Clear-event return counts changed', 409);
       if (!clear.returned && counts.steering + counts.followUp > clear.rowBudget) throw new StateError('capacity', 'Returned queue exceeds its pre-clear reservation', 429);
       const records = this.recoveredRows(anchor, target, queue);
+      if (clear.phase === 'retained') { await this.publishRecoveredRows(records, target, true); return; }
       clear.returned = counts; clear.phase = 'retaining'; anchor.view.state = 'dispatched'; anchor.view.updatedAt = this.stamp(); await this.store.writeOperation(anchor);
-      await this.publishRecoveredRows(records, target, previouslyRetained);
+      await this.publishRecoveredRows(records, target, false);
       clear.phase = 'retained'; clear.rowBudget = 0; anchor.view.state = 'completed'; anchor.view.updatedAt = this.stamp(); delete anchor.view.error;
       anchor.view.receipt = {kind: 'rpc', result: projectJson({action: 'clear_queue', ...counts})};
       await this.store.writeOperation(anchor);
