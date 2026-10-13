@@ -972,6 +972,39 @@ test('composer focus and repeated transcript refresh never replace non-tail read
   assert.equal(container.scrollTop, before); assert.equal(view.captureGeometry().anchor?.id, 'e20'); assert.equal(view.captureGeometry().anchor?.offsetPx, 17);
   assert.ok(readings.every(value => !value.followTail && value.anchorId === 'e20')); view.reset();
 });
+for (const route of ['capture', 'paint', 'own-scroll']) {
+  test(`resized DOM before observer settlement keeps the owned interior anchor through ${route}`, () => {
+    setup(); const geometry = geometryEnvironment();
+    try {
+      const readings: ReadingView[] = [], entries = Array.from({length: 20}, (_, i) => entry(`e${i}`));
+      const view = new Transcript('primary', {presentation: () => {}, reading: value => readings.push(value)});
+      view.configure(undefined, {revision: 1, anchorId: 'e4', offsetPx: 108, followTail: false}); view.set(entries); flush();
+      const root = node('primary-transcript'); if (route !== 'own-scroll') root.dispatch('scrollend');
+      assert.equal(view.captureGeometry().anchor?.id, 'e4');
+      const preceding = root.children.find(child => child.dataset.entryId === 'e0'); assert.ok(preceding);
+      preceding.measured = 280; root.clientWidth = 300;
+      if (route === 'own-scroll') root.dispatch('scroll');
+      if (route === 'capture') {
+        const saved = view.captureGeometry(); assert.deepEqual(saved.anchor, {id: 'e4', offsetPx: 108}); view.applyGeometry(saved);
+      } else {view.set(entries); flush();}
+      const observer = geometry.observers[0]; assert.ok(observer); observer.emit(root, 300, 300); geometry.run(); flush();
+      root.dispatch('scrollend');
+      const anchor = root.children.find(child => child.dataset.entryId === 'e4'); assert.ok(anchor);
+      assert.equal(root.scrollTop - anchor.offsetTop, 108);
+      assert.deepEqual(view.captureGeometry().anchor, {id: 'e4', offsetPx: 108});
+      assert.equal(readings.at(-1)?.anchorId, 'e4'); assert.equal(readings.at(-1)?.offsetPx, 108);
+      view.reset();
+    } finally {geometry.restore();}
+  });
+}
+test('a distinct user scroll supersedes a retained geometry anchor after an internal scroll notification', () => {
+  setup(); const view = transcript(); const entries = Array.from({length: 30}, (_, i) => entry(`e${i}`));
+  view.configure(undefined, {revision: 1, anchorId: 'e4', offsetPx: 108, followTail: false}); view.set(entries); flush();
+  const root = node('primary-transcript'); root.dispatch('scroll'); flush(); root.dispatch('scrollend');
+  root.scrollTop = 12 * 140 + 17; root.dispatch('scroll'); flush(); root.dispatch('scrollend');
+  assert.deepEqual(view.captureGeometry().anchor, {id: 'e12', offsetPx: 17});
+  assert.equal(view.captureGeometry().followTail, false); view.reset();
+});
 test('settled root resize retains its saved anchor and only processes actual dirty geometry', () => {
   setup(); const geometry = geometryEnvironment();
   try {

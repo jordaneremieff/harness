@@ -209,6 +209,7 @@ export class Transcript {
   private scrolling = new WeakSet<HTMLElement>();
   private sizes = new WeakMap<Element, string>();
   private reflowAnchor?: {id: string; offsetPx: number} | null;
+  private writtenScrollTop?: number;
   readonly node: HTMLElement;
   private readonly latest: HTMLElement;
   private hooks: ViewHooks;
@@ -255,6 +256,8 @@ export class Transcript {
     this.lead = elements.earlier;
     this.listen(this.node, 'scroll', () => {
       if (this.hidden()) return;
+      if (this.node.scrollTop === this.writtenScrollTop) {this.writtenScrollTop = undefined; return;}
+      this.writtenScrollTop = undefined;
       this.scrolling.add(this.node); this.reflowAnchor = undefined; this.restoring = undefined;
       this.follow = this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight < 48 && !this.hasSelection();
       this.latest.hidden = this.follow;
@@ -262,7 +265,7 @@ export class Transcript {
     }, {passive: true});
     this.listen(this.node, 'scrollend', event => {
       if (event.target !== this.node) return;
-      this.scrolling.delete(this.node); this.queueGeometry(); this.saveReading();
+      this.writtenScrollTop = undefined; this.scrolling.delete(this.node); this.queueGeometry(); this.saveReading();
     });
     if (typeof ResizeObserver === 'function') {
       this.resize = new ResizeObserver(entries => {
@@ -378,10 +381,10 @@ export class Transcript {
     this.elapsed.stop();
     if (this.geometryTimer !== undefined) clearTimeout(this.geometryTimer);
     this.geometryTimer = undefined; this.geometryDirty.clear(); this.outputNodes.clear();
-    this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined;
+    this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.showThinking = false; this.follow = true; this.readingRevision = 0;
-    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.node.scrollTop = 0;
+    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0);
   }
   defer(refresh: () => void, receivedAt?: number): void {
     if (this.destroyed) return;
@@ -430,7 +433,7 @@ export class Transcript {
     const anchor = !this.follow && !this.restoring ? this.anchor() : null;
     this.lead.hidden = !available;
     const node = anchor && this.cache.get(anchor.id)?.node;
-    if (anchor && node?.isConnected) this.node.scrollTop = node.offsetTop - this.node.offsetTop + anchor.offsetPx;
+    if (anchor && node?.isConnected) this.scrollTo(node.offsetTop - this.node.offsetTop + anchor.offsetPx);
   }
   restorationCurrent(reading?: ReadingView): boolean {
     return !!reading && !this.hidden() && !this.follow && this.restoring === reading;
@@ -491,15 +494,25 @@ export class Transcript {
     }
     return captureAnchor(this.layout, this.node.scrollTop);
   }
+  private geometryAnchor(override?: {id: string; offsetPx: number} | null): {id: string; offsetPx: number} | null {
+    if (this.follow) return null;
+    if (override !== undefined) return override;
+    // DOM wrapping changes before resize observers run; it is not a new reading intent.
+    return this.reflowAnchor === undefined ? this.anchor() : this.reflowAnchor;
+  }
+  private scrollTo(position: number): void {
+    const before = this.node.scrollTop; this.node.scrollTop = position;
+    if (this.node.scrollTop !== before) this.writtenScrollTop = this.node.scrollTop;
+  }
   captureGeometry(): TranscriptGeometry {
-    return {generation: this.generation, followTail: this.follow, anchor: this.follow ? null : this.anchor(), scrollTop: this.node.scrollTop};
+    return {generation: this.generation, followTail: this.follow, anchor: this.follow ? null : this.geometryAnchor(), scrollTop: this.node.scrollTop};
   }
   /** Remeasures current cards without a reset or a change to reading intent. */
   applyGeometry(saved: TranscriptGeometry): void {
     if (this.destroyed || this.hidden() || saved.generation !== this.generation || this.geometryGuard()) return;
     this.heights.clear(); this.sizes = new WeakMap(); this.dirtyLayout = true; this.follow = saved.followTail;
     this.reflowAnchor = saved.anchor; this.paint(saved.anchor);
-    if (saved.anchor) this.restorePosition(saved.anchor); else if (!saved.followTail) this.node.scrollTop = saved.scrollTop;
+    if (saved.anchor) this.restorePosition(saved.anchor); else if (!saved.followTail) this.scrollTo(saved.scrollTop);
   }
   private geometryGuard(): boolean {
     return this.hidden() || !!this.restoring || this.hasSelection() || (document.activeElement !== this.node && this.node.contains(document.activeElement));
@@ -520,7 +533,9 @@ export class Transcript {
     }, 120);
   }
   private settleGeometry(): void {
-    if (!this.geometryDirty.size || this.geometryGuard() || this.scrolling.has(this.node)) return;
+    if (!this.geometryDirty.size) return;
+    if (this.geometryGuard()) {this.writtenScrollTop = undefined; return;}
+    if (this.scrolling.has(this.node)) return;
     const anchor = this.follow ? null : this.reflowAnchor ?? this.anchor(); let reflow = false;
     for (const node of this.geometryDirty) {
       if (node === this.node) { reflow = true; this.geometryDirty.delete(node); continue; }
@@ -641,7 +656,7 @@ export class Transcript {
   }
   private saveReading(): void {
     if (this.hidden() || this.restoring) return;
-    const anchor = this.anchor(); this.reflowAnchor = anchor;
+    const anchor = this.geometryAnchor(); this.reflowAnchor = anchor;
     this.hooks.reading({revision: this.readingRevision, anchorId: anchor?.id ?? null, offsetPx: anchor?.offsetPx ?? 0, followTail: this.follow});
   }
   private applyPendingView(): boolean {
@@ -653,7 +668,7 @@ export class Transcript {
     if (this.hidden()) { this.elapsed.stop(); return false; }
     // Current tail intent supersedes a saved reading position that has not reached the DOM yet.
     if (this.follow) this.restoring = undefined;
-    const anchor = this.follow ? null : anchorOverride ?? this.anchor();
+    const anchor = this.geometryAnchor(anchorOverride);
     if (this.dirtyLayout) { this.layout = layoutItems(this.displayed.map(entry => entry.id), this.heights, 140); this.dirtyLayout = false; }
     const scrollTop = this.prepareScroll();
     const pins = this.currentPins(); if (anchor) pins.add(anchor.id);
@@ -666,14 +681,18 @@ export class Transcript {
     this.evict(new Set(selected.map(item => item.id)));
     this.refreshMountedTools();
     this.refreshMountedCommunications();
-    if (this.follow && !this.hasSelection()) this.node.scrollTop = this.node.scrollHeight;
-    else this.restorePosition(anchor);
-    this.latest.hidden = this.follow;
+    this.finishScroll(anchor);
     this.elapsed.sync();
     // Measurements and restored scroll positions can expose rows outside the window chosen above.
     const next = visibleWindow(this.layout, this.prepareScroll(), this.node.clientHeight, {pins}).items;
     if (next.length !== selected.length || next.some((item, index) => item.id !== selected[index]?.id)) this.schedule();
     return true;
+  }
+  private finishScroll(anchor: {id: string; offsetPx: number} | null): void {
+    if (this.follow && !this.hasSelection()) this.scrollTo(this.node.scrollHeight);
+    else this.restorePosition(anchor);
+    if (!this.restoring) this.reflowAnchor = this.follow ? null : this.anchor();
+    this.latest.hidden = this.follow;
   }
   private refreshMountedCommunications(): void {
     for (const entry of this.cache.values()) for (const message of entry.messages.values()) {
@@ -714,7 +733,7 @@ export class Transcript {
     const item = wanted && this.layout.byId.get(wanted.id);
     if (node?.isConnected && wanted && item) {
       const position = restoreAnchor(this.layout, wanted, 0);
-      this.node.scrollTop = node.offsetTop - this.node.offsetTop + position - item.top;
+      this.scrollTo(node.offsetTop - this.node.offsetTop + position - item.top);
     }
     if (this.restoring && (!this.restoring.anchorId || node?.isConnected)) this.restoring = undefined;
   }

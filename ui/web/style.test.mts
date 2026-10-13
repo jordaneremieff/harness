@@ -640,7 +640,11 @@ test('agent status uses one plain line and a flat action row in normal flow', ()
   assert.match(rule('.agent-state-actions'), /display: flex; flex-wrap: wrap; align-items: center; gap: 16px/);
   assert.match(rule('.agent-state-actions > button, #agent-message-retry'), /border: 0; border-radius: 0/);
   assert.doesNotMatch(rule('.agent-state-actions > button, #agent-message-retry'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent/);
-  assert.match(rule('.conversation.agent-empty > .transcript-region'), /flex: none; display: block/);
+  assert.match(rule('.conversation'), /display: flex; flex-direction: column;[^}]*min-height: 0/);
+  assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\) auto; flex: 1;[^}]*min-height: 0/);
+  assert.doesNotMatch(css, /\.conversation\.agent-empty > \.transcript-region\s*\{/);
+  assert.match(rule('.composer'), /flex: none/);
+  assert.match(rule('.conversation.agent-empty .transcript'), /padding-block: 0/);
   assert.match(rule('.transcript-region > .empty-state'), /position: absolute/);
 });
 

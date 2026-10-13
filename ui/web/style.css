@@ -402,7 +402,6 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .agent-state > p { margin: 0; font-size: inherit; font-weight: 400; overflow-wrap: anywhere; }
 .agent-state-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 4px; }
 .agent-state-actions > button, #agent-message-retry { padding: 4px 0; border: 0; border-radius: 0; }
-.conversation.agent-empty > .transcript-region { flex: none; display: block; }
 .conversation.agent-empty .transcript { padding-block: 0; }
 .last-observed { padding-top: 8px; }
 .inline-session-chooser { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; padding: 24px var(--gutter); }
