@@ -6,8 +6,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { durableContribution, type DurableContributionHost } from "./durable.ts";
 
 const SOURCE = fileURLToPath(new URL("./index.ts", import.meta.url));
@@ -40,7 +42,7 @@ interface ReadResult {
 	next: unknown;
 }
 
-async function openHarness(storageId: string) {
+async function openHarness(storageId: string, extraExtensions: Durable.Extension[] = []) {
 	const context = BACKGROUND_CONTEXT;
 	const host: DurableContributionHost = {
 		durable: Durable,
@@ -58,6 +60,7 @@ async function openHarness(storageId: string) {
 	const registry = Durable.createRegistry();
 	const extension = await durableContribution(SOURCE).create(host);
 	registry.install(extension);
+	for (const extra of extraExtensions) registry.install(extra);
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 	const listed = async () => (await root.entries({}, 100, undefined, context)).items;
@@ -98,10 +101,9 @@ test("history contribution serves model-issued search and read calls over the re
 		assert.ok(beta, "beta user entry");
 
 		faux.setResponses([
-			fauxAssistantMessage(
-				fauxToolCall("history_search", { query: "release", fromId: beta.id, maxMatches: 1 }),
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage(fauxToolCall("history_search", { query: "release", fromId: beta.id, maxMatches: 1 }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("First match found."),
 		]);
 		await say("find the newest release note");
@@ -168,6 +170,14 @@ test("history contribution serves model-issued search and read calls over the re
 		const readTool = extension.tools?.find((tool) => tool.name === "history_read");
 		assert.equal(searchTool?.replay, "safe");
 		assert.equal(readTool?.replay, "safe");
+		assert.equal(searchTool?.structuredOutputSchema, undefined);
+		assert.equal(readTool?.structuredOutputSchema, undefined);
+		for (const entry of [...(await toolResults("history_search")), ...(await toolResults("history_read"))]) {
+			const message = entry.model?.[0] as ToolResultMessage;
+			assert.equal(message.isError, false);
+			assert.deepEqual(message.details, {});
+			assert.equal(message.content.length, 1);
+		}
 
 		const { messages } = await root.context(context);
 		const system = messages.find((message) => message.role === "system");
@@ -190,9 +200,7 @@ test("history contribution serves model-issued search and read calls over the re
 });
 
 test("history read and filter adapt to Durable entry records", async () => {
-	const { context, faux, harness, listed, resultText, say, toolResults } = await openHarness(
-		"history-durable-records",
-	);
+	const { context, faux, harness, listed, resultText, say, toolResults } = await openHarness("history-durable-records");
 	try {
 		faux.setResponses([fauxAssistantMessage("note acknowledged")]);
 		await say("target note");
@@ -250,5 +258,149 @@ test("history read and filter adapt to Durable entry records", async () => {
 		assert.match(section.text ?? "", /history_search/);
 	} finally {
 		await harness.close(context);
+	}
+});
+
+test("native codemode receives history JSON text strings with continuations and exact escapes", async () => {
+	const sandbox = new CodemodeSandbox();
+	try {
+		const { context, faux, harness, listed, resultText, say, toolResults, userText } = await openHarness(
+			"history-native-codemode",
+			[createCodemodeExtension({ sandbox, models: false })],
+		);
+		try {
+			const note = "nested alpha \u0001😀";
+			faux.setResponses([fauxAssistantMessage("Note stored.")]);
+			await say(note);
+			const user = (await listed()).find((entry) => entry.kind === "pi.user" && userText(entry) === note);
+			assert.ok(user);
+			const searchArgs = { query: "nested", fromId: user.id, maxMatches: 1 };
+			const readArgs = { entryId: user.id, pointer: "/model/0/content" };
+			faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("history_search", searchArgs), fauxToolCall("history_read", readArgs)], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("Direct calls complete."),
+			]);
+			await say("Read the pinned note directly.");
+			const directSearch = JSON.parse(resultText((await toolResults("history_search"))[0]));
+			const directRead = JSON.parse(resultText((await toolResults("history_read"))[0]));
+
+			const code = `
+const search = await tools.history_search(${JSON.stringify(searchArgs)});
+const read = await tools.history_read(${JSON.stringify(readArgs)});
+const page = await tools.history_read(${JSON.stringify({ ...readArgs, maxBytes: 4 })});
+const next = JSON.parse(page).next;
+const continuation = await tools.history_read(next);
+const manifest = await tools.history_read({ entryId: ${user.id} });
+text(JSON.stringify({ fixture: "history-nested", search, read, page, continuation, manifest }));`;
+			faux.setResponses([
+				fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("Nested calls complete."),
+			]);
+			await say("Read the same pinned note through codemode.");
+			const result = (await toolResults("codemode"))[0];
+			assert.equal((result.model?.[0] as ToolResultMessage | undefined)?.isError, false);
+			const line = resultText(result)
+				.split("\n")
+				.find((value) => value.startsWith('{"fixture":"history-nested"'));
+			assert.ok(line, resultText(result));
+			const nested = JSON.parse(line);
+			for (const key of ["search", "read", "page", "continuation", "manifest"]) {
+				assert.equal(typeof nested[key], "string", key);
+			}
+			const pinned = (value: Record<string, unknown>) => {
+				const copy = { ...value };
+				delete copy.currentLeafId;
+				return copy;
+			};
+			assert.deepEqual(pinned(JSON.parse(nested.search)), pinned(directSearch));
+			assert.deepEqual(pinned(JSON.parse(nested.read)), pinned(directRead));
+			assert.match(nested.read, /\\u0001/);
+			assert.equal(JSON.parse(nested.read).text, note);
+			assert.equal(JSON.parse(nested.page).status, "page");
+			assert.equal(JSON.parse(nested.page).text, "nest");
+			assert.equal(JSON.parse(nested.page).next.offset, 4);
+			assert.equal(JSON.parse(nested.continuation).text, note.slice(4));
+			assert.ok(JSON.parse(nested.manifest).items.some((item: ReadItem) => item.pointer === "/model"));
+			assert.equal((await toolResults("history_search")).length, 1, "nested calls do not enter the transcript");
+			assert.equal((await toolResults("history_read")).length, 1, "nested calls do not enter the transcript");
+		} finally {
+			await harness.close(context);
+		}
+	} finally {
+		await sandbox.close();
+	}
+});
+
+test("history model errors stay errors and schema-less native codemode calls reject", async () => {
+	const sandbox = new CodemodeSandbox();
+	try {
+		const { context, faux, harness, resultText, say, toolResults } = await openHarness("history-native-errors", [
+			createCodemodeExtension({ sandbox, models: false }),
+		]);
+		try {
+			faux.setResponses([
+				fauxAssistantMessage(
+					[
+						fauxToolCall("history_read", { entryId: 0 }),
+						fauxToolCall("history_search", { sessionId: "different-storage" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("Direct errors observed."),
+			]);
+			await say("Check invalid history arguments.");
+			const invalidRead = (await toolResults("history_read"))[0];
+			const invalidSearch = (await toolResults("history_search"))[0];
+			assert.equal((invalidRead.model?.[0] as ToolResultMessage | undefined)?.isError, true);
+			assert.equal((invalidSearch.model?.[0] as ToolResultMessage | undefined)?.isError, true);
+			assert.match(resultText(invalidRead), /entryId/);
+			assert.match(resultText(invalidSearch), /Session changed/);
+
+			const code = `
+const errors = [];
+for (const call of [
+  () => tools.history_read({ entryId: 0 }),
+  () => tools.history_search({ sessionId: "different-storage" }),
+  () => tools.history_read({ entryId: 1, pointer: "not-a-pointer" })
+]) {
+  try { await call(); errors.push("resolved"); }
+  catch (error) { errors.push(error.message); }
+}
+text(JSON.stringify({ fixture: "history-errors", errors }));`;
+			faux.setResponses([
+				fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("Nested rejections observed."),
+			]);
+			await say("Catch invalid history calls in codemode.");
+			const caught = (await toolResults("codemode"))[0];
+			assert.equal((caught.model?.[0] as ToolResultMessage | undefined)?.isError, false);
+			const line = resultText(caught)
+				.split("\n")
+				.find((value) => value.startsWith('{"fixture":"history-errors"'));
+			assert.ok(line, resultText(caught));
+			const { errors } = JSON.parse(line);
+			assert.equal(errors.length, 3);
+			assert.match(errors[0], /entryId/);
+			assert.match(errors[1], /Session changed/);
+			assert.match(errors[2], /JSON pointer/);
+
+			faux.setResponses([
+				fauxAssistantMessage(
+					fauxToolCall("codemode", { code: 'await tools.history_search({ sessionId: "different-storage" });' }),
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("Uncaught rejection observed."),
+			]);
+			await say("Let the invalid history call reject codemode.");
+			const uncaught = (await toolResults("codemode"))[0];
+			assert.equal((uncaught.model?.[0] as ToolResultMessage | undefined)?.isError, true);
+			assert.match(resultText(uncaught), /Session changed/);
+		} finally {
+			await harness.close(context);
+		}
+	} finally {
+		await sandbox.close();
 	}
 });

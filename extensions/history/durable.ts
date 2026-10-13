@@ -80,19 +80,24 @@ export function durableContribution(source: string): DurableContribution {
 						description: SEARCH_DESCRIPTION,
 						parameters: SEARCH_PARAMETERS,
 						replay: "safe",
-						execute: async (args, api, context) => toolResult(await search(api, sessionId, args, context)),
+						execute: async (args, api, context) => nativeResult(await search(api, sessionId, args, context)),
 					}),
 					defineTool({
 						name: "history_read",
 						description: READ_DESCRIPTION,
 						parameters: READ_PARAMETERS,
 						replay: "safe",
-						execute: async (args, api, context) => toolResult(await read(api, sessionId, args, context)),
+						execute: async (args, api, context) => nativeResult(await read(api, sessionId, args, context)),
 					}),
 				],
 			});
 		},
 	};
+}
+
+function nativeResult(value: unknown): Durable.ToolExecutionResult {
+	const { content, details } = toolResult(value);
+	return { output: content, details };
 }
 
 const SESSION_ID = Type.Optional(
@@ -277,11 +282,18 @@ class DurableHistorySearch {
 		this.#fromId = own(args, "fromId") === undefined ? undefined : entryId(own(args, "fromId"), "fromId");
 		this.#slot = integer(own(args, "slot"), 0, 0, Number.MAX_SAFE_INTEGER, "slot");
 		this.#offset = integer(own(args, "offset"), 0, 0, Number.MAX_SAFE_INTEGER, "offset");
-		if ((this.#slot || this.#offset) && this.#fromId === undefined) throw new Error("A search continuation requires fromId.");
+		if ((this.#slot || this.#offset) && this.#fromId === undefined)
+			throw new Error("A search continuation requires fromId.");
 		this.#visitCap = integer(own(args, "maxVisits"), LIMITS.visits, 1, LIMITS.visits, "maxVisits");
 		this.#scanCap = integer(own(args, "maxScanBytes"), LIMITS.scanBytes, 2048, LIMITS.scanBytes, "maxScanBytes");
 		this.#matchCap = integer(own(args, "maxMatches"), LIMITS.matches, 1, LIMITS.matches, "maxMatches");
-		this.#outputCap = integer(own(args, "maxOutputBytes"), LIMITS.outputBytes, 4096, LIMITS.outputBytes, "maxOutputBytes");
+		this.#outputCap = integer(
+			own(args, "maxOutputBytes"),
+			LIMITS.outputBytes,
+			4096,
+			LIMITS.outputBytes,
+			"maxOutputBytes",
+		);
 	}
 
 	#cursor(fromId: number | null, slot: number, offset: number): RecordValue {
@@ -635,7 +647,13 @@ class DurableHistoryRead {
 		this.#offset = integer(own(args, "offset"), 0, 0, Number.MAX_SAFE_INTEGER, "offset");
 		this.#maxBytes = integer(own(args, "maxBytes"), LIMITS.readBytes, 4, LIMITS.readBytes, "maxBytes");
 		this.#maxItems = integer(own(args, "maxItems"), LIMITS.items, 1, LIMITS.items, "maxItems");
-		this.#outputCap = integer(own(args, "maxOutputBytes"), LIMITS.outputBytes, 4096, LIMITS.outputBytes, "maxOutputBytes");
+		this.#outputCap = integer(
+			own(args, "maxOutputBytes"),
+			LIMITS.outputBytes,
+			4096,
+			LIMITS.outputBytes,
+			"maxOutputBytes",
+		);
 	}
 
 	#finish(value: RecordValue): RecordValue {
@@ -659,9 +677,7 @@ class DurableHistoryRead {
 	async run(api: Durable.ToolExecutionApi, context: Context): Promise<RecordValue> {
 		const conversationId = api.conversationId;
 		const snapshot = await api.commit(
-			async (
-				tx: Durable.Tx,
-			): Promise<{ currentLeafId: number | null; entry: Durable.EntryRecord | undefined }> => {
+			async (tx: Durable.Tx): Promise<{ currentLeafId: number | null; entry: Durable.EntryRecord | undefined }> => {
 				const currentLeaf = (await tx.scanEntries({ conversationId }, 1)).items[0];
 				const found = (
 					await tx.scanEntries(
@@ -726,7 +742,12 @@ class DurableHistoryRead {
 		}
 	}
 
-	#readItems(entry: Durable.EntryRecord, selected: unknown, keys: readonly string[] | undefined, base: RecordValue): RecordValue {
+	#readItems(
+		entry: Durable.EntryRecord,
+		selected: unknown,
+		keys: readonly string[] | undefined,
+		base: RecordValue,
+	): RecordValue {
 		const length = Array.isArray(selected) ? selected.length : (keys?.length ?? 0);
 		if (this.#offset > length) throw new Error("Offset exceeds the item list length.");
 		const items: RecordValue[] = [];
@@ -755,7 +776,9 @@ class DurableHistoryRead {
 		if (this.#itemsFit(items, index, base)) return true;
 		items.pop();
 		if (items.length === 0)
-			throw new Error("Field descriptor exceeds the output limit. Increase maxOutputBytes or select a shorter pointer.");
+			throw new Error(
+				"Field descriptor exceeds the output limit. Increase maxOutputBytes or select a shorter pointer.",
+			);
 		return false;
 	}
 

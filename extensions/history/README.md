@@ -262,7 +262,13 @@ TUI renderer surface. The same withholding rules apply at Durable content-block
 locations: image payloads, provider signatures, and redacted thinking are not
 exposed. The native adapter holds no session state: each call takes the tool
 API at invocation, commits its reads on the session line, and returns the same
-bounded JSON text contract.
+bounded JSON text contract through pi-durable's `output` channel. Neither tool
+has a structured output schema: the Harness derives a nested call's
+`structuredOutput` from its bounded text, and native codemode receives that
+JSON text as a string. Scripts parse the string to use page fields. Failed
+calls reject in codemode; history page statuses such as `unknown_entry` remain
+successful JSON results. The ordinary adapter retains its `content` result
+and empty `details` without a structured schema.
 
 ## Verification
 
@@ -286,9 +292,14 @@ the unfiltered scan budget while the user filter reaches the stored user text.
 That test establishes deterministic selection under its fixture, not aggregate
 utility or model choice quality. The Durable regression runs the contribution
 in a real Harness over `MemoryStorage` with pi-ai's faux provider, drives a
-model-issued call for each tool, checks the declared replay class, and compares
-repeated pinned pages across growing entries. Repository gates remain a
-separate evidence layer.
+model-issued call for each tool, checks the declared replay class and
+schema-less output, and compares repeated pinned pages across growing entries.
+Native codemode regressions use the public pi-durable codemode extension and a
+QuickJS sandbox against the same in-memory Harness. They check JSON text
+strings, exact escapes, read continuations, manifests, and rejection of
+validation and execution errors, both caught and uncaught. These tests use no
+live stores or external providers. Repository gates remain a separate evidence
+layer.
 
 The ordinary adapter uses the public `ExtensionAPI` and `ExtensionContext` contracts.
 Its session-manager access uses only `getSessionId`, `getLeafId`, and `getEntry`.
