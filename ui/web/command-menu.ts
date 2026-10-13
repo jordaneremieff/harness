@@ -1,4 +1,5 @@
 import { announce, button, element } from './dom.ts';
+import { insertNativeText } from './native-insertion.ts';
 import { acceptCommand, emptyMenu, menuKey, updateMenu } from './command-menu-state.ts';
 import type { CommandInventory, CommandMatch, MenuState } from './command-menu-state.ts';
 
@@ -15,11 +16,11 @@ export class CommandMenu {
   private editor: HTMLTextAreaElement;
   private menu: HTMLElement;
   private inventory: () => CommandInventory;
-  private change: (text: string) => void;
+  private change: (text: string, error?: string, prepared?: string) => void;
   private cleanup: (() => void)[] = [];
   private observer?: ResizeObserver;
   private destroyed = false;
-  constructor(editor: HTMLTextAreaElement, menu: HTMLElement, inventory: () => CommandInventory, change: (text: string) => void, more?: () => Promise<void>) {
+  constructor(editor: HTMLTextAreaElement, menu: HTMLElement, inventory: () => CommandInventory, change: (text: string, error?: string, prepared?: string) => void, more?: () => Promise<void>) {
     this.editor = editor; this.menu = menu; this.inventory = inventory; this.change = change; this.more = more;
     menu.setAttribute('role', 'listbox'); menu.setAttribute('aria-label', 'Commands');
     editor.setAttribute('aria-autocomplete', 'list'); editor.setAttribute('aria-controls', menu.id);
@@ -68,7 +69,9 @@ export class CommandMenu {
     const token = this.state.token; const match = this.state.matches[index]; if (!token || !match) return;
     const result = acceptCommand(this.editor.value, token, match.item.name);
     this.state = {...this.state, open: false}; this.paint();
-    this.editor.value = result.text; this.editor.setSelectionRange(result.caret, result.caret); this.change(result.text);
+    const end = token.end + (this.editor.value[token.end] === ' ' ? 1 : 0);
+    const inserted = insertNativeText(this.editor, result.text.slice(0, result.caret), 0, end);
+    this.change(inserted.text, inserted.status === 'inserted' ? undefined : inserted.status === 'refused' ? 'Text insertion was refused. Copy the prepared text.' : 'Text insertion changed unexpectedly. Your native edit is unchanged.', inserted.status === 'refused' ? inserted.prepared : undefined);
   }
   private row(match: CommandMatch, index: number): HTMLElement {
     const node = element('div', 'command-option'); node.id = `${this.menu.id}-option-${encodeURIComponent(match.item.name)}`;

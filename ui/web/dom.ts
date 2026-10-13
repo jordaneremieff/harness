@@ -12,6 +12,12 @@ export function byId<T extends HTMLElement = HTMLElement>(id: string): T {
   if (!node) throw new Error(`Missing UI element: ${id}`);
   return node as T;
 }
+/** A connected native editor tree must keep its physical ancestry, even when moveBefore exists. */
+export function placeRetained(node: HTMLElement, parent: HTMLElement, before: Node | null = null): void {
+  if (node.parentElement === parent && node.nextSibling === before) return;
+  if (node.isConnected && (node.tagName.toLowerCase() === 'textarea' || node.querySelector('textarea'))) throw new Error('This browser cannot preserve editing when moving this conversation.');
+  parent.insertBefore(node, before);
+}
 export function button(text: string, action: () => void, className?: string): HTMLButtonElement {
   const node = element('button', className, text);
   node.type = 'button';

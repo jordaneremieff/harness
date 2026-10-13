@@ -340,8 +340,12 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .message-panel-status { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .message-panel-status:has(> span:empty):has(> button[hidden]) { display: none; }
 .message-panel-status > button { margin-left: 8px; padding: 2px 8px; border: 1px solid var(--edge); font-size: 13px; }
-.agent-message-panel .composer { margin: 8px 0 0; }
-.agent-message-panel .composer-line { flex-wrap: wrap; }
+.message-editor-slot { min-height: 160px; margin-top: 8px; }
+.composer[data-message-panel=true] .composer-line { flex-wrap: wrap; }
+.stable-views { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.stable-views > * { pointer-events: auto; }
+.stable-views > .conversation { overflow: visible; }
+.conversation[data-message-only=true] > :not(.composer) { display: none; }
 
 /* Workspace and conversation column */
 .workspace { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -680,6 +684,17 @@ pre.tool-document { font-family: var(--mono); }
 .composer { position: relative; container: composer / inline-size; flex: none; margin: 4px 0 8px; }
 .composer-input { position: relative; padding: 10px 0 4px; border: 0; border-top: 1px solid var(--edge); border-radius: 0; background: var(--canvas); }
 .composer textarea { display: block; width: 100%; min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 15px; line-height: 1.6; resize: none; }
+.composer-surface { position: relative; }
+.composer-overlay { position: absolute; top: 0; left: 0; overflow: hidden; pointer-events: none; color: var(--fg); }
+.composer-colors { box-sizing: border-box; white-space: pre-wrap; overflow-wrap: break-word; }
+.composer-colors::highlight(composer-keyword) { color: var(--link); }
+.composer-colors::highlight(composer-string) { color: var(--success); }
+.composer-colors::highlight(composer-number) { color: var(--warning); }
+.composer-colors::highlight(composer-comment), .composer-colors::highlight(composer-punct) { color: var(--muted); }
+.composer-colors::highlight(composer-type), .composer-colors::highlight(composer-fn) { color: var(--fg); }
+.composer textarea { position: relative; }
+.composer textarea[data-decorated=true] { color: transparent; }
+.composer textarea::selection { color: var(--fg); background: var(--raised); }
 .composer textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
 .composer textarea:disabled { color: var(--dim); }
 .composer-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; min-height: 28px; padding: 0; border: 0; border-radius: 0; background: transparent; }
@@ -738,6 +753,8 @@ pre.tool-document { font-family: var(--mono); }
 /* Lists in menus, palette and pickers */
 .command-option, .palette-row { position: relative; display: grid; grid-template-columns: minmax(0,30%) minmax(0,1fr) 10ch; align-items: center; gap: 12px; width: 100%; min-height: 32px; padding: 0 12px 0 14px; border-left: 2px solid transparent; border-radius: 0; cursor: pointer; }
 .command-option:hover, .palette-row:hover { background: var(--canvas); }
+.palette-check { position: absolute; right: 14px; width: 14px; height: 14px; color: var(--fg); }
+.palette-row[aria-checked] .palette-source { padding-right: 20px; }
 .palette-row[data-kind=conversation] { grid-template-columns: minmax(0,1fr) auto; }
 .palette-row[data-kind=conversation] .palette-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .palette-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -869,10 +886,11 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .sidebar > .resizer { display: none; }
   .sidebar-close { display: inline-flex; }
   .app.drawer-open .workbench > .sidebar { position: absolute; inset: 0 auto 0 0; z-index: 10; display: flex; width: min(300px, calc(100vw - 48px)); box-shadow: var(--shadow); }
-  .workspace { --gutter: 16px; }
+  .workspace, .stable-views { --gutter: 16px; }
+  .app.drawer-open .stable-views { z-index: 11; }
 }
 @media (max-width:599px) {
-  .workspace { --gutter: 16px; }
+  .workspace, .stable-views { --gutter: 16px; }
   .composer-line { flex-wrap: wrap; }
   .palette-row { grid-template-columns: minmax(0,1fr) auto; }
   .palette-desc { grid-column: 1; grid-row: 2; }
@@ -938,6 +956,8 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   * { scroll-behavior: auto; }
 }
 @media (forced-colors:active) {
+  .composer-overlay { display: none; }
+  .composer textarea[data-decorated=true] { color: CanvasText; }
   button, input, textarea, dialog, .command-menu, .tool-shell, .extension-status-list { border: 1px solid ButtonText; }
   .nav-row[aria-current=page], .row-select[aria-current=page], .command-option[aria-selected=true], .palette-row[aria-selected=true], .conversation-tab[aria-selected=true] { outline: 2px solid Highlight; outline-offset: -2px; }
   :focus-visible { outline: 2px solid Highlight; }

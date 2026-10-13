@@ -42,8 +42,17 @@ export function updateMenu(previous: MenuState, text: string, start: number, end
 }
 export type MenuKey = {key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; isComposing?: boolean; keyCode?: number; repeat?: boolean};
 function arrowStep(key: string): number { return key === 'ArrowDown' ? 1 : key === 'ArrowUp' ? -1 : 0; }
-export function menuKey(state: MenuState, key: MenuKey): {state: MenuState; action: 'native' | 'handled' | 'accept'} {
-  if (key.isComposing || key.keyCode === 229 || (key.repeat && !arrowStep(key.key)) || key.ctrlKey || key.metaKey || key.altKey || !state.open) return {state, action: 'native'};
+type KeyResult = {state: MenuState; action: 'native' | 'handled' | 'accept'};
+function enterOverride(state: MenuState, key: MenuKey): KeyResult | undefined {
+  if (key.key !== 'Enter') return;
+  if (key.ctrlKey || key.metaKey) return {state: {...state, open: false, suppressed: state.token?.name}, action: 'handled'};
+  if (key.repeat) return {state, action: 'handled'};
+}
+function nativeKey(key: MenuKey): boolean {return !!((key.repeat && !arrowStep(key.key)) || key.ctrlKey || key.metaKey || key.altKey);}
+export function menuKey(state: MenuState, key: MenuKey): KeyResult {
+  if (key.isComposing || key.keyCode === 229 || !state.open) return {state, action: 'native'};
+  const override = enterOverride(state, key); if (override) return override;
+  if (nativeKey(key)) return {state, action: 'native'};
   if (key.key === 'Escape') return {state: {...state, open: false, suppressed: state.token?.name}, action: 'handled'};
   if (key.key === 'Enter' && key.shiftKey) return {state: {...state, open: false, suppressed: state.token?.name}, action: 'native'};
   if (key.shiftKey) return {state, action: 'native'};

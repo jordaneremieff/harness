@@ -12,7 +12,8 @@ import { Composer, createComposerElements } from './composer.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
 import { ConnectionRecovery, accessViewVisible, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
-import { announce, byId, button, copy, details, element, empty, rawText, setText } from './dom.ts';
+import { announce, byId, button, copy, details, element, empty, placeRetained, rawText, setText } from './dom.ts';
+import {StableViews} from './stable-views.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
 import { Transcript } from './render.ts';
@@ -98,6 +99,12 @@ function focusedTranscript(): Transcript | undefined {
   const target = layoutTarget(currentLayout(), primaryTarget());
   return target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target))?.transcript : undefined;
 }
+let workspaceViews: StableViews | undefined;
+export function stableViews(): StableViews {
+  if (!workspaceViews) {const parent = byId('workspace').parentElement; if (!parent) throw new Error('Workspace layout is unavailable.'); workspaceViews = new StableViews(parent);}
+  return workspaceViews;
+}
+function viewPane(node: HTMLElement): HTMLElement | null {return stableViews().slot(node)?.closest<HTMLElement>('.pane-leaf') ?? null;}
 function conversationController(target: Target): ConversationController {
   const workspaceId = state.workspace?.id; if (!workspaceId) throw new Error('No workspace is selected.');
   const key = controllerKey(workspaceId, target); const existing = controllers.get(key); if (existing) return existing;
@@ -119,10 +126,10 @@ function conversationController(target: Target): ConversationController {
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
   const activity = add('activity', 'p', 'exception'); activity.setAttribute('role', 'status'); const queued = element('ul', 'queued-list'); queued.hidden = true; queued.setAttribute('aria-label', 'Queued messages'); nodes.set('queued', queued); elements.root.prepend(activity, queued);
-  root.append(observed, notice, region, above, elements.root, below);
+  root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, historyReady: false, initialized: false, showThinking: false} as ConversationController;
-  controller.composer = new Composer(elements, {timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
@@ -132,6 +139,8 @@ function conversationController(target: Target): ConversationController {
     image: part => imageUrl(part, controller.target, controller.workspaceId)});
   earlier.addEventListener('click', () => { void loadControllerHistory(controller, true); });
   stop.addEventListener('click', () => { void stopController(controller); });
+  const focusPane = (event: Event): void => {const pane = viewPane(event.target as HTMLElement); if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId);};
+  root.addEventListener('pointerdown', focusPane); root.addEventListener('focusin', focusPane);
   elements.editor.addEventListener('focus', () => { footerController = controller; renderWorkbenchStatus(); });
   controllers.set(key, controller); return controller;
 }
@@ -154,7 +163,7 @@ function collectControllers(): void {
   for (const [key, controller] of controllers) {
     const awaitingDraft = controller.workspaceId === state.workspace?.id && (controller.composer.serverDraftRevision ?? 0) > (targetState(controller.target)?.draft.revision ?? 0);
     if (open.has(key) || !controller.composer.canDispose || preferences.pending || awaitingDraft) continue;
-    controller.abort.abort(); controller.historyAbort.abort(); controller.resizer?.destroy(); controller.transcript.destroy(); controller.composer.destroy(); controller.root.remove(); controller.elements.root.remove(); controllers.delete(key);
+    controller.abort.abort(); controller.historyAbort.abort(); controller.resizer?.destroy(); controller.transcript.destroy(); controller.composer.destroy(); stableViews().forget(controller.root); controller.root.remove(); controller.elements.root.remove(); controllers.delete(key);
   }
 }
 async function loadControllerOutput(controller: ConversationController, more: import('../shared/api.ts').OutputContinuation): Promise<import('../shared/api.ts').OutputPage> {
@@ -175,7 +184,7 @@ const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversa
   move: (key, pane, index) => applyLayout(movePaneTab(currentLayout(), key, pane, index)), label: tabLabel,
   status: tab => { const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view)}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
-  {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: pane.content.id})), conversations: byId('sidebar-conversations')});
+  {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload: reloadSelection, project: projectPath, projectsChanged: renderIdentity});
 actions.projectPicker = () => picker.open(projectPath());
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
@@ -347,7 +356,7 @@ function moveRetained(node: HTMLElement, parent: HTMLElement): void {
   const focused = document.activeElement instanceof HTMLElement && node.contains(document.activeElement) ? document.activeElement : undefined;
   const selection = document.getSelection(); const ranges: Range[] = [];
   if (selection && node.contains(selection.anchorNode) && node.contains(selection.focusNode)) for (let index = 0; index < selection.rangeCount; index++) ranges.push(selection.getRangeAt(index).cloneRange());
-  const top = node.scrollTop; parent.append(node); node.scrollTop = top;
+  const top = node.scrollTop; placeRetained(node, parent); node.scrollTop = top;
   focused?.focus({preventScroll: true});
   if (ranges.length && selection) {selection.removeAllRanges(); for (const range of ranges) selection.addRange(range);}
 }
@@ -358,12 +367,13 @@ function mountPaneNode(node: import('../shared/api.ts').PaneNode, layout: Conver
   if (!split) {
     const root = element('div', 'pane-split'), handle = element('div', 'resizer pane-divider'); root.dataset.splitId = node.id;
     handle.tabIndex = 0; handle.setAttribute('role', 'separator'); handle.setAttribute('aria-label', 'Resize panes'); root.append(handle);
-    split = {node: root, handle}; paneSplits.set(node.id, split);
+    byId('conversation-panes').append(root); split = {node: root, handle}; paneSplits.set(node.id, split);
   }
   split.node.dataset.axis = node.axis; split.handle.dataset.axis = node.axis; split.handle.setAttribute('aria-orientation', node.axis === 'x' ? 'vertical' : 'horizontal');
   const first = mountPaneNode(node.first, layout, visited), second = mountPaneNode(node.second, layout, visited); first.dataset.slot = 'first'; second.dataset.slot = 'second';
-  if (split.node.firstChild !== first) split.node.prepend(first);
-  if (first.nextSibling !== split.handle) first.after(split.handle); if (split.handle.nextSibling !== second) split.handle.after(second);
+  if (split.node.firstChild !== first) placeRetained(first, split.node, split.node.firstChild);
+  if (first.nextSibling !== split.handle) placeRetained(split.handle, split.node, first.nextSibling);
+  if (split.handle.nextSibling !== second) placeRetained(second, split.node, split.handle.nextSibling);
   return split.node;
 }
 function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement {
@@ -376,7 +386,7 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
     const next = cardAction('next', 'Next tab', () => tabStrip.step(leaf.id, 1), 'icon-button pane-tab-nav');
     const plus = cardAction('plus', 'New tab', () => choosePaneTarget(leaf.id), 'icon-button pane-actions'); plus.setAttribute('aria-haspopup', 'dialog');
     const menu = cardAction('chevron', 'Tabs in this pane', () => openTabsList(leaf.id), 'icon-button pane-menu'); menu.setAttribute('aria-haspopup', 'menu');
-    bar.append(previous, next, tabs, plus, menu); node.append(bar, content); pane = {node, tabs, content, plus, menu, previous, next}; paneRegions.set(leaf.id, pane);
+    bar.append(previous, next, tabs, plus, menu); node.append(bar, content); byId('conversation-panes').append(node); pane = {node, tabs, content, plus, menu, previous, next}; paneRegions.set(leaf.id, pane);
     node.addEventListener('contextmenu', event => {
       if (event.defaultPrevented || !(event.target instanceof HTMLElement) || nativeEditingTarget(event.target) || event.target.closest('.transcript')) return;
       event.preventDefault(); openPaneMenu(leaf.id, event, event.target.closest<HTMLElement>('.conversation-tab')?.dataset.tabKey);
@@ -389,9 +399,8 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
-  for (const child of [...pane.content.children]) if (!target || child !== conversationController(target).root) child.remove();
-  if (target) { const owner = conversationController(target); moveRetained(owner.root, pane.content); owner.root.hidden = false; owner.root.inert = false;
-    if (messageTarget.current?.identity !== (target.kind === 'agent' ? target.identity : undefined)) moveRetained(owner.elements.root, owner.root);
+  if (target) { const owner = conversationController(target); stableViews().place(owner.root, pane.content); owner.root.dataset.paneId = leaf.id;
+    if (messageTarget.current?.identity !== (target.kind === 'agent' ? target.identity : undefined)) stableViews().project(owner.elements.root);
   }
   return pane.node;
 }
@@ -402,7 +411,7 @@ function renderPaneTree(layout: ConversationLayout): void {
   const navigation = byId('navigation-access');
   if ([...paneRegions].some(([id, pane]) => !paneById(layout, id) && pane.node.contains(navigation))) moveRetained(navigation, byId('workspace'));
   retainPaneGeometry();
-  const visited = new Set<string>(); const root = mountPaneNode(layout.root, layout, visited); if (container.firstChild !== root) container.replaceChildren(root);
+  const visited = new Set<string>(); const root = mountPaneNode(layout.root, layout, visited); if (container.firstChild !== root) placeRetained(root, container, container.firstChild);
   for (const [id, pane] of paneRegions) if (!visited.has(id)) {pane.node.remove(); paneRegions.delete(id);}
   for (const [id, split] of paneSplits) if (!visited.has(id)) {split.resizer?.destroy(); split.node.remove(); paneSplits.delete(id);}
   for (const controller of controllers.values()) if (controller.root.hidden && !controller.historyAbort.signal.aborted) controller.historyAbort.abort();
@@ -412,9 +421,10 @@ function renderPaneTree(layout: ConversationLayout): void {
 }
 function retainPaneGeometry(): void {
   for (const controller of controllers.values()) {
-    const pane = controller.root.closest<HTMLElement>('.pane-leaf');
+    const pane = viewPane(controller.root);
     if (!controller.root.hidden && !controller.root.inert && !pane?.hidden && !pane?.inert) controller.geometry = controller.transcript.captureGeometry();
-    controller.root.hidden = true; controller.root.inert = true;
+    stableViews().place(controller.root); delete controller.root.dataset.paneId; delete controller.root.dataset.messageOnly;
+    if (messageTarget.current?.identity !== (controller.target.kind === 'agent' ? controller.target.identity : undefined)) stableViews().project(controller.elements.root);
   }
 }
 function restorePaneGeometry(): void {
@@ -425,6 +435,7 @@ function refreshTreeGeometry(): void {
   const focusOnly = box.width < minimum.width || box.height < minimum.height; root.dataset.focusOnly = String(focusOnly);
   for (const [id, pane] of paneRegions) {pane.node.hidden = focusOnly && id !== layout.focusedPane; pane.node.inert = pane.node.hidden;}
   if (!focusOnly) refreshPaneSplit(layout.root);
+  stableViews().sync();
   for (const controller of controllers.values()) controller.transcript.visibilityChanged();
 }
 function refreshPaneSplit(node: import('../shared/api.ts').PaneNode): void {
@@ -781,6 +792,12 @@ function renderMessageResume(identity: string): void {
   const index = [...state.targetIndex.values()].find(item => sameTarget(item.target, target)); const controller = controllers.get(controllerKey(workspace, target));
   roster.resume(identity, controller?.composer.retained(workspace, target, index) ?? (!!index?.hasDraft || !!index?.unconfirmedOperationIds.length));
 }
+function placeMessageEditor(controller: ConversationController, panel: HTMLElement): void {
+  let slot = panel.querySelector<HTMLElement>('.message-editor-slot'); if (!slot) {slot = element('div', 'message-editor-slot'); slot.id = 'agent-message-editor-slot'; panel.append(slot);}
+  const pane = viewPane(controller.root);
+  if (!pane || pane.closest('[hidden],[inert]')) {stableViews().place(controller.root, panel); controller.root.dataset.messageOnly = 'true';}
+  controller.elements.root.dataset.messagePanel = 'true'; stableViews().project(controller.elements.root, slot); stableViews().sync(); controller.composer.placement(true);
+}
 function renderMessagePanel(): void {
   const captured = messageTarget.current, panel = byId('agent-message-panel'); panel.hidden = !captured; if (!captured) return;
   if (!messageTarget.valid(captured)) {messageTarget.close(); panel.hidden = true; return;}
@@ -792,7 +809,7 @@ function renderMessagePanel(): void {
     const saved = current && current.draft.revision >= prepared.draft.revision ? current : prepared;
     state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved; controller.composer.attach(captured.workspaceId, saved);
   } else controller.composer.attachRetained(captured.workspaceId, target);
-  moveRetained(controller.elements.root, panel); controller.elements.root.hidden = false; controller.composer.placement(true);
+  placeMessageEditor(controller, panel);
   const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + (row?.name ?? row?.handle ?? captured.identity), ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.');
   controller.composer.availability(connected, ready, false, selecting); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderWorkbenchStatus();
@@ -819,7 +836,8 @@ function renderMessageRecovery(preparing: boolean): void {
 }
 function closeMessagePanel(focus = true): void {
   const identity = messageTarget.current?.identity; messageTarget.close(); byId('agent-message-panel').hidden = true;
-  renderNavigation(); renderRoster(); collectControllers();
+  for (const controller of controllers.values()) if (controller.elements.root.dataset.messagePanel) {delete controller.elements.root.dataset.messagePanel; stableViews().project(controller.elements.root);}
+  renderNavigation(); renderRoster(); collectControllers(); stableViews().sync();
   if (focus && (!identity || byId('sidebar').hidden || !roster.focusMessage(identity))) focusEditor();
 }
 function renderAgent(deferredTranscript = false): void {
@@ -1256,7 +1274,7 @@ export function consumeDrawerClick(event: MouseEvent): void {
 }
 function appContextMenu(event: MouseEvent): void {
   if (event.defaultPrevented || nativeEditingTarget(event.target)) return;
-  const target = event.target as HTMLElement | null, pane = target?.closest<HTMLElement>('.pane-leaf');
+  const target = event.target as HTMLElement | null, pane = target?.closest<HTMLElement>('.pane-leaf') ?? (target ? viewPane(target) : null);
   if (!pane?.dataset.paneId || target?.closest('.transcript')) return;
   const tab = target?.closest<HTMLElement>('[data-tab-key]'); event.preventDefault(); openPaneMenu(pane.dataset.paneId, event, tab?.dataset.tabKey);
 }

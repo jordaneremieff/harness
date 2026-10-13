@@ -382,7 +382,7 @@ function controls(composer: Composer): (key: string) => HostNode {
 const primaryControl = (key: string) => controls(app.primaryComposer())(key);
 const agentControl = (key: string) => controls(app.agentComposer())(key);
 function messageControl(key: string): HostNode {
-  const form = byId('agent-message-panel').querySelector('form'); assert.ok(form);
+  const form = hostDocument.body.querySelector('.composer[data-message-panel="true"]'); assert.ok(form);
   const node = key === 'composer' ? form : form.querySelector(`#${form.id}-${key}`); assert.ok(node, `Missing Message ${key}`); return node;
 }
 function paneNode(id: string): HostNode { const node = byId('conversation-panes').querySelector(`[data-pane-id="${id}"]`); assert.ok(node); return node; }
@@ -916,7 +916,7 @@ test('a non-split agent round trip keeps the loaded primary anchor and earlier p
 });
 
 
-test('pane detach, tab reveal and width changes retain target-owned transcript geometry', async t => {
+test('tab reveal and width changes retain target-owned transcript geometry without detachment', async t => {
   t.after(() => {host.viewport = 1200;});
   const epoch = 706; const target = {kind: 'primary' as const, key: 'p', epoch}; const identity = 'geometry-observer';
   const rows = Array.from({length: 24}, (_, index) => entryFixture(`geometry-${index}`, [messageFixture(`geometry-message-${index}`, [textPart(`Retained place ${index}`)])]));
@@ -931,7 +931,7 @@ test('pane detach, tab reveal and width changes retain target-owned transcript g
     const attached = this.parentNode !== null; remove.call(this);
     if (attached && this.className === 'conversation') { for (const transcript of this.querySelectorAll('.transcript')) transcript.scrollTop = 0; detached++; }
   });
-  await app.selectAgent(agent); await settle(); assert.equal(primaryControl('root').hidden, true); assert.ok(detached > 0);
+  await app.selectAgent(agent); await settle(); assert.equal(primaryControl('root').hidden, true); assert.equal(detached, 0);
   const agentNotice = agentControl('view-notice'); assert.doesNotMatch(agentNotice.textContent, /Saved position|saved place/);
   fixture = {...fixture, selectedPage: {target, items: rows, nextCursor: null, coverage}};
   byId('primary-row').click(); await settle();
@@ -1065,7 +1065,7 @@ test('message panel moves the existing form outside the roster without changing 
   const row=agentFixture('movable-message'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:706})],roster:[row]});
   const selected=app.state.workspace?.selectedTarget,agent=controls(app.agentComposer()),form=agent('composer'),editor=agent('editor'),root=agent('root'),saved=selectionSaves.length;
   app.openTabActions('agent-pane'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
-  assert.equal(messageControl('composer'),form); assert.equal(messageControl('editor'),editor); assert.equal(form.parentNode,byId('agent-message-panel')); assert.equal(byId('roster').contains(form),false); assert.deepEqual(app.state.workspace?.selectedTarget,selected); assert.equal(selectionSaves.length,saved);
+  assert.equal(messageControl('composer'),form); assert.equal(messageControl('editor'),editor); assert.equal(form.parentNode,agentControl('root')); assert.equal(app.stableViews().slot(form as unknown as HTMLElement)?.id,'agent-message-editor-slot'); assert.equal(byId('roster').contains(form),false); assert.deepEqual(app.state.workspace?.selectedTarget,selected); assert.equal(selectionSaves.length,saved);
   byId('agent-message-close').click(); await settle(); assert.equal(form.parentNode,root);
 });
 test('preference completions keep their captured request and leave a newer target notice unchanged', async context => {
@@ -1976,12 +1976,12 @@ test('three exact owners isolate drafts, carets, roots and accepted frames throu
   for (const [index, editor] of editors.entries()) { editor.value += ' local'; editor.dispatch('input'); editor.setSelectionRange(index + 1, index + 5, index === 1 ? 'backward' : 'forward'); editor.dispatch('select'); }
   await settle();
   const moved = movePaneTab(app.state.workspace?.conversationLayout ?? layout, tabKey(b), 'pane-a'); app.applyLayout(moved); await settle();
-  assert.equal(bc('root'), roots[2]); assert.equal(bc('editor'), editors[2]); assert.equal(roots[2]?.parentNode?.id, 'pane-content-pane-a');
+  assert.equal(bc('root'), roots[2]); assert.equal(bc('editor'), editors[2]); assert.equal(roots[2]?.parentNode, app.stableViews().host); assert.equal(app.stableViews().slot(roots[2] as unknown as HTMLElement)?.id, 'pane-content-pane-a');
   fixture = {...fixture, observations: [observation(a.identity, frame(a.identity, 1), 11), observation(b.identity, frame(b.identity, 1), 20)]};
   const restored = splitPane(app.state.workspace?.conversationLayout ?? moved, 'pane-a', 'y', {width: 760, height: 640, divider: 4}, tabKey(b)); app.applyLayout(restored); await settle();
   app.applyLayout(activatePaneTab(app.state.workspace?.conversationLayout ?? restored, 'pane-a', tabKey(a))); await settle();
   const bPane = paneLeaves((app.state.workspace?.conversationLayout ?? restored).root).find(pane => pane.active === tabKey(b)); assert.ok(bPane); app.openTabActions(bPane.id); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
-  assert.equal(messageControl('composer'), forms[2]); assert.equal(messageControl('editor'), editors[2]); assert.equal(forms[2]?.parentNode, byId('agent-message-panel')); assert.deepEqual(app.state.workspace?.selectedTarget, a); editors[2]?.focus();
+  assert.equal(messageControl('composer'), forms[2]); assert.equal(messageControl('editor'), editors[2]); assert.equal(forms[2]?.parentNode, roots[2]); assert.equal(app.stableViews().slot(forms[2] as unknown as HTMLElement)?.id,'agent-message-editor-slot'); assert.deepEqual(app.state.workspace?.selectedTarget, a); editors[2]?.focus();
   event('agent.frame', {identity: a.identity, connectionEpoch: 11, frame: frame(a.identity, 2)}); event('agent.frame', {identity: b.identity, connectionEpoch: 20, frame: frame(b.identity, 2)}); await settle();
   assert.match(ac('transcript').textContent, /three-a frame 2/); assert.doesNotMatch(ac('transcript').textContent, /three-b frame/);
   assert.match(bc('transcript').textContent, /three-b frame 2/); assert.doesNotMatch(bc('transcript').textContent, /three-a frame/); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('workbench-scope').title,b.identity); assert.match(byId('agent-status').textContent,/three-b-model-2/); assert.equal(hostDocument.activeElement,editors[2]);

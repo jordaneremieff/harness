@@ -32,7 +32,10 @@ afterEach(() => { if (originalDocument) Object.defineProperty(globalThis, 'docum
 function fixture(more?: () => Promise<void>) {
   const editor = new FakeNode(); const menu = new FakeNode(); menu.id = 'primary-command-menu'; const announcements = new FakeNode(); const changed: string[] = [];
   let inventory: CommandInventory = {state: 'ready', items: ['compact', 'model', 'thinking'].map(name => ({name, description: `${name} description`, source: 'app'}))};
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: (tag: string) => {const node = new FakeNode(); node.tag = tag; return node;}, getElementById: () => announcements}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {execCommand: (_command: string, _ui: boolean, text: string) => {
+    const editor = document.activeElement as unknown as FakeNode; const at = editor.selectionStart;
+    editor.value = editor.value.slice(0, at) + text + editor.value.slice(editor.selectionEnd); editor.setSelectionRange(at + text.length, at + text.length); return true;
+  }, createElement: (tag: string) => {const node = new FakeNode(); node.tag = tag; return node;}, getElementById: () => announcements}});
   const controller = new CommandMenu(editor as unknown as HTMLTextAreaElement, menu as unknown as HTMLElement, () => inventory, text => {changed.push(text); controller.update();}, more);
   const text = (value: string, caret = value.length, end = caret) => {editor.value = value; editor.setSelectionRange(caret, end); editor.fire('focus'); controller.update();};
   const key = (value: string, extra: Partial<FakeEvent> = {}) => {
@@ -82,6 +85,16 @@ test('loading and empty states are not options and consume Enter without edits',
   f.inventory({state: 'ready', items: []}); f.text('/nothing');
   assert.equal(f.menu.children[0]?.textContent, 'No commands match /nothing'); assert.equal(f.key('Enter').event.defaultPrevented, true);
   f.inventory({state: 'unavailable', items: []}); assert.equal(f.menu.hidden, true); assert.equal(f.editor.attrs.has('aria-activedescendant'), false);
+});
+test('modifier Enter closes ready, loading and empty lists without insertion and stays dismissed', () => {
+  for (const inventory of [{state: 'loading', items: []}, {state: 'ready', items: []}, {state: 'ready', items: [{name: 'model', source: 'app', description: ''}]}] as CommandInventory[]) {
+    for (const modifier of [{ctrlKey: true}, {metaKey: true}]) {
+      const f = fixture(); f.inventory(inventory); f.text('/mo');
+      const enter = f.key('Enter', modifier); assert.equal(enter.handled, true); assert.equal(enter.event.defaultPrevented, true);
+      assert.deepEqual(f.changed, []); assert.equal(f.menu.hidden, true); f.controller.update(); assert.equal(f.menu.hidden, true);
+    }
+  }
+  const f = fixture(); f.text('/mo'); assert.equal(f.key('Enter', {repeat: true}).handled, true); assert.deepEqual(f.changed, []);
 });
 test('Escape persists across inventory updates; ShiftEnter, blur and composition clear active references', () => {
   const f = fixture(); f.text('/mo'); f.key('Escape'); f.controller.update(); assert.equal(f.menu.hidden, true);

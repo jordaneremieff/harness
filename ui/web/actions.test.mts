@@ -388,10 +388,24 @@ function paletteFixture(overrides: Partial<ActionContext> = {}) {
 function key(node: FakeNode, name: string, options: Record<string, unknown> = {}) {
   const event = new Event('keydown', {cancelable: true}); Object.assign(event, {key: name, ...options}); node.dispatchEvent(event); return event;
 }
+test('Enter send preference is a checked Commands choice and saves the inverse workspace value', async () => {
+  let selected: unknown;
+  for (const enabled of [false, true]) {
+    const f = paletteFixture({snapshot: () => ({workspace: {enterSendsMessages: enabled}} as Snapshot), selection: async value => {selected = value;}});
+    try {
+      const item = f.actions.paletteEntries().find(row => row.name === 'Enter sends messages'); assert.ok(item); assert.equal(item.checked, enabled);
+      item.run(); await Promise.resolve(); assert.deepEqual(selected, {enterSendsMessages: !enabled});
+      f.actions.palette(); const list = f.body.children.find(node => node.className === 'palette-list');
+      const row = list?.children.find(node => node.attributes.get('aria-label')?.startsWith('Enter sends messages')); assert.ok(row);
+      assert.equal(row.attributes.get('aria-checked'), String(enabled));
+      assert.equal(row.children.find(node => node.className.includes('palette-check'))?.style.visibility, enabled ? 'visible' : 'hidden');
+    } finally {f.restore();}
+  }
+});
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context());
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Show sidebar', 'Projects', 'Model', 'Thinking']);
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Enter sends messages', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Show sidebar', 'Projects', 'Model', 'Thinking']);
   const absent = new Actions(context({primary: () => undefined})).paletteEntries();
   const disabled = absent.filter(item => !item.enabled).map(item => item.name);
   assert.deepEqual(disabled, ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking']);

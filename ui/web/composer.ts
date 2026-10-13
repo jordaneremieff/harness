@@ -1,4 +1,5 @@
 import { LIMITS } from '../shared/api.ts';
+import { ComposerOverlay } from './composer-overlay.ts';
 import type { DraftView, OperationView, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
 import { announce, button, copy, element, rawText, setText } from './dom.ts';
 import { cardAction, controlIcon } from './card-icons.ts';
@@ -14,9 +15,9 @@ import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draft
 import type { DraftState, Submission } from './draft-state.ts';
 import { ApiError, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
+export type ComposerHooks = {layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement};
+  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
@@ -27,7 +28,9 @@ export function createComposerElements(instanceId: string): ComposerElements {
   resize.setAttribute('role', 'separator'); resize.setAttribute('aria-orientation', 'horizontal'); resize.setAttribute('aria-label', 'Resize message box'); resize.setAttribute('aria-controls', editor.id);
   const receipt = element('div', 'receipt'); receipt.id = `${id}-receipt`; receipt.setAttribute('role', 'status');
   const commandMenu = element('div', 'command-menu'); commandMenu.id = `${id}-commands`; commandMenu.hidden = true;
-  const input = element('div', 'composer-input'); input.append(commandMenu, recipient, editor);
+  const overlay = element('div', 'composer-overlay'); overlay.setAttribute('aria-hidden', 'true'); overlay.hidden = true;
+  const surface = element('div', 'composer-surface'); surface.append(overlay, editor);
+  const input = element('div', 'composer-input'); input.append(commandMenu, recipient, surface);
   const modes = element('div', 'modes'); modes.id = `${id}-modes`; modes.hidden = true; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Delivery while working');
   const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Delivery while working';
   for (const [mode, text] of [['steer', 'Next step'], ['followUp', 'After response']] as const) {
@@ -40,12 +43,12 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const bar = element('div', 'composer-bar'); bar.append(modes, stop, send); const line = element('div', 'composer-line'); line.append(bar); root.append(resize, receipt, input, line);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, commandMenu};
+  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, commandMenu, overlay};
 }
 type Edit = {text: string; mode: string; edit: number};
 type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; authorized?: boolean; cleanup?: DraftView; settling?: Promise<void>};
 type Buffer = {selection?: EditorSelection; workspace: string; state: TargetState; data: DraftState; saving?: Promise<DraftView>; submitting: boolean;
-  review: boolean; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; noticeDetails?: string; lastOperation?: OperationView; retained?: boolean};
+  review: boolean; insertionCopy?: string; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; noticeDetails?: string; lastOperation?: OperationView; retained?: boolean};
 const encoded = encodeURIComponent;
 const sameTarget = (a: Target, b?: Target): boolean => JSON.stringify(a) === JSON.stringify(b);
 
@@ -69,11 +72,15 @@ export class Composer {
   private hooks: ComposerHooks;
   private commandMenu?: CommandMenu;
   private composing = false;
+  private suppressEnter = false;
+  private overlay?: ComposerOverlay;
+  private textLimit = false;
   private focusRequest?: {origin: Element | null};
   constructor(elements: ComposerElements, hooks: ComposerHooks) {
     this.elements = elements; this.hooks = hooks; this.editor = elements.editor;
+    if (elements.overlay) this.overlay = new ComposerOverlay(this.editor, elements.overlay);
     this.listen(this.editor, 'input', () => {
-      const start = performance.now(), buffer = this.current; this.change(this.editor.value);
+      const start = performance.now(), buffer = this.current; this.overlay?.invalidate(); this.change(this.editor.value);
       if (this.hooks.timing) requestAnimationFrame(() => {
         if (this.destroyed || this.current !== buffer) return;
         try {this.hooks.timing?.(start, performance.now());} catch { /* Diagnostics do not interrupt editor work. */ }
@@ -82,10 +89,17 @@ export class Composer {
     this.listen(this.editor, 'keydown', event => this.key(event));
     for (const event of ['select', 'keyup', 'blur', 'scroll'] as const) this.listen(this.editor, event, () => this.rememberSelection());
     this.listen(this.editor, 'focus', () => this.restoreSelection(this.current));
-    this.listen(this.editor, 'compositionstart', () => { this.composing = true; });
+    this.listen(this.editor, 'compositionstart', () => { this.composing = true; this.suppressEnter = true; });
     this.listen(this.editor, 'compositionend', () => { this.composing = false; });
+    this.listen(this.editor, 'keyup', event => { if (event.key === 'Enter') this.suppressEnter = false; });
+    this.listen(this.editor, 'beforeinput', event => { if (!this.composing && !event.isComposing && event.inputType !== 'insertLineBreak' && event.inputType !== 'insertParagraph' && event.inputType !== 'insertCompositionText' && event.inputType !== 'insertFromComposition') this.suppressEnter = false; });
     const moreCommands = hooks.moreCommands;
-    if (elements.commandMenu && hooks.commands) this.commandMenu = new CommandMenu(this.editor, elements.commandMenu, hooks.commands, text => this.change(text), moreCommands ? () => {
+    if (elements.commandMenu && hooks.commands) this.commandMenu = new CommandMenu(this.editor, elements.commandMenu, hooks.commands, (text, error, prepared) => {
+      this.change(text);
+      if (error && this.current) {
+        this.current.notice = error; this.current.insertionCopy = prepared; this.receipt(this.current);
+      }
+    }, moreCommands ? () => {
       const target = this.current?.state.target;
       return target ? moreCommands(target) : Promise.reject(new Error('No message recipient is selected.'));
     } : undefined);
@@ -107,7 +121,7 @@ export class Composer {
   /** Removes DOM work without cancelling captured saves or receipt settlement. */
   destroy(): void {
     if (this.destroyed) return; this.rememberSelection(); this.destroyed = true;
-    for (const cleanup of this.cleanup) cleanup(); this.cleanup = []; this.commandMenu?.destroy();
+    for (const cleanup of this.cleanup) cleanup(); this.cleanup = []; this.commandMenu?.destroy(); this.overlay?.destroy();
     for (const buffer of this.buffers.values()) {clearTimeout(buffer.slowTimer); buffer.slowTimer = undefined;}
     this.elements.receipt.replaceChildren(); this.elements.receiptDetails.replaceChildren();
   }
@@ -127,6 +141,7 @@ export class Composer {
     // Hidden layout can reset native offsets without changing the owned draft.
     if (document.activeElement === this.editor) this.rememberSelection();
     const previousTarget = this.current?.state.target;
+    this.overlay?.invalidate();
     if (!state) { this.commandMenu?.reset(); }
     if (!state) { this.current = undefined; this.editor.value = ''; this.slot().replaceChildren(); this.elements.receiptDetails.replaceChildren(); this.render(); return; }
     const key = JSON.stringify([workspace, state.targetKey, state.target]);
@@ -209,7 +224,7 @@ export class Composer {
   get state(): TargetState | undefined { return this.current?.state; }
   /** New supplied text starts at its end; restoring an existing draft retains its range. */
   setText(text: string): void {
-    this.editor.value = text; this.change(text); this.editor.setSelectionRange(text.length, text.length); this.rememberSelection();
+    this.overlay?.invalidate(); this.editor.value = text; this.change(text); this.editor.setSelectionRange(text.length, text.length); this.rememberSelection();
   }
   focus(): void {
     if (this.destroyed) return;
@@ -232,13 +247,28 @@ export class Composer {
     const buffer = this.current; if (!buffer) return;
     const previous = buffer.data;
     buffer.data = editDraft(buffer.data, text, mode);
+    if (buffer.data === previous) {this.rememberSelection(); return;}
+    if (buffer.insertionCopy !== undefined) {buffer.insertionCopy = undefined; buffer.notice = '';}
     if (text === previous.text) this.rebaseSelection(buffer, previous);
-    this.rememberSelection(); this.notifyRetained(buffer); this.resize(); this.render(); this.commandMenu?.update(); this.flush(buffer);
+    this.textLimit = new TextEncoder().encode(text).length > LIMITS.textBytes;
+    if (this.textLimit) buffer.saveError = 'Text exceeds the saved text limit. Your draft is unchanged.';
+    else if (buffer.saveError === 'Text exceeds the saved text limit. Your draft is unchanged.') buffer.saveError = undefined;
+    this.rememberSelection(); this.notifyRetained(buffer); this.resize(); this.render(); if (this.textLimit) this.receipt(buffer); this.commandMenu?.update(); this.flush(buffer);
+  }
+  private compositionKey(event: KeyboardEvent): boolean {
+    if (this.composing || event.isComposing || event.keyCode === 229) { if (event.key === 'Enter' || event.keyCode === 229) this.suppressEnter = true; return true; }
+    if (event.key === 'Enter' && this.suppressEnter) { event.preventDefault(); return true; }
+    return false;
   }
   private key(event: KeyboardEvent): void {
-    if (event.defaultPrevented || this.composing || event.isComposing || event.keyCode === 229) return;
-    if (this.commandMenu?.key(event) || event.repeat) return;
-    if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); void this.send(); }
+    if (this.compositionKey(event)) return;
+    if (event.defaultPrevented) return;
+    if (this.commandMenu?.key(event)) return;
+    const modifierSend = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
+    const ordinarySend = this.hooks.enterSends?.() && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (event.key === 'Enter' && (modifierSend || ordinarySend)) {
+      event.preventDefault(); if (!event.repeat && this.current && draftSaved(this.current.data) && !this.textLimit) void this.send();
+    }
   }
   private prepare(buffer: Buffer): void {
     if (this.destroyed || this.admissionBlocked || !this.ready || buffer !== this.current || buffer.reservation || buffer.submitting) return;
@@ -278,8 +308,9 @@ export class Composer {
   private paint(buffer: Buffer): void {
     buffer.state.draft = buffer.data.server;
     if (this.current !== buffer) return;
-    if (this.editor.value !== buffer.data.text) { this.editor.value = buffer.data.text; this.restoreSelection(buffer); }
+    if (this.editor.value !== buffer.data.text) { this.overlay?.invalidate(); this.editor.value = buffer.data.text; this.restoreSelection(buffer); }
     else if (document.activeElement !== this.editor) this.restoreSelection(buffer);
+    this.textLimit = new TextEncoder().encode(buffer.data.text).length > LIMITS.textBytes;
     this.resize(); this.render(); this.finishFocusRequest();
   }
   resize(): void {
@@ -292,14 +323,14 @@ export class Composer {
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
       const short = matchMedia('(max-height: 599px)').matches;
       const baseline = line + extra;
-      const available = this.elements.root.parentElement?.clientHeight ?? this.elements.root.clientHeight;
+      const available = this.hooks.layoutHeight?.() ?? this.elements.root.parentElement?.clientHeight ?? this.elements.root.clientHeight;
       const autoCap = Math.min(10 * line + extra, available * (short ? 0.25 : 0.3));
       const cap = Math.max(baseline, this.manualHeight === undefined ? autoCap : available * 0.6);
       this.editor.style.maxHeight = `${cap}px`;
       this.editor.style.height = this.manualHeight === undefined ? '0px' : `${Math.min(cap, Math.max(baseline, this.manualHeight))}px`;
       if (this.manualHeight === undefined) this.editor.style.height = `${Math.min(cap, Math.max(baseline, this.editor.scrollHeight + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth)))}px`;
       this.editor.scrollTop = scrollTop; this.editor.scrollLeft = scrollLeft;
-      this.sizedHeight = this.editor.offsetHeight;
+      this.sizedHeight = this.editor.offsetHeight; this.overlay?.invalidate();
     });
   }
   private render(): void {
@@ -307,7 +338,7 @@ export class Composer {
     const buffer = this.current; const mode = buffer?.data.mode;
     this.elements.root.hidden = !buffer; this.editor.disabled = !buffer;
     this.renderControls();
-    this.elements.send.disabled = !buffer || !this.ready || this.admissionBlocked || buffer.submitting || buffer.review || this.pendingBlocks(buffer) || !buffer.data.text.trim();
+    this.elements.send.disabled = !buffer || !this.ready || this.admissionBlocked || buffer.submitting || buffer.review || this.textLimit || !draftSaved(buffer.data) || this.pendingBlocks(buffer) || !buffer.data.text.trim();
     const active = this.deliveryMode(mode);
     const delivery = this.delivery(); if (delivery) delivery.value = active === 'followUp' ? 'followUp' : 'steer';
     setText(this.elements.save, this.saveSummary(buffer));
@@ -344,6 +375,7 @@ export class Composer {
   }
   private flush(buffer: Buffer): void {
     if (this.admissionBlocked || buffer.submitting || buffer.review || buffer.saving || buffer.saveError || draftSaved(buffer.data)) return;
+    if (new TextEncoder().encode(buffer.data.text).length > LIMITS.textBytes) {buffer.saveError = 'Text exceeds the saved text limit. Your draft is unchanged.'; this.receipt(buffer); return;}
     void this.save(buffer, buffer.data).then(() => this.flush(buffer), () => {});
   }
   private async save(buffer: Buffer, edit: Edit): Promise<DraftView> {
@@ -416,10 +448,11 @@ export class Composer {
     const ordinary = buffer.lastOperation?.state === 'accepted' && buffer.notice === 'Message sent';
     if (buffer.notice && !ordinary && buffer.notice !== buffer.saveError) slot.append(element('p', 'warning', buffer.notice));
     if (buffer.noticeDetails && !buffer.saveError) slot.append(this.details(buffer.noticeDetails));
+    if (buffer.insertionCopy !== undefined) slot.append(button('Copy prepared text', () => { void copy(buffer.insertionCopy ?? '', slot); }));
     this.inputReceiptNotice(buffer, records.find(inputOperation), slot);
     if (!buffer.saveError || buffer.review) return;
     const retry = cardAction('restart', 'Retry draft save', () => { if (this.current !== buffer || this.admissionBlocked || buffer.saving) return; if (buffer.notice === buffer.saveError || buffer.noticeDetails === buffer.saveError) { buffer.notice = ''; buffer.noticeDetails = undefined; } buffer.saveError = undefined; this.render(); this.receipt(buffer); this.flush(buffer); });
-    retry.disabled = this.admissionBlocked || !!buffer.saving;
+    retry.disabled = this.admissionBlocked || !!buffer.saving || new TextEncoder().encode(buffer.data.text).length > LIMITS.textBytes;
     slot.append(this.details(buffer.saveError), retry);
   }
   private inputReceiptNotice(buffer: Buffer, record: OperationView | undefined, slot: HTMLElement): void {
@@ -560,7 +593,7 @@ export class Composer {
     return false;
   }
   async send(literal = false): Promise<void> {
-    const buffer = this.current; if (!buffer || this.blocked(buffer)) return;
+    const buffer = this.current; if (this.composing || this.suppressEnter || this.textLimit || !buffer || this.blocked(buffer)) return;
     this.rememberSelection(); const focusOrigin = document.activeElement;
     this.commandMenu?.close();
     const snapshot: Edit = {text: buffer.data.text, mode: buffer.state.target.kind === 'primary' && !this.busy ? 'prompt' : this.deliveryMode(buffer.data.mode) ?? buffer.data.mode, edit: buffer.data.edit};

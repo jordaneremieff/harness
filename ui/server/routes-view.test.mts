@@ -53,6 +53,14 @@ test('pure concurrent malformed closed trees reject before state or observation 
   for(const conversationLayout of invalid) await assert.rejects(f.select({expectedRevision:0,conversationLayout}));
   assert.deepEqual(f.changes,[]);assert.equal(f.observed,0);
 });
+test('Enter preference admits booleans only and preserves omission',async()=> {
+  const f=fixture();
+  assert.equal((await f.select({expectedRevision:0,enterSendsMessages:true}) as Workspace).enterSendsMessages,true);
+  assert.equal((await f.select({expectedRevision:0,appearance:'light'}) as Workspace).enterSendsMessages,true);
+  assert.equal((await f.select({expectedRevision:0,enterSendsMessages:false}) as Workspace).enterSendsMessages,false);
+  for(const enterSendsMessages of [null,'true',0,{},[]]) await assert.rejects(f.select({expectedRevision:0,enterSendsMessages}),/Enter preference/);
+  assert.equal(f.observed,3);
+});
 test('appearance and sidebar values retain exact validation without changing observation ownership',async()=> {
   const f=fixture();const choices=['dark','light','system','latte','frappe','macchiato','mocha'] as const;
   for(const appearance of choices) assert.equal((await f.select({expectedRevision:0,appearance}) as Workspace).appearance,appearance);

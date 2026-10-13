@@ -92,7 +92,7 @@ export type PaneNode = {kind: 'pane'; id: string; tabs: ConversationTab[]; activ
 export type ConversationLayout = {root: PaneNode; focusedPane: string};
 /** Shared tabs use compare-and-set revisions for view state. */
 export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
-  panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance;
+  panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean;
   conversationLayout?: ConversationLayout};
 export type DraftView = {revision: number; text: string; mode: string; persisted: true};
 export type ReadingView = {revision: number; anchorId: string | null; offsetPx: number; followTail: boolean};

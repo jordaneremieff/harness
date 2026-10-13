@@ -71,6 +71,22 @@ test('private state survives restart, retains distinct epochs, and publishes onl
   } finally { await reopened.close(); }
 });
 
+test('Enter preference is workspace-local, revisioned, optional and durable', async t => {
+  const {root, store, workspace} = await setup(t);
+  assert.equal(workspace.enterSendsMessages, undefined);
+  const other = await store.createWorkspace();
+  const saved = await store.updateSelection(workspace.id, {expectedRevision: 0, enterSendsMessages: true});
+  assert.equal(saved.enterSendsMessages, true); assert.equal(saved.revision, 1);
+  assert.equal((await store.workspace(other.id)).enterSendsMessages, undefined);
+  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 0, enterSendsMessages: false}), StateError);
+  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 1, enterSendsMessages: 'yes'} as unknown as Parameters<StateStore['updateSelection']>[1]), StateError);
+  const unchanged = await store.updateSelection(workspace.id, {expectedRevision: 1, appearance: 'light'}); assert.equal(unchanged.enterSendsMessages, true);
+  await store.close(); const reopened = await StateStore.open(root);
+  try {
+    assert.equal((await reopened.workspace(workspace.id)).enterSendsMessages, true);
+    const off = await reopened.updateSelection(workspace.id, {expectedRevision: 2, enterSendsMessages: false}); assert.equal(off.enterSendsMessages, false);
+  } finally {await reopened.close();}
+});
 test('conversation layouts replace atomically, clone nested values, preserve omission and survive restart', async t => {
   const events: Workspace[] = [];
   const {root, store, workspace, target} = await setup(t, {onChange: (name, data) => {if (name === 'workspace.changed') events.push(data as Workspace);}});

@@ -7,6 +7,7 @@ import type { Modal } from './modal.ts';
 import { operation, request } from './transport.ts';
 import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
+import { DECORATION_BYTES, DECORATION_LINES, DECORATION_SPANS } from './composer-syntax.ts';
 import { duplicateIdentityTails } from './tabs.ts';
 import { relativeTime } from './format.ts';
 import { navigateOptions } from './list-navigation.ts';
@@ -26,7 +27,7 @@ const appCommands: CommandOption[] = [
   {name: 'thinking', description: 'Choose the thinking level for Primary', source: 'app'},
 ];
 
-export type PaletteEntry = CommandOption & {enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string};
+export type PaletteEntry = CommandOption & {enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string; checked?: boolean};
 function choice(label: string, selected: boolean, run: () => void): HTMLButtonElement {
   const node = button('', run, 'option-choice');
   const check = cardIcon('success'); check.classList.add('choice-check'); check.style.visibility = selected ? 'visible' : 'hidden';
@@ -290,6 +291,11 @@ export class Actions {
       entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent),
       entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
       {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', ...appearanceChoices.flatMap(([value, label]) => [value, label, ...(label.startsWith('Catppuccin ') ? [`Catppuccin ${value}`] : [])])]},
+      {...entry('Enter sends messages', 'Change the message box Enter action', () => {
+        void this.ctx.selection({enterSendsMessages: this.ctx.snapshot()?.workspace.enterSendsMessages !== true}).catch(error => {
+          this.ctx.modal.open('Message preference'); this.ctx.modal.error(error, 'The preference was not saved.');
+        });
+      }), checked: this.ctx.snapshot()?.workspace.enterSendsMessages === true},
       entry('Help', 'Browser controls and terminal fallback', () => this.help()),
       entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), transcript),
       entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), transcript),
@@ -407,6 +413,10 @@ export class Actions {
         const conversation = mode === 'goto' || item.source === 'agent'; if (conversation) row.dataset.kind = 'conversation';
         row.setAttribute('aria-label', [item.name, item.tail, item.description].filter(Boolean).join(', '));
         row.append(paletteName(item, match.marks, conversation), element('span', 'palette-desc', item.description), element('span', 'palette-source', commandSource(item.source)));
+        if (item.checked !== undefined) {
+          row.setAttribute('aria-checked', String(item.checked));
+          const check = cardIcon('success'); check.classList.add('palette-check'); check.style.visibility = item.checked ? 'visible' : 'hidden'; row.append(check);
+        }
         list.append(row);
       });
       if (!matches.length) list.append(paletteEmpty(search.field.value, mode === 'commands' && (!this.commandsLoaded || this.commandsIncomplete) || rosterIncomplete(this.ctx.snapshot())));
@@ -482,6 +492,7 @@ export class Actions {
   help(): void {
     const modal = this.ctx.modal; modal.open('Help');
     modal.body.append(element('p', undefined, 'Closing this tab does not stop your sessions or agents.'), element('p', undefined, 'To configure an agent, use its command through Primary.'), element('p', undefined, 'Use Commands to find actions. Closing a dialog never stops work.'), element('p', undefined, 'Unsaved drafts are lost if the browser closes unexpectedly.'));
+    modal.body.append(details('Display limits', `Message box syntax uses plain text above ${DECORATION_BYTES / 1024} KiB, ${DECORATION_LINES} lines, or ${DECORATION_SPANS} color marks. Composition and forced colors use native text.`));
   }
   retryOutput(): void {
     const items = this.ctx.primaryEntries();

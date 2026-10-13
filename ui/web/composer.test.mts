@@ -72,10 +72,13 @@ function scopedNodes(id: string, withMenu: boolean) {
   const elements = {root:node('composer'), editor:node('editor'), recipient:node('recipient'), receipt:node('receipt'), receiptDetails:node('receipt-details'), modes:node('modes'), send:node('send'), save:node('save'), commandMenu:withMenu ? node('command-menu') : undefined} as unknown as ComposerElements;
   return {node, elements};
 }
-function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory, withMenu = prefix === 'primary', timing?: (start: number, end: number) => void) {
+function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory, withMenu = prefix === 'primary', timing?: (start: number, end: number) => void, enterSends: () => boolean = () => false) {
   const scoped = scopedNodes(prefix, withMenu); const announcements = new NodeFake(); const lookups: string[] = [];
   const calls: Call[] = []; let sequence = 0; const frames: (() => void)[] = []; const copied: string[] = [];
-  Object.defineProperty(globalThis, 'document', {configurable: true, value: {getElementById: (id: string) => {lookups.push(id); assert.equal(id, 'announcements', 'Composer never resolves an instance through the global document'); return announcements;}, createElementNS: (_namespace: string, tag: string) => {const node = new NodeFake(); node.tag = tag; return node;}, createElement: (tag: string) => {const node = new NodeFake(); node.tag = tag; return node;}}});
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {execCommand: (_command: string, _ui: boolean, value: string) => {
+    const editor = document.activeElement as unknown as NodeFake; const at = editor.selectionStart;
+    editor.value = editor.value.slice(0, at) + value + editor.value.slice(editor.selectionEnd); editor.setSelectionRange(at + value.length, at + value.length); editor.fire('input'); return true;
+  }, getElementById: (id: string) => {lookups.push(id); assert.equal(id, 'announcements', 'Composer never resolves an instance through the global document'); return announcements;}, createElementNS: (_namespace: string, tag: string) => {const node = new NodeFake(); node.tag = tag; return node;}, createElement: (tag: string) => {const node = new NodeFake(); node.tag = tag; return node;}}});
   Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => { copied.push(text); }}}});
   Object.defineProperty(globalThis, 'requestAnimationFrame', {configurable: true, value: (callback: () => void) => frames.push(callback)});
   Object.defineProperty(globalThis, 'fetch', {configurable: true, value: (path: string, init: RequestInit) => {
@@ -89,7 +92,7 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
     const scope = scopedNodes(id, menu); const composer = new Composer(scope.elements, {submitted:result => submitted.push(result), unknownCommand:(text, send) => unknown(text, send), commands:inventory, retained:(workspace, target, value) => retained.push({workspace,target,value})});
     return {...scope, composer};
   };
-  const composer = new Composer(scoped.elements, {timing, submitted: result => submitted.push(result), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
+  const composer = new Composer(scoped.elements, {timing, enterSends, submitted: result => submitted.push(result), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
   const node = scoped.node;
   const pick = (method: string, suffix: string) => { const call = calls.find(item => item.method === method && item.path.endsWith(suffix)); assert.ok(call, `${method} ${suffix}`); return call; };
   const ok = (call: Call, value: unknown) => { calls.splice(calls.indexOf(call), 1); call.resolve({ok: true, data: value}); };
@@ -106,6 +109,65 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
     unknown: (handler: typeof unknown) => { unknown = handler; }};
 }
 
+test('composition commit beforeinput cannot release the Enter latch', async () => {
+  for (const inputType of ['insertCompositionText', 'insertFromComposition']) {
+    const f = fixture('primary', undefined, true, undefined, () => true); f.connect(state('a', draft(1, 'saved')));
+    f.node('editor').fire('compositionstart'); f.node('editor').fire('compositionend');
+    f.node('editor').fire('beforeinput', Object.assign({}, {inputType}));
+    assert.equal(f.node('editor').fire('keydown', {key: 'Enter', metaKey: true}).defaultPrevented, true);
+    await turn(); assert.equal(f.calls.length, 0);
+  }
+});
+test('duplicate native input notifications keep one edit and one draft save', async () => {
+  const f = fixture(); f.connect(); f.node('editor').value = 'one edit'; f.node('editor').fire('input');
+  const retained = f.retained.length; f.node('editor').fire('input'); f.node('editor').fire('input');
+  assert.equal(f.retained.length, retained); assert.equal(f.calls.filter(call => call.path.endsWith('/draft')).length, 1);
+  f.saved('one edit'); await turn(); assert.equal(f.calls.length, 0);
+});
+test('newline is native by default; only saved explicit send gestures dispatch', async () => {
+  for (const key of ['Enter', 'ArrowUp', 'ArrowDown', 'Tab', 'Escape']) {
+    const f = fixture(); f.connect(state('a', draft(1, 'saved')));
+    assert.equal(f.node('editor').fire('keydown', {key}).defaultPrevented, false); await turn(); assert.equal(f.calls.length, 0);
+  }
+  for (const modifier of [{metaKey: true}, {ctrlKey: true}]) {
+    const f = fixture(); f.connect(state('a', draft(1, 'saved')));
+    assert.equal(f.node('editor').fire('keydown', {key: 'Enter', ...modifier}).defaultPrevented, true); await turn(); assert.ok(f.pick('POST', '/inputs'));
+  }
+  const f = fixture('primary', undefined, true, undefined, () => true); f.connect(); f.composer.setText('unsaved');
+  f.node('editor').fire('keydown', {key: 'Enter', metaKey: true}); f.saved('unsaved'); await turn(); assert.equal(f.calls.length, 0);
+  assert.equal(f.node('editor').fire('keydown', {key: 'Enter', shiftKey: true}).defaultPrevented, false);
+  assert.equal(f.node('editor').fire('keydown', {key: 'Enter', repeat: true}).defaultPrevented, true); await turn(); assert.equal(f.calls.length, 0);
+});
+test('composition commit suppression survives compositionend, form submission and final keydown until matching keyup', async () => {
+  for (const finalBeforeEnd of [false, true]) {
+    const f = fixture('primary', undefined, true, undefined, () => true); f.connect(state('a', draft(1, 'saved'))); const editor = f.node('editor');
+    editor.fire('compositionstart');
+    if (finalBeforeEnd) editor.fire('keydown', {key: 'Enter'});
+    editor.fire('compositionend');
+    if (!finalBeforeEnd) assert.equal(editor.fire('keydown', {key: 'Enter'}).defaultPrevented, true);
+    f.node('composer').fire('submit'); await turn(); assert.equal(f.calls.length, 0);
+    editor.fire('keyup', {key: 'Enter'}); editor.fire('keydown', {key: 'Enter'}); await turn(); assert.ok(f.pick('POST', '/inputs'));
+  }
+});
+test('a later non-Enter native edit releases the composition latch without replay', async () => {
+  const f = fixture(); f.connect(state('a', draft(1, 'saved'))); const editor = f.node('editor');
+  editor.fire('compositionstart'); editor.fire('compositionend'); editor.fire('beforeinput', {inputType: 'insertText'} as Partial<EventFake>);
+  editor.fire('keydown', {key: 'Enter', ctrlKey: true}); await turn(); assert.ok(f.pick('POST', '/inputs'));
+});
+test('modifier Enter closes active completion first and does not bypass loading or empty lists', async () => {
+  for (const inventory of [{state: 'loading', items: []}, {state: 'ready', items: []}] as CommandInventory[]) {
+    const f = fixture('primary', () => inventory); f.connect(state('a', draft(1, '/mo'))); f.node('editor').setSelectionRange(3, 3); f.node('editor').focus();
+    f.node('editor').fire('keydown', {key: 'Enter', ctrlKey: true}); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.node('command-menu').hidden, true);
+  }
+});
+test('over-byte native paste remains exact, unsaved and unsendable without a backend request', async () => {
+  const f = fixture(); f.connect(); const value = 'é'.repeat(32769); f.node('editor').value = value; f.node('editor').fire('input');
+  assert.equal(f.composer.editor.value, value); assert.equal(f.composer.unsaved, true); assert.equal(f.node('send').disabled, true); assert.equal(f.calls.length, 0);
+  f.node('editor').fire('keydown', {key: 'Enter', ctrlKey: true}); await turn(); assert.equal(f.calls.length, 0);
+  const retry = f.node('receipt').find('Retry draft save'); assert.ok(retry); assert.equal(retry.disabled, true);
+  f.click('Retry draft save'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.composer.editor.value, value);
+  f.node('editor').value = 'fits'; f.node('editor').fire('input'); assert.equal(f.pick('PUT', '/draft').body.text, 'fits');
+});
 test('saved ranges and editor scroll survive reload with exact target identity', () => {
   const f = fixture(); const values = new Map<string, string>();
   Reflect.set(globalThis, 'sessionStorage', {getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value)});
@@ -320,8 +382,8 @@ test('IME, repeat, ShiftEnter, prevented autocomplete, and modified Enter do not
   assert.equal(f.node('modes').children[0]?.fire('keydown', {key: 'Tab'}).defaultPrevented, false);
   assert.equal(f.node('editor').fire('keydown', {key: 'Tab', shiftKey: true}).defaultPrevented, false);
 });
-test('Enter submits once while pending and form submission shares the duplicate guard', async () => {
-  const f = fixture(); const a = f.connect(state('a', draft(1, 'sent')));
+test('Enter sends preference submits once while pending and form submission shares the duplicate guard', async () => {
+  const f = fixture('primary', undefined, true, undefined, () => true); const a = f.connect(state('a', draft(1, 'sent')));
   assert.equal(f.node('editor').fire('keydown', {key: 'Enter'}).defaultPrevented, true); f.node('composer').fire('submit'); await turn();
   assert.equal(f.calls.filter(call => call.path.endsWith('/inputs')).length, 1); f.admit(a, 'rejected'); await turn();
 });
@@ -549,7 +611,7 @@ test('an open primary menu accepts an exact name without dispatch and normal Ent
   f.node('editor').setSelectionRange(8, 8); f.node('editor').fire('focus'); f.composer.commandsChanged();
   assert.equal(f.node('command-menu').hidden, false); f.node('editor').fire('keydown', {key: 'Enter'}); await turn();
   assert.equal(f.composer.editor.value, '/fixture '); assert.equal(f.calls.some(call => call.path.endsWith('/inputs')), false);
-  f.saved('/fixture ', 2); await turn(); f.node('editor').fire('keydown', {key: 'Enter'}); await turn();
+  f.saved('/fixture ', 2); await turn(); f.node('editor').fire('keydown', {key: 'Enter', metaKey: true}); await turn();
   assert.equal(f.calls.filter(call => call.path.endsWith('/inputs')).length, 1); f.admit(a, 'rejected'); await turn();
 });
 test('loading or empty primary menus consume Enter and agent composers never open slash menus', async () => {

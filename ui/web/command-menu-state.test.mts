@@ -52,7 +52,8 @@ test('empty and loading lists consume Enter and unavailable inventories never op
 test('ShiftEnter dismisses for a native newline and IME or modified keys never accept', () => {
   const state = open(); const newline = menuKey(state, {key: 'Enter', shiftKey: true});
   assert.equal(newline.state.open, false); assert.equal(newline.action, 'native');
-  for (const extra of [{isComposing: true}, {keyCode: 229}, {repeat: true}, {ctrlKey: true}, {metaKey: true}, {altKey: true}]) assert.equal(menuKey(state, {key: 'Enter', ...extra}).action, 'native');
+  for (const extra of [{isComposing: true}, {keyCode: 229}, {altKey: true}]) assert.equal(menuKey(state, {key: 'Enter', ...extra}).action, 'native');
+  for (const extra of [{repeat: true}, {ctrlKey: true}, {metaKey: true}]) assert.equal(menuKey(state, {key: 'Enter', ...extra}).action, 'handled');
   assert.equal(updateMenu(state, '/mo', 3, 3, inventory, true).open, false);
 });
 test('acceptance changes only the command token and its separator, preserves arguments and positions the caret', () => {

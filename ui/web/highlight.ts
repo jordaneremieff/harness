@@ -3,7 +3,7 @@ import { element } from './dom.ts';
 export const HIGHLIGHT_BYTES = 64 * 1024;
 export const HIGHLIGHT_LINES = 2000;
 const MAX_SPANS = 16_384;
-type Tone = 'keyword' | 'string' | 'number' | 'comment' | 'type' | 'fn' | 'punct';
+export type Tone = 'keyword' | 'string' | 'number' | 'comment' | 'type' | 'fn' | 'punct';
 type Family = 'script' | 'json' | 'shell' | 'python' | 'css' | 'markup' | 'config' | 'go' | 'rust' | 'diff';
 const languages: Record<string, Family> = {
   ts: 'script', typescript: 'script', js: 'script', javascript: 'script', tsx: 'script', jsx: 'script', mjs: 'script', mts: 'script', json: 'json',
@@ -142,26 +142,34 @@ function token(scan: Scanner, family: Family, state: LexState): Tone | undefined
   return punctuation(char) ? 'punct' : undefined;
 }
 
-/** Lexical color only, not a grammar parser. Unknown and over-budget blocks stay exact plain text. */
-export function highlight(text: string, language?: string): DocumentFragment {
+export type TokenRange = {start: number; end: number; tone: Tone};
+/** Undefined means the complete block exceeded its budget, never a highlighted prefix. */
+export function tokenRanges(text: string, language?: string, maxSpans = MAX_SPANS): TokenRange[] | undefined {
   const family = familyFor(language);
-  const plain = (): DocumentFragment => { const fragment = document.createDocumentFragment(); fragment.append(document.createTextNode(text)); return fragment; };
-  if (!family || text.length > HIGHLIGHT_BYTES) return plain();
+  if (text.length > HIGHLIGHT_BYTES) return undefined;
+  if (!family) return [];
   const scan = new Scanner(text); const state: LexState = {inTag: false, tagName: false};
-  const fragment = document.createDocumentFragment();
-  let lastTone: Tone | undefined; let start = 0; let end = 0; let spans = 0;
+  const ranges: TokenRange[] = [];
+  let lastTone: Tone | undefined; let start = 0; let end = 0;
   const append = (): void => {
-    if (end <= start) return;
-    const value = text.slice(start, end);
-    fragment.append(lastTone ? element('span', `syn-${lastTone}`, value) : document.createTextNode(value));
-    if (lastTone) spans++;
+    if (end > start && lastTone) ranges.push({start, end, tone: lastTone});
   };
   while (scan.has()) {
     const before = scan.at; const tone = token(scan, family, state);
     if (tone !== lastTone) { append(); start = before; lastTone = tone; }
     end = scan.at;
-    if (spans >= MAX_SPANS) return plain();
+    if (ranges.length > maxSpans) return undefined;
   }
-  if (scan.exceeded) return plain();
-  append(); return fragment;
+  if (scan.exceeded) return undefined;
+  append(); return ranges.length > maxSpans ? undefined : ranges;
+}
+/** Lexical color only, not a grammar parser. Unknown and over-budget blocks stay exact plain text. */
+export function highlight(text: string, language?: string): DocumentFragment {
+  const ranges = tokenRanges(text, language);
+  const fragment = document.createDocumentFragment(); let at = 0;
+  for (const range of ranges ?? []) {
+    if (range.start > at) fragment.append(document.createTextNode(text.slice(at, range.start)));
+    fragment.append(element('span', `syn-${range.tone}`, text.slice(range.start, range.end))); at = range.end;
+  }
+  fragment.append(document.createTextNode(text.slice(at))); return fragment;
 }

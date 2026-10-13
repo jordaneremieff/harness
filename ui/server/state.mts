@@ -114,7 +114,10 @@ async function syncDirectory(path: string): Promise<void> {
   const dir = await open(path, constants.O_RDONLY); try { await dir.sync(); } finally { await dir.close(); }
 }
 
-type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; conversationLayout?: ConversationLayout};
+type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; conversationLayout?: ConversationLayout};
+function validateEnterPreference(value: unknown): void {
+  if (value !== undefined && typeof value !== 'boolean') throw new StateError('invalid_request', 'Invalid Enter preference');
+}
 function validateSelection(input: SelectionInput): void {
       if (input.selectedTarget) validateTarget(input.selectedTarget);
       if (input.primaryKey !== undefined && (typeof input.primaryKey !== 'string' || input.primaryKey.length > 256)) throw new StateError('invalid_request', 'Invalid primary key');
@@ -122,8 +125,9 @@ function validateSelection(input: SelectionInput): void {
       if (input.sidebarVisible !== undefined && typeof input.sidebarVisible !== 'boolean') throw new StateError('invalid_request', 'Invalid sidebar visibility');
       if (input.sidebarWidth !== undefined && (!Number.isSafeInteger(input.sidebarWidth) || input.sidebarWidth < LIMITS.sidebarWidthMin || input.sidebarWidth > LIMITS.sidebarWidthMax)) throw new StateError('invalid_request', 'Invalid sidebar width');
       if (input.appearance !== undefined && !['dark', 'light', 'system', 'latte', 'frappe', 'macchiato', 'mocha'].includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
+      validateEnterPreference(input.enterSendsMessages);
       if (input.conversationLayout !== undefined) validateConversationLayout(input.conversationLayout);
-      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'conversationLayout'];
+      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'enterSendsMessages', 'conversationLayout'];
       if (Object.keys(input).some(key => !allowed.includes(key))) throw new StateError('invalid_request', 'Unknown workspace field');
 }
 function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace {
@@ -133,6 +137,7 @@ function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace
       if (input.sidebarVisible !== undefined) value.sidebarVisible = input.sidebarVisible;
       if (input.sidebarWidth !== undefined) value.sidebarWidth = input.sidebarWidth;
       if (input.appearance !== undefined) value.appearance = input.appearance;
+      if (input.enterSendsMessages !== undefined) value.enterSendsMessages = input.enterSendsMessages;
       if (input.conversationLayout !== undefined) value.conversationLayout = structuredClone(input.conversationLayout);
       if (input.selectedTarget === null) delete value.selectedTarget;
       else if (input.selectedTarget !== undefined) value.selectedTarget = structuredClone(input.selectedTarget);
@@ -184,6 +189,7 @@ export class StateStore {
       await this.load('workspaces', LIMITS.workspaces, 8192, value => {
         const record = value as Workspace;
         if (!UUID.test(record.id) || !Number.isSafeInteger(record.revision)) throw new StateError('not_ready', 'Invalid saved workspace', 503);
+        if (record.enterSendsMessages !== undefined && typeof record.enterSendsMessages !== 'boolean') throw new StateError('not_ready', 'Invalid saved Enter preference', 503);
         if (record.conversationLayout !== undefined) validateConversationLayout(record.conversationLayout);
         this.workspaces.set(record.id, record);
       });

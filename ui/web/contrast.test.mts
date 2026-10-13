@@ -272,6 +272,9 @@ function textDeclaration(context: Context, property: string, value: string) {
 		exclusions.push(`${theme}: inherited foreground ${source} ${property}: ${value}`);
 		return;
 	}
+  if (property === 'color' && value === 'transparent' && context.rule.selector === '.composer textarea[data-decorated=true]' && !context.rule.contexts.length) {
+    exclusions.push(`${theme}: exact syntax source replaces native glyph paint ${source}`); return;
+  }
 	const name = token(value);
 	if (!name || !foregrounds.includes(name)) {
 		issues.push(`${theme}: non-token text color ${source} ${property}: ${value}`);
@@ -475,6 +478,10 @@ test("regular user prose retains normal-text contrast and the left rule retains 
 		assert.equal(borders.length, surfaces.length, `${theme}: left rule needs every modeled surface`);
 		assert.ok(borders.every((row) => row.threshold === 3 && row.ratio >= 3));
 	}
+});
+test('decorated editor transparency does not admit hidden text on other surfaces', () => {
+  assert.ok(audit(`${css}\n.probe { color: transparent; }`).issues.some(issue => issue.includes('non-token text color')));
+  assert.ok(audit(`${css}\n.composer textarea { color: transparent; }`).issues.some(issue => issue.includes('non-token text color')));
 });
 test('native insertion caret is measured as graphics without weakening text or ignoring unknown colors', context => {
   const rows = result.measurements.filter(row => row.kind === 'caret-declaration' && row.source.startsWith('.composer textarea '));
