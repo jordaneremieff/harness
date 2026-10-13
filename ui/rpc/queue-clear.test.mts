@@ -81,6 +81,23 @@ test('clear failure settlement separates native refusal from lost, invalid and o
     child.exit(0);
   }
 });
+test('available malformed responses retain original identity without filtering or a later clear', async () => {
+  for (const raw of [null, ['available'], {steering: ['available', 42, '', 'available'], followUp: []}, {steering: ['available'], followUp: 'invalid'}]) {
+    const {child, session, events} = create(); await session.start(); child.pendingMessageCount = 4;
+    child.onCommand = record => record.type === 'clear_queue' ? child.response(record, raw) : child.defaults(record);
+    await assert.rejects(session.stop(), {code: 'protocol_error', uncertain: true});
+    assert.deepEqual(session.returnedQueueRecovery, {clearOperationId: 'clear-1', response: raw});
+    assert.equal(session.queueRecoveryPending, true);
+    for (const action of Object.values(actions)) await assert.rejects(action(session), {code: 'protocol_error', uncertain: true});
+    child.exit(1); await assert.rejects(session.close(), {code: 'protocol_error', uncertain: true});
+    assert.deepEqual(session.returnedQueueRecovery, {clearOperationId: 'clear-1', response: raw});
+    assert.equal(child.writes.filter(record => record.type === 'clear_queue').length, 1);
+    assert.equal(child.writes.some(record => record.type === 'abort'), false);
+    assert.equal(events.filter(event => Array.isArray(event) && event[0] === 'before').length, 1);
+    assert.equal(events.some(event => Array.isArray(event) && event[0] === 'retained'), false);
+    assert.ok(events.filter(event => Array.isArray(event) && event[0] === 'failed').every(event => Array.isArray(event) && event[1] === 'clear-1' && event[2] === true));
+  }
+});
 test('recovery retries preserve original identity and positions before another clear event', async () => {
   const records: unknown[] = []; let fail = true;
   const {child, session} = create({onRecoveredQueue: async (id, queue) => {

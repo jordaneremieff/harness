@@ -75,11 +75,13 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     development?.build.start();diagnostics?.emit({event:'connection',code:'applied'});
     void registry.agents.refresh().catch(()=>registry.journal.publish('notice',undefined,{level:'warning',message:'The retained agent catalog is unavailable.',code:'catalog_unavailable'}));
     let closing:Promise<void>|undefined;
+    let closedServices:Promise<PromiseSettledResult<void>[]>|undefined;
     const close=()=>closing??=(async()=> {
       http.stopAdmission();registry.journal.close();
-      const result=await Promise.allSettled([registry.close(),http.close(),development?.build.close(),diagnostics?.close()]);
-      const failed=result.find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
-    })();
+      closedServices??=Promise.allSettled([http.close(),development?.build.close(),diagnostics?.close()]);
+      const [primaries,services]=await Promise.all([Promise.allSettled([registry.close()]),closedServices]);
+      const failed=[...primaries,...services].find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
+    })().catch(error=> {closing=undefined;throw error;});
     return {registry,http,launchUrl,identity,close};
   } catch(error) {await Promise.allSettled([registry.close(),startupHttp?.close(),development?.build.close(),diagnostics?.close()]);throw error;}
 }
@@ -91,9 +93,10 @@ export async function main(args=process.argv.slice(2), opener: (url: string) => 
   let closing=false;
   const shutdown=()=> {
     if(closing) return;closing=true;
-    void app.close().catch(()=> {process.stderr.write('The backend did not confirm an orderly primary exit.\n');process.exitCode=1;});
+    void app.close().then(()=> {process.off('SIGINT',shutdown);process.off('SIGTERM',shutdown);})
+      .catch(()=> {closing=false;process.stderr.write('The backend did not confirm an orderly primary exit.\n');process.exitCode=1;});
   };
-  process.once('SIGINT',shutdown);process.once('SIGTERM',shutdown);
+  process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
   return app;
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) void main().catch(error=> {

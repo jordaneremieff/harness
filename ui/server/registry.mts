@@ -24,6 +24,7 @@ export type RegistryOptions = {stateDir: string; cwd: string; executable: string
   agentStart?: Pick<StartOptions,'spawn'|'timeoutMs'|'agentDir'>};
 const live = (view: PrimaryView) => !['stopped','failed'].includes(view.lifecycle);
 const ownsWriter = (session: PrimarySession) => !!session.client.child && !session.client.exited;
+const needsStorage = (session: PrimarySession) => ownsWriter(session) || session.queueRecoveryPending;
 const owned = (session: PrimarySession) => live(session.view) || ownsWriter(session);
 function preparationAvailability(code: string): TargetPreparation['availability'] {
   if(code === 'stored') return 'stored';
@@ -222,7 +223,7 @@ export class Registry {
     for(const [path,owner] of this.pathClaims) if(owner === key) this.pathClaims.delete(path);
   }
   private finalizeAfterExit() {
-    if(this.closing && this.shutdownReady && ![...this.sessions.values()].some(ownsWriter)) void this.finalize().catch(()=>{});
+    if(this.closing && this.shutdownReady && ![...this.sessions.values()].some(needsStorage)) void this.finalize().catch(()=>{});
   }
   private metadataChanged() {
     const values = this.views(); const digest = JSON.stringify(values.map(({activity:_,pendingDialogs:__,...view})=>view));
@@ -368,20 +369,22 @@ export class Registry {
     return dispatchView(this,context);
   }
   close():Promise<void> {
-    if(this.shutdownReady && ![...this.sessions.values()].some(ownsWriter)) return this.finalize();
-    this.closePromise ??= this.closeOnce(); return this.closePromise;
+    if(this.shutdownReady && ![...this.sessions.values()].some(needsStorage)) return this.finalize();
+    this.closePromise ??= this.closeOnce().catch(error => {this.closePromise = undefined; throw error;}); return this.closePromise;
   }
   private async closeOnce() {
     this.closing = true; this.starter.close(); this.journal.close();
     await Promise.allSettled([...this.opens]);
     const results = await Promise.allSettled([...this.sessions.values()].map(session=>session.close()).concat(this.agents.close()));
     this.shutdownReady=true;
-    if([...this.sessions.values()].some(ownsWriter)) throw new ApiError('not_ready','A primary writer remains owned; the state lock stays held.',503,'manual');
+    if([...this.sessions.values()].some(needsStorage)) throw new ApiError('not_ready','A primary writer or queue recovery remains owned; the state lock stays held.',503,'manual');
     await this.finalize();
     if(results.some(result=>result.status === 'rejected')) throw new ApiError('not_ready','A primary did not confirm orderly exit.',503,'manual');
   }
   private finalize() {
-    this.finalization ??= (async()=> {await this.metadataWrite; await this.store.savePrimaries(this.views()); await this.store.close();})();
+    if([...this.sessions.values()].some(needsStorage)) return Promise.reject(new ApiError('not_ready','Primary queue recovery or writer ownership prevents state closure.',503,'manual'));
+    this.finalization ??= (async()=> {await this.metadataWrite; await this.store.savePrimaries(this.views()); await this.store.close();})()
+      .catch(error => {this.finalization = undefined; throw error;});
     return this.finalization;
   }
 }

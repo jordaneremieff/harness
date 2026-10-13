@@ -30,10 +30,16 @@ export class PrimarySession {
   models: ModelChoice[] = [];
   thinking: string[] = [];
   resourcesRevision = 0;
-  private pendingRecovery?: {clearOperationId: string; queue: {steering: string[]; followUp: string[]}};
+  private pendingRecovery?: {clearOperationId: string; response: unknown; queue?: {steering: string[]; followUp: string[]}};
   private recoveryFailure?: RpcError;
   private queueClearing?: Promise<unknown>;
   get recoveredQueue() { return this.pendingRecovery?.queue ?? {steering: [], followUp: []}; }
+  get queueRecoveryPending() { return !!this.pendingRecovery || !!this.queueClearing; }
+  get returnedQueueRecovery() {
+    if (!this.pendingRecovery) return undefined;
+    const {clearOperationId, response} = this.pendingRecovery;
+    return {clearOperationId, response: structuredClone(response)};
+  }
   private inputGeneration = 0;
   private imagePreparation?: ReturnType<typeof createImagePreparation>;
   private modelChanges = 0;
@@ -250,6 +256,7 @@ export class PrimarySession {
     const {clearOperationId, queue} = this.pendingRecovery;
     try {
       if (this.recoveryFailure) throw this.recoveryFailure;
+      if (!queue) throw new RpcError('protocol_error', 'Invalid cleared queue response.', true);
       if (!this.options.onRecoveredQueue) throw new RpcError('not_ready', 'The cleared messages must be saved before another queue clear.');
       await this.options.onRecoveredQueue(clearOperationId, structuredClone(queue));
       this.pendingRecovery = undefined;
@@ -285,12 +292,16 @@ export class PrimarySession {
     }
   }
   private retainReturnedQueue(raw: unknown, clearOperationId: string, pendingCount: number) {
-    const result = object(raw);
+    // Capture the native result before decoding; invalid positions still own recovery storage.
+    this.pendingRecovery = {clearOperationId, response: raw};
+    const result = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
     if (!Array.isArray(result.steering) || !Array.isArray(result.followUp) ||
-        result.steering.some(value => typeof value !== 'string') || result.followUp.some(value => typeof value !== 'string'))
-      throw new RpcError('protocol_error', 'Invalid cleared queue response.', true);
+        result.steering.some(value => typeof value !== 'string') || result.followUp.some(value => typeof value !== 'string')) {
+      this.recoveryFailure = new RpcError('protocol_error', 'Invalid cleared queue response.', true);
+      throw this.recoveryFailure;
+    }
     const queue = {steering: result.steering as string[], followUp: result.followUp as string[]};
-    this.pendingRecovery = {clearOperationId, queue};
+    this.pendingRecovery.queue = queue;
     if (queue.steering.length + queue.followUp.length > pendingCount || Buffer.byteLength(JSON.stringify(queue)) > 1024 * 1024) {
       this.recoveryFailure = new RpcError('capacity', 'Cleared queue exceeds its reserved recovery capacity.', true);
       throw this.recoveryFailure;
