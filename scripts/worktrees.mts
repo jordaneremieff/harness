@@ -90,6 +90,7 @@ interface PromoteOptions {
 	gates: boolean;
 	json: boolean;
 	dryRun: boolean;
+	full: boolean;
 }
 
 type PromoteOptionName = keyof PromoteOptions;
@@ -141,6 +142,9 @@ interface PromotionReport {
 	mainBefore?: string;
 	mainAfter?: string;
 	gates?: GateResults;
+	changedDirectories?: string[];
+	selectedTestFiles?: string[];
+	fullTests?: boolean;
 	pushed?: boolean;
 	syncOk?: boolean;
 	branchFailures?: string[];
@@ -702,12 +706,13 @@ export function parsePromoteArguments(args: readonly string[]): {
 	names: string[];
 	options: PromoteOptions;
 } {
-	const options: PromoteOptions = { push: true, gates: true, json: false, dryRun: false };
+	const options: PromoteOptions = { push: true, gates: true, json: false, dryRun: false, full: false };
 	const flags = new Map<string, PromoteOptionName>([
 		["--no-push", "push"],
 		["--no-gates", "gates"],
 		["--json", "json"],
 		["--dry-run", "dryRun"],
+		["--full", "full"],
 	]);
 	const seen = new Set<string>();
 	const names: string[] = [];
@@ -746,16 +751,109 @@ function runLoadGate(repoRoot: string, entrypoint: string): { status: "pass" } |
 	return { status: "fail", detail: (result.stderr || result.stdout).trim() };
 }
 
-function promoteGates(context: HarnessContext): { results: GateResults; failure?: { gate: string; detail: string } } {
+export interface PromotionTestSelection {
+	changedDirectories: string[];
+	selectedTestFiles: string[];
+	fullTests: boolean;
+}
+
+function testDirectory(path: string): string {
+	const parts = path.split("/");
+	return (parts[0] === "extensions" || parts[0] === "skills") && parts.length > 2
+		? parts.slice(0, 2).join("/")
+		: parts[0];
+}
+
+function documentationPath(path: string): boolean {
+	return (
+		path.startsWith("docs/") || (path.endsWith(".md") && !path.startsWith("prompts/") && !path.endsWith("/SKILL.md"))
+	);
+}
+
+function packageTestFiles(repoRoot: string, tracked: readonly string[]): string[] {
+	const manifestPath = join(repoRoot, "package.json");
+	const testScript: string = existsSync(manifestPath)
+		? (JSON.parse(readFileSync(manifestPath, "utf8")).scripts?.test ?? "")
+		: "";
+	const patterns = [...testScript.matchAll(/["']([^"']*\.test\.mts)["']/g)].map(
+		(match) => new RegExp(`^${match[1].replace(/[.*+?^${}()|[\]\\]/g, (ch) => (ch === "*" ? "[^/]*" : `\\${ch}`))}$`),
+	);
+	return tracked.filter((path) => path.endsWith(".test.mts") && patterns.some((pattern) => pattern.test(path))).sort();
+}
+
+function importedDirectory(repoRoot: string, path: string, specifier: string): string | undefined {
+	if (!specifier.startsWith("./") && !specifier.startsWith("../")) return undefined;
+	const target = relative(repoRoot, resolve(repoRoot, dirname(path), specifier))
+		.split(sep)
+		.join("/");
+	if (target.startsWith("../")) return undefined;
+	const directory = testDirectory(target);
+	return directory === testDirectory(path) ? undefined : directory;
+}
+
+async function importConsumers(repoRoot: string, tracked: readonly string[]): Promise<Map<string, Set<string>>> {
+	const { literalSpecifiers } = await import("./check-slices.mts");
+	const consumers = new Map<string, Set<string>>();
+	for (const path of tracked.filter((path) => /\.(?:[cm]?[jt]s|[jt]sx)$/.test(path))) {
+		for (const specifier of literalSpecifiers(readFileSync(join(repoRoot, path), "utf8"))) {
+			const dependency = importedDirectory(repoRoot, path, specifier);
+			if (dependency === undefined) continue;
+			const directories = consumers.get(dependency) ?? new Set<string>();
+			directories.add(testDirectory(path));
+			consumers.set(dependency, directories);
+		}
+	}
+	return consumers;
+}
+
+/** Select tests at their owning directory boundary, including transitive import consumers. */
+export async function selectPromotionTests(
+	repoRoot: string,
+	changedPaths: readonly string[],
+	full = false,
+): Promise<PromotionTestSelection> {
+	const changedDirectories = [...new Set(changedPaths.filter((path) => path.includes("/")).map(testDirectory))].sort();
+	const fullTests =
+		full ||
+		changedPaths.some((path) => /^(?:package(?:-lock)?\.json|tsconfig[^/]*\.json|biome\.json)$/.test(basename(path)));
+	const tracked = git(repoRoot, ["ls-files", "-z"])
+		.stdout.split("\0")
+		.filter((path) => path && existsSync(join(repoRoot, path)));
+	const tests = packageTestFiles(repoRoot, tracked);
+	const affected = new Set(changedPaths.filter((path) => !documentationPath(path)).map(testDirectory));
+	if (!fullTests && affected.size > 0) {
+		const consumers = await importConsumers(repoRoot, tracked);
+		for (const directory of affected) {
+			for (const consumer of consumers.get(directory) ?? []) affected.add(consumer);
+		}
+	}
+	return {
+		changedDirectories,
+		selectedTestFiles: fullTests ? tests : tests.filter((path) => affected.has(testDirectory(path))),
+		fullTests,
+	};
+}
+
+export function promotionGateCommands(selection: PromotionTestSelection): GateCommand[] {
+	const test: GateCommand[] = selection.fullTests
+		? [{ name: "test", command: ["npm", "test"] }]
+		: selection.selectedTestFiles.length > 0
+			? [{ name: "test", command: [process.execPath, "--test", ...selection.selectedTestFiles] }]
+			: [];
+	return [
+		...test,
+		{ name: "typecheck", command: ["npm", "run", "typecheck"] },
+		{ name: "check", command: ["npm", "run", "check"] },
+		{ name: "lint", command: ["npm", "run", "lint"] },
+	];
+}
+
+function promoteGates(
+	context: HarnessContext,
+	selection: PromotionTestSelection,
+): { results: GateResults; failure?: { gate: string; detail: string } } {
 	const override = process.env.PI_PROMOTE_GATES;
-	const commands: GateCommand[] = override
-		? JSON.parse(override)
-		: [
-				{ name: "test", command: ["npm", "test"] },
-				{ name: "typecheck", command: ["npm", "run", "typecheck"] },
-				{ name: "check", command: ["npm", "run", "check"] },
-				{ name: "lint", command: ["npm", "run", "lint"] },
-			];
+	const commands: GateCommand[] = override ? JSON.parse(override) : promotionGateCommands(selection);
 	const results: GateResults = {};
 	for (const entry of commands) {
 		const [command, ...args] = entry.command;
@@ -1077,7 +1175,11 @@ function preparePromotions(
 	return selected;
 }
 
-function promote(context: HarnessContext, requestedReferences: string[], options: PromoteOptions): PromotionReport {
+async function promote(
+	context: HarnessContext,
+	requestedReferences: string[],
+	options: PromoteOptions,
+): Promise<PromotionReport> {
 	const selected = preparePromotions(context, requestedReferences);
 	if (!Array.isArray(selected)) return selected;
 	const prepared = selected.map((selection) => selection.prepared);
@@ -1107,6 +1209,9 @@ function promote(context: HarnessContext, requestedReferences: string[], options
 		promoted: [],
 		held: slices.flatMap((slice) => slice.held),
 		gates: {},
+		changedDirectories: [],
+		selectedTestFiles: [],
+		fullTests: options.full,
 		mainBefore,
 		mainAfter: mainBefore,
 		pushed: false,
@@ -1141,7 +1246,7 @@ function promote(context: HarnessContext, requestedReferences: string[], options
 	}
 	if (prepared.every((entry) => entry.shipping.length === 0)) return report;
 
-	const result = applyPromotions(context, selected, report, options);
+	const result = await applyPromotions(context, selected, report, options);
 	if (!result.ok) return result;
 	return completePromotion(context, result, options, remote);
 }
@@ -1186,12 +1291,12 @@ function promotionResourceGates(
 	return undefined;
 }
 
-function applyPromotions(
+async function applyPromotions(
 	context: HarnessContext,
 	selected: PromotionSelection[],
 	report: PromotionReport,
 	options: PromoteOptions,
-): PromotionReport {
+): Promise<PromotionReport> {
 	const mainBefore = selected[0].prepared.mainBefore;
 	const roots = selected.map((selection) => selection.prepared.devRecordRoot);
 	const slices = report.slices ?? [];
@@ -1254,8 +1359,13 @@ function applyPromotions(
 		}
 		failedSlice = undefined;
 		stage = "gates";
+		const changedPaths = git(context.repoRoot, ["diff", "--name-only", "--no-renames", "-z", mainBefore, "main"])
+			.stdout.split("\0")
+			.filter(Boolean);
+		const selection = await selectPromotionTests(context.repoRoot, changedPaths, options.full);
+		Object.assign(report, selection);
 		if (options.gates) {
-			const outcome = promoteGates(context);
+			const outcome = promoteGates(context, selection);
 			report.gates = outcome.results;
 			if (outcome.failure) return abandon(`${outcome.failure.gate} failed: ${outcome.failure.detail}`);
 			const failure = promotionResourceGates(context, selected, slices, outcome.results);
@@ -1419,7 +1529,7 @@ function addSlice(context: HarnessContext, reference: string | undefined): void 
 
 class WorktreeBusyError extends Error {}
 
-function withWorktreeLock(context: HarnessContext, operation: () => void): void {
+async function withWorktreeLock(context: HarnessContext, operation: () => Promise<void>): Promise<void> {
 	const commonDir = git(context.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).stdout.trim();
 	const lockPath = join(commonDir, "worktrees.lock");
 	let descriptor: number;
@@ -1435,18 +1545,18 @@ function withWorktreeLock(context: HarnessContext, operation: () => void): void 
 	}
 	try {
 		writeFileSync(descriptor, `${process.pid}\n`);
-		operation();
+		await operation();
 	} finally {
 		closeSync(descriptor);
 		unlinkSync(lockPath);
 	}
 }
 
-function main(): void {
+async function main(): Promise<void> {
 	const context = contextFromEnvironment();
 	const args = process.argv.slice(2);
 	try {
-		withWorktreeLock(context, () => executeCommand(context, args));
+		await withWorktreeLock(context, () => executeCommand(context, args));
 	} catch (error) {
 		if (!(error instanceof WorktreeBusyError)) throw error;
 		const command = args.find((arg) => !arg.startsWith("--")) ?? "sync";
@@ -1528,7 +1638,7 @@ function reportReconciliation(
 	}
 }
 
-function executeCommand(context: HarnessContext, args: string[]): void {
+async function executeCommand(context: HarnessContext, args: string[]): Promise<void> {
 	const command = args.find((arg) => !arg.startsWith("--")) ?? "sync";
 	const commandIndex = args.indexOf(command);
 	const name = args.slice(commandIndex + 1).find((arg) => !arg.startsWith("--"));
@@ -1544,7 +1654,7 @@ function executeCommand(context: HarnessContext, args: string[]): void {
 	}
 	if (command === "promote") {
 		const parsed = parsePromoteArguments(args.slice(commandIndex + 1));
-		const report = promote(context, parsed.names, parsed.options);
+		const report = await promote(context, parsed.names, parsed.options);
 		process.exitCode = reportPromotion(report, parsed.options.json);
 		return;
 	}
@@ -1576,7 +1686,7 @@ function executeCommand(context: HarnessContext, args: string[]): void {
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;
 if (invokedPath === import.meta.url) {
 	try {
-		main();
+		await main();
 	} catch (error) {
 		console.error(error instanceof Error ? error.message : undefined);
 		process.exitCode = 1;

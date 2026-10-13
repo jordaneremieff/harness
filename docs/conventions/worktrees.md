@@ -177,11 +177,26 @@ only after that comparison passes.
 
 If every selected slice has no shipped changes, the command returns without
 gates, push, or synchronization. Otherwise, once all selected changes form one
-tree, the command runs `test`, `typecheck`, `check`, and `lint` once for the
-combined result. It also runs an entrypoint load
-check for every selected extension and the skill validator for every selected
-skill. Prompts and features have no additional resource check. Docs-only changes
-use the same shared gates; there is no reduced docs gate.
+tree, the command runs `typecheck`, `check`, `lint`, and scoped tests once for
+the combined result. Test selection uses the shipped diff between the starting
+`main` and that combined tree. It includes every test matched by the `npm test`
+globs in each changed directory: `extensions/<name>/`, `skills/<name>/`, or a
+top-level feature directory such as `ui/`, `transport/`, `scripts/`, `prompts/`,
+and `evals/`. It also includes tests in directories that consume those sources
+through literal relative imports, including transitive consumers. The import
+check uses the same parser as the slice isolation check.
+
+Scoped tests run with `node --test` without repository-wide coverage thresholds.
+`--full` runs `npm test` with its coverage thresholds instead. Dependency and
+compiler-setting changes (`package.json`, `package-lock.json`, `tsconfig*.json`,
+or `biome.json`) also select the full suite. Use the full suite when the operator
+asks for it. Documentation-only changes select no tests; `SKILL.md` and prompt
+bodies are behavior, not documentation for this purpose. The other gates still
+run. Development-record-only changes still return without gates.
+
+The command also runs an entrypoint load check for every selected extension and
+the skill validator for every selected skill. Prompts and features have no
+additional resource check.
 
 The command then rebuilds every selected branch onto the final `main` with that
 slice's original development records, verifies each full-tree boundary again,
@@ -195,8 +210,10 @@ savings.
 `PI_PROMOTE_GATES` replaces the repository gates the command runs before the
 push: a JSON array of `{ "name": string, "command": string[] }` entries, each
 executed in the repository root and required to exit 0. Unset, the command runs
-the default gates (`scripts/worktrees.mts`). `--no-gates` still skips them
-entirely.
+the default shared gates and scoped tests (`scripts/worktrees.mts`). `--full`
+changes only the default test gate; it does not alter an explicit override.
+The entrypoint load check and skill validator remain separate resource gates.
+`--no-gates` still skips both shared and resource gates entirely.
 
 A rebase, replay, verification, gate, or promoted-branch rebuild failure before
 push triggers rollback of `main` and every changed selected branch to their
@@ -216,8 +233,14 @@ report's direct Git push recovery. After the push succeeds, run
 | `--json` | Emit one machine-readable report |
 | `--no-push` | Promote and synchronize locally without a push |
 | `--no-gates` | Skip shared and resource gates |
+| `--full` | Run the complete `npm test` as the default test gate |
 
-The JSON report carries `ok`. After successful preflight resolution, `slices`
+The JSON report carries `ok`. After composition, `changedDirectories` lists the
+changed directory boundaries, `selectedTestFiles` lists the exact selected test
+paths, and `fullTests` states whether the default test gate selects the full
+suite. Overrides and `--no-gates` retain this selection record but control which
+gates actually run. Dry runs do not compose a tree or select tests.
+After successful preflight resolution, `slices`
 contains one entry per selection, in input order, for both single and batch
 invocations. Each entry carries `name`, `kind`, `branch`, `promoted`, `held`, and
 `gates`; a dry run also carries its `wouldPromote` plan. A dry run shows the

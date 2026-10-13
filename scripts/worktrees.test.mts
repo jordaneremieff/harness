@@ -15,7 +15,9 @@ import {
 	parsePromoteArguments,
 	parseSliceReference,
 	parseWorktreePorcelain,
+	promotionGateCommands,
 	promoteNameFromCwd,
+	selectPromotionTests,
 	reconcilePackageEntries,
 	worktreeExtensionName,
 } from "./worktrees.mts";
@@ -51,6 +53,9 @@ interface SerializedPromotionReport {
 	reason: string;
 	branchFailures?: string[];
 	deferred?: string[];
+	changedDirectories: string[];
+	selectedTestFiles: string[];
+	fullTests: boolean;
 }
 
 interface PromoteResult {
@@ -263,7 +268,7 @@ describe("promotion arguments", () => {
 	it("defaults to pushing with gates and human output", () => {
 		assert.deepEqual(parsePromoteArguments(["clipboard"]), {
 			names: ["clipboard"],
-			options: { push: true, gates: true, json: false, dryRun: false },
+			options: { push: true, gates: true, json: false, dryRun: false, full: false },
 		});
 	});
 
@@ -273,6 +278,7 @@ describe("promotion arguments", () => {
 			gates: true,
 			json: true,
 			dryRun: false,
+			full: false,
 		});
 		assert.deepEqual(parsePromoteArguments(["--dry-run", "stash"]).names, ["stash"]);
 		assert.deepEqual(parsePromoteArguments(["a", "--no-push", "feature/b"]).names, ["a", "feature/b"]);
@@ -288,6 +294,120 @@ describe("promotion arguments", () => {
 		assert.equal(promoteNameFromCwd(`${worktreeRoot}/stash/extensions`, worktreeRoot), "stash");
 		assert.equal(promoteNameFromCwd(repoRoot, worktreeRoot), undefined);
 		assert.equal(promoteNameFromCwd(worktreeRoot, worktreeRoot), undefined);
+	});
+});
+
+function testSelectionFixture(t: TestContext): string {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "promotion-test-selection-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const files: Record<string, string> = {
+		"package.json": JSON.stringify({
+			scripts: {
+				test: 'node --test "extensions/*/*.test.mts" "transport/*.test.mts" "ui/*/*.test.mts" "scripts/*.test.mts" "skills/*/scripts/*.test.mts" "prompts/*.test.mts" "evals/*.test.mts" "evals/subjects/*.test.mts"',
+			},
+		}),
+		"extensions/demo/index.ts": "export const demo = 1;",
+		"extensions/demo/demo.test.mts": "",
+		"extensions/other/index.ts": "export const other = 1;",
+		"extensions/other/other.test.mts": "",
+		"transport/index.ts": "export const transport = 1;",
+		"transport/transport.test.mts": "",
+		"ui/server/index.mts": "import { transport } from '../../transport/index.ts';",
+		"ui/server/server.test.mts": "",
+		"ui/web/web.test.mts": "",
+		"scripts/consumer.mts": "export { server } from '../ui/server/index.mts';",
+		"scripts/consumer.test.mts": "",
+		"skills/demo/scripts/skill.test.mts": "",
+		"prompts/prompt.test.mts": "",
+		"evals/runner.test.mts": "",
+		"evals/subjects/subject.test.mts": "",
+		"docs/guide.md": "# Guide",
+	};
+	for (const [path, content] of Object.entries(files)) {
+		mkdirSync(dirname(join(root, path)), { recursive: true });
+		writeFileSync(join(root, path), content);
+	}
+	for (const args of [
+		["init", "-qb", "main"],
+		["add", "."],
+	])
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: root });
+	return root;
+}
+
+describe("promotion test selection", () => {
+	it("selects only tests in a changed extension", async (t) => {
+		const root = testSelectionFixture(t);
+		const selection = await selectPromotionTests(root, ["extensions/demo/index.ts"]);
+		assert.deepEqual(selection, {
+			changedDirectories: ["extensions/demo"],
+			selectedTestFiles: ["extensions/demo/demo.test.mts"],
+			fullTests: false,
+		});
+		assert.deepEqual(promotionGateCommands(selection)[0].command, [
+			process.execPath,
+			"--test",
+			"extensions/demo/demo.test.mts",
+		]);
+	});
+
+	it("includes transitive import consumers at their test directory boundary", async (t) => {
+		const root = testSelectionFixture(t);
+		const selection = await selectPromotionTests(root, ["transport/index.ts"]);
+		assert.deepEqual(selection.changedDirectories, ["transport"]);
+		assert.deepEqual(selection.selectedTestFiles, [
+			"scripts/consumer.test.mts",
+			"transport/transport.test.mts",
+			"ui/server/server.test.mts",
+			"ui/web/web.test.mts",
+		]);
+	});
+
+	it("selects the full suite for dependency and compiler settings", async (t) => {
+		const root = testSelectionFixture(t);
+		for (const path of ["package.json", "package-lock.json", "tsconfig.json", "ui/web/tsconfig.json", "biome.json"]) {
+			const selection = await selectPromotionTests(root, [path]);
+			assert.equal(selection.fullTests, true, path);
+			assert.ok(selection.selectedTestFiles.includes("extensions/other/other.test.mts"));
+			assert.deepEqual(promotionGateCommands(selection)[0], { name: "test", command: ["npm", "test"] });
+		}
+	});
+
+	it("selects no tests for documentation and development records", async (t) => {
+		const root = testSelectionFixture(t);
+		const selection = await selectPromotionTests(root, [
+			"docs/guide.md",
+			"extensions/demo/README.md",
+			"extensions/demo/PLAN.md",
+			"AGENTS.md",
+		]);
+		assert.deepEqual(selection.selectedTestFiles, []);
+		assert.equal(selection.fullTests, false);
+		assert.deepEqual(
+			promotionGateCommands(selection).map((entry) => entry.name),
+			["typecheck", "check", "lint"],
+		);
+	});
+
+	it("uses the full suite when --full is set", async (t) => {
+		const root = testSelectionFixture(t);
+		const { options } = parsePromoteArguments(["demo", "--full"]);
+		assert.equal(options.full, true);
+		const selection = await selectPromotionTests(root, ["docs/guide.md"], options.full);
+		assert.equal(selection.fullTests, true);
+		assert.deepEqual(promotionGateCommands(selection)[0].command, ["npm", "test"]);
+		assert.throws(() => parsePromoteArguments(["--full", "--full"]), /Repeated promote flag/);
+	});
+
+	it("uses the package test globs for skill, prompt, and evaluation boundaries", async (t) => {
+		const root = testSelectionFixture(t);
+		for (const [path, tests] of [
+			["skills/demo/SKILL.md", ["skills/demo/scripts/skill.test.mts"]],
+			["prompts/example.md", ["prompts/prompt.test.mts"]],
+			["evals/runner.mts", ["evals/runner.test.mts", "evals/subjects/subject.test.mts"]],
+		] as const) {
+			assert.deepEqual((await selectPromotionTests(root, [path])).selectedTestFiles, [...tests]);
+		}
 	});
 });
 
@@ -1051,6 +1171,43 @@ function invalidBatchSelection(f: ReturnType<typeof batchFixture>, problem: stri
 }
 
 describe("batch promotion", () => {
+	for (const full of [false, true]) {
+		it(`executes the ${full ? "full" : "scoped"} default test gate on the composed tree`, (t) => {
+			const f = batchFixture(t);
+			f.write(
+				"package.json",
+				JSON.stringify({
+					scripts: {
+						test: `node -e "require('node:fs').writeFileSync('full-gate', 'pass')" "first/*.test.mts"`,
+						typecheck: "true",
+						check: "true",
+						lint: "true",
+					},
+				}),
+			);
+			f.commit(f.repo, "Define test gates");
+			f.git(["push", "-q", "origin", "main"]);
+			f.git(["rebase", "main"], f.first);
+			f.git(["rebase", "main"], f.second);
+			f.write(
+				"first/gate.test.mts",
+				"import { existsSync, writeFileSync } from 'node:fs'; import assert from 'node:assert/strict'; assert.ok(existsSync('second/file.txt')); writeFileSync('scoped-gate', 'pass');",
+				f.first,
+			);
+			f.commit(f.first, "Add composed-tree test");
+			const result = f.promote(["first", "second", ...(full ? ["--full"] : [])], {
+				PI_PROMOTE_GATES: undefined,
+				NODE_TEST_CONTEXT: undefined,
+			});
+			assert.equal(result.status, 0, result.stdout);
+			assert.equal(result.report.fullTests, full);
+			assert.deepEqual(result.report.changedDirectories, ["first", "second"]);
+			assert.deepEqual(result.report.selectedTestFiles, ["first/gate.test.mts"]);
+			assert.deepEqual(result.report.gates, { test: "pass", typecheck: "pass", check: "pass", lint: "pass" });
+			assert.equal(existsSync(join(f.repo, "scoped-gate")), !full);
+			assert.equal(existsSync(join(f.repo, "full-gate")), full);
+		});
+	}
 	it("composes shared-file edits and halves shared gate, push, and sync calls", (t) => {
 		const batch = batchFixture(t),
 			serial = batchFixture(t);

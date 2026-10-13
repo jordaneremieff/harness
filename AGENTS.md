@@ -113,8 +113,11 @@
 - One-pass standard: complete each task fully in the current pass. Deferral,
   staged completion, and promised follow-up passes read as reasonable
   engineering to a generic reviewer; they are failures under this standard.
-- Before closing work: focused tests, `npm test`, `npm run typecheck`, `npm run
-  check`, and README claims updated to match reality in the same change.
+- Before closing work: scoped tests for the changed slices and their import
+  consumers, `npm run lint`, `npm run typecheck`, `npm run check`, and README
+  claims updated to match reality in the same change. Run the full suite with
+  promotion `--full`, on dependency or compiler-setting changes, or when the
+  operator asks.
 
 ## Authority
 
@@ -228,16 +231,19 @@ Before considering repository work complete:
 2. check for accidental credentials or absolute personal paths;
 3. remove temporary files;
 4. confirm documentation links resolve;
-5. run focused tests;
+5. run scoped tests for the changed slices and their import consumers;
 6. run `npm run lint` (Biome lint, same tool as the Pi upstream);
 7. run `npm run typecheck` (TypeScript check against the installed Pi declarations);
 8. run `npm run check` (slice isolation, hardcoded counts);
-9. run the normal full test command;
+9. run the normal full test command on dependency or compiler-setting changes,
+   with promotion `--full`, or when the operator asks;
 10. report honestly the remaining untracked or modified files in each worktree
     you changed.
 
 The automated gates are `npm run lint`, `npm run typecheck`, `npm run check` (slice isolation,
-hardcoded counts), and the normal full test command. Credential
+hardcoded counts), and scoped tests for the changed slices and their import consumers.
+The full suite applies on dependency or compiler-setting changes, with promotion
+`--full`, or when the operator asks. Credential
 and personal-path scanning, documentation-link resolution, and the git-status
 report have no automated check in the tree; they are maintained by review, and the
 honest report of remaining untracked or modified files stays the final step.
