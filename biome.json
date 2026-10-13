@@ -35,6 +35,8 @@
 			"settings/**/*.ts",
 			"settings/**/*.mts",
 			"skills/**/*.mts",
+			"transport/**/*.ts",
+			"transport/**/*.mts",
 			"ui/**/*.ts",
 			"ui/**/*.mts",
 			"!ui/dist"

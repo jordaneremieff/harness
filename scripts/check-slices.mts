@@ -198,6 +198,10 @@ export function literalSpecifiers(source: string): string[] {
 	return specifiers;
 }
 
+function publicImport(root: string, file: string, sliceName: string, sliceDir: string, target: string | undefined): boolean {
+	return (sliceName === "agent" && target === join(root, "transport", "index.ts")) || evaluationImport(root, file, sliceDir, target);
+}
+
 function evaluationImport(root: string, file: string, sliceDir: string, target: string | undefined): boolean {
 	return (
 		dirname(file) === sliceDir &&
@@ -220,9 +224,9 @@ export function auditSliceImports(root: string, file: string, source: string): s
 		const isRelative = specifier.startsWith("./") || specifier.startsWith("../");
 		const normalized = isRelative ? relative(sliceDir, resolve(dirname(file), specifier)) : specifier;
 		const target = isRelative ? resolve(dirname(file), specifier) : undefined;
-		const evaluationContract = evaluationImport(root, file, sliceDir, target);
+		const publicContract = publicImport(root, file, sliceName, sliceDir, target);
 		const cross = normalized.match(/\/extensions\/([^/]+)\//);
-		if (isRelative && normalized.startsWith("..") && !evaluationContract) {
+		if (isRelative && normalized.startsWith("..") && !publicContract) {
 			fail(`${rel}: import "${specifier}" escapes the extension slice`);
 		} else if (specifier.startsWith("/")) {
 			fail(`${rel}: absolute import "${specifier}"`);

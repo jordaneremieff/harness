@@ -1112,3 +1112,16 @@ test("settings modules must export their local reader and publisher", async () =
 		}
 	}
 });
+
+ test("allows only the agent public transport entrypoint", async () => {
+	const { auditSliceImports } = await import("./check-slices.mts");
+	const root = "/repo";
+	for (const [file, specifier, allowed] of [
+		["extensions/agent/host-client.ts", "../../transport/index.ts", true],
+		["extensions/agent/fixtures/host.mts", "../../../transport/index.ts", true],
+		["extensions/agent/host-client.ts", "../../transport/unix-link.ts", false],
+		["extensions/agent/host-client.ts", "../../transport/endpoint.ts", false],
+		["extensions/other/index.ts", "../../transport/index.ts", false],
+		["extensions/agent/host-client.ts", "../../extensions/other/index.ts", false],
+	] as const) assert.equal(auditSliceImports(root, join(root, file), `import "${specifier}";`).length, allowed ? 0 : 1);
+});
