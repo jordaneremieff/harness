@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { hostname } from "node:os";
-import test from "node:test";
-import { AgentService, HostLink, AgentError, type AgentCatalog, type CatalogRecord } from "./service-runtime.mts";
+import { hostname, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import test, { type TestContext } from "node:test";
+import { AgentService, HostLink, AgentError, deriveEndpoint, readClaim, type AgentCatalog, type CatalogRecord } from "./service-runtime.mts";
+import { FakeHost } from "./fake-host.mts";
 import type { RetainedReader } from "./retained-read.mts";
 
 const ROOT="00000000-0000-4000-8000-000000000001";
@@ -44,6 +46,52 @@ test("compatible live snapshot preserves the live path without a reader call",as
   t.mock.method(HostLink,"connect",async(endpoint:unknown)=>({endpoint,connected:true,request:async(member:string)=>{calls.push(member);return snapshot;},close:async()=>{}} as unknown as HostLink));
   const service=new AgentService({store:"/backend",installationId:"fixture"},()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog),()=>({request:()=>{throw Error("No cold reader for compatible live read");},close:async()=>{}} as unknown as RetainedReader));
   t.after(()=>service.close());assert.deepEqual(await service.history(ROOT),snapshot);assert.deepEqual(calls,["snapshot"]);
+});
+async function claimedService(t: TestContext) {
+  const dir=await fs.mkdtemp(join(tmpdir(),"ui-retained-link-"));
+  const record:CatalogRecord={storageId:ROOT,cwd:dir,agentDir:dir,packageDir:dir,storagePath:join(dir,`${ROOT}.sqlite`),model:{provider:"fixture",modelId:"inert"},thinkingLevel:"off",createdAt:"2026-01-01T00:00:00.000Z"};
+  const endpoint=deriveEndpoint(record);
+  await fs.mkdir(dirname(endpoint.claimPath),{recursive:true});
+  await fs.mkdir(dirname(endpoint.socketPath),{recursive:true});
+  await fs.writeFile(endpoint.claimPath,JSON.stringify({sessionId:ROOT,cwd:dir,host:hostname(),createdAt:record.createdAt,pid:process.pid}));
+  const reads:unknown[][]=[];const availability:unknown[][]=[];
+  const service=new AgentService({store:dir,installationId:"fixture",onAvailability:(...args)=>availability.push(args)},
+    ()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog),
+    ()=>({request:async(method:string,identity:string,params:unknown)=>{reads.push([method,identity,params]);return method==="snapshot"?snapshot:exact;},close:async()=>{}} as unknown as RetainedReader));
+  t.after(async()=>{await service.close();await fs.rm(endpoint.socketPath,{force:true});await fs.rm(dir,{recursive:true,force:true});});
+  assert.equal((await readClaim(record)).state,"live");
+  return {service,endpoint,reads,availability};
+}
+for(const socket of ["absent","non-socket"] as const) test(`live claim with ${socket} endpoint reads retained evidence without live capability`,async t=> {
+  const {service,endpoint,reads,availability}=await claimedService(t);
+  if(socket==="non-socket") await fs.writeFile(endpoint.socketPath,"");
+  assert.deepEqual(await service.history(CHILD,{before:9,limit:1,maxBytes:64}),snapshot);
+  const expected={code:"host_unavailable",...(socket==="absent"?{message:`connect ENOENT ${endpoint.socketPath}`}:{})};
+  await assert.rejects(service.prepare(CHILD),expected);
+  await assert.rejects(service.select("workspace",CHILD,1),expected);
+  assert.equal(availability.at(-1)?.[3],"unavailable");
+  if(socket==="absent") assert.equal(availability.at(-1)?.[4],expected.message);
+  assert.deepEqual(await service.inspect(CHILD,{view:"exact",entryId:7,offset:0}),exact);
+  assert.deepEqual(reads,[["snapshot",CHILD,{limit:1,maxBytes:64,before:9}],["inspect",CHILD,{view:"exact",entryId:7,offset:0}]]);
+  await assert.rejects(service.abort(CHILD),{code:"host_unavailable"});
+  assert.equal(reads.length,2);
+});
+test("malformed runtime descriptor disables live access without disabling independent retained reads",async t=> {
+  const {service,endpoint,reads}=await claimedService(t);
+  const host=await FakeHost.start({endpoint,descriptor:null});t.after(()=>host.close());
+  await assert.rejects(service.prepare(CHILD),{code:"protocol_error"});
+  assert.deepEqual(await service.history(CHILD),snapshot);
+  assert.deepEqual(await service.inspect(CHILD,{view:"exact",entryId:7,offset:0}),exact);
+  assert.deepEqual(reads,[["snapshot",CHILD,{limit:50,maxBytes:65536}],["inspect",CHILD,{view:"exact",entryId:7,offset:0}]]);
+  assert.deepEqual(host.calls,[]);
+});
+for(const member of ["snapshot","inspect"] as const) test(`malformed negotiated ${member} refuses retained dispatch`,async t=> {
+  const {service,endpoint,reads}=await claimedService(t);
+  const host=await FakeHost.start({endpoint,handler:()=>null});t.after(()=>host.close());
+  const read=()=>member==="snapshot"?service.history(CHILD):service.inspect(CHILD,{view:"exact",entryId:7});
+  await assert.rejects(read(),{code:"protocol_error"});
+  await assert.rejects(read(),{code:"protocol_error"});
+  assert.deepEqual(reads,[]);assert.deepEqual(host.calls.map(call=>call.member),[member]);
 });
 test("retained refusal never becomes an empty snapshot and never loops",async()=> {
   let reads=0;

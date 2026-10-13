@@ -212,8 +212,10 @@ test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and 
   assert.match(rule('.context-menu-item > .choice-check'), /top: 50%; left: 10px; margin-top: -8px/);
   assert.match(rule('.nav-row, .row-select'), /height: 26px;[^}]*white-space: nowrap/);
   assert.match(rule('.row-age, .row-message'), /position: absolute; top: 1px; right: 8px/);
-  assert.match(rule('.row-message'), /opacity: 0; pointer-events: none/);
-  assert.match(rule('.agent-row:hover > .row-message, .agent-row:focus-within > .row-message, .agent-row[data-action=resume] > .row-message'), /opacity: 1; pointer-events: auto/);
+  assert.match(rule('.row-message'), /opacity: 1; pointer-events: auto; color: var\(--muted\)/);
+  assert.doesNotMatch(css, /\.agent-row(?:\:hover|\:focus-within)[^{]+> \.row-message/);
+  assert.match(rule('.agent-row:is([data-action=message],[data-action=resume]) > .row-age'), /right: 40px; max-width: 64px/);
+  assert.match(rule('.agent-row:is([data-action=message],[data-action=resume]) > .row-select'), /padding-right: 104px/);
   assert.doesNotMatch(css, /\.conversation-title-line|\.conversation-title\s*\{/);
   assert.doesNotMatch(html, /conversation-title-line|conversation-head|head-actions|header-band/);
   assert.match(rule('.pane-actions'), /display: inline-flex; flex: none;[^}]*min-width: 28px; min-height: 28px/);
@@ -625,10 +627,18 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
 test('agent status uses one plain line and a flat action row in normal flow', () => {
   assert.match(rule('.agent-state'), /flex: none/); assert.match(rule('.agent-state > p'), /font-weight: 400/);
   assert.match(rule('.agent-state-actions'), /display: flex; flex-wrap: wrap; align-items: center; gap: 16px/);
-  assert.match(rule('.agent-state-actions > button'), /border: 0; border-radius: 0/);
-  assert.doesNotMatch(rule('.agent-state-actions > button'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent/);
+  assert.match(rule('.agent-state-actions > button, #agent-message-retry'), /border: 0; border-radius: 0/);
+  assert.doesNotMatch(rule('.agent-state-actions > button, #agent-message-retry'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent/);
   assert.match(rule('.conversation.agent-empty > .transcript-region'), /flex: none; display: block/);
   assert.match(rule('.transcript-region > .empty-state'), /position: absolute/);
+});
+
+test('Message connection recovery shares flat state actions and retains native focus', () => {
+  const action = rule('.agent-state-actions > button, #agent-message-retry');
+  assert.match(action, /padding: 4px 0; border: 0; border-radius: 0/);
+  assert.doesNotMatch(action, /outline|box-shadow|background/);
+  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
+  assert.match(html, /id="agent-message-retry" type="button"/);
 });
 
 test('the sidebar footer uses one separated action row and a visible edge', () => {
@@ -650,6 +660,19 @@ test('source headers reserve controls outside local wrap scrollports and preserv
   assert.match(rule('pre[data-wrap=false], .tool-source > pre[data-wrap=false]'), /white-space: pre; overflow-wrap: normal; overflow-x: auto/);
   assert.match(rule('pre'), /white-space: pre-wrap/);
   assert.doesNotMatch(rule('.diff-del, .diff-add'), /display: block/);
+});
+test('dialog word-button chrome never changes shared SVG action geometry', () => {
+  const words = rule('#modal-body > button:not(.card-action, .icon-button), .dialog-actions > button:not(.card-action, .icon-button), .picker-project-actions > button:not(.card-action, .icon-button)');
+  assert.match(words, /padding: 4px 10px; border: 1px solid var\(--edge\)/);
+  assert.doesNotMatch(css, /(?:#modal-body|\.dialog-actions|\.picker-project-actions) > button(?:\s*,[^{}]+)?\s*\{[^}]*border:/);
+  assert.match(rule('.card-action'), /padding: 0; border: 0/);
+  assert.match(rule('.icon-button'), /min-width: 28px; height: 28px; padding: 0 4px/);
+  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
+});
+test('primary history details and retry share a flat wrapping action row', () => {
+  assert.match(rule('.history-actions'), /display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 12px/);
+  assert.match(rule('.history-actions > .history-details'), /min-width: 0; max-width: calc\(100% - 40px\)/);
+  assert.match(rule('.history-actions > .card-action'), /flex: none/);
 });
 test('coarse working tool slots require roster width and preserve names and action reservations', () => {
   assert.match(rule('.roster'), /container-type: inline-size; container-name: roster/);

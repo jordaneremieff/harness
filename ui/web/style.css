@@ -310,11 +310,10 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .row-age time { white-space: nowrap; }
 .row-age:disabled { color: var(--muted); }
 .row-age[data-absolute=true] { max-width: none; background: var(--raised); color: var(--fg); }
-.row-message { opacity: 0; pointer-events: none; background: var(--raised); color: var(--fg); }
-.row-message:hover { background: var(--raised); }
-.agent-row:hover > .row-message, .agent-row:focus-within > .row-message, .agent-row[data-action=resume] > .row-message { opacity: 1; pointer-events: auto; }
-.agent-row:hover > .row-age, .agent-row:focus-within > .row-age, .agent-row[data-action=resume] > .row-age { visibility: hidden; }
-.agent-row:not([data-action]) > .row-age, .agent-row[data-action=""] > .row-age { visibility: visible; }
+.row-message { opacity: 1; pointer-events: auto; color: var(--muted); }
+.row-message:hover { background: var(--raised); color: var(--fg); }
+.agent-row:is([data-action=message],[data-action=resume]) > .row-age { right: 40px; max-width: 64px; }
+.agent-row:is([data-action=message],[data-action=resume]) > .row-select { padding-right: 104px; }
 .roster-older, .roster-more { display: block; width: 100%; height: 26px; padding: 0 12px 0 36px; border-radius: 0; color: var(--muted); font-size: 13px; text-align: left; }
 .roster-more.card-action { display: inline-flex; width: 28px; height: 28px; margin-left: 26px; padding: 0; }
 .row-message.card-action { top: 0; width: 28px; height: 28px; padding: 0; }
@@ -396,7 +395,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .agent-state { flex: none; padding-block: 12px 8px; color: var(--muted); font-size: 13px; }
 .agent-state > p { margin: 0; font-size: inherit; font-weight: 400; overflow-wrap: anywhere; }
 .agent-state-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 4px; }
-.agent-state-actions > button { padding: 4px 0; border: 0; border-radius: 0; }
+.agent-state-actions > button, #agent-message-retry { padding: 4px 0; border: 0; border-radius: 0; }
 .conversation.agent-empty > .transcript-region { flex: none; display: block; }
 .conversation.agent-empty .transcript { padding-block: 0; }
 .last-observed { padding-top: 8px; }
@@ -440,6 +439,9 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .availability { flex: none; padding-top: 6px; color: var(--muted); font-size: 13px; }
 .availability:empty { display: none; }
 .availability p { margin: 0; }
+.history-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 12px; margin-top: 4px; }
+.history-actions > .history-details { min-width: 0; max-width: calc(100% - 40px); }
+.history-actions > .card-action { flex: none; }
 .facts-panel { flex: none; max-height: min(20dvh,180px); padding-top: 8px; overflow: auto; color: var(--muted); font-size: 13px; }
 .facts-panel:empty { display: none; }
 .facts-panel pre { white-space: pre-wrap; }
@@ -777,8 +779,8 @@ dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset
 #modal-body > * + * { margin-top: 12px; }
 #modal-body > button { display: inline-block; margin-right: 8px; }
 #modal-body > button + button { margin-top: 0; }
-#modal-body > button, .dialog-actions > button, .picker-project-actions > button { padding: 4px 10px; border: 1px solid var(--edge); }
-#modal-body > button:hover, .dialog-actions > button:hover, .picker-project-actions > button:hover { background: var(--canvas); }
+#modal-body > button:not(.card-action, .icon-button), .dialog-actions > button:not(.card-action, .icon-button), .picker-project-actions > button:not(.card-action, .icon-button) { padding: 4px 10px; border: 1px solid var(--edge); }
+#modal-body > button:not(.card-action, .icon-button):hover, .dialog-actions > button:not(.card-action, .icon-button):hover, .picker-project-actions > button:not(.card-action, .icon-button):hover { background: var(--canvas); }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .dialog-actions > button:last-child, button.main-action { font-weight: 600; }
 .options { display: flex; flex-direction: column; max-height: 45dvh; overflow: auto; scrollbar-width: thin; }
@@ -919,6 +921,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .message:is(.thinking-only, .tool-only) > .message-header { position: static; transform: none; min-height: 44px; margin-bottom: 4px; }
   .tool-tier { min-height: 44px; }
   .agent-row:is([data-action=message],[data-action=resume]) > .row-age { visibility: hidden; }
+  .agent-row:is([data-action=message],[data-action=resume]) > .row-select { padding-right: 64px; }
   .agent-row[data-tool=true]:is([data-action=message],[data-action=resume]) > .row-select { padding-left: 12px; padding-right: 72px; }
   .agent-row[data-tool=true]:is([data-action=message],[data-action=resume]) .row-heading { gap: 6px; }
   @container roster (min-width: 392px) {

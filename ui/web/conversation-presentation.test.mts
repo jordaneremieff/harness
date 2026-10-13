@@ -8,12 +8,14 @@ const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/project
 const frame = (busy: boolean): ProjectedFrame => ({revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null,
   status: {busy}, coverage: {complete: true, truncated: false, omitted: 0}});
 const target = {kind: 'agent' as const, identity: row.identity};
+assert.ok(row.capabilities);
+const negotiated = {identity: row.identity, availability: 'live' as const, capabilities: row.capabilities};
 test('one status combines read truth with independent connection and admission state', () => {
   const source = {hasEntries: false, connected: true, loading: false, ready: false};
   assert.equal(agentViewStatus(source).text, 'Loading messages…');
   const message = 'Required Durable 1.1.0; reader Durable 1.0.3.';
   const failed = agentViewStatus({...source, availability: 'incompatible', error: {code: 'contract_mismatch', message}});
-  assert.equal(failed.text, 'History unavailable: the reader does not support this history format. · This host is incompatible; messages remain read-only.'); assert.equal(failed.detail, message); assert.equal(failed.start, false);
+  assert.equal(failed.text, 'History unavailable: saved messages use an unsupported format. · This agent cannot connect; messages remain read-only.'); assert.equal(failed.detail, message); assert.equal(failed.start, false);
   assert.equal(agentViewStatus({...source, connected: false}).text, 'History unavailable: the browser is disconnected.');
   assert.equal(agentViewStatus({...source, availability: 'stored', ready: true, complete: true}).text, 'No messages yet. · Agent is not connected.');
   const incomplete = agentViewStatus({...source, ready: true, complete: false, reason: 'Earlier saved messages are missing.'});
@@ -35,37 +37,54 @@ test('unreadable saved messages use plain text and retain the exact diagnostic',
     assert.equal(view.start, false);
   }
 });
+test('read and connection diagnostics stay in detail without changing admission or retained history', () => {
+  const message = 'retained-read/1.0.0 request failed at host endpoint: ' + 'technical diagnostic '.repeat(80);
+  const connectionError = 'task-submit/1.2.0 host unavailable: ' + 'connection diagnostic '.repeat(80);
+  for (const hasEntries of [false, true]) {
+    const source = {hasEntries, connected: true, loading: false, ready: false, error: {code: 'host_unavailable', message}, connectionError};
+    const view = agentViewStatus(source);
+    assert.equal(view.text, 'History unavailable: saved messages could not be read. · Agent connection is unavailable.');
+    assert.equal(view.detail, `${message}\n${connectionError}`); assert.equal(view.start, false);
+    const stored = agentViewStatus({...source, availability: 'stored'}); assert.equal(stored.start, true);
+    assert.equal(stored.detail, view.detail);
+    const duplicate = agentViewStatus({...source, connectionError: message});
+    assert.equal(duplicate.text, 'History unavailable: saved messages could not be read.');
+  }
+  const readOnly = agentViewStatus({hasEntries: true, connected: true, loading: false, ready: true, complete: true, availability: 'incompatible', input: false});
+  assert.equal(readOnly.text, 'This agent cannot connect; messages remain read-only.');
+  assert.equal(readOnly.start, false);
+});
 test('live negotiated input overrides unavailable catalog claims without inventing idle', () => {
-  const connected = conversationPresentation({target, row, connected: true});
+  const connected = conversationPresentation({target, row, negotiated, connected: true});
   assert.equal(connected.activity, 'Connected'); assert.equal(connected.input, true); assert.equal(connected.busy, false);
   const settings = {...row, model: {provider: 'saved', modelId: 'catalog'}, thinkingLevel: 'low'};
   const accepted = {...frame(false), status: {busy: false, model: {provider: 'live', modelId: 'accepted'}}};
-  const mixed = conversationPresentation({target, row: settings, frame: accepted, connected: true});
+  const mixed = conversationPresentation({target, row: settings, negotiated, frame: accepted, connected: true});
   assert.equal(mixed.retainedModel, false); assert.equal(mixed.retainedThinking, true);
-  assert.equal(conversationPresentation({target, row: settings, frame: {...accepted, status: {...accepted.status, thinkingLevel: 'high'}}, connected: true}).retainedThinking, false);
-  const noInput = conversationPresentation({target, row: {...row, capabilities: {...row.capabilities, history: true, observe: true, abort: false, configure: false, input: false}}, connected: true});
+  assert.equal(conversationPresentation({target, row: settings, negotiated, frame: {...accepted, status: {...accepted.status, thinkingLevel: 'high'}}, connected: true}).retainedThinking, false);
+  const noInput = conversationPresentation({target, row: {...row, capabilities: {...row.capabilities, history: true, observe: true, abort: false, configure: false, input: false}}, negotiated: {...negotiated, capabilities: {...negotiated.capabilities, input: false}}, connected: true});
   assert.equal(noInput.activity, 'Connected'); assert.equal(noInput.input, false); assert.equal(noInput.guidance, 'Messages are unavailable for this agent.');
-  assert.equal(conversationPresentation({target, row, frame: frame(false), connected: true}).activity, 'Ready');
-  const working = conversationPresentation({target, row, frame: frame(true), connected: true});
+  assert.equal(conversationPresentation({target, row, negotiated, frame: frame(false), connected: true}).activity, 'Ready');
+  const working = conversationPresentation({target, row, negotiated, frame: frame(true), connected: true});
   assert.equal(working.activity, 'Working'); assert.equal(working.busy, true); assert.equal(working.input, true);
 });
 test('only accepted live tool calls supply current tools and completed calls disappear', () => {
   const stale = {...row, state: 'working', currentTool: {name: 'old-tool', argument: 'old'}};
-  assert.equal(conversationPresentation({target, row: stale, frame: frame(true), connected: true}).tool, undefined);
+  assert.equal(conversationPresentation({target, row: stale, negotiated, frame: frame(true), connected: true}).tool, undefined);
   const current = frame(true); current.live = [{id: 'live', kind: 'message', messages: [{id: 'm', role: 'assistant', state: 'partial', coverage: current.coverage, parts: [{type: 'toolCall', callId: 'call', name: 'read', arguments: {value: {path: 'current.ts'}, truncated: false}}]}]}];
-  assert.deepEqual(conversationPresentation({target, row: stale, frame: current, connected: true}).tool, {name: 'read', argument: '{"path":"current.ts"}'});
+  assert.deepEqual(conversationPresentation({target, row: stale, negotiated, frame: current, connected: true}).tool, {name: 'read', argument: '{"path":"current.ts"}'});
   current.entries = [{id: 'result', kind: 'message', messages: [{id: 'r', role: 'toolResult', state: 'final', coverage: current.coverage, parts: [{type: 'toolResult', callId: 'call', name: 'read', parts: [], isError: false}]}]}];
-  assert.equal(conversationPresentation({target, row: stale, frame: current, connected: true}).tool, undefined);
+  assert.equal(conversationPresentation({target, row: stale, negotiated, frame: current, connected: true}).tool, undefined);
 });
 
 test('status glyphs distinguish ready, working, stored, stopped and unknown without changing words', () => {
-  const ready = conversationPresentation({target, row, frame: frame(false), connected: true});
+  const ready = conversationPresentation({target, row, negotiated, frame: frame(false), connected: true});
   const cases = [{...ready, activity: 'Ready'}, {...ready, activity: 'Working', busy: true},
     {...ready, activity: 'Not connected'}, {...ready, activity: 'Stopped'}, {...ready, activity: ''}];
   assert.equal(new Set(cases.map(presentationGlyph)).size, cases.length);
   assert.deepEqual(cases.map(presentationGlyph), ['✓', '●', '○', '!', '?']);
   assert.equal(presentationGlyph({...ready, activity: 'Connected'}), presentationGlyph(ready));
-  for (const activity of ['Unavailable', 'Incompatible host', 'Session stopped']) assert.equal(presentationGlyph({...ready, activity}), '!');
+  for (const activity of ['Unavailable', 'Connection unavailable', 'Session stopped']) assert.equal(presentationGlyph({...ready, activity}), '!');
   assert.equal(presentationGlyph({...ready, lastObserved: true}), presentationGlyph(ready));
   assert.equal(ready.activity, 'Ready'); assert.equal(ready.input, true);
 });
@@ -73,7 +92,7 @@ test('status glyphs distinguish ready, working, stored, stopped and unknown with
 test('availability loss defeats stale activity and another identity never supplies input', () => {
   assert.ok(row.capabilities);
   const capabilities = {...row.capabilities, input: false};
-  for (const [state, activity] of [['stored','Not connected'], ['incompatible','Incompatible host'], ['unavailable','Unavailable']] as const) {
+  for (const [state, activity] of [['stored','Not connected'], ['incompatible','Connection unavailable'], ['unavailable','Unavailable']] as const) {
     const view = conversationPresentation({target, row, availability: {identity: row.identity, state, capabilities}, frame: frame(true), connected: true});
     assert.equal(view.activity, activity); assert.equal(view.busy, false); assert.equal(view.input, false);
     assert.equal(view.guidance, state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.');
@@ -82,7 +101,7 @@ test('availability loss defeats stale activity and another identity never suppli
   assert.equal(missing.input, false); assert.equal(missing.activity, 'Unavailable');
 });
 test('connection loss marks only last observation and preserves target facts', () => {
-  const view = conversationPresentation({target, row, frame: frame(true), connected: false});
+  const view = conversationPresentation({target, row, negotiated, frame: frame(true), connected: false});
   assert.equal(view.activity, 'Working'); assert.equal(view.lastObserved, true);
   assert.equal(projectIdentity(view, '/launch/path').path, row.cwd);
   assert.deepEqual(projectIdentity({}, '/launch/path'), {path: '/launch/path', name: 'path'});
@@ -120,4 +139,21 @@ test('multiple sessions in one directory and trailing separators share labels wi
   assert.deepEqual([...labels.entries()], [['/projects/checkout', 'projects/checkout'], ['/projects/checkout/', 'projects/checkout'], ['/other/checkout/', 'other/checkout']]);
   assert.deepEqual(projectIdentity({cwd: '/projects/checkout/'}, undefined, paths), {path: '/projects/checkout/', name: 'projects/checkout'});
   assert.equal(projectLabels(['/projects/checkout', '/projects/checkout/']).get('/projects/checkout/'), 'checkout');
+});
+
+
+test('a live catalog claim without exact negotiated evidence is unchecked and admits no input', () => {
+  const claim = {...row, model: {provider: 'saved', modelId: 'claim-model'}, currentTool: {name: 'read', argument: 'claim.ts'}};
+  const view = conversationPresentation({target, row: claim, frame: frame(true), connected: true});
+  assert.equal(view.activity, 'Connection not checked'); assert.equal(view.input, false); assert.equal(view.busy, false); assert.equal(view.tool, undefined); assert.equal(view.retainedModel, true);
+  assert.equal(presentationGlyph(view), '?');
+  const other = conversationPresentation({target, row: claim, negotiated: {...negotiated, identity: 'other'}, connected: true});
+  assert.equal(other.activity, view.activity); assert.equal(other.input, false);
+  const unavailable = conversationPresentation({target, row: claim, negotiated: {...negotiated, availability: 'unavailable'}, connected: true});
+  assert.equal(unavailable.activity, 'Unavailable'); assert.equal(unavailable.input, false);
+});
+
+test('unchecked live claims use plain connection guidance independently of retained reads', () => {
+  const view = agentViewStatus({hasEntries: true, connected: true, loading: false, ready: true, availability: 'live', checked: false, input: false});
+  assert.equal(view.text, 'Connection not checked.'); assert.equal(view.start, false); assert.equal(view.detail, '');
 });

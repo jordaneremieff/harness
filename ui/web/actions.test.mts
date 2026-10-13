@@ -24,7 +24,7 @@ afterEach(() => {
 const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/project', lifecycle: 'ready', activity: 'idle', pendingDialogs: [], pendingOperationIds: [], capabilities: {control: true}};
 const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'completed', target: {kind: 'primary', key: 'p', epoch: 1}, createdAt: '2026-10-08T12:00:00Z', updatedAt: '2026-10-08T12:00:00Z'};
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
-  return {snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
+  return {snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
 }
 test('resource invalidation notifies the existing command owner without acquiring a Primary composer', () => {
   let selected: PrimaryView | undefined = {...primary, lifecycle: 'starting'}, changed = 0; const ctx = context({primary: () => selected, commandsChanged: () => {changed++;}});
@@ -399,6 +399,20 @@ test('palette covers every displaced control and session availability follows th
   assert.equal(starting.find(item => item.name === 'New session')?.enabled, true);
   assert.equal(starting.find(item => item.name === 'Model')?.enabled, false);
   assert.equal(starting.find(item => item.name === 'Thinking')?.enabled, false);
+});
+test('transcript actions follow the focused view without enabling Primary execution', () => {
+  const calls: string[] = []; let available = true;
+  const actions = new Actions(context({primary: () => undefined, selectedAgent: () => ({identity: 'only-agent'}), hasTranscript: () => available,
+    view: (tools, expanded) => {calls.push(`${tools ? 'tools' : 'thinking'}:${expanded}`);}}));
+  actions.find = () => {calls.push('find');};
+  const names = ['Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text'];
+  for (const name of names) {const item = actions.paletteEntries().find(item => item.name === name); assert.ok(item); assert.equal(item.enabled, true); item.run();}
+  assert.deepEqual(calls, ['tools:true', 'tools:false', 'thinking:true', 'thinking:false', 'find']);
+  for (const name of ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Model', 'Thinking']) assert.equal(actions.paletteEntries().find(item => item.name === name)?.enabled, false);
+  available = false; for (const name of names) assert.equal(actions.paletteEntries().find(item => item.name === name)?.enabled, false);
+  const unrelatedPrimary = new Actions(context({hasTranscript: () => false}));
+  for (const name of names) assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === name)?.enabled, false);
+  assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === 'Compact…')?.enabled, true);
 });
 test('retry and selected-agent palette entries require their evidence and capability', () => {
   const actions = new Actions(context({primary: () => ({...primary, lastError: {code: 'failed', message: 'Failure', retry: 'manual'}}), selectedAgent: () => ({identity: 'agent-id'})}));

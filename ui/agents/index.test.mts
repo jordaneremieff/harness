@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import { AgentService, createAgentService, deriveEndpoint } from "./index.mts";
 import { activity, blockedResult, deferred, descriptor, FakeHost, frame, receipt } from "./fake-host.mts";
 import { dispatchAgent } from "../server/routes-agent.mts";
+import { errorView } from "../server/errors.mts";
 import type { Registry } from "../server/registry.mts";
 
 function memoryService() {
@@ -95,6 +96,20 @@ test("offline observation and missing retained reader refuse without host acquis
   await assert.rejects(service.history(storageId), hasCode("host_unavailable"));
   await assert.rejects(service.abort(storageId), hasCode("stored"));
   assert.equal(service.roster().rows[0].state, "unavailable");
+});
+
+test("absent-socket diagnostics survive the real worker and safe HTTP error projection", async t => {
+  const { service, directory } = await stored(t);
+  const endpoint = deriveEndpoint({storageId, cwd: directory, agentDir: directory});
+  await mkdir(dirname(endpoint.claimPath), {recursive: true});
+  await writeFile(endpoint.claimPath, JSON.stringify({sessionId: storageId, cwd: directory, host: hostname(), createdAt: "2026-01-01T00:00:00.000Z", pid: process.pid}));
+  await service.refresh();
+  const message = `connect ENOENT ${endpoint.socketPath}`;
+  await assert.rejects(service.prepare(storageId), error => {
+    assert.equal((error as Error).message, message);
+    assert.deepEqual(errorView(error), {code: "host_unavailable", message, retry: "none"});
+    return true;
+  });
 });
 
 test("operation keys preserve exact text and target across offline failure", async t => {

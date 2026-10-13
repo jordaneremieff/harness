@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { JsonValue, ServiceProviderUpdate, ServiceSubscriptionSnapshot } from "@earendil-works/chord";
-import { Client, type ServiceSubscription } from "@earendil-works/pi-client";
+import { Client, DisconnectedError, type ServiceSubscription } from "@earendil-works/pi-client";
 import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
 import { assertOperation, decodeDescriptor, decodeFrame, decodeInput, decodeResponse, supportedOperations, type Admission, type ConversationFrame, type JsonObject, type OperationName, type RuntimeDescriptor } from "./contract.mts";
 
@@ -67,7 +67,11 @@ export class HostLink {
         return decodeDescriptor(await client.request({ serverId: endpoint.serverId }, { serviceId: "pi.agent.host", member: "runtime-contract", args: [] }, controller.signal));
       })(), deadline]);
       return new HostLink(endpoint, client, descriptor, options);
-    } catch (error) { await client.dispose(); throw contractFailure(error); }
+    } catch (error) {
+      await client.dispose();
+      if (error instanceof DisconnectedError) throw new AgentError("host_unavailable", error.message);
+      throw contractFailure(error);
+    }
     finally { if (timer) clearTimeout(timer); }
   }
   get connected(): boolean { return !this.#closed && this.#client.connected; }

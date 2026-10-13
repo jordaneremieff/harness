@@ -6,6 +6,7 @@ import type { AgentRow, ConversationLayout, ConversationTab, EntryView, MessageV
 import type { Composer } from './composer.ts';
 import { createPaneLayout, paneLeaves, movePaneTab, splitPane, validPaneLayout, activatePaneTab } from './pane-layout.ts';
 import { tabKey } from './tabs.ts';
+import { targetIdentity } from './state.ts';
 
 const source = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
 const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
@@ -225,7 +226,7 @@ class FixtureEventSource {
     for (const listener of this.listeners.get(name) ?? []) listener(message);
   }
 }
-type Fixture = {workspace: Workspace; primaries: PrimaryView[]; roster: AgentRow[]; targets?: TargetState[];
+type Fixture = {workspace: Workspace; primaries: PrimaryView[]; roster: AgentRow[]; targets?: TargetState[]; confirmed?: boolean;
   selectedPage?: Snapshot['selectedPage']; observations?: Snapshot['observations']; history?: EntryView[]; pendingOperations?: OperationView[]};
 function singlePane(tabs: ConversationTab[] = [{kind: 'primary'}], active = tabs[0] ? tabKey(tabs[0]) : null): ConversationLayout { return createPaneLayout(tabs, active); }
 function twoPanes(identity: string, focusedPane = 'agent-pane', extra: ConversationTab[] = []): ConversationLayout {
@@ -233,7 +234,7 @@ function twoPanes(identity: string, focusedPane = 'agent-pane', extra: Conversat
     first: {kind: 'pane', id: 'primary-pane', tabs: [{kind: 'primary'}], active: 'primary'},
     second: {kind: 'pane', id: 'agent-pane', tabs: [{kind: 'agent', identity}, ...extra], active: `agent:${identity}`}}, focusedPane};
 }
-function observation(identity: string, frame?: ProjectedFrame, connectionEpoch = 1): NonNullable<Snapshot['observations']>[number] { return {identity, connectionEpoch, ...(frame ? {frame} : {})}; }
+function observation(identity: string, frame?: ProjectedFrame, connectionEpoch = (app.state.agentEpochs.get(identity) ?? 0) + 1): NonNullable<Snapshot['observations']>[number] { return {identity, connectionEpoch, ...(frame ? {frame} : {})}; }
 const coverage = {complete: true, truncated: false, omitted: 0};
 function primaryFixture(overrides: Partial<PrimaryView> = {}): PrimaryView {
   return {key: 'p', epoch: 1, cwd: '/fixture/project', lifecycle: 'ready', activity: 'running', pendingOperationIds: [],
@@ -397,6 +398,16 @@ async function arrive(next: Fixture): Promise<void> {
   fixture = {...next, workspace: {...next.workspace, conversationLayout, revision: Math.max(next.workspace.revision, (app.state.workspace?.revision ?? 0) + 1)}};
   await app.reload();
   await settle();
+  await confirmFixtureAvailability();
+}
+async function confirmFixtureAvailability(): Promise<void> {
+  if (fixture.confirmed !== false) {
+    const identity = fixture.workspace.selectedTarget?.kind === 'agent' ? fixture.workspace.selectedTarget.identity : undefined, row = fixture.roster.find(item => item.identity === identity);
+    if (row?.availability === 'live' && row.capabilities) {
+      const conversation = app.state.conversations.get(targetIdentity({kind: 'agent', identity: row.identity}));
+      event('agent.availability', {identity: row.identity, connectionEpoch: conversation?.connectionEpoch ?? (app.state.agentEpochs.get(row.identity) ?? 0) + 1, state: 'live', capabilities: row.capabilities}); await settle();
+    }
+  }
 }
 function event(name: string, data: unknown, target?: {kind: 'primary'; key: string; epoch: number}): void {
   cursorSequence = Math.max(cursorSequence + 1, ++eventSequence + 1000);
@@ -525,6 +536,282 @@ test('section changes hide retained nodes and explicit skip navigation focuses t
   assert.equal(root.hidden,true); byId('skip-composer').click(); assert.equal(hostDocument.activeElement,agentControl('editor'));
   byId('primary-row').click(); await settle(); byId('skip-composer').click(); assert.equal(primaryControl('root'),root); assert.equal(primaryControl('editor'),editor); assert.equal(root.hidden,false); assert.equal(hostDocument.activeElement,editor);
 });
+test('an initial Primary history error keeps one summary, exact detail and a read-only retry row', async t => {
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original;});
+  const target = {kind: 'primary' as const, key: 'p', epoch: 9801}, diagnostic = 'history operation failed at host endpoint';
+  let failed = true; const calls: Array<[string, string]> = [];
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input), 'http://ui.test').pathname; calls.push([init?.method ?? 'GET', path]);
+    return path === '/api/primaries/p/history' ? failed ? Response.json({ok: false, error: {code: 'host_unavailable', message: diagnostic, retry: 'read'}}) : Response.json({ok: true, data: {target, items: [], nextCursor: null, coverage}}) : original(input, init);
+  };
+  await arrive({workspace: {id: 'primary-read-failure', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: []});
+  const notice = primaryControl('view-notice'), actions = notice.querySelector('.history-actions'); assert.ok(actions);
+  assert.equal(notice.children.length, 2); assert.equal(notice.children[0]?.textContent, 'History could not be loaded.');
+  assert.equal(actions.children.length, 2); assert.equal(actions.querySelector('pre')?.textContent, diagnostic);
+  const retry = actions.querySelector('button'); assert.ok(retry); assert.equal(retry.getAttribute('aria-label'), 'Retry history');
+  const editor = primaryControl('editor'), before = calls.length; failed = false; retry.click(); await settle();
+  assert.deepEqual(calls.slice(before), [['GET', '/api/primaries/p/history']]); assert.equal(primaryControl('editor'), editor); assert.equal(notice.textContent, '');
+});
+
+test('failed Message preparation and technical availability reasons stay in exact details through retry', async t => {
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original; byId('agent-message-close').click();});
+  const a = agentFixture('message-error-main', {modifiedAt: Date.now()}), b = agentFixture('message-error-recipient', {modifiedAt: Date.now()});
+  const targetA = {kind: 'agent' as const, identity: a.identity}, targetB = {kind: 'agent' as const, identity: b.identity};
+  const savedA = targetFixture('message-error-main', targetA, {draft: {revision: 4, text: 'Main draft stays', mode: 'prompt', persisted: true}});
+  const savedB = targetFixture('message-error-recipient', targetB, {draft: {revision: 4, text: 'Recipient draft stays', mode: 'followUp', persisted: true}});
+  const diagnostic = 'connect ENOENT /fixture/pi-hosts/unavailable.sock', reason = 'task-submit/1.2.0 endpoint does not support input';
+  let phase: 'ready' | 'failed' | 'reason' = 'ready'; const preparations: Target[] = [];
+  globalThis.fetch = async (input, init) => {
+    if (!new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') || init?.method !== 'POST') return original(input, init);
+    const target = JSON.parse(String(init.body)).target;
+    if (target.identity !== b.identity) return original(input, init);
+    preparations.push(target);
+    if (phase === 'failed') return Response.json({ok: false, error: {code: 'host_unavailable', message: diagnostic, retry: 'manual'}});
+    const ready = phase === 'ready';
+    return Response.json({ok: true, data: {targetState: savedB, availability: ready ? 'live' : 'incompatible', capabilities: {input: ready}, reason: ready ? undefined : reason}});
+  };
+  await arrive({workspace: {id: 'message-errors', revision: 1, selectedTarget: targetA, conversationLayout: singlePane([{kind: 'agent', identity: a.identity}, {kind: 'agent', identity: b.identity}], `agent:${a.identity}`)}, primaries: [], roster: [a, b], targets: [savedA, savedB]});
+  const message = byId('roster').querySelector(`[data-identity="${b.identity}"]`)?.querySelector('.row-message'); assert.ok(message);
+  message.click(); await settle(); const editor = messageControl('editor'); editor.setSelectionRange(2, 7);
+  byId('agent-message-close').click(); await settle(); const main = agentControl('editor'); main.setSelectionRange(1, 4);
+  const before = transportLog.length; phase = 'failed'; message.click(); await settle();
+  const status = byId('agent-message-status'); assert.equal(status.textContent, 'Message connection is unavailable. Your draft is unchanged.'); assert.equal(status.title, diagnostic);
+  assert.doesNotMatch(byId('agent-message-panel').textContent, /ENOENT|unavailable\.sock/); assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
+  assert.equal(messageControl('send').disabled, true); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('agent-message-retry').textContent, 'Try again');
+  phase = 'reason'; byId('agent-message-retry').click(); await settle(); assert.equal(status.textContent, 'Agent connection is unavailable.'); assert.equal(status.title, reason);
+  assert.doesNotMatch(byId('agent-message-panel').textContent, /task-submit/); assert.equal(byId('agent-message-retry').textContent, 'Check connection'); assert.equal(messageControl('send').disabled, true);
+  phase = 'ready'; byId('agent-message-retry').click(); await settle(); assert.equal(status.textContent, ''); assert.equal(status.title, ''); assert.equal(messageControl('send').disabled, false);
+  assert.deepEqual(preparations, [targetB, targetB, targetB, targetB]); assert.deepEqual(app.state.workspace?.selectedTarget, targetA); assert.equal(agentControl('editor'), main); assert.equal(main.value, savedA.draft.text); assert.deepEqual([main.selectionStart, main.selectionEnd], [1, 4]);
+  assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
+  assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+});
+
+test('Primary reload keeps an inactive live claim unchecked until exact Message negotiation', async t => {
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original;});
+  const b = agentFixture('reload-claim'), target = {kind: 'agent' as const, identity: b.identity}, saved = targetFixture('reload-claim', target);
+  const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: b.identity}], 'primary');
+  await arrive({workspace: {id: 'reload-claim-workspace', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 9808})], roster: [b], targets: [targetFixture('reload-primary', {kind: 'primary', key: 'p', epoch: 9808}), saved], confirmed: false});
+  assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Connection not checked/);
+  await app.reload(); await settle();
+  assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Connection not checked/);
+  const before = transportLog.length;
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' ? Response.json({ok: true, data: {targetState: saved, availability: 'unavailable', capabilities: {history: true, observe: false, input: false, abort: false, configure: false}, reason: 'Claim socket is absent'}}) : original(input, init);
+  const message = byId('roster').querySelector('[data-identity="reload-claim"]')?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
+  assert.equal(messageControl('send').disabled, true); assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Unavailable/);
+  assert.doesNotMatch(byId('workbench-status-agent').textContent, /Connected|Ready/); assert.equal(app.state.workspace?.primaryKey, 'p');
+  assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+  byId('agent-message-close').click(); await settle();
+});
+
+test('Message negotiation overrides a claim across main selection, panel close, availability and reconnect', async t => {
+  const original = globalThis.fetch; t.after(async () => {globalThis.fetch = original; pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();});
+  const a = agentFixture('negotiated-a'), b = agentFixture('claimed-b'), targetA = {kind: 'agent' as const, identity: a.identity}, targetB = {kind: 'agent' as const, identity: b.identity};
+  const savedA = targetFixture('negotiated-a', targetA), savedB = targetFixture('claimed-b', targetB, {draft: {revision: 4, text: 'Retained B draft', mode: 'followUp', persisted: true}});
+  const capabilities = {history: true, observe: false, input: false, abort: false, configure: false}; let ready = false;
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input), 'http://ui.test').pathname;
+    const connection = ready ? {availability: 'live', capabilities: b.capabilities} : {availability: 'unavailable', capabilities, reason: 'Claim endpoint is unavailable'};
+    if (path === `/api/agents/${b.identity}/history`) return Response.json({ok: true, data: {target: targetB, entries: [entryFixture('retained-b', [messageFixture('retained-b-message', [textPart('Saved B history')])])], nextBefore: null, coverage, revision: 'r'}});
+    if (path.endsWith('/targets') && init?.method === 'POST' && JSON.parse(String(init.body)).target?.identity === b.identity) {
+      if (ready) event('agent.availability', {identity: b.identity, connectionEpoch: (app.state.agentEpochs.get(b.identity) ?? 0) + 1, state: 'live', capabilities: b.capabilities});
+      return Response.json({ok: true, data: {targetState: savedB, ...connection}});
+    }
+    return original(input, init);
+  };
+  const layout = singlePane([{kind: 'agent', identity: a.identity}, {kind: 'agent', identity: b.identity}], `agent:${b.identity}`);
+  await arrive({workspace: {id: 'negotiation-owner', revision: 1, selectedTarget: targetB, conversationLayout: layout}, primaries: [], roster: [a, b], targets: [savedA, savedB]});
+  event('agent.availability', {identity: b.identity, connectionEpoch: 1, state: 'unavailable', capabilities, reason: 'Claim endpoint is unavailable'}); await settle();
+  const editor = agentControl('editor'); editor.setSelectionRange(2, 7); assert.match(agentControl('root').textContent, /Saved B history/);
+  app.applyLayout(activatePaneTab(layout, 'pane-1', `agent:${a.identity}`)); await app.selectionQueue.drain(); await settle();
+  const before = transportLog.length, message = byId('roster').querySelector(`[data-identity="${b.identity}"]`)?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
+  assert.equal(byId('agent-message-status').textContent, 'Agent connection is unavailable.'); assert.equal(messageControl('send').disabled, true);
+  assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/); assert.doesNotMatch(byId('workbench-status-agent').textContent, /Connected|Ready/);
+  assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]); assert.deepEqual(app.state.workspace?.selectedTarget, targetA);
+  byId('agent-message-close').click(); await settle(); await app.reload(); await settle();
+  assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
+  app.applyLayout(activatePaneTab(app.state.workspace?.conversationLayout ?? layout, 'pane-1', `agent:${b.identity}`)); await app.selectionQueue.drain(); await settle();
+  event('agent.availability', {identity: b.identity, connectionEpoch: 2, state: 'live', capabilities: b.capabilities}); await settle();
+  assert.equal(agentControl('send').disabled, true); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
+  ready = true; await app.checkAgentConnection('negotiation-owner', b.identity); await settle();
+  assert.equal(agentControl('send').disabled, false); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
+  event('agent.availability', {identity: b.identity, connectionEpoch: 2, state: 'unavailable', capabilities, reason: 'Connection closed'}); await settle();
+  assert.equal(agentControl('send').disabled, true); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
+  await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
+  pageHidden(true); await settle(); assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
+  pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle(); assert.equal(agentControl('send').disabled, true);
+  await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
+  assert.equal(agentControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.match(agentControl('root').textContent, /Saved B history/);
+  assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+  await arrive({workspace: {id: 'different-negotiation-owner', revision: 1, selectedTarget: targetB, conversationLayout: singlePane([{kind: 'agent', identity: b.identity}])}, primaries: [], roster: [agentFixture(b.identity, {availability: 'stored', capabilities})], targets: [targetFixture('different-owner-b', targetB)]});
+  assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
+});
+
+async function restorePreparationConnection(): Promise<void> {
+  pageHidden(true); pageHidden(false); await settle();
+  streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();
+}
+async function interruptPreparation(mode: string): Promise<void> {
+  if (mode === 'suspend') pageHidden(true);
+  else {streamSources.at(-1)?.onerror?.(); if (mode === 'reconnect') await restorePreparationConnection();}
+  await settle();
+}
+async function latePreparationFixture(surface: string, mode: string, t: {after: (fn: () => Promise<void>) => void}) {
+  const original = globalThis.fetch, pending = Promise.withResolvers<Response>(); let held = true, requests = 0;
+  const prefix = 'late-' + surface + '-' + mode, a = agentFixture(prefix + '-a'), b = agentFixture(prefix + '-b');
+  const targetA = {kind: 'agent' as const, identity: a.identity}, targetB = {kind: 'agent' as const, identity: b.identity};
+  const savedA = targetFixture(prefix + '-a', targetA, {draft: {revision: 4, text: 'Keep A draft', mode: 'prompt', persisted: true}}), savedB = targetFixture(prefix + '-b', targetB, {draft: {revision: 4, text: 'Keep B draft', mode: 'followUp', persisted: true}});
+  const response = () => Response.json({ok: true, data: {targetState: savedB, availability: 'live', capabilities: b.capabilities}});
+  t.after(async () => {held = false; pending.resolve(response()); globalThis.fetch = original; byId('agent-message-close').click(); await restorePreparationConnection();});
+  const selected = surface === 'Message' ? targetA : targetB, layout = singlePane([{kind: 'agent', identity: a.identity}, {kind: 'agent', identity: b.identity}], 'agent:' + b.identity);
+  await arrive({workspace: {id: prefix, revision: 1, selectedTarget: targetB, conversationLayout: layout}, primaries: [], roster: [a, b], targets: [savedA, savedB], confirmed: false});
+  if (surface === 'Message') {app.applyLayout(activatePaneTab(layout, 'pane-1', 'agent:' + a.identity)); await app.selectionQueue.drain(); await settle();}
+  const mainEditor = agentControl('editor'); mainEditor.setSelectionRange(1, 5, 'backward');
+  const before = transportLog.length;
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input), 'http://ui.test').pathname;
+    if (path.endsWith('/targets') && init?.method === 'POST' && JSON.parse(String(init.body)).target?.identity === b.identity) {
+      requests++; fixture = {...fixture, targets: [savedA, savedB]}; if (held) return pending.promise;
+      if (surface === 'main') event('agent.availability', {identity: b.identity, connectionEpoch: (app.state.agentEpochs.get(b.identity) ?? 0) + 1, state: 'live', capabilities: b.capabilities});
+      return response();
+    }
+    return original(input, init);
+  };
+  if (surface === 'Message') {
+    const message = byId('roster').querySelector('[data-identity="' + b.identity + '"]')?.querySelector('.row-message'); assert.ok(message); message.click();
+  } else {fixture = {...fixture, targets: [savedA]}; app.state.targets.delete(savedB.targetKey); app.focusPane(app.focusedPane); await app.selectionQueue.drain();}
+  await settle(); const control = surface === 'Message' ? messageControl : agentControl, editor = control('editor'); editor.setSelectionRange(2, 6, 'backward');
+  return {prefix, b, selected, savedA, savedB, mainEditor, control, editor, before, requests: () => requests, resolve: () => pending.resolve(response()), reject: () => pending.resolve(Response.json({ok: false, error: {code: 'host_unavailable', message: 'Obsolete connection failure', retry: 'manual'}})), fresh: async () => {
+    held = false; if (surface === 'Message') byId('agent-message-retry').click(); else await app.checkAgentConnection(prefix, b.identity); await settle();
+  }};
+}
+for (const surface of ['Message', 'main']) for (const mode of ['disconnect', 'reconnect', 'suspend']) test('pending ' + surface + ' preparation cannot restore connection after ' + mode, async t => {
+  const f = await latePreparationFixture(surface, mode, t); assert.equal(f.requests(), 1);
+  await interruptPreparation(mode); assert.equal(f.control('send').disabled, true);
+  if (surface === 'Message' && mode === 'reconnect') assert.equal(f.requests(), 1);
+  f.resolve(); await settle();
+  const unchecked = () => {assert.doesNotMatch(tabsNode().querySelector('[data-tab-key="agent:' + f.b.identity + '"]')?.title ?? '', /Connected|Ready|Working/); assert.equal(f.control('send').disabled, true);};
+  unchecked(); if (mode !== 'reconnect') await restorePreparationConnection(); unchecked(); assert.equal(f.requests(), 1);
+  await f.fresh(); assert.equal(f.requests(), 2); assert.equal(f.control('send').disabled, false);
+  assert.equal(f.control('editor'), f.editor); assert.equal(f.editor.value, f.savedB.draft.text); assert.deepEqual([f.editor.selectionStart, f.editor.selectionEnd, f.editor.selectionDirection], [2, 6, 'backward']);
+  assert.deepEqual(app.state.workspace?.selectedTarget, f.selected); assert.equal(app.state.workspace?.id, f.prefix);
+  if (surface === 'Message') {assert.equal(agentControl('editor'), f.mainEditor); assert.equal(f.mainEditor.value, f.savedA.draft.text); assert.deepEqual([f.mainEditor.selectionStart, f.mainEditor.selectionEnd, f.mainEditor.selectionDirection], [1, 5, 'backward']);}
+  assert.equal(transportLog.slice(f.before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+});
+test('a rejected Message preparation from the retired stream keeps the lifetime recovery reason', async t => {
+  const f = await latePreparationFixture('Message', 'retired-error', t); await interruptPreparation('reconnect');
+  f.reject(); await settle(); assert.equal(f.control('send').disabled, true);
+  assert.match(byId('agent-message-status').title, /browser connection changed/); assert.doesNotMatch(byId('agent-message-status').title, /Obsolete connection failure/);
+  assert.equal(byId('agent-message-retry').textContent, 'Check connection');
+  await f.fresh(); assert.equal(f.control('send').disabled, false); assert.equal(f.editor.value, f.savedB.draft.text);
+});
+
+test('fresh Message preparation supersedes a pending failure from the retired stream', async t => {
+  const f = await latePreparationFixture('Message', 'rejected', t);
+  await interruptPreparation('reconnect'); await f.fresh(); assert.equal(f.requests(), 2); assert.equal(f.control('send').disabled, false);
+  f.reject(); await settle(); assert.equal(f.control('send').disabled, false); assert.equal(byId('agent-message-status').textContent, '');
+  assert.match(tabsNode().querySelector('[data-tab-key="agent:' + f.b.identity + '"]')?.title ?? '', /Connected|Ready/);
+  assert.equal(f.control('editor'), f.editor); assert.equal(f.editor.value, f.savedB.draft.text); assert.deepEqual([f.editor.selectionStart, f.editor.selectionEnd, f.editor.selectionDirection], [2, 6, 'backward']);
+});
+
+test('an obsolete Message completion cannot replace another recipient in another workspace', async t => {
+  const f = await latePreparationFixture('Message', 'owner', t); await restorePreparationConnection();
+  const c = agentFixture('late-new-c'), targetC = {kind: 'agent' as const, identity: c.identity}, savedC = targetFixture('late-new-c', targetC, {draft: {revision: 5, text: 'Keep new C draft', mode: 'followUp', persisted: true}});
+  await arrive({workspace: {id: 'late-new-owner', revision: 1, selectedTarget: f.selected}, primaries: [], roster: [agentFixture(f.selected.identity), c], targets: [f.savedA, savedC], confirmed: false});
+  byId('roster').querySelector('[data-identity="late-new-c"]')?.querySelector('.row-message')?.click(); await settle(); const editor = messageControl('editor'); editor.setSelectionRange(1, 4, 'backward');
+  f.resolve(); await settle(); assert.equal(app.state.workspace?.id, 'late-new-owner'); assert.deepEqual(app.state.workspace?.selectedTarget, f.selected);
+  assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedC.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [1, 4, 'backward']);
+  assert.equal(f.editor.value, f.savedB.draft.text); assert.deepEqual([f.editor.selectionStart, f.editor.selectionEnd, f.editor.selectionDirection], [2, 6, 'backward']); assert.equal(app.state.targets.has(f.savedB.targetKey), false);
+});
+
+test('Primary preparation errors clear after fresh preparation or snapshot restoration', async t => {
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original;});
+  const diagnostic = 'connect ENOENT /fixture/primary-endpoint.sock', target = {kind: 'primary' as const, key: 'p', epoch: 9802};
+  for (const recovery of ['prepare', 'snapshot']) {
+    const saved = targetFixture('prepare-primary-error', target, {draft: {revision: 4, text: 'Retained Primary draft', mode: 'prompt', persisted: true}});
+    await arrive({workspace: {id: `prepare-primary-error-${recovery}`, revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [], targets: [saved]});
+    const editor = primaryControl('editor'); fixture = {...fixture, targets: []};
+    globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' ? Response.json({ok: false, error: {code: 'host_unavailable', message: diagnostic, retry: 'manual'}}) : original(input, init);
+    app.state.targets.clear(); app.focusPane(app.focusedPane); await app.selectionQueue.drain(); await settle();
+    const notice = primaryControl('view-notice'), caption = notice.querySelector('.preparation-error'); assert.ok(caption);
+    assert.equal(notice.textContent, 'Conversation could not be prepared.'); assert.equal(caption.title, diagnostic); assert.equal(notice.title, ''); assert.doesNotMatch(notice.textContent, /ENOENT|endpoint/);
+    globalThis.fetch = original; fixture = {...fixture, targets: [saved]}; const beforeRetry = transportLog.length;
+    if (recovery === 'snapshot') await app.reload(); else app.focusPane(app.focusedPane);
+    await app.selectionQueue.drain(); await settle();
+    const retries = transportLog.slice(beforeRetry).filter(call => call.method === 'POST' && call.path.endsWith('/targets'));
+    assert.equal(retries.length, recovery === 'prepare' ? 1 : 0); assert.ok(retries.every(call => JSON.stringify(call.body) === JSON.stringify({target})));
+    assert.equal(notice.textContent, ''); assert.equal(notice.title, ''); assert.equal(caption.parentNode, null); assert.equal(notice.querySelector('.preparation-error'), null);
+    assert.equal(primaryControl('editor'), editor); assert.equal(editor.value, saved.draft.text); assert.equal(editor.disabled, false);
+  }
+});
+
+test('a late Primary preparation failure does not restore an obsolete caption after snapshot recovery', async t => {
+  const original = globalThis.fetch; let complete!: (response: Response) => void, preparations = 0;
+  const pending = new Promise<Response>(resolve => {complete = resolve;});
+  t.after(() => {globalThis.fetch = original; complete(Response.json({ok: false, error: {code: 'host_unavailable', message: 'Late preparation failure', retry: 'manual'}}));});
+  const target = {kind: 'primary' as const, key: 'p', epoch: 9806}, saved = targetFixture('late-primary-preparation', target, {draft: {revision: 3, text: 'Retained recovered draft', mode: 'prompt', persisted: true}});
+  await arrive({workspace: {id: 'late-primary-preparation', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [], targets: [saved]});
+  const editor = primaryControl('editor'); fixture = {...fixture, targets: []};
+  globalThis.fetch = async (input, init) => {if (new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST') {preparations++; fixture = {...fixture, targets: [saved]}; return pending;} return original(input, init);};
+  app.state.targets.clear(); app.focusPane(app.focusedPane); await app.selectionQueue.drain(); await settle(); assert.equal(preparations, 1);
+  fixture = {...fixture, targets: [saved]}; await app.reload(); await settle();
+  complete(Response.json({ok: false, error: {code: 'host_unavailable', message: 'Late preparation failure', retry: 'manual'}})); await settle();
+  const notice = primaryControl('view-notice'); assert.equal(notice.textContent, ''); assert.equal(notice.title, ''); assert.equal(notice.querySelector('.preparation-error'), null);
+  assert.equal(primaryControl('editor'), editor); assert.equal(editor.value, saved.draft.text); assert.equal(editor.disabled, false); assert.equal(preparations, 1);
+});
+
+test('roster refresh failure keeps the exact error behind Details and retains Refresh', async t => {
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original;});
+  const diagnostic = 'connect ENOENT /fixture/roster-endpoint.sock';
+  await arrive({workspace: {id: 'roster-refresh-error', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: 9803})], roster: []});
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === '/api/agents/refresh' ? Response.json({ok: false, error: {code: 'host_unavailable', message: diagnostic, retry: 'manual'}}) : original(input, init);
+  byId('agent-refresh').click(); await settle(); const footer = byId('roster-footer');
+  assert.equal(footer.querySelector('p')?.textContent, 'Agents could not be refreshed.'); assert.equal(footer.querySelector('pre')?.textContent, diagnostic);
+  assert.equal(footer.querySelector('button')?.getAttribute('aria-label'), 'Refresh agent roster'); assert.equal(byId('announcements').textContent, 'Agents could not be refreshed.');
+});
+
+test('Message B remains visible while main A retains its writer, caret and reading place', async () => {
+  const targetA = {kind: 'agent' as const, identity: 'message-main-a'}, targetB = {kind: 'agent' as const, identity: 'message-other-b'};
+  const a = agentFixture(targetA.identity, {availability: 'stored', modifiedAt: Date.now(), capabilities: {input: false}}), b = agentFixture(targetB.identity, {availability: 'stored', modifiedAt: Date.now(), capabilities: {input: false}});
+  const savedA = targetFixture('message-main-a', targetA, {draft: {revision: 4, text: 'Keep main A draft', mode: 'prompt', persisted: true}});
+  const savedB = targetFixture('message-other-b', targetB, {draft: {revision: 4, text: 'Keep B draft', mode: 'followUp', persisted: true}});
+  await arrive({workspace: {id: 'message-with-agent', revision: 1, selectedTarget: targetA, conversationLayout: singlePane([{kind: 'agent', identity: a.identity}, {kind: 'agent', identity: b.identity}], `agent:${a.identity}`)}, primaries: [], roster: [a, b], targets: [savedA, savedB]});
+  const editorA = agentControl('editor'), rootA = agentControl('root'), transcriptA = agentControl('transcript');
+  editorA.focus(); editorA.setSelectionRange(2, 7, 'backward'); transcriptA.scrollTop = 17;
+  const reading = app.state.targets.get(savedA.targetKey)?.reading, before = transportLog.length;
+  const row = byId('roster').querySelector(`[data-identity="${b.identity}"]`), message = row?.querySelector('.row-message'); assert.ok(message); assert.equal(message.hidden, false);
+  message.click(); await settle();
+  assert.deepEqual(app.state.workspace?.selectedTarget, targetA); assert.equal(agentControl('root'), rootA); assert.equal(rootA.hidden, false);
+  assert.equal(agentControl('editor'), editorA); assert.equal(editorA.value, 'Keep main A draft'); assert.deepEqual([editorA.selectionStart, editorA.selectionEnd, editorA.selectionDirection], [2, 7, 'backward']);
+  assert.equal(transcriptA.scrollTop, 17); assert.deepEqual(app.state.targets.get(savedA.targetKey)?.reading, reading);
+  const editorB = messageControl('editor'); assert.equal(editorB.value, 'Keep B draft'); assert.equal(messageControl('send').disabled, true); assert.equal(messageControl('stop').hidden, true);
+  const preparation = transportLog.slice(before).filter(call => call.path.endsWith('/targets')); assert.equal(preparation.length, 1); assert.deepEqual((preparation[0]?.body as {target?: Target})?.target, targetB);
+  editorB.setSelectionRange(1, 5); byId('agent-message-close').click(); await settle();
+  assert.equal(message.hidden, false); assert.match(message.getAttribute('aria-label') ?? '', /Resume message to/); message.click(); await settle();
+  assert.equal(messageControl('editor'), editorB); assert.deepEqual([editorB.selectionStart, editorB.selectionEnd], [1, 5]); assert.deepEqual(app.state.workspace?.selectedTarget, targetA);
+  assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+  byId('agent-message-close').click(); await settle();
+});
+
+test('Commands find and thinking actions work on the agent-only focused transcript', async () => {
+  const identity = 'agent-transcript-commands', target = {kind: 'agent' as const, identity};
+  const saved = targetFixture('agent-transcript-commands', target, {presentation: {revision: 1, expanded: [], showThinking: false}});
+  const entry = entryFixture('agent-command-entry', [messageFixture('agent-command-message', [textPart('Find this retained agent text'), {type: 'thinking', text: 'Agent reasoning'}])]);
+  const entries = [...Array.from({length: 30}, (_, index) => entryFixture(`agent-command-before-${index}`, [messageFixture(`agent-command-before-message-${index}`, [textPart(`Earlier agent text ${index}`)])])), entry];
+  await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(identity)], targets: [saved], observations: [observation(identity, {revision: 1, observedAt: 'now', entries, live: [], nextBefore: null, status: {busy: false}, coverage})]});
+  const rows = () => byId('modal-body').querySelectorAll('.palette-row');
+  const choice = (name: string) => {const row = rows().find(row => row.querySelector('.palette-name')?.textContent === name); assert.ok(row, name); return row;};
+  byId('commands-button').click();
+  for (const name of ['Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text']) assert.equal(choice(name).disabled, false);
+  for (const name of ['Compact…', 'Fork from message…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Model', 'Thinking']) assert.equal(choice(name).disabled, true);
+  choice('Show thinking').click(); await settle(); assert.equal(agentControl('transcript').querySelector('.thinking')?.open, true);
+  assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
+  byId('commands-button').click(); choice('Find text').click();
+  const query = byId('modal-body').querySelector('input'); assert.ok(query); query.value = 'Find this retained agent text'; query.dispatch('keydown', {key: 'Enter'}); await settle();
+  const found = agentControl('transcript').querySelector('[data-entry-id="agent-command-entry"]'); assert.ok(found); assert.equal(found.tabIndex, -1);
+  assert.ok(agentControl('transcript').scrollTop > 0);
+  assert.equal(app.state.primaries.size, 0); assert.deepEqual(app.state.workspace?.selectedTarget, target);
+});
+
 test('earlier-history loads expose pending and result states without restoring an old saved anchor', async t => {
   const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: 699};
   const pending = Array.from({length: 3}, () => Promise.withResolvers<Response>()), cursors: (string | null)[] = [];
@@ -543,6 +830,9 @@ test('earlier-history loads expose pending and result states without restoring a
   earlier.click(); await settle(); assert.equal(earlier.disabled, true); assert.equal(earlier.getAttribute('aria-label'), 'Loading earlier messages'); assert.equal(earlier.getAttribute('aria-busy'), 'true');
   pending[0]?.resolve(Response.json({ok: false, error: {code: 'capacity', message: 'Earlier unavailable', retry: 'manual'}})); await settle();
   assert.equal(earlier.disabled, false); assert.equal(earlier.getAttribute('aria-label'), 'Earlier messages'); assert.equal(earlier.getAttribute('aria-busy'), null); assert.match(notice.textContent, /[Hh]istory could not be loaded.*Retry history/); assert.equal(notice.querySelector('summary')?.getAttribute('aria-label'), 'History error details'); assert.equal(notice.querySelector('summary svg')?.getAttribute('class'), 'card-icon card-icon-info');
+  const actions = notice.querySelector('.history-actions'); assert.ok(actions); assert.equal(notice.children.length, 2);
+  assert.equal(actions.children.length, 2); assert.equal(actions.children[0]?.tagName, 'details'); assert.equal(actions.children[1]?.getAttribute('aria-label'), 'Retry history');
+  assert.match(actions.querySelector('pre')?.textContent ?? '', /Earlier unavailable/);
   earlier.click(); await settle(); const anchor = scroller.querySelector('[data-entry-id="feedback-6"]'); assert.ok(anchor);
   scroller.scrollTop = anchor.offsetTop - scroller.offsetTop + 77; scroller.dispatch('scroll'); flushFrames();
   pending[1]?.resolve(Response.json({ok: true, data: {target, items: [entryFixture('feedback-older', [messageFixture('feedback-older-message', [textPart('Earlier feedback')])])], nextCursor: 'oldest', coverage}})); await settle();
@@ -680,8 +970,10 @@ test('a late action rejection stays under its captured owner after navigation', 
     primaries: [primaryFixture({epoch: 8400})], roster: [row], targets: [targetFixture('receipt-agent', {kind: 'agent', identity: row.identity})]});
   primaryControl('receipt').textContent = 'Primary receipt retained'; agentControl('receipt').textContent = 'Agent receipt retained';
   response.resolve(Response.json({ok: false, error: {code: 'capacity', message: 'Late action refused', retry: 'manual'}})); await settle();
-  assert.match(primaryControl('receipt').textContent, /Late action refused/);
+  const receipt = primaryControl('receipt'), caption = receipt.querySelector('.status-error'); assert.ok(caption);
+  assert.equal(receipt.textContent, 'Stop could not be confirmed.'); assert.equal(caption.title, 'Late action refused'); assert.equal(receipt.title, '');
   assert.equal(agentControl('receipt').textContent, 'Agent receipt retained');
+  app.primaryComposer().receipts(app.state.operations.values()); assert.equal(caption.parentNode, null); assert.equal(receipt.querySelector('.status-error'), null); assert.equal(receipt.title, '');
 });
 test('connection and access views stay distinct and tab hiding releases observation', async t => {
   assert.ok(source.includes('connectionSurfaceFor(connectionPhase)')); assert.ok(source.includes('setUnauthorizedHandler(error =>'));
@@ -876,7 +1168,7 @@ test('close and Escape retain buffers, return focus by identity, and hide unsafe
 test('only arrived roster and availability events invalidate message preparation', () => {
   const events = source.slice(source.indexOf('function applyEvent('), source.indexOf('function renderObservedAgent('));
   assert.match(events, /messageTarget\.rosterChanged\(event\.envelope\.data as EventData\['agent\.roster'\]\)/);
-  assert.match(events, /messageTarget\.availabilityChanged\(event\.envelope\.data as EventData\['agent\.availability'\]\)/);
+  assert.match(events, /const data = event\.envelope\.data as EventData\['agent\.availability'\]/); assert.match(events, /messageTarget\.availabilityChanged\(data\)/);
   const panel = source.slice(source.indexOf('function renderMessagePanel()'), source.indexOf('function closeMessagePanel('));
   assert.doesNotMatch(panel, /messageTarget\.(rosterChanged|availabilityChanged)/);
   assert.match(source, /messageTarget\.current && !messageTarget\.current\.invalidated\) await waitForSignal\(messageTarget\.open\(messageTarget\.current\.identity\), signal\)/);
@@ -1303,7 +1595,7 @@ test('the conversation list reuses exact tab activation without a new navigation
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'list-a'}, {kind: 'agent', identity: 'list-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 715})], roster: [agentFixture('list-a', {name: 'Review'}), agentFixture('list-b', {name: 'Review'})]});
   const rows = byId('sidebar-conversations').querySelectorAll('.conversation-row'); assert.equal(rows.length, 3); assert.notEqual(rows[1]?.textContent, rows[2]?.textContent); assert.notEqual(rows[1]?.getAttribute('aria-label'), rows[2]?.getAttribute('aria-label'));
-  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg')?.getAttribute('class'), index === 0 ? 'card-icon card-icon-working' : 'card-icon card-icon-success'); assert.equal(status.title, index === 0 ? 'Working' : 'Connected'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connected/);}
+  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg')?.getAttribute('class'), index === 0 ? 'card-icon card-icon-working' : 'card-icon card-icon-unknown'); assert.equal(status.title, index === 0 ? 'Working' : 'Connection not checked'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connection not checked/);}
   rows[2]?.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'list-b'}); assert.equal(hostDocument.activeElement, agentControl('editor')); assert.equal(rows[2]?.getAttribute('aria-current'), 'true');
 });
 
@@ -1463,8 +1755,51 @@ async function storedLaunchFixture(identity: string): Promise<void> {
 function confirmLaunch(identity: string): Response {
   const row = agentFixture(identity);
   fixture = {...fixture, roster: fixture.roster.map(item => item.identity === identity ? row : item), observations: [observation(identity, {revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:false},coverage}, (app.state.agentEpochs.get(identity) ?? 0) + 1)]};
+  event('agent.availability', {identity, connectionEpoch: fixture.observations?.[0]?.connectionEpoch, state: 'live', capabilities: row.capabilities});
   return Response.json({ok: true, data: fixturePreparation({kind: 'agent', identity})});
 }
+
+test('Check connection cannot select or accept a result from a retired stream', async t => {
+  const original = globalThis.fetch, pending = Promise.withResolvers<Response>(), b = agentFixture('late-explicit-check'), target = {kind: 'agent' as const, identity: b.identity}, saved = targetFixture('late-explicit-check', target, {draft: {revision: 4, text: 'Keep checked draft', mode: 'followUp', persisted: true}});
+  t.after(async () => {pending.resolve(Response.json({ok: true, data: {targetState: saved, availability: 'live', capabilities: b.capabilities}})); globalThis.fetch = original; await restorePreparationConnection();});
+  await arrive({workspace: {id: 'late-explicit-check', revision: 1, selectedTarget: target}, primaries: [], roster: [b], targets: [saved], confirmed: false});
+  const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward');
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' ? pending.promise : original(input, init);
+  const selections = selectionSaves.length, checking = app.checkAgentConnection('late-explicit-check', b.identity); await settle(); await interruptPreparation('reconnect');
+  pending.resolve(Response.json({ok: true, data: {targetState: saved, availability: 'live', capabilities: b.capabilities}})); await checking; await settle();
+  assert.equal(selectionSaves.length, selections); assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector('[data-tab-key="agent:late-explicit-check"]')?.title ?? '', /Connected|Ready/);
+  assert.equal(agentControl('editor'), editor); assert.equal(editor.value, saved.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
+});
+
+test('a stored Start response across stream replacement retains uncertainty without another Start', async t => {
+  const pending = Promise.withResolvers<Response>(), identity = 'late-stored-start';
+  t.after(async () => {pending.resolve(Response.json({ok: false, error: {code: 'not_ready', message: 'Retired start', retry: 'manual'}})); startPreparation = undefined; await restorePreparationConnection();});
+  await storedLaunchFixture(identity); const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward'); const before = transportLog.length;
+  startPreparation = async () => pending.promise; const starting = app.startStoredAgent('w', identity); await settle(); await interruptPreparation('reconnect');
+  pending.resolve(Response.json({ok: true, data: {...fixturePreparation({kind: 'agent', identity}), availability: 'live', capabilities: agentFixture(identity).capabilities}})); await starting; await settle();
+  assert.equal(agentControl('send').disabled, true); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed/); assert.match(agentControl('agent-state-line').title, /browser connection changed/); assert.equal(agentControl('start').hidden, true);
+  assert.equal(agentControl('editor'), editor); assert.equal(editor.value, 'Agent launch keep'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
+  assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
+});
+
+for (const action of ['Check', 'Start']) test(action + ' does not restore preparation after disconnect during snapshot confirmation', async t => {
+  const original = globalThis.fetch, entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let hold = true;
+  const identity = 'post-response-' + action;
+  t.after(async () => {release.resolve(); globalThis.fetch = original; startPreparation = undefined; await restorePreparationConnection();});
+  await storedLaunchFixture(identity); const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward');
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input), 'http://ui.test').pathname;
+    if (path === '/api/snapshot' && hold) {hold = false; const response = await original(input, init); entered.resolve(); await release.promise; return response;}
+    if (path.endsWith('/targets') && init?.method === 'POST') return confirmLaunch(identity);
+    return original(input, init);
+  };
+  startPreparation = async () => confirmLaunch(identity);
+  const confirming = action === 'Check' ? app.checkAgentConnection('w', identity) : app.startStoredAgent('w', identity); await entered.promise;
+  streamSources.at(-1)?.onerror?.(); release.resolve(); await confirming; await settle();
+  assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector('[data-tab-key="agent:' + identity + '"]')?.title ?? '', /Connected|Ready/);
+  assert.equal(agentControl('editor'), editor); assert.equal(editor.value, 'Agent launch keep'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
+  if (action === 'Start') {assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed/); assert.match(agentControl('agent-state-line').title, /browser connection changed/);}
+});
 
 test('stored Start is explicit, uses fresh keys and retains both drafts, caret, focus and ready input', async t => {
   t.after(() => { startPreparation = undefined; }); const identity = 'explicit-start';
@@ -1730,4 +2065,43 @@ test('queued view writes keep the old workspace acknowledgment despite a same-ke
     assert.equal(app.state.targets.get(key)?.[kind]?.revision, 50); assert.equal(notice.textContent, 'Current workspace notice'); assert.equal(hostDocument.activeElement, editor);
     globalThis.fetch = original;
   }
+});
+
+test('generic action failures keep exact details for the focused owner or an ownerless view', async t => {
+  t.after(() => {selectionFailure = undefined; byId('modal-close').click();});
+  const diagnostic = 'connect ENOENT /fixture/selection-endpoint.sock', target = {kind: 'primary' as const, key: 'p', epoch: 9805};
+  const cases: Fixture[] = [
+    {workspace: {id: 'generic-error-owned', revision: 1, sidebarVisible: true, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [], targets: [targetFixture('generic-error', target)]},
+    {workspace: {id: 'generic-error-ownerless', revision: 1, sidebarVisible: true}, primaries: [], roster: []},
+  ];
+  for (const current of cases) {
+    await arrive(current); const owner = !!current.workspace.primaryKey;
+    const receipt = owner ? primaryControl('receipt') : undefined, captions: HostNode[] = []; let restoreReceipt = () => {};
+    if (receipt) {
+      const replace = receipt.replaceChildren.bind(receipt);
+      receipt.replaceChildren = (...nodes) => {captions.push(...nodes); replace(...nodes);};
+      restoreReceipt = () => {Reflect.deleteProperty(receipt, 'replaceChildren');};
+    }
+    selectionFailure = {code: 'capacity', message: diagnostic, retry: 'capacity'};
+    const before = transportLog.length; app.toggleSidebar(false); await app.selectionQueue.drain(); await settle(); selectionFailure = undefined;
+    restoreReceipt(); assert.ok(transportLog.slice(before).some(call => call.path.endsWith('/selection')));
+    if (receipt) {
+      const caption = captions.find(node => node.title === diagnostic); assert.ok(caption);
+      assert.equal(caption.textContent, 'Action could not be completed.'); assert.doesNotMatch(caption.textContent, /ENOENT|selection-endpoint/); assert.equal(receipt.title, '');
+      app.primaryComposer().receipts(app.state.operations.values()); assert.equal(caption.parentNode, null); assert.equal(receipt.querySelector('.status-error'), null); assert.equal(receipt.title, '');
+    }
+    else {assert.equal(byId('modal').open, true); assert.equal(byId('modal-body').querySelector('pre')?.textContent, diagnostic); byId('modal-close').click();}
+    assert.doesNotMatch(byId('announcements').textContent, /ENOENT|selection-endpoint/);
+  }
+});
+
+test('access refusal uses plain visible words and retains its exact error without destroying the editor', async t => {
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original;});
+  const target = {kind: 'primary' as const, key: 'p', epoch: 9804};
+  await arrive({workspace: {id: 'access-error-detail', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [], targets: [targetFixture('access-error-detail', target, {draft: {revision: 4, text: 'Keep access draft', mode: 'prompt', persisted: true}})]});
+  const editor = primaryControl('editor'), diagnostic = 'ENOENT authentication record /fixture/access-record';
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === '/api/snapshot' ? Response.json({ok: false, error: {code: 'unauthorized', message: diagnostic, retry: 'none'}}, {status: 401}) : original(input, init);
+  await assert.rejects(app.reload()); await settle();
+  assert.equal(byId('access-view').hidden, false); assert.equal(byId('access-error').textContent, 'Browser access could not be confirmed.'); assert.equal(byId('access-error').title, diagnostic); assert.doesNotMatch(byId('access-view').textContent, /ENOENT|access-record/);
+  assert.equal(primaryControl('editor'), editor); assert.equal(editor.value, 'Keep access draft');
 });

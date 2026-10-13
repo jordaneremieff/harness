@@ -124,7 +124,7 @@ export class Roster {
     cached.message.focus(); return true;
   }
   private messageAction(cached: RowNode): void {
-    cached.message.hidden = !!this.selected || !this.message;
+    cached.message.hidden = this.selected === cached.source.identity || !this.message;
     const resume = this.resumes.has(cached.source.identity);
     cardActionLabel(cached.message, resume ? 'Resume' : 'Message', `${resume ? 'Resume message to' : 'Message'} ${rowName(cached.source)} · ${cached.source.identity}`); cached.node.dataset.action = cached.message.hidden ? '' : resume ? 'resume' : 'message';
     cached.message.setAttribute('aria-label', `${this.resumes.has(cached.source.identity) ? 'Resume message to' : 'Message'} ${rowName(cached.source)} · ${cached.source.identity}`);

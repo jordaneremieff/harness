@@ -79,7 +79,7 @@ export function rankPalette(entries: PaletteEntry[], query: string): CommandMatc
 }
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modal: Modal;
-  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
+  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
@@ -277,7 +277,7 @@ export class Actions {
     }, false, 'Thinking levels could not be loaded.');
   }
   paletteEntries(): PaletteEntry[] {
-    const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent();
+    const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent(); const transcript = this.ctx.hasTranscript();
     const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(alias ? {search: [alias, `/${alias}`]} : {})});
     const entries = [
       entry('New session', 'Start a new session', () => this.newSession(), true, 'new'),
@@ -291,11 +291,11 @@ export class Actions {
       entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
       {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', ...appearanceChoices.flatMap(([value, label]) => [value, label, ...(label.startsWith('Catppuccin ') ? [`Catppuccin ${value}`] : [])])]},
       entry('Help', 'Browser controls and terminal fallback', () => this.help()),
-      entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), !!primary),
-      entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), !!primary),
-      entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), !!primary),
-      entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), !!primary),
-      entry('Find text', 'Find text in this session', () => this.find(), !!primary),
+      entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), transcript),
+      entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), transcript),
+      entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), transcript),
+      entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), transcript),
+      entry('Find text', 'Find text in this session', () => this.find(), transcript),
       entry('Notifications', 'Read and dismiss notices', () => this.ctx.notices()),
       entry('Refresh agents', 'Refresh the agent list', () => this.ctx.rosterRefresh()),
       entry('Insert /agent new', 'Insert the command into the Primary draft', () => this.prepareText('/agent new')),

@@ -1,6 +1,6 @@
-import type { AgentRow, EventData, PrimaryView, ProjectedFrame, Target } from '../shared/api.ts';
+import type { AgentRow, EventData, PrimaryView, ProjectedFrame, Target, TargetPreparation } from '../shared/api.ts';
 
-export type AgentViewState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; availability?: AgentRow['availability']; input?: boolean; reason?: string; error?: {code?: string; message: string}; startAttempt?: {pending: boolean; reason?: string}; connectionError?: string};
+export type AgentViewState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; availability?: AgentRow['availability']; input?: boolean; checked?: boolean; reason?: string; error?: {code?: string; message: string}; startAttempt?: {pending: boolean; reason?: string}; connectionError?: string};
 /** Reading retained messages and admitting new work have independent outcomes. */
 export function agentViewStatus(source: AgentViewState): {text: string; detail: string; start: boolean} {
   const history = agentHistoryStatus(source), connection = agentConnectionStatus(source.connectionError === source.error?.message ? {...source, connectionError: undefined} : source);
@@ -9,7 +9,7 @@ export function agentViewStatus(source: AgentViewState): {text: string; detail: 
 }
 function agentHistoryStatus(source: AgentViewState): string {
   if (source.error?.code === 'source_unreadable') return 'History unavailable: saved messages could not be read.';
-  if (source.error) return ['contract_mismatch', 'incompatible'].includes(source.error.code ?? '') ? 'History unavailable: the reader does not support this history format.' : `History unavailable: ${source.error.message}`;
+  if (source.error) return ['contract_mismatch', 'incompatible'].includes(source.error.code ?? '') ? 'History unavailable: saved messages use an unsupported format.' : 'History unavailable: saved messages could not be read.';
   if (source.loading) return source.hasEntries ? 'Updating messages…' : 'Loading messages…';
   if (source.hasEntries) return '';
   if (!source.connected) return 'History unavailable: the browser is disconnected.';
@@ -18,10 +18,11 @@ function agentHistoryStatus(source: AgentViewState): string {
 }
 function agentConnectionStatus(source: AgentViewState): string {
   if (source.startAttempt) return source.startAttempt.pending ? 'Starting agent…' : 'Start not confirmed. Retry only reads saved messages.';
-  if (source.connectionError) return `Connection unavailable: ${source.connectionError}`;
+  if (source.connectionError) return 'Agent connection is unavailable.';
   if (!source.connected && source.hasEntries) return 'The browser is disconnected.';
+  if (source.availability === 'live' && source.checked === false) return 'Connection not checked.';
   if (source.availability === 'live' && source.input === false) return 'Messages are read-only.';
-  if (source.availability === 'incompatible') return 'This host is incompatible; messages remain read-only.';
+  if (source.availability === 'incompatible') return 'This agent cannot connect; messages remain read-only.';
   if (source.availability === 'stored' || source.availability === 'unavailable') return 'Agent is not connected.';
   return '';
 }
@@ -31,7 +32,7 @@ export type ConversationPresentation = {
   tool?: AgentRow['currentTool'];
 };
 export type PresentationSource = {target?: Target; primary?: PrimaryView; row?: AgentRow;
-  availability?: EventData['agent.availability']; frame?: ProjectedFrame; tool?: AgentRow['currentTool']; connected: boolean};
+  availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; tool?: AgentRow['currentTool']; connected: boolean};
 const emptyPresentation = (connected: boolean): ConversationPresentation => ({name: 'Primary', activity: '', input: false, busy: false, guidance: '', lastObserved: !connected, retainedModel: false, retainedThinking: false});
 function primaryPresentation(source: PresentationSource, target: Extract<Target, {kind: 'primary'}>): ConversationPresentation {
   const base = emptyPresentation(source.connected); const item = source.primary;
@@ -51,7 +52,7 @@ function agentSettings(row?: AgentRow, frame?: ProjectedFrame): Pick<Conversatio
     retainedModel: !frame?.status.model && !!row?.model, retainedThinking: frame?.status.thinkingLevel === undefined && !!(row?.thinkingLevel ?? row?.model?.thinkingLevel)};
 }
 function agentActivity(state: AgentRow['availability'], input: boolean, frame?: ProjectedFrame): string {
-  if (state !== 'live') return {stored: 'Not connected', incompatible: 'Incompatible host', unavailable: 'Unavailable'}[state];
+  if (state !== 'live') return {stored: 'Not connected', incompatible: 'Connection unavailable', unavailable: 'Unavailable'}[state];
   if (frame?.status.busy) return 'Working';
   return frame && input ? 'Ready' : 'Connected';
 }
@@ -62,16 +63,21 @@ function frameTool(frame?: ProjectedFrame): AgentRow['currentTool'] {
   const call = calls.findLast(part => !completed.has(part.callId));
   return call ? {name: call.name, argument: JSON.stringify(call.arguments.value) ?? ''} : undefined;
 }
-function agentPresentation(source: PresentationSource, identity: string): ConversationPresentation {
+function agentConnection(source: PresentationSource, identity: string) {
   const row = source.row?.identity === identity ? source.row : undefined;
   const availability = source.availability?.identity === identity ? source.availability : undefined;
-  const state = availability?.state ?? row?.availability ?? 'unavailable';
-  const input = state === 'live' && (availability?.capabilities ?? row?.capabilities)?.input === true;
-  const frame = source.frame; const busy = state === 'live' && frame?.status.busy === true;
+  const negotiated = source.negotiated?.identity === identity ? source.negotiated : undefined, checked = !!negotiated || !!availability;
+  const state = negotiated?.availability ?? availability?.state ?? row?.availability ?? 'unavailable';
+  const input = source.connected && checked && state === 'live' && (negotiated?.capabilities ?? availability?.capabilities)?.input === true;
+  return {row, checked, state, input};
+}
+function agentPresentation(source: PresentationSource, identity: string): ConversationPresentation {
+  const {row, checked, state, input} = agentConnection(source, identity), frame = source.frame;
+  const busy = checked && state === 'live' && frame?.status.busy === true, retained = !checked || state !== 'live';
   const settings = agentSettings(row, frame);
   return {...emptyPresentation(source.connected), ...settings, name: settings.name || identity, cwd: row?.cwd,
-    activity: agentActivity(state, input, frame), input, busy, guidance: input ? '' : state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || state !== 'live' && !!settings.model, retainedThinking: settings.retainedThinking || state !== 'live' && !!settings.thinking,
-    tool: state === 'live' ? frameTool(frame) : undefined};
+    activity: state === 'live' && !checked ? 'Connection not checked' : agentActivity(state, input, frame), input, busy, guidance: input ? '' : state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
+    tool: checked && state === 'live' ? frameTool(frame) : undefined};
 }
 /** Negotiated input and accepted activity describe the same recipient; catalog claims never override them. */
 export function conversationPresentation(source: PresentationSource): ConversationPresentation {
@@ -83,7 +89,7 @@ export function presentationGlyph(view: ConversationPresentation): string {
   if (view.busy) return '●';
   if (['Ready', 'Connected'].includes(view.activity)) return '✓';
   if (view.activity === 'Not connected') return '○';
-  if (['Stopped', 'Unavailable', 'Incompatible host', 'Session stopped'].includes(view.activity)) return '!';
+  if (['Stopped', 'Unavailable', 'Connection unavailable', 'Session stopped'].includes(view.activity)) return '!';
   return '?';
 }
 /** Composer folders come only from this recipient, never the window launch directory. */

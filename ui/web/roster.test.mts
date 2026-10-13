@@ -515,7 +515,11 @@ test('Message captures identity across rename and reorder; Resume changes only i
   action.click(); assert.deepEqual(messages, ['a']); assert.deepEqual(selections, []); assert.match(action.attributes['aria-label'] ?? '', /Renamed/);
   const moves = a.moves; roster.resume('a', true); assert.equal(action.textContent, 'Resume'); assert.equal(a.moves, moves);
   assert.equal(required(f.node.children[1]).query('row-message').textContent, 'Message');
-  roster.set([row('a'), row('b')], undefined, 'b'); f.flush(); assert.equal(action.hidden, true);
+  roster.set([row('a'), row('b')], undefined, 'b'); f.flush(); assert.equal(action.hidden, false);
+  const b = required(f.node.children[1]).query('row-message'); assert.equal(b.hidden, true);
+  assert.equal(roster.focusMessage('a'), true); action.click(); assert.deepEqual(messages, ['a', 'a']); assert.deepEqual(selections, []);
+  roster.set([row('a'), row('b')], undefined, 'a'); f.flush(); assert.equal(action.hidden, true); assert.equal(b.hidden, false);
+  b.click(); assert.deepEqual(messages, ['a', 'a', 'b']); assert.deepEqual(selections, []);
   roster.set([row('a'), row('b')]); f.flush(); assert.equal(action.hidden, false); assert.equal(action.textContent, 'Resume');
 });
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ProjectedFrame } from '../shared/api.ts';
-import {app, arrive, settle, hostDocument, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} from './app-fixture.mts';
+import {app, arrive, settle, event, hostDocument, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} from './app-fixture.mts';
 
 test('initial focused draft hydration restores focus, while rerenders preserve another control focus', async () => {
   const target = {kind: 'agent', identity: 'caret-agent'} as const;
@@ -26,7 +26,7 @@ test('agent view combines pending read, source refusal and confirmed empty in on
     const arrival = arrive({workspace: {id: 'history-state', revision: 1, selectedTarget: {kind: 'agent', identity: 'history-state'}}, primaries: [], roster: [agentFixture('history-state', {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('history-state-target', {kind: 'agent', identity: 'history-state'})]});
     await settle(); assert.equal(agentControl('agent-state-line').textContent, 'Loading messages… · Agent is not connected.'); assert.equal(agentControl('history-retry').disabled, true); assertAgentComposition();
     complete(Response.json({ok: false, error: {code: 'contract_mismatch', message: reason, retry: 'none'}})); await arrival; await settle();
-    assert.equal(agentControl('agent-state-line').textContent, 'History unavailable: the reader does not support this history format. · Agent is not connected.'); assert.equal(agentControl('agent-state-line').title, reason); assertAgentComposition();
+    assert.equal(agentControl('agent-state-line').textContent, 'History unavailable: saved messages use an unsupported format. · Agent is not connected.'); assert.equal(agentControl('agent-state-line').title, reason); assertAgentComposition();
     pending = false; agentControl('history-retry').dispatch('click'); await settle();
     assert.equal(agentControl('agent-state-line').textContent, 'No messages yet. · Agent is not connected.'); assertAgentComposition();
     assert.equal(transportLog.filter(call => call.path.includes('/history-state/start') || call.path.includes('/inputs')).length, 0);
@@ -52,12 +52,13 @@ test('whole agent views retain messages independently of running, idle and incom
       const saved = targetFixture(`saved-${identity}`, target, {draft: {revision: 4, text: 'Exact editable draft', mode: 'followUp', persisted: true}});
       const row = agentFixture(identity, {availability, capabilities: {input: availability === 'live'}});
       await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [row], targets: [saved], observations: availability === 'live' ? [observation(identity, {revision: 1, observedAt: '', status: {busy: true}, live: [], entries: [entry], nextBefore: null, coverage})] : []});
+      if (availability === 'live') {event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity), state: 'live', capabilities: row.capabilities}); await settle();}
       assertAgentComposition(); assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal(app.agentComposer().state?.draft.text, 'Exact editable draft');
       assert.equal(agentControl('send').disabled, availability !== 'live'); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, availability !== 'stored');
       assert.equal(agentControl('agent-state').hidden, availability === 'live');
       const editor = app.agentComposer().editor, message = agentControl('root').querySelector('[data-entry-id=retained-message]'); assert.ok(message); editor.setSelectionRange(2, 7, 'backward'); editor.focus();
       const before = transportLog.length; failed = true; agentControl('history-retry').dispatch('click'); await settle(); assertAgentComposition();
-      assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal((visibleText(agentControl('root')).match(/The saved history read failed/g) ?? []).length, 1); assert.equal(agentControl('root').querySelector('[data-entry-id=retained-message]'), message);
+      assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.doesNotMatch(visibleText(agentControl('root')), /The saved history read failed/); assert.equal(agentControl('agent-state-line').title, 'The saved history read failed.'); assert.match(agentControl('agent-state-line').textContent, /saved messages could not be read/); assert.equal(agentControl('root').querySelector('[data-entry-id=retained-message]'), message);
       failed = false; agentControl('history-retry').dispatch('click'); await settle(); assertAgentComposition(); assert.doesNotMatch(visibleText(agentControl('root')), /read failed/);
       assert.equal(app.agentComposer().editor, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']); assert.equal(hostDocument.activeElement, editor);
       assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
@@ -76,8 +77,9 @@ test('whole idle and incompatible views show one plain unreadable-history error 
       };
       await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(identity, {availability, capabilities: {input: false}})], targets: [targetFixture(identity, target, {draft: {revision: 4, text: 'Exact unreadable-view draft', mode: 'followUp', persisted: true}})]});
       assertAgentComposition(); const rendered = visibleText(agentControl('root')); assert.equal(rendered.split(plain).length - 1, 1); assert.doesNotMatch(rendered, /retained source|Permission denied/);
-      assert.equal(agentControl('agent-state-line').textContent, plain + (availability === 'stored' ? ' · Agent is not connected.' : ' · This host is incompatible; messages remain read-only.'));
+      assert.equal(agentControl('agent-state-line').textContent, plain + (availability === 'stored' ? ' · Agent is not connected.' : ' · This agent cannot connect; messages remain read-only.'));
       assert.equal(agentControl('agent-state-line').title, diagnostic); assert.equal(agentControl('send').disabled, true);
+      if (availability === 'incompatible') {assert.equal(byId('workbench-activity').textContent, 'Connection unavailable'); assert.doesNotMatch(hostDocument.title, /host/i);}
       const editor = app.agentComposer().editor, before = requests.length; assert.equal(editor.value, 'Exact unreadable-view draft'); editor.setSelectionRange(1, 3); editor.focus(); failed = false; agentControl('history-retry').dispatch('click'); await settle();
       assertAgentComposition(); assert.match(agentControl('agent-state-line').textContent, /^No messages yet/); assert.doesNotMatch(visibleText(agentControl('root')), /saved messages could not be read|retained source/); assert.equal(agentControl('agent-state-line').title, '');
       assert.equal(app.agentComposer().editor, editor); assert.equal(editor.value, 'Exact unreadable-view draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [1, 3]); assert.equal(hostDocument.activeElement, editor); assert.equal(agentControl('send').disabled, true);
@@ -90,6 +92,7 @@ test('agent settings retain model and thinking text from the exact frame without
   const frame: ProjectedFrame = {revision: 1, observedAt: '', live: [], entries: [], nextBefore: null, coverage,
     status: {busy: false, model: {provider: 'provider', modelId: 'selected-agent-long-model-name'}, thinkingLevel: 'medium'}};
   await arrive({workspace: {id: 'agent-settings', revision: 2, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: 'selected'}}, primaries: [primaryFixture()], roster: [row], observations: [observation('selected', frame)]});
+  event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity), state: 'live', capabilities: row.capabilities}); await settle();
   byId('model-button').textContent = 'Primary model'; byId('thinking-button').textContent = 'Thinking high';
   app.agentChrome('selected', row); assert.equal(byId('agent-status').textContent, 'Model selected-agent-long-model-name · Thinking medium');
   app.state.conversations.clear(); app.agentChrome('selected', row);

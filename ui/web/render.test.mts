@@ -422,13 +422,13 @@ test('roster preserves order, visible duplicate identities, keyed rows and data-
     assert.equal(first.querySelector('.row-identity')?.textContent, 'one');
     assert.equal(first.querySelector('.row-word'), null); assert.equal(first.querySelector('.row-detail'), null); assert.equal(first.dataset.live, 'true');
     assert.equal(first.querySelector('.row-model'), null); assert.equal(first.querySelector('.row-activity'), null);
-    assert.equal(first.querySelector('.row-select')?.title, 'Connected');
-    assert.equal(first.querySelector('.row-select')?.attributes['aria-description'], 'Connected');
+    assert.equal(first.querySelector('.row-select')?.title, 'Connection not checked');
+    assert.equal(first.querySelector('.row-select')?.attributes['aria-description'], 'Connection not checked');
     assert.equal(node('roster').children[1]?.querySelector('.row-identity')?.textContent, 'two');
     clock = 900000; view.set([two, one], undefined, 'two'); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '10m');
     first.querySelector('.row-select')?.dispatch('click'); assert.deepEqual(selected, ['one']);
     view.set([{...one, latestReply: 'new'}, two]); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '15m');
-    assert.equal(first.querySelector('.row-select')?.title, 'Connected · new');
+    assert.equal(first.querySelector('.row-select')?.title, 'Connection not checked · new');
     first.querySelector('.row-age')?.dispatch('click'); assert.doesNotMatch(age?.textContent ?? '', /ago/);
   } finally { Date.now = now; }
 });
