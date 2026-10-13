@@ -256,10 +256,13 @@ no Durable documents.
 An interrupted unsafe call returns an interrupted result instead of rerunning.
 Model-facing guidance renders as the prompt section `clipboard`, composed from
 the same snippets and guidelines the ordinary registration exposes. The native
-tools return the same result text and details object as the ordinary tools; the
-ordinary tool cards do not apply because a Durable session renders its own
-transcript. The `/clipboard` overlay is a TUI operator surface and has no
-Durable form.
+tools map ordinary `content` to native `output` and retain the same details
+object. They declare no structured output schema. Pi Durable supplies bounded
+text as `NestedToolExecutionResult.structuredOutput`, so native codemode calls
+resolve to strings, including JSON text from archive search. Failed calls reject
+in the script rather than resolve to presentation details. The ordinary tool
+cards do not apply because a Durable session renders its own transcript. The
+`/clipboard` overlay is a TUI operator surface and has no Durable form.
 
 ## Tool cards
 
@@ -303,5 +306,7 @@ npm test
 
 `native.test.mts` and `durable.test.mts` exercise tool execution through ordinary
 Pi and Durable hosts with controlled providers, synthetic archives, and replacement
-clipboard executables. Their evidence concerns exercised execution, not live-model
-search judgment or storage-layer crash recovery.
+clipboard executables. The Durable test also uses public native codemode to
+check text results, search JSON, page continuation, and error rejection. Their
+evidence concerns exercised execution, not live-model search judgment or
+storage-layer crash recovery.

@@ -13,7 +13,9 @@
  * overwrite newer clipboard content and duplicate a record.
  *
  * The ordinary tools expose presentation details but no structured content, so
- * the native tools return the same result text and details object.
+ * the native tools map content to output and keep the details object.
+ * Without a structured schema, Pi Durable supplies bounded output text to
+ * nested callers through structuredOutput.
  */
 
 import type * as Durable from "@earendil-works/pi-durable";
@@ -55,6 +57,16 @@ export interface DurableContributionHost {
 	onClose(dispose: () => void | Promise<void>): void;
 }
 
+async function nativeResult(
+	operation: Promise<{
+		content: NonNullable<Durable.ToolExecutionResult["output"]>;
+		details: Durable.ToolExecutionResult["details"];
+	}>,
+): Promise<Durable.ToolExecutionResult> {
+	const { content, details } = await operation;
+	return { output: content, details };
+}
+
 /** The ordinary entrypoint this contribution speaks for, as its factory resolves it. */
 export function clipboardContribution(
 	source: string,
@@ -77,35 +89,35 @@ export function clipboardContribution(
 						description: COPY_DESCRIPTION,
 						parameters: CopyParams,
 						replay: "unsafe",
-						execute: (args, _api, context) => clipboardCopy(storeDir(), args, context.abortSignal),
+						execute: (args, _api, context) => nativeResult(clipboardCopy(storeDir(), args, context.abortSignal)),
 					}),
 					durable.defineTool({
 						name: "clipboard_paste",
 						description: PASTE_DESCRIPTION,
 						parameters: PasteParams,
 						replay: "safe",
-						execute: (args, _api, context) => clipboardPaste(args, context.abortSignal),
+						execute: (args, _api, context) => nativeResult(clipboardPaste(args, context.abortSignal)),
 					}),
 					durable.defineTool({
 						name: "clipboard_list",
 						description: LIST_DESCRIPTION,
 						parameters: ListParams,
 						replay: "safe",
-						execute: (args, _api, context) => clipboardList(storeDir(), args, context.abortSignal),
+						execute: (args, _api, context) => nativeResult(clipboardList(storeDir(), args, context.abortSignal)),
 					}),
 					durable.defineTool({
 						name: "clipboard_get",
 						description: GET_DESCRIPTION,
 						parameters: GetParams,
 						replay: "safe",
-						execute: (args, _api, context) => clipboardGet(storeDir(), args, context.abortSignal),
+						execute: (args, _api, context) => nativeResult(clipboardGet(storeDir(), args, context.abortSignal)),
 					}),
 					durable.defineTool({
 						name: "clipboard_restore",
 						description: RESTORE_DESCRIPTION,
 						parameters: RestoreParams,
 						replay: "unsafe",
-						execute: (args, _api, context) => clipboardRestore(storeDir(), args, context.abortSignal),
+						execute: (args, _api, context) => nativeResult(clipboardRestore(storeDir(), args, context.abortSignal)),
 					}),
 				],
 				sections: [durable.section("clipboard", () => CLIPBOARD_GUIDANCE)],
