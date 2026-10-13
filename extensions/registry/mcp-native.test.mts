@@ -120,12 +120,13 @@ async function observe(repeat: number): Promise<{ instructionsLength: number; li
 		await session.prompt("/mcp");
 		const mcpTools = session.getAllTools().filter((tool) => tool.name.startsWith("mcp__"));
 		assert.equal(mcpTools.length, 3);
+		assert.deepEqual(mcpTools[0].namespace?.aliases, [SERVER_NAME]);
 		const nativeInstructions = mcpTools[0].namespace?.instructions;
 		assert.ok(nativeInstructions !== undefined, "Pi supplies the server instructions on the tool");
 		assert.ok(nativeInstructions.includes(SENTENCE));
 
 		faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("registry", { kind: "tool", search: "mcp__dev", match: "substring" }, { id: "list" })]),
+			fauxAssistantMessage([fauxToolCall("registry", { kind: "tool", search: SERVER_NAME }, { id: "list" })]),
 			fauxAssistantMessage("Listed."),
 		]);
 		await session.prompt("Find the dev-docs tools.");
@@ -134,14 +135,14 @@ async function observe(repeat: number): Promise<{ instructionsLength: number; li
 		const listed = list.details as { records: Array<{ name: string; namespace?: unknown }> };
 		assert.deepEqual(listed.records.map((record) => record.name), [`${NAMESPACE}__list_topics`, `${NAMESPACE}__lookup_doc`, `${NAMESPACE}__search_docs`]);
 		for (const record of listed.records) {
-			assert.deepEqual(record.namespace, { name: NAMESPACE, description: "Search the product docs", instructionsOmitted: true });
+			assert.deepEqual(record.namespace, { name: NAMESPACE, aliases: [SERVER_NAME], description: "Search the product docs", instructionsOmitted: true });
 		}
 		assert.match(textOf(list), /describeNamespace\(name\)/);
 
 		faux.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("registry", { kind: "tool", name: `${NAMESPACE}__lookup_doc`, detail: true }, { id: "detail" }),
-				fauxToolCall("codemode", { code: `const ns = await describeNamespace(${JSON.stringify(SERVER_NAME)}); return { instructions: ns.instructions.length, tools: ns.tools.length };` }, { id: "describe" }),
+				fauxToolCall("codemode", { code: `const ns = await describeNamespace(${JSON.stringify(SERVER_NAME)}); const page = await tools.registry({kind: "tool", search: ${JSON.stringify(SERVER_NAME)}}); return { instructions: ns.instructions.length, tools: ns.tools.length, aliases: page.records.map(r => r.namespace.aliases) };` }, { id: "describe" }),
 			]),
 			fauxAssistantMessage("Described."),
 		]);
@@ -154,6 +155,7 @@ async function observe(repeat: number): Promise<{ instructionsLength: number; li
 		const described = toolResult(session.messages, "describe");
 		assert.equal(described.isError, false, textOf(described));
 		assert.match(textOf(described), new RegExp(`"instructions":\\s*${nativeInstructions.length}`));
+		assert.match(textOf(described), /"aliases":\s*\[\s*\[\s*"dev-docs"\s*\]/);
 		assert.deepEqual(errors, []);
 		return { instructionsLength: nativeInstructions.length, listBytes: envelopeBytes(list), detailBytes: envelopeBytes(detail) };
 	} finally {

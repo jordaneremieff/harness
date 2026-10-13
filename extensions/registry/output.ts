@@ -20,9 +20,9 @@ const resource = Type.Object({
 	kind: StringEnum(["tool", "command", "skill", "prompt"]), name: text, sourceInfo, evidence, at: Type.Number(),
 	description: Type.Optional(text), invocation: Type.Optional(text), configured: Type.Optional(Type.Boolean()),
 	active: Type.Optional(Type.Boolean()), callable: Type.Optional(Type.Boolean()),
-	callableEvidence: Type.Optional(Type.Literal("tool_context")), modelDeclared: Type.Optional(Type.Null()),
+	callableEvidence: Type.Optional(StringEnum(["tool_context", "durable_agent"])), modelDeclared: Type.Optional(Type.Null()),
 	exposure: Type.Optional(StringEnum(["direct", "model-only", "codemode", "deferred", "hidden"])),
-	namespace: Type.Optional(Type.Object({ name: text, description: Type.Optional(text),
+	namespace: Type.Optional(Type.Object({ name: text, aliases: Type.Optional(strings), description: Type.Optional(text),
 		instructionsOmitted: Type.Optional(Type.Literal(true, { description: "Pi supplied namespace instructions that registry does not carry. Read them with codemode describeNamespace(name)." })) }, closed)),
 	annotations: Type.Optional(Type.Object({ readOnlyHint: Type.Optional(Type.Boolean()), destructiveHint: Type.Optional(Type.Boolean()),
 		idempotentHint: Type.Optional(Type.Boolean()), openWorldHint: Type.Optional(Type.Boolean()) }, closed)),
@@ -104,4 +104,4 @@ export const RegistryOutputSchema = Type.Object({
 	partialScan: Type.Optional(Type.Boolean()), modelInvocable: Type.Optional(attestedBoolean),
 	frontmatter: Type.Optional(Type.Object({ state: StringEnum(["absent", "incomplete", "invalid", "non_object", "valid", "unknown"]),
 		disableModelInvocation: Type.Optional(Type.Boolean()) }, closed)),
-}, { ...closed, description: "Bounded registry page. Model queries cover chat models only. Check outcome, source coverage, resultBounded and pageBlocked before treating an empty records array as absence. Continue with cursor alone. Tool callable is ctx.tools membership, not permission or model declaration." });
+}, { ...closed, description: "Bounded registry page. Model queries cover chat models only. Check outcome, source coverage, resultBounded and pageBlocked before treating an empty records array as absence. Continue with cursor alone. Tool callable is ctx.tools or Durable Agent.callable membership, not permission or model declaration." });

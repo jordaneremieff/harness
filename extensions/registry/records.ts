@@ -47,11 +47,12 @@ export interface ObservationSnapshot {
  *
  * Pi's namespace `instructions` are unbounded, server-supplied guidance that
  * Pi returns on request (codemode `describeNamespace`). The projection keeps
- * only the name, the description, and the fact that instructions exist, so neither
+ * the name, aliases, description, and the fact that instructions exist, so neither
  * the snapshot, the records, nor any result carries the text.
  */
 export interface ToolNamespace {
 	name: string;
+	aliases?: string[];
 	description?: string;
 	/** Present only when Pi supplied a non-empty `instructions` string. */
 	instructionsOmitted?: true;
@@ -60,6 +61,7 @@ export interface ToolNamespace {
 /** Project a Pi namespace field by field; fields registry does not name are never copied. */
 export function projectNamespace(namespace: NonNullable<ToolInfo["namespace"]>): ToolNamespace {
 	const projected: ToolNamespace = { name: namespace.name };
+	if (namespace.aliases !== undefined) projected.aliases = [...namespace.aliases];
 	if (namespace.description !== undefined) projected.description = namespace.description;
 	if (typeof namespace.instructions === "string" && namespace.instructions.length > 0) projected.instructionsOmitted = true;
 	return projected;
@@ -92,9 +94,9 @@ export interface ResourceRecord {
 	exposure?: ToolInfo["exposure"];
 	namespace?: ToolNamespace;
 	annotations?: ToolInfo["annotations"];
-	/** Membership in the invocation's ctx.tools, not inferred from exposure or activation. */
+	/** Membership in ctx.tools or Durable Agent.callable, not inferred from exposure or activation. */
 	callable?: boolean;
-	callableEvidence?: "tool_context";
+	callableEvidence?: "tool_context" | "durable_agent";
 	/** The final declaration is not exposed by these accessors. */
 	modelDeclared?: null;
 	/** Set on skills when a prior observation or a file read established it. */
@@ -129,6 +131,7 @@ export interface HostSnapshot {
 		exposure?: ToolInfo["exposure"]; namespace?: ToolNamespace; annotations?: ToolInfo["annotations"] }>;
 	activeTools: string[];
 	callableTools?: string[];
+	callableEvidence?: ResourceRecord["callableEvidence"];
 	commands: Array<{
 		name: string;
 		description?: string;
@@ -191,7 +194,7 @@ function buildToolRecord(tool: HostSnapshot["tools"][number], snapshot: HostSnap
 	if (tool.annotations !== undefined) record.annotations = { ...tool.annotations };
 	if (snapshot.availability.callableTools) {
 		record.callable = callable.has(tool.name);
-		record.callableEvidence = "tool_context";
+		record.callableEvidence = snapshot.callableEvidence ?? "tool_context";
 	}
 	return record;
 }

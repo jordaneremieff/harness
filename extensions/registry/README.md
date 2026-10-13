@@ -32,7 +32,7 @@ embedding's configured agent directory.
 | `name` | Optional text, 1–256 characters. Name comparisons are case-sensitive. Skills also match `skill:<name>`; ordinary sessions additionally match `/skill:<name>`. |
 | `match` | `exact` or `substring`; default `exact`. |
 | `kind` | Optional `tool`, `command`, `skill`, `prompt`, `model`, `context_file`, or `setting`. `model` covers chat models only, not classifier or image models. Without it, name/search queries cover only tools and slash-command resources. |
-| `search` | Optional text, 1–256 characters. Models require every whitespace-delimited token as a case-insensitive literal substring somewhere in the canonical name or display name, in any order; whitespace-only model queries match nothing. Other resources retain one case-insensitive literal substring within names, descriptions, or registered tool usage guidelines; context files use path. Settings match names, descriptions, and environment variable names. Search does not scan resource contents and uses no index or semantic ranking. |
+| `search` | Optional text, 1–256 characters. Models require every whitespace-delimited token as a case-insensitive literal substring somewhere in the canonical name or display name, in any order; whitespace-only model queries match nothing. Other resources retain one case-insensitive literal substring within names, descriptions, registered tool usage guidelines, or tool namespace names and aliases; context files use path. Settings match names, descriptions, and environment variable names. Search does not scan resource contents and uses no index or semantic ranking. |
 | `detail` | Optional boolean. Requires `kind: "tool"` and an exact name, without `search` or `contains`. `true` returns that tool's complete parameters and prompt guidelines as bounded data. Lists omit them. |
 | `provider` | Optional exact provider ID, 1–256 characters. Requires `kind: "model"`. |
 | `available` | Optional boolean filter on the cached availability snapshot. Requires `kind: "model"`. |
@@ -190,8 +190,10 @@ Registry adds no non-chat catalog, inference, routing policy, or credential chec
 
 ### Structured results
 
-The tool declares `outputSchema` and returns `structuredContent` on every outcome.
-Native codemode scripts receive this object rather than the human text. Its
+The ordinary tool declares `outputSchema` and returns `structuredContent` on every outcome.
+The Durable tool declares `structuredOutputSchema` and returns the same object as
+`structuredOutput`, separately from its model-facing `output` and UI `details`.
+Codemode scripts receive this object rather than the human text. Its
 `records`, `outcome`, `returnedRecords`, `resultBounded`, and `omittedRecordBlocks`
 fields are always present. Query-specific fields retain pagination, source
 coverage, and failure evidence. A `cursor`, when present, resumes with no other
@@ -342,8 +344,12 @@ its schema and registered guidance without activating it.
   tools exist. If the active-tool accessor fails, active
   status is unavailable rather than false. `exposure`, `namespace`, and
   `annotations` retain native metadata when present; annotations are unverified
-  author hints, not permission. A `namespace` carries `name` and `description`
-  only. When Pi supplies namespace `instructions`, such as an MCP server's
+  author hints, not permission. A `namespace` carries `name`, `aliases`, and
+  `description` when Pi supplies them. Metadata search matches namespace names
+  and aliases, but exact `name` queries still select tool names, not namespaces.
+  Aliases remain intact in bounded records. Output bounds omit whole records,
+  not part of an alias list. When Pi supplies namespace `instructions`, such as
+  an MCP server's
   guidance, the record sets `instructionsOmitted: true` instead of the text, and
   the result text adds one boundary line. The text is unbounded and the same on
   every tool of its server, so it never reaches the snapshot, a record, or a
@@ -454,8 +460,8 @@ to mutate them after that validation.
   model availability/auth configuration/selection/scope
   (including scope order), extension-provider registration, and retained context
   observations. A namespace change means a change to the fields a record shows:
-  `name`, `description`, or whether non-empty `instructions` exist. Editing the
-  instruction text does not move a cursor, because no page shows that text.
+  `name`, `aliases`, `description`, or whether non-empty `instructions` exist.
+  Editing the instruction text does not move a cursor, because no page shows that text.
   Read timestamps alone do not invalidate model
   pages. If one required registry accessor fails, results preserve independently
   available matching registration evidence and report an incomplete inventory.
@@ -545,15 +551,19 @@ Documented differences from the ordinary tool:
 - Durable tool records carry no `promptGuidelines`: the Durable tool registry
   has no such field, so this contribution renders its guidance as a prompt
   section instead. Search matches registered names and descriptions only.
-- Installed Durable tools expose name, description, and parameters only:
-  `exposure`, `namespace`, `annotations`, and `ctx.tools` callable membership
-  have no Durable tool equivalent, so those record fields stay absent. Pi
-  Durable has no tool renderer surface, so the ordinary terminal call and
-  result cards are not part of the Durable form.
-- `details.structuredContent` carries the same structured object the ordinary
-  tool returns as `structuredContent`. The registration spreads the output
-  schema as an extra property; pi-durable ignores it, and nested-call
-  declarations can read it.
+- Installed Durable tools expose name, description, and parameters. `active`
+  reports the resolved `Agent.tools` offered set. `callable` reports membership
+  in `Agent.callable`, with `callableEvidence: "durable_agent"`; tools-only and
+  unloaded deferred tools remain callable without an active model declaration.
+  Failed agent resolution omits callable evidence rather than reporting false.
+  `exposure`, `namespace`, and `annotations` remain absent because this native
+  registry has no matching fields. Native codemode groups tools through its
+  own namespace options, not ordinary `ToolInfo` aliases. Pi Durable has no
+  tool renderer surface, so ordinary terminal cards are not part of this form.
+- The native registration declares `structuredOutputSchema`. `output` carries
+  model-facing text, `structuredOutput` carries the bounded object to nested
+  calls and codemode, and `details` carries UI data. The contribution does not
+  wrap structured output inside details or register an ignored schema property.
 - Cursors are bound to one host incarnation and one conversation, so a host
   restart or another conversation cannot resume a stale page; the ordinary tool
   binds them to one Pi session.
@@ -590,20 +600,26 @@ omit price tiers but retain their presence flag; exact selectors recover them.
 `durable.test.mts` runs the contribution through a real pi-durable Harness over
 `MemoryStorage` with pi-ai's faux provider. It drives model-issued calls across
 query kinds and checks the declared `replay: "safe"` class, the native-fact
-records, Durable coverage, the structured-content carrier, the root and
+records, Durable coverage, model-facing output, the root and
 non-root agent identity, and the committed-usage context estimate, including
 older usable usage after a zero-usage response and reset/compaction boundaries.
 It also checks that an aborted host binds the call to `cancelled` without
 reading any host fact, and that model pages preserve present, absent, and
 unreadable settings evidence. Settings tests verify trusted-project overrides,
-privacy, and unchanged settings bytes.
+privacy, and unchanged settings bytes. A controlled native codemode run uses
+real nested tool tasks and the QuickJS sandbox to verify structured registry
+pages, missing-resource and chat-only boundaries, settings coverage, and
+callable membership for tools-only, deferred, and model-only tools.
 Schema tests validate every outcome, source kinds, continuation, partial
-coverage, and bounded pages. The native codemode test uses the public factory
+coverage, and bounded pages. The ordinary codemode test uses the public factory
 and real QuickJS executor with fixture host accessors and nested dispatch. It
 establishes object delivery and record selection, not full session dispatch,
 model-backed utility, or global activation. Namespace tests check that instruction
 text of any length leaves records, results, snapshots, and cursors unchanged except
-for the `instructionsOmitted` flag. A native session test loads Pi's public MCP and
+for the `instructionsOmitted` flag. Namespace tests also cover alias projection,
+search, presentation, independent arrays, cursor changes, and oversized-record
+bounds. An ordinary codemode test verifies alias search and structured alias data.
+An ordinary session test loads Pi's public MCP and
 codemode factories against a dependency-free stdio server and runs `registry`
 through the ordinary tool pipeline, so the records come from Pi's own
 registration. Adapter tests also require zero host probes after caller

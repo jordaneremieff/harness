@@ -196,7 +196,9 @@ export function selectRecords(records: ResourceRecord[], query: Query): Resource
 	return records
 		.filter((record) => (query.kind === undefined || record.kind === query.kind) && matchesName(record, query) &&
 			(search === undefined || [record.name, record.description ?? "",
-				...(record.kind === "tool" ? record.promptGuidelines ?? [] : [])]
+				...(record.kind === "tool" ? [
+					...(record.promptGuidelines ?? []), record.namespace?.name ?? "", ...(record.namespace?.aliases ?? []),
+				] : [])]
 				.some((value) => value.toLowerCase().includes(search))))
 		.sort(compareRecords);
 }

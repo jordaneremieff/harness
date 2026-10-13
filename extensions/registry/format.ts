@@ -264,7 +264,7 @@ function toolRecordLines(record: ResourceRecord): string[] {
 	return [
 		`  configured: ${record.configured === true}`,
 		`  active: ${record.active === undefined ? "unavailable (the active-tool surface did not answer)" : record.active}`,
-		`  callable: ${record.callable === undefined ? "unavailable (no ctx.tools snapshot)" : `${record.callable} (ctx.tools)`}`,
+		`  callable: ${record.callable === undefined ? "unavailable (no callable-tool snapshot)" : `${record.callable} (${record.callableEvidence === "durable_agent" ? "Durable Agent.callable" : "ctx.tools"})`}`,
 		`  exposure: ${record.exposure ?? "unavailable"} | model declaration: unavailable`,
 		...(record.namespace ? [`  namespace: ${escapeJsonControls(JSON.stringify(record.namespace))}`] : []),
 		...(record.annotations ? [`  annotations (unverified hints): ${escapeJsonControls(JSON.stringify(record.annotations))}`] : []),

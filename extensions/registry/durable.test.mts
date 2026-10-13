@@ -15,6 +15,10 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import type { AssistantMessage, Message, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import type { SourceInfo } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { Type } from "typebox";
+import { Check } from "typebox/value";
 import {
 	createRegistryDurableContribution,
 	readContextEstimate,
@@ -210,7 +214,8 @@ test("durable registry answers model-issued queries from native Durable facts", 
 	assert.equal(registration.name, "registry");
 	assert.equal(registration.replay, "safe");
 	for (const listed of extension.tools ?? []) assert.equal(listed.replay, "safe");
-	assert.equal((registration as { outputSchema?: unknown }).outputSchema, RegistryOutputSchema);
+	assert.equal(registration.structuredOutputSchema, RegistryOutputSchema);
+	assert.equal(Object.hasOwn(registration, "outputSchema"), false);
 	const guidance = extension.sections?.[0];
 	assert.ok(guidance);
 	assert.match(
@@ -255,7 +260,10 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		assert.equal(toolRecords[0]?.active, true);
 		assert.equal(objectOf(toolRecords[0]?.sourceInfo).path, "<inline:registry-fixture>");
 		assert.ok(objectOf(toolRecords[0]?.parameters));
-		assert.deepEqual(objectOf(toolDetails.structuredContent).records, toolDetails.records);
+		assert.equal(Object.hasOwn(toolDetails, "structuredContent"), false);
+		assert.equal(toolRecords[0]?.callable, true);
+		assert.equal(toolRecords[0]?.callableEvidence, "durable_agent");
+		assert.match(textOf(tool), /true \(Durable Agent\.callable\)/);
 
 		const command = toolResult(messages, "command");
 		assert.equal(command.isError, false, textOf(command));
@@ -316,8 +324,7 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		assert.deepEqual(recordsOf(nonChat), []);
 		assert.match(textOf(nonChat), /missing here does not establish their absence/);
 		assert.match(String(nonChatDetails.catalogBoundary), /models\.getModelsOfType\("classifier"\)/);
-		const scriptValue = objectOf(nonChatDetails.structuredContent);
-		assert.equal(scriptValue.catalogBoundary, nonChatDetails.catalogBoundary);
+		assert.ok(Check(RegistryOutputSchema, nonChatDetails));
 
 		const context = toolResult(messages, "context");
 		assert.equal(context.isError, false, textOf(context));
@@ -331,7 +338,7 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		assert.equal(summaryDetails.outcome, "host_summary");
 		assert.equal(summaryDetails.host, true);
 		assert.deepEqual(summaryDetails.counts, { tool: 1, command: 1, skill: 1, prompt: 1 });
-		assert.deepEqual(summaryDetails.availability, { tools: true, activeTools: true, commands: true });
+		assert.deepEqual(summaryDetails.availability, { tools: true, activeTools: true, callableTools: true, commands: true });
 		const summaryContext = objectOf(summaryDetails.context);
 		assert.equal(summaryContext.state, "available");
 		assert.equal(summaryContext.model, "faux/faux-1");
@@ -381,7 +388,7 @@ test("Durable model pages carry present, absent, and unreadable settings evidenc
 			assert.equal(scope.status, state);
 			assert.deepEqual(scope.patterns, state === "available" ? patterns : null);
 			assert.equal(typeof scope.observedAt, "number");
-			assert.deepEqual(objectOf(details.structuredContent).settingsScope, scope);
+			assert.ok(Check(RegistryOutputSchema, details));
 			assert.ok(recordsOf(result).every((record) => record.inScope === null && record.providerHasScopedModels === null));
 			assert.ok(recordsOf(result).every((record) => record.providerNamedInSettings ===
 				(state === "available" ? record.provider === selected.provider : null)));
@@ -447,6 +454,81 @@ test("reports the Durable agent identity for the root and a non-root conversatio
 		assert.match(otherText, new RegExp(`- agentId: <registry-durable-test:${String(other.id)}>(\\n|$)`));
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
+test("unresolved native agent leaves callable evidence unavailable", async () => {
+	const { services } = fixture();
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
+	const tool = extension.tools?.[0];
+	assert.ok(tool);
+	const api = { conversationId: 1, agent: async () => { throw new Error("Unavailable agent"); },
+		registry: { tools: () => [{ extension, tool }] },
+	} as unknown as Durable.ToolExecutionApi;
+	const result = await tool.execute({ kind: "tool" }, api, BACKGROUND_CONTEXT);
+	assert.ok(Check(RegistryOutputSchema, result.structuredOutput));
+	const page = objectOf(result.structuredOutput);
+	assert.equal(objectOf(page.availability).callableTools, false);
+	const records = page.records;
+	assert.ok(Array.isArray(records));
+	assert.equal(records.length, 1);
+	assert.equal(objectOf(records[0]).callable, undefined);
+	assert.equal(objectOf(records[0]).callableEvidence, undefined);
+	assert.equal(objectOf(records[0]).active, undefined);
+});
+
+test("native codemode receives structured registry pages and distinguishes callable from offered tools", { timeout: 30000 }, async () => {
+	const { faux, models, services } = fixture();
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
+	const sandbox = new CodemodeSandbox();
+	const registry = Durable.createRegistry();
+	registry.install(extension);
+	registry.install(createCodemodeExtension({ sandbox, models: false }));
+	registry.install(Durable.defineExtension({ name: "fixture", tools: [
+		Durable.defineTool({ name: "nested_only", description: "Nested fixture", parameters: Type.Object({}), callers: ["tools"],
+			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
+		Durable.defineTool({ name: "deferred_fixture", description: "Deferred fixture", parameters: Type.Object({}), deferred: true,
+			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
+		Durable.defineTool({ name: "model_only", description: "Model fixture", parameters: Type.Object({}), callers: ["model"],
+			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
+	] }));
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	try {
+		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code: `
+const pages = await Promise.all([
+  tools.registry({kind: "tool"}),
+  tools.registry({kind: "tool", name: "absent"}),
+  tools.registry({kind: "model", name: "unconfigured/missing"}),
+  tools.registry({kind: "setting"})
+]);
+if (pages.some(p => typeof p !== "object" || !Array.isArray(p.records))) throw new Error("not structured");
+const facts = Object.fromEntries(pages[0].records.map(r => [r.name, {active:r.active, callable:r.callable, evidence:r.callableEvidence}]));
+return {facts, missing:pages[1].outcome, nonChat:pages[2].catalogBoundary, settings:pages[3].settingsCoverage,
+  carrier: Object.hasOwn(pages[0], "structuredContent")};
+` }, { id: "script" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Inspected."),
+		]);
+		const result = await (await root.submit({ type: "input", content: "Inspect through native codemode." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(result.status, "done");
+		const script = toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "script");
+		assert.equal(script.isError, false, textOf(script));
+		const output = textOf(script);
+		assert.match(output, /"nested_only":\{"active":false,"callable":true,"evidence":"durable_agent"\}/);
+		assert.match(output, /"deferred_fixture":\{"active":false,"callable":true,"evidence":"durable_agent"\}/);
+		assert.match(output, /"model_only":\{"active":true,"callable":false,"evidence":"durable_agent"\}/);
+		assert.match(output, /"missing":"missing"/);
+		assert.match(output, /Chat models only/);
+		assert.match(output, /"settings":\{/);
+		assert.match(output, /"carrier":false/);
+		const calls = objectOf(script.details).calls;
+		assert.ok(Array.isArray(calls));
+		assert.equal(calls.length, 4);
+		assert.ok(calls.every(call => objectOf(call).name === "registry" && objectOf(call).status === "ok"));
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+		await sandbox.close();
 	}
 });
 
@@ -610,7 +692,7 @@ test("native setting queries use the captured host bus and release collection on
 		assert.equal(recordsOf(toolResult(refreshed.messages, "refresh"))[0].value, 9);
 		assert.equal(requests, 2);
 		assert.equal(subscriptions, 1);
-		assert.deepEqual(objectOf(objectOf(settings.details).structuredContent).records, records);
+		assert.ok(Check(RegistryOutputSchema, settings.details));
 		assert.match(textOf(settings), /not proof a running runtime applied/);
 		assert.equal(close.length, 1);
 	} finally {

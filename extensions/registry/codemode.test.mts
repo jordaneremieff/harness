@@ -13,7 +13,7 @@ it("native codemode receives registry objects and filters records without parsin
 	const sourceInfo = { path: "builtin:fixture", source: "builtin", scope: "temporary" as const, origin: "top-level" as const };
 	const pi = { on: () => () => {}, events: { emit: () => {}, on: () => () => {} }, registerTool: (tool: ToolDefinition) => definitions.set(tool.name, tool),
 		getAllTools: () => [{ name: "sample", description: "read a fixture", parameters: Type.Object({}), exposure: "codemode",
-			namespace: { name: "fixture" }, annotations: { readOnlyHint: true }, sourceInfo }],
+			namespace: { name: "fixture", aliases: ["reference-guide"] }, annotations: { readOnlyHint: true }, sourceInfo }],
 		getActiveTools: () => [], getCommands: () => [], getSettings: () => ({}), appendEntry: () => { throw new Error("No store writes expected"); },
 	} as unknown as ExtensionAPI;
 	registerRegistry(pi);
@@ -37,7 +37,7 @@ it("native codemode receives registry objects and filters records without parsin
 	} as unknown as ExtensionToolContext;
 	const result = await codemode.execute("script", { code: `
 const pages = await Promise.allSettled([
-  tools.registry({kind: "tool"}),
+  tools.registry({kind: "tool", search: "REFERENCE-GUIDE"}),
   tools.registry({name: "absent", kind: "tool"})
 ]);
 if (pages.some(p => p.status !== "fulfilled")) throw new Error("call failed");
@@ -45,6 +45,7 @@ const page = pages[0].value;
 if (typeof page !== "object" || page.outcome !== "ok") throw new Error("not typed output");
 return {names: page.records.filter(r => r.kind === "tool" && r.callable).map(r => r.name),
   exposure: page.records[0].exposure, active: page.records[0].active, declared: page.records[0].modelDeclared,
+  aliases: page.records[0].namespace.aliases,
   empty: pages[1].value.outcome, count: pages[1].value.returnedRecords};
 ` }, undefined, undefined, ctx);
 	assert.notEqual(result.isError, true, JSON.stringify(result.content));
@@ -55,4 +56,5 @@ return {names: page.records.filter(r => r.kind === "tool" && r.callable).map(r =
 	assert.match(text, /"declared":\s*null/);
 	assert.match(text, /"empty":\s*"missing"/);
 	assert.match(text, /"count":\s*0/);
+	assert.match(text, /"aliases":\s*\[\s*"reference-guide"\s*\]/);
 });

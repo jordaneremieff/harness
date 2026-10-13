@@ -191,6 +191,7 @@ function readDurableSnapshot(
 	const availability: SurfaceAvailability = {
 		tools: false,
 		activeTools: agent !== undefined,
+		callableTools: agent !== undefined,
 		commands: facts !== null,
 	};
 
@@ -242,6 +243,8 @@ function readDurableSnapshot(
 	return {
 		tools,
 		activeTools: agent?.tools.map((tool) => tool.name) ?? [],
+		callableTools: agent?.callable.map((tool) => tool.name) ?? [],
+		callableEvidence: "durable_agent",
 		commands,
 		observation: facts === null ? null : buildObservation(facts, agent, host.cwd, at),
 		availability,
@@ -455,6 +458,7 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 				name: "registry",
 				description: REGISTRY_DESCRIPTION,
 				parameters: RegistryParams,
+				structuredOutputSchema: RegistryOutputSchema,
 				replay: "safe",
 				execute: async (args, api, context) => {
 					const at = Date.now();
@@ -485,10 +489,9 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 						signal,
 						durable: durableLookupContext(host),
 					});
-					const details = JSON.parse(
-						JSON.stringify({ ...result.details, structuredContent: result.structuredContent }),
-					) as Durable.JsonObject;
-					return { content: [{ type: "text", text: result.text }], details };
+					const details = JSON.parse(JSON.stringify(result.details)) as Durable.JsonObject;
+					const structuredOutput = JSON.parse(JSON.stringify(result.structuredContent)) as Durable.JsonObject;
+					return { output: [{ type: "text", text: result.text }], structuredOutput, details };
 				},
 			});
 			const guidance = durable.section("registry", (input) =>
@@ -496,13 +499,9 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 					? [REGISTRY_PROMPT_SNIPPET, ...REGISTRY_PROMPT_GUIDELINES].join("\n")
 					: undefined,
 			);
-			const registration: Durable.ToolRegistration & { outputSchema: typeof RegistryOutputSchema } = {
-				...tool,
-				outputSchema: RegistryOutputSchema,
-			};
 			return durable.defineExtension({
 				name: "registry",
-				tools: [registration],
+				tools: [tool],
 				sections: [guidance],
 			});
 		},

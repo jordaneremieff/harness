@@ -38,6 +38,56 @@ function validate(result: LookupResult): LookupResult {
 
 const records = (result: LookupResult) => result.details.records as Array<{ name: string; namespace?: Record<string, unknown> }>;
 
+describe("tool namespace aliases", () => {
+	it("copies aliases without retaining the host array and exposes them in full and compact pages", async () => {
+		const aliases = ["docs", "reference-guide"];
+		const namespace = { ...namespaceWith(), aliases };
+		const snapshot = readSnapshot(piWith(namespace), null, 1000);
+		aliases.push("later");
+		assert.deepEqual(snapshot.tools[0].namespace?.aliases, ["docs", "reference-guide"]);
+		for (const query of [{ kind: "tool", search: "reference-guide" }, { kind: "tool", name: "mcp__docs__lookup_doc", detail: true }] as const) {
+			const result = validate(await run(namespace, query));
+			assert.equal(result.outcome, "ok");
+			assert.deepEqual(records(result)[0].namespace?.aliases, aliases);
+			assert.match(result.text, /"aliases":\["docs","reference-guide","later"\]/);
+		}
+	});
+
+	it("searches namespace names and aliases case-insensitively but keeps exact tool names distinct", async () => {
+		const namespace = { ...namespaceWith(), name: "documentation", aliases: ["reference-guide"] };
+		for (const search of ["DOCUMENTATION", "REFERENCE-GUIDE"]) {
+			const result = validate(await run(namespace, { kind: "tool", search }));
+			assert.equal(records(result).length, 3);
+		}
+		assert.equal(validate(await run(namespace, { kind: "tool", name: "reference-guide" })).outcome, "missing");
+		assert.equal(validate(await run(namespaceWith(), { kind: "tool", search: "reference-guide" })).outcome, "missing");
+	});
+
+	it("invalidates continuation after an alias change", async () => {
+		const namespace = { ...namespaceWith(), aliases: ["reference-guide"] };
+		const first = validate(await run(namespace, { kind: "tool", limit: 1 }));
+		const cursor = first.details.cursor as string;
+		assert.ok(cursor);
+		assert.equal(validate(await run(namespace, { cursor })).outcome, "ok");
+		for (const aliases of [[], ["other-guide"]]) {
+			assert.equal(validate(await run({ ...namespace, aliases }, { cursor })).outcome, "stale_cursor");
+		}
+	});
+
+	it("blocks an oversized alias record without publishing incomplete aliases or claiming absence", async () => {
+		const namespace = { ...namespaceWith(), aliases: ["x".repeat(4 * MAX_RESULT_BYTES)] };
+		const result = await run(namespace, { kind: "tool", limit: 1 });
+		assert.ok(Check(RegistryOutputSchema, result.structuredContent));
+		assert.equal(result.details.pageBlocked, true);
+		assert.equal(result.details.resultBounded, true);
+		assert.equal(result.details.cursor, undefined);
+		assert.deepEqual(result.details.records, []);
+		const envelope = { content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent };
+		assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= MAX_RESULT_BYTES);
+		assert.match(result.text, /cannot advance/);
+	});
+});
+
 describe("tool namespace instructions", () => {
 	const queries = [
 		{ kind: "tool", search: "mcp__docs", match: "substring" },
