@@ -3,11 +3,12 @@
 The ordinary primary owns the Pi terminal and its extension lifecycle. It is a
 client of Durable agent hosts, not their execution owner. Reload and shutdown
 remove its delivery callbacks and client connections without stopping admitted
-agent work. The primary registers one channel over the public `pi-server`/
-`pi-client` Unix transport: a same-user socket where a private 0700 directory,
-an owner-only 0600 socket, and the exact `serverId` handshake are the boundary;
-no token crosses it. That channel returns peer messages and answers project-trust
-prompts.
+agent work. The primary registers one channel over the package-level Chord
+Unix transport. A private 0700 directory and an owner-only 0600 socket
+provide local filesystem admission; no token crosses that boundary. The exact
+expected Chord hello name identifies the target, not the peer's user identity. That channel returns peer messages and answers project-trust
+prompts. The [Agent host contract](../agent-host-contract.md#chord-wire-contract)
+defines the shared typed Endpoint and Feed for terminal and browser consumers.
 
 One independent process owns each Durable storage. It takes the exclusive writer
 claim before storage opens, and it alone resumes the native scheduler. A root

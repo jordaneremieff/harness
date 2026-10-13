@@ -1,9 +1,12 @@
 # Native codemode
 
-Use Pi's native `codemode` to compose tool calls and model requests in JavaScript.
+Use Pi's built-in `codemode` to compose tool calls and model requests in JavaScript.
 Read-only reconnaissance below combines independent sources into a small result.
-The agent, stash, memory, and registry extensions expose bounded objects through
-`outputSchema` and `structuredContent`. Scripts use those objects directly, without parsing terminal prose or JSON strings.
+In ordinary Pi, the agent, stash, memory, and registry extensions expose bounded
+objects through `outputSchema` and `structuredContent`. Durable contributions
+use `structuredOutputSchema` and `structuredOutput` instead, separate from model
+`output` and presentation `details`. Scripts use the schema-bearing values
+directly, without parsing terminal prose or JSON strings.
 
 This composition adds no shared runtime, store, or cross-extension import.
 Each extension still owns its data, bounds, errors, and continuation rules.
@@ -29,8 +32,11 @@ batched calls and output filtering without harness instructions. Check the
 declaration before changing instructions or policy: `registry` with
 `kind: "tool"` and `name: "codemode"` reports `configured` and `active`
 separately. `/reload` activates a tool newly added to `defaultTools` in a
-running session; `--tools` replaces the whole selection, so an invocation that
-passes it must name `codemode` too. This setup describes ordinary Pi sessions.
+running session. CLI `--tools` entries with `+name` or `-name` adjust the
+inherited selection; unsigned entries replace it. Use `pi -t +codemode` to
+preserve the default tools. `*` patterns select matching tools. MCP tools remain
+available unless an entry starts with `mcp__`; `--no-mcp` disables MCP for that
+run. This setup describes ordinary Pi sessions.
 Durable agents use the [agent extension's native execution
 integration](../extensions/agent/README.md#capabilities-and-project-resources),
 not the ordinary codemode factory.
@@ -39,12 +45,15 @@ Keep native codemode's default `on` mode. It preserves direct tool declarations
 alongside script access, and each declared tool that scripts can call carries a
 one-line call note: `tools.<name>(args)` resolves to the tool's output. The
 full declaration is not repeated in that note; `describeTool(name)` returns
-it, and the `codemode` description lists the callable tools without `direct`
+it, including input constraints such as integer ranges, string lengths, patterns,
+and defaults in property comments, and the `codemode` description lists the callable tools without `direct`
 exposure within `codemode.inlineBudget` (3000 estimated tokens by default). In
 `only` mode, Pi hides direct tool declarations.
-Native `read` has no output schema, so a script receives its text but not its
-image blocks. Use direct `read` for images. Activating codemode does not require
-an MCP server or `tool_search`.
+Ordinary `read` and the agent host's read adapter declare an output schema.
+Text reads resolve to a string; image reads resolve to an image block. Use
+`image(await tools.read({ path: "picture.png" }))` to show an image. Direct reads
+also retain image blocks. Activating codemode does not require an MCP server or
+`tool_search`.
 
 Leave `tool_search` inactive for this workflow. Its discovery covers inactive
 `codemode` and `deferred` tools, not these direct harness tools. Inside a script,
@@ -167,7 +176,9 @@ failure contract: calls without structured data reject on failure with an
 `Error` carrying the tool's error text. A tool that declares an output schema
 can instead return structured error data; inspect its outcome as well as promise
 settlement. A failed script keeps its partial output, and calls still running
-at script end are cancelled.
+at script end are cancelled. Put `// @options:` on the first line. Ordinary
+codemode rejects that directive on a later line before script execution instead
+of silently ignoring its timeout.
 
 ## Preserve source boundaries
 
@@ -213,8 +224,9 @@ through these sources:
   instructions. Pass `namespace` to search one server.
 - `describeNamespace(name)` resolves to `{ name, description?, instructions?,
   tools }`, with script identifiers as tool names, or to `undefined`. It is how
-  scripts read the server's full instructions. Name a namespace as
-  `mcp__dev-radius`, `mcp__dev_radius`, `dev-radius`, or `dev_radius`.
+  scripts read the server's full instructions. Namespace lookup and the search
+  `namespace` filter accept registered aliases. MCP registers the server name as
+  an alias, so use `dev-docs` or its normalized `mcp__dev_docs` namespace.
 
 ```javascript
 const found = await searchTools("list pages", { namespace: "dev-docs", limit: 5 });
@@ -276,7 +288,8 @@ for (const block of result.output) {
 `errorMessage`. Show each image block with `image()`: printing the base64
 `data` with `text()` adds a large string the model cannot read, and a script
 that generates images without showing them gets a note in its result.
-Generated images are not saved to disk. Their usage is added to the `codemode`
+Codemode attempts to save each emitted image to a temporary file. Its output
+includes the path or a save-failure note. Image usage is added to the `codemode`
 tool result and counts toward the session cost, as classifier calls do.
 
 ## Orchestration versus native execution

@@ -99,9 +99,9 @@ The harness is a Pi package. `package.json` declares the resources under the
   peer ranges are wildcards; the lockfile records the versions used for
   repository checks.
 - Pi's extension loader binds the core AI, agent, coding-agent, TUI,
-  and TypeBox imports to its running installation. It does not bind Chord,
-  Pi Client, Pi Server, Pi Durable, Codemode, or MCP. A peer declaration alone
-  does not establish loader binding. The [session host roles](conventions/session-host-roles.md)
+  and TypeBox imports to its running installation. Chord, Pi Durable,
+  Codemode, and MCP resolve through declared runtime dependencies. A peer
+  declaration alone does not establish loader binding. The [session host roles](conventions/session-host-roles.md)
   distinguish the ordinary primary from independent Durable storage hosts;
   the [contribution convention](conventions/durable-contributions.md) defines
   native capabilities. See [the durable-harness track](pi-durable-harness.md)
@@ -172,6 +172,11 @@ extensions that duplicate these controls:
 
 These controls are host capabilities, not package defaults. Installing this
 harness does not select their values or authorize an evidence upload.
+
+Pi publishes editor schemas for settings, models, keybindings, and themes.
+Use the `$schema` URLs documented by the installed Pi release when editing
+those files. An editor schema does not activate a resource, replace Pi's
+runtime validation, or add a repository completion gate.
 
 ## Extension anatomy
 

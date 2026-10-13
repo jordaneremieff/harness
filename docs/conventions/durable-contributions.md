@@ -233,12 +233,30 @@ surface. A model answer or an idle root does not prove publication succeeded.
 - Shared external stores, such as the memory corpus, stash store, clipboard
   archive, and policy store, stay external. Do not copy them into documents.
 - Model-facing usage guidance belongs in a prompt section of the contribution.
-- Native `details` equal the ordinary tool's `details`. Where the ordinary tool
-  also returns `structuredContent`, the native result adds it beside them:
-  `details: { ...details, structuredContent }`; nowhere else. An `outputSchema`
-  property on the registration object describes that `structuredContent`
-  object, for example `{ ...durable.defineTool({...}), outputSchema }`;
-  pi-durable ignores the extra property, and nested-call declarations read it.
+  Native codemode returns successful nested values without their info diagnostics.
+  If a nested result requires a model assessment, use a public model-visible
+  conversation write keyed by the native task identity. A tool diagnostic alone
+  does not establish delivery to the next provider request; test that boundary.
+- Native results use Pi Durable's three channels: `output` for model-visible
+  content, `structuredOutput` for program callers, and `details` for
+  presentation. Keep ordinary tool details in `details`; do not embed a
+  structured result there. A contribution with an ordinary `outputSchema`
+  declares the same schema as native `structuredOutputSchema` and maps
+  ordinary `structuredContent` to native `structuredOutput`. Preserve a
+  schema-less ordinary tool's native program text and error rejection. A new
+  native-only schema changes those semantics and requires a concrete consumer,
+  not merely an object-returning test. Durable validates
+  that value before returning it to nested callers. A schema tool's error
+  result with its own value resolves to that value inside codemode; callers
+  must inspect its error fields. Without a schema, nested callers receive the
+  bounded `output`, and codemode rejects an error with its text.
+- `ToolRegistration.callers` selects model calls, tool calls, or both. Use
+  `callers: ["model"]` for model-only controls; scripts must not call them.
+  `deferred: true` omits a tool from model declarations until `modelTools`
+  selects it, without denying nested calls. `Agent.tools` is the model-offered
+  set; `Agent.callable` is the nested-call set. Hook schema lookup for nested
+  calls uses the latter. A tool omitted from model declarations is not
+  necessarily unavailable.
 - Use native hooks for their native meanings: `beforeTool` and `afterTool` on
   `ToolTask`; `beforeRequest`, `afterResponse`, `onYield`, and `afterTools` on
   `GenerationTask`; `beforeCompact` on `CompactionTask`.

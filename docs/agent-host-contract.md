@@ -8,7 +8,7 @@ Paths are relative to the repository root. References describe implementation, n
 
 ## Scope and identity
 
-This is a same-user, machine-local interface. [Independent retained reads](#independent-retained-reads) use a one-shot process without a live host. Public `@earendil-works/pi-client` and its `/unix` export supply the live transport. The service names, payloads, catalog publications, operation identities, and retry policy below are harness contracts, not generic Pi protocol features. The endpoint is a private directory and owner-only Unix socket, not remote authentication. Source: `extensions/agent/host-protocol.ts:1-30`; `extensions/agent/host-client.ts:213-222`; `extensions/agent/host-process.ts:523-544`.
+This is a same-user, machine-local interface. [Independent retained reads](#independent-retained-reads) use a one-shot process without a live host. Chord's public typed host runtime supplies live calls and state over a bounded Unix-socket `Link`. The [wire contract](#chord-wire-contract) defines the shared boundary for Agent and independent UI consumers. Payloads, catalog publications, operation identities, and retry policy remain harness contracts. The endpoint is a private directory and owner-only Unix socket, not remote authentication. Chord owns calls, cancellation, and state; the socket adapter owns framing, bounds, close, and initial identity admission.
 
 Use these terms consistently:
 
@@ -17,7 +17,7 @@ Use these terms consistently:
 - `storageId` identifies one Durable SQLite storage and host.
 - The external conversation identity is `storageId` for root conversation 1, otherwise `storageId:conversationId`.
 - `conversationId`, submission IDs, and entry IDs resolve to positive safe integers. Live request parsers also accept decimal-digit strings in the corresponding ID fields; responses use numbers except display snapshot entry IDs, which are strings. Source: `extensions/agent/durable-observation.ts:473-500`.
-- `serverId` is the UUID used by the public transport handshake. It is not a conversation identity.
+- `serverId` is the expected Chord host name in the first `hello` frame. It is not a conversation identity.
 
 Source: `extensions/agent/index.ts:231-235`; `extensions/agent/identity.ts:15-19`; `extensions/agent/durable-observation.ts:508-522`; `extensions/agent/dashboard-types.ts:107-127`.
 
@@ -72,7 +72,7 @@ Source: `extensions/agent/communication.ts`; `communication-retention.ts`; `comm
 
 ## Ordinary peer communication mapping
 
-Ordinary Pi custom messages with `customType: "agent.peer"` expose a structured peer contribution through their supplied `details`. This section is the public mapping for consumers; it does not authorize imports of Agent-private types, prose parsing, new delivery operations, or history rewriting. `primary-delivery/1.1.0`, `sendMessage`, wake behavior, original content, and `display: false` exclusion remain unchanged. Saved `custom_message` entries and live `role: "custom"` messages use the same mapping before projection drops their details.
+Ordinary Pi custom messages with `customType: "agent.peer"` expose a structured peer contribution through their supplied `details`. This section is the public mapping for consumers; it does not authorize imports of Agent-private types, prose parsing, new delivery operations, or history rewriting. The `primary-delivery/2.0.0` channel changes transport identity, not this payload mapping. `sendMessage`, wake behavior, original content, and `display: false` exclusion retain their meanings. Saved `custom_message` entries and live `role: "custom"` messages use the same mapping before projection drops their details.
 
 The normalized value has `format: "agent.communication/1"`, `sender`, `body`, `recordedAt`, and exactly one of the variants below. Unknown properties are not copied into this closed value. Ordinary source records retain their original detail fields separately.
 
@@ -162,7 +162,14 @@ key = sha256(storageId + NUL + resolvedCwd).hex
 hostDirectory = join(agentDir, "durable-hosts", key)
 ```
 
-Choose the first socket directory for which `join(directory, serverId + ".sock")` is at most 100 UTF-8 bytes: `<agentDir>/durable-hosts`, `join(tmpdir(), "pi-hosts")`, then `/tmp/pi-hosts`. Refuse if none fits. The claim is:
+The public `unixSocketPath(serverId, directory)` uses
+`join(directory, serverId + ".sock")` when it fits 100 UTF-8 bytes. For a longer
+path, it hashes the complete resolved endpoint path, takes its first 40 hex
+characters, and returns `/tmp/harness-chord-<uid>/<hash>.sock`. Hashing the complete
+path keeps different endpoint directories distinct. The host supplies
+`<agentDir>/durable-hosts` first. The listener validates the resulting private
+directory's ownership before chmod and uses an owner-only socket. A filename
+or hello name is not peer-credential authentication. The claim is:
 
 ```text
 claimKey = sha256(JSON.stringify([resolvedCwd, storageId])).hex
@@ -171,7 +178,14 @@ join(hostDirectory, ".claims", claimKey + ".lock")
 
 Source: `extensions/agent/host-protocol.ts:34,151-181`; `extensions/agent/claims.ts:47-52`.
 
-Connect with `new Client({serverId, transportFactory: createUnixTransportFactory({path: socketPath})})`, await `connect()`, then negotiate. The configured `serverId` binds the public handshake to the expected server; a matching filename alone is insufficient. Attach-only access first requires a live claim, then a successful connection and usable descriptor. Source: `extensions/agent/host-client.ts:213-222,325-347`.
+Import `connectTransport` from the public `transport/index.ts` entrypoint and
+call `connectTransport({serverId, path: socketPath})`, then negotiate with
+`client.request({method: "runtime-contract"})`. The configured `serverId`
+binds the first server hello to the expected host; the same matching hello
+then reaches Chord. A matching filename alone is insufficient. Attach-only
+access first requires a live claim, then a successful connection and usable
+descriptor. An attach failure never authorizes listener replacement. Sources:
+`transport/{index,endpoint,unix-link}.ts` and `extensions/agent/host-client.ts`.
 
 Public Unix server discovery enumerates reachable sockets only. It is not retained catalog discovery and cannot find cold storage. No global server is necessary to read catalog publications. Source: `extensions/agent/catalog.ts:343-386`; `extensions/agent/manager.ts:652-701`.
 
@@ -210,7 +224,7 @@ Replace `packageDir` with the installation selected by the server's configured `
 
 Preserve `trust`, `ownerId`, and the complete `independent` object exactly. Explicit trust participates in the owner's normal trust resolver. If independent metadata exists, `independent.projectTrusted` supplies the prioritized resolver instead. An unresolved normal decision follows the retained owner chain, not the Primary displayed in the browser. Do not replace absent trust with false, force true, fabricate an owner, or omit independent metadata. Source: `extensions/agent/durable-runtime.ts:55–79`; `durable-services.ts:553–564`; `trust-support.ts:73–109`; installed coding-agent `dist/core/resource-loader.js:352–366`.
 
-Before dynamically loading host modules, the runner binds coding-agent, agent-core, ai, tui, and typebox imports originating under the Agent source root to the selected installation. Durable, client, server, and chord remain dependencies of the configured owner checkout; the binding does not redirect every Pi package. Validate the catalog identity, exact database path under the configured durable catalog root, and existing canonical regular-file/directory paths before spawn. Source: `extensions/agent/{durable-runner,installation-binding,host-protocol}.ts`.
+Before dynamically loading host modules, the runner binds coding-agent, agent-core, ai, tui, and typebox imports originating under the Agent source root to the selected installation. Durable, Codemode, MCP, and Chord remain dependencies of the configured owner checkout; the binding does not redirect every Pi package. Validate the catalog identity, exact database path under the configured durable catalog root, and existing canonical regular-file/directory paths before spawn. Source: `extensions/agent/{durable-runner,installation-binding,host-protocol}.ts`.
 
 A live same-host writer claim requires attach and negotiation without a spawn. An unknown claim refuses acquisition. For an absent or proven-dead claim, launch one detached runner with ignored stdin and drained stdout/stderr. The runner, not the consumer, acquires and releases its writer claim. Consumers never remove, rewrite, or lock claims. Concurrent starts for one storage join the same attempt; repeated request IDs retain the same outcome. If another process wins the claim, its live ownership remains authoritative and the consumer attaches to that owner. It never signals the competing owner. Source: `extensions/agent/{claims,host-process,host-client}.ts`.
 
@@ -224,15 +238,112 @@ Read a bounded amount of output within a bounded deadline. A matching malformed 
 
 The host owns its lifetime independently of the UI. Runtime construction resumes unfinished conversations, tool work, and retained deliveries before the socket starts and before READY is emitted. A readiness, negotiation, or startup timeout does not prove that native work was never admitted. Source: `extensions/agent/durable-runtime.ts:324–350`; `durable-host.ts:353–362`; `host-process.ts:277–302,688–711`; owner-installed Durable `dist/harness/{harness,scheduler}.js:resume`. Retain an uncertain attempt while its child remains alive; offer an explicit connection check rather than automatic relaunch or task submission. Malformed readiness, socket mismatch, connection failure, browser loss, and UI shutdown never justify killing admitted or pre-existing work. UI shutdown cancels only its own readiness wait and closes its observations/transports. A confirmed exited child permits a new explicit attempt. The owner client's current cleanup implementation is not a consumer requirement or permission to interrupt work. Source: `extensions/agent/{durable-runner,host-process,durable-runtime}.ts`.
 
+## Chord wire contract
+
+The live interface uses the published Chord `remote`, `method`, `createHost`,
+`Link`, and `Frame` contracts. The package-level transport entrypoint serves
+both Agent and UI; neither imports the other's private implementation. Its
+contract runtime values use these exact closed schemas:
+
+```typescript
+import { method, remote } from "@earendil-works/chord";
+import { Type } from "typebox";
+
+const Endpoint = remote("pi.agent.endpoint", {
+  version: 1,
+  input: Type.Object({ serverId: Type.String() }, { additionalProperties: false }),
+  variants: { default: { methods: {
+    request: method(Type.Object({
+      method: Type.String({ minLength: 1, maxLength: 128 }),
+      params: Type.Optional(Type.Unknown()),
+      requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+      contract: Type.Optional(Type.Unknown()),
+    }, { additionalProperties: false }),
+    Type.Object({ value: Type.Optional(Type.Unknown()) }, { additionalProperties: false })),
+  } } },
+});
+
+const Feed = remote("pi.agent.feed", {
+  version: 1,
+  input: Type.Object({
+    serverId: Type.String(),
+    kind: Type.Union([Type.Literal("changes"), Type.Literal("observation")]),
+    token: Type.Optional(Type.String()),
+  }, { additionalProperties: false }),
+  variants: { default: { state: {
+    value: Type.Object({ ready: Type.Boolean(), value: Type.Optional(Type.Unknown()) },
+      { additionalProperties: false }),
+  } } },
+});
+```
+
+One UTF-8 JSON Chord frame followed by LF forms one socket record. The adapter
+handles split and combined reads, ordered writes, backpressure, byte bounds,
+and close. It rejects invalid UTF-8, malformed JSON, a nonobject frame or
+missing string tag, and an invalid initial hello before Chord dispatch.
+Chord validates its remaining frame protocol. Chord owns its hello, call, result, cancellation,
+subscription, and state protocol. No retired Pi service envelope is accepted.
+
+The default frame bound is 16 MiB of UTF-8 JSON, excluding LF. The default
+outgoing queue bound is 64 MiB of encoded bytes, including LF. Before receiver
+registration, the queue bound counts JSON frame bytes without LF. Both
+`connectTransport` and `createTransportServer` accept `maxFrameBytes` and
+`maxQueueBytes`; the listener forwards its limits to each accepted Link.
+These are encoded-byte limits, not universal maxima on user messages, native
+values, or complete observations. JSON escaping changes the encoded size;
+equal numeric defaults do not establish equal payload capacity across wire
+formats. Larger exchanges require suitable limits at both peers.
+
+The first server frame is `hello` with `kind: "host"`, exact expected
+`name: serverId`, and a nonnegative safe-integer epoch. The client rejects a
+mismatch and forwards the same matching hello to Chord. The server accepts only client
+peers and assigns a unique connection principal; supplied frame fields do not
+select that principal. Filesystem permissions, not the public name, enforce
+same-user access. Attach failure grants no authority to start or replace a host.
+
+Create a Chord client host, connect the Unix `Link`, and acquire
+`host.get(Endpoint, {serverId}, {at: serverId})`. Await its readiness within the
+handshake deadline. Run calls through `host.root()`. Unwrap the response's
+optional `value` without converting absent values to `null`. Chord errors
+remain errors, not empty data. Malformed application input uses `invalid`.
+Version refusal uses `unavailable` with reason `version`; other availability,
+claim, and internal distinctions remain in the reason. The shared server keeps
+Chord errors intact and wraps untyped failures as `unavailable/internal`.
+Link loss is a separate failure. Do not encode an error code in its message.
+
+The Unix Link closes on a received `bye` instead of forwarding it. Sending
+after close is a no-op. Serialization or queue overflow closes the Link and
+returns from its void `send()` without a throw or a partial offending frame.
+Close attempts a bounded `bye` and ends the socket. The listener refuses an
+existing path. It binds a private unpublished name and publishes a hard link
+without replacement, so Node's own close cannot unlink a substituted public
+socket. Cleanup unlinks only the public socket whose device/inode it recorded.
+
+Both Agent and UI import `transport/index.ts`; neither imports another slice's
+transport implementation or supplies a second adapter. Its public factories
+are `connectTransport`, `createTransportServer`, `createUnixLink`,
+`connectUnixLink`, and `listenUnixLinks`. The client exposes `request`,
+`subscribe`, `onClose`, `connected`, and `dispose`; `subscribe` returns a
+hydrated `value` and `dispose`. Reconnect creates a new client host and fresh
+Feed handles and observation tokens, not `host.connect()` with old handles.
+Sources: `transport/{index,endpoint,unix-link}.ts`.
+
+The manager's retained-object identity is `manager/3.0.0`; ordinary primary
+channels use `primary-delivery/2.0.0`. Their Endpoint methods are `info`,
+`deliver`, and `trustPrompt`, with the existing single payload in `params`
+and no host operation contract. Host operation identities and
+`retained-read/1.0.0` do not change merely because the wire changes. A version
+refusal contains an incompatible call; it is not a safe activation plan.
+
 ## Negotiation and request envelope
 
 Negotiate on the expected server target:
 
 ```json
-{"serviceId":"pi.agent.host","member":"runtime-contract","args":[]}
+{"method":"runtime-contract"}
 ```
 
-This is the `call` passed to `client.request({serverId}, call)`, not the complete CBOR protocol envelope. Its result is:
+Call `Endpoint.request` with `{method:"runtime-contract"}` through a Chord root. The response wrapper's `value` is:
 
 ```text
 {
@@ -249,20 +360,23 @@ The parser rejects malformed descriptors, invalid operation names, more than 128
 An operation call uses:
 
 ```text
-client.request(
-  {serverId},
-  {serviceId: "pi.agent.host", member,
-   args: [params ?? null, wireRequestId, expectedOperationContract]}
-)
+host.root(ctx => endpoint.request({
+  method: member,
+  params,
+  requestId: wireRequestId,
+  contract: expectedOperationContract,
+}, ctx), {signal})
 ```
 
-The host recognizes `runtime-contract` before operation dispatch. Otherwise it compares the supplied operation's request, response, and optional Durable identities against its own identities **before parsing or admitting the operation payload**. A mismatch produces a service error and no operation is admitted. The client also checks before dispatch. Source: `extensions/agent/host-client.ts:499-516`; `extensions/agent/host-process.ts:523-544`; `extensions/agent/version-contract.ts:118-131`.
+The host recognizes `runtime-contract` before operation dispatch. Otherwise it compares the supplied operation's request, response, and optional Durable identities against its own identities **before parsing or admitting the operation payload**. A mismatch produces a Chord `unavailable` error with reason `version` and no operation is admitted. The client also checks before dispatch. Source: `extensions/agent/host-client.ts:499-516`; `extensions/agent/host-process.ts:523-544`; `extensions/agent/version-contract.ts:118-131`.
 
-A consumer must possess an expected contract for the payload it implements. It must not simply echo unknown identities from the remote descriptor: that defeats the check. Require equality of request, response, and optional `durable`. Missing or malformed negotiation disables the host; mismatch of one operation disables that operation. Check the complete dependency set for a composite action. Re-negotiate after reconnect. Do not infer compatibility from source release ordering, endpoint liveness, or a successful unrelated call. Source: `extensions/agent/version-contract.ts:118-131`; `extensions/agent/host-protocol.ts:218-223`; `extensions/agent/host-client.ts:325-347,499-506,640-646`.
+A consumer must possess an expected contract for the payload it implements. It must not simply echo unknown identities from the remote descriptor: that defeats the check. Require equality of request, response, and optional `durable`. Missing or malformed negotiation disables the host; mismatch of one operation disables that operation. Check the complete dependency set for a composite action. Re-negotiate after reconnect with a fresh transport client. Do not infer compatibility from source release ordering, endpoint liveness, or a successful unrelated call. Source: `extensions/agent/version-contract.ts:118-131`; `extensions/agent/host-protocol.ts:218-223`; `extensions/agent/host-client.ts:325-347,499-506,640-646`.
 
 ### Current operation identities
 
-`D` below is the exact `@earendil-works/pi-durable` release loaded by that process, not a future version pinned by this document. A consumer of opaque native values compares it with the Durable representation it supports. The descriptor's `release` is currently `1.0.0`, and both API floors are `1.0.0`; those labels do not replace this table. Source: `extensions/agent/version-contract.ts:10-12,30-70`.
+`D` below is the exact `@earendil-works/pi-durable` release loaded by that process, not a future version pinned by this document. A consumer of opaque native values compares it with the Durable representation it supports. The descriptor's `release` is currently `1.0.0`.
+
+The current descriptor requires `codingAgent: "1.2.0"` and `durable: "1.2.0"`. The coding-agent floor covers custom-message startup guidance and its retention through tool rounds. The Durable floor covers native codemode, deferred tool search, nested tool execution, and `Session.closed`. These are minimum required APIs, not dependency pins, a supported-version ceiling, or a substitute for exact operation checks. Read floors from the loaded descriptor, not from the source release label. Source: `extensions/agent/version-contract.ts:10-12,30-75`; installed coding-agent and Durable `CHANGELOG.md` sections for 1.2.0.
 
 For every member in the following set, request and response are both `<member>/1.0.0`, with no `durable` field:
 
@@ -305,10 +419,10 @@ Overrides and remaining members:
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a
-H-status        7905de0a78289817e351720bd656eb45583a4eb854299f22a426d795cf0a1acf
+H-inspect       d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b
+H-status        294bb95f3d60b9c9ae2976f291e4f8d41c11d00ec517c1aebcfd9c7af40a3087
 H-list          76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600
-H-dashboard     46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241
+H-dashboard     a89f98f3eb28c78f115c0010581107073600bfb9ec44934ad622aeb5d1cffcd7
 H-profile-read  b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889
 H-profile-update 7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4
 H-profile-list  0eb5c60290d491535a1dd158e5d5ed4432eb8f89fe26a496a395e08b58ff4db4
@@ -316,9 +430,16 @@ H-profile-list  0eb5c60290d491535a1dd158e5d5ed4432eb8f89fe26a496a395e08b58ff4db4
 
 Schema owners in table order are `InspectOutputSchema`, `StatusOutputSchema`, `ListRowSchema`, `AgentConversationSummarySchema`, `AgentProfileSchema`, `ProfileUpdateSchema`, and `ProfiledListOutputSchema`. `dashboard` returns an array despite its response identity hashing the row schema. Maintain these identities with the defining schemas; do not infer a complete result shape from the schema name alone. Source: `extensions/agent/version-contract.ts:30-56`; `extensions/agent/durable-host.ts:454-457`.
 
-The table lists advertised identities, not a claim that all members have the same target or side-effect policy. The consumer operations below define the relevant payloads. `changes` gates a service subscription; it is not an ordinary runtime request member.
+The table lists advertised identities, not a claim that all members have the same target or side-effect policy. The consumer operations below define the relevant payloads. `changes` gates a Feed subscription; it is not an ordinary runtime request member.
 
-Source-checked 2026-10-12 against installed Pi/Durable 1.1.0 and `extensions/agent/{durable-observation,observation-schema,version-contract}.ts`: conversation status task rows permit optional native `startedAt` and `endedAt`. Durable stamps wall-clock milliseconds at first running and terminal state; the span includes waits and recovery, not only execution. These status rows contain live tasks, so their native `endedAt` remains absent. Missing timestamps remain absent. The status and inspect hashes above derive from the current schemas; list/dashboard hashes and snapshot/observe response versions remain unchanged.
+The current `extensions/agent/observation-schema.ts` permits optional native
+`startedAt` and `endedAt` on conversation task rows. Durable stamps wall-clock
+milliseconds at first running and terminal state; the span includes waits and
+recovery, not only execution. Status selects live tasks, so their terminal
+`endedAt` remains absent. Missing timestamps remain absent. Schema checks against
+Pi/Durable 1.2.0 on 2026-10-13 change inspect, status, and dashboard response
+hashes for nested metadata and compaction failure. List and snapshot/observe
+response identities retain their shapes; exact native operations still bind D.
 
 ## Native result inspection
 
@@ -340,9 +461,11 @@ A summary has required fields:
 {id, storageId, cwd, modifiedAt:number, owner, state, cost:number, partial:boolean}
 ```
 
-Optional fields are `creatingOwnerId`, `name`, `firstMessage`, `model:{provider,modelId,thinkingLevel}`, `ownerLabel`, `latestReply`, `error`, `toolCalls`, `currentTool:{name,argument}`, `durationMs`, `health`, and `awaiting`. Manager-enriched rows can also include `profile`; it is not part of the base native row contract. `owner` is `here | unavailable | unknown`. `state` is `starting | working | idle | done | failed | stopped | interrupted | new | unavailable`. `health` carries optional `lastError`, `compactionFailure:{reason,at,errorMessage?}`, and `autoRetry:{attempt,maxAttempts,delayMs,errorMessage}`. `awaiting` is optional retained wait information; a consumer that does not display it leaves it opaque. Source: `extensions/agent/dashboard-types.ts:13-104`; `extensions/agent/version-contract.ts:54`; `extensions/agent/manager.ts:677-700`.
+Optional fields are `creatingOwnerId`, `name`, `firstMessage`, `model:{provider,modelId,thinkingLevel}`, `ownerLabel`, `latestReply`, `error`, `toolCalls`, `currentTool:{name,argument}`, `durationMs`, `health`, and `awaiting`. Manager-enriched rows can also include `profile`; it is not part of the base native row contract. `owner` is `here | unavailable | unknown`. `state` is `starting | working | idle | done | failed | stopped | interrupted | new | unavailable`. `health` carries optional `lastError`, `compactionFailure:{reason,at?,errorMessage?}`, and `autoRetry:{attempt,maxAttempts,delayMs,errorMessage}`. `awaiting` is optional retained wait information; a consumer that does not display it leaves it opaque. Source: `extensions/agent/dashboard-types.ts:13-104`; `extensions/agent/version-contract.ts:54`; `extensions/agent/manager.ts:677-700`.
 
-Dashboard summary `durationMs` remains the wall-clock span of the latest user turn, ending at the live clock while busy or the final retained message when settled. It is not recorded tool execution time. Activity `runningTools.elapsedMs` remains elapsed time from the tool-call entry, qualified by `elapsedFrom:"tool-call-entry"`. Native task timestamps do not replace either quantity. Source-checked 2026-10-12 against `extensions/agent/durable-observation.ts` (`turnDuration`, `activityMetadata`).
+Dashboard summary `durationMs` remains the wall-clock span of the latest user turn, ending at the live clock while busy or the final retained message when settled. It is not recorded tool execution time. Activity `runningTools.elapsedMs` remains elapsed time from the tool-call entry, qualified by `elapsedFrom:"tool-call-entry"`. Native task timestamps do not replace either quantity. These are the separate `turnDuration` and `activityMetadata` projections in
+`extensions/agent/durable-observation.ts`; native task execution duration does
+not replace them.
 
 ### Catalog view and machine roster
 
@@ -393,7 +516,11 @@ Entry = {id:string,kind:string,communication:CommunicationView,model?:PiMessage[
 
 Entries are oldest first. System and communication bookkeeping entries are hidden. `revision` is an opaque display revision, not a durable replay cursor. Preserve `partial`, coverage, and `nextBefore`; an empty bounded scan with null continuation does not override `complete:false`. Earlier reads scan at most eight source pages of 64 entries. Source: `extensions/agent/dashboard-types.ts:107-135`; `extensions/agent/durable-observation.ts:1037-1057,1102-1200`.
 
-Native assistant and tool-result messages retain optional recorded `durationMs` through snapshot projection and existing terminal component handoff. Assistant duration times the final response stream; tool duration times its executed attempt, not task waits or recovery. Interrupted or unavailable results need not carry duration. The assistant schema permits the native field without a new timing view. Source-checked 2026-10-12 against `extensions/agent/{durable-observation,observation-schema,dashboard-conversation}.ts`, `pi-durable/dist/harness/tool.js`, `pi-ai/dist/utils/event-stream.js`, and coding-agent `dist/modes/interactive/components/tool-execution.js`.
+
+Native assistant and tool-result messages retain optional recorded `durationMs` through snapshot projection and existing terminal component handoff. Assistant duration times the final response stream; tool duration times its executed attempt, not task waits or recovery. Interrupted or unavailable results need not carry duration. The assistant schema permits the native field without a new timing view. Sources: `extensions/agent/{durable-observation,observation-schema,dashboard-conversation}.ts`,
+`pi-durable/dist/harness/tool.js`, `pi-ai/dist/utils/event-stream.js`, and
+coding-agent `dist/modes/interactive/components/tool-execution.js`. These source
+contracts do not establish terminal rendering under every process or task.
 
 **Byte-bound exception:** selection admits the first visible entry even if that entry alone exceeds `maxBytes`. `coverage.bytes` measures source-entry selection, not a hard serialized response bound. Model messages, entry data, and live frames require separate consumer output/memory bounds. Source: `extensions/agent/durable-observation.ts:1063-1097`.
 
@@ -416,7 +543,9 @@ Output is discriminated by `view`:
 
 `CompactEntry` has `{id:number,kind,source,role?,text,truncated,communication:CommunicationView,format:"compact",nextOffset:null,omissions?,toolCalls?,toolResults?,omittedParts?}`. Tool call summaries carry `{callId?,name,arguments,truncated}`; tool result summaries carry `{callId?,name,text,isError,truncated,durationMs?}`. This optional duration is the native recorded execution duration; zero stays present and missing duration stays absent. It is not derived from entry timestamps or running-tool elapsed time. Raw rows omit the compact discriminator and may carry `preview:{text,truncated}` plus `nextOffset`. Omission counters are `{providerSignatures,imagePayloads,redactedThinking}`. Search matches carry `{entryId,kind,source,matchOffset,excerpt,excerptText,truncated}` and their cursor is `{cursor:object|null,skip,scannedBytes}`. Source: `extensions/agent/observation-schema.ts:306-377`.
 
-Activity metadata contains `{owner,live,operation:number|null,runningTools,pending:number|null,streamedText?,lastError?,compactionFailure?,autoRetry?}`. Running tools carry `{toolCallId,name,issuedAt?,elapsedMs?,elapsedFrom?}`. Activity coverage includes scanned entries/bytes, complete, entry/scan-byte/output-byte limit flags, output bytes, omittedEntries, and metadataTruncated. Usage is `{models:{[key]:Usage},tools:{[key]:Usage}}`, with Pi usage values; consumers need not display financial fields to read an answer. Source: `extensions/agent/observation-schema.ts:49-60,379-425`.
+Activity metadata contains `{owner,live,operation:number|null,runningTools,pending:number|null,streamedText?,lastError?,compactionFailure?,autoRetry?}`. Running tools carry `{toolCallId,name,taskId?,parentToolCallId?,parentTaskId?,issuedAt?,elapsedMs?,elapsedFrom?}`.
+Nested rows retain native task and parent-call identity rather than a fabricated
+model-issued result. Missing timing and parent fields remain absent. Activity coverage includes scanned entries/bytes, complete, entry/scan-byte/output-byte limit flags, output bytes, omittedEntries, and metadataTruncated. Usage is `{models:{[key]:Usage},tools:{[key]:Usage}}`, with Pi usage values; consumers need not display financial fields to read an answer. Source: `extensions/agent/observation-schema.ts:49-60,379-425`.
 
 These are retained/read projections, not proof of operation completion outside the requested result reference. Exact continuation uses `nextOffset`; history/activity/search use `nextCursor`. Do not silently exchange them.
 
@@ -426,26 +555,32 @@ These are retained/read projections, not proof of operation completion outside t
 
 Open params are `{token,scope:"conversation",sessionId}` or `{token,scope:"tasks"}`. A token contains 1–128 letters, digits, dots, underscores, colons, or dashes; use a fresh random token for a fresh connection. `observe-open` returns `{token,frame}`. `observe-frame` with `{token}` returns the current frame. `observe-close` with `{token}` returns `{closed:boolean}`. Source: `extensions/agent/durable-host.ts:101-117,841-859`.
 
-After open, subscribe on the **same Client connection**:
+After open, acquire a Feed on the **same accepted connection**:
 
 ```text
-client.subscribeService(
-  {serverId}, "pi.agent.host.observe:" + token, "singleton", listener
-)
+host.get(Feed, {serverId, kind:"observation", token}, {at:serverId})
 ```
 
-The host tracks tokens per connection and rejects a subscription to an unowned token. Its snapshot is:
+The host tracks tokens by the assigned connection principal and rejects an
+unowned token. Subscribe to the handle's `value`. Ignore `ready:false` and
+undefined hydration; the first `ready:true` value is the baseline
+`ObservationFrame`. Prefer that baseline to the earlier open result. Later
+values are complete current frames. A ready `null` value means the observation
+is unavailable. Chord applies its own deltas internally; consumers do not parse
+retired service snapshots or custom delta envelopes.
 
-```text
-{
-  serviceId:"pi.agent.host.observe", mode:"singleton",
-  instances:[{members:[{
-    name:"frame",kind:"state",sequence:frame.revision,ops:[["r",frame]]
-  }]}]
-}
-```
-
-The snapshot serviceId intentionally lacks the token suffix. Later state updates use member `frame` and root-replacement ops `[["r",frame]]`. Handle service unavailability separately. Inspect the subscription snapshot before `subscription.start()`; later buffered updates then follow it. Prefer that snapshot to the earlier open result. Source: `extensions/agent/host-process.ts:403-440`; `extensions/agent/host-client.ts:697-740`; `extensions/agent/live-frames.ts:179-185`.
+Release the Feed handle and subscription, then await `observe-close` on the
+same accepted connection. The host retains token ownership during automatic
+cleanup and joins that cleanup before the explicit close response. A repeated
+close returns `{closed:false}` for an absent token; this acknowledges cleanup,
+not an error. Foreign active tokens and malformed requests remain invalid.
+Disconnect releases all connection-owned tokens, including admission races.
+The disconnected attachment retains its token ownership until all pending native
+closes settle; another connection cannot use those tokens during cleanup.
+Reconnect uses fresh tokens and a new baseline, not old live state.
+Source: `extensions/agent/host-process.ts:323-334,385-395,495-505`.
+Mark observations unavailable immediately on link loss. Hydration supplies a
+current snapshot, not replay of missed events.
 
 A conversation frame is:
 
@@ -459,7 +594,11 @@ A conversation frame is:
 
 `entries` are committed visible entries; `live` is uncommitted assistant/tool output. Live IDs include `live:generation` and `live:tool:<callId>`. They must not become committed history. The frame is coalesced current state, not an append-only event stream. Revision ordering applies within the current observation lifetime; a new connection/token starts a new baseline. Source: `extensions/agent/live-frames.ts:15-30,74-140`; `extensions/agent/host-client.ts:697-741`.
 
-`ConversationStatus` includes `{conversationId,identity,busy,lastText,live,inbox,agent,tasks,submissions}` and optional `name`, `owner`, `firstMessage`, `forkSource`, `ownerTaskId`, `awaiting`, `cwd`, `lastTextRole`, `usage`, `timers`, `providerBlock`. `agent` carries `{model?:{provider,modelId},thinkingLevel,extensions:string[],tools:string[],cwd?,instructions?}`. Tasks carry `{id,kind,status,background,owner?,abortRequested}`; submissions carry `{id,type:"input"|"write",status,requestId?,entryId?,answerEntryId?,reason?}`. Native `live`, `inbox`, usage, and task statuses belong to the exact declared Durable representation. Source: `extensions/agent/durable-observation.ts:99-156`; `providerBlock`: `extensions/agent/observation-schema.ts:143-144`.
+`ConversationStatus` includes `{conversationId,identity,busy,lastText,live,inbox,agent,tasks,submissions}` and optional `name`, `owner`, `firstMessage`, `forkSource`, `ownerTaskId`, `awaiting`, `cwd`, `lastTextRole`, `usage`, `timers`, `providerBlock`. `agent` carries `{model?:{provider,modelId},thinkingLevel,extensions:string[],tools:string[],cwd?,instructions?}`. Tasks carry `{id,kind,status,background,owner?,abortRequested}`; submissions carry `{id,type:"input"|"write",status,requestId?,entryId?,answerEntryId?,reason?}`. Native `live`, `inbox`, usage, and task statuses belong to the exact declared
+Durable representation. `live.nestedTools` has real task IDs, parent call/task
+IDs, arguments, progress, and optional terminal summaries. `live.compactionFailure`
+contains its task ID, reason, and error, not a fabricated timestamp. The
+presentation health projection therefore keeps `at` optional. Source: `extensions/agent/durable-observation.ts:99-156`; `providerBlock`: `extensions/agent/observation-schema.ts:143-144`.
 
 A tasks frame is `{scope:"tasks",storageId,revision,observedAt,tasks,labels,coverage:{complete,live}}`. Task rows contain `{id,kind,conversationId,owner?,background,abortRequested,status,phase,waitsOn,policy?,outcome?,conversations}`; labels contain `{conversationId,identity,name?,firstMessage?}`. Source: `extensions/agent/live-frames.ts:33-70`.
 
@@ -467,7 +606,12 @@ Dispose the subscription and close its token when no longer observed. Disconnect
 
 ### Changes
 
-After checking the `changes` operation identity, subscribe to `pi.agent.host.changes`, mode `singleton`. Its state member is `change`; the baseline uses sequence 0 and `ops:[["r",{revision:0}]]`. Later revisions coalesce actual runtime writes per microtask. They are subscription-local invalidations, not global catalog deltas or replay cursors. Source: `extensions/agent/host-process.ts:367-399`; `extensions/agent/host-client.ts:586-610`.
+After checking the `changes` operation identity, acquire Feed with
+`{serverId,kind:"changes"}` and subscribe to `value`. Ignore hydration until
+`ready:true`; its value is `{revision:number}`. Later revisions coalesce actual
+runtime writes per microtask. Read-only operations create no change event.
+These are subscription-local invalidations, not catalog deltas or replay
+cursors. Release the handle and subscription on close.
 
 ## Operator admission and controls
 
@@ -519,8 +663,8 @@ Result:
 
 There are three distinct IDs:
 
-1. The public transport's correlation ID, owned by pi-client.
-2. `wireRequestId`, the second service argument, retained by a caller across safe link recovery.
+1. Chord's call ID, owned by its runtime.
+2. `wireRequestId`, the Endpoint request's `requestId`, retained by a caller across safe link recovery.
 3. Native `params.requestId`, the admission/mutation key. The runtime fills a missing native key from the wire key for task-submit, profile-update, submit, rewind, and report.
 
 Keep both application keys stable for the same logical request, including its target and original input. Never reuse a key for edited text. Request admission deduplicates; this is not an exactly-once guarantee for external tools or provider calls. Source: `extensions/agent/host-client.ts:499-516`; `extensions/agent/host-process.ts:517-528`; `extensions/agent/durable-runtime.ts:477-480`; `extensions/agent/durable-controls.ts:235-240,389-423`.
@@ -534,7 +678,11 @@ submit report acknowledge inspect status list receipts dashboard snapshot
 observe-open observe-frame observe-close timer-list
 ```
 
-Unknown methods, abort, configure, fork, rewind, compact, spawn, place, reset, close, and timer mutations are not made retry-safe merely by having a request ID. A consumer may use a narrower retry policy. Observation reconnection creates fresh tokens and a new baseline. Only `receipts` with `wait:true` forwards request cancellation to the host; other client cancellation/disconnect must not cancel admitted work. Source: `extensions/agent/host-protocol.ts:196-235`; `extensions/agent/host-client.ts:546-553,697-740`.
+Unknown methods, abort, configure, fork, rewind, compact, spawn, place, reset, close, and timer mutations are not made retry-safe merely by having a request ID. A consumer may use a narrower retry policy. Observation reconnection creates fresh tokens and a new baseline. The shared transport supports caller-local cancellation of a Chord wait. The
+Agent adapter forwards its call signal to the native runtime only for
+`receipts` with `wait:true`; other cancellation or disconnect must not cancel
+admitted work. The separate ordinary-primary `trustPrompt` also supports caller
+cancellation. Observation cleanup releases handles and tokens, not native work. Source: `extensions/agent/host-protocol.ts:196-235`; `extensions/agent/host-client.ts:546-553,697-740`.
 
 Admission and answer delivery are separate. Native result inspection or retained delivery receipts establish result state. Acknowledgment marks receipt delivery, not operator acceptance of the answer. Self-owned result delivery acknowledges in place without another model input. Ordinary RPC prompt IDs have no equivalent native retry guarantee. Source: `extensions/agent/durable-controls.ts:905-936,995-1043,1103-1140`; `extensions/agent/README.md:1453-1460,1535-1547`.
 
@@ -570,7 +718,7 @@ settings, credentials, models, or extensions.
 without reading catalog or storage. `version` is exactly `retained-read/1.0.0`.
 The loaded reader derives upstream versions and both operation values from
 `HOST_CONTRACT`; it advertises no other operations. See the
-[descriptor fixture](#fixture-retained-read-descriptor). Its concrete 1.1.0
+[descriptor fixture](#fixture-retained-read-descriptor). Its concrete 1.2.0
 values describe the current example, not a supported-version ceiling.
 
 Default mode reads exactly one UTF-8 JSON request on stdin followed by EOF.
@@ -781,7 +929,7 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ### Fixture: operator-input
 
 ```json
-{"serviceId":"pi.agent.host","member":"task-submit","args":[{"sessionId":"00000000-0000-4000-8000-000000000001","message":"Describe the current state.","origin":"operator","requester":"consumer:example","replyTo":"00000000-0000-4000-8000-000000000001","requestId":"input-example","whenBusy":"steer"},"input-example",{"request":"task-submit/1.0.0","response":"task-submit/1.2.0"}]}
+{"method":"task-submit","params":{"sessionId":"00000000-0000-4000-8000-000000000001","message":"Describe the current state.","origin":"operator","requester":"consumer:example","replyTo":"00000000-0000-4000-8000-000000000001","requestId":"input-example","whenBusy":"steer"},"requestId":"input-example","contract":{"request":"task-submit/1.0.0","response":"task-submit/1.2.0"}}
 ```
 
 ### Fixture: admitted-input
@@ -811,19 +959,19 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ### Fixture: change-state
 
 ```json
-{"type":"state","member":"change","sequence":1,"ops":[["r",{"revision":1}]]}
+{"ready":true,"value":{"revision":1}}
 ```
 
 ### Fixture: retained-read-descriptor
 
 ```json
-{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.1.0","durable":"1.1.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.1.0"},"inspect":{"request":"inspect/1.1.0","response":"9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a","durable":"1.1.0"}}}
+{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.2.0","durable":"1.2.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.2.0"},"inspect":{"request":"inspect/1.1.0","response":"d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b","durable":"1.2.0"}}}
 ```
 
 ### Fixture: retained-read-request
 
 ```json
-{"version":"retained-read/1.0.0","id":"retained-example","store":"/example/sessions","sessionId":"00000000-0000-4000-8000-000000000001:2","method":"snapshot","expected":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.1.0"},"params":{"limit":50,"maxBytes":65536}}
+{"version":"retained-read/1.0.0","id":"retained-example","store":"/example/sessions","sessionId":"00000000-0000-4000-8000-000000000001:2","method":"snapshot","expected":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.2.0"},"params":{"limit":50,"maxBytes":65536}}
 ```
 
 ### Fixture: retained-read-success
