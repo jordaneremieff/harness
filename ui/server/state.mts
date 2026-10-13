@@ -171,7 +171,7 @@ export class StateStore {
   private poisoned = false;
   private readonly refusedTargets = new Set<string>();
   private imageRecordsRefused = false;
-  private refusedOperationCount = 0;
+  private readonly refusedOperations = new Set<string>();
   private refusedOperationBytes = 0;
   private workspaces = new Map<string, Workspace>();
   private targetRecords = new Map<string, StoredTarget>();
@@ -306,7 +306,7 @@ export class StateStore {
   private refuseSavedRecord(directory: string, name: string, value: unknown, error: unknown): void {
     if (!(error instanceof StateError) || error.code !== 'state_record_refused') throw error;
     if (directory === 'targets') this.refusedTargets.add(name.slice(0, -5));
-    if (directory === 'operations') { this.refusedOperationCount++; this.refusedOperationBytes += Buffer.byteLength(JSON.stringify(value)); }
+    if (directory === 'operations') { this.refusedOperations.add(name.slice(0, -5)); this.refusedOperationBytes += Buffer.byteLength(JSON.stringify(value)); }
     this.imageRecordsRefused = true;
     this.changed('notice', {level: 'warning', code: 'state_record_refused', message: `${directory}/${name}: ${error.message}. The saved file remains unchanged.`});
   }
@@ -507,8 +507,9 @@ export class StateStore {
   }
   async writeOperation(value: OperationRecord): Promise<void> {
     if (!UUID.test(value.view.id)) throw new StateError('invalid_request', 'Invalid operation identity');
+    if (this.refusedOperations.has(value.view.id)) throw new StateError('state_record_refused', 'A refused saved operation cannot be rewritten', 503);
     this.requireWorkspace(value.workspaceId); this.validateOperationInput(value);
-    if (this.operationRecords.size + this.refusedOperationCount + (this.operationRecords.has(value.view.id) ? 0 : 1) + this.reservedQueueRows(value) > LIMITS.operations) throw new StateError('capacity', 'Operation record limit reached', 429);
+    if (this.operationRecords.size + this.refusedOperations.size + (this.operationRecords.has(value.view.id) ? 0 : 1) + this.reservedQueueRows(value) > LIMITS.operations) throw new StateError('capacity', 'Operation record limit reached', 429);
     if (Buffer.byteLength(JSON.stringify(value)) > 128 * 1024) throw new StateError('payload_too_large', 'Operation exceeds its file limit', 413);
     const previous = this.operationRecords.get(value.view.id);
     const size = Buffer.byteLength(JSON.stringify(value));
@@ -520,7 +521,7 @@ export class StateStore {
     this.changed('operation.changed', value.view, value.workspaceId, value.view.target); this.publishRecoveryGuards();
   }
   operationStoreBytes(): number { return this.operationBytes + this.refusedOperationBytes + this.reservedQueueRows() * 128 * 1024; }
-  operationStoreCount(): number { return this.operationRecords.size + this.refusedOperationCount + this.reservedQueueRows(); }
+  operationStoreCount(): number { return this.operationRecords.size + this.refusedOperations.size + this.reservedQueueRows(); }
   operationMetadata(): OperationMetadata[] {
     const protectedIds = this.protectedOperationIds();
     return [...this.operationRecords.values()].map(({view, workspaceId, input, inputResolved, retainedInput}) => ({workspaceId, inputResolved, ...(input ? {input: true as const} : {}), ...(retainedInput ? {retainedInput} : {}), ...(protectedIds.has(view.id) ? {protected: true} : {}), view: {id: view.id, kind: view.kind, state: view.state, createdAt: view.createdAt, updatedAt: view.updatedAt, ...(view.target ? {target: structuredClone(view.target)} : {})}}));

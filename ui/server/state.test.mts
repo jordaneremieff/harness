@@ -94,7 +94,7 @@ for (const owner of ['draft', 'input'] as const) {
     const operations = new Operations(initial), clearId = await operations.beginQueueClear(f.workspace.id, validTarget, 1);
     await operations.retainQueue(clearId, {steering: ['exact recovered text'], followUp: []});
     const recoveredId = initial.records().find(record => record.queueRecovery?.clearOperationId === clearId)?.view.id; assert.ok(recoveredId);
-    const operationCount = initial.operationStoreCount();
+    const operationCount = initial.operationStoreCount(), originalOperation = initial.record(f.operationId);
     await initial.close();
     const source = owner === 'draft' ? f.targetPath : f.operationPath;
     const record = JSON.parse(await readFile(source, 'utf8')); delete record[owner].images;
@@ -109,6 +109,8 @@ for (const owner of ['draft', 'input'] as const) {
       assert.equal(journal.notices(f.workspace.id).some(notice => notice.code === 'state_record_refused' && notice.message.includes(`Saved ${owner} image metadata requires an array`)), true);
       assert.equal(reopened.records().some(record => record.view.id === f.operationId), false);
       assert.equal(reopened.operationStoreCount(), operationCount);
+      await assert.rejects(reopened.writeOperation(originalOperation), {code: 'state_record_refused', message: 'A refused saved operation cannot be rewritten'});
+      assert.equal(await readFile(f.operationPath, 'utf8'), before[1]);
       assert.equal(reopened.targetIndex(f.workspace.id).some(target => target.targetKey === f.target.targetKey), owner === 'input');
       assert.equal((await reopened.getRetainedInput(f.workspace.id, recoveredId)).text, 'exact recovered text');
       const next = new Operations(reopened), nextId = await next.beginQueueClear(f.workspace.id, validTarget, 1);
@@ -122,6 +124,26 @@ for (const owner of ['draft', 'input'] as const) {
     await assert.rejects(stat(join(f.root, 'lock.json')), {code: 'ENOENT'});
   });
 }
+
+test('queue publication never rewrites a refused saved row at the same operation identity', async t => {
+  const f = await setup(t); assert.ok(f.target.target.kind === 'primary');
+  const operations = new Operations(f.store), queue = {steering: ['exact queue text'], followUp: []};
+  const clearId = await operations.beginQueueClear(f.workspace.id, f.target.target, 1);
+  await operations.retainQueue(clearId, queue);
+  const row = f.store.records().find(record => record.queueRecovery?.clearOperationId === clearId); assert.ok(row);
+  await f.store.close();
+  const rowPath = join(f.root, 'operations', `${row.view.id}.json`), clearPath = join(f.root, 'operations', `${clearId}.json`);
+  const savedRow = JSON.parse(await readFile(rowPath, 'utf8')); delete savedRow.input.images;
+  const bytes = JSON.stringify(savedRow); await writeFile(rowPath, bytes);
+  const anchor = JSON.parse(await readFile(clearPath, 'utf8')); anchor.queueClear.phase = 'retaining'; anchor.view.state = 'dispatched';
+  await writeFile(clearPath, JSON.stringify(anchor));
+  const reopened = await StateStore.open(f.root);
+  try {
+    await assert.rejects(new Operations(reopened).retainQueue(clearId, queue), {code: 'state_record_refused', message: 'A refused saved operation cannot be rewritten'});
+    assert.equal(reopened.records().some(record => record.view.id === row.view.id), false);
+    assert.equal(await readFile(rowPath, 'utf8'), bytes);
+  } finally {await reopened.close();}
+});
 
 test('current text-only writers persist explicit image arrays and reopen without normalization', async t => {
   const f = await savedTextInput(t);
