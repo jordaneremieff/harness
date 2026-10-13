@@ -5,13 +5,14 @@ import { AgentError, createAgentService, type AgentService, type AgentServiceOpt
 import { PrimarySession, type PrimarySessionOptions } from '../rpc/session.mts';
 import { LIMITS, type AgentCapabilities, type Bootstrap, type EventData, type EventName, type PrimaryView, type ProjectedFrame, type Snapshot, type Target, type TargetPreparation } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
+import * as v from './validate.mts';
 import { Journal, type Measure } from './journal.mts';
 import { Operations } from './operations.mts';
 import { StateStore } from './state.mts';
 import { projectFrame, projectRoster, safeText } from './projection.mts';
 import { pageEntries } from './history.mts';
 import { budgetSnapshot } from './snapshot.mts';
-import type { RequestContext } from './http.mts';
+import type { RequestContext, ImageUploadContext, ImageUploadHeaders } from './http.mts';
 import { dispatchPrimary } from './routes-primary.mts';
 import { dispatchAgent } from './routes-agent.mts';
 import { dispatchView } from './routes-view.mts';
@@ -96,7 +97,7 @@ export class Registry {
   }
   private capabilities(supported?: Record<string,boolean>): AgentCapabilities {
     return {history: supported?.snapshot === true, observe: ['observe-open','observe-frame','observe-close','snapshot'].every(key=>supported?.[key] === true),
-      input:supported?.['task-submit'] === true,abort:supported?.abort === true,configure:false,inspect:supported?.inspect === true};
+      input:supported?.['task-submit'] === true,images:false,abort:supported?.abort === true,configure:false,inspect:supported?.inspect === true};
   }
   async prepareTarget(workspace: string, target: Extract<Target,{kind:'agent'}>): Promise<TargetPreparation> {
     let availability: TargetPreparation['availability'] = 'live';
@@ -189,14 +190,19 @@ export class Registry {
   }
   private async openOnce(cwd: string, sessionFile?: string, workspaceId?: string) {
     this.admitPrimary();
-    const key = randomUUID(); let session: PrimarySession;
+    const key = randomUUID(); let session: PrimarySession; let textClearId: string | undefined;
     try {
       if(sessionFile) await this.claimPath(sessionFile,key);
       this.admitPrimary();
       session = (this.options.primary ?? (options=>new PrimarySession(options)))({key,cwd,sessionFile,executable:this.options.executable,
         measure:this.options.measure ? (stage,id,at,bytes)=>this.options.measure?.(stage,`${key}:${id}`,at,bytes) : undefined,
         publish: (name,target,data) => this.publish(name,target,data), onChange:()=>this.metadataChanged(),
-        onRecoveredQueue:async queue=>this.operations.retainQueue(this.queueWorkspaces.get(key)??await this.workspace(),{kind:'primary',key,epoch:session.view.epoch},queue)});
+        onRecoveredQueue: async queue => {
+          textClearId ??= await this.operations.beginQueueClear(this.queueWorkspaces.get(key) ?? await this.workspace(), {kind: 'primary', key, epoch: session.view.epoch}, queue.steering.length + queue.followUp.length);
+          const clearId = textClearId;
+          try { await this.operations.retainQueue(clearId, queue); textClearId = undefined; }
+          catch (error) { await this.operations.settleQueueClearFailure(clearId, true); throw error; }
+        }});
       this.sessions.set(key,session); this.saved.set(key,session.view);
       if(workspaceId) this.queueWorkspaces.set(key,workspaceId);
       await this.store.savePrimaries(this.views());
@@ -330,6 +336,29 @@ export class Registry {
   }
   detached(workspaceId: string) {
     if(!this.journal.workspaceClients(workspaceId)) void this.observe(workspaceId).catch(()=>{});
+  }
+  async uploadImage(context: ImageUploadContext, headers: ImageUploadHeaders, body: AsyncIterable<Uint8Array>): Promise<unknown> {
+    const workspace = v.string(context.parts[2], 'workspace ID'), key = v.string(context.parts[4], 'target key');
+    const saved = await this.store.getTarget(workspace, key);
+    const allowed = saved.target.kind === 'primary' ? ['name', 'epoch'] : ['name'];
+    for (const name of context.url.searchParams.keys()) if (!allowed.includes(name) || context.url.searchParams.getAll(name).length !== 1) throw new ApiError('invalid_request', 'Image intake query is invalid.');
+    if (context.url.searchParams.getAll('name').length !== 1) throw new ApiError('invalid_request', 'Image intake requires one display name.');
+    const name = v.imageName(context.url.searchParams.get('name'));
+    const epoch = saved.target.kind === 'primary' ? v.integer(Number(context.url.searchParams.get('epoch')), 'primary epoch', 1) : undefined;
+    if (saved.target.kind === 'primary' && context.url.searchParams.getAll('epoch').length !== 1) throw new ApiError('invalid_request', 'Image intake requires one primary epoch.');
+    const guard = () => {
+      context.authorize();
+      if (this.closing) throw new ApiError('not_ready', 'The backend no longer accepts work.', 503);
+      if (saved.target.kind === 'primary') this.primary(saved.target.key, saved.target.epoch, true);
+      else throw new ApiError('unsupported', 'This connection does not accept images. Use a file reference.', 409);
+    };
+    const reservation = await this.store.reserveImageUpload(workspace, key, {name, mimeType: headers.mimeType, epoch, declaredBytes: headers.declaredBytes}, guard);
+    try {
+      const intake = await this.store.beginImageUpload(reservation);
+      for await (const chunk of body) { guard(); await intake.write(chunk); }
+      guard(); const image = await intake.finish();
+      return await this.store.finishImageUpload(reservation, image, guard);
+    } finally { await this.store.cancelImageUpload(reservation); }
   }
   async dispatch(context: RequestContext): Promise<unknown> {
     if(this.closing) throw new ApiError('not_ready','The backend no longer accepts work.',503);

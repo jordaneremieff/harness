@@ -39,7 +39,7 @@ function agents() {
 }
 type Reply = {status: number; headers: IncomingHttpHeaders; bytes: Buffer; text: string; json?: ApiResult<unknown>};
 async function send(origin: string, path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}): Promise<Reply> {
-  const raw = typeof body === 'string' ? body : body === undefined ? undefined : JSON.stringify(body);
+  const raw = body instanceof Uint8Array ? Buffer.from(body) : typeof body === 'string' ? body : body === undefined ? undefined : JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const req = request(origin, {path, method, agent: false, headers: {...(raw === undefined ? {} : {'Content-Type': 'application/json', ...(headers['Transfer-Encoding'] ? {} : {'Content-Length': String(Buffer.byteLength(raw))})}), ...headers}}, res => {
       const chunks: Buffer[] = []; res.on('data', chunk => chunks.push(Buffer.from(chunk))); res.on('error', reject);
@@ -101,7 +101,7 @@ function inProcessHttp(context:TestContext, identity?: UiIdentity) {
     const response=new MemoryResponse();const handler=http as unknown as {handle(request:IncomingMessage,response:ServerResponse):Promise<void>};
     await handler.handle(request,response as unknown as ServerResponse);return response;
   };
-  return {http,backend,generations,diagnostics,rows,counts,invoke,advance:(value:number)=>{now=value;}};
+  return {http,backend,generations,diagnostics,rows,counts,invoke,cookie,advance:(value:number)=>{now=value;}};
 }
 
 test('leased documents carry their retained generation identity and matching HEAD lengths', async context => {
@@ -510,4 +510,32 @@ test('browser asset routes preserve method errors and Host, Origin, and fetch me
   for (const path of ['/web/not-built.js', '/favicon.ico', '/unknown.svg', '/favicon.svg/extra']) {
     assert.equal((await send(app.origin, path)).status, 404, path);
   }
+});
+
+test('raw image intake authenticates before bytes, saves a target-local lease and never falls back to text Send', {timeout: 15000}, async context => {
+  const app = await fixture(context); await app.login(); const boot = data<Bootstrap>(await app.call('/api/bootstrap')); const events = await stream(context, app, boot);
+  const primary = await openPrimary(app, events); const saved = await app.registry.store.target(boot.workspace.id, primary.target);
+  const raw = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+  const path = `/api/workspaces/${boot.workspace.id}/targets/${saved.targetKey}/images`; const query = `?name=pixel.png&epoch=${primary.target.epoch}`;
+  assert.equal((await app.call(path + query, 'POST', raw, {Cookie: '', 'Content-Type': 'image/png'})).status, 401);
+  assert.equal((await app.call(`${path + query}&workspace=${boot.workspace.id}`, 'POST', raw, {'Content-Type': 'image/png'})).status, 400);
+  assert.equal((await app.call(path + query, 'POST', raw, {'Content-Type': 'image/gif'})).status, 400);
+  const reply = await app.call(path + query, 'POST', raw, {'Content-Type': 'image/png'}); assert.equal(reply.status, 200);
+  const staged = data<import('../shared/api.ts').ImageUploadView>(reply); assert.equal(staged.image.name, 'pixel.png');
+  const read = await app.call(`${path}/${staged.image.digest}`); assert.equal(read.status, 200); assert.deepEqual(read.bytes, raw); assert.match(String(read.headers['cache-control']), /no-store/); assert.equal(read.headers['x-content-type-options'], 'nosniff');
+  const draft = data<import('../shared/api.ts').DraftView>(await app.call(path.replace(/images$/, 'draft'), 'PUT', {expectedRevision: 0, text: '', mode: 'prompt', images: [staged.image]}));
+  const id = await app.reserve('primary.input', primary.target);
+  const receipt = data<OperationView>(await app.call(`/api/primaries/${primary.target.key}/inputs`, 'POST', {epoch: primary.target.epoch, message: '', mode: 'prompt', draftRevision: draft.revision, images: draft.images}, {'Idempotency-Key': id}));
+  assert.equal(receipt.state, 'rejected'); assert.equal(receipt.error?.code, 'unsupported');
+  assert.equal((await app.registry.store.getTarget(boot.workspace.id, saved.targetKey)).draft.images.length, 1);
+  assert.equal(app.registry.primary(primary.target.key).view.activity, 'idle');
+});
+test('raw body deadline cancels a stalled producer without an unhandled rejection', async context => {
+  const f = inProcessHttp(context); context.mock.timers.enable({apis: ['setTimeout']}); let reached!: () => void; let cancelled = false;
+  const entered = new Promise<void>(resolve => {reached = resolve;});
+  f.backend.uploadImage = async (ctx, _headers, body) => {reached(); try {for await (const _chunk of body) ctx.authorize();} finally {cancelled = ctx.signal.aborted;} return {};};
+  const request = new Readable({read() {}}) as unknown as IncomingMessage; request.url = '/api/workspaces/w/targets/t/images?name=x.png&epoch=1'; request.method = 'POST';
+  request.headers = {host: '127.0.0.1:12345', origin: f.http.auth.origin, cookie: f.cookie, 'content-type': 'image/png'};
+  const response = new MemoryResponse(); const pending = (f.http as unknown as {handle(request: IncomingMessage, response: ServerResponse): Promise<void>}).handle(request, response as unknown as ServerResponse);
+  await entered; context.mock.timers.tick(LIMITS.imageReceiveMs); await pending; assert.equal(response.statusCode, 408); assert.equal(cancelled, true); request.destroy();
 });

@@ -30,10 +30,12 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     return registry.startAgent(workspace,identity,v.string(context.operationId,'start request ID',128));
   }
   if(parts[3]==='inputs') {
-    v.fields(body,['message','mode','draftRevision'],['message','mode','draftRevision']);
-    const message=v.text(body.message); const mode=v.choice(body.mode,['steer','followUp'],'agent mode'); const draftRevision=v.integer(body.draftRevision,'draft revision');
+    v.fields(body,['message','mode','draftRevision','images'],['message','mode','draftRevision']);
+    const images = v.normalizeDraftImages(body.images);
+    const message=v.text(body.message, images.length > 0); const mode=v.choice(body.mode,['steer','followUp'],'agent mode'); const draftRevision=v.integer(body.draftRevision,'draft revision');
     const state=await registry.store.target(workspace,target);
-    return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.input',target,body,input:{targetKey:state.targetKey,text:message,mode,draftRevision}},async()=> {
+    return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.input',target,body,input:{targetKey:state.targetKey,text:message,mode,draftRevision,images}},async()=> {
+      if (images.length) throw new ApiError('unsupported', 'This connection does not accept images. Use a file reference.', 409);
       const admission=await registry.agents.submit(identity,{operationId:context.operationId ?? '',message,mode});
       return {state:'accepted',receipt:{kind:'durable',identity:admission.identity,submissionId:admission.submissionId,requestId:admission.result.requestId ?? '',deduped:admission.deduped}};
     });

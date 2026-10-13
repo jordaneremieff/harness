@@ -3,6 +3,7 @@ import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { ApiError } from './errors.mts';
 import { execute } from './dispatch.mts';
+import {ImageResponse} from './images.mts';
 import * as v from './validate.mts';
 import { validateConversationLayout } from './state.mts';
 
@@ -18,12 +19,22 @@ export async function dispatchView(registry:Registry,context:RequestContext):Pro
   await registry.store.workspace(workspace);
   if(parts[3]==='selection') return selection(registry,workspace,body);
   if(parts[3]==='unconfirmed') return unconfirmed(registry,workspace,context);
+  return targetAction(registry, workspace, context);
+}
+async function targetAction(registry: Registry, workspace: string, context: RequestContext): Promise<unknown> {
+  const {parts, body, method} = context;
   const key=v.string(parts[4],'target key');
+  if (parts[5] === 'images' && method === 'GET') {
+    if (context.url.searchParams.size) throw new ApiError('invalid_request', 'Saved image reads do not accept query fields.');
+    const digest = v.string(parts[6], 'image digest', 64);
+    if (!/^[a-f0-9]{64}$/.test(digest)) throw new ApiError('invalid_request', 'Image digest is invalid.');
+    return new ImageResponse(await registry.store.readDraftImage(workspace, key, digest));
+  }
   if(method==='GET') return registry.store.getTarget(workspace,key);
   const expectedRevision=v.integer(body.expectedRevision,'revision');
   if(parts[5]==='draft') {
-    v.fields(body,['expectedRevision','text','mode'],['text','mode','expectedRevision']);
-    return registry.store.putDraft(workspace,key,{expectedRevision,text:v.text(body.text,true),mode:v.choice(body.mode,['prompt','steer','followUp'],'draft mode')});
+    v.fields(body,['expectedRevision','text','mode','images','recoverySource'],['text','mode','expectedRevision']);
+    return registry.store.putDraft(workspace,key,{expectedRevision,text:v.text(body.text,true),mode:v.choice(body.mode,['prompt','steer','followUp'],'draft mode'),images:v.normalizeDraftImages(body.images),...(body.recoverySource !== undefined ? {recoverySource:v.string(body.recoverySource,'recovery source')} : {})});
   }
   if(parts[5]==='reading') {
     v.fields(body,['expectedRevision','anchorId','offsetPx','followTail'],['expectedRevision','anchorId','offsetPx','followTail']);
@@ -48,10 +59,10 @@ async function prepareTarget(registry:Registry,workspace:string,body:Record<stri
 async function unconfirmed(registry:Registry,workspace:string,context:RequestContext) {
   const {parts,body,method}=context;
   const id=v.string(parts[4],'operation ID');
-  if(method==='GET') return registry.store.getUnconfirmed(workspace,id);
-  if(method==='DELETE') {await registry.store.discardUnconfirmed(workspace,id);return {removed:true};}
+  if(method==='GET') return registry.store.getRetainedInput(workspace,id);
+  if(method==='DELETE') {await registry.store.discardRetainedInput(workspace,id);return {removed:true};}
   v.fields(body,['expectedDraftRevision'],['expectedDraftRevision']);
-  return registry.store.restoreUnconfirmed(workspace,id,v.integer(body.expectedDraftRevision,'draft revision'));
+  return registry.store.restoreRetainedInput(workspace,id,v.integer(body.expectedDraftRevision,'draft revision'));
 }
 async function selection(registry:Registry,workspace:string,body:Record<string,unknown>) {
   v.fields(body,['expectedRevision','primaryKey','selectedTarget','panelVisible','sidebarVisible','sidebarWidth','appearance','enterSendsMessages','conversationLayout'],['expectedRevision']);
@@ -96,6 +107,7 @@ async function operations(registry:Registry,context:RequestContext) {
   const record=registry.store.record(id);
   if(record.view.kind!=='agent.input'||record.view.state!=='uncertain'||record.view.target?.kind!=='agent'||!record.input) throw new ApiError('unsupported','Only uncertain native inputs support explicit same-key retry.');
   const input=record.input; const target=record.view.target;
+  if (input.images?.length) throw new ApiError('unsupported', 'Image retry requires a connection with validated image input support.', 409);
   const captured={message:input.text,mode:input.mode,draftRevision:input.submittedDraftRevision};
   return execute(registry,id,{workspaceId:record.workspaceId,kind:'agent.input',target,body:captured,
     input:{targetKey:input.targetKey,text:input.text,mode:input.mode,draftRevision:input.submittedDraftRevision},retryUncertainNative:true},async()=> {

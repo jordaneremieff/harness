@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ImageView, ImageSource, PartView } from '../shared/api.ts';
+import type { DraftImage, ImageView, ImageSource, PartView } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 
 export const IMAGE_BYTES = 8 * 1024 * 1024;
@@ -57,6 +57,14 @@ function jpeg(bytes: Buffer): {width: number; height: number} {
   }
   return invalid('JPEG dimensions are unavailable within the header limit.');
 }
+export type ValidatedImage = Omit<DraftImage, 'name'>;
+/** Binary policy is shared with transcript decoding; callers run it in workers. */
+export function validateImageBytes(raw: Uint8Array, mimeType: DraftImage['mimeType']): ValidatedImage {
+  const data = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+  if (!data.length || data.length > IMAGE_BYTES || !['image/png', 'image/jpeg'].includes(mimeType)) invalid('Image bytes or type exceed the allowed bounds.');
+  const size = mimeType === 'image/png' ? png(data) : jpeg(data);
+  return {digest: createHash('sha256').update(data).digest('hex'), mimeType, bytes: data.length, ...size};
+}
 function decode(raw: unknown): {view: ImageView; data: Buffer} {
   const part = record(raw);
   if (part.type !== 'image' || !['image/png', 'image/jpeg'].includes(String(part.mimeType))) invalid('Only static PNG and JPEG images are supported.');
@@ -65,9 +73,8 @@ function decode(raw: unknown): {view: ImageView; data: Buffer} {
   const data = Buffer.from(part.data, 'base64');
   if (data.length > IMAGE_BYTES || data.toString('base64') !== part.data) invalid('Image base64 is invalid or exceeds the limit.');
   const mimeType = part.mimeType as ImageView['mimeType'];
-  const size = mimeType === 'image/png' ? png(data) : jpeg(data);
-  const digest = createHash('sha256').update(data).digest('hex');
-  return {view: {type: 'image', mimeType, digest, bytes: data.length, ...size, alt: `Transcript image (${mimeType === 'image/png' ? 'PNG' : 'JPEG'}, ${size.width} × ${size.height})`}, data};
+  const image = validateImageBytes(data, mimeType);
+  return {view: {type: 'image', ...image, alt: `Transcript image (${mimeType === 'image/png' ? 'PNG' : 'JPEG'}, ${image.width} × ${image.height})`}, data};
 }
 /** Projection emits metadata only and never retains the encoded or decoded image. */
 export function imagePart(raw: unknown): PartView {

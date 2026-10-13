@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { DraftView, Target } from '../shared/api.ts';
 import { acknowledgeDraft, applyEditorSuggestion, beginDraftSave, captureSubmission, createDraft, draftSaved,
   editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, settleSubmission, useEditorSuggestion } from './draft-state.ts';
-const view = (revision = 0, text = '', mode = 'prompt'): DraftView => ({revision, text, mode, persisted: true});
+const view = (revision = 0, text = '', mode = 'prompt'): DraftView => ({revision, text, mode, images: [], persisted: true});
 const target: Target = {kind: 'primary', key: 'p', epoch: 1};
 
 test('a draft save never replaces newer edits and sends only one revision at a time', () => {
@@ -50,7 +50,7 @@ test('save rejection retains local text and exposes the current server revision'
 test('submission captures exact target and saved text and blocks duplicate pending edits', () => {
   const state = createDraft(view(4, 'exact text', 'steer'));
   const captured = captureSubmission(state, target, 'operation'); assert.ok(captured.submission);
-  assert.equal(captured.submission.target, target); assert.equal(captured.submission.draftRevision, 4);
+  assert.deepEqual(captured.submission.target, target); assert.notEqual(captured.submission.target, target); assert.equal(captured.submission.draftRevision, 4);
   assert.equal(captureSubmission(captured.state, target, 'other').submission, undefined);
   assert.equal(captureSubmission(editDraft(state, 'unsaved'), target, 'operation').submission, undefined);
   assert.equal(captureSubmission(createDraft(view(0, '  ')), target, 'operation').submission, undefined);
@@ -94,4 +94,32 @@ test('an admission clear event also clears an unchanged submitted edit once', ()
   const state = receiveDraft(captured.state, view(5, ''));
   assert.equal(state.text, ''); assert.equal(draftSaved(state), true);
   assert.equal(settleSubmission(state, captured.submission, 'accepted', view(5, '')).text, '');
+});
+
+const image = {digest: 'a'.repeat(64), mimeType: 'image/png' as const, bytes: 64, width: 1, height: 1, name: 'a.png'};
+test('image-only tuples save, conflict and capture without merging or sharing mutable arrays', () => {
+  const initial = {...view(1), images: [image]}; let state = createDraft(initial);
+  initial.images[0] = {...image, name: 'outside.png'}; assert.equal(state.images[0]?.name, 'a.png');
+  const captured = captureSubmission(state, target, 'image'); assert.ok(captured.submission); assert.deepEqual(captured.submission.images, [image]);
+  state = editDraft(state, '', 'prompt', [{...image, name: 'local.png'}]);
+  const request = beginDraftSave(state).request; assert.ok(request); assert.equal(request.images[0]?.name, 'local.png');
+  state = receiveDraft(state, {...view(2), images: [{...image, digest: 'b'.repeat(64), name: 'server.png'}]});
+  assert.equal(state.conflict?.images[0]?.name, 'server.png'); assert.equal(state.images[0]?.name, 'local.png');
+  const local = resolveDraftConflict(state, 'local'); assert.equal(beginDraftSave(local).request?.images[0]?.name, 'local.png');
+  const remote = resolveDraftConflict(state, 'server'); assert.equal(remote.images[0]?.name, 'server.png'); assert.equal(remote.images.length, 1);
+});
+test('handled image acknowledgment never clears the captured tuple and newer image edits survive admission', () => {
+  const state = createDraft({...view(1, 'caption'), images: [image]}); const captured = captureSubmission(state, target, 'image'); assert.ok(captured.submission);
+  const handled = settleSubmission(captured.state, captured.submission, 'accepted', state.server, false); assert.deepEqual(handled.images, [image]); assert.equal(handled.text, 'caption');
+  const newer = editDraft(captured.state, 'newer', 'steer', [{...image, name: 'newer.png'}]);
+  const settled = settleSubmission(newer, captured.submission, 'accepted', view(2), true); assert.equal(settled.text, 'newer'); assert.equal(settled.images[0]?.name, 'newer.png');
+});
+test('same revision guard updates block Send and confirmation belongs to one operation only', () => {
+  let state = createDraft({...view(1, 'recovered'), recoveryOrigin: {clearOperationId: 'clear', recoveryOperationId: 'row'}, recoverySendGuard: {state: 'blocked' as const, imageCopies: 2}});
+  assert.equal(captureSubmission(state, target, 'blocked').submission, undefined);
+  const confirmed = captureSubmission(state, target, 'confirmed', true); assert.equal(confirmed.submission?.differentMessage, true);
+  const edited = editDraft(confirmed.state, 'another'); assert.equal(captureSubmission(edited, target, 'another').submission, undefined);
+  const same = receiveDraft(state, state.server); assert.equal(same, state);
+  state = receiveDraft(state, {...state.server, recoverySendGuard: {state: 'clear', imageCopies: 0}}); assert.ok(captureSubmission(state, target, 'clear').submission);
+  state = receiveDraft(state, {...state.server, recoverySendGuard: {state: 'unavailable', imageCopies: 0}}); assert.equal(captureSubmission(state, target, 'invalid', true).submission, undefined);
 });

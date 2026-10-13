@@ -18,7 +18,10 @@ export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:Diagno
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; session: string; signal?: AbortSignal};
+export type ImageUploadContext = Omit<RequestContext, 'body' | 'signal'> & {signal: AbortSignal; authorize(): void};
+export type ImageUploadHeaders = {mimeType: 'image/png' | 'image/jpeg'; declaredBytes?: number};
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
+  uploadImage?(context: ImageUploadContext, headers: ImageUploadHeaders, body: AsyncIterable<Uint8Array>): Promise<unknown>;
   workspace(id?: string): Promise<string>; observe(workspace: string): Promise<void>; detached(workspace: string): void};
 export type Asset = {type: string; data: Buffer};
 export const ASSET_FILE_BYTES = 2 * 1024 * 1024;
@@ -196,6 +199,7 @@ export class LocalHttp {
     const asset = this.assets.get(url.pathname);
     if (asset) return this.staticAsset(method, url.pathname === '/' ? this.versionDocument(asset) : asset, response);
     matchRoute(method, parts);
+    if (this.savedImageRoute(method, parts, 'POST', 6)) return this.uploadImage(request, response, url, parts, this.auth.session(request));
     const body = method === 'GET' || method === 'DELETE' ? {} : await readBody(request);
     if (url.pathname === '/api/auth/launch') return this.launch(body, response);
     const session = this.auth.session(request);
@@ -205,14 +209,61 @@ export class LocalHttp {
     await this.validateResume(method, url, body);
     return this.dispatchRequest(request,response,url,method,parts,body,session);
   }
+  private savedImageRoute(method: string, parts: string[], expectedMethod: string, length: number): boolean {
+    return method === expectedMethod && parts.length === length && parts[1] === 'workspaces' && parts[3] === 'targets' && parts[5] === 'images';
+  }
   private async dispatchRequest(request:IncomingMessage,response:ServerResponse,url:URL,method:string,parts:string[],body:Record<string,unknown>,session:string) {
     const context={method,parts,url,body,session,operationId:operationKey(request),workspace:url.searchParams.get('workspace')??undefined};
-    if(isImageRoute(method,parts)) return this.image(context,response);
+    if(isImageRoute(method,parts) || this.savedImageRoute(method, parts, 'GET', 7)) return this.image(context,response);
     const controller=new AbortController();
     const cancel=()=>{if(!response.writableEnded) controller.abort();};
     request.once('aborted',cancel);response.once('close',cancel);
     try {const data=await this.backend.dispatch({...context,signal:controller.signal});if(!controller.signal.aborted) respond(response,data,method==='POST'&&url.pathname==='/api/primaries'?202:200);}
     finally {request.off('aborted',cancel);response.off('close',cancel);}
+  }
+  private imageUploads = 0;
+  private async uploadImage(request: IncomingMessage, response: ServerResponse, url: URL, parts: string[], session: string): Promise<void> {
+    if (!this.backend.uploadImage) throw new ApiError('unsupported', 'Image intake is unavailable.', 503);
+    if (this.imageUploads >= LIMITS.imageUploads) throw new ApiError('capacity', 'Two image uploads are already active.', 429, 'read');
+    const mimeType = request.headers['content-type'];
+    if (mimeType !== 'image/png' && mimeType !== 'image/jpeg') throw new ApiError('invalid_request', 'Image intake requires raw PNG or JPEG bytes.');
+    const length = request.headers['content-length'];
+    if (length !== undefined && (!/^[0-9]+$/.test(length) || !Number.isSafeInteger(Number(length)) || Number(length) < 1 || Number(length) > LIMITS.imageBytes)) throw new ApiError('payload_too_large', 'Image intake exceeds its byte bound.', 413);
+    if (operationKey(request)) throw new ApiError('invalid_request', 'Image intake does not accept an operation key.');
+    const controller = new AbortController();
+    const cancel = () => { if (!response.writableEnded) controller.abort(); };
+    const timer = setTimeout(() => controller.abort(), LIMITS.imageReceiveMs); timer.unref();
+    request.once('aborted', cancel); response.once('close', cancel); this.imageUploads++;
+    const authorize = () => {
+      if (controller.signal.aborted) throw new ApiError('not_ready', 'Image intake ended or exceeded its receive deadline.', 408);
+      if (this.stopped) throw new ApiError('not_ready', 'The backend no longer accepts requests.', 503);
+      if (this.auth.session(request) !== session) throw new ApiError('unauthorized', 'The browser session changed.', 401);
+    };
+    const iterator = request.iterator({destroyOnReturn: false});
+    let rejectAbort: (reason: Error) => void = () => {};
+    const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+    void aborted.catch(() => {});
+    const abort = () => rejectAbort(new ApiError('not_ready', 'Image receive deadline or connection ended.', 408));
+    controller.signal.addEventListener('abort', abort, {once: true});
+    const body = async function* (): AsyncGenerator<Uint8Array> {
+      let bytes = 0;
+      while (true) {
+        authorize(); const next = await Promise.race([iterator.next(), aborted]);
+        if (next.done) return;
+        if (!(next.value instanceof Uint8Array)) throw new ApiError('invalid_request', 'Image intake requires byte chunks.');
+        bytes += next.value.byteLength;
+        if (bytes > LIMITS.imageBytes) throw new ApiError('payload_too_large', 'Image intake exceeds its byte bound.', 413);
+        yield next.value;
+      }
+    };
+    try {
+      const data = await this.backend.uploadImage({method: 'POST', parts, url, session, signal: controller.signal, authorize}, {mimeType, ...(length !== undefined ? {declaredBytes: Number(length)} : {})}, body());
+      authorize(); respond(response, data);
+    } catch (error) { if (!response.headersSent) response.setHeader('Connection', 'close'); throw error; }
+    finally {
+      clearTimeout(timer); controller.signal.removeEventListener('abort', abort); request.off('aborted', cancel); response.off('close', cancel);
+      void iterator.return?.().catch(() => {}); request.resume(); this.imageUploads--;
+    }
   }
   private async developmentRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string):Promise<boolean> {
     const generations=this.development.generations;

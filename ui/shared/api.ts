@@ -9,6 +9,13 @@ export const LIMITS = {
   sidebarWidthMin: 200, sidebarWidthMax: 480, conversationTabs: 16,
   journalBytes: 8 * 1024 * 1024, clientQueueBytes: 512 * 1024,
   reservationMs: 10 * 60 * 1000, jsonDepth: 8, jsonNodes: 2048,
+  imagesPerDraft: 4, imageBytes: 8 * 1024 * 1024, draftImageBytes: 8 * 1024 * 1024,
+  imagePixels: 16_777_216, imageEdge: 8192, imageNameCodePoints: 240,
+  imageBase64Bytes: Math.floor(11.2 * 1024 * 1024), inputFrameBytes: 12 * 1024 * 1024,
+  blobStoreBytes: 256 * 1024 * 1024, imageUploads: 2, imageReceiveMs: 30_000,
+  imageLeaseMs: 10 * 60 * 1000, stagedImages: 128, stagedImagesPerTarget: 16,
+  blobEntries: 1024, agentPendingBytes: 16 * 1024 * 1024, imagePreparations: 1,
+  preparedInputBytes: 12 * 1024 * 1024, textFileBytes: 32 * 1024,
 } as const;
 /** Exact target captured before dispatch. Epochs never transfer drafts. */
 export type Target = {kind: 'primary'; key: string; epoch: number} | {kind: 'agent'; identity: string};
@@ -94,18 +101,38 @@ export type ConversationLayout = {root: PaneNode; focusedPane: string};
 export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
   panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean;
   conversationLayout?: ConversationLayout};
-export type DraftView = {revision: number; text: string; mode: string; persisted: true};
+export type DraftImage = {digest: string; mimeType: 'image/png' | 'image/jpeg'; bytes: number; width: number; height: number; name: string};
+export type DraftTuple = {text: string; mode: string; images: DraftImage[]};
+export type QueueRecovery = {clearOperationId: string; mode: 'steer' | 'followUp'; index: number};
+export type RecoveryOrigin = {clearOperationId: string; recoveryOperationId: string};
+export type RecoverySendGuard = {state: 'clear' | 'blocked' | 'unavailable'; imageCopies: number};
+export type StoredDraft = {revision: number; text: string; mode: string; persisted: true; images?: DraftImage[]; recoveryOrigin?: RecoveryOrigin};
+export type DraftView = Omit<StoredDraft, 'images'> & {images: DraftImage[]; recoverySendGuard?: RecoverySendGuard};
+export type DraftPut = {expectedRevision: number; text: string; mode: string; images?: DraftImage[]; recoverySource?: string};
+export type ImageUploadView = {targetKey: string; target: Target; image: DraftImage; leaseExpiresAt: string};
+export type UnknownDraftImages = {targetKey: string; missingIndexes: number[]};
+export type DraftImageAvailability = {digest: string; state: 'ready' | 'unavailable'; reason?: string};
+export function draftImageFingerprint(images: readonly DraftImage[]): string {
+  return JSON.stringify(images.map(image => [image.digest, image.mimeType, image.bytes, image.width, image.height, image.name]));
+}
+export function sameDraftImages(a: readonly DraftImage[], b: readonly DraftImage[]): boolean { return draftImageFingerprint(a) === draftImageFingerprint(b); }
+export function sameDraftTuple(a: DraftTuple, b: DraftTuple): boolean { return a.text === b.text && a.mode === b.mode && sameDraftImages(a.images, b.images); }
+export function draftHasContent(value: Pick<DraftTuple, 'text' | 'images'>): boolean { return !!value.text.length || !!value.images.length; }
 export type ReadingView = {revision: number; anchorId: string | null; offsetPx: number; followTail: boolean};
 export type TranscriptView = 'chronological' | 'grouped';
 export type PresentationView = {revision: number; expanded: string[]; showThinking: boolean; transcriptView?: TranscriptView};
-export type UnconfirmedInput = {operationId: string; target: Target; text: string; mode: string;
-  submittedDraftRevision: number; createdAt: string; reason: string; textTruncated?: true};
-export type TargetIndex = {targetKey: string; target: Target; draftRevision: number; hasDraft: boolean; draftPreview?: string; draftPreviewTruncated?: boolean; unconfirmedOperationIds: string[]};
+export type InputCopy = {operationId: string; target: Target; text: string; mode: string; images: DraftImage[];
+  submittedDraftRevision: number; createdAt: string; reason: string; textTruncated?: true;
+  queueRecovery?: QueueRecovery; recoveryOrigin?: RecoveryOrigin; differentMessage?: true};
+export type UnconfirmedInput = InputCopy & {sendGuard?: RecoverySendGuard};
+export type RetainedInput = InputCopy & {admission: 'queued-image' | 'handled-image'; receipt: NonNullable<OperationView['receipt']>};
+export type RecoveryInput = (UnconfirmedInput & {admission: 'unconfirmed'}) | RetainedInput;
+export type TargetIndex = {targetKey: string; target: Target; draftRevision: number; hasDraft: boolean; draftPreview?: string; draftPreviewTruncated?: boolean; unconfirmedOperationIds: string[]; retainedInputOperationIds: string[]};
 export type TargetState = {targetKey: string; target: Target; draft: DraftView; reading: ReadingView;
-  unconfirmed: UnconfirmedInput[]; presentation?: PresentationView};
+  unconfirmed: UnconfirmedInput[]; retainedInputs: RetainedInput[]; imageAvailability: DraftImageAvailability[]; imageStorageError?: ErrorView; recoveryPreviewTruncated?: true; presentation?: PresentationView};
 export type TargetPreparation = {targetState: TargetState; availability: 'live' | 'stored' | 'unavailable' | 'incompatible';
   capabilities: AgentCapabilities; reason?: string};
-export type AgentCapabilities = {history: boolean; observe: boolean; input: boolean; abort: boolean; configure: boolean; inspect?: boolean};
+export type AgentCapabilities = {history: boolean; observe: boolean; input: boolean; abort: boolean; configure: boolean; inspect?: boolean; images?: boolean};
 /** Published metadata and claim state, not an assertion of fresh native idle state. */
 export type AgentRow = {identity: string; storageId: string; cwd: string; name?: string; handle?: string;
   modifiedAt: number; state: string; owner: 'here' | 'unavailable' | 'unknown';
@@ -126,9 +153,10 @@ export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 
 /** Admission is separate from the eventual answer. Completed is a local control response. */
 export type OperationView = {id: string; kind: OperationKind; target?: Target; action?: string;
   state: 'reserved' | 'dispatched' | 'accepted' | 'rejected' | 'uncertain' | 'completed';
-  createdAt: string; updatedAt: string; receipt?: {kind: 'rpc'; disposition?: 'started' | 'queued' | 'handled'; result?: JsonDisplay} |
+  createdAt: string; updatedAt: string; retainedInput?: 'queued-image' | 'handled-image'; receipt?: {kind: 'rpc'; disposition?: 'started' | 'queued' | 'handled'; result?: JsonDisplay} |
   {kind: 'durable'; identity: string; submissionId: number; requestId: string; deduped: boolean}; error?: ErrorView};
-export type PrimaryInput = {epoch: number; message: string; mode: 'prompt' | 'steer' | 'followUp'; draftRevision: number; literal?: boolean};
+export type PrimaryInput = {epoch: number; message: string; mode: 'prompt' | 'steer' | 'followUp'; draftRevision: number; literal?: boolean; images?: DraftImage[]; differentMessage?: true};
+export type AgentInput = {message: string; mode: 'steer' | 'followUp'; draftRevision: number; images?: DraftImage[]};
 export type PrimaryControl = {epoch: number} & ({action: 'model'; provider: string; modelId: string} |
   {action: 'thinking'; level: string} | {action: 'compact'; customInstructions?: string} |
   {action: 'autoCompaction' | 'autoRetry'; enabled: boolean} | {action: 'abortRetry'} |
@@ -182,6 +210,7 @@ export const ROUTES = [
   'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'GET /api/agents/:identity/history/image', 'POST /api/agents/:identity/inspect',
   'POST /api/agents/:identity/inputs', 'POST /api/agents/:identity/abort', 'POST /api/agents/:identity/configure',
   'POST /api/workspaces/:id/targets', 'PUT /api/workspaces/:id/selection', 'GET /api/workspaces/:id/targets/:targetKey', 'PUT /api/workspaces/:id/targets/:targetKey/draft',
+  'POST /api/workspaces/:id/targets/:targetKey/images', 'GET /api/workspaces/:id/targets/:targetKey/images/:digest',
   'PUT /api/workspaces/:id/targets/:targetKey/reading', 'PUT /api/workspaces/:id/targets/:targetKey/presentation',
   'GET /api/workspaces/:id/unconfirmed/:operationId', 'POST /api/workspaces/:id/unconfirmed/:operationId/restore', 'DELETE /api/workspaces/:id/unconfirmed/:operationId',
 ] as const;

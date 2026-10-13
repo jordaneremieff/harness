@@ -109,11 +109,14 @@ function readResources(session: ReturnType<Registry['primary']>,key: string,part
   return {items,nextCursor:end<source.length?Buffer.from(JSON.stringify({key,kind,revision:session.resourcesRevision,offset:end})).toString('base64url'):null,revision:String(session.resourcesRevision)};
 }
 async function input(registry: Registry, context: RequestContext, workspace: string, target: Target & {kind:'primary'}) {
-  const {body} = context; v.fields(body,['epoch','message','mode','draftRevision','literal'],['epoch','message','mode','draftRevision']);
-  const message=v.text(body.message); const mode=v.choice(body.mode,['prompt','steer','followUp'],'input mode'); const draftRevision=v.integer(body.draftRevision,'draft revision');
+  const {body} = context; v.fields(body,['epoch','message','mode','draftRevision','literal','images','differentMessage'],['epoch','message','mode','draftRevision']);
+  const images = v.normalizeDraftImages(body.images);
+  if (body.differentMessage !== undefined && body.differentMessage !== true) throw new ApiError('invalid_request', 'Different-message confirmation must be explicit true.');
+  const message=v.text(body.message, images.length > 0); const mode=v.choice(body.mode,['prompt','steer','followUp'],'input mode'); const draftRevision=v.integer(body.draftRevision,'draft revision');
   if(body.literal!==undefined) v.boolean(body.literal,'literal flag');
   const state=await registry.store.target(workspace,target);
-  return execute(registry,context.operationId,{workspaceId:workspace,kind:'primary.input',target,body,input:{targetKey:state.targetKey,text:message,mode,draftRevision}},async()=> {
+  return execute(registry,context.operationId,{workspaceId:workspace,kind:'primary.input',target,body,input:{targetKey:state.targetKey,text:message,mode,draftRevision,images,...(body.differentMessage === true ? {differentMessage:true as const} : {})}},async()=> {
+    if (images.length) throw new ApiError('unsupported', 'Image dispatch requires validated RPC image support.', 409);
     const session=registry.primary(target.key,target.epoch,true);
     const result=await session.input(message,mode,body.literal===true) as {disposition:'started'|'queued'|'handled'};
     return {state:'accepted',receipt:{kind:'rpc',disposition:result.disposition,result:projectJson(result)}};

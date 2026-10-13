@@ -6,6 +6,11 @@ import test from 'node:test';
 import { Operations, nativeRequestId } from './operations.mts';
 import type { DispatchResult, ExecuteRequest } from './operations.mts';
 import { StateStore } from './state.mts';
+import type {Target} from '../shared/api.ts';
+async function retainReturnedQueue(operations: Operations, workspace: string, target: Extract<Target, {kind: 'primary'}>, rows: {steering: string[]; followUp: string[]}) {
+  const id = await operations.beginQueueClear(workspace, target, rows.steering.length + rows.followUp.length);
+  await operations.retainQueue(id, rows);
+}
 
 async function setup(t: test.TestContext, kind: 'primary' | 'agent' = 'primary') {
   const root = await mkdtemp(join(tmpdir(), 'ui-operations-test-')); let store = await StateStore.open(root);
@@ -139,10 +144,10 @@ test('uncertain copy restore checks current draft revision and never sends; disc
   await operations.execute(view.id, request, async () => { throw new Error('transport gone'); });
   await assert.rejects(operations.remove(view.id), /Resolve/);
   await store.putDraft(workspace.id, target.targetKey, {expectedRevision: 1, text: 'new edit', mode: 'prompt'});
-  await assert.rejects(store.restoreUnconfirmed(workspace.id, view.id, 1), /revision changed/);
-  const restored = await store.restoreUnconfirmed(workspace.id, view.id, 2); assert.equal(restored.text, 'exact message');
+  await assert.rejects(store.restoreRetainedInput(workspace.id, view.id, 1), /revision changed/);
+  const restored = await store.restoreRetainedInput(workspace.id, view.id, 2); assert.equal(restored.text, 'exact message');
   assert.equal((await store.getTarget(workspace.id, target.targetKey)).unconfirmed.length, 1);
-  await store.discardUnconfirmed(workspace.id, view.id); assert.equal((await operations.get(view.id)).state, 'uncertain');
+  await store.discardRetainedInput(workspace.id, view.id); assert.equal((await operations.get(view.id)).state, 'uncertain');
   assert.equal((await store.getTarget(workspace.id, target.targetKey)).unconfirmed.length, 0);
   await operations.remove(view.id);
 });
@@ -182,7 +187,7 @@ test('input recovery capacity refuses new work and never evicts unresolved recor
     }
   });
   let sends = 0;
-  await assert.rejects(operations.execute(view.id, request, async () => { sends++; return {state: 'accepted'}; }), /Resolve unconfirmed/);
+  await assert.rejects(operations.execute(view.id, request, async () => { sends++; return {state: 'accepted'}; }), /Resolve (unconfirmed|recovery)/);
   assert.equal(sends, 0); assert.equal(store.unresolvedInputCount(), 128);
 });
 
@@ -191,18 +196,18 @@ test('queue recovery preserves separate exact copies, previews stay bounded, and
   assert.equal(target.target.kind, 'primary');
   if (target.target.kind !== 'primary') throw new Error('Expected primary fixture');
   const text = '😀'.repeat(16_000);
-  await operations.retainQueue(workspace.id, target.target, {steering: ['one', text], followUp: ['three']});
+  await retainReturnedQueue(operations, workspace.id, target.target, {steering: ['one', text], followUp: ['three']});
   const state = await store.getTarget(workspace.id, target.targetKey);
   assert.equal(state.unconfirmed.length, 3); assert.equal(new Set(state.unconfirmed.map(copy => copy.operationId)).size, 3);
   const truncated = state.unconfirmed.find(copy => copy.textTruncated); assert.ok(truncated);
   assert.ok(Buffer.byteLength(truncated.text) <= 256); assert.ok(Buffer.byteLength(JSON.stringify(state)) < 256 * 1024);
-  const exact = await store.getUnconfirmed(workspace.id, truncated.operationId); assert.equal(exact.text, text); assert.equal(exact.mode, 'steer');
+  const exact = await store.getRetainedInput(workspace.id, truncated.operationId); assert.equal(exact.text, text); assert.equal(exact.mode, 'steer');
   assert.equal(exact.textTruncated, undefined); assert.match(exact.reason, /does not prove non-admission/);
-  await store.restoreUnconfirmed(workspace.id, exact.operationId, 1); assert.equal((await store.getTarget(workspace.id, target.targetKey)).draft.text, text);
-  await assert.rejects(operations.retainQueue(workspace.id, target.target, {steering: Array(128).fill('not lost'), followUp: []}), /Resolve unconfirmed/);
+  await store.restoreRetainedInput(workspace.id, exact.operationId, 1); assert.equal((await store.getTarget(workspace.id, target.targetKey)).draft.text, text);
+  await assert.rejects(retainReturnedQueue(operations, workspace.id, target.target, {steering: Array(128).fill('not lost'), followUp: []}), /Resolve (unconfirmed|recovery)/);
   assert.equal(store.unresolvedInputCount(), 3);
-  await store.discardUnconfirmed(workspace.id, exact.operationId); assert.equal(store.record(exact.operationId).input, undefined);
-  await assert.rejects(store.getUnconfirmed(workspace.id, exact.operationId), /No unconfirmed copy/);
+  await store.discardRetainedInput(workspace.id, exact.operationId); assert.equal(store.record(exact.operationId).input, undefined);
+  await assert.rejects(store.getRetainedInput(workspace.id, exact.operationId), /No recovery copy/);
 });
 
 test('receipt bursts use cached byte accounting without cloning or serializing retained operation payloads', async t => {
@@ -235,21 +240,21 @@ test('a full recovery window exposes bounded previews, exact copies, and metadat
   const {store, operations, workspace, target, reopen} = await setup(t);
   if (target.target.kind !== 'primary') throw new Error('Expected primary fixture');
   const exactText = 'q'.repeat(64 * 1024);
-  await operations.retainQueue(workspace.id, target.target, {steering: Array(128).fill(exactText), followUp: []});
+  for (let batch = 0; batch < 16; batch++) await retainReturnedQueue(operations, workspace.id, target.target, {steering: Array(8).fill(exactText), followUp: []});
   const state = await store.getTarget(workspace.id, target.targetKey);
   assert.equal(state.unconfirmed.length, 128); assert.ok(Buffer.byteLength(JSON.stringify(state)) < 256 * 1024);
   assert.equal(state.unconfirmed.every(copy => copy.textTruncated === true && Buffer.byteLength(copy.text) <= 256), true);
   const id = state.unconfirmed[0]?.operationId; assert.ok(id);
-  assert.equal((await store.getUnconfirmed(workspace.id, id)).text, exactText);
+  assert.equal((await store.getRetainedInput(workspace.id, id)).text, exactText);
   const cut = store.snapshot(workspace.id, []); assert.deepEqual(cut.targets, []); assert.equal(cut.targetIndex[0]?.unconfirmedOperationIds.length, 128);
   assert.ok(Buffer.byteLength(JSON.stringify(cut)) < 16 * 1024);
-  const restarted = await reopen(); assert.equal((await restarted.getUnconfirmed(workspace.id, id)).text, exactText);
+  const restarted = await reopen(); assert.equal((await restarted.getRetainedInput(workspace.id, id)).text, exactText);
   assert.equal(restarted.unresolvedInputCount(), 128);
 });
 
 test('queue file-byte validation happens before any copy publication', async t => {
   const {store, operations, workspace, target} = await setup(t);
   if (target.target.kind !== 'primary') throw new Error('Expected primary fixture');
-  await assert.rejects(operations.retainQueue(workspace.id, target.target, {steering: ['first', '\n'.repeat(64 * 1024)], followUp: []}), /file limit/);
-  assert.equal(store.unresolvedInputCount(), 0); assert.equal((await store.getTarget(workspace.id, target.targetKey)).unconfirmed.length, 0);
+  await assert.rejects(retainReturnedQueue(operations, workspace.id, target.target, {steering: ['first', '\n'.repeat(64 * 1024)], followUp: []}), /file limit/);
+  assert.equal(store.unresolvedInputCount(), 2); assert.equal((await store.getTarget(workspace.id, target.targetKey)).unconfirmed.length, 0);
 });

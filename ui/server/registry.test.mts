@@ -216,7 +216,7 @@ async function memoryRegistry(context: TestContext) {
   let callbacks!:AgentServiceOptions; let selectGate: ((workspace:string,identity:string)=>Promise<void>) | undefined; let disconnectGate: (()=>Promise<void>) | undefined;
   const state = async (workspace:string,target:Target):Promise<TargetState> => {
     const values=states.get(workspace) ?? []; let value=values.find(value=>JSON.stringify(value.target)===JSON.stringify(target));
-    if(!value) {value={targetKey:target.kind==='agent'?target.identity:'primary',target,draft:{revision:0,text:'',mode:'steer',persisted:true},reading:{revision:0,anchorId:null,offsetPx:0,followTail:false},unconfirmed:[]};values.push(value);states.set(workspace,values);} return value;
+    if(!value) {value={targetKey:target.kind==='agent'?target.identity:'primary',target,draft:{revision:0,text:'',mode:'steer',images:[],persisted:true},reading:{revision:0,anchorId:null,offsetPx:0,followTail:false},unconfirmed:[],retainedInputs:[],imageAvailability:[]};values.push(value);states.set(workspace,values);} return value;
   };
   const store={instanceId:'synthetic',workspace:async(id='w')=>{const value=workspaces.get(id);assert.ok(value);return structuredClone(value);},target:state,
     readPrimaries:async()=>[],savePrimaries:async()=>{},close:async()=>{},transaction:async<T,>(job:()=>Promise<T>)=>job(),operationViews:()=>[],
@@ -336,7 +336,7 @@ test('repeated agent preparation returns the same saved draft without selection 
   assert.equal(second.targetState.targetKey,first.targetState.targetKey);
   assert.equal(second.targetState.draft.text,'Retain this exact draft.');
   assert.equal(second.targetState.draft.revision,1); assert.equal(second.availability,'live'); assert.equal(second.reason,undefined);
-  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,abort:true,configure:false,inspect:true});
+  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true});
   assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
   assert.equal(registry.frames.size,0); assert.equal(registry.availability.size,0);
   assert.equal(setup.counts.started,0); assert.deepEqual(calls,['storage:2','storage:2']);
@@ -355,7 +355,7 @@ test('expected preparation refusals keep target drafts and disable every capabil
     const prepared = await prepareRoute(registry,workspace.id,{target});
     assert.equal(prepared.availability,availability); assert.equal(prepared.reason,failure.message);
     assert.equal(prepared.targetState.targetKey,state.targetKey); assert.equal(prepared.targetState.draft.text,'Safe offline draft.');
-    assert.deepEqual(prepared.capabilities,{history:false,observe:false,input:false,abort:false,configure:false,inspect:false});
+    assert.deepEqual(prepared.capabilities,{history:false,observe:false,input:false,images:false,abort:false,configure:false,inspect:false});
   }
   assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
   assert.equal(registry.frames.size,0); assert.equal(registry.availability.size,0); assert.equal(setup.counts.started,0);
@@ -393,7 +393,7 @@ test('current host identities enable input and activity inspection but never con
     inspect: async (identity, options) => { calls.push({identity, options}); return activity(identity) as Awaited<ReturnType<AgentAdapter['inspect']>>; }});
   const registry = await setup.open(); const workspace = await registry.store.workspace(); const identity = 'storage:2';
   const prepared = await prepareRoute(registry, workspace.id, {target:{kind:'agent',identity}});
-  assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,abort:true,configure:false,inspect:true});
+  assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true});
   const inspected = await registry.dispatch({parts:['api','agents',identity,'inspect'],body:{view:'activity',limit:20},method:'POST',
     url:new URL('http://localhost/api/agents/storage:2/inspect'),session:'fixture'}) as {projection:{value:unknown}};
   assert.deepEqual(JSON.parse(JSON.stringify(inspected.projection.value)), activity(identity));

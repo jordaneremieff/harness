@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { clampSelection, draftPresentation, editorSelectionKey, readEditorSelection, SLOW_SAVE_MS } from './draft-presentation.ts';
 import type { DraftPresentation, EditorSelection } from './draft-presentation.ts';
-const range: EditorSelection = {start: 2, end: 5, direction: 'backward', text: 'sample', revision: 4, edit: 7, scrollTop: 48, scrollLeft: 12};
+const range: EditorSelection = {start: 2, end: 5, direction: 'backward', text: 'sample', revision: 4, edit: 7, scrollTop: 48, scrollLeft: 12, imageFingerprint: '[]'};
 test('editor checkpoint keys distinguish workspace, primary epoch and exact agent identity', () => {
   const targets = [{kind: 'primary', key: 'a', epoch: 1}, {kind: 'primary', key: 'a', epoch: 2}, {kind: 'agent', identity: 'storage:1'}, {kind: 'agent', identity: 'storage:2'}] as const;
   assert.equal(new Set(targets.flatMap(target => ['w1', 'w2'].map(workspace => editorSelectionKey(workspace, target)))).size, 8);
@@ -38,4 +38,14 @@ test('disconnection never changes a clean acknowledged draft into unsaved text',
 test('save failures and conflicts use exception presentation instead of routine success text', () => {
   assert.equal(draftPresentation({...pending, failed: true}, 5000), 'Draft not saved');
   assert.equal(draftPresentation({...pending, failed: true, conflict: true}, 5000), '');
+});
+
+test('attachment changes invalidate caret checkpoints and image-only offline edits stay visible', () => {
+  const image = {digest: 'a'.repeat(64), mimeType: 'image/png' as const, bytes: 64, width: 1, height: 1, name: 'a.png'};
+  const draft = {revision: 4, text: 'sample', mode: 'prompt', images: [image], persisted: true as const};
+  const range = clampSelection({start: 1, end: 1, direction: 'none', text: 'sample', revision: 4, edit: 0, scrollTop: 0, scrollLeft: 0}, draft.text, 4, 0, draft.images);
+  const raw = JSON.stringify({...range, mode: draft.mode}); assert.ok(readEditorSelection(raw, draft));
+  assert.equal(readEditorSelection(raw, {...draft, images: [{...image, name: 'renamed.png'}]}), undefined);
+  assert.equal(readEditorSelection(raw, {...draft, images: []}), undefined);
+  assert.equal(draftPresentation({...pending, connected: false, text: '', images: [image], outstandingSince: undefined}, 5000), 'Draft not saved');
 });
