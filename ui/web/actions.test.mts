@@ -26,6 +26,26 @@ const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'com
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
   return {snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
 }
+test('model holds start before reservation and release only their own authoritative receipt', async () => {
+  const reserved = Promise.withResolvers<Response>(); let count = 0, changed = 0;
+  globalThis.fetch = async path => {
+    if (String(path) === '/api/operations') {if (++count === 1) return reserved.promise; return Response.json({ok: true, data: {operationId: 'new'}});}
+    if (count === 1) throw new Error('response lost');
+    return Response.json({ok: true, data: {...operation, id: 'new', state: 'rejected'}});
+  };
+  const actions = new Actions(context({modelChanged: () => {changed++;}})), target = operation.target; assert.ok(target);
+  const first = actions.control({action: 'model', provider: 'fixture', modelId: 'model'} as PrimaryControl);
+  assert.equal(actions.modelChanging(target), true); reserved.resolve(Response.json({ok: true, data: {operationId: 'old'}})); await assert.rejects(first, /response lost/);
+  await actions.control({action: 'model', provider: 'fixture', modelId: 'other'} as PrimaryControl);
+  assert.equal(actions.modelChanging(target), true); assert.equal(actions.modelChanging({...target, epoch: 2} as Target), false);
+  assert.equal(actions.modelChanging(target, [{...operation, id: 'old', state: 'uncertain'}]), true);
+  assert.equal(actions.modelChanging(target, [{...operation, id: 'old'}]), false); assert.equal(changed, 4);
+});
+test('failed model reservation has no control effect and releases the local hold', async () => {
+  let calls = 0; globalThis.fetch = async () => {calls++; throw new Error('reservation lost');};
+  const actions = new Actions(context()); await assert.rejects(actions.control({action: 'model'} as PrimaryControl), /reservation lost/);
+  assert.equal(actions.modelChanging(operation.target as Target), false); assert.equal(calls, 1);
+});
 test('resource invalidation notifies the existing command owner without acquiring a Primary composer', () => {
   let selected: PrimaryView | undefined = {...primary, lifecycle: 'starting'}, changed = 0; const ctx = context({primary: () => selected, commandsChanged: () => {changed++;}});
   Object.defineProperty(ctx, 'composer', {get: () => {throw Error('No Primary editor is mounted');}});

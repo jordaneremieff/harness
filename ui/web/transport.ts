@@ -1,4 +1,5 @@
-import type { ApiResult, ErrorView, EventEnvelope, EventName, OperationKind, OperationView, Target } from '../shared/api.ts';
+import { LIMITS } from '../shared/api.ts';
+import type { ApiResult, DraftImage, ImageUploadView, ErrorView, EventEnvelope, EventName, OperationKind, OperationView, Target } from '../shared/api.ts';
 
 export class ApiError extends Error {
   readonly view: ErrorView;
@@ -16,12 +17,30 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, o
   const response = await fetch(workspacePath(path), {method, body: body === undefined ? undefined : JSON.stringify(body), headers, signal: signal ?? (method === 'GET' ? AbortSignal.timeout(15_000) : undefined), credentials: 'same-origin'});
   const result = await response.json() as ApiResult<T>;
   try {timing?.(startedAt, performance.now());} catch { /* Diagnostics do not change the API result. */ }
+  return responseValue(response, result);
+}
+function responseValue<T>(response: Response, result: ApiResult<T>): T {
   if (!result.ok) {
     const error = new ApiError(result.error);
     if (response.status === 401 || error.view.code === 'unauthorized') unauthorizedHandler?.(error);
     throw error;
   }
   return result.data;
+}
+/** The path workspace and captured epoch are authoritative for binary intake. */
+export async function uploadDraftImage(workspace: string, targetKey: string, target: Target, image: Pick<DraftImage, 'mimeType' | 'name'>, bytes: Blob, signal: AbortSignal): Promise<ImageUploadView> {
+  if (!bytes.size || bytes.size > LIMITS.imageBytes) throw new Error('Image exceeds the upload limit.');
+  const query = new URLSearchParams({name: image.name});
+  if (target.kind === 'primary') query.set('epoch', String(target.epoch));
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspace)}/targets/${encodeURIComponent(targetKey)}/images?${query}`, {
+    method: 'POST', body: bytes, headers: {'Content-Type': image.mimeType}, credentials: 'same-origin',
+    signal: AbortSignal.any([signal, AbortSignal.timeout(LIMITS.imageReceiveMs)]),
+  });
+  return responseValue(response, await response.json() as ApiResult<ImageUploadView>);
+}
+export function draftImageUrl(workspace: string, targetKey: string, digest: string): string {
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid image identity.');
+  return `/api/workspaces/${encodeURIComponent(workspace)}/targets/${encodeURIComponent(targetKey)}/images/${digest}`;
 }
 export function workspacePath(path: string): string {
   if (typeof location === 'undefined' || !path.startsWith('/api/')) return path;

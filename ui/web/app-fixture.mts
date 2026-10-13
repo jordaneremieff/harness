@@ -241,8 +241,8 @@ function agentFixture(identity: string, overrides: Partial<AgentRow> = {}): Agen
     availability: 'live', partial: false, capabilities: {history: true, observe: true, input: true, abort: true, configure: true}, ...overrides};
 }
 function targetFixture(targetKey: string, target: TargetState['target'], overrides: Partial<TargetState> = {}): TargetState {
-  return {targetKey, target, draft: {revision: 1, text: '', mode: 'prompt', persisted: true},
-    reading: {revision: 1, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: [], ...overrides};
+  const draft = {revision: 1, text: '', mode: 'prompt', persisted: true as const, ...overrides.draft, images: overrides.draft?.images ?? []};
+  return {targetKey, target, reading: {revision: 1, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: [], retainedInputs: [], imageAvailability: [], ...overrides, draft};
 }
 function entryFixture(id: string, messages: MessageView[]): EntryView {
   return {id, kind: 'message', messages};
@@ -279,7 +279,7 @@ function fixturePreparation(value: unknown): unknown {
 }
 function fixtureDraft(path: string, body?: Record<string, unknown>): unknown {
   const key = decodeURIComponent(path.split('/')[5] ?? ''); const saved = fixture.targets?.find(item => item.targetKey === key);
-  const draft = {revision: Number(body?.expectedRevision ?? 0) + 1, text: String(body?.text ?? ''), mode: String(body?.mode ?? 'prompt'), persisted: true};
+  const draft = {revision: Number(body?.expectedRevision ?? 0) + 1, text: String(body?.text ?? ''), mode: String(body?.mode ?? 'prompt'), images: (body?.images ?? []) as import('../shared/api.ts').DraftImage[], persisted: true as const};
   if (saved) { fixture = {...fixture, targets: fixture.targets?.map(item => item === saved ? {...saved, draft} : item)}; queueMicrotask(() => event('draft.changed', {targetKey: key, target: saved.target, draft})); }
   return draft;
 }

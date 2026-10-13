@@ -699,6 +699,20 @@ pre.tool-document { font-family: var(--mono); }
 .composer textarea::selection { color: var(--fg); background: var(--raised); }
 .composer textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
 .composer textarea:disabled { color: var(--dim); }
+.composer[data-file-drop=true] .composer-input { outline: 1px solid var(--accent); outline-offset: -1px; }
+.composer-attachments { display: flex; flex-direction: column; gap: 6px; max-height: min(24dvh,220px); margin-top: 8px; overflow: auto; }
+.attachment-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; font-size: 13px; }
+.attachment-name { flex: 1 1 100px; min-width: 0; overflow-wrap: anywhere; }
+.attachment-row > .warning, .attachment-row > .secondary { flex-basis: 100%; }
+.attachment-preview { flex: none; width: 44px; min-height: 40px; padding: 0; background: transparent; }
+.attachment-preview img { display: block; width: 40px; height: 40px; object-fit: contain; }
+.attachment-summary { width: 100%; margin: 4px 0; padding-left: 18px; }
+.attachment-summary li { overflow-wrap: anywhere; }
+.attachment-digest { display: block; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.attachment-dialog { max-width: min(90vw,900px); max-height: 90dvh; padding: 16px; border: 1px solid var(--rule); background: var(--canvas); color: var(--fg); }
+.attachment-dialog > img { display: block; max-width: 100%; max-height: 65dvh; margin: 8px auto; object-fit: contain; }
+.attach { width: 28px; height: 28px; padding: 0; }
+@media (pointer: coarse) { .attach, .attachment-row button, .attachment-dialog button { min-width: 44px; min-height: 44px; } }
 .composer-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; min-height: 28px; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .statusline { display: flex; flex-wrap: wrap; align-items: center; flex: 0 1 auto; gap: 2px 12px; min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 .statusline > :empty, .statusline > [hidden] { display: none; }

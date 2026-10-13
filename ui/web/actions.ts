@@ -4,7 +4,7 @@ import { renderFacts, type ReportedFact } from './facts.ts';
 import type { AgentRow, Appearance, CommandView, ConversationLayout, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
 import { button, copy, details, element, input, rawText } from './dom.ts';
 import type { Modal } from './modal.ts';
-import { operation, request } from './transport.ts';
+import { ApiError, operation, request, reserve } from './transport.ts';
 import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
 import { DECORATION_BYTES, DECORATION_LINES, DECORATION_SPANS } from './composer-syntax.ts';
@@ -79,7 +79,7 @@ export function rankPalette(entries: PaletteEntry[], query: string): CommandMatc
   return [...matches.values()].sort((a, b) => a.rank - b.rank || a.item.name.localeCompare(b.item.name));
 }
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
-export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modal: Modal;
+export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modal: Modal;
   selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
@@ -92,6 +92,7 @@ export class Actions {
   private displayedHandoffs = new Set<string>();
   private picker?: ProjectPicker;
   private changingSession = false;
+  private modelChanges = new Map<string, Set<{operationId?: string}>>();
   private ctx: ActionContext;
   constructor(ctx: ActionContext) { this.ctx = ctx; }
   private target(primary: PrimaryView): Target { return {kind: 'primary', key: primary.key, epoch: primary.epoch}; }
@@ -177,10 +178,40 @@ export class Actions {
   warm(): void {
     if (this.observeResources(this.ctx.primary())) void this.load('commands').catch(() => undefined);
   }
+  modelChanging(target: Target, operations: Iterable<OperationView> = []): boolean {
+    const key = JSON.stringify(target), changes = this.modelChanges.get(key); if (!changes) return false;
+    for (const operation of operations) {
+      if (JSON.stringify(operation.target) !== key || !['accepted', 'completed', 'rejected'].includes(operation.state)) continue;
+      for (const change of changes) if (change.operationId === operation.id) changes.delete(change);
+    }
+    if (!changes.size) this.modelChanges.delete(key);
+    return changes.size > 0;
+  }
+  private async performControl(primary: PrimaryView, control: Omit<PrimaryControl, 'epoch'>, operationId?: string): Promise<OperationView> {
+    const result = await operation('primary.control', this.path(primary, 'control'), {...control, epoch: primary.epoch}, this.target(primary), operationId);
+    this.ctx.result(result); return result;
+  }
   async control(control: Omit<PrimaryControl, 'epoch'>, captured?: PrimaryView): Promise<void> {
     const primary = captured ?? this.ctx.primary(); if (!primary) return;
-    const result = await operation('primary.control', this.path(primary, 'control'), {...control, epoch: primary.epoch}, this.target(primary)); this.ctx.result(result);
+    const result = control.action === 'model' ? await this.modelControl(primary, control) : await this.performControl(primary, control);
     if (result.error) throw new Error(result.error.message);
+  }
+  private async modelControl(primary: PrimaryView, control: Omit<PrimaryControl, 'epoch'>): Promise<OperationView> {
+    const target = this.target(primary), key = JSON.stringify(target), changes = this.modelChanges.get(key) ?? new Set<{operationId?: string}>();
+    const change: {operationId?: string} = {}; changes.add(change); this.modelChanges.set(key, changes); this.ctx.modelChanged?.();
+    let settled = false;
+    try {
+      change.operationId = await reserve('primary.control', target);
+      const result = await this.performControl(primary, control, change.operationId);
+      settled = ['accepted', 'completed', 'rejected'].includes(result.state); return result;
+    } catch (error) {
+      settled = !change.operationId || error instanceof ApiError && !['delivery_uncertain', 'internal'].includes(error.view.code);
+      throw error;
+    } finally {
+      if (settled) changes.delete(change);
+      if (!changes.size) this.modelChanges.delete(key);
+      this.ctx.modelChanged?.();
+    }
   }
   private sessionPicker(): ProjectPicker { this.picker ??= new ProjectPicker(this.ctx); return this.picker; }
   projectPicker(): void { this.sessionPicker().open(); }

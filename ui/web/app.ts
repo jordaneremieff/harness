@@ -1,4 +1,5 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
+import { draftImageFingerprint } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import type { ConversationLayout, ConversationTab } from '../shared/api.ts';
 import { activeTab, closeTab, duplicateIdentityTails, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
@@ -129,7 +130,7 @@ function conversationController(target: Target): ConversationController {
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, historyReady: false, initialized: false, showThinking: false} as ConversationController;
-  controller.composer = new Composer(elements, {layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
@@ -143,6 +144,25 @@ function conversationController(target: Target): ConversationController {
   root.addEventListener('pointerdown', focusPane); root.addEventListener('focusin', focusPane);
   elements.editor.addEventListener('focus', () => { footerController = controller; renderWorkbenchStatus(); });
   controllers.set(key, controller); return controller;
+}
+function refreshComposerImages(workspace: string, saved: TargetState): void {
+  if (workspace !== state.workspace?.id) return;
+  const current = state.targets.get(saved.targetKey);
+  if (!current || !sameTarget(current.target, saved.target)) return;
+  state = {...state, targets: new Map(state.targets).set(saved.targetKey, {...current, imageAvailability: saved.imageAvailability, imageStorageError: saved.imageStorageError})};
+}
+function composerImageInput(controller: ConversationController, target: Target): {allowed: boolean; reason?: string} {
+  if (!connected || controller.workspaceId !== state.workspace?.id || !sameTarget(controller.target, target)) return {allowed: false, reason: 'Reconnect this exact conversation before adding images.'};
+  if (target.kind === 'primary') {
+    const current = state.primaries.get(target.key);
+    const pending = actions.modelChanging(target, state.operations.values()) || [...state.operations.values()].some(item => sameTarget(item.target, target) && item.kind === 'primary.control' && item.action === 'model' && ['reserved', 'dispatched', 'uncertain'].includes(item.state));
+    if (pending) return {allowed: false, reason: 'The model change is not confirmed. Keep the images until it settles.'};
+    if (current?.epoch !== target.epoch || current.lifecycle !== 'ready' || !current.model?.input.includes('image')) return {allowed: false, reason: 'The current model does not report image input. Choose an image-capable model before sending.'};
+    return {allowed: true};
+  }
+  const capabilities = controller.connection?.capabilities ?? state.agentAvailability.get(target.identity)?.capabilities;
+  if (!presentation(target).input || capabilities?.images !== true) return {allowed: false, reason: 'This connection does not accept images. Use a file reference.'};
+  return {allowed: true};
 }
 function createAgentState(add: (name: string, tag: 'div' | 'p' | 'button', css?: string) => HTMLElement): HTMLElement {
   const status = add('agent-state', 'div', 'agent-state'); status.hidden = true; status.setAttribute('aria-label', 'Agent status');
@@ -175,7 +195,7 @@ let footerController: ConversationController | undefined;
 const workbenchStatus = new WorkbenchStatus();
 const messageTarget = new MessageTarget({workspace: () => state.workspace, prepare: prepareMessageTarget, paint: renderMessagePanel});
 const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); });
-const actions: Actions = new Actions({snapshot: currentSnapshot, primary, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: query => focusedTranscript()?.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
+const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: query => focusedTranscript()?.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
@@ -590,7 +610,9 @@ function renderPrimaryEvent(event: ReceivedEvent): void {
 function renderRosterEvent(event: ReceivedEvent): void {
   if (event.name === 'agent.roster') messageTarget.rosterChanged(event.envelope.data as EventData['agent.roster']);
   else {
-    const data = event.envelope.data as EventData['agent.availability'], controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, {kind: 'agent', identity: data.identity})) : undefined;
+    const data = event.envelope.data as EventData['agent.availability'];
+    if (!Number.isSafeInteger(data.connectionEpoch) || data.connectionEpoch <= 0 || data.connectionEpoch < (state.agentEpochs.get(data.identity) ?? 0)) return;
+    const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, {kind: 'agent', identity: data.identity})) : undefined;
     if (controller && (data.state !== 'live' || !controller.connectionError && (!controller.connection || controller.connection.availability === 'live'))) {
       controller.connection = {availability: data.state, capabilities: data.capabilities, reason: data.reason}; controller.connectionError = undefined;
     }
@@ -1381,7 +1403,7 @@ function devEntry(controller: ConversationController): DevCheckpointEntry {
   if (controller.target.kind === 'agent' && (!epoch || !Number.isSafeInteger(epoch))) throw new Error('Agent observation metadata is unavailable.');
   const editor = controller.composer.editor;
   return {targetKey: saved.targetKey, target: controller.target.kind === 'primary' ? {...controller.target} : {...controller.target, connectionEpoch: epoch as number},
-    draftRevision: controller.composer.serverDraftRevision ?? saved.draft.revision, readingRevision: saved.reading.revision, presentationRevision: saved.presentation?.revision ?? 0,
+    draftRevision: controller.composer.serverDraftRevision ?? saved.draft.revision, imageFingerprint: draftImageFingerprint(controller.composer.state?.draft.images ?? saved.draft.images), readingRevision: saved.reading.revision, presentationRevision: saved.presentation?.revision ?? 0,
     selection: {start: editor.selectionStart, end: editor.selectionEnd, direction: editor.selectionDirection}};
 }
 export function captureDevCheckpoint(): ReturnType<DevReloadHooks['captureCheckpoint']> {
@@ -1397,6 +1419,7 @@ export function captureDevCheckpoint(): ReturnType<DevReloadHooks['captureCheckp
 function devTargetMatches(entry: DevCheckpointEntry, saved: TargetState): boolean {
   if (saved.targetKey !== entry.targetKey || !sameTarget(saved.target, entry.target.kind === 'primary' ? entry.target : {kind: 'agent', identity: entry.target.identity})) return false;
   if (saved.draft.revision !== entry.draftRevision || saved.reading.revision !== entry.readingRevision || (saved.presentation?.revision ?? 0) !== entry.presentationRevision || saved.unconfirmed.length) return false;
+  if (entry.imageFingerprint !== draftImageFingerprint(saved.draft.images)) return false;
   if (entry.target.kind === 'primary') return state.primaries.get(entry.target.key)?.epoch === entry.target.epoch;
   const epoch = state.conversations.get(targetIdentity(saved.target))?.connectionEpoch;
   return !!epoch && Number.isSafeInteger(epoch) && epoch > 0;

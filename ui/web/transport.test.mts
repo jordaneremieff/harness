@@ -1,10 +1,27 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { ApiError, authenticate, operation, request, reserve, setUnauthorizedHandler, setRequestTiming, connect } from './transport.ts';
+import { ApiError, authenticate, operation, request, reserve, setUnauthorizedHandler, setRequestTiming, connect, uploadDraftImage, draftImageUrl } from './transport.ts';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; setUnauthorizedHandler(); setRequestTiming(); });
 function json(data: unknown): Response { return Response.json({ok: true, data}); }
+test('raw image upload retains its captured path, bytes and cancellation across page workspace changes', async t => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  Object.defineProperty(globalThis, 'location', {configurable: true, value: {href: 'http://fixture/?workspace=new-page'}});
+  t.after(() => {if (previous) Object.defineProperty(globalThis, 'location', previous); else Reflect.deleteProperty(globalThis, 'location');});
+  const controller = new AbortController(), bytes = new Blob(['image']); let seen: RequestInit | undefined;
+  globalThis.fetch = async (path, init) => {assert.equal(path, '/api/workspaces/old%20workspace/targets/old%20target/images?name=one.png&epoch=7'); seen = init; return json({targetKey: 'old target'});};
+  await uploadDraftImage('old workspace', 'old target', {kind: 'primary', key: 'p', epoch: 7}, {name: 'one.png', mimeType: 'image/png'}, bytes, controller.signal);
+  assert.equal(seen?.body, bytes); assert.deepEqual(seen?.headers, {'Content-Type': 'image/png'}); assert.equal(seen?.credentials, 'same-origin');
+  controller.abort(); assert.equal(seen?.signal?.aborted, true);
+  assert.equal(draftImageUrl('w', 't', 'a'.repeat(64)), '/api/workspaces/w/targets/t/images/' + 'a'.repeat(64)); assert.throws(() => draftImageUrl('w', 't', '../file'));
+});
+test('image authentication failure reports access once without an automatic retry', async () => {
+  let calls = 0, notices = 0; setUnauthorizedHandler(() => {notices++;});
+  globalThis.fetch = async () => {calls++; return Response.json({ok: false, error: {code: 'unauthorized', message: 'Access required', retry: 'none'}}, {status: 401});};
+  await assert.rejects(uploadDraftImage('w', 't', {kind: 'agent', identity: 'agent'}, {name: 'one.jpg', mimeType: 'image/jpeg'}, new Blob(['image']), new AbortController().signal), ApiError);
+  assert.equal(calls, 1); assert.equal(notices, 1);
+});
 test('request timing supplies only its own numeric interval without creating UserTiming entries', async () => {
   const samples: number[][] = [], pending = Promise.withResolvers<Response>(); const count = performance.getEntriesByName('ui:control-roundtrip').length;
   globalThis.fetch = () => pending.promise; setRequestTiming((start, end) => {samples.push([start, end]);});

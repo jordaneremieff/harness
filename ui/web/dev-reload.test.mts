@@ -42,8 +42,8 @@ class Stylesheet implements DevStylesheet {
   discard(): void {if (!this.applied) this.discarded = true;}
 }
 const view = (): DevReloadView => ({workspaceId: 'w', focusedPane: 'pane-a', messageRecipient: 'agent:a', focusedControl: {targetKey: 'agent:a', kind: 'message'}, targets: [
-  {targetKey: 'primary:p', target: {kind: 'primary', key: 'p', epoch: 2}, draftRevision: 4, readingRevision: 5, presentationRevision: 6},
-  {targetKey: 'agent:a', target: {kind: 'agent', identity: 'agent-a', connectionEpoch: 3}, draftRevision: 7, readingRevision: 8, presentationRevision: 9, selection: {start: 2, end: 5, direction: 'backward'}},
+  {targetKey: 'primary:p', target: {kind: 'primary', key: 'p', epoch: 2}, draftRevision: 4, imageFingerprint: '[]', readingRevision: 5, presentationRevision: 6},
+  {targetKey: 'agent:a', target: {kind: 'agent', identity: 'agent-a', connectionEpoch: 3}, draftRevision: 7, imageFingerprint: '[]', readingRevision: 8, presentationRevision: 9, selection: {start: 2, end: 5, direction: 'backward'}},
 ]});
 function checkpoint(generation = B): DevReloadCheckpoint {return {...view(), version: 1, generation, oldClient: OLD, capturedAt: NOW, interactionRevision: 1};}
 function response(status = 200, data: unknown = {ok: true, data: build(0, A, 'reload')}) {return Promise.resolve({ok: status === 200, status, json: async () => data});}
@@ -202,6 +202,8 @@ test('checkpoint validation is closed, bounded and rejects duplicate or missing 
     {...checkpoint(), focusedControl: {kind: 'message', targetKey: 'primary:p'}}, Object.assign(Object.create({nodeType: 1}), checkpoint()),
     {...checkpoint(), targets: Array(17).fill(view().targets[0])}, {...checkpoint(), targets: [view().targets[0], view().targets[0]]},
     {...checkpoint(), targets: [{...view().targets[0], draftRevision: -1}]},
+    {...checkpoint(), targets: [{...view().targets[0], imageFingerprint: undefined}]},
+    {...checkpoint(), targets: [{...view().targets[0], imageFingerprint: 'x'.repeat(8193)}]},
     {...checkpoint(), targets: [{...view().targets[1], target: {kind: 'agent', identity: 'agent-a', connectionEpoch: 0}}]},
     {...checkpoint(), targets: [{...view().targets[1], selection: {start: 5, end: 2, direction: 'none'}}]},
     {...checkpoint(), targets: [{...view().targets[1], selection: {start: 0, end: 262145, direction: 'none'}}]},

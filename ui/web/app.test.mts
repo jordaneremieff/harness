@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {draftImageFingerprint} from '../shared/api.ts';
 import { readFile } from 'node:fs/promises';
 import test, {after} from 'node:test';
 import { contextMenu } from './context-menu.ts';
@@ -245,8 +246,8 @@ function agentFixture(identity: string, overrides: Partial<AgentRow> = {}): Agen
     availability: 'live', partial: false, capabilities: {history: true, observe: true, input: true, abort: true, configure: true}, ...overrides};
 }
 function targetFixture(targetKey: string, target: TargetState['target'], overrides: Partial<TargetState> = {}): TargetState {
-  return {targetKey, target, draft: {revision: 1, text: '', mode: 'prompt', persisted: true},
-    reading: {revision: 1, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: [], ...overrides};
+  const draft = {revision: 1, text: '', mode: 'prompt', persisted: true as const, ...overrides.draft, images: overrides.draft?.images ?? []};
+  return {targetKey, target, reading: {revision: 1, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: [], retainedInputs: [], imageAvailability: [], ...overrides, draft};
 }
 function entryFixture(id: string, messages: MessageView[]): EntryView {
   return {id, kind: 'message', messages};
@@ -287,7 +288,7 @@ function fixturePreparation(value: unknown): unknown {
 }
 function fixtureDraft(path: string, body?: Record<string, unknown>): unknown {
   const key = decodeURIComponent(path.split('/')[5] ?? ''); const saved = decodeURIComponent(path.split('/')[3] ?? '') === fixture.workspace.id ? fixture.targets?.find(item => item.targetKey === key) : undefined;
-  const draft = {revision: Number(body?.expectedRevision ?? 0) + 1, text: String(body?.text ?? ''), mode: String(body?.mode ?? 'prompt'), persisted: true};
+  const draft = {revision: Number(body?.expectedRevision ?? 0) + 1, text: String(body?.text ?? ''), mode: String(body?.mode ?? 'prompt'), images: (body?.images ?? []) as import('../shared/api.ts').DraftImage[], persisted: true as const};
   if (saved) { fixture = {...fixture, targets: fixture.targets?.map(item => item === saved ? {...saved, draft} : item)}; queueMicrotask(() => event('draft.changed', {targetKey: key, target: saved.target, draft})); }
   return draft;
 }
@@ -441,9 +442,9 @@ await test('initial hidden startup and its retired ready wait initialize once af
   assert.equal(developmentSources.length, 1); assert.equal(acknowledgments, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 1);
 });
 
-async function devHookFixture(workspace: string, epoch: number): Promise<{primary: TargetState; agent: TargetState}> {
+async function devHookFixture(workspace: string, epoch: number, images: import('../shared/api.ts').DraftImage[] = []): Promise<{primary: TargetState; agent: TargetState}> {
   const identity = `${workspace}-agent`, primary = targetFixture(`${workspace}-primary`, {kind: 'primary', key: 'p', epoch}, {draft: {revision: 3, text: 'Primary private draft', mode: 'steer', persisted: true}, presentation: {revision: 5, expanded: [], showThinking: false, transcriptView: 'chronological'}});
-  const agent = targetFixture(`${workspace}-agent`, {kind: 'agent', identity}, {draft: {revision: 3, text: 'Agent private draft', mode: 'prompt', persisted: true}, presentation: {revision: 5, expanded: [], showThinking: false, transcriptView: 'chronological'}});
+  const agent = targetFixture(`${workspace}-agent`, {kind: 'agent', identity}, {draft: {revision: 3, text: 'Agent private draft', mode: 'prompt', images, persisted: true}, presentation: {revision: 5, expanded: [], showThinking: false, transcriptView: 'chronological'}});
   await arrive({workspace: {id: workspace, revision: 1, primaryKey: 'p', selectedTarget: agent.target, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch})], roster: [agentFixture(identity)], targets: [primary, agent], observations: [observation(identity, {revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: false}, coverage}, 10)], history: Array.from({length: 20}, (_, index) => entryFixture(`dev-history-${index}`, [messageFixture(`dev-message-${index}`, [textPart(`Development history ${index}`)])]))});
   return {primary, agent};
 }
@@ -451,6 +452,34 @@ function devCheckpoint(): import('./dev-reload.ts').DevReloadCheckpoint {
   return {...app.captureDevCheckpoint(), version: 1, generation: 'a'.repeat(64), oldClient: 'b'.repeat(24), capturedAt: 1, interactionRevision: 0};
 }
 
+const attachedImage = (name = 'one.png', digit = 'a'): import('../shared/api.ts').DraftImage => ({name, digest: digit.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1});
+test('development checkpoint rejects changed image order at the same text and revision', async t => {
+  const images = [attachedImage(), attachedImage('two.png', 'b')], saved = await devHookFixture('image-order', 9770, images), checkpoint = devCheckpoint(), original = globalThis.fetch;
+  t.after(() => {globalThis.fetch = original;});
+  assert.equal(checkpoint.targets.find(item => item.targetKey === saved.agent.targetKey)?.imageFingerprint, draftImageFingerprint(images));
+  globalThis.fetch = async (input, init) => (init?.method ?? 'GET') === 'GET' && new URL(String(input), 'http://ui.test').pathname.endsWith('/targets/' + saved.agent.targetKey)
+    ? Response.json({ok: true, data: {...saved.agent, draft: {...saved.agent.draft, images: [...images].reverse()}}}) : original(input, init);
+  assert.equal(await app.restoreDevCheckpoint(checkpoint, new AbortController().signal), false); assert.deepEqual(app.agentComposer().state?.draft.images, images);
+});
+test('Primary image controls follow current model input and exact model-change outcomes', async () => {
+  const target = {kind: 'primary' as const, key: 'p', epoch: 9771};
+  const primary = primaryFixture({epoch: target.epoch, model: {provider: 'fixture', id: 'image-model', name: 'Image model', reasoning: false, input: ['text', 'image']}});
+  await arrive({workspace: {id: 'image-model', revision: 1, primaryKey: 'p', selectedTarget: target}, primaries: [primary], roster: [], targets: [targetFixture('image-model-target', target, {draft: {revision: 2, text: '', mode: 'prompt', images: [attachedImage()], persisted: true}})]});
+  assert.equal(primaryControl('send').disabled, false);
+  event('primary.state', {...primary, model: {...primary.model, input: ['text']}}); await settle(); assert.equal(primaryControl('send').disabled, true);
+  event('primary.state', primary); await settle(); assert.equal(primaryControl('send').disabled, false);
+  const pending = {id: 'model-hold', kind: 'primary.control' as const, action: 'model', target, state: 'uncertain' as const, createdAt: '', updatedAt: ''};
+  event('operation.changed', pending); await settle(); assert.equal(primaryControl('send').disabled, true);
+  event('operation.changed', {...pending, state: 'rejected'}); await settle(); assert.equal(primaryControl('send').disabled, false);
+});
+test('Agent image controls reject stale capabilities without borrowing transcript or roster state', async () => {
+  const target = {kind: 'agent' as const, identity: 'image-agent'}, capabilities = {input: true, images: true, history: true, observe: true};
+  await arrive({workspace: {id: 'image-agent-workspace', revision: 1, selectedTarget: target, conversationLayout: singlePane([target])}, primaries: [], roster: [agentFixture(target.identity, {capabilities})], observations: [observation(target.identity, undefined, 10)], targets: [targetFixture('image-agent-target', target, {draft: {revision: 2, text: '', mode: 'prompt', images: [attachedImage()], persisted: true}})]});
+  assert.equal(agentControl('send').disabled, false); const epoch = app.state.conversations.get(JSON.stringify(['agent', target.identity]))?.connectionEpoch; assert.ok(epoch);
+  event('agent.availability', {identity: target.identity, connectionEpoch: epoch, state: 'live', capabilities: {...capabilities, images: false}}); await settle(); assert.equal(agentControl('send').disabled, true);
+  event('agent.availability', {identity: target.identity, connectionEpoch: epoch - 1, state: 'live', capabilities}); await settle(); assert.equal(agentControl('send').disabled, true);
+  event('agent.availability', {identity: target.identity, connectionEpoch: epoch + 1, state: 'live', capabilities}); await settle(); assert.equal(agentControl('send').disabled, false);
+});
 test('development checkpoint captures exact owners and rejects workspace, recipient and revision changes', async t => {
   const saved = await devHookFixture('dev-capture', 9660), original = globalThis.fetch;
   t.after(() => {globalThis.fetch = original; byId('agent-message-close').click();});
@@ -634,7 +663,7 @@ test('Message negotiation overrides a claim across main selection, panel close, 
   assert.equal(agentControl('send').disabled, true); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
   ready = true; await app.checkAgentConnection('negotiation-owner', b.identity); await settle();
   assert.equal(agentControl('send').disabled, false); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
-  event('agent.availability', {identity: b.identity, connectionEpoch: 2, state: 'unavailable', capabilities, reason: 'Connection closed'}); await settle();
+  event('agent.availability', {identity: b.identity, connectionEpoch: app.state.agentEpochs.get(b.identity), state: 'unavailable', capabilities, reason: 'Connection closed'}); await settle();
   assert.equal(agentControl('send').disabled, true); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
   await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
   pageHidden(true); await settle(); assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
@@ -1665,7 +1694,7 @@ test('Message panel settings describe its captured agent instead of a prior agen
   assert.equal(byId('agent-status').textContent, 'Model recipient-model (retained) · Thinking low (retained)'); assert.equal(byId('agent-status').title, 'agent-provider/recipient-model');
   assert.equal(messageControl('recipient').textContent, 'Message Recipient'); assert.equal(primaryControl('root').hidden, false);
   const editor = messageControl('editor'); editor.value = 'Keep the recipient draft'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(3, 8);
-  event('agent.availability', {identity: row.identity, state: 'live', capabilities: {input: false}});
+  event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity) ?? 1, state: 'live', capabilities: {input: false}});
   assert.match(byId('agent-message-status').textContent, /Message access changed/); assert.equal(messageControl('recipient').textContent, 'Draft for Recipient');
   assert.equal(messageControl('send').disabled, true); assert.equal(messageControl('editor'), editor); assert.equal(editor.value, 'Keep the recipient draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [3, 8]);
   assert.equal(hostDocument.activeElement, editor); assert.doesNotMatch(messageControl('send').getAttribute('aria-description') ?? '', /not connected/);
@@ -1895,7 +1924,7 @@ test('stored Start refuses a wrong prepared recipient or missing input and stale
 
 test('failed-session recovery leaves retained text and unconfirmed input under the old target', async () => {
   const target = {kind: 'primary' as const, key: 'p', epoch: 3};
-  const unconfirmed = [{operationId: 'unresolved', target, text: 'Unconfirmed text', mode: 'prompt', submittedDraftRevision: 1, createdAt: 'now', reason: 'Uncertain'}];
+  const unconfirmed = [{admission: 'unconfirmed' as const, images: [], operationId: 'unresolved', target, text: 'Unconfirmed text', mode: 'prompt', submittedDraftRevision: 1, createdAt: 'now', reason: 'Uncertain'}];
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target}, primaries: [primaryFixture({epoch: 3, lifecycle: 'failed', sessionFile: '/fixture/exact.jsonl', pid: 42, lastError: {code: 'host_unavailable', message: 'Failed', retry: 'manual'}})], roster: [], targets: [targetFixture('failed-retained', target, {draft: {revision: 7, text: 'Retained failure draft', mode: 'prompt', persisted: true}, unconfirmed})]});
   assert.match(primaryControl('activity').textContent, /Pi did not confirm that its process exited/); assert.match(primaryControl('activity').textContent, /Sessions/);
   assert.equal(primaryControl('editor').value, 'Retained failure draft'); assert.equal(app.primaryComposer().state?.unconfirmed[0]?.operationId, 'unresolved');

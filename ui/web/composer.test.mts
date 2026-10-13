@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import { beforeEach, test } from 'node:test';
 import type { CommandInventory } from './command-menu-state.ts';
 beforeEach(context => { context.mock.timers.enable({apis: ['setTimeout', 'Date'], now: 0}); Reflect.deleteProperty(globalThis, 'sessionStorage'); });
-import type { DraftView, OperationView, Target, TargetIndex, TargetState } from '../shared/api.ts';
+import type { DraftImage, DraftView, OperationView, Target, TargetIndex, TargetState } from '../shared/api.ts';
 
 import { Composer, createComposerElements, type ComposerElements } from './composer.ts';
 import { MessageTarget } from './selection-state.ts';
@@ -55,26 +56,26 @@ class NodeFake {
   }
 }
 type EventFake = {key: string; defaultPrevented: boolean; isComposing: boolean; repeat: boolean; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean; preventDefault(): void};
-type Call = {path: string; method: string; body: Record<string, unknown>; id?: string; resolve: (value: unknown) => void; reject: (error: Error) => void};
-const draft = (revision = 0, text = '', mode = 'prompt'): DraftView => ({revision, text, mode, persisted: true});
+type Call = {path: string; method: string; body: Record<string, unknown>; bytes?: Blob; id?: string; resolve: (value: unknown) => void; reject: (error: Error) => void};
+const draft = (revision = 0, text = '', mode = 'prompt'): DraftView => ({revision, text, mode, images: [], persisted: true});
 function state(key = 'a', saved = draft(), agent = false): TargetState {
   return {targetKey: key, target: agent ? {kind: 'agent', identity: key} : {kind: 'primary', key, epoch: 7}, draft: saved,
-    reading: {revision: 0, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: []};
+    reading: {revision: 0, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: [], retainedInputs: [], imageAvailability: []};
 }
 const turn = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 function scopedNodes(id: string, withMenu: boolean) {
   const nodes = new Map<string, NodeFake>();
-  for (const name of ['editor', 'recipient', 'composer', 'modes', 'send', 'caption', 'save', 'receipt', 'receipt-details', 'command-menu']) {const node = new NodeFake(); node.id = `${id}-${name}`; nodes.set(name, node);}
+  for (const name of ['editor', 'recipient', 'composer', 'modes', 'send', 'caption', 'save', 'receipt', 'receipt-details', 'command-menu', 'attachments']) {const node = new NodeFake(); node.id = `${id}-${name}`; nodes.set(name, node);}
   const node = (name: string) => nodes.get(name) as NodeFake;
   const delivery = new NodeFake(); delivery.tag = 'select'; node('modes').append(delivery);
   const pane = new NodeFake(); Object.defineProperty(pane, 'clientHeight', {get: () => node('editor').conversationHeight});
-  pane.append(node('composer')); node('composer').append(node('editor'), node('recipient'), node('receipt'), node('modes'), node('send'));
-  const elements = {root:node('composer'), editor:node('editor'), recipient:node('recipient'), receipt:node('receipt'), receiptDetails:node('receipt-details'), modes:node('modes'), send:node('send'), save:node('save'), commandMenu:withMenu ? node('command-menu') : undefined} as unknown as ComposerElements;
+  pane.append(node('composer')); node('composer').append(node('editor'), node('recipient'), node('receipt'), node('modes'), node('send'), node('attachments'));
+  const elements = {root:node('composer'), editor:node('editor'), recipient:node('recipient'), receipt:node('receipt'), receiptDetails:node('receipt-details'), modes:node('modes'), send:node('send'), save:node('save'), attachments:node('attachments'), commandMenu:withMenu ? node('command-menu') : undefined} as unknown as ComposerElements;
   return {node, elements};
 }
-function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory, withMenu = prefix === 'primary', timing?: (start: number, end: number) => void, enterSends: () => boolean = () => false) {
+function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory, withMenu = prefix === 'primary', timing?: (start: number, end: number) => void, enterSends: () => boolean = () => false, imageInput = () => ({allowed: true, reason: ''})) {
   const scoped = scopedNodes(prefix, withMenu); const announcements = new NodeFake(); const lookups: string[] = [];
-  const calls: Call[] = []; let sequence = 0; const frames: (() => void)[] = []; const copied: string[] = [];
+  const calls: Call[] = []; const arrivals = new Set<() => void>(); let sequence = 0; const frames: (() => void)[] = []; const copied: string[] = [];
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {execCommand: (_command: string, _ui: boolean, value: string) => {
     const editor = document.activeElement as unknown as NodeFake; const at = editor.selectionStart;
     editor.value = editor.value.slice(0, at) + value + editor.value.slice(editor.selectionEnd); editor.setSelectionRange(at + value.length, at + value.length); editor.fire('input'); return true;
@@ -83,8 +84,12 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
   Object.defineProperty(globalThis, 'requestAnimationFrame', {configurable: true, value: (callback: () => void) => frames.push(callback)});
   Object.defineProperty(globalThis, 'fetch', {configurable: true, value: (path: string, init: RequestInit) => {
     if (path === '/api/operations') { const operationId = `op-${++sequence}`; return Promise.resolve({json: async () => ({ok: true, data: {operationId}})}); }
-    return new Promise((resolve, reject) => calls.push({path, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : {},
-      id: (init.headers as Record<string, string>)['Idempotency-Key'], resolve: value => resolve({json: async () => value}), reject}));
+    return new Promise((resolve, reject) => {
+      const bytes = init.body instanceof Blob ? init.body : undefined;
+      calls.push({path, method: init.method ?? 'GET', body: !bytes && init.body ? JSON.parse(String(init.body)) : {}, bytes,
+        id: (init.headers as Record<string, string>)['Idempotency-Key'], resolve: value => resolve({json: async () => value}), reject});
+      for (const notify of arrivals) notify();
+    });
   }});
   const submitted: OperationView[] = []; let unknown = (_text: string, _send: () => void) => false;
   const retained: {workspace: string; target: Target; value: boolean}[] = [];
@@ -92,7 +97,7 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
     const scope = scopedNodes(id, menu); const composer = new Composer(scope.elements, {submitted:result => submitted.push(result), unknownCommand:(text, send) => unknown(text, send), commands:inventory, retained:(workspace, target, value) => retained.push({workspace,target,value})});
     return {...scope, composer};
   };
-  const composer = new Composer(scoped.elements, {timing, enterSends, submitted: result => submitted.push(result), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
+  const composer = new Composer(scoped.elements, {timing, enterSends, imageInput, submitted: result => submitted.push(result), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
   const node = scoped.node;
   const pick = (method: string, suffix: string) => { const call = calls.find(item => item.method === method && item.path.endsWith(suffix)); assert.ok(call, `${method} ${suffix}`); return call; };
   const ok = (call: Call, value: unknown) => { calls.splice(calls.indexOf(call), 1); call.resolve({ok: true, data: value}); };
@@ -105,9 +110,128 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
   const click = (text: string) => { const found = node('receipt').find(text); assert.ok(found, text); found.fire('click'); };
   const connect = (targetState = state('a', draft(0, '', prefix === 'agent' ? 'followUp' : 'prompt'), prefix === 'agent')) => { composer.attach('w', targetState); composer.availability(true, true, false); return targetState; };
   const openReceipt = () => { const details = node('receipt-details').children[0]; assert.ok(details); details.open = true; details.fire('toggle'); };
-  return {composer, node, calls, retained, pick, ok, fail, saved, admit, click, connect, submitted, frames, copied, openReceipt, create, lookups, elements:scoped.elements, reservations: () => sequence,
+  const waitCall = (method: string, suffix: string) => new Promise<Call>(resolve => {
+    const notify = () => {const call = calls.find(item => item.method === method && item.path.endsWith(suffix)); if (call) {arrivals.delete(notify); resolve(call);}};
+    arrivals.add(notify); notify();
+  });
+  return {composer, node, calls, retained, pick, ok, fail, saved, admit, click, connect, submitted, frames, copied, openReceipt, create, lookups, waitCall, elements:scoped.elements, reservations: () => sequence,
     unknown: (handler: typeof unknown) => { unknown = handler; }};
 }
+
+const image = (name = 'one.png', digit = 'a'): DraftImage => ({name, digest: digit.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1});
+test('captured image send still checks image capability after a newer text-only edit', async () => {
+  let allowed = true; const f = fixture('primary', undefined, true, undefined, () => false, () => ({allowed, reason: 'No image input'}));
+  f.connect(state('a', {...draft(4, 'captured'), images: [image()]})); const sending = f.composer.send();
+  f.node('attachments').find('Remove one.png')?.fire('click'); allowed = false; await sending;
+  assert.equal(f.calls.some(call => call.path.endsWith('/inputs')), false); assert.deepEqual(f.pick('PUT', '/draft').body.images, []); f.saved('captured', 5); await turn();
+});
+test('exact recovery refuses changed ordered image metadata instead of restoring another tuple', async () => {
+  const f = fixture(), a = state('a', draft(4)), images = [image(), image('two.png', 'b')];
+  const original = {admission: 'unconfirmed' as const, operationId: 'copy', target: a.target, text: 'short', textTruncated: true, mode: 'prompt', images, submittedDraftRevision: 2, createdAt: '', reason: 'unknown'};
+  a.unconfirmed.push(original); f.connect(a); f.click('Restore to draft'); await turn();
+  f.ok(f.pick('GET', '/copy'), {...original, text: 'full text', textTruncated: false, images: [...images].reverse()}); await turn();
+  assert.equal(f.calls.length, 0); assert.deepEqual(f.composer.state?.draft.images, []);
+});
+test('missing image lease reacquires exact bytes once for Save but never retries Send', {timeout: 5000}, async t => {
+  const bitmap = Object.getOwnPropertyDescriptor(globalThis, 'createImageBitmap');
+  Object.defineProperty(globalThis, 'createImageBitmap', {configurable: true, value: async () => ({width: 1, height: 1, close() {}})});
+  t.after(() => {if (bitmap) Object.defineProperty(globalThis, 'createImageBitmap', bitmap); else Reflect.deleteProperty(globalThis, 'createImageBitmap');});
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jFioAAAAASUVORK5CYII=', 'base64');
+  const file = new File([bytes], 'one.png', {type: 'image/png'}), metadata = {...image(), bytes: bytes.length, digest: createHash('sha256').update(bytes).digest('hex')};
+  const f = fixture(), a = f.connect(state('a', draft(3, 'source'))); t.after(() => f.composer.destroy()); f.composer.addFiles([file]);
+  const upload = await f.waitCall('POST', '/images?name=one.png&epoch=7'); assert.equal(upload.bytes, file);
+  f.ok(upload, {targetKey: 'a', target: a.target, image: metadata, leaseExpiresAt: 'later'});
+  const first = await f.waitCall('PUT', '/draft'); f.calls.splice(f.calls.indexOf(first), 1);
+  first.resolve({ok: false, error: {code: 'unknown_image_digest', message: 'Lease expired', retry: 'read', details: {value: {targetKey: 'a', missingIndexes: [0]}, truncated: false}}});
+  const repair = await f.waitCall('POST', '/images?name=one.png&epoch=7'); assert.equal(repair.bytes, file);
+  f.ok(repair, {targetKey: 'a', target: a.target, image: metadata, leaseExpiresAt: 'later'});
+  const second = await f.waitCall('PUT', '/draft'); assert.deepEqual(second.body, first.body); f.ok(second, {...draft(4, 'source'), images: [metadata]}); await turn();
+  const sending = f.composer.send(); await f.waitCall('POST', '/inputs'); f.fail(f.pick('POST', '/inputs'), 'unknown_image_digest'); await sending;
+  assert.equal(f.calls.length, 0); assert.deepEqual(f.composer.state?.draft.images, [metadata]);
+});
+test('preview retry refreshes authoritative availability without replacing text or sending', async () => {
+  const f = fixture(), a = state('a', {...draft(4, 'source'), images: [image()]}); a.imageAvailability = [{digest: image().digest, state: 'unavailable'}];
+  a.imageStorageError = {code: 'image_storage_unavailable', message: 'Storage unavailable', retry: 'read'}; f.connect(a); assert.equal(f.node('send').disabled, true);
+  f.node('attachments').find('Retry preview one.png')?.fire('click'); await turn();
+  f.ok(f.pick('GET', '/a'), {...a, imageStorageError: undefined, imageAvailability: [{digest: image().digest, state: 'ready'}]}); await turn();
+  assert.equal(f.node('send').disabled, false); assert.equal(f.composer.editor.value, 'source'); assert.equal(f.calls.length, 0);
+});
+test('image-only input uses the saved ordered tuple and retains it on refusal', async () => {
+  const f = fixture(), images = [image(), image('two.png', 'b')], a = f.connect(state('a', {...draft(4), images}));
+  assert.equal(f.node('send').disabled, false); const sending = f.composer.send(); await turn();
+  assert.deepEqual(f.pick('POST', '/inputs').body, {message: '', mode: 'prompt', images, draftRevision: 4, epoch: 7, literal: false});
+  f.admit(a, 'rejected'); await sending; assert.deepEqual(f.composer.state?.draft.images, images); assert.match(f.node('attachments').textContent, /one.png/);
+});
+test('image removal saves the entire remaining tuple before another send', async () => {
+  const f = fixture(), images = [image(), image('two.png', 'b')]; f.connect(state('a', {...draft(3, 'source'), images}));
+  f.node('editor').setSelectionRange(1, 4, 'backward'); f.node('editor').fire('select');
+  f.node('attachments').find('Remove one.png')?.fire('click');
+  assert.deepEqual(f.pick('PUT', '/draft').body, {expectedRevision: 3, text: 'source', mode: 'prompt', images: [images[1]]}); assert.equal(f.node('send').disabled, true);
+  f.ok(f.pick('PUT', '/draft'), {...draft(4, 'source'), images: [images[1]]}); await turn();
+  assert.equal(f.node('send').disabled, false); assert.deepEqual([f.node('editor').selectionStart, f.node('editor').selectionEnd, f.node('editor').selectionDirection], [1, 4, 'backward']);
+});
+test('image capability loss and command combinations retain the complete draft without dispatch', async () => {
+  let allowed = false;
+  const f = fixture('primary', undefined, true, undefined, () => false, () => ({allowed, reason: 'Model capability unavailable'}));
+  const a = state('a', {...draft(3, 'source'), images: [image()]}); f.connect(a); await f.composer.send(); assert.equal(f.calls.length, 0); assert.match(f.node('send').getAttribute('aria-description') ?? '', /unavailable/);
+  allowed = true; f.composer.availability(true, true, false); f.composer.setText('/command'); f.ok(f.pick('PUT', '/draft'), {...draft(4, '/command'), images: [image()]}); await turn();
+  await f.composer.send(true); assert.equal(f.calls.length, 0); assert.deepEqual(f.composer.state?.draft.images, [image()]); assert.match(f.node('attachments').textContent, /separate messages/);
+});
+test('handled image admission keeps the draft without a cleanup save', async () => {
+  const f = fixture(), images = [image()], a = f.connect(state('a', {...draft(5, 'source'), images}));
+  const sending = f.composer.send(); await turn(); const call = f.pick('POST', '/inputs');
+  f.ok(call, {id: call.id, kind: 'primary.input', target: a.target, state: 'accepted', receipt: {kind: 'rpc', disposition: 'handled'}}); await turn();
+  f.ok(f.pick('GET', '/a'), a); await sending;
+  assert.equal(f.composer.editor.value, 'source'); assert.deepEqual(f.composer.state?.draft.images, images); assert.match(f.node('receipt').textContent, /images not confirmed/); assert.equal(f.calls.length, 0);
+});
+test('queue recovery uncertainty is not overridden by different-message consent', async () => {
+  const f = fixture(), a = state('a', {...draft(5, 'queue text'), recoverySendGuard: {state: 'unavailable', imageCopies: 1}}); f.connect(a);
+  await f.composer.send(); assert.equal(f.calls.length, 0); assert.match(f.node('receipt').textContent, /unavailable/); assert.equal(f.node('receipt').find('Send a different message…'), undefined);
+});
+test('known queue recovery consent applies to one exact attempt and preserves provenance', async () => {
+  const f = fixture(), origin = {clearOperationId: 'clear', recoveryOperationId: 'copy'}, a = state('a', {...draft(5, 'different text'), recoveryOrigin: origin, recoverySendGuard: {state: 'blocked', imageCopies: 1}}); f.connect(a);
+  await f.composer.send(); assert.equal(f.calls.length, 0); f.click('Send a different message…'); const confirm = f.node('receipt').find('Confirm different message'); assert.ok(confirm);
+  confirm.fire('click'); await turn(); assert.equal(f.pick('POST', '/inputs').body.differentMessage, true); f.admit(a, 'rejected'); await turn();
+  confirm.fire('click'); await turn(); assert.equal(f.calls.length, 0);
+  f.composer.setText('new text'); assert.equal(f.pick('PUT', '/draft').body.recoverySource, origin.recoveryOperationId); f.saved('new text', 6); await turn();
+});
+test('a newer saved revision invalidates different-message consent before dispatch', async () => {
+  const f = fixture(), guard = {state: 'blocked' as const, imageCopies: 1}; f.connect(state('a', {...draft(5, 'different text'), recoverySendGuard: guard}));
+  f.click('Send a different message…'); f.click('Confirm different message');
+  f.composer.updateDraft({...draft(6, 'different text'), recoverySendGuard: guard}); await turn();
+  assert.equal(f.calls.some(call => call.path.endsWith('/inputs')), false); assert.match(f.node('receipt').textContent, /confirmed draft changed/i);
+});
+test('duplicate-send consent retains the original uncertain operation and cannot be reused', async () => {
+  const f = fixture(), a = f.connect(state('a', draft(2, 'original'))), first = f.composer.send(); await turn(); const original = f.admit(a, 'uncertain'); await first;
+  f.click('Send again…'); const confirm = f.node('receipt').find('Send again'); assert.ok(confirm); confirm.fire('click'); await turn();
+  assert.equal(f.pick('POST', '/inputs').id, 'op-2'); f.admit(a, 'rejected'); await turn(); assert.match(f.node('receipt').textContent, /op-1/);
+  confirm.fire('click'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.composer.updateOperation({...original, state: 'accepted'}), true); await turn();
+  f.ok(f.pick('GET', '/a'), state('a', draft(3))); await turn(); assert.equal(f.composer.editor.value, '');
+});
+test('whole-image restore uses exact-target CAS and never sends', async () => {
+  const f = fixture(), images = [image(), image('two.png', 'b')], a = state('a', draft(4));
+  a.unconfirmed.push({admission: 'unconfirmed', operationId: 'copy', target: a.target, text: '', mode: 'prompt', images, submittedDraftRevision: 2, createdAt: '', reason: 'unknown'}); f.connect(a);
+  f.click('Restore to draft'); await turn(); assert.deepEqual(f.pick('POST', '/restore').body, {expectedDraftRevision: 4});
+  f.ok(f.pick('POST', '/restore'), {...draft(5), images}); await turn(); assert.deepEqual(f.composer.state?.draft.images, images); assert.equal(f.calls.length, 0);
+});
+test('a failed thumbnail retains identity and blocks a reduced send', async () => {
+  const f = fixture(); f.connect(state('a', {...draft(4, 'source'), images: [image()]})); const thumbnail = f.node('attachments').querySelector('img'); assert.ok(thumbnail);
+  thumbnail.fire('error'); assert.equal(f.node('send').disabled, true); assert.match(f.node('attachments').textContent, /Image unavailable/); assert.equal(f.composer.editor.value, 'source'); assert.deepEqual(f.composer.state?.draft.images, [image()]);
+  await f.composer.send(); assert.equal(f.calls.length, 0);
+});
+test('file inclusion after an edit remains a named suggestion until deliberate native insertion', async () => {
+  const f = fixture(); f.connect(state('a', draft(2, 'before'))); f.node('editor').focus(); f.node('editor').setSelectionRange(1, 3, 'backward');
+  f.composer.addFiles([new File(['exact\nfile'], 'notes.txt')]); await new Promise(resolve => setImmediate(resolve));
+  const include = f.node('attachments').find('Include text from notes.txt'); assert.ok(include);
+  f.composer.setText('after'); include.fire('click'); await new Promise(resolve => setImmediate(resolve)); assert.equal(f.composer.editor.value, 'after');
+  const insert = f.node('attachments').find('Insert prepared text from notes.txt'); assert.ok(insert); f.node('editor').setSelectionRange(1, 1); insert.fire('click'); await turn();
+  assert.match(f.composer.editor.value, /^aFile: "notes.txt"/); assert.match(f.composer.editor.value, /exact\nfile/); assert.equal(f.node('attachments').hidden, true);
+});
+test('removed text preparation cannot insert after its asynchronous read', async () => {
+  const f = fixture(); f.connect(state('a', draft(2, 'source'))); f.composer.addFiles([new File(['retained'], 'notes.txt')]); await new Promise(resolve => setImmediate(resolve));
+  f.node('attachments').find('Include text from notes.txt')?.fire('click'); f.node('attachments').find('Remove notes.txt')?.fire('click'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.composer.editor.value, 'source'); assert.equal(f.calls.length, 0); assert.equal(f.node('attachments').hidden, true);
+});
 
 test('composition commit beforeinput cannot release the Enter latch', async () => {
   for (const inputType of ['insertCompositionText', 'insertFromComposition']) {
@@ -356,7 +480,7 @@ test('submission saves the clicked exact text and mode, then keeps target and re
   f.ok(f.calls.find(call => call.path.includes('/a/draft')) as Call, draft(1, 'first', 'followUp')); await turn();
   const clicked = f.calls.find(call => call.path.includes('/a/draft')) as Call; assert.equal(clicked.body.text, 'clicked');
   f.ok(clicked, draft(2, 'clicked', 'followUp')); await turn(); const input = f.pick('POST', '/inputs');
-  assert.equal(input.path, '/api/agents/a/inputs'); assert.deepEqual(input.body, {message: 'clicked', mode: 'followUp', draftRevision: 2}); assert.equal(input.id, 'op-1');
+  assert.equal(input.path, '/api/agents/a/inputs'); assert.deepEqual(input.body, {message: 'clicked', mode: 'followUp', draftRevision: 2, images: []}); assert.equal(input.id, 'op-1');
   f.admit(a, 'rejected'); await sending; assert.equal(f.composer.editor.value, 'B'); f.composer.attach('w', state('a', draft(2, 'clicked', 'followUp'), true)); assert.equal(f.composer.editor.value, 'newer');
 });
 test('acceptance preserves newer edits and saves from the backend cleanup revision', async () => {
@@ -374,7 +498,7 @@ test('network loss after dispatch retains original key, copy, restore, receipt c
   const f = fixture(); const a = f.connect(state('a', draft(4, ' exact\n '))); const sending = f.composer.send(); await turn();
   const input = f.pick('POST', '/inputs'); f.calls.splice(f.calls.indexOf(input), 1); input.reject(new Error('connection lost')); await sending;
   assert.match(f.node('receipt').textContent, /op-1/); assert.match(f.node('receipt').textContent, / exact\n /); await f.composer.send(); assert.equal(f.calls.length, 0);
-  f.click('Copy original message'); await turn(); assert.deepEqual(f.copied, [' exact\n ']); f.click('Restore to draft'); assert.equal(f.composer.editor.value, ' exact\n ');
+  f.click('Copy original text only'); await turn(); assert.deepEqual(f.copied, [' exact\n ']); f.click('Restore to draft'); await turn(); assert.deepEqual(f.pick('POST', '/restore').body, {expectedDraftRevision: 4}); f.fail(f.pick('POST', '/restore'), 'host_unavailable'); await turn(); assert.equal(f.composer.editor.value, ' exact\n ');
   f.click('Check delivery'); assert.equal(f.pick('POST', '/reconcile').path, '/api/operations/op-1/reconcile'); f.fail(f.pick('POST', '/reconcile'), 'unknown_operation'); await turn();
   assert.match(f.node('receipt').textContent, /admission remains unknown/); f.click('Send again…'); assert.equal(f.calls.length, 0);
   f.click('Send again'); await turn(); assert.equal(f.pick('POST', '/inputs').id, 'op-2'); f.admit(a, 'rejected'); await turn();
@@ -384,18 +508,21 @@ test('an uncertain send result shows one warning and retains explicit recovery c
   const sending = f.composer.send(); await turn(); f.admit(a, 'uncertain'); await sending;
   const receipt = f.node('receipt'); assert.equal(receipt.textContent.split('Send not confirmed. Check before you send again.').length - 1, 1);
   assert.doesNotMatch(receipt.textContent, /Check the receipt before another submission/);
-  for (const label of ['Check delivery', 'Copy original message', 'Restore to draft', 'Send again…']) assert.ok(receipt.find(label));
+  for (const label of ['Check delivery', 'Copy original text only', 'Restore to draft', 'Send again…']) assert.ok(receipt.find(label));
   assert.equal(f.composer.editor.value, 'original'); assert.equal(f.calls.length, 0);
 });
 test('restoring uncertain input does not replace a newer draft without an explicit choice', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(2, 'original'))); const sending = f.composer.send(); await turn(); f.admit(a, 'uncertain'); await sending;
   f.composer.availability(false, false, false); f.composer.setText('newer'); f.click('Restore to draft'); await turn(); assert.equal(f.composer.editor.value, 'newer');
-  f.click('Replace draft with original'); assert.equal(f.composer.editor.value, 'original');
+  f.composer.availability(true, true, false); f.saved('newer', 3); await turn();
+  f.click('Restore to draft'); await turn(); f.click('Replace draft with original');
+  assert.equal(f.composer.editor.value, 'newer'); assert.deepEqual(f.pick('POST', '/restore').body, {expectedDraftRevision: 3});
+  f.ok(f.pick('POST', '/restore'), draft(4, 'original')); await turn(); assert.equal(f.composer.editor.value, 'original'); assert.equal(f.calls.length, 0);
 });
 test('restored input uses one Composer recovery UI, blocks duplicates, and accepts late receipt', async () => {
-  const f = fixture(); const a = state('a', draft(2, 'original')); a.unconfirmed.push({operationId: 'retained', target: a.target, text: 'original', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown'});
+  const f = fixture(); const a = state('a', draft(2, 'original')); a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: 'retained', target: a.target, text: 'original', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown'});
   f.connect(a); assert.equal(f.node('receipt').textContent.split('Send not confirmed').length - 1, 1);
-  for (const label of ['Check delivery', 'Copy original message', 'Restore to draft']) assert.ok(f.node('receipt').find(label));
+  for (const label of ['Check delivery', 'Copy original text only', 'Restore to draft']) assert.ok(f.node('receipt').find(label));
   await f.composer.send(); assert.equal(f.calls.length, 0);
   assert.equal(f.composer.updateOperation({id: 'retained', kind: 'primary.input', target: a.target, state: 'accepted', createdAt: '', updatedAt: ''}), true);
   await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(3, ''))); await turn(); assert.equal(f.composer.editor.value, '');
@@ -460,7 +587,7 @@ test('an earlier late acceptance keeps a newer already-saved edit', async () => 
 test('late hidden-target acceptance never clears the selected target and stale copies do not rehydrate', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(4, 'original'))); const sending = f.composer.send(); await turn(); const result = f.admit(a, 'uncertain'); await sending;
   f.composer.attach('w', state('b', draft(3, 'B'))); f.composer.updateOperation({...result, state: 'accepted'}); await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(5, ''))); await turn();
-  assert.equal(f.composer.editor.value, 'B'); a.unconfirmed.push({operationId: result.id, target: a.target, text: 'original', mode: 'prompt', submittedDraftRevision: 4, createdAt: '', reason: 'old snapshot'});
+  assert.equal(f.composer.editor.value, 'B'); a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: result.id, target: a.target, text: 'original', mode: 'prompt', submittedDraftRevision: 4, createdAt: '', reason: 'old snapshot'});
   f.composer.attach('w', a); assert.equal(f.composer.editor.value, ''); assert.doesNotMatch(f.node('receipt').textContent, /Send not confirmed/);
 });
 test('agent uncertainty blocks the same input but permits a different explicitly submitted revision', async () => {
@@ -477,31 +604,31 @@ test('workspaces keep independent queues even for the same target key', async ()
 
 test('truncated recovery Copy fetches exact text for the captured workspace and target', async () => {
   const f = fixture(); const a = state('a', draft(3, 'newer'));
-  const item = {operationId: 'retained', target: a.target, text: 'preview', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
-  f.connect(a); f.click('Copy original message'); const fetch = f.pick('GET', '/retained'); assert.equal(fetch.path, '/api/workspaces/w/unconfirmed/retained');
+  const item = {admission: 'unconfirmed' as const, images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
+  f.connect(a); f.click('Copy original text only'); const fetch = f.pick('GET', '/retained'); assert.equal(fetch.path, '/api/workspaces/w/unconfirmed/retained');
   f.composer.attach('other', state('b', draft(1, 'B'))); f.ok(fetch, {...item, text: ' exact\n original ', textTruncated: undefined}); await turn();
   assert.deepEqual(f.copied, [' exact\n original ']); assert.equal(f.composer.editor.value, 'B');
   f.composer.attach('w', a); f.click('Restore to draft'); await turn(); assert.equal(f.composer.editor.value, 'newer');
-  f.click('Replace draft with original'); assert.equal(f.composer.editor.value, ' exact\n original '); assert.equal(f.pick('PUT', '/draft').body.expectedRevision, 3);
+  f.click('Replace draft with original'); assert.equal(f.pick('POST', '/restore').body.expectedDraftRevision, 3);
+  f.ok(f.pick('POST', '/restore'), draft(4, ' exact\n original ')); await turn(); assert.equal(f.composer.editor.value, ' exact\n original '); assert.equal(f.calls.length, 0);
 });
 test('delayed draft restoration returns focus only to the original action owner', async () => {
   for (const nextFocus of ['delivery', 'external', 'restore'] as const) {
     const f = fixture(); const a = state('a', draft(3, '', 'steer'));
-    const item = {operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
+    const item = {admission: 'unconfirmed' as const, images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
     f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('modes').hidden, false);
     const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
     const fetch = f.pick('GET', '/retained'); assert.equal(fetch.path, '/api/workspaces/w/unconfirmed/retained');
     const origin = nextFocus === 'delivery' ? f.node('modes').children[0] : nextFocus === 'external' ? new NodeFake() : restore; assert.ok(origin); origin.focus();
     f.ok(fetch, {...item, text: 'full original', textTruncated: undefined}); await turn();
-    assert.equal(f.composer.editor.value, 'full original'); assert.equal(f.pick('PUT', '/draft').body.expectedRevision, 3);
-    assert.equal(document.activeElement === (nextFocus === 'restore' ? f.composer.editor : origin), true, `focus owner: ${nextFocus}`);
-    f.saved('full original', 4, 'steer'); await turn(); assert.equal(document.activeElement === (nextFocus === 'restore' ? f.composer.editor : origin), true, `saved focus owner: ${nextFocus}`);
+    assert.equal(f.composer.editor.value, ''); assert.equal(f.pick('POST', '/restore').body.expectedDraftRevision, 3);
+    f.ok(f.pick('POST', '/restore'), draft(4, 'full original', 'steer')); await turn(); assert.equal(f.composer.editor.value, 'full original'); assert.equal(document.activeElement === (nextFocus === 'restore' ? f.composer.editor : origin), true, `saved focus owner: ${nextFocus}`);
     assert.equal(f.calls.length, 0);
   }
 });
 test('explicit replacement starts a fresh focus intent after delayed restoration review', async () => {
   const f = fixture(); const a = state('a', draft(3, 'newer', 'steer'));
-  const item = {operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
+  const item = {admission: 'unconfirmed' as const, images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
   f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('modes').hidden, false);
   f.node('editor').setSelectionRange(1, 4, 'backward'); f.node('editor').fire('select');
   const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
@@ -509,14 +636,15 @@ test('explicit replacement starts a fresh focus intent after delayed restoration
   f.ok(f.pick('GET', '/retained'), {...item, text: 'full original', textTruncated: undefined}); await turn();
   assert.equal(f.composer.editor.value, 'newer'); assert.equal(document.activeElement, delivery); assert.equal(f.calls.length, 0);
   const replace = f.node('receipt').find('Replace draft with original'); assert.ok(replace); replace.focus(); replace.fire('click');
+  assert.equal(document.activeElement, replace); assert.equal(f.composer.editor.value, 'newer');
+  assert.equal(f.pick('POST', '/restore').body.expectedDraftRevision, 3); f.ok(f.pick('POST', '/restore'), draft(4, 'full original', 'steer')); await turn();
   assert.equal(document.activeElement, f.composer.editor); assert.equal(f.composer.editor.value, 'full original');
-  assert.deepEqual([f.node('editor').selectionStart, f.node('editor').selectionEnd, f.node('editor').selectionDirection], [1, 4, 'backward']);
-  assert.equal(f.pick('PUT', '/draft').body.expectedRevision, 3); f.saved('full original', 4, 'steer'); await turn(); assert.equal(f.calls.length, 0);
+  assert.deepEqual([f.node('editor').selectionStart, f.node('editor').selectionEnd, f.node('editor').selectionDirection], [1, 4, 'backward']); assert.equal(f.calls.length, 0);
 });
 test('failed exact recovery fetch never copies or restores the preview', async () => {
   const f = fixture(); const a = state('a', draft(3, 'newer'));
-  a.unconfirmed.push({operationId: 'retained', target: a.target, text: 'preview', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true});
-  f.connect(a); f.click('Copy original message'); f.fail(f.pick('GET', '/retained'), 'host_unavailable'); await turn();
+  a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true});
+  f.connect(a); f.click('Copy original text only'); f.fail(f.pick('GET', '/retained'), 'host_unavailable'); await turn();
   assert.deepEqual(f.copied, []); assert.equal(f.composer.editor.value, 'newer'); assert.match(f.node('receipt').textContent, /Send not confirmed/);
 });
 test('accepted native receipt exposes exact identity, submission ID, and request key', async () => {
@@ -545,7 +673,7 @@ test('accepted-event cleanup keeps newer edits and advances their next save revi
 test('an idle primary saves prompt mode before dispatch and keeps that captured mode if busy state changes', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(2, 'sent', 'steer'))); const sending = f.composer.send(); f.composer.availability(true, true, true); await turn();
   assert.equal(f.pick('PUT', '/draft').body.mode, 'prompt'); f.saved('sent', 3, 'prompt'); await turn();
-  assert.deepEqual(f.pick('POST', '/inputs').body, {epoch: 7, message: 'sent', mode: 'prompt', draftRevision: 3, literal: false}); f.admit(a, 'rejected'); await sending;
+  assert.deepEqual(f.pick('POST', '/inputs').body, {epoch: 7, message: 'sent', mode: 'prompt', draftRevision: 3, images: [], literal: false}); f.admit(a, 'rejected'); await sending;
 });
 
 test('literal confirmation refuses changed text, saved revision, and target epoch', async () => {
@@ -727,7 +855,7 @@ test('close retains pending and unconfirmed sends and reopening never sends them
   const sending = f.composer.send(); await turn(); f.composer.attach('w');
   assert.equal(f.composer.retained('w', a.target), true); f.admit(a, 'uncertain'); await sending;
   f.composer.attach('w', a); assert.match(f.node('receipt').textContent, /Send not confirmed/);
-  assert.ok(f.node('receipt').find('Check delivery')); assert.ok(f.node('receipt').find('Copy original message')); assert.ok(f.node('receipt').find('Restore to draft'));
+  assert.ok(f.node('receipt').find('Check delivery')); assert.ok(f.node('receipt').find('Copy original text only')); assert.ok(f.node('receipt').find('Restore to draft'));
   await f.composer.send(); assert.equal(f.calls.length, 0);
 });
 test('composer placement keeps delivery gating independent of app-owned connection controls', () => {
@@ -738,20 +866,20 @@ test('composer placement keeps delivery gating independent of app-owned connecti
 });
 
 function targetIndex(saved: TargetState, changes: Partial<TargetIndex> = {}): TargetIndex {
-  return {targetKey: saved.targetKey, target: saved.target, draftRevision: saved.draft.revision, hasDraft: !!saved.draft.text, unconfirmedOperationIds: saved.unconfirmed.map(item => item.operationId), ...changes};
+  return {targetKey: saved.targetKey, target: saved.target, draftRevision: saved.draft.revision, hasDraft: !!saved.draft.text, retainedInputOperationIds: [], unconfirmedOperationIds: saved.unconfirmed.map(item => item.operationId), ...changes};
 }
 test('Resume reconciles indexed revisions and unresolved IDs against an empty retained buffer', () => {
   const f = fixture('agent'); const a = state('a', draft(4, '', 'followUp'), true); f.composer.attach('w', a); f.composer.attach('w');
   assert.equal(f.composer.retained('w', a.target, targetIndex(a)), false);
   assert.equal(f.composer.retained('w', a.target, targetIndex(a, {draftRevision: 5, hasDraft: true})), true);
   assert.equal(f.composer.retained('w', a.target, targetIndex(a, {draftRevision: 3, hasDraft: true})), false);
-  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {unconfirmedOperationIds: ['remote-input']})), true);
-  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {draftRevision: 3, unconfirmedOperationIds: ['remote-input']})), true);
+  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {retainedInputOperationIds: [], unconfirmedOperationIds: ['remote-input']})), true);
+  assert.equal(f.composer.retained('w', a.target, targetIndex(a, {draftRevision: 3, retainedInputOperationIds: [], unconfirmedOperationIds: ['remote-input']})), true);
   assert.equal(f.composer.retained('w', a.target, targetIndex(a, {target: {kind: 'agent', identity: 'other'}, hasDraft: true, draftRevision: 9})), false);
 });
 test('an old index cannot resurrect a draft or input copy cleared by this tab', async () => {
   const f = fixture('agent'); const a = state('a', draft(4, 'sent', 'followUp'), true);
-  a.unconfirmed.push({operationId: 'retained', target: a.target, text: 'sent', mode: 'followUp', submittedDraftRevision: 4, createdAt: '', reason: 'unknown'});
+  a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: 'retained', target: a.target, text: 'sent', mode: 'followUp', submittedDraftRevision: 4, createdAt: '', reason: 'unknown'});
   f.connect(a); const oldIndex = targetIndex(a);
   f.composer.updateOperation({id: 'retained', kind: 'agent.input', target: a.target, state: 'accepted', createdAt: '', updatedAt: ''});
   await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(5, '', 'followUp'), true)); await turn(); f.composer.attach('w');
@@ -819,7 +947,7 @@ test('busy delivery choices describe timing once and stay separate from activity
 });
 test('unconfirmed delivery puts captured identifiers and text in closed disclosures', () => {
   const f = fixture(); const a = state('captured', draft(2, 'message'));
-  a.unconfirmed.push({operationId: 'unconfirmed-id', target: a.target, text: 'message', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown'});
+  a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: 'unconfirmed-id', target: a.target, text: 'message', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown'});
   f.connect(a); const row = f.node('receipt').children.find(node => node.find('Check delivery')); assert.ok(row);
   assert.match(row.children[0]?.textContent ?? '', /Send not confirmed. Check before you send again./);
   assert.equal(row.children[1]?.open, false); assert.equal(row.children[2]?.open, false);

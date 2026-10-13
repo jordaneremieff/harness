@@ -9,7 +9,7 @@ export type DevCheckpointTarget =
   | {kind: 'primary'; key: string; epoch: number}
   | {kind: 'agent'; identity: string; connectionEpoch: number};
 export type DevCheckpointEntry = {
-  targetKey: string; target: DevCheckpointTarget; draftRevision: number; readingRevision: number; presentationRevision: number;
+  targetKey: string; target: DevCheckpointTarget; draftRevision: number; imageFingerprint: string; readingRevision: number; presentationRevision: number;
   selection?: {start: number; end: number; direction: 'forward' | 'backward' | 'none'};
 };
 export type DevReloadView = {
@@ -71,8 +71,9 @@ function target(value: unknown): value is DevCheckpointTarget {
   return record(value, ['kind', 'identity', 'connectionEpoch']) && value.kind === 'agent' && id(value.identity) && integer(value.connectionEpoch) && value.connectionEpoch > 0;
 }
 function entry(value: unknown): value is DevCheckpointEntry {
-  if (!record(value, ['targetKey', 'target', 'draftRevision', 'readingRevision', 'presentationRevision'], ['selection'])) return false;
+  if (!record(value, ['targetKey', 'target', 'draftRevision', 'imageFingerprint', 'readingRevision', 'presentationRevision'], ['selection'])) return false;
   if (!id(value.targetKey) || !target(value.target) || !integer(value.draftRevision) || !integer(value.readingRevision) || !integer(value.presentationRevision)) return false;
+  if (typeof value.imageFingerprint !== 'string' || value.imageFingerprint.length > 8192) return false;
   if (value.selection === undefined) return true;
   const s = value.selection;
   return record(s, ['start', 'end', 'direction']) && integer(s.start) && integer(s.end) && s.start <= s.end && s.end <= 262144 && typeof s.direction === 'string' && ['forward', 'backward', 'none'].includes(s.direction);
