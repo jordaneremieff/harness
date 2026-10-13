@@ -125,7 +125,8 @@ export type InputCopy = {operationId: string; target: Target; text: string; mode
   submittedDraftRevision: number; createdAt: string; reason: string; textTruncated?: true;
   queueRecovery?: QueueRecovery; recoveryOrigin?: RecoveryOrigin; differentMessage?: true};
 export type UnconfirmedInput = InputCopy & {sendGuard?: RecoverySendGuard};
-export type RetainedInput = InputCopy & {admission: 'queued-image' | 'handled-image'; receipt: NonNullable<OperationView['receipt']>};
+export type RetainedAdmission = 'queued-image' | 'handled-image' | 'refused';
+export type RetainedInput = InputCopy & ({admission: 'queued-image' | 'handled-image'; receipt: NonNullable<OperationView['receipt']>} | {admission: 'refused'; error?: ErrorView});
 export type RecoveryInput = (UnconfirmedInput & {admission: 'unconfirmed'}) | RetainedInput;
 export type TargetIndex = {targetKey: string; target: Target; draftRevision: number; hasDraft: boolean; draftPreview?: string; draftPreviewTruncated?: boolean; unconfirmedOperationIds: string[]; retainedInputOperationIds: string[]};
 export type TargetState = {targetKey: string; target: Target; draft: DraftView; reading: ReadingView;
@@ -153,7 +154,7 @@ export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 
 /** Admission is separate from the eventual answer. Completed is a local control response. */
 export type OperationView = {id: string; kind: OperationKind; target?: Target; action?: string;
   state: 'reserved' | 'dispatched' | 'accepted' | 'rejected' | 'uncertain' | 'completed';
-  createdAt: string; updatedAt: string; retainedInput?: 'queued-image' | 'handled-image'; receipt?: {kind: 'rpc'; disposition?: 'started' | 'queued' | 'handled'; result?: JsonDisplay} |
+  createdAt: string; updatedAt: string; retainedInput?: RetainedAdmission; receipt?: {kind: 'rpc'; disposition?: 'started' | 'queued' | 'handled'; result?: JsonDisplay} |
   {kind: 'durable'; identity: string; submissionId: number; requestId: string; deduped: boolean}; error?: ErrorView};
 export type PrimaryInput = {epoch: number; message: string; mode: 'prompt' | 'steer' | 'followUp'; draftRevision: number; literal?: boolean; images?: DraftImage[]; differentMessage?: true};
 export type AgentInput = {message: string; mode: 'steer' | 'followUp'; draftRevision: number; images?: DraftImage[]};

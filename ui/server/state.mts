@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { LIMITS, sameDraftTuple, draftHasContent } from '../shared/api.ts';
-import type {DraftImage, DraftPut, StoredDraft, RecoveryInput, RetainedInput, InputCopy, RecoveryOrigin, RecoverySendGuard, QueueRecovery, ImageUploadView} from '../shared/api.ts';
+import type {DraftImage, DraftPut, StoredDraft, RecoveryInput, RetainedInput, RetainedAdmission, InputCopy, RecoveryOrigin, RecoverySendGuard, QueueRecovery, ImageUploadView} from '../shared/api.ts';
 import {normalizeDraftImages, imageName} from './validate.mts';
 import {DraftImages, sameImageContent} from './draft-images.mts';
 import type {BlobIndex, BlobReferenceGraph, BlobReadSpec, BlobIntake, UploadReservation} from './draft-images.mts';
@@ -17,8 +17,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FORMAT = 'ui-state/1';
 export type ChangeHook = (name: EventName, data: EventData[EventName], workspaceId?: string, target?: Target) => void;
 export type QueueClearRecord = {recoveryWorkspaceId: string; phase: 'prepared' | 'retaining' | 'retained' | 'uncertain' | 'refused'; imageCopies: {workspaceId: string; operationId: string}[]; rowBudget: number; returned?: {steering: number; followUp: number}};
-export type OperationMetadata = {view: Pick<OperationView, 'id' | 'kind' | 'target' | 'state' | 'createdAt' | 'updatedAt'>; workspaceId: string; input?: true; inputResolved?: boolean; retainedInput?: 'queued-image' | 'handled-image'; protected?: boolean};
-export type OperationRecord = {view: OperationView; workspaceId: string; digest?: string; input?: Omit<InputCopy, 'images' | 'queueRecovery'> & {targetKey: string; images?: DraftImage[]}; inputResolved?: boolean; retainedInput?: 'queued-image' | 'handled-image'; queueRecovery?: QueueRecovery; queueClear?: QueueClearRecord};
+export type OperationMetadata = {view: Pick<OperationView, 'id' | 'kind' | 'target' | 'state' | 'createdAt' | 'updatedAt'>; workspaceId: string; input?: true; inputResolved?: boolean; retainedInput?: RetainedAdmission; protected?: boolean};
+export type OperationRecord = {view: OperationView; workspaceId: string; digest?: string; input?: Omit<InputCopy, 'images' | 'queueRecovery'> & {targetKey: string; images?: DraftImage[]}; inputResolved?: boolean; retainedInput?: RetainedAdmission; queueRecovery?: QueueRecovery; queueClear?: QueueClearRecord};
 export type ImageLease = {image: ValidatedImage; expiresAt: string};
 type StoredTarget = Omit<TargetState, 'draft' | 'unconfirmed' | 'retainedInputs' | 'imageAvailability' | 'imageStorageError' | 'recoveryPreviewTruncated'> & {workspaceId: string; draft: StoredDraft; imageLeases?: ImageLease[]};
 
@@ -364,7 +364,7 @@ export class StateStore {
       return {...input, ...(record?.queueRecovery ? {queueRecovery: record.queueRecovery} : {}), ...(origin ? {sendGuard: this.recoveryGuard(origin)} : {})};
     });
     const retainedInputs: RetainedInput[] = [...this.operationRecords.values()].filter(record => record.workspaceId === value.workspaceId && record.input?.targetKey === value.targetKey && record.retainedInput).map(record => {
-      const copy = this.inputView(record); return {...copy, text: safeText(copy.text, 256), ...(copy.text.length > 256 ? {textTruncated: true as const} : {}), admission: record.retainedInput as RetainedInput['admission'], receipt: record.view.receipt as NonNullable<OperationView['receipt']>};
+      const copy = this.retainedView(record); return {...copy, text: safeText(copy.text, 256), ...(copy.text.length > 256 ? {textTruncated: true as const} : {})};
     });
     const draft = this.draftView(storedDraft);
     const metadata = [...draft.images, ...unconfirmed.flatMap(copy => copy.images), ...retainedInputs.flatMap(copy => copy.images)];
@@ -418,7 +418,7 @@ export class StateStore {
     await this.queue; const record = this.record(id);
     if (record.workspaceId !== wid || !record.input || record.inputResolved && !record.retainedInput) throw new StateError('unknown_operation', 'No recovery copy exists', 404);
     const input = this.inputView(record);
-    return record.retainedInput ? {...input, admission: record.retainedInput, receipt: record.view.receipt as NonNullable<OperationView['receipt']>} : {...input, admission: 'unconfirmed'};
+    return record.retainedInput ? this.retainedView(record) : {...input, admission: 'unconfirmed'};
   }
   private async writeTarget(value: StoredTarget): Promise<void> {
     await this.atomic(`targets/${value.targetKey}.json`, value, 96 * 1024); this.targetRecords.set(value.targetKey, value);
@@ -520,10 +520,24 @@ export class StateStore {
   private validateOperationInput(record: OperationRecord): void {
     if (record.input) this.validateCapturedInput(record, record.input);
     if (record.queueRecovery) validateQueueRecovery(record.queueRecovery);
-    if (record.retainedInput && (!['queued-image', 'handled-image'].includes(record.retainedInput) || !record.input?.images?.length || record.view.receipt?.kind !== 'rpc' || record.view.receipt.disposition !== (record.retainedInput === 'queued-image' ? 'queued' : 'handled'))) throw new StateError('operation_conflict', 'Protected image receipt is invalid', 409);
+    this.validateRetainedInput(record);
     this.validateQueueClear(record);
     record.view.retainedInput = record.retainedInput;
     if (!record.retainedInput) delete record.view.retainedInput;
+  }
+  private validateRetainedInput(record: OperationRecord): void {
+    if (!record.retainedInput) return;
+    if (record.retainedInput === 'refused') {
+      if (!record.input || record.view.state !== 'rejected' || record.inputResolved !== true) throw new StateError('operation_conflict', 'Refused recovery copy is invalid', 409);
+      return;
+    }
+    if (!['queued-image', 'handled-image'].includes(record.retainedInput) || !record.input?.images?.length || record.view.receipt?.kind !== 'rpc' || record.view.receipt.disposition !== (record.retainedInput === 'queued-image' ? 'queued' : 'handled')) throw new StateError('operation_conflict', 'Protected image receipt is invalid', 409);
+  }
+  private retainedView(record: OperationRecord): RetainedInput {
+    const input = this.inputView(record);
+    if (record.retainedInput === 'refused') return {...input, admission: 'refused', ...(record.view.error ? {error: structuredClone(record.view.error)} : {})};
+    if (!record.retainedInput || !record.view.receipt) throw new StateError('operation_conflict', 'Protected image receipt is unavailable', 409);
+    return {...input, admission: record.retainedInput, receipt: structuredClone(record.view.receipt)};
   }
   private validateCapturedInput(record: OperationRecord, input: NonNullable<OperationRecord['input']>): void {
     validateText(input.text); validateMode(input.mode); validateTarget(input.target);
@@ -566,7 +580,7 @@ export class StateStore {
     for (const member of anchor.queueClear.imageCopies) {
       const record = this.operationRecords.get(member.operationId);
       if (!record || record.workspaceId !== member.workspaceId || !sameTarget(record.view.target, anchor.view.target) || !record.input && record.inputResolved !== true) return {state: 'unavailable', imageCopies};
-      if (record.input?.images?.length && (!record.inputResolved || record.retainedInput)) imageCopies++;
+      if (record.input?.images?.length && record.retainedInput !== 'refused' && (!record.inputResolved || record.retainedInput)) imageCopies++;
     }
     return {state: imageCopies ? 'blocked' : 'clear', imageCopies};
   }
@@ -767,7 +781,7 @@ export class StateStore {
     const verified = new Set<string>();
     const copies: QueueClearRecord['imageCopies'] = [];
     for (const record of this.operationRecords.values()) {
-      if (!record.input?.images?.length || !sameTarget(record.view.target, target) || record.inputResolved && !record.retainedInput) continue;
+      if (!record.input?.images?.length || record.retainedInput === 'refused' || !sameTarget(record.view.target, target) || record.inputResolved && !record.retainedInput) continue;
       this.validateDraftImageReferences(record.input.targetKey, record.input.images);
       for (const image of record.input.images) {
         const key = `${record.input.targetKey}:${image.digest}`;

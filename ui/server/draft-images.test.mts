@@ -211,6 +211,58 @@ test('a refused retry does not certify the original uncertain admission or disca
   assert.equal(result.state, 'uncertain'); assert.equal(f.store.record(operation.id).input?.text, 'original'); assert.equal((await f.store.getTarget(f.workspace.id, saved.targetKey)).draft.text, 'newer');
 });
 
+test('delayed definite refusal preserves a displaced full tuple through restart and explicit restore', async t => {
+  const f = await fixture(t), staged = await f.upload();
+  const draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: 'submitted caption', mode: 'prompt', images: [staged.image]});
+  const operations = f.operations(), operation = await operations.reserve(f.workspace.id, 'primary.input', f.target);
+  let entered = () => {}, finish = () => {}, dispatches = 0;
+  const started = new Promise<void>(resolve => {entered = resolve;}); const gate = new Promise<void>(resolve => {finish = resolve;});
+  const error = {code: 'unsupported', message: 'Native input was refused', retry: 'none' as const};
+  const pending = operations.execute(operation.id, {workspaceId: f.workspace.id, kind: 'primary.input', target: f.target, body: {message: draft.text, mode: draft.mode, draftRevision: draft.revision, images: draft.images}, input: {targetKey: f.saved.targetKey, text: draft.text, mode: draft.mode, draftRevision: draft.revision, images: draft.images}}, async () => {dispatches++; entered(); await gate; return {state: 'rejected', error};});
+  await started;
+  const newer = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: draft.revision, text: 'newer text', mode: 'steer', images: []});
+  finish(); const result = await pending;
+  assert.equal(result.state, 'rejected'); assert.deepEqual(result.error, error); assert.equal(result.receipt, undefined); assert.equal(result.retainedInput, 'refused');
+  assert.deepEqual((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft, newer);
+  await assert.rejects(operations.remove(operation.id), {code: 'operation_conflict'});
+  f.advance(LIMITS.imageLeaseMs + 1); await f.reopen();
+  const copy = await f.store.getRetainedInput(f.workspace.id, operation.id);
+  assert.equal(copy.admission, 'refused'); assert.ok(!('receipt' in copy)); assert.ok(sameDraftTuple(copy, draft));
+  if (copy.admission === 'refused') assert.deepEqual(copy.error, error);
+  assert.equal(f.store.retainedInputCount(), 1); assert.equal(f.store.record(operation.id).view.state, 'rejected');
+  assert.deepEqual(f.store.snapshot(f.workspace.id, [f.target]).targetIndex[0]?.retainedInputOperationIds, [operation.id]);
+  const clear = await f.operations().beginQueueClear(f.workspace.id, f.target, 0); assert.deepEqual(f.store.record(clear).queueClear?.imageCopies, []);
+  await assert.rejects(f.store.restoreRetainedInput(f.workspace.id, operation.id, draft.revision), {code: 'stale_revision'});
+  assert.deepEqual((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft, newer);
+  const restored = await f.store.restoreRetainedInput(f.workspace.id, operation.id, newer.revision); assert.ok(sameDraftTuple(restored, draft)); assert.equal(dispatches, 1);
+  assert.deepEqual(Buffer.from((await f.store.readDraftImage(f.workspace.id, f.saved.targetKey, staged.image.digest)).data), bytes);
+  await f.store.discardRetainedInput(f.workspace.id, operation.id); assert.equal(f.store.retainedInputCount(), 0);
+  await f.operations().remove(operation.id); assert.ok(sameDraftTuple((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft, draft));
+});
+
+test('text-only refused copies use retained capacity and remain protected until explicit discard', async t => {
+  const f = await fixture(t), draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: 'original', mode: 'prompt'});
+  const operations = f.operations(), operation = await operations.reserve(f.workspace.id, 'primary.input', f.target);
+  await operations.execute(operation.id, {workspaceId: f.workspace.id, kind: 'primary.input', target: f.target, body: {message: draft.text, mode: draft.mode, draftRevision: draft.revision}, input: {targetKey: f.saved.targetKey, text: draft.text, mode: draft.mode, draftRevision: draft.revision}}, async () => {
+    await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: draft.revision, text: draft.text, mode: 'followUp'}); return {state: 'rejected', error: {code: 'not_ready', message: 'Refused', retry: 'none'}};
+  });
+  assert.equal((await f.store.getRetainedInput(f.workspace.id, operation.id)).admission, 'refused'); assert.equal(f.store.retainedInputCount(), 1);
+  await assert.rejects(operations.remove(operation.id), {code: 'operation_conflict'});
+  await f.reopen(); assert.equal(f.store.retainedInputCount(), 1);
+  await f.store.discardRetainedInput(f.workspace.id, operation.id); assert.equal(f.store.retainedInputCount(), 0);
+  await f.operations().remove(operation.id); assert.equal((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft.mode, 'followUp');
+});
+
+test('definite refusal releases its operation copy when the complete tuple remains in a newer saved revision', async t => {
+  const f = await fixture(t), draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: 'unchanged', mode: 'prompt'});
+  const operations = f.operations(), operation = await operations.reserve(f.workspace.id, 'primary.input', f.target);
+  const result = await operations.execute(operation.id, {workspaceId: f.workspace.id, kind: 'primary.input', target: f.target, body: {message: draft.text, mode: draft.mode, draftRevision: draft.revision}, input: {targetKey: f.saved.targetKey, text: draft.text, mode: draft.mode, draftRevision: draft.revision}}, async () => {
+    await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: draft.revision, text: draft.text, mode: draft.mode}); return {state: 'rejected'};
+  });
+  assert.equal(result.state, 'rejected'); assert.equal(result.retainedInput, undefined); assert.equal(f.store.record(operation.id).input, undefined);
+  assert.ok(sameDraftTuple((await f.store.getTarget(f.workspace.id, f.saved.targetKey)).draft, draft));
+});
+
 test('corrupt acknowledged bytes remain a typed unavailable reference, not an expired upload', async t => {
   const f = await fixture(t), staged = await f.upload();
   const draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: 'caption', mode: 'prompt', images: [staged.image]});

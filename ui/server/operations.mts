@@ -136,7 +136,17 @@ export class Operations {
       });
     } catch { return this.uncertain(prepared.record, 'Receipt persistence failed after possible delivery'); }
   }
+  private retainRefusedInput(record: OperationRecord, outcome: DispatchResult): boolean {
+    const input = record.input;
+    if (outcome.state !== 'rejected' || !input) return false;
+    const draft = this.store.draftForOperation(record.workspaceId, input.targetKey).draft;
+    if (sameDraftTuple(draft, {...input, images: input.images ?? []})) return false;
+    record.inputResolved = true; record.retainedInput = 'refused';
+    input.reason = 'Input was refused; the submitted message remains for review';
+    return true;
+  }
   private resolveInput(record: OperationRecord, outcome: DispatchResult): boolean {
+    if (this.retainRefusedInput(record, outcome)) return false;
     const submitted = record.input;
     const disposition = outcome.receipt?.kind === 'rpc' ? outcome.receipt.disposition : undefined;
     const retained = outcome.state === 'accepted' && submitted?.images?.length && ['queued', 'handled'].includes(disposition ?? '');

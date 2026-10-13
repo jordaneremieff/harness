@@ -552,7 +552,7 @@ export class Composer {
     for (const item of state.unconfirmed) {
       if (buffer.pending.has(item.operationId) || buffer.resolved.has(item.operationId)) continue;
       const matches = (item.textTruncated || buffer.data.text === item.text) && buffer.data.mode === item.mode && buffer.data.server.revision === item.submittedDraftRevision;
-      const submission: Submission = {operationId: item.operationId, target: {...item.target}, text: item.textTruncated && matches ? buffer.data.server.text : item.text, mode: item.mode, draftRevision: item.submittedDraftRevision, edit: matches ? buffer.data.edit : -1};
+      const submission: Submission = {operationId: item.operationId, target: {...item.target}, text: item.textTruncated && matches ? buffer.data.server.text : item.text, mode: item.mode, images: item.images.map(image => ({...image})), draftRevision: item.submittedDraftRevision, edit: matches ? buffer.data.edit : -1};
       buffer.pending.set(item.operationId, {submission, original: item, uncertain: true});
       buffer.data = {...buffer.data, submissions: new Map(buffer.data.submissions).set(item.operationId, submission)};
     }

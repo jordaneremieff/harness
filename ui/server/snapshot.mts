@@ -1,4 +1,4 @@
-import { LIMITS, type Bootstrap, type Snapshot, type SnapshotSection, type TargetState } from '../shared/api.ts';
+import { LIMITS, draftHasContent, type Bootstrap, type Snapshot, type SnapshotSection, type TargetState } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 
 const SECTIONS: SnapshotSection[] = ['notices', 'targets', 'selectedPage', 'observations', 'primaries', 'roster', 'pendingOperations', 'dialogs'];
@@ -59,8 +59,12 @@ class Budget {
   optional(key: string, value: unknown) { return this.take(value, Buffer.byteLength(JSON.stringify(key)) + 2); }
 }
 function targetIndex(targets: readonly TargetState[]) {
-  return targets.map(state => ({targetKey: state.targetKey, target: state.target, draftRevision: state.draft.revision,
-    hasDraft: state.draft.text.length > 0, draftPreview: Array.from(state.draft.text).slice(0, LIMITS.draftPreviewChars).join(''), draftPreviewTruncated: Array.from(state.draft.text).length > LIMITS.draftPreviewChars, unconfirmedOperationIds: state.unconfirmed.map(input => input.operationId)}));
+  return targets.map(state => {
+    if (state.recoveryPreviewTruncated) throw new ApiError('capacity', 'A truncated recovery preview requires its complete target index.', 413);
+    return {targetKey: state.targetKey, target: state.target, draftRevision: state.draft.revision,
+      hasDraft: draftHasContent(state.draft), draftPreview: Array.from(state.draft.text).slice(0, LIMITS.draftPreviewChars).join(''), draftPreviewTruncated: Array.from(state.draft.text).length > LIMITS.draftPreviewChars,
+      unconfirmedOperationIds: state.unconfirmed.map(input => input.operationId), retainedInputOperationIds: state.retainedInputs.map(input => input.operationId)};
+  });
 }
 function priorities(snapshot: Snapshot) {
   const active = snapshot.primaries.filter(view => view.key === snapshot.workspace.primaryKey);

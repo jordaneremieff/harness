@@ -7,8 +7,8 @@ function primary(key: string, lifecycle: PrimaryView['lifecycle'] = 'stopped'): 
   return {key, epoch: 1, cwd: '/project', lifecycle, activity: 'idle', pendingOperationIds: [], pendingDialogs: [], capabilities: {input: lifecycle === 'ready'}};
 }
 function target(key: string, text = ''): TargetState {
-  return {targetKey: key, target: {kind: 'primary', key, epoch: 1}, draft: {revision: 2, text, mode: 'prompt', persisted: true},
-    reading: {revision: 1, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: []};
+  return {targetKey: key, target: {kind: 'primary', key, epoch: 1}, draft: {revision: 2, text, mode: 'prompt', persisted: true, images: []},
+    reading: {revision: 1, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: [], retainedInputs: [], imageAvailability: []};
 }
 function operation(id: string, payload = ''): OperationView {
   return {id, kind: 'primary.input', target: {kind: 'primary', key: 'p', epoch: 1}, state: 'uncertain', createdAt: 'date', updatedAt: 'date',
@@ -36,14 +36,27 @@ test('small snapshots preserve the authoritative cut, workspace, indexes, and ex
   const before = JSON.stringify(source); freeze(source); const result = budgetSnapshot(source); bounded(result);
   assert.equal(JSON.stringify(source), before); assert.deepEqual(result.workspace, source.workspace); assert.equal(result.cursor, source.cursor);
   assert.deepEqual(result.primaryIndex, [{key: 'p', epoch: 1, lifecycle: 'ready'}]); assert.deepEqual(result.operationIndex, ['operation']);
-  assert.deepEqual(result.targetIndex, [{targetKey: 'p', target: source.targets[0]?.target, draftRevision: 2, hasDraft: true, draftPreview: 'unchanged draft', draftPreviewTruncated: false, unconfirmedOperationIds: []}]);
+  assert.deepEqual(result.targetIndex, [{targetKey: 'p', target: source.targets[0]?.target, draftRevision: 2, hasDraft: true, draftPreview: 'unchanged draft', draftPreviewTruncated: false, unconfirmedOperationIds: [], retainedInputOperationIds: []}]);
   assert.deepEqual(result.targets, source.targets); assert.equal(result.omitted, undefined); assert.equal(result.roster.nextCursor, 'actual-cursor');
+});
+
+test('image-only drafts and refused-copy IDs survive whole-target snapshot omission', () => {
+  const source = snapshot(), state = target('p');
+  state.draft.images = [{digest: 'a'.repeat(64), mimeType: 'image/png', bytes: 100, width: 1, height: 1, name: 'pixel.png'}];
+  state.retainedInputs = [{operationId: 'refused', target: state.target, text: '\u0000'.repeat(LIMITS.textBytes), mode: 'prompt', images: state.draft.images, submittedDraftRevision: 1, createdAt: 'date', reason: 'Refused', admission: 'refused', error: {code: 'unsupported', message: 'Refused', retry: 'none'}}];
+  source.targets = [state]; const result = budgetSnapshot(source); bounded(result);
+  assert.deepEqual(result.targets, []); assert.ok(result.omitted?.includes('targets'));
+  assert.equal(result.targetIndex?.[0]?.hasDraft, true); assert.deepEqual(result.targetIndex?.[0]?.retainedInputOperationIds, ['refused']);
+  state.recoveryPreviewTruncated = true;
+  assert.throws(() => budgetSnapshot(source), {code: 'capacity'});
+  source.targetIndex = result.targetIndex;
+  assert.deepEqual(budgetSnapshot(source).targetIndex, result.targetIndex);
 });
 
 test('bootstrap budgeting retains limits and launch path along with stable existing indexes', () => {
   const source: Bootstrap = {...snapshot(), limits: LIMITS, launchCwd: `/project/${'界'.repeat(1000)}`};
   source.primaryIndex = [{key: 'not-inline', epoch: 4, lifecycle: 'stopped'}]; source.operationIndex = ['not-inline'];
-  source.targetIndex = [{targetKey: 'not-inline', target: {kind: 'agent', identity: 'agent'}, draftRevision: 9, hasDraft: true, unconfirmedOperationIds: ['copy']}];
+  source.targetIndex = [{targetKey: 'not-inline', target: {kind: 'agent', identity: 'agent'}, draftRevision: 9, hasDraft: true, unconfirmedOperationIds: ['copy'], retainedInputOperationIds: ['retained']}];
   const result = budgetSnapshot(source); bounded(result); assert.equal(result.limits, LIMITS); assert.equal(result.launchCwd, source.launchCwd);
   assert.deepEqual(result.primaryIndex, source.primaryIndex); assert.deepEqual(result.operationIndex, source.operationIndex); assert.deepEqual(result.targetIndex, source.targetIndex);
 });
@@ -76,7 +89,7 @@ test('JSON-escaped maximum drafts are omitted whole, never shortened or replaced
 test('a target with 128 large unconfirmed copies keeps every copy ID without scanning every text', () => {
   const source = snapshot(); const state = target('p'); let reads = 0;
   state.unconfirmed = Array.from({length: 128}, (_, i): UnconfirmedInput => {
-    const copy = {operationId: `copy${i}`, target: state.target, text: '', mode: 'prompt', submittedDraftRevision: 1, createdAt: 'date', reason: 'uncertain'};
+    const copy = {operationId: `copy${i}`, target: state.target, text: '', mode: 'prompt', images: [], submittedDraftRevision: 1, createdAt: 'date', reason: 'uncertain'};
     Object.defineProperty(copy, 'text', {enumerable: true, get() { reads++; return 'x'.repeat(LIMITS.textBytes); }}); return copy;
   });
   source.targets = [state]; const result = budgetSnapshot(source); bounded(result);
