@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { PrimarySession } from '../rpc/session.mts';
 import { FakeChild } from '../rpc/fake-child.mts';
 import { startBackend } from './main.mts';
+import { StateStore } from './state.mts';
 import type { HistoryPage, OutputPage, PrimaryView, Success } from '../shared/api.ts';
 
 async function setup(t: import('node:test').TestContext) {
@@ -15,9 +16,10 @@ async function setup(t: import('node:test').TestContext) {
   const rows = [{type: 'message', id: 'text', parentId: null, message: {role: 'assistant', timestamp: 1, content: [{type: 'text', text: '雪'.repeat(10_000)}]}}];
   await writeFile(path, [{type: 'session', version: 3, id: 'fixture', timestamp: new Date(0).toISOString(), cwd: dir}, ...rows].map(row => `${JSON.stringify(row)}\n`).join(''));
   let resolveReady: () => void = () => {}; const ready = new Promise<void>(resolve => { resolveReady = resolve; });
-  const app = await startBackend({cwd: dir, pi: 'fixture', stateDir: join(dir, 'state'), port: 0}, {assets: new Map([['/', {type: 'text/html; charset=utf-8', data: Buffer.from('<title>Fixture</title>')}]]), primary: options => {
-    const child = new FakeChild(); child.onCommand = record => {
-      if (record.type === 'get_state') child.response(record, {sessionId: 'fixture', sessionFile: path, isStreaming: false, isCompacting: false});
+  const child = new FakeChild(), stateDir = join(dir, 'state');
+  const app = await startBackend({cwd: dir, pi: 'fixture', stateDir, port: 0}, {assets: new Map([['/', {type: 'text/html; charset=utf-8', data: Buffer.from('<title>Fixture</title>')}]]), primary: options => {
+    child.onCommand = record => {
+      if (record.type === 'get_state') child.response(record, {sessionId: 'fixture', sessionFile: path, isStreaming: false, isCompacting: false, pendingMessageCount: child.pendingMessageCount});
       else if (record.type === 'get_entries') child.response(record, {entries: record.since ? [] : rows, leafId: 'text'});
       else child.defaults(record);
     };
@@ -28,7 +30,7 @@ async function setup(t: import('node:test').TestContext) {
   const launch = new URL(app.launchUrl); const origin = launch.origin;
   const auth = await fetch(`${origin}/api/auth/launch`, {method: 'POST', headers: {Origin: origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: launch.hash.slice('#launch='.length)})});
   assert.equal(auth.status, 200); const cookie = auth.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
-  return {app, key, origin, cookie, route: `${origin}/api/primaries/${key}/history/output`};
+  return {app, child, stateDir, path, key, origin, cookie, route: `${origin}/api/primaries/${key}/history/output`};
 }
 test('authenticated history output restores protected bytes in bounded chunks and validates epoch and part', async t => {
   const fixture = await setup(t); const headers = {Cookie: fixture.cookie};
@@ -48,4 +50,33 @@ test('authenticated history output restores protected bytes in bounded chunks an
   }
   assert.equal((await fetch(`${fixture.route}?epoch=1&entry=text&part=0&offset=0`)).status, 401);
   assert.ok(Buffer.byteLength(JSON.stringify(fixture.app.registry.primary(fixture.key).entries)) < 64 * 1024);
+  const beforeClose = fixture.child.writes.length;
+  await fixture.app.close();
+  assert.deepEqual(fixture.child.writes.slice(beforeClose).map(record => record.type), ['get_state', 'clear_queue', 'abort']);
+  assert.equal(fixture.app.registry.primary(fixture.key).client.exited, true);
+  assert.equal(fixture.child.stdin.writableEnded, true);
+  assert.equal(fixture.app.http.server.listening, false);
+  const next = await StateStore.open(fixture.stateDir); await next.close();
+});
+
+test('a missing fresh queue count retains writer storage until a valid shutdown retry', async t => {
+  const fixture = await setup(t), session = fixture.app.registry.primary(fixture.key);
+  const complete = fixture.child.onCommand; assert.ok(complete);
+  fixture.child.onCommand = record => {
+    if (record.type === 'get_state') fixture.child.response(record, {sessionId: 'fixture', sessionFile: fixture.path, isStreaming: false, isCompacting: false});
+    else complete(record);
+  };
+  const beforeClose = fixture.child.writes.length;
+  try {
+    await assert.rejects(session.close(), {code: 'capacity', message: 'The pending queue count is invalid or exceeds recovery capacity.'});
+    await assert.rejects(fixture.app.close(), {code: 'not_ready', status: 503});
+    assert.deepEqual(fixture.child.writes.slice(beforeClose).map(record => record.type), ['get_state', 'get_state']);
+    assert.equal(session.client.exited, false); assert.equal(fixture.child.stdin.writableEnded, false);
+    await assert.rejects(StateStore.open(fixture.stateDir), {code: 'not_ready', message: 'State root already has an owner'});
+  } finally { fixture.child.onCommand = complete; }
+  const beforeRetry = fixture.child.writes.length;
+  await fixture.app.close();
+  assert.deepEqual(fixture.child.writes.slice(beforeRetry).map(record => record.type), ['get_state', 'clear_queue', 'abort']);
+  assert.equal(session.client.exited, true); assert.equal(fixture.child.stdin.writableEnded, true);
+  const next = await StateStore.open(fixture.stateDir); await next.close();
 });

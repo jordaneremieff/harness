@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdtemp, opendir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { isBuiltin } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
@@ -137,12 +138,12 @@ function check(files: Map<string, string>, runtime: Set<string>, dev: Set<string
   for (const filename of files.keys()) if (filename.startsWith(`${path.join(ui, 'web')}${path.sep}`) && filename.endsWith('.ts') && !filename.endsWith('.test.ts')) browser(filename);
   return errors;
 }
-async function sources() {
+async function sources(directories = [ui, transport], maxVisits = 512) {
   const files = new Map<string, string>(); let visits = 0; let bytes = 0;
   async function walk(directory: string, depth = 0) {
     assert.ok(depth < 8, 'source depth bound');
-    for (const entry of await readdir(directory, {withFileTypes: true})) {
-      assert.ok(++visits <= 256, 'source visit bound');
+    for await (const entry of await opendir(directory)) {
+      assert.ok(++visits <= maxVisits, 'source visit bound');
       if (entry.name.startsWith('.') || ['dist', 'node_modules'].includes(entry.name) || directory.startsWith(transport) && entry.name.endsWith('.test.mts')) continue;
       const filename = path.join(directory, entry.name);
       assert.ok(!entry.isSymbolicLink(), 'source tree contains no links');
@@ -153,17 +154,28 @@ async function sources() {
       }
     }
   }
-  await walk(ui);
-  await walk(transport);
-  return files;
+  for (const directory of directories) await walk(directory);
+  return {files, visits, bytes};
 }
 
-test('UI loaders remain local or declared; browser graph has no Node/server code', async () => {
+test('UI loaders remain local or declared; browser graph has no Node/server code', async t => {
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
   const runtime = new Set<string>(Object.keys({...manifest.dependencies, ...manifest.peerDependencies, ...manifest.optionalDependencies}));
   const dev = new Set<string>(Object.keys(manifest.devDependencies ?? {}));
   assert.ok(dev.has('typescript')); assert.ok(!runtime.has('typescript'));
-  assert.deepEqual(check(await sources(), runtime, dev), []);
+  const inventory = await sources();
+  t.diagnostic(`Source inventory: ${inventory.visits} visits, ${inventory.files.size} files, ${inventory.bytes} bytes`);
+  assert.deepEqual(check(inventory.files, runtime, dev), []);
+});
+
+test('source inventory rejects visit exhaustion and checks every admitted source', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ui-source-bound-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  for (const name of ['one.mts', 'two.mts', 'three.mts']) await writeFile(path.join(directory, name), "import 'undeclared';");
+  await assert.rejects(sources([directory], 2), {message: 'source visit bound'});
+  const inventory = await sources([directory], 3);
+  assert.equal(inventory.visits, 3); assert.equal(inventory.files.size, 3);
+  assert.deepEqual(check(inventory.files, new Set(), new Set()), Array(3).fill('undeclared dependency: undeclared'));
 });
 
 test('compiler inspection sees literal imports, exports, require, dynamic imports, and import types', () => {

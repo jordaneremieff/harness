@@ -9,6 +9,7 @@ import { startBackend } from './main.mts';
 import { IMAGE_BYTES, ImageResponse, imagePart } from './images.mts';
 import { LocalHttp } from './http.mts';
 import { Journal } from './journal.mts';
+import { StateStore } from './state.mts';
 import type { PrimaryView } from '../shared/api.ts';
 
 const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
@@ -92,9 +93,10 @@ test('image HTTP route requires authentication and exact epoch, entry, part and 
   const save = () => writeFile(path, [{type: 'session', version: 3, id: 'fixture', timestamp: new Date(0).toISOString(), cwd: dir}, ...rows].map(row => `${JSON.stringify(row)}\n`).join(''));
   await save();
   let resolveReady = () => {}; const ready = new Promise<void>(resolve => { resolveReady = resolve; });
-  const app = await startBackend({cwd: dir, pi: 'fixture', stateDir: join(dir, 'state'), port: 0}, {assets: new Map([['/', {type: 'text/html', data: Buffer.from('<title>Fixture</title>')}]]), primary: options => {
-    const child = new FakeChild(); child.onCommand = record => {
-      if (record.type === 'get_state') child.response(record, {sessionId: 'fixture', sessionFile: path, isStreaming: false, isCompacting: false});
+  const child = new FakeChild(), stateDir = join(dir, 'state');
+  const app = await startBackend({cwd: dir, pi: 'fixture', stateDir, port: 0}, {assets: new Map([['/', {type: 'text/html', data: Buffer.from('<title>Fixture</title>')}]]), primary: options => {
+    child.onCommand = record => {
+      if (record.type === 'get_state') child.response(record, {sessionId: 'fixture', sessionFile: path, isStreaming: false, isCompacting: false, pendingMessageCount: child.pendingMessageCount});
       else if (record.type === 'get_entries') child.response(record, {entries: record.since ? [] : rows, leafId: 'image-entry'});
       else child.defaults(record);
     };
@@ -124,4 +126,10 @@ test('image HTTP route requires authentication and exact epoch, entry, part and 
   const stale = await fetch(`${route}?${query}`, {headers}); assert.equal(stale.status, 409);
   raw.mimeType = 'image/svg+xml'; await save();
   assert.notEqual((await fetch(`${route}?${query}`, {headers})).status, 200);
+  const beforeClose = child.writes.length;
+  await app.close();
+  assert.deepEqual(child.writes.slice(beforeClose).map(record => record.type), ['get_state', 'clear_queue', 'abort']);
+  assert.equal(app.registry.primary(key).client.exited, true); assert.equal(child.stdin.writableEnded, true);
+  assert.equal(app.http.server.listening, false);
+  const next = await StateStore.open(stateDir); await next.close();
 });
