@@ -1,8 +1,7 @@
 /**
  * agent/host-protocol: host metadata, identities, and method policy.
  *
- * The wire transport is the public Pi service protocol: a `pi-server` Unix
- * server in the host process and a `pi-client` Unix client in the caller. This
+ * The wire transport uses the package-level Chord Unix endpoint. This
  * module keeps the validated host metadata, the per-storage directory, claim
  * identity and socket path, the process readiness line, and the method policy
  * the client applies across link recovery. Peer authentication is the Unix
@@ -12,22 +11,12 @@
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { getUnixSocketPath } from "@earendil-works/pi-server/unix";
+import { unixSocketPath } from "../../transport/index.ts";
 import { type ClaimIdentity, claimPath } from "./claims.ts";
 import { parseRuntimeContract, contractRefusal, type RuntimeContract } from "./version-contract.ts";
 
-/** Chord service identity for the storage host's request surface. */
-export const HOST_SERVICE_ID = "pi.agent.host";
-/** Method that advertises current operation contracts before any runtime request. */
+/** Operation that advertises current contracts before runtime requests. */
 export const HOST_CONTRACT_MEMBER = "runtime-contract";
-/** Chord service identity for the host's coalesced change notifications. */
-export const HOST_CHANGE_SERVICE_ID = "pi.agent.host.changes";
-/** State member published on every actual host write. */
-export const HOST_CHANGE_MEMBER = "change";
-/** Chord service identity prefix for one observation token's live frames. */
-export const HOST_OBSERVE_SERVICE_ID = "pi.agent.host.observe";
-/** State member published on the observation service. */
-export const HOST_OBSERVE_MEMBER = "frame";
 /** Readiness line the host prints after it starts listening. */
 export const HOST_READY_PREFIX = "PI_AGENT_HOST_READY ";
 /** Largest Unix socket path length that works on every supported host (macOS sun_path is 104 bytes). */
@@ -76,7 +65,7 @@ export class HostError extends Error {
 /** Private directory, socket, and claim paths for one host identity. */
 export interface HostPaths {
 	readonly directory: string;
-	/** Canonical v4 identity the public Unix transport expects in the handshake. */
+	/** Canonical v4 identity the endpoint expects in its Chord hello. */
 	readonly serverId: string;
 	readonly socket: string;
 	readonly claim: string;
@@ -162,7 +151,7 @@ function serverIdFor(storageId: string, cwd: string): string {
 function socketDirectory(agentDir: string, serverId: string): string {
 	const candidates = [join(agentDir, "durable-hosts"), join(tmpdir(), "pi-hosts"), join("/tmp", "pi-hosts")];
 	for (const directory of candidates) {
-		if (Buffer.byteLength(getUnixSocketPath(serverId, directory), "utf8") <= HOST_SOCKET_PATH_LIMIT_BYTES) return directory;
+		if (Buffer.byteLength(unixSocketPath(serverId, directory), "utf8") <= HOST_SOCKET_PATH_LIMIT_BYTES) return directory;
 	}
 	throw new Error(`no Unix socket path within ${HOST_SOCKET_PATH_LIMIT_BYTES} bytes for durable host ${serverId}`);
 }
@@ -177,7 +166,7 @@ export function hostPaths(metadata: Pick<HostMetadata, "agentDir" | "storageId" 
 	const directory = join(metadata.agentDir, "durable-hosts", key);
 	const identity: ClaimIdentity = { sessionId: metadata.storageId, cwd: metadata.cwd };
 	const serverId = serverIdFor(metadata.storageId, metadata.cwd);
-	return { directory, serverId, socket: getUnixSocketPath(serverId, socketDirectory(metadata.agentDir, serverId)), claim: claimPath(directory, identity), identity };
+	return { directory, serverId, socket: unixSocketPath(serverId, socketDirectory(metadata.agentDir, serverId)), claim: claimPath(directory, identity), identity };
 }
 
 export function formatHostReady(ready: HostReady): string {
@@ -200,19 +189,6 @@ export function parseHostReadyLine(line: string): HostReady | undefined {
  * Unknown methods are never retried.
  */
 const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["profile-read", "profile-list", "profile-update", "task-submit", "resolve-agent", "collaboration-list", "collaboration-read", "collaboration-mutate", "passive-submit", "submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list"]);
-
-/** Service id one observation token subscribes to for live frames. */
-export function observationServiceId(token: string): string {
-	return `${HOST_OBSERVE_SERVICE_ID}:${token}`;
-}
-
-/** Token carried by one observation service id; undefined for any other service id. */
-export function observationTokenFromServiceId(serviceId: string): string | undefined {
-	const prefix = `${HOST_OBSERVE_SERVICE_ID}:`;
-	if (!serviceId.startsWith(prefix)) return undefined;
-	const token = serviceId.slice(prefix.length);
-	return token === "" ? undefined : token;
-}
 
 export function isRetrySafeHostMethod(method: string): boolean {
 	return HOST_RETRY_SAFE_METHODS.has(method);

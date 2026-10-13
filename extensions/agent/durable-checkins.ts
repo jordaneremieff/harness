@@ -2,7 +2,7 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readSettings, type Environment } from "./settings.ts";
 import { withAbortSignal } from "@earendil-works/chord/context";
-import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
+import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type LiveState, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { AgentDeliveryDoc, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
 import { producerRetryFact, readAwaitFact } from "./await-observation.ts";
 import { awaitFactLines, retryFactLines } from "./await-facts.ts";
@@ -78,6 +78,10 @@ function runningToolLines(tool: ToolSlot, issuedAt: number | undefined, now: num
 	return lines;
 }
 
+function runningTools(live: LiveState): ToolSlot[] {
+	return [...live.tools ?? [], ...live.nestedTools ?? []].filter((tool) => tool.status === "running").slice(0, 4);
+}
+
 /** One bounded native snapshot; cost is retained conversation spend, not an estimate of an in-flight request. */
 async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefined, now: number, maxAttempts: number): Promise<{ cost: number | null; digest: string }> {
 	const id = input.conversationId as ConversationId;
@@ -88,7 +92,7 @@ async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefin
 	if (awaiting !== undefined) return { cost: retainedCost(usage), digest: bounded(awaitFactLines(awaiting).join("\n"), 2400) };
 	const recent = await recentActivity(tx, id, inputEntry);
 	// Native input placement follows the prior tool round and clears its live tools.
-	const running = (inputEntry === undefined ? [] : live.tools ?? []).filter((tool) => tool.status === "running").slice(0, 4);
+	const running = inputEntry === undefined ? [] : runningTools(live);
 	const generation = inputEntry === undefined ? undefined : live.generation;
 	const retry = watched === undefined ? undefined : await producerRetryFact(tx, id, [{ sessionId: input.senderIdentity, submissionId: watched.id, requestId: input.requestId }], maxAttempts);
 	const lines = [...(retry === undefined ? [] : retryFactLines(retry)), recent.truncated

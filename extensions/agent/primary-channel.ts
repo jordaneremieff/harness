@@ -2,8 +2,8 @@
  * primary-channel: the local endpoint through which a Durable host reaches the
  * ordinary primary session that owns it.
  *
- * The primary session registers one channel: a public `pi-server` Unix server
- * whose service members deliver a message, ask for a project-trust decision, and
+ * The primary session registers one channel: a Chord endpoint over a Unix socket
+ * whose methods deliver a message, ask for a project-trust decision, and
  * report read-only live information. The endpoint record lives under
  * `<sessionsRoot>/.primaries/<id>.json` with a 0700 directory and a 0600 socket;
  * no token crosses the boundary, because the filesystem permissions and the
@@ -20,29 +20,22 @@
  * select mapped by `promptProjectTrust`).
  */
 import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, chmodSync, writeFileSync } from "node:fs";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { opendir } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import type { Context, JsonValue, ServiceCall, ServiceProviderUpdate } from "@earendil-works/chord";
-import { Client } from "@earendil-works/pi-client";
-import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
-import type { ByteTransport, ByteTransportFactory } from "@earendil-works/pi-client";
-import { ServerError, type RoutedServerServiceAttachment, type ServerHost } from "@earendil-works/pi-server";
-import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
+import { invalid, type JsonValue } from "@earendil-works/chord";
+import { connectTransport, createTransportServer, unixSocketPath, type TransportClient, type TransportRequest } from "../../transport/index.ts";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
 export type { PrimaryIntentClaim } from "./effort-presence.ts";
 
-/** Service id all primary channel calls use. */
-export const PRIMARY_CHANNEL_SERVICE_ID = "pi.agent.primary";
 /** Current notice contract includes explicit quiet-delivery semantics. */
 export const PRIMARY_ENDPOINT_VERSION = PRIMARY_DELIVERY_CONTRACT;
 const ENDPOINT_BYTES = 16 * 1024;
 const LIST_LIMIT = 20;
 const VISIT_LIMIT = 256;
-const SOCKET_PATH_BYTES = 100;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 /** A human trust decision is not a transport exchange; it carries its own bounded deadline. */
 const TRUST_DECISION_TIMEOUT_MS = 300_000;
@@ -167,30 +160,12 @@ export interface PrimaryChannelConnection {
 }
 
 /** Connect one client with a bounded handshake; a silent peer cannot hang the caller. */
-async function connectClient(id: string, socketPath: string, serverId: string, timeoutMs: number): Promise<Client> {
-	const base = createUnixTransportFactory({ path: socketPath });
-	const transports = new Set<ByteTransport>();
-	const factory: ByteTransportFactory = async (handlers) => {
-		const transport = await base(handlers);
-		transports.add(transport);
-		return transport;
-	};
-	const connecting = Client.connect({ transportFactory: factory, serverId });
-	const timer: { handle?: ReturnType<typeof setTimeout> } = {};
-	const expired = new Promise<never>((_resolve, reject) => {
-		timer.handle = setTimeout(() => {
-			for (const transport of transports) transport.close();
-			reject(new PrimaryChannelUnavailableError(`primary channel ${id} did not complete its identity handshake within ${timeoutMs} ms`));
-		}, timeoutMs);
-		timer.handle.unref?.();
-	});
+async function connectClient(id: string, socketPath: string, serverId: string, timeoutMs: number): Promise<TransportClient> {
 	try {
-		return await Promise.race([connecting, expired]);
+		return await connectTransport({ path: socketPath, serverId, timeoutMs });
 	} catch (error) {
-		void connecting.then((client) => client.dispose().catch(() => undefined), () => undefined);
+		if (error instanceof Error && error.name === "TimeoutError") throw new PrimaryChannelUnavailableError(`primary channel ${id} did not complete its identity handshake within ${timeoutMs} ms`);
 		throw error;
-	} finally {
-		if (timer.handle !== undefined) clearTimeout(timer.handle);
 	}
 }
 
@@ -408,16 +383,6 @@ function removeFile(path: string): void {
 	}
 }
 
-/** Derived socket path with the host transport's deep-root fallback. */
-function primarySocketPath(serverId: string, directory: string): string {
-	const preferred = getUnixSocketPath(serverId, directory);
-	if (Buffer.byteLength(preferred, "utf8") <= SOCKET_PATH_BYTES) return preferred;
-	const fallbackDir = join(tmpdir(), "pi-primary");
-	mkdirSync(fallbackDir, { recursive: true, mode: 0o700 });
-	const key = createHash("sha256").update(serverId).digest("hex").slice(0, 24);
-	return join(fallbackDir, `${key}.sock`);
-}
-
 /** Bounded directory page of supported primary ids. */
 async function listPrimaryIds(directory: string): Promise<{ ids: string[]; complete: boolean }> {
 	const ids: string[] = [];
@@ -460,20 +425,8 @@ function removeDeadEndpoint(endpointPath: string, id: string): void {
 	removeFile(file.endpoint.socketPath);
 }
 
-/** The server-side attachment host for one primary channel. */
-class PrimaryChannelHost implements ServerHost {
-	readonly serverServices = {
-		attachClient: (): RoutedServerServiceAttachment => ({ invokeService: (call: ServiceCall, _publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>, _context: Context) => this.dispatch(call), release: () => {} }),
-	};
-
-	readonly resolveSession = async (): Promise<never> => {
-		throw new ServerError("session_not_found", "this primary channel routes no sessions");
-	};
-
-	readonly openSession = async (): Promise<never> => {
-		throw new ServerError("session_not_found", "this primary channel routes no sessions");
-	};
-
+/** The application endpoint for one primary channel. */
+class PrimaryChannelHost {
 	private readonly options: PrimaryChannelOptions;
 	private endpoint: PrimaryEndpoint;
 	private readonly endpointPath: string;
@@ -520,26 +473,25 @@ class PrimaryChannelHost implements ServerHost {
 		this.endpoint = endpoint;
 	}
 
-	private async dispatch(call: ServiceCall): Promise<JsonValue | undefined> {
-		if (call.serviceId !== PRIMARY_CHANNEL_SERVICE_ID) throw new ServerError("service_not_found", `unknown primary channel service ${call.serviceId}`);
-		switch (call.member) {
+	async dispatch(request: TransportRequest): Promise<JsonValue | undefined> {
+		switch (request.method) {
 			case "info":
 				return this.info() as unknown as JsonValue;
 			case "deliver":
-				return this.deliver(call.args[0]);
+				return this.deliver(request.params);
 			case "trustPrompt":
-				return this.trustPrompt(call.args[0]);
+				return this.trustPrompt(request.params);
 			default:
-				throw new ServerError("service_invalid_value", `unknown primary channel member ${call.member}`);
+				throw invalid("method", `unknown primary channel method ${request.method}`);
 		}
 	}
 
 	/** Display one validated message in the primary session. */
 	private async deliver(raw: unknown): Promise<JsonValue> {
-		if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ServerError("service_invalid_value", "deliver requires a message object");
+		if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw invalid("params", "deliver requires a message object");
 		const message = raw as Record<string, unknown>;
-		if (typeof message.sourceId !== "string" || message.sourceId === "" || typeof message.text !== "string") throw new ServerError("service_invalid_value", "deliver requires sourceId and text");
-		if (message.replyTo !== undefined && typeof message.replyTo !== "string") throw new ServerError("service_invalid_value", "deliver replyTo must be a string");
+		if (typeof message.sourceId !== "string" || message.sourceId === "" || typeof message.text !== "string") throw invalid("params", "deliver requires sourceId and text");
+		if (message.replyTo !== undefined && typeof message.replyTo !== "string") throw invalid("params", "deliver replyTo must be a string");
 		await this.options.deliver({
 			sourceId: message.sourceId,
 			text: message.text,
@@ -551,7 +503,7 @@ class PrimaryChannelHost implements ServerHost {
 
 	/** Ask the primary UI for one trust decision. */
 	private async trustPrompt(raw: unknown): Promise<JsonValue> {
-		if (typeof raw !== "string" || raw === "") throw new ServerError("service_invalid_value", "trustPrompt requires a cwd string");
+		if (typeof raw !== "string" || raw === "") throw invalid("params", "trustPrompt requires a cwd string");
 		const answer = await this.options.promptTrust(raw);
 		return answer === undefined ? null : { trusted: answer.trusted, remember: answer.remember ?? null };
 	}
@@ -589,10 +541,10 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 	const endpointPath = join(directory, `${options.id}.json`);
 	removeDeadEndpoint(endpointPath, options.id);
 	const serverId = randomUUID();
-	const socketPath = primarySocketPath(serverId, directory);
+	const socketPath = unixSocketPath(serverId, directory);
 	const endpoint = endpointRecord(options, serverId, socketPath);
 	const host = new PrimaryChannelHost(options, endpoint, endpointPath);
-	const server = createUnixServer(host, { serverId, path: socketPath, mode: 0o600 });
+	const server = createTransportServer({ serverId, path: socketPath, request: (request) => host.dispatch(request) });
 	try {
 		await server.start();
 	} catch (error) {
@@ -646,31 +598,30 @@ export async function connectPrimaryChannel(options: { readonly id: string; read
 	const endpoint = readEndpoint(primaryEndpointPath(options.sessionsRoot, options.id));
 	if (endpoint === undefined || endpoint.id !== options.id) throw await unavailable(directory, options.id);
 	if (endpoint.version !== PRIMARY_ENDPOINT_VERSION) throw primaryEndpointIncompatibleError(options.id, endpointVersionLabel(endpoint.version));
-	let client: Client;
+	let client: TransportClient;
 	try {
 		client = await connectClient(options.id, endpoint.socketPath, endpoint.serverId, timeoutMs);
 	} catch (error) {
 		throw new PrimaryChannelUnavailableError(`primary channel ${options.id} is registered but unreachable: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	try {
-		if (client.hello?.serverId !== endpoint.serverId) throw new PrimaryChannelUnavailableError(`primary channel ${options.id} announced serverId ${String(client.hello?.serverId)}; identity handshake failed`);
-		const invoke = async (member: string, args: readonly JsonValue[], deadlineMs: number, signal?: AbortSignal): Promise<JsonValue | undefined> => {
+		const invoke = async (method: string, params: JsonValue | undefined, deadlineMs: number, signal?: AbortSignal): Promise<unknown> => {
 			const deadline = AbortSignal.timeout(deadlineMs);
-			return client.request({ serverId: endpoint.serverId }, { serviceId: PRIMARY_CHANNEL_SERVICE_ID, member, args }, signal === undefined ? deadline : AbortSignal.any([deadline, signal]));
+			return client.request({ method, ...(params === undefined ? {} : { params }) }, signal === undefined ? deadline : AbortSignal.any([deadline, signal]));
 		};
 		return {
 			id: endpoint.id,
-			info: async () => (await invoke("info", [], timeoutMs)) as unknown as PrimaryInfo,
+			info: async () => (await invoke("info", undefined, timeoutMs)) as PrimaryInfo,
 			deliver: async (message) => {
-				await invoke("deliver", [{
+				await invoke("deliver", {
 					sourceId: message.sourceId,
 					text: message.text,
 					...(message.details === undefined ? {} : { details: message.details }),
 					...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }),
-				}], timeoutMs);
+				}, timeoutMs);
 			},
 			trustPrompt: async (cwd, signal) => {
-				const value = await invoke("trustPrompt", [cwd], TRUST_DECISION_TIMEOUT_MS, signal);
+				const value = await invoke("trustPrompt", cwd, TRUST_DECISION_TIMEOUT_MS, signal);
 				if (value === null || value === undefined) return undefined;
 				const answer = value as { trusted?: unknown; remember?: unknown };
 				return { trusted: answer.trusted === true, remember: answer.remember === true };

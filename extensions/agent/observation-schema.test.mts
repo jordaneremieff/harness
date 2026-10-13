@@ -1,18 +1,83 @@
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
+import type { ConversationId, EntryId, SubmissionId, ToolExecutionResult } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
 import { AgentManager } from "./manager.ts";
-import { AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, nativeStructuredObservation, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
+import { HOST_CONTRACT } from "./version-contract.ts";
 import { boundCatalogView } from "./catalog-view.ts";
 import { readConversationList, readConversationStatus, readDashboard, readInspection } from "./durable-observation.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, fixtureStorageId, hostOptions, scriptedRuntime } from "./durable-host-fixture.mts";
+
+it("native observations separate model text from validated structured output without changing ordinary values", () => {
+	const schema = Type.Object({ result: Type.String(), optional: Type.Optional(Type.String()) }, { additionalProperties: false });
+	const input = { result: "retained observation", optional: undefined };
+	const ordinary = structuredObservation(schema, input);
+	const native = nativeStructuredObservation(schema, input, "Observation for the model");
+	const accepted: ToolExecutionResult = native;
+	assert.deepEqual(ordinary, { result: "retained observation" });
+	assert.deepEqual(native, { output: [{ type: "text", text: "Observation for the model" }], structuredOutput: ordinary });
+	assert.deepEqual(accepted.structuredOutput, ordinary);
+	assert.notEqual(native.structuredOutput, input);
+	assert.equal(Object.hasOwn(native.structuredOutput, "optional"), false);
+	assert.deepEqual(input, { result: "retained observation", optional: undefined });
+	assert.equal(nativeStructuredObservation(schema, input, "").output?.[0]?.type, "text");
+});
+
+it("native observations reject malformed values with the ordinary schema diagnostics", () => {
+	const schema = Type.Object({ result: Type.String() }, { additionalProperties: false });
+	for (const value of [{ result: 7 }, { result: "valid", unexpected: true }, undefined]) {
+		assert.throws(() => nativeStructuredObservation(schema, value, "Invalid observation"), /Observation output does not match its schema:/u);
+	}
+	assert.throws(() => nativeStructuredObservation(schema, { result: 7 }, "Invalid observation"), /\/result/u);
+});
+
+it("activity parent metadata binds the operation response identity without invented issue times", () => {
+	const nested = { toolCallId: "outer/child", name: "evidence", taskId: 2, parentToolCallId: "outer", parentTaskId: 1 };
+	const activity = {
+		view: "activity", format: "compact", sessionId: "storage", conversationId: 1, turns: [], nextCursor: null,
+		metadata: { owner: "here", live: true, operation: 1, runningTools: [nested], pending: 0 },
+		coverage: { scannedEntries: 0, scannedBytes: 0, complete: true, entryLimitReached: false, scanByteLimitReached: false, byteLimitReached: false, bytes: 0, omittedEntries: 0, metadataTruncated: false },
+		detail: "Native nested evidence",
+	};
+	const checked = structuredObservation(ActivityOutputSchema, activity) as typeof activity;
+	assert.deepEqual(checked.metadata.runningTools, [nested]);
+	assert.equal(Object.hasOwn(checked.metadata.runningTools[0], "issuedAt"), false);
+	for (const invalid of [{ taskId: 0 }, { parentTaskId: 0 }, { parentToolCallId: 7 }]) {
+		assert.throws(() => structuredObservation(ActivityOutputSchema, { ...activity, metadata: { ...activity.metadata, runningTools: [{ ...nested, ...invalid }] } }), /does not match its schema/u);
+	}
+	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
+	assert.equal(HOST_CONTRACT.operations.inspect.response, hash(InspectOutputSchema));
+	const withoutParents = structuredClone(InspectOutputSchema);
+	const member = withoutParents.anyOf.find((schema) => (schema as typeof ActivityOutputSchema).properties?.view?.const === "activity") as typeof ActivityOutputSchema | undefined;
+	assert.ok(member);
+	for (const field of ["taskId", "parentToolCallId", "parentTaskId"]) Reflect.deleteProperty(member.properties.metadata.properties.runningTools.items.properties, field);
+	assert.notEqual(hash(withoutParents), HOST_CONTRACT.operations.inspect.response);
+});
+
+it("live observations validate native nested slots and retained compaction failures", () => {
+	const nested = { callId: "outer/child", name: "evidence", taskId: 2, parentCallId: "outer", parentTaskId: 1, arguments: { query: "source" }, status: "running" };
+	const failure = { taskId: 3, reason: "manual", error: "Summary failed" };
+	const value = { nestedTools: [nested], compactionFailure: failure };
+	assert.deepEqual(structuredObservation(LiveStateSchema, value), value);
+	structuredObservation(LiveStateSchema, { nestedTools: [{ ...nested, summary: { isError: true, durationMs: 2, error: "tool failed" } }] });
+	assert.throws(() => structuredObservation(LiveStateSchema, { nestedTools: [{ ...nested, parentTaskId: 0 }] }), /parentTaskId/u);
+	assert.throws(() => structuredObservation(LiveStateSchema, { compactionFailure: { ...failure, reason: "invalid" } }), /reason/u);
+	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
+	assert.equal(HOST_CONTRACT.operations.status.response, hash(StatusOutputSchema));
+	const withoutNested = structuredClone(LiveStateSchema);
+	Reflect.deleteProperty(withoutNested.properties, "nestedTools");
+	Reflect.deleteProperty(withoutNested.properties, "compactionFailure");
+	assert.notEqual(hash(withoutNested), hash(LiveStateSchema));
+});
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "observation-schema-"));
@@ -150,6 +215,29 @@ it("validates list rows and the manager list aggregation", async (t) => {
 	assert.deepEqual(unavailable.rows, []);
 	assert.equal(unavailable.coverage.unavailable.length, 1);
 	assert.match(unavailable.coverage.unavailable[0]?.reason ?? "", /unavailable/u);
+});
+
+it("recovery health accepts retained failures without timestamps and timed compaction retries", () => {
+	const retained = { reason: "manual" as const, errorMessage: "Summary failed" };
+	const row = { id: "storage", storageId: "storage", cwd: "/work", modifiedAt: 0, owner: "here" as const, state: "failed" as const, cost: 0, partial: false };
+	const metadata = { owner: "here", live: true, operation: null, runningTools: [], pending: 0 };
+	for (const failure of [retained, { ...retained, at: "2026-01-01T00:00:00.000Z" }]) {
+		const summary = { ...row, health: { compactionFailure: failure } };
+		assert.deepEqual(nativeStructuredObservation(AgentConversationSummarySchema, summary, "Recovery health").structuredOutput, summary);
+		const activity = { ...metadata, compactionFailure: failure };
+		assert.deepEqual(structuredObservation(ActivityOutputSchema.properties.metadata, activity), activity);
+		const overview = { ...buildStatusOverview({ rows: [row], observedAt: new Date(0).toISOString(), coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null } }, [], []), sessions: [summary] };
+		structuredObservation(StatusOutputSchema, overview);
+	}
+	assert.throws(() => structuredObservation(AgentConversationSummarySchema, { ...row, health: { compactionFailure: { ...retained, at: 7 } } }), /\/health\/compactionFailure\/at/u);
+	assert.throws(() => structuredObservation(ActivityOutputSchema.properties.metadata, { ...metadata, compactionFailure: { ...retained, at: 7 } }), /\/compactionFailure\/at/u);
+	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
+	assert.equal(HOST_CONTRACT.operations.dashboard.response, hash(AgentConversationSummarySchema));
+	const requiredTimestamp = structuredClone(AgentConversationSummarySchema);
+	const required: string[] | undefined = requiredTimestamp.properties.health.properties.compactionFailure.required;
+	assert.ok(required);
+	required.push("at");
+	assert.notEqual(hash(requiredTimestamp), HOST_CONTRACT.operations.dashboard.response);
 });
 
 it("validates the starting roster row and no-target status overview", () => {

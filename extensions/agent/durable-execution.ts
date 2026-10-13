@@ -1,35 +1,4 @@
-/**
- * agent/durable-execution: native codemode and MCP built-ins for Pi Durable conversations.
- *
- * A Durable conversation receives tools, tasks, documents, and hooks only from native
- * extensions. This module builds that native form on top of the public
- * `@earendil-works/pi-codemode` `CodemodeSandbox` and `@earendil-works/pi-mcp` `McpClient`:
- *
- * - a `codemode` tool that runs a QuickJS script and calls other tools through a custom
- *   durable task. The task records validated intent before execution and a terminal result
- *   after it, runs the same `beforeTool`/`afterTool` `ToolTask` hooks a model-issued call
- *   runs, is owned by the codemode call, and applies each target tool's replay policy on
- *   recovery. Nested results reach only the script; they create no transcript entries.
- * - an `mcp_servers` section and per-server MCP tools read from the user and trusted-project
- *   `mcp.json` files. Tools follow the ordinary exposure rules: `direct` tools register in
- *   the registry, `codemode` and `deferred` tools stay callable from scripts, `deferred`
- *   tools enter the registry only after `tool_search` loads them, and `hidden` tools are
- *   unreachable.
- * - a `tool_search` tool over the not-yet-declared MCP tools, when settings or a deferred
- *   server activates it.
- *
- * The host installs the returned extensions as native built-ins. MCP connections start in
- * the background; the extension's tool list is live, so connected direct tools appear on
- * the next request. `close()` closes MCP connections and stops accepting scripts. `ready`
- * settles when the initial servers connected or failed, for a caller that mirrors the
- * ordinary first-prompt wait for direct tools.
- *
- * Boundaries: remote MCP servers use configured headers, a configured Pi login provider, or
- * OAuth state stored in `mcp-auth.json` and refreshed through the public OAuth adapter. A
- * Durable host cannot run the interactive sign-in flow; the failure names `pi mcp login`,
- * and credentials stored by the CLI are used. The installed ordinary MCP integration has no
- * prompt retrieval, so this contribution matches it; only server capabilities are tracked.
- */
+/** Native code mode and tool search with configured MCP transports and resource tools. */
 import { execSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
@@ -39,21 +8,19 @@ import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord";
-import { withAbortSignal } from "@earendil-works/chord/context";
-import type { CodemodeJsonSchema, CodemodeOutputItem, CodemodeResult, CodemodeTool } from "@earendil-works/pi-codemode";
-import { CodemodeSandbox, loadQuickJSWasm, parseCodemodeSource, renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode";
+import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
+import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension, type CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
+import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import type { AuthProvider, CallToolResult, ContentBlock, ListResourcesResult, ReadResourceResult, Resource, ResourceTemplate, Tool as McpTool } from "@earendil-works/pi-mcp";
 import { JSON_RPC_ERROR_CODES, McpClient, McpError, StdioTransport, StreamableHttpTransport, toLlmContent } from "@earendil-works/pi-mcp";
 import type { McpOAuthState, McpOAuthStateStore } from "@earendil-works/pi-mcp/oauth";
 import { adaptOAuthProvider, McpOAuthAuthorizationRequiredError, McpOAuthProvider } from "@earendil-works/pi-mcp/oauth";
-import type { AgentSessionServices, CodemodeToolDetails } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
-import type { ImageContent, Message, SystemMessage, TextContent, ToolCall, Tool as PiTool, Usage } from "@earendil-works/pi-ai";
-import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
-import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { JsonObject } from "@earendil-works/pi-durable";
-import { Type, type TSchema } from "typebox";
+import type { TSchema } from "typebox";
 
 // ─── Public contract ────────────────────────────────────────────────────────
 
@@ -66,6 +33,8 @@ export interface DurableExecutionHost {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly storageId: string;
+	/** Resolve the live catalog after asynchronous MCP discovery. */
+	readonly harness: Durable.Harness;
 	/** Aborted when the host shuts down. */
 	readonly signal: AbortSignal;
 	readonly inventory: unknown;
@@ -89,25 +58,13 @@ export interface DurableExecutionOptions {
 	readonly readyTimeoutMs?: number;
 }
 
-/** Part of the model runtime scripts reach through `models`. */
-export type CodemodeModelRuntime = Pick<AgentSessionServices["modelRuntime"], "getModelsOfType" | "getAvailableOfType" | "getModelOfType" | "classify" | "generateImages">;
-
 const EXTENSION_NAME = "pi.durable-execution";
-const TASK_NAME = `${EXTENSION_NAME}.call`;
-const STORE_KIND = `${EXTENSION_NAME}.store`;
-const TOOL_TASK_NAME = "pi.tool";
 const CODEMODE_TOOL_NAME = "codemode";
 const TOOL_SEARCH_TOOL_NAME = "tool_search";
 const MCP_SERVERS_SECTION = "mcp_servers";
 const LIST_MCP_RESOURCES_TOOL = "list_mcp_resources";
 const LIST_MCP_RESOURCE_TEMPLATES_TOOL = "list_mcp_resource_templates";
 const READ_MCP_RESOURCE_TOOL = "read_mcp_resource";
-const DEFAULT_TEXT_OUTPUT_SCHEMA: CodemodeJsonSchema = { type: "string" };
-const MAX_CONCURRENT_MODEL_CALLS = 4;
-const MAX_STORE_VALUE_CHARS = 262_144;
-const MAX_STORE_TOTAL_CHARS = 1_048_576;
-const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
-const CHARS_PER_TOKEN = 4;
 const CODEMODE_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
 const MCP_OUTPUT_MAX_BYTES = 20 * 1024;
@@ -115,14 +72,11 @@ const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 const MAX_SERVERS_SECTION_CHARS = 4096;
 const MAX_SERVER_DESCRIPTION_CHARS = 250;
 const MAX_TOOL_NAME_LENGTH = 64;
-const DEFAULT_TOOL_SEARCH_LIMIT = 8;
 
-/** A native tool as the codemode pipeline sees it: the registration plus its declared output schema. */
-type NestedTool = Durable.ToolRegistration & { readonly outputSchema?: CodemodeJsonSchema };
+type NestedTool = Durable.ToolRegistration;
 
 type ToolResultContent = readonly (TextContent | ImageContent)[];
 
-type ToolDiagnostic = { readonly severity: "info" | "warn" | "error"; readonly message: string; readonly code?: string };
 
 // ─── MCP configuration ──────────────────────────────────────────────────────
 
@@ -443,7 +397,7 @@ function createMcpResultSchema(structuredContentSchema: CodemodeJsonSchema | und
 		type: "object",
 		properties: {
 			content: { type: "array", items: { type: "object" } },
-			...(structuredContentSchema === undefined ? {} : { structuredContent: structuredContentSchema }),
+			structuredContent: structuredContentSchema ?? {},
 			isError: { type: "boolean" },
 			_meta: { type: "object" },
 		},
@@ -554,13 +508,14 @@ async function blobResourceContent(resource: { uri: string; mimeType?: string; b
 	}
 }
 
-/** Convert one MCP result into a Durable tool result. Scripts read `details.structuredContent`. */
+/** Convert one MCP result into a Durable tool result. Scripts read `structuredOutput`. */
 export async function convertMcpResult(server: string, tool: string, result: CallToolResult): Promise<Durable.ToolExecutionResult<JsonValue>> {
 	const limited = await limitMcpContent(await mcpModelContent(result));
 	const { _meta: _ignored, ...scriptResult } = result;
 	return {
-		content: [...limited.content],
-		details: { server, tool, ...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }), structuredContent: scriptResult as unknown as JsonValue },
+		output: [...limited.content],
+		structuredOutput: scriptResult as unknown as JsonValue,
+		details: { server, tool, ...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }) },
 		...(result.isError ? { isError: true } : {}),
 	};
 }
@@ -577,92 +532,6 @@ function toParameters(schema: unknown): TSchema {
 	const object = isRecord(schema) ? schema : {};
 	return { ...object, type: object.type ?? "object", ...(object.properties === undefined ? { properties: {} } : {}) } as TSchema;
 }
-
-// ─── Tool search ranking ────────────────────────────────────────────────────
-
-const STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with"]);
-
-/** Lowercase terms, split at camelCase boundaries and non-alphanumerics, without stop words. */
-export function tokenize(text: string): string[] {
-	return text
-		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-		.toLowerCase()
-		.split(/[^a-z0-9]+/)
-		.filter((term) => term !== "" && !STOP_WORDS.has(term));
-}
-
-function schemaTerms(schema: unknown): string[] {
-	const terms: string[] = [];
-	collectSchemaTerms(terms, schema, 0);
-	return terms;
-}
-
-function collectSchemaTerms(terms: string[], schema: unknown, depth: number): void {
-	if (depth > 6 || !isRecord(schema)) return;
-	collectDescriptionTerms(terms, schema);
-	collectPropertyTerms(terms, schema.properties, depth);
-	collectArrayTerms(terms, schema.anyOf, depth);
-	collectArrayTerms(terms, schema.oneOf, depth);
-	if (isRecord(schema.items)) collectSchemaTerms(terms, schema.items, depth + 1);
-}
-
-function collectDescriptionTerms(terms: string[], schema: Record<string, unknown>): void {
-	for (const key of ["description", "title"]) if (typeof schema[key] === "string" && schema[key] !== "") terms.push(schema[key] as string);
-}
-
-function collectPropertyTerms(terms: string[], properties: unknown, depth: number): void {
-	if (!isRecord(properties)) return;
-	for (const [name, child] of Object.entries(properties)) {
-		terms.push(name);
-		collectSchemaTerms(terms, child, depth + 1);
-	}
-}
-
-function collectArrayTerms(terms: string[], value: unknown, depth: number): void {
-	if (!Array.isArray(value)) return;
-	for (const child of value) collectSchemaTerms(terms, child, depth + 1);
-}
-
-interface SearchDocument {
-	readonly name: string;
-	readonly text: string;
-}
-
-/** Okapi BM25 over tool metadata. Ties keep document order. */
-class Bm25Ranker {
-	rank(query: string, documents: readonly SearchDocument[], limit: number): SearchDocument[] {
-		const queryTerms = [...new Set(tokenize(query))];
-		const tokenized = documents.map((document) => tokenize(document.text));
-		if (queryTerms.length === 0 || documents.length === 0) return documents.slice(0, limit);
-		const length = tokenized.map((terms) => terms.length);
-		const average = length.reduce((sum, value) => sum + value, 0) / length.length || 1;
-		const scored = documents.map((_document, index) => ({ index, score: this.score(queryTerms, tokenized, length, average, index) }));
-		return scored
-			.filter((entry) => entry.score > 0)
-			.sort((a, b) => b.score - a.score || a.index - b.index)
-			.slice(0, limit)
-			.flatMap((entry) => {
-				const document = documents[entry.index];
-				return document === undefined ? [] : [document];
-			});
-	}
-
-	private score(queryTerms: readonly string[], tokenized: readonly (readonly string[])[], length: readonly number[], average: number, index: number): number {
-		let score = 0;
-		for (const term of queryTerms) {
-			const frequency = tokenized[index]?.filter((candidate) => candidate === term).length ?? 0;
-			if (frequency === 0) continue;
-			const documentFrequency = tokenized.filter((terms) => terms.includes(term)).length;
-			const idf = Math.log(1 + (tokenized.length - documentFrequency + 0.5) / (documentFrequency + 0.5));
-			score += idf * ((frequency * 2.2) / (frequency + 1.2 * (1 - 0.75 + (0.75 * (length[index] ?? 0)) / average)));
-		}
-		return score;
-	}
-}
-
-const ranker = new Bm25Ranker();
-
-// ─── MCP transport and connection ───────────────────────────────────────────
 
 function expandHome(value: string): string {
 	if (value === "~") return homedir();
@@ -982,487 +851,6 @@ class McpServerConnection {
 	}
 }
 
-// ─── Callable catalog ───────────────────────────────────────────────────────
-
-interface McpNamespace {
-	readonly name: string;
-	readonly description?: string;
-	readonly instructions?: string;
-}
-
-interface CallableEntry {
-	readonly name: string;
-	readonly description: string;
-	readonly declaration: Pick<CodemodeTool, "name" | "description" | "inputSchema" | "outputSchema">;
-	readonly structured: boolean;
-	/** MCP catalog entry: reachable only through scripts until `tool_search` loads it. */
-	readonly namespace?: McpNamespace;
-	readonly replay: "safe" | "unsafe";
-}
-
-function entryOf(tool: NestedTool, namespace?: McpNamespace): CallableEntry {
-	return {
-		name: tool.name,
-		description: tool.description ?? "",
-		declaration: {
-			name: tool.name,
-			description: tool.description ?? "",
-			inputSchema: tool.parameters as CodemodeJsonSchema,
-			outputSchema: tool.outputSchema ?? DEFAULT_TEXT_OUTPUT_SCHEMA,
-		},
-		structured: tool.outputSchema !== undefined,
-		...(namespace === undefined ? {} : { namespace }),
-		replay: tool.replay ?? "unsafe",
-	};
-}
-
-// ─── Nested-call durable task ───────────────────────────────────────────────
-
-interface NestedCallInput {
-	readonly callId: string;
-	readonly name: string;
-	readonly arguments: JsonValue;
-}
-
-type NestedCallCheckpoint = { readonly phase: "call" } | { readonly phase: "execute"; readonly arguments: JsonObject; readonly replay: "safe" | "unsafe" };
-
-interface NestedCallResult {
-	readonly content: ToolResultContent;
-	readonly details?: JsonValue;
-	readonly diagnostics?: readonly ToolDiagnostic[];
-	readonly isError?: boolean;
-	readonly usage?: Usage;
-}
-
-type NestedRuntime = Durable.TaskRuntime<NestedCallInput, NestedCallCheckpoint, NestedCallResult, Durable.ToolHooks>;
-
-function errorResult(code: string, message: string, result?: NestedCallResult): NestedCallResult {
-	return { ...(result ?? {}), isError: true, content: result?.content ?? [], diagnostics: [{ severity: "error", code, message }] };
-}
-
-function errorText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function diagnosticText(result: NestedCallResult): string {
-	const text = textOf(result.content as readonly { type?: string; text?: string }[]);
-	if (text !== "") return text;
-	return (result.diagnostics ?? []).map((diagnostic) => diagnostic.message).join("\n");
-}
-
-/** Call the tool's argument repair and then validate the result, as the built-in tool task does. */
-function repairArguments(tool: NestedTool, args: JsonValue): { args: JsonValue } | { error: string } {
-	if (tool.prepareArguments === undefined) return { args };
-	try {
-		return { args: tool.prepareArguments(args) as JsonValue };
-	} catch (error) {
-		return { error: errorText(error) };
-	}
-}
-
-function validateArguments(tool: NestedTool, call: ToolCall, args: JsonValue): { args: JsonObject } | { error: string } {
-	try {
-		return { args: validateToolArguments(tool, { ...call, arguments: args as JsonObject }) as JsonObject };
-	} catch (error) {
-		return { error: errorText(error) };
-	}
-}
-
-/** Run the `ToolTask` handlers the selected extensions registered, in extension order. */
-async function eachToolTaskHook<K extends "beforeTool" | "afterTool">(
-	runtime: NestedRuntime,
-	context: Context,
-	member: K,
-	invoke: (handler: NonNullable<Durable.ToolHooks[K]>) => Promise<void>,
-): Promise<void> {
-	const agent = await runtime.agent(context);
-	for (const extension of agent.extensions) {
-		for (const handler of extensionToolHandlers(extension, member)) await invokeReported(runtime, () => invoke(handler));
-	}
-}
-
-function extensionToolHandlers<K extends "beforeTool" | "afterTool">(extension: Durable.Extension, member: K): NonNullable<Durable.ToolHooks[K]>[] {
-	const handlers: NonNullable<Durable.ToolHooks[K]>[] = [];
-	for (const hook of extension.hooks ?? []) {
-		if (hook.task !== TOOL_TASK_NAME) continue;
-		const handler = (hook.handlers as Durable.ToolHooks)[member] as NonNullable<Durable.ToolHooks[K]> | undefined;
-		if (typeof handler === "function") handlers.push(handler.bind(hook.handlers) as NonNullable<Durable.ToolHooks[K]>);
-	}
-	return handlers;
-}
-
-async function invokeReported(runtime: NestedRuntime, run: () => Promise<void>): Promise<void> {
-	try {
-		await run();
-	} catch (error) {
-		if (runtime.signal.aborted) throw error;
-		runtime.report(error);
-	}
-}
-
-async function resolveBeforeTool(runtime: NestedRuntime, context: Context, call: ToolCall, initialArgs: JsonObject): Promise<{ args: JsonObject; block?: string }> {
-	let args = initialArgs;
-	let block: string | undefined;
-	await eachToolTaskHook(runtime, context, "beforeTool", async (handler) => {
-		if (block !== undefined) return;
-		const decision = await beforeToolDecision(handler, { ...call, arguments: args }, runtime, context);
-		if (decision?.block !== undefined) block = decision.block;
-		else if (decision?.arguments !== undefined) args = decision.arguments;
-	});
-	return { args, block };
-}
-
-async function beforeToolDecision(handler: NonNullable<Durable.ToolHooks["beforeTool"]>, call: ToolCall, runtime: NestedRuntime, context: Context) {
-	try {
-		return await handler(call, runtime, context);
-	} catch (error) {
-		if (runtime.signal.aborted) throw error;
-		return { block: errorText(error) };
-	}
-}
-
-/** What one tool execution reported through its api; the built-in task falls back to these. */
-interface ToolCollectors {
-	readonly output: string[];
-	details: JsonValue | undefined;
-	readonly diagnostics: ToolDiagnostic[];
-}
-
-/** A `ToolExecutionApi` backed by the nested task's runtime. */
-function nestedToolApi(runtime: NestedRuntime, callId: string, env: Durable.ToolExecutionApi["env"], collectors: ToolCollectors): Durable.ToolExecutionApi {
-	return {
-		taskId: runtime.taskId,
-		conversationId: runtime.conversationId,
-		callId,
-		get registry() {
-			return runtime.registry;
-		},
-		agent: runtime.agent,
-		env,
-		output: (chunk) => {
-			collectors.output.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
-		},
-		diagnostic: (diagnostic) => {
-			collectors.diagnostics.push(diagnostic);
-		},
-		details: async (value, context) => {
-			context.abortSignal?.throwIfAborted();
-			collectors.details = value;
-		},
-		commit: async (change, commitContext) => {
-			let value: unknown;
-			await runtime.commit(async (tx) => {
-				value = await change(tx);
-				return undefined;
-			}, commitContext);
-			return value;
-		},
-		memo: runtime.memo,
-		createTask: async (task, input, options, taskContext) => {
-			let id: Durable.TaskId<unknown> | undefined;
-			await runtime.commit(async (tx) => {
-				id = await tx.createTask(task, input, { ...options, conversationId: runtime.conversationId });
-				return undefined;
-			}, taskContext);
-			return id as Durable.TaskId<unknown>;
-		},
-		getTask: runtime.getTask,
-		waitForTask: runtime.waitForTask,
-		conversation: runtime.conversation,
-		snapshot: runtime.snapshot,
-		snapshotAsOf: runtime.snapshotAsOf,
-		watchDoc: runtime.watchDoc,
-	} as Durable.ToolExecutionApi;
-}
-
-function toolResultOf(produced: Durable.ToolExecutionResult, collectors: ToolCollectors): NestedCallResult {
-	return {
-		content: produced.content ?? (collectors.output.length === 0 ? [] : [{ type: "text", text: collectors.output.join("") }]),
-		details: produced.details ?? collectors.details,
-		diagnostics: [...collectors.diagnostics, ...(produced.diagnostics ?? [])],
-		...(produced.isError === undefined ? {} : { isError: produced.isError }),
-		...(produced.usage === undefined ? {} : { usage: produced.usage }),
-	};
-}
-
-const CODEMODE_HEADER =
-	"Write one JavaScript program that calls this session's tools. Pass raw source, not JSON and not a fenced block; it runs as the body of an async function inside a QuickJS sandbox, so top-level `await` and `return` work and there is no Node API, file system, network, or timer.\n- `await tools.<name>({ ...args })` returns a string, or the structured value named by the tool declaration, and throws an Error when the call fails. Cancelling the script cancels its calls.\n- An optional first line sets limits: `// @options: {\"max_output_tokens\": 10000, \"timeout_ms\": 60000}`";
-
-type ClassifierContextValue = Parameters<CodemodeModelRuntime["classify"]>[1];
-type ImagesContextValue = Parameters<CodemodeModelRuntime["generateImages"]>[1];
-const MODEL_KINDS = ["chat", "image", "classifier"] as const;
-
-function toModelKind(value: unknown): "chat" | "image" | "classifier" {
-	if (value === "chat" || value === "image" || value === "classifier") return value;
-	throw new Error(`Unknown model type ${JSON.stringify(value)}. Use "chat", "image", or "classifier".`);
-}
-
-function toProvider(value: unknown): string | undefined {
-	if (value === undefined || value === null) return undefined;
-	if (typeof value !== "string") throw new Error("provider must be a string");
-	return value;
-}
-
-function withArticle(word: string): string {
-	return `${/^[aeiou]/.test(word) ? "an" : "a"} ${word}`;
-}
-
-/** A script value in an error message: `undefined`, `a string`, `an array`, or its keys. */
-function describeValue(value: unknown): string {
-	if (value === undefined || value === null) return String(value);
-	if (Array.isArray(value)) return value.length === 0 ? "an empty array" : "an array";
-	if (typeof value === "object") {
-		const keys = Object.keys(value);
-		return keys.length === 0 ? "{}" : `{ ${keys.slice(0, 6).join(", ")}${keys.length > 6 ? ", ..." : ""} }`;
-	}
-	return typeof value === "string" ? "a string" : `a ${typeof value}`;
-}
-
-const CLASSIFIER_CONTEXT_SHAPE =
-	'{ state: { ... }, questions: { <id>: { type: "choice", instructions, criteria: { <label>: <meaning> } } | { type: "score", instructions, criteria: [<lowest>, ..., <highest>] } | { type: "bool", instructions, criteria: { true: <meaning>, false: <meaning> } } } }';
-
-/** Check a script's classifier context, so mistakes fail before the provider call. */
-export function checkClassifierContext(context: unknown): ClassifierContextValue {
-	const fail = (problem: string) => new Error(`models.classify() got an invalid context: ${problem}. Shape: ${CLASSIFIER_CONTEXT_SHAPE}.`);
-	if (!isRecord(context)) throw fail(`the second argument must be a context object, got ${describeValue(context)}`);
-	if (!isRecord(context.state)) throw fail(`context.state must be an object, got ${describeValue(context.state)}`);
-	if (!isRecord(context.questions) || Object.keys(context.questions).length === 0) throw fail(`context.questions must map question IDs to question objects, got ${describeValue(context.questions)}`);
-	for (const [id, question] of Object.entries(context.questions)) checkClassifierQuestion(fail, `context.questions.${id}`, question);
-	return context as unknown as ClassifierContextValue;
-}
-
-function checkClassifierQuestion(fail: (problem: string) => Error, at: string, question: unknown): void {
-	if (!isRecord(question)) throw fail(`${at} must be a question object, got ${describeValue(question)}`);
-	if (typeof question.instructions !== "string") throw fail(`${at}.instructions must be a string`);
-	const criteria = question.criteria;
-	const isStrings = (values: readonly unknown[]) => values.length > 0 && values.every((value) => typeof value === "string");
-	if (question.type === "choice") {
-		if (!isRecord(criteria) || !isStrings(Object.values(criteria))) throw fail(`${at} is a "choice" question, so criteria must map each label to its meaning`);
-		return;
-	}
-	if (question.type === "score") {
-		if (!Array.isArray(criteria) || !isStrings(criteria)) throw fail(`${at} is a "score" question, so criteria must list the levels as strings, lowest first`);
-		return;
-	}
-	if (question.type === "bool") {
-		if (!isRecord(criteria) || typeof criteria.true !== "string" || typeof criteria.false !== "string") throw fail(`${at} is a "bool" question, so criteria must be { true: string, false: string }`);
-		return;
-	}
-	throw fail(`${at}.type must be "choice", "score", or "bool", got ${JSON.stringify(question.type)}`);
-}
-
-/** Check a script's image context, so mistakes such as `{ prompt }` fail before the provider call. */
-export function checkImagesContext(context: unknown): ImagesContextValue {
-	const fail = (problem: string) => new Error(`models.generateImages() got an invalid context: ${problem}. Shape: { input: [{ type: "text", text }, or { type: "image", data, mimeType }] }.`);
-	if (!isRecord(context)) throw fail(`the second argument must be a context object, got ${describeValue(context)}`);
-	if (!Array.isArray(context.input) || context.input.length === 0) throw fail(`context.input must be a non-empty array of blocks, got ${describeValue(context.input)}`);
-	context.input.forEach((block, index) => {
-		if (isRecord(block) && block.type === "text" && typeof block.text === "string") return;
-		if (isRecord(block) && block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") return;
-		throw fail(`context.input[${index}] must be a text or image block, got ${describeValue(block)}`);
-	});
-	return context as unknown as ImagesContextValue;
-}
-
-/** The codemode tool description: fixed, so it does not change while MCP servers connect. */
-function codemodeDescription(models: boolean): string {
-	const lines = [
-		CODEMODE_HEADER,
-		"Available globals:",
-		"- Output: `text(value)`, `image(dataUrlOrImageBlock)`, `console.log(...)`, and a top-level `return`; `exit()` stops the script successfully. Multiple text items start with `==> text N/M <==`; console lines follow other output in one `<console_output>` block.",
-		"- State: `store(key, value)` and `load(key)` keep a JSON value for later scripts.",
-		"- Discovery: `ALL_TOOLS`, `await searchTools(query, { limit?, namespace? })`, `await describeTool(name)`, `await describeNamespace(name)` reach tools that are not declared, such as MCP tools.",
-	];
-	if (models) lines.push("- Models: `models` lists and runs classifiers and image models.");
-	return lines.join("\n");
-}
-
-/** A system message that carries tool declarations. */
-function isSystemWithTools(message: Message): message is SystemMessage & { toolsAdded: PiTool[] } {
-	return message.role === "system" && (message as SystemMessage).toolsAdded !== undefined;
-}
-
-/** The mode-`only` codemode description: every tool a script can call. */
-function codemodeOnlyDescription(entries: readonly CallableEntry[]): string {
-	const sections = entries.map((entry) => {
-		const id = toCodemodeIdentifier(entry.name);
-		const heading = id === entry.name ? `### \`${id}\`` : `### \`${id}\` (\`${entry.name}\`)`;
-		return `${heading}\n${renderToolSample(entry.declaration).trim()}`;
-	});
-	return `${codemodeDescription(true)}\n\nNested tools:\n\n${sections.join("\n\n")}`;
-}
-
-/** What a script call resolves to: `a string`, an object's fields, or the rendered type. */
-function describeOutput(schema: CodemodeJsonSchema): string {
-	const type = renderToolOutputType(schema);
-	if (type === "string") return "a string";
-	const object = typeof schema === "object" && schema !== null ? (schema as Record<string, unknown>) : undefined;
-	const properties = object?.properties;
-	if (object?.type === "object" && typeof properties === "object" && properties !== null) {
-		const required = new Set(Array.isArray(object.required) ? object.required : []);
-		const fields = Object.keys(properties).map((name) => (required.has(name) ? name : `${name}?`));
-		return `\`{ ${fields.join(", ")} }\``;
-	}
-	return `\`${type.replace(/\s+/g, " ")}\``;
-}
-
-/** How one script treated one call, for the tool details. */
-type ScriptCallRecord = CodemodeToolDetails["calls"][number] & { durationMs: number };
-
-function callPreview(text: string, limit: number): string {
-	return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
-}
-
-function callArgs(args: unknown): string {
-	try { return callPreview(JSON.stringify(args) ?? "", 200); } catch { return ""; }
-}
-
-function callAborted(error: unknown, signal: AbortSignal | undefined): boolean {
-	return signal?.aborted === true || (error instanceof Error && error.name === "AbortError");
-}
-
-function settledCallRecord(record: ScriptCallRecord, result: NestedCallResult | undefined, status: string, aborted: boolean): string | undefined {
-	const failure = status === "completed" ? undefined : `Tool "${record.name}" did not complete (${status})`;
-	record.status = status === "aborted" || aborted ? "cancelled" : status === "completed" && result?.isError !== true ? "ok" : "error";
-	if (record.status !== "ok") record.error = callPreview((result === undefined ? "" : diagnosticText(result)) || failure || `Tool "${record.name}" failed`, 500);
-	return failure;
-}
-
-interface ScriptRun {
-	readonly callId: string;
-	readonly calls: ScriptCallRecord[];
-	readonly publish: () => void;
-	usage: Usage | undefined;
-	generatedImages: number;
-}
-
-function scriptDetails(run: ScriptRun) {
-	return { calls: run.calls.map((call) => ({ ...call, durationMs: Math.round(call.durationMs) })) };
-}
-
-function combineUsage(first: Usage, second: Usage): Usage {
-	return {
-		input: first.input + second.input,
-		output: first.output + second.output,
-		cacheRead: first.cacheRead + second.cacheRead,
-		cacheWrite: first.cacheWrite + second.cacheWrite,
-		totalTokens: first.totalTokens + second.totalTokens,
-		cost: {
-			input: first.cost.input + second.cost.input,
-			output: first.cost.output + second.cost.output,
-			cacheRead: first.cost.cacheRead + second.cost.cacheRead,
-			cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
-			total: first.cost.total + second.cost.total,
-		},
-	};
-}
-
-function addUsage(run: ScriptRun, usage: Usage | undefined): void {
-	if (usage !== undefined) run.usage = run.usage === undefined ? usage : combineUsage(run.usage, usage);
-}
-
-function valueText(value: unknown): string {
-	return typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
-}
-
-/** Keep script text items distinct and move console lines into one final block. */
-function formatScriptOutput(output: readonly CodemodeOutputItem[]): (TextContent | ImageContent)[] {
-	const total = output.filter((item) => item.type === "text" && !item.console).length;
-	const items: (TextContent | ImageContent)[] = [];
-	const consoleLines: string[] = [];
-	let index = 0;
-	for (const item of output) {
-		if (item.type === "image") items.push(item);
-		else if (item.console) consoleLines.push(item.text);
-		else {
-			index++;
-			items.push({ type: "text", text: total > 1 ? `==> text ${index}/${total} <==\n${item.text}` : item.text });
-		}
-	}
-	if (consoleLines.length > 0) items.push({ type: "text", text: `<console_output>\n${consoleLines.join("\n")}\n</console_output>` });
-	return items;
-}
-
-/** Put adjacent text on separate lines without moving text across images. */
-function joinScriptText(items: readonly (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
-	const joined: (TextContent | ImageContent)[] = [];
-	for (const item of items) {
-		const last = joined.at(-1);
-		if (item.type === "text" && last?.type === "text") {
-			const separator = last.text === "" || last.text.endsWith("\n") ? "" : "\n";
-			joined[joined.length - 1] = { type: "text", text: `${last.text}${separator}${item.text}` };
-		} else joined.push(item);
-	}
-	return joined;
-}
-
-/** The failure text of a script, with the calls it made before failing. */
-function scriptErrorText(result: CodemodeResult, run: ScriptRun): string {
-	if (result.ok) return "";
-	const header = result.error.kind === "script" ? (result.error.stack ?? `${result.error.name ?? "Error"}: ${result.error.message}`) : `${result.error.kind}: ${result.error.message}`;
-	const madeCalls = run.calls.length === 0 ? "No tool calls were made." : `Calls already made are not undone: ${run.calls.map((call) => `${call.name} (${call.status})`).join(", ")}`;
-	return `Script error:\n${header}\n\n${madeCalls}`;
-}
-
-/** Resolve the model argument of `models.classify()`/`models.generateImages()`. */
-function resolveModelArgument(name: string, kind: "classifier" | "image", model: unknown, models: CodemodeModelRuntime): unknown {
-	const listHint = `List the ${kind} models you can use with models.getAvailableOfType("${kind}").`;
-	const modelRecord = isRecord(model) ? model : undefined;
-	if (modelRecord === undefined || typeof modelRecord.provider !== "string" || typeof modelRecord.id !== "string") {
-		const undefinedHint = model === undefined || model === null ? " models.getModelOfType() returns undefined for an unknown provider or id." : "";
-		throw new Error(`${name}() needs a ${kind} model object with provider and id, got ${describeValue(model)}.${undefinedHint} ${listHint}`);
-	}
-	const provider = modelRecord.provider;
-	const id = modelRecord.id;
-	const resolved = models.getModelOfType(kind, provider, id);
-	if (resolved !== undefined) return resolved;
-	const other = MODEL_KINDS.find((candidate) => candidate !== kind && models.getModelOfType(candidate, provider, id) !== undefined);
-	throw new Error(other === undefined ? `Unknown ${kind} model "${provider}/${id}". ${listHint}` : `"${provider}/${id}" is ${withArticle(other)} model, not ${withArticle(kind)} model. ${listHint}`);
-}
-
-/** Catalog entry for scripts; `headers` is dropped because a model entry can carry credentials. */
-function toModelInfo(model: unknown): Record<string, unknown> {
-	const info = { ...(model as Record<string, unknown>) };
-	delete info.headers;
-	return info;
-}
-
-/** The script's view of one nested call result. */
-function toScriptValue(entry: CallableEntry, result: NestedCallResult | undefined, fallbackError?: string): JsonValue {
-	const structured = (result?.details as { structuredContent?: JsonValue } | undefined)?.structuredContent;
-	if (entry.structured && structured !== undefined) return structured;
-	const text = result === undefined ? "" : diagnosticText(result);
-	if (result?.isError === true || result === undefined) throw new Error(text || fallbackError || `Tool "${entry.name}" failed`);
-	return text;
-}
-
-/** Search text of one callable entry. */
-function searchText(entry: CallableEntry): string {
-	const parts = [entry.name, entry.name.replace(/_/g, " "), entry.description];
-	parts.push(...schemaTerms(entry.declaration.inputSchema));
-	if (entry.namespace !== undefined) parts.push(entry.namespace.name, entry.namespace.description ?? "", entry.namespace.instructions ?? "");
-	return parts.filter((part) => part !== "").join("\n");
-}
-
-/** Whether `query` names a namespace directly or by its suffix. */
-function isNamespaceName(namespace: string, query: string): boolean {
-	const identifier = toCodemodeIdentifier(namespace);
-	const queryIdentifier = toCodemodeIdentifier(query);
-	const suffix = (name: string) => (name.includes("__") ? name.slice(name.lastIndexOf("__") + 2) : undefined);
-	return namespace === query || identifier === queryIdentifier || suffix(namespace) === query || suffix(identifier) === queryIdentifier;
-}
-
-function truncateLine(text: string, max: number): string {
-	const first = (text.split("\n", 1)[0] ?? "").trim();
-	if (first.length <= max) return first;
-	return max <= 1 ? "" : `${first.slice(0, max - 1).trimEnd()}…`;
-}
-
-function hasIndirectTools(config: McpServerConfig): boolean {
-	const exposures = configuredExposures(config);
-	return exposures.has("codemode") || exposures.has("deferred");
-}
-
 // ─── MCP resource tools ─────────────────────────────────────────────────────
 
 /** The three resource tools, using the names established by common MCP hosts. */
@@ -1507,8 +895,9 @@ function listedResource(server: string, item: unknown): Record<string, JsonValue
 async function resourceJsonResult(tool: string, server: string | undefined, payload: JsonValue): Promise<Durable.ToolExecutionResult<JsonValue>> {
 	const limited = await limitMcpContent([{ type: "text", text: JSON.stringify(payload) }]);
 	return {
-		content: [...limited.content],
-		details: { server: server ?? "", tool, ...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }), structuredContent: payload },
+		output: [...limited.content],
+		structuredOutput: payload,
+		details: { server: server ?? "", tool, ...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }) },
 	};
 }
 
@@ -1546,687 +935,162 @@ function computeActivation(host: DurableExecutionHost): Activation {
 	};
 }
 
-// ─── The execution runtime ──────────────────────────────────────────────────
+// ─── Native execution host ────────────────────────────────────────────────
 
-interface McpCatalogItem {
-	readonly entry: CallableEntry;
-	readonly tool: NestedTool;
-	readonly server: string;
-	readonly exposure: McpExposure;
+function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function hasIndirectTools(config: McpServerConfig): boolean {
+	const exposures = configuredExposures(config);
+	return exposures.has("codemode") || exposures.has("deferred");
+}
+function truncateLine(text: string, max: number): string {
+	const first = (text.split("\n", 1)[0] ?? "").trim();
+	return first.length <= max ? first : max <= 1 ? "" : `${first.slice(0, max - 1).trimEnd()}…`;
 }
 
-/**
- * Native codemode and MCP support for one Durable session host. The services bootstrap calls
- * `createDurableExecution(host)` and installs `extensions`.
- */
 class DurableExecutionRuntime implements DurableExecution {
 	readonly extensions: readonly Durable.Extension[];
 	readonly ready: Promise<void>;
 	private readonly host: DurableExecutionHost;
-	private readonly durable: typeof Durable;
-	private readonly callTask: Durable.Task<NestedCallInput, NestedCallCheckpoint, NestedCallResult, Durable.ToolHooks>;
-	private readonly store: Durable.RewindableConversationDocToken<{ values: Record<string, JsonValue> }>;
 	private readonly liveTools: NestedTool[] = [];
-	private readonly mcpTools = new Map<string, McpCatalogItem>();
+	private readonly namespaces: CodemodeNamespace[] = [];
 	private readonly resourceTools: NestedTool[];
 	private readonly servers: McpServerConnection[] = [];
-	private readonly loaded = new Set<string>();
-	private readonly authStore: McpAuthFileStore;
-	private resourceExposure: McpExposure | "hidden" = "hidden";
-	private readonly abortControllers = new Map<Durable.TaskId<unknown>, AbortController>();
-	private readonly wasm = loadQuickJSWasm();
+	private readonly sandbox = new CodemodeSandbox({ memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES });
 	private readonly readyTimeoutMs: number;
 	private readonly closeOnHostAbort = () => void this.close();
 	private closed = false;
 
 	constructor(host: DurableExecutionHost, options: DurableExecutionOptions = {}) {
 		this.host = host;
-		this.durable = host.durable;
 		this.readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
-		this.store = this.durable.defineDoc({
-			kind: STORE_KIND,
-			version: 1,
-			scope: "conversation",
-			history: "rewindable",
-			fork: "asOf",
-			initial: () => ({ values: {} as Record<string, JsonValue> }),
-		});
-		this.callTask = this.defineCallTask();
-		this.authStore = new McpAuthFileStore(join(host.agentDir, "mcp-auth.json"));
 		this.resourceTools = this.defineResourceTools();
 		const activation = computeActivation(host);
-		if (activation.codemode) this.liveTools.push(this.defineCodemodeTool());
-		if (activation.toolSearch) this.liveTools.push(this.defineToolSearchTool());
+		const authStore = new McpAuthFileStore(join(host.agentDir, "mcp-auth.json"));
 		this.extensions = this.buildExtensions(activation);
 		if (host.signal.aborted) void this.close();
 		else host.signal.addEventListener("abort", this.closeOnHostAbort, { once: true });
-		for (const server of activation.servers) {
-			const connection = new McpServerConnection(server, host.cwd, () => this.rebuildMcpTools(), createServerAuthProvider(server, this.authStore, host.services.modelRuntime));
-			this.servers.push(connection);
+		for (const server of host.signal.aborted ? [] : activation.servers) {
+			this.servers.push(new McpServerConnection(server, host.cwd, () => this.rebuildMcpTools(), createServerAuthProvider(server, authStore, host.services.modelRuntime)));
 		}
 		this.ready = this.waitForDirectServers();
 	}
 
-	/** Resolve when the initial direct-exposure servers settled, bounded by `readyTimeoutMs`. */
 	private async waitForDirectServers(): Promise<void> {
 		const pending = this.servers.filter((server) => configuredExposures(server.entry.config).has("direct")).map((server) => server.ready);
 		if (pending.length === 0 || this.readyTimeoutMs <= 0) return;
 		await new Promise<void>((resolve) => {
 			const timer = setTimeout(resolve, this.readyTimeoutMs);
-			(timer as { unref?: () => void }).unref?.();
-			void Promise.all(pending).then(() => {
-				clearTimeout(timer);
-				resolve();
-			});
+			timer.unref?.();
+			void Promise.all(pending).then(() => { clearTimeout(timer); resolve(); });
 		});
 	}
 
-	/** Build the contribution extension from the tools, tasks, and sections the activation selected. */
 	private buildExtensions(activation: Activation): readonly Durable.Extension[] {
-		const sections: Durable.PromptSection[] = [];
+		const result: Durable.Extension[] = [];
 		if (activation.codemode) {
-			sections.push(
-				this.durable.section("codemode", () =>
-					["## Codemode", "- Run JavaScript that calls other tools.", "- Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls."].join("\n"),
-				),
-			);
+			const native = createCodemodeExtension({ sandbox: this.sandbox, namespaces: this.namespaces });
+			const tools = (native.tools ?? []).map((tool) => tool.name !== CODEMODE_TOOL_NAME ? tool : {
+				...tool,
+				execute: async (args: { code: string }, api: Durable.ToolExecutionApi, context: Context) => {
+					await this.waitForScriptServers(parseCodemodeSource(args.code).code, context);
+					return tool.execute(args, this.catalogApi(api), context);
+				},
+			});
+			result.push({ ...native, tools, hooks: [this.host.durable.hook(this.host.durable.GenerationTask, {
+				beforeRequest: (request) => {
+					if (this.host.services.settingsManager.getSettings().codemode?.mode !== "only") return;
+					return { messages: request.messages.map((message) => message.role !== "system" ? message : {
+						...message,
+						...(message.toolsAdded === undefined ? {} : { toolsAdded: message.toolsAdded.filter((tool) => tool.name === CODEMODE_TOOL_NAME || tool.name === TOOL_SEARCH_TOOL_NAME) }),
+					}) };
+				},
+			})] });
 		}
-		if (activation.indirect) sections.push(this.durable.section(MCP_SERVERS_SECTION, () => this.renderServersSection()));
-		const hooks: Durable.HookRegistration[] = [];
-		if (activation.codemode) {
-			hooks.push(
-				this.durable.hook(this.durable.GenerationTask, {
-					beforeRequest: (request) => {
-						const messages = this.applyCodemodeMode(request.messages);
-						return messages === undefined ? undefined : { messages };
-					},
-				}),
-			);
+		if (activation.toolSearch) {
+			const native = createToolSearchExtension();
+			result.push({ ...native, tools: (native.tools ?? []).map((tool) => ({ ...tool,
+				execute: async (args: Parameters<typeof tool.execute>[0], api: Durable.ToolExecutionApi, context: Context) => { await this.waitForAllServers(context); return tool.execute(args, this.catalogApi(api), context); },
+			})) });
 		}
-		if (this.liveTools.length === 0 && sections.length === 0) return [];
-		return [
-			this.durable.defineExtension({
-				name: EXTENSION_NAME,
-				tools: this.liveTools,
-				sections,
-				...(hooks.length === 0 ? {} : { hooks }),
-				...(activation.codemode ? { tasks: [this.callTask] } : {}),
-			}),
-		];
+		result.push(this.host.durable.defineExtension({ name: EXTENSION_NAME, tools: this.liveTools,
+			sections: activation.indirect ? [this.host.durable.section(MCP_SERVERS_SECTION, () => this.renderServersSection())] : [],
+		}));
+		return result;
 	}
 
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
 		this.host.signal.removeEventListener("abort", this.closeOnHostAbort);
-		for (const controller of this.abortControllers.values()) controller.abort(new Error("durable execution is closed"));
-		this.abortControllers.clear();
-		await Promise.all(this.servers.map((server) => server.close()));
+		await Promise.all([this.sandbox.close(), ...this.servers.map((server) => server.close())]);
 	}
 
-	// ── MCP catalog ────────────────────────────────────────────────────────
-
-	/** Rebuild the script-visible MCP entries after a connection or tool-list change. */
 	private rebuildMcpTools(): void {
 		if (this.closed) return;
-		this.mcpTools.clear();
+		this.liveTools.splice(0);
+		this.namespaces.splice(0);
 		for (const server of this.servers) {
-			const tools = [...new Map(server.tools.map((tool) => [tool.name, tool])).values()];
-			const plain = [...new Set(tools.map((tool) => tool.name))].map((name) => createMcpToolName(server.entry.name, name));
-			const owners = new Map<string, string>();
-			for (const tool of tools) {
-				const exposure = getToolExposure(server.entry.config, tool.name);
-				if (exposure === "hidden") continue;
-				const owner = `${server.entry.name}\0${tool.name}`;
-				const name = createMcpToolName(server.entry.name, tool.name, (candidate) => {
-					const existing = owners.get(candidate);
-					return (existing !== undefined && existing !== owner) || plain.indexOf(candidate) !== plain.lastIndexOf(candidate);
-				});
-				owners.set(name, owner);
-				const registration = this.defineMcpTool(server, tool, name);
-				const namespace: McpNamespace = {
-					name: mcpNamespace(server.entry.name),
-					...(server.entry.config.description === undefined ? {} : { description: server.entry.config.description }),
-					...(server.instructions === undefined ? {} : { instructions: server.instructions }),
-				};
-				this.mcpTools.set(name, { entry: entryOf(registration, namespace), tool: registration, server: server.entry.name, exposure });
-			}
+			this.namespaces.push({ name: server.entry.name, prefix: `${mcpNamespace(server.entry.name)}__`,
+				...(server.entry.config.description === undefined ? {} : { description: server.entry.config.description }),
+				...(server.instructions === undefined ? {} : { instructions: server.instructions }),
+			});
+			this.registerServerTools(server);
 		}
-		this.resourceExposure = this.computeResourceExposure();
-		this.syncRegisteredTools();
+		const exposures = new Set(this.resourceServers().map((server) => server.entry.config.exposure ?? "codemode"));
+		if (exposures.size > 0) for (const tool of this.resourceTools) this.liveTools.push({ ...tool, ...(exposures.has("direct") ? {} : { deferred: true }) });
 	}
 
-	/** Enabled servers with resources whose exposure is not `hidden`, which the resource tools reach. */
+	private registerServerTools(server: McpServerConnection): void {
+		const tools = [...new Map(server.tools.map((tool) => [tool.name, tool])).values()];
+		const owners = new Set<string>();
+		const plain = tools.map((tool) => createMcpToolName(server.entry.name, tool.name));
+		for (const tool of tools) {
+			const exposure = getToolExposure(server.entry.config, tool.name);
+			if (exposure === "hidden") continue;
+			const name = createMcpToolName(server.entry.name, tool.name, (candidate) => owners.has(candidate) || plain.indexOf(candidate) !== plain.lastIndexOf(candidate));
+			owners.add(name);
+			this.liveTools.push(this.defineMcpTool(server, tool, name, exposure));
+		}
+	}
+
 	private resourceServers(): McpServerConnection[] {
 		return this.servers.filter((server) => server.hasResources && server.entry.config.exposure !== "hidden");
 	}
 
-	/** Widest exposure of the reachable resource servers: `direct`, then `codemode`, then `deferred`. */
-	private computeResourceExposure(): McpExposure | "hidden" {
-		const exposures = new Set(this.resourceServers().map((server) => server.entry.config.exposure ?? "codemode"));
-		if (exposures.has("direct")) return "direct";
-		if (exposures.has("codemode")) return "codemode";
-		if (exposures.has("deferred")) return "deferred";
-		return "hidden";
+	private defineMcpTool(server: McpServerConnection, tool: McpTool, name: string, exposure: McpExposure): NestedTool {
+		return { name, description: tool.description?.trim() || tool.title || `MCP tool ${tool.name} from server ${server.entry.name}`,
+			parameters: toParameters(tool.inputSchema), structuredOutputSchema: createMcpResultSchema(tool.outputSchema as CodemodeJsonSchema | undefined) as TSchema,
+			replay: "unsafe", ...(exposure === "direct" ? {} : { deferred: true }),
+			execute: async (args, _api, context) => convertMcpResult(server.entry.name, tool.name, await server.callTool(tool.name, args as Record<string, unknown>, { signal: context.abortSignal })),
+		};
 	}
 
-	/** Keep `direct` tools, the resource tools, and `tool_search`-loaded tools in the live registry list. */
-	private syncRegisteredTools(): void {
-		const wanted = this.wantedRegisteredTools();
-		const managed = new Set([...this.mcpTools.keys(), ...this.resourceTools.map((tool) => tool.name)]);
-		for (let index = this.liveTools.length - 1; index >= 0; index--) {
-			const tool = this.liveTools[index];
-			if (tool !== undefined && managed.has(tool.name) && !wanted.has(tool.name)) this.liveTools.splice(index, 1);
-		}
-		const present = new Set(this.liveTools.map((tool) => tool.name));
-		for (const name of wanted) {
-			if (present.has(name)) continue;
-			const tool = this.mcpTools.get(name)?.tool ?? this.resourceTools.find((candidate) => candidate.name === name);
-			if (tool !== undefined) this.liveTools.push(tool);
-		}
+	/** A tool phase pins its agent before MCP discovery; the public conversation read resolves the completed catalog. */
+	private catalogApi(api: Durable.ToolExecutionApi): Durable.ToolExecutionApi {
+		if (this.servers.length === 0) return api;
+		return { ...api, agent: async (context) => {
+			await api.agent(context);
+			const conversation = await this.host.harness.conversation(api.conversationId, context);
+			if (conversation === undefined) throw new Error("The MCP tool's conversation is unavailable");
+			return conversation.agent(context);
+		} };
 	}
 
-	private wantedRegisteredTools(): Set<string> {
-		const wanted = new Set<string>();
-		for (const [name, item] of this.mcpTools) if (item.exposure === "direct" || this.loaded.has(name)) wanted.add(name);
-		for (const tool of this.resourceTools) if (this.resourceExposure === "direct" || this.loaded.has(tool.name)) wanted.add(tool.name);
-		return wanted;
-	}
-
-	/** MCP and resource tools a script may call, whether or not the model sees them. */
-	private scriptOnlyEntries(): CallableEntry[] {
-		return [...this.mcpTools.values()].map((item) => item.entry).concat(this.resourceExposure === "hidden" ? [] : this.resourceTools.map((tool) => entryOf(tool)));
-	}
-
-	/** Tools `tool_search` may load: not declared yet and reachable through codemode or tool_search. */
-	private searchableEntries(): CallableEntry[] {
-		const candidates = this.scriptOnlyEntries().filter((entry) => {
-			const item = this.mcpTools.get(entry.name);
-			return item !== undefined && item.exposure !== "direct";
-		});
-		if (this.resourceExposure === "codemode" || this.resourceExposure === "deferred") {
-			for (const tool of this.resourceTools) candidates.push(entryOf(tool));
-		}
-		return candidates.filter((entry) => !this.loaded.has(entry.name));
-	}
-
-	/** Load one tool into the registry after `tool_search` matched it. */
-	private loadToolSearchMatch(name: string): boolean {
-		const known = this.mcpTools.get(name)?.tool ?? this.resourceTools.find((tool) => tool.name === name);
-		if (known === undefined || this.loaded.has(name)) return false;
-		this.loaded.add(name);
-		this.syncRegisteredTools();
-		return true;
-	}
-
-	// ── Scripts ────────────────────────────────────────────────────────────
-
-	/** Wait for the servers a script names, or for all servers when it searches or enumerates. */
-	async waitForScriptServers(code: string, context: Context): Promise<void> {
+	private async waitForScriptServers(code: string, context: Context): Promise<void> {
 		const wantsAll = /\b(searchTools|describeNamespace|describeTool|ALL_TOOLS)\b/.test(code);
-		const waiting = this.servers.filter((server) => wantsAll || code.includes(mcpNamespace(server.entry.name)));
-		await Promise.all(waiting.map((server) => server.ready));
-		context.abortSignal?.throwIfAborted();
+		const waiting = this.servers.filter((server) => wantsAll || code.includes(mcpNamespace(server.entry.name)) || /\b(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)\b/.test(code));
+		await this.waitForServers(waiting, context);
 	}
-
-	async waitForAllServers(context: Context): Promise<void> {
-		await Promise.all(this.servers.map((server) => server.ready));
-		context.abortSignal?.throwIfAborted();
-	}
-
-	/** All tools a script may call: the model's tools plus the not-yet-declared MCP tools. */
-	private async callableEntries(api: Durable.ToolExecutionApi, context: Context): Promise<CallableEntry[]> {
-		const agent = await api.agent(context);
-		const entries = new Map<string, CallableEntry>();
-		for (const tool of agent.tools) {
-			if (tool.name === CODEMODE_TOOL_NAME) continue;
-			entries.set(tool.name, entryOf(tool as NestedTool));
-		}
-		for (const entry of this.scriptOnlyEntries()) if (!entries.has(entry.name)) entries.set(entry.name, entry);
-		return [...entries.values()];
-	}
-
-	/** Resolve one script call to a registry tool, an MCP catalog tool, or a resource tool. */
-	private async resolveTool(runtime: NestedRuntime, name: string, context: Context): Promise<NestedTool | undefined> {
-		const agent = await runtime.agent(context);
-		const registered = agent.tools.find((tool) => tool.name === name);
-		if (registered !== undefined) return registered as NestedTool;
-		return this.mcpTools.get(name)?.tool ?? this.resourceTools.find((tool) => tool.name === name);
-	}
-
-	/** Run one nested call as an owned durable task and return its result. */
-	async callTool(sandbox: { api: Durable.ToolExecutionApi; context: Context; run: ScriptRun }, name: string, args: JsonValue, callSignal: AbortSignal): Promise<JsonValue> {
-		if (this.closed) throw new Error("durable execution is closed");
-		callSignal.throwIfAborted();
-		const entry = (await this.callableEntries(sandbox.api, sandbox.context)).find((candidate) => candidate.name === name);
-		if (entry === undefined) throw new Error(`Tool "${name}" is not available`);
-		const callId = `${sandbox.api.callId}/${sandbox.run.calls.length + 1}`;
-		const startedAt = performance.now();
-		const record: ScriptCallRecord = { id: callId, name, args: callArgs(args), status: "running", durationMs: 0 };
-		sandbox.run.calls.push(record);
-		sandbox.run.publish();
-		const controller = new AbortController();
-		let taskId: Durable.TaskId<NestedCallResult> | undefined;
-		let settled: Durable.SettledTask<NestedCallResult>;
-		try {
-			taskId = await sandbox.api.createTask(
-				this.callTask,
-				{ callId, name, arguments: args },
-				{ ownership: { kind: "task", taskId: sandbox.api.taskId } },
-				sandbox.context,
-			);
-			this.abortControllers.set(taskId, controller);
-			settled = await sandbox.api.waitForTask(taskId, withAbortSignal(callSignal, sandbox.context));
-		} catch (error) {
-			controller.abort(new Error(`Tool "${name}" was cancelled`));
-			record.status = callSignal.aborted || sandbox.context.abortSignal?.aborted ? "cancelled" : "error";
-			record.durationMs = performance.now() - startedAt;
-			const failure = record.status === "cancelled" ? new Error(`Tool "${name}" was cancelled because the script call ended`) : error;
-			record.error = callPreview(errorText(failure), 500);
-			sandbox.run.publish();
-			throw failure;
-		} finally {
-			if (taskId !== undefined) this.abortControllers.delete(taskId);
-		}
-		record.durationMs = performance.now() - startedAt;
-		const outcome = settled.state.outcome;
-		const result = "result" in outcome ? outcome.result : undefined;
-		addUsage(sandbox.run, result?.usage);
-		const failure = settledCallRecord(record, result, outcome.status, callSignal.aborted);
-		sandbox.run.publish();
-		return toScriptValue(entry, result, failure);
-	}
-
-	// ── Codemode sandbox ───────────────────────────────────────────────────
-
-	/** The script's discovery globals and the `models` namespace. */
-	private sandboxGlobals(entries: CallableEntry[], run: ScriptRun): CodemodeTool[] {
-		const samples = new Map(entries.map((entry) => [entry.name, renderToolSample(entry.declaration)]));
-		const entryList = entries.map((entry) => ({ name: toCodemodeIdentifier(entry.name), description: samples.get(entry.name) ?? "" }));
-		const globals: CodemodeTool[] = [
-			{
-				name: "searchTools",
-				spread: true,
-				execute: (args: unknown) => {
-					const [query, options] = args as [unknown, { limit?: unknown; namespace?: unknown } | undefined];
-					if (typeof query !== "string") throw new Error("searchTools() expects a query string");
-					const limit = options?.limit ?? DEFAULT_TOOL_SEARCH_LIMIT;
-					if (typeof limit !== "number" || !Number.isInteger(limit) || limit <= 0) throw new Error("searchTools() limit must be a positive integer");
-					const namespace = options?.namespace;
-					if (namespace !== undefined && namespace !== null && typeof namespace !== "string") throw new Error("searchTools() namespace must be a string");
-					const documents = entries
-						.filter((entry) => namespace === undefined || namespace === null || (entry.namespace !== undefined && isNamespaceName(entry.namespace.name, namespace)))
-						.map((entry) => ({ name: entry.name, text: searchText(entry) }));
-					return ranker.rank(query, documents, limit).map((document) => entryList.find((candidate) => candidate.name === toCodemodeIdentifier(document.name)) ?? { name: toCodemodeIdentifier(document.name), description: "" });
-				},
-			},
-			{
-				name: "describeTool",
-				spread: true,
-				execute: (args: unknown) => {
-					const [name] = args as [unknown];
-					if (typeof name !== "string") throw new Error("describeTool() expects a tool name");
-					const entry = entries.find((candidate) => candidate.name === name || toCodemodeIdentifier(candidate.name) === name);
-					return entry === undefined ? undefined : samples.get(entry.name);
-				},
-			},
-			{
-				name: "describeNamespace",
-				spread: true,
-				execute: (args: unknown) => {
-					const [name] = args as [unknown];
-					if (typeof name !== "string") throw new Error("describeNamespace() expects a namespace name");
-					const matches = entries.filter((entry) => entry.namespace !== undefined && isNamespaceName(entry.namespace.name, name));
-					const namespace = matches[0]?.namespace;
-					if (namespace === undefined) return undefined;
-					return {
-						name: namespace.name,
-						...(namespace.description === undefined ? {} : { description: namespace.description }),
-						...(namespace.instructions === undefined ? {} : { instructions: namespace.instructions }),
-						tools: matches.map((entry) => toCodemodeIdentifier(entry.name)),
-					};
-				},
-			},
-			...this.modelGlobals(run),
-		];
-		return globals;
-	}
-
-	/** `models.*` for scripts, backed by the session model runtime. */
-	private modelGlobals(run: ScriptRun): CodemodeTool[] {
-		const models = this.host.services.modelRuntime as CodemodeModelRuntime;
-		let active = 0;
-		const waiting: (() => void)[] = [];
-		const limit = async <T>(job: () => Promise<T>): Promise<T> => {
-			if (active >= MAX_CONCURRENT_MODEL_CALLS) await new Promise<void>((resolve) => waiting.push(resolve));
-			active++;
-			try {
-				return await job();
-			} finally {
-				active--;
-				waiting.shift()?.();
-			}
-		};
-		const runCall = async (
-			name: string,
-			kind: "classifier" | "image",
-			model: unknown,
-			context: unknown,
-			options: { signal?: AbortSignal } | undefined,
-			execute: (resolved: unknown, checked: unknown, callOptions?: { signal?: AbortSignal }) => Promise<{ stopReason?: string; usage?: Usage; errorMessage?: string }>,
-			args: unknown,
-		): Promise<unknown> => {
-			const resolved = resolveModelArgument(name, kind, model, models);
-			if (kind === "classifier") checkClassifierContext(context);
-			else checkImagesContext(context);
-			const record: ScriptCallRecord = { id: `${run.callId}/${run.calls.length + 1}`, name, args: callArgs(args), status: "running", durationMs: 0 };
-			run.calls.push(record);
-			run.publish();
-			const startedAt = performance.now();
-			try {
-				const result = await limit(() => execute(resolved, context, options));
-				record.status = result.stopReason === "stop" ? "ok" : result.stopReason === "aborted" ? "cancelled" : "error";
-				if (record.status !== "ok") record.error = callPreview(result.errorMessage || `${name} did not complete (${result.stopReason ?? "error"})`, 500);
-				if (result.usage !== undefined) record.cost = result.usage.cost.total;
-				addUsage(run, result.usage);
-				return result;
-			} catch (error) {
-				record.status = callAborted(error, options?.signal) ? "cancelled" : "error";
-				record.error = callPreview(errorText(error), 500);
-				throw error;
-			} finally {
-				record.durationMs = performance.now() - startedAt;
-				run.publish();
-			}
-		};
-		return [
-			{
-				name: "models.getModelsOfType",
-				spread: true,
-				execute: (args) => {
-					const [type, provider] = args as [unknown, unknown];
-					return models.getModelsOfType(toModelKind(type), toProvider(provider)).map(toModelInfo);
-				},
-			},
-			{
-				name: "models.getAvailableOfType",
-				spread: true,
-				execute: async (args) => {
-					const [type, provider, options] = args as [unknown, unknown, { signal?: AbortSignal } | undefined];
-					const available = await models.getAvailableOfType(toModelKind(type), toProvider(provider), options as never);
-					return available.map(toModelInfo);
-				},
-			},
-			{
-				name: "models.getModelOfType",
-				spread: true,
-				execute: (args) => {
-					const [type, provider, id] = args as [unknown, unknown, unknown];
-					if (typeof provider !== "string" || typeof id !== "string") {
-						throw new Error(`models.getModelOfType(type, provider, id) expects three strings, got (${[type, provider, id].map(describeValue).join(", ")}). The provider and the id are separate arguments.`);
-					}
-					const model = models.getModelOfType(toModelKind(type), provider, id);
-					return model === undefined ? undefined : toModelInfo(model);
-				},
-			},
-			{
-				name: "models.classify",
-				spread: true,
-				execute: async (args) => {
-					const [model, classifierContext, options] = args as [unknown, unknown, { signal?: AbortSignal } | undefined];
-					return await runCall("models.classify", "classifier", model, classifierContext, options, (resolved, checked, callOptions) =>
-						models.classify(resolved as Parameters<CodemodeModelRuntime["classify"]>[0], checked as never, callOptions),
-						args,
-					);
-				},
-			},
-			{
-				name: "models.generateImages",
-				spread: true,
-				execute: async (args) => {
-					const [model, imagesContext, options] = args as [unknown, unknown, { signal?: AbortSignal } | undefined];
-					const result = (await runCall("models.generateImages", "image", model, imagesContext, options, (resolved, checked, callOptions) =>
-						models.generateImages(resolved as Parameters<CodemodeModelRuntime["generateImages"]>[0], checked as never, callOptions),
-						args,
-					)) as { output?: readonly { type: string }[] };
-					run.generatedImages += (result.output ?? []).filter((block) => block.type === "image").length;
-					return result;
-				},
-			},
-		];
-	}
-
-	/** Run one script in a fresh sandbox and return the tool result. */
-	async executeScript(args: { code: string }, api: Durable.ToolExecutionApi, context: Context): Promise<Durable.ToolExecutionResult<JsonValue>> {
-		const startedAt = performance.now();
-		const { code, options } = parseCodemodeSource(args.code);
-		await this.waitForScriptServers(code, context);
-		const entries = await this.callableEntries(api, context);
-		const run: ScriptRun = {
-			callId: api.callId, calls: [], usage: undefined, generatedImages: 0,
-			// Durable owns throttling and reports commit failures; progress never delays execution.
-			publish: () => { void api.details(scriptDetails(run), context).catch(() => undefined); },
-		};
-		const sandbox = new CodemodeSandbox({
-			tools: entries.map((entry) => ({
-				name: entry.name,
-				description: renderToolSample(entry.declaration),
-				execute: async (rawArgs, toolContext) => this.callTool({ api, context, run }, entry.name, rawArgs as JsonValue, toolContext.signal),
-			})),
-			globals: this.sandboxGlobals(entries, run),
-			timeoutMs: options.timeoutMs ?? Number.POSITIVE_INFINITY,
-			memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES,
-			wasm: this.wasm,
+	private async waitForAllServers(context: Context): Promise<void> { await this.waitForServers(this.servers, context); }
+	private async waitForServers(servers: readonly McpServerConnection[], context: Context): Promise<void> {
+		const signal = context.abortSignal;
+		signal?.throwIfAborted();
+		await new Promise<void>((resolve, reject) => {
+			const abort = () => reject(signal?.reason ?? new Error("MCP wait aborted"));
+			signal?.addEventListener("abort", abort, { once: true });
+			void Promise.all(servers.map((server) => server.ready)).then(() => resolve(), reject).finally(() => signal?.removeEventListener("abort", abort));
 		});
-		const result = await this.runSandbox(sandbox, code, api, context);
-		for (const call of run.calls) if (call.status === "running") {
-			call.status = "cancelled";
-			call.error = callPreview(result.ok ? "Script call ended" : result.error.message, 500);
-			run.publish();
-		}
-		if (result.ok) await this.writeStore(api, context, result.storeWrites);
-		return await this.scriptResult(result, run, options.maxOutputTokens, startedAt);
-	}
-
-	private async runSandbox(sandbox: CodemodeSandbox, code: string, api: Durable.ToolExecutionApi, context: Context): Promise<CodemodeResult> {
-		try {
-			return await sandbox.execute(code, { signal: context.abortSignal, store: await this.readStore(api, context) });
-		} finally {
-			await sandbox.close().catch(() => undefined);
-		}
-	}
-
-	/** Store values of the branch, for `load()`. */
-	private async readStore(api: Durable.ToolExecutionApi, context: Context): Promise<Record<string, JsonValue>> {
-		const document = await api.snapshot(this.store, api.conversationId, context);
-		return document?.values ?? {};
-	}
-
-	/** Persist `store()` writes of a successful script. */
-	private async writeStore(api: Durable.ToolExecutionApi, context: Context, writes: { set: Record<string, unknown>; delete: string[] }): Promise<void> {
-		if (Object.keys(writes.set).length === 0 && writes.delete.length === 0) return;
-		await api.commit(async (tx) => {
-			const document = await tx.doc(this.store, api.conversationId);
-			for (const key of writes.delete) delete document.values[key];
-			for (const [key, value] of Object.entries(writes.set)) {
-				if (JSON.stringify(value).length > MAX_STORE_VALUE_CHARS) throw new Error(`store("${key}") exceeds ${MAX_STORE_VALUE_CHARS} characters`);
-				document.values[key] = value as JsonValue;
-			}
-			if (JSON.stringify(document.values).length > MAX_STORE_TOTAL_CHARS) throw new Error(`the codemode store exceeds ${MAX_STORE_TOTAL_CHARS} characters`);
-		}, context);
-	}
-
-	/** Turn the sandbox result into the tool result the model sees. */
-	private async scriptResult(result: CodemodeResult, run: ScriptRun, maxOutputTokens: number | undefined, startedAt: number): Promise<Durable.ToolExecutionResult<JsonValue>> {
-		const items = this.scriptItems(result, run);
-		const bounded = await this.boundOutput(joinScriptText(items), maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS);
-		const details: Record<string, JsonValue> = scriptDetails(run);
-		if (bounded.fullOutputPath !== undefined) details.fullOutputPath = bounded.fullOutputPath;
-		const wallTime = ((performance.now() - startedAt) / 1000).toFixed(1);
-		return {
-			content: [{ type: "text", text: `${result.ok ? "Script completed" : "Script failed"}\nWall time ${wallTime} seconds\nOutput:\n` }, ...bounded.items],
-			details,
-			...(run.usage === undefined ? {} : { usage: run.usage }),
-			...(result.ok ? {} : { isError: true }),
-		};
-	}
-
-	/** Script output items, including the returned value, the failure, and an unshown-image note. */
-	private scriptItems(result: CodemodeResult, run: ScriptRun): (TextContent | ImageContent)[] {
-		const output: CodemodeOutputItem[] = [...result.output];
-		if (result.ok && result.value !== undefined) output.push({ type: "text", text: valueText(result.value) });
-		const items = formatScriptOutput(output);
-		if (!result.ok) items.push({ type: "text", text: scriptErrorText(result, run) });
-		if (run.generatedImages > 0 && !items.some((item) => item.type === "image")) {
-			items.push({
-				type: "text",
-				text: `Note: ${run.generatedImages} generated image${run.generatedImages === 1 ? "" : "s"} were not shown. Call image(block) for each image block of result.output.`,
-			});
-		}
-		return items;
-	}
-
-	/** Apply the token budget: text over it keeps its start and end and spills the full text. */
-	private async boundOutput(items: (TextContent | ImageContent)[], maxTokens: number): Promise<{ items: (TextContent | ImageContent)[]; fullOutputPath?: string }> {
-		const combined = items.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n");
-		/** Plain text counts characters; the budget is in estimated tokens. */
-		const budget = maxTokens * CHARS_PER_TOKEN;
-		if (combined === "" || combined.length <= budget) return { items };
-		const head = combined.slice(0, Math.floor(budget / 2));
-		const tail = combined.slice(-Math.max(0, budget - Math.floor(budget / 2)));
-		let fullOutputPath: string | undefined;
-		let where: string;
-		try {
-			fullOutputPath = await saveToTempFile(combined, ".txt");
-			where = `[Complete output: ${fullOutputPath} (read with offset/limit)]`;
-		} catch (error) {
-			where = `[Could not save the full output: ${error instanceof Error ? error.message : String(error)}]`;
-		}
-		const text = `Output was truncated (about ${Math.ceil(combined.length / CHARS_PER_TOKEN)} tokens originally, ${combined.split("\n").length} lines):\n\n${head}…${Math.ceil((combined.length - head.length - tail.length) / CHARS_PER_TOKEN)} tokens omitted…${tail}\n\n${where}`;
-		return { items: [{ type: "text", text }, ...items.filter((item) => item.type === "image")], ...(fullOutputPath === undefined ? {} : { fullOutputPath }) };
-	}
-
-	// ── Tool definitions ───────────────────────────────────────────────────
-
-	private defineCallTask(): Durable.Task<NestedCallInput, NestedCallCheckpoint, NestedCallResult, Durable.ToolHooks> {
-		const toolCall = (input: NestedCallInput): ToolCall => ({ type: "toolCall", id: input.callId, name: input.name, arguments: input.arguments as JsonObject });
-		const settle = async (taskRuntime: NestedRuntime, context: Context, result: NestedCallResult, status: "completed" | "failed" | "aborted", message?: string): Promise<void> => {
-			await taskRuntime.commit(async () => {
-				if (status === "aborted") return { status: "terminal" as const, outcome: { status: "aborted" as const, reason: message, result } };
-				if (status === "failed") return { status: "terminal" as const, outcome: { status: "failed" as const, error: { message: message ?? "nested call failed" }, result } };
-				return { status: "terminal" as const, outcome: { status: "completed" as const, result } };
-			}, context);
-		};
-		const run = async (taskRuntime: NestedRuntime, context: Context, call: ToolCall, tool: NestedTool, argumentObject: JsonObject): Promise<void> => {
-			const local = this.abortControllers.get(taskRuntime.taskId);
-			const toolContext = local === undefined ? context : withAbortSignal(local.signal, context);
-			const env = await taskRuntime.env(context);
-			const collectors: ToolCollectors = { output: [], details: undefined, diagnostics: [] };
-			let result: NestedCallResult;
-			let failed: string | undefined;
-			try {
-				result = toolResultOf(await tool.execute(argumentObject, nestedToolApi(taskRuntime, call.id, env, collectors), toolContext), collectors);
-			} catch (error) {
-				if (taskRuntime.signal.aborted) throw error;
-				failed = `Tool ${call.name} threw`;
-				result = errorResult("tool_error", errorText(error));
-			}
-			let final = result;
-			await eachToolTaskHook(taskRuntime, context, "afterTool", async (handler) => {
-				final = ((await handler(call, final as Durable.ToolExecutionResult, taskRuntime, context)) as NestedCallResult | undefined) ?? final;
-			});
-			await settle(taskRuntime, context, final, failed === undefined ? "completed" : "failed", failed);
-		};
-		return this.durable.defineTask<NestedCallInput, NestedCallCheckpoint, NestedCallResult, Durable.ToolHooks>({
-			name: TASK_NAME,
-			version: 1,
-			initial: () => ({ phase: "call" }),
-			phases: {
-				call: async (task, taskRuntime, context) => {
-					const call = toolCall(task.input);
-					const tool = await this.resolveTool(taskRuntime, task.input.name, context);
-					if (tool === undefined) {
-						await settle(taskRuntime, context, errorResult("tool_unavailable", `Tool ${task.input.name} is not available`), "completed");
-						return;
-					}
-					const repaired = repairArguments(tool, task.input.arguments);
-					const initial = "error" in repaired ? repaired : validateArguments(tool, call, repaired.args);
-					if ("error" in initial) {
-						await settle(taskRuntime, context, errorResult("invalid_arguments", initial.error), "completed");
-						return;
-					}
-					const decided = await resolveBeforeTool(taskRuntime, context, call, initial.args);
-					const args = decided.args;
-					if (decided.block !== undefined) {
-						await settle(taskRuntime, context, errorResult("blocked", `Tool call blocked: ${decided.block}`), "completed");
-						return;
-					}
-					const validated = validateArguments(tool, call, args);
-					if ("error" in validated) {
-						await settle(taskRuntime, context, errorResult("invalid_arguments", validated.error), "completed");
-						return;
-					}
-					const finalArgs = validated.args;
-					const replay = tool.replay ?? "unsafe";
-					await taskRuntime.commit(async () => ({ status: "running" as const, checkpoint: { phase: "execute" as const, arguments: finalArgs, replay } }), context);
-					await run(taskRuntime, context, call, tool, finalArgs);
-				},
-				execute: async (task, taskRuntime, context) => {
-					const checkpoint = task.state.checkpoint;
-					const call = toolCall(task.input);
-					const tool = await this.resolveTool(taskRuntime, task.input.name, context);
-					if (checkpoint.replay === "safe" && tool?.replay === "safe") {
-						await run(taskRuntime, context, call, tool, checkpoint.arguments);
-						return;
-					}
-					const message = `Tool ${task.input.name} was interrupted and may have partially run`;
-					await settle(taskRuntime, context, errorResult("interrupted", message), "failed", message);
-				},
-			},
-			abort: async (task, taskRuntime, context) => {
-				const message = `Tool ${task.input.name} was aborted`;
-				await settle(taskRuntime, context, errorResult("aborted", message), "aborted", message);
-			},
-		});
-	}
-
-	private defineCodemodeTool(): NestedTool {
-		return {
-			...this.durable.defineTool({
-				name: CODEMODE_TOOL_NAME,
-				description: codemodeDescription(true),
-				parameters: Type.Object({ code: Type.String({ description: "Raw JavaScript source." }) }),
-				replay: "unsafe",
-				execute: async (args, api, context) => this.executeScript(args, api, context),
-			}),
-		};
-	}
-
-	private defineToolSearchTool(): NestedTool {
-		return {
-			...this.durable.defineTool({
-				name: TOOL_SEARCH_TOOL_NAME,
-				description:
-					"# Tool discovery\n\nFind a tool that is not declared to you and make it available for your next request. Matches are ranked by relevance.\n\nMCP tools and other deferred tools are often reachable only this way, so use `tool_search` to find them.",
-				parameters: Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }),
-				replay: "safe",
-				execute: async (args, api, context) => {
-					await this.waitForAllServers(context);
-					const available = this.searchableEntries();
-					const samples = new Map(available.map((entry) => [entry.name, renderToolSample(entry.declaration)]));
-					const documents: SearchDocument[] = available.map((entry) => ({ name: entry.name, text: searchText(entry) }));
-					const matches = ranker.rank(args.query, documents, args.limit ?? DEFAULT_TOOL_SEARCH_LIMIT);
-					const loadedTools = matches.filter((document) => this.loadToolSearchMatch(document.name));
-					void api;
-					const details: Record<string, JsonValue> = { loaded: loadedTools.map((document) => document.name), tools: loadedTools.flatMap((document) => (samples.get(document.name) === undefined ? [] : [{ name: document.name, description: samples.get(document.name) as string }])) };
-					return {
-						content: [{ type: "text", text: loadedTools.length === 0 ? "No matching tools found." : loadedTools.map((document) => `- ${document.name}`).join("\n") }],
-						details: { structuredContent: details },
-						...(loadedTools.length === 0 ? {} : { control: { addTools: loadedTools.map((document) => document.name) } }),
-					};
-				},
-			}),
-		};
+		signal?.throwIfAborted();
 	}
 
 	// ── Resource tools ─────────────────────────────────────────────────────
@@ -2238,7 +1102,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				description:
 					"Show the resources the connected MCP servers publish. A resource can be a file, a schema, or other context a model can use; prefer it over a web search. Omit `server` to list every server, or name one server with a cursor for one page.",
 				parameters: RESOURCE_LIST_PARAMETERS,
-				outputSchema: RESOURCE_LIST_OUTPUT_SCHEMA,
+				structuredOutputSchema: RESOURCE_LIST_OUTPUT_SCHEMA as TSchema,
 				replay: "safe",
 				execute: (args, _api, context) => this.listResourceTool(LIST_MCP_RESOURCES_TOOL, "resources", args as Record<string, unknown>, context),
 			},
@@ -2247,7 +1111,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				description:
 					"Show the parameterized resource templates the connected MCP servers publish. Prefer a template over a web search when it covers the data you need.",
 				parameters: RESOURCE_LIST_PARAMETERS,
-				outputSchema: RESOURCE_TEMPLATES_OUTPUT_SCHEMA,
+				structuredOutputSchema: RESOURCE_TEMPLATES_OUTPUT_SCHEMA as TSchema,
 				replay: "safe",
 				execute: (args, _api, context) => this.listResourceTool(LIST_MCP_RESOURCE_TEMPLATES_TOOL, "resourceTemplates", args as Record<string, unknown>, context),
 			},
@@ -2255,7 +1119,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				name: READ_MCP_RESOURCE_TOOL,
 				description: "Read one resource by server name and URI, as returned by `list_mcp_resources`.",
 				parameters: RESOURCE_READ_PARAMETERS,
-				outputSchema: RESOURCE_READ_OUTPUT_SCHEMA,
+				structuredOutputSchema: RESOURCE_READ_OUTPUT_SCHEMA as TSchema,
 				replay: "safe",
 				execute: (args, _api, context) => this.readResourceTool(args as Record<string, unknown>, context),
 			},
@@ -2307,12 +1171,12 @@ class DurableExecutionRuntime implements DurableExecution {
 		const limited = await limitMcpContent(converted.length > 0 ? converted : [{ type: "text", text: `Resource ${uri} is empty.` }]);
 		const contents = result.contents.map(({ _meta: _ignored, ...rest }) => rest);
 		return {
-			content: [...limited.content],
+			output: [...limited.content],
+			structuredOutput: { server: server.entry.name, uri, contents } as unknown as JsonValue,
 			details: {
 				server: server.entry.name,
 				tool: READ_MCP_RESOURCE_TOOL,
 				...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }),
-				structuredContent: { server: server.entry.name, uri, contents } as unknown as JsonValue,
 			},
 		};
 	}
@@ -2322,77 +1186,6 @@ class DurableExecutionRuntime implements DurableExecution {
 		if (found !== undefined) return found;
 		const available = servers.map((server) => server.entry.name).join(", ");
 		throw new Error(`MCP server "${name}" has no resources${available === "" ? "" : `. Servers with resources: ${available}`}`);
-	}
-
-	// ── Codemode presentation mode ─────────────────────────────────────────
-
-	/** Apply the `codemode.mode` setting to one request's declarations without changing the transcript. */
-	private applyCodemodeMode(messages: readonly Message[]): readonly Message[] | undefined {
-		const declared = getCurrentTools([...messages]);
-		if (declared.length === 0) return undefined;
-		const mode = this.host.services.settingsManager.getSettings().codemode?.mode ?? "on";
-		const callable = declared.filter((tool) => tool.name !== CODEMODE_TOOL_NAME);
-		return mode === "only" ? this.withOnlyDeclarations(messages, callable) : this.withScriptCallNotes(messages, callable);
-	}
-
-	/** `on`: declared callable tools say how scripts call them. */
-	private withScriptCallNotes(messages: readonly Message[], callable: readonly PiTool[]): readonly Message[] | undefined {
-		const names = new Set(callable.map((tool) => tool.name));
-		let changed = false;
-		const next = messages.map((message) => {
-			if (!isSystemWithTools(message)) return message;
-			const toolsAdded = message.toolsAdded?.map((tool) => {
-				if (!names.has(tool.name)) return tool;
-				const note = this.scriptCallNote(tool.name);
-				if (tool.description.includes(note)) return tool;
-				changed = true;
-				return { ...tool, description: `${tool.description.trimEnd()}\n\n${note}` };
-			});
-			return toolsAdded === undefined ? message : { ...message, toolsAdded };
-		});
-		return changed ? next : undefined;
-	}
-
-	/** `only`: only the discovery tools stay declared; the codemode description lists every callable tool. */
-	private withOnlyDeclarations(messages: readonly Message[], callable: readonly PiTool[]): readonly Message[] | undefined {
-		const declaredNames = new Set(callable.map((tool) => tool.name));
-		const scriptOnly = this.scriptOnlyEntries().filter((entry) => !declaredNames.has(entry.name));
-		const description = codemodeOnlyDescription([...callable.map((tool) => entryOf(tool as NestedTool)), ...scriptOnly]);
-		let changed = false;
-		const next = messages.map((message) => {
-			if (!isSystemWithTools(message)) return message;
-			const toolsAdded = message.toolsAdded?.flatMap((tool) => {
-				if (tool.name !== CODEMODE_TOOL_NAME && tool.name !== TOOL_SEARCH_TOOL_NAME) {
-					changed = true;
-					return [];
-				}
-				if (tool.name !== CODEMODE_TOOL_NAME) return [tool];
-				changed = true;
-				return [{ ...tool, description }];
-			});
-			return toolsAdded === undefined ? message : { ...message, toolsAdded };
-		});
-		return changed ? next : undefined;
-	}
-
-	/** What a script call resolves to, for the declared-tool note. */
-	private scriptCallNote(name: string): string {
-		const schema = this.liveTools.find((tool) => tool.name === name)?.outputSchema ?? DEFAULT_TEXT_OUTPUT_SCHEMA;
-		return `Codemode: \`tools.${toCodemodeIdentifier(name)}(args)\` returns ${describeOutput(schema)}.`;
-	}
-
-	private defineMcpTool(server: McpServerConnection, tool: McpTool, name: string): NestedTool {
-		return {
-			name,
-			description: tool.description?.trim() || tool.title || `MCP tool ${tool.name} from server ${server.entry.name}`,
-			parameters: toParameters(tool.inputSchema),
-			outputSchema: createMcpResultSchema(tool.outputSchema as CodemodeJsonSchema | undefined),
-			replay: "unsafe",
-			execute: async (args, _api, context) => {
-				const result = await server.callTool(tool.name, (args ?? {}) as Record<string, unknown>, { signal: context.abortSignal });
-				return await convertMcpResult(server.entry.name, tool.name, result);
-			},
-		};
 	}
 
 	// ── Prompt section ─────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ import { readSettings } from "./settings.ts";
  * agent/host-process: one exclusive durable host process per storage.
  *
  * `runHost` takes the writer claim for the storage before it creates the
- * runtime, then serves the storage over a local `pi-server` Unix endpoint. The
+ * runtime, then serves the storage over a local Chord Unix endpoint. The
  * runtime owns Durable work; this module owns the claim, the process lifecycle,
  * and the public service surface. It announces readiness on stdout so a
  * launching client can connect without polling.
@@ -13,15 +13,18 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
-import { decodeServiceControlCall } from "@earendil-works/chord";
-import type { Context, JsonValue, ServiceCall, ServiceProviderUpdate, ServiceSubscriptionSnapshot } from "@earendil-works/chord";
-import { ServerError } from "@earendil-works/pi-server";
-import type { RoutedServerServiceAttachment, Server, ServerHost } from "@earendil-works/pi-server";
-import { createUnixServer } from "@earendil-works/pi-server/unix";
+import { ChordError, invalid, isChordError } from "@earendil-works/chord";
+import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
 import { type ClaimFile, type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
-import { formatHostReady, HOST_CHANGE_MEMBER, HOST_CHANGE_SERVICE_ID, HOST_OBSERVE_MEMBER, HOST_OBSERVE_SERVICE_ID, HOST_CONTRACT_MEMBER, HOST_SERVICE_ID, hostPaths, isCancelableHostWait, observationTokenFromServiceId, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
+import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
+
+function hostOperationError(error: unknown): ChordError {
+	if (isChordError(error)) return error;
+	const reason = error instanceof HostError ? error.code : "internal";
+	return new ChordError(reason === "invalid" ? "invalid" : "unavailable", error instanceof Error ? error.message : String(error), { reason });
+}
 
 /** The host-side surface the parent runtime must supply. */
 export interface HostRuntime {
@@ -95,23 +98,11 @@ interface ClaimRecord {
 	readonly createdAt: string;
 }
 
-/** One connection-scoped change subscription; publications are coalesced per turn. */
-interface ChangeSubscription {
-	readonly id: string;
-	readonly publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>;
-	readonly context: Context;
-	unsubscribe: () => void;
-	sequence: number;
-	pending: boolean;
-}
-
-/** One connection-scoped live-frame subscription; one token per observation. */
+interface ChangeSubscription { unsubscribe: () => void }
 interface ObservationSubscription {
 	readonly subscriptionId: string;
 	readonly token: string;
-	readonly publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>;
-	readonly context: Context;
-	sequence: number;
+	readonly publish: (value: unknown) => void;
 	revision: number;
 	closed: boolean;
 	close: () => void;
@@ -123,6 +114,7 @@ interface AttachmentState {
 	readonly observations: Map<string, ObservationSubscription>;
 	/** Observation tokens this attachment opened; only these may subscribe. */
 	readonly tokens: Set<string>;
+	readonly closingTokens: Map<string, Promise<unknown>>;
 	released: boolean;
 }
 
@@ -231,17 +223,19 @@ class HostProcessServer implements HostProcess {
 	private readonly paths: HostPaths;
 	private readonly claim: HeldClaim;
 	private readonly idleMs: number;
-	private server: Server | undefined;
+	private server: TransportServer | undefined;
 	private socketIdentity: { dev: number; ino: number } | undefined;
 	private cancelIdleCheck: (() => void) | undefined;
 	private readonly scheduleIdleCheck: NonNullable<RunHostOptions["scheduleIdleCheck"]>;
 	private activeRequests = 0;
 	private activityGeneration = 0;
-	private readonly attachments = new Set<AttachmentState>();
+	private readonly attachments = new Map<string, AttachmentState>();
 	private retirementChecking = false;
 	private closing = false;
 	private readonly cancelableRequests = new AbortController();
 	private closePromise: Promise<void> | undefined;
+	private readonly writerReleased: Promise<void>;
+	private resolveWriterReleased: () => void = () => {};
 	private resolveDone: () => void = () => {};
 	private rejectDone: (error: Error) => void = () => {};
 	/** Live observation subscriptions across every attachment; frames publish on actual host writes. */
@@ -265,6 +259,7 @@ class HostProcessServer implements HostProcess {
 			return () => clearTimeout(timer);
 		});
 		this.socketPath = paths.socket;
+		this.writerReleased = new Promise((resolve) => { this.resolveWriterReleased = resolve; });
 		this.done = new Promise<void>((resolve, reject) => {
 			this.resolveDone = resolve;
 			this.rejectDone = reject;
@@ -275,9 +270,26 @@ class HostProcessServer implements HostProcess {
 	}
 
 	async start(announce: (ready: HostReady) => void): Promise<void> {
-		const server = createUnixServer(this.host(), {
-			serverId: this.paths.serverId,
-			path: this.paths.socket,
+		// Construction follows exclusive writer-claim acquisition. Only that owner replaces a stale socket.
+		const prior = lstatSync(this.paths.socket, { throwIfNoEntry: false });
+		if (prior) {
+			if (!prior.isSocket() || prior.uid !== process.getuid?.()) throw new Error("Durable host endpoint is not an owned socket");
+			const current = lstatSync(this.paths.socket);
+			if (current.dev !== prior.dev || current.ino !== prior.ino) throw new Error("Durable host socket changed before replacement");
+			unlinkSync(this.paths.socket);
+		}
+		const server = createTransportServer({
+			serverId: this.paths.serverId, path: this.paths.socket,
+			request: (request, peer, signal) => this.invoke(request, signal, this.attachment(peer)),
+			subscribe: async (kind, token, peer, publish) => {
+				const state = this.attachment(peer);
+				if (this.closing) throw new ChordError("unavailable", "The durable host process is shutting down", { reason: "closing" });
+				if (kind === "changes") return this.subscribeChanges(publish, state);
+				this.beginActivity();
+				try { return await this.subscribeObservation(token ?? "", publish, state); }
+				finally { this.endActivity(); }
+			},
+			release: (peer) => this.releaseAttachment(peer),
 		});
 		this.server = server;
 		try {
@@ -292,6 +304,7 @@ class HostProcessServer implements HostProcess {
 		this.unsubscribeObservation = this.runtime.onChange?.(() => this.scheduleObservationPump());
 		const subscribeActivity = this.runtime.onActivity ?? this.runtime.onChange;
 		this.unsubscribeActivity = subscribeActivity?.call(this.runtime, () => {
+			this.shutdownIfRequired();
 			this.activityGeneration++;
 			this.cancelIdleCheck?.();
 			this.cancelIdleCheck = undefined;
@@ -301,143 +314,64 @@ class HostProcessServer implements HostProcess {
 		this.scheduleRetirement();
 	}
 
-	private host(): ServerHost {
-		return {
-			serverServices: { attachClient: () => this.attachment() },
-			resolveSession: async (sessionId) => {
-				throw new ServerError("session_not_found", `session ${sessionId} is not routed by this host`);
-			},
-			openSession: async () => {
-				throw new ServerError("session_not_found", "this host routes no durable sessions");
-			},
-		};
+	private attachment(peer: string): AttachmentState {
+		let state = this.attachments.get(peer);
+		if (!state) { state = { subscriptions: new Map(), observations: new Map(), tokens: new Set(), closingTokens: new Map(), released: false }; this.attachments.set(peer, state); }
+		return state;
 	}
 
-	private attachment(): RoutedServerServiceAttachment {
-		const state: AttachmentState = { subscriptions: new Map(), observations: new Map(), tokens: new Set(), released: false };
-		this.attachments.add(state);
-		return {
-			invokeService: (call, publish, context) => this.invokeService(call, publish, context, state),
-			release: () => {
-				state.released = true;
-				this.attachments.delete(state);
-				for (const entry of state.subscriptions.values()) entry.unsubscribe();
-				state.subscriptions.clear();
-				for (const entry of state.observations.values()) entry.close();
-				state.observations.clear();
-				for (const token of [...state.tokens]) this.closeObservationToken(token, state);
-				state.tokens.clear();
-			},
-		};
+	private releaseAttachment(peer: string): void {
+		const state = this.attachments.get(peer);
+		if (!state || state.released) return;
+		state.released = true;
+		for (const entry of state.subscriptions.values()) entry.unsubscribe();
+		state.subscriptions.clear();
+		for (const entry of state.observations.values()) entry.close();
+		state.observations.clear();
+		for (const token of [...state.tokens]) this.closeObservationToken(token, state);
+		// A disconnected peer owns its tokens until native cleanup settles.
+		void Promise.allSettled(state.closingTokens.values()).then(() => { this.attachments.delete(peer); });
 	}
 
-	/** Route Chord control calls for the change and observation services, then host methods. */
-	private async invokeService(
-		call: ServiceCall,
-		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
-		context: Context,
-		state: AttachmentState,
-	): Promise<JsonValue | undefined> {
-		const control = decodeServiceControlCall(call);
-		const passive = call.member === HOST_CONTRACT_MEMBER || control?.type === "subscribe" && control.serviceId === HOST_CHANGE_SERVICE_ID
-			|| control?.type === "unsubscribe" && !state.observations.has(control.subscriptionId);
-		if (this.closing) throw new ServerError("service_invalid_value", "The durable host process is shutting down");
-		if (!passive && call.member !== "close") this.beginActivity();
-		try { return await this.routeService(call, publish, context, state); }
-		finally { if (!passive && call.member !== "close") this.endActivity(); }
+	private async invoke(request: TransportRequest, signal: AbortSignal, state: AttachmentState): Promise<unknown> {
+		if (this.closing) throw new ChordError("unavailable", "The durable host process is shutting down", { reason: "closing" });
+		const active = request.method !== HOST_CONTRACT_MEMBER && request.method !== "close";
+		if (active) this.beginActivity();
+		try { return await this.dispatch(request, signal, state); }
+		finally { if (active) this.endActivity(); }
 	}
 
-	private async routeService(call: ServiceCall, publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>, context: Context, state: AttachmentState): Promise<JsonValue | undefined> {
-		const control = decodeServiceControlCall(call);
-		if (control?.type === "subscribe") {
-			if (control.serviceId === HOST_CHANGE_SERVICE_ID) return this.subscribeChanges(control.subscriptionId, publish, context, state) as unknown as JsonValue;
-			const token = observationTokenFromServiceId(control.serviceId);
-			if (token !== undefined) return (await this.subscribeObservation(control.subscriptionId, token, publish, context, state)) as unknown as JsonValue;
-		}
-		if (control?.type === "unsubscribe") {
-			state.subscriptions.get(control.subscriptionId)?.unsubscribe();
-			state.subscriptions.delete(control.subscriptionId);
-			state.observations.get(control.subscriptionId)?.close();
-			state.observations.delete(control.subscriptionId);
-			return { unsubscribed: true };
-		}
-		if (control !== undefined) return undefined;
-		return this.dispatch(call, context, state);
-	}
-
-	/**
-	 * One coalesced change subscription. The runtime commit source fires per
-	 * actual write; a burst collapses into one state publication per microtask
-	 * turn, so the primary refreshes its footer once per observed state change.
-	 */
-	private subscribeChanges(
-		subscriptionId: string,
-		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
-		context: Context,
-		state: AttachmentState,
-	): ServiceSubscriptionSnapshot {
-		const subscriptions = state.subscriptions;
-		const entry: ChangeSubscription = { id: subscriptionId, publish, context, unsubscribe: () => {}, sequence: 0, pending: false };
-		const notify = (): void => {
-			if (entry.pending) return;
-			entry.pending = true;
+	private subscribeChanges(publish: (value: unknown) => void, state: AttachmentState): { value: unknown; close: () => void } {
+		const id = randomUUID();
+		let sequence = 0;
+		let pending = false;
+		const entry: ChangeSubscription = { unsubscribe: () => {} };
+		entry.unsubscribe = this.runtime.onChange?.(() => {
+			if (pending) return;
+			pending = true;
 			queueMicrotask(() => {
-				entry.pending = false;
-				if (subscriptions.get(subscriptionId) !== entry) return;
-				entry.sequence += 1;
-				const update: ServiceProviderUpdate = { type: "state", member: HOST_CHANGE_MEMBER, sequence: entry.sequence, ops: [["r", { revision: entry.sequence }]] };
-				void Promise.resolve(entry.publish(subscriptionId, update, entry.context)).catch(() => undefined);
+				pending = false;
+				if (state.subscriptions.get(id) !== entry) return;
+				publish({ revision: ++sequence });
 			});
-		};
-		entry.unsubscribe = this.runtime.onChange?.(notify) ?? (() => {});
-		subscriptions.set(subscriptionId, entry);
-		return {
-			serviceId: HOST_CHANGE_SERVICE_ID,
-			mode: "singleton",
-			instances: [{ members: [{ name: HOST_CHANGE_MEMBER, kind: "state", sequence: 0, ops: [["r", { revision: 0 }]] }] }],
-		};
+		}) ?? (() => {});
+		state.subscriptions.set(id, entry);
+		return { value: { revision: 0 }, close: () => { if (state.subscriptions.delete(id)) entry.unsubscribe(); } };
 	}
 
-	/**
-	 * One live-frame subscription. The initial snapshot is the token's current
-	 * frame, so a subscription never starts from a gap; later publications come
-	 * from the observation pump, one coalesced state update per observed change.
-	 */
-	private async subscribeObservation(
-		subscriptionId: string,
-		token: string,
-		publish: (subscriptionId: string, update: ServiceProviderUpdate, context: Context) => void | Promise<void>,
-		context: Context,
-		state: AttachmentState,
-	): Promise<ServiceSubscriptionSnapshot> {
-		if (!state.tokens.has(token)) throw new ServerError("service_not_found", `unknown observation token ${token}`);
+	private async subscribeObservation(token: string, publish: (value: unknown) => void, state: AttachmentState): Promise<{ value: unknown; close: () => void }> {
+		if (!state.tokens.has(token)) throw invalid("observation", `unknown observation token ${token}`);
 		let baseline: unknown;
 		try {
 			baseline = await this.runtime.request("observe-frame", { token }, randomUUID());
-			if (!isObservationFrame(baseline) || state.released || !state.tokens.has(token)) throw new ServerError("service_invalid_value", `observation token ${token} returned no frame`);
+			if (!isObservationFrame(baseline) || state.released || !state.tokens.has(token)) throw invalid("observation", `observation token ${token} returned no frame`);
 		} catch (error) { this.closeObservationToken(token, state); throw error; }
-		if (!isObservationFrame(baseline)) throw new ServerError("service_invalid_value", `observation token ${token} returned no frame`);
-		const entry: ObservationSubscription = {
-			subscriptionId,
-			token,
-			publish,
-			context,
-			sequence: baseline.revision,
-			revision: baseline.revision,
-			closed: false,
-			close: () => {},
-		};
+		const entry: ObservationSubscription = { subscriptionId: randomUUID(), token, publish, revision: baseline.revision, closed: false, close: () => {} };
 		entry.close = () => this.closeObservationSubscription(entry, state);
-		state.observations.set(subscriptionId, entry);
+		state.observations.set(entry.subscriptionId, entry);
 		this.observations.add(entry);
-		// Close the open/subscribe gap: a commit between the baseline and
-		// registration publishes on the next pump, which is scheduled now.
 		this.scheduleObservationPump();
-		return {
-			serviceId: HOST_OBSERVE_SERVICE_ID,
-			mode: "singleton",
-			instances: [{ members: [{ name: HOST_OBSERVE_MEMBER, kind: "state", sequence: baseline.revision, ops: [["r", baseline as unknown as JsonValue]] }] }],
-		};
+		return { value: baseline, close: entry.close };
 	}
 
 	private closeObservationSubscription(entry: ObservationSubscription, state: AttachmentState): void {
@@ -450,9 +384,15 @@ class HostProcessServer implements HostProcess {
 
 	/** Release one runtime token; the runtime stops the watch when the last token closes. */
 	private closeObservationToken(token: string, state: AttachmentState): void {
-		if (!state.tokens.delete(token)) return;
+		if (!state.tokens.has(token) || state.closingTokens.has(token)) return;
 		this.beginActivity();
-		void this.runtime.request("observe-close", { token }, randomUUID()).catch(() => undefined).finally(() => this.endActivity());
+		const closing = this.runtime.request("observe-close", { token }, randomUUID());
+		state.closingTokens.set(token, closing);
+		void closing.catch(() => undefined).finally(() => {
+			state.closingTokens.delete(token);
+			state.tokens.delete(token);
+			this.endActivity();
+		});
 	}
 
 	/** Coalesce runtime write notifications into one frame check per turn. */
@@ -502,53 +442,67 @@ class HostProcessServer implements HostProcess {
 		if (!isObservationFrame(frame)) { await this.failObservation(entry); return; }
 		if (frame.revision === entry.revision) return;
 		entry.revision = frame.revision;
-		entry.sequence += 1;
-		const update: ServiceProviderUpdate = { type: "state", member: HOST_OBSERVE_MEMBER, sequence: entry.sequence, ops: [["r", frame as unknown as JsonValue]] };
-		await Promise.resolve(entry.publish(entry.subscriptionId, update, entry.context)).catch(() => undefined);
+		entry.publish(frame);
 	}
 
 	/** A lost native watch is unavailable, not a live token retaining an old frame. */
 	private async failObservation(entry: ObservationSubscription): Promise<void> {
 		if (entry.closed) return;
-		await Promise.resolve(entry.publish(entry.subscriptionId, { type: "unavailable" }, entry.context)).catch(() => undefined);
+		entry.publish(null);
 		entry.close();
 	}
 
 	/**
-	 * Dispatch one public service call. The durable request ID travels as the
-	 * second argument so a caller retry after link loss reuses it. The context
-	 * signal follows the public cancel envelope; only observational waits in the
-	 * runtime observe it, so a disconnect never cancels admitted Durable work.
+	 * Dispatch one negotiated operation with its stable request ID. Only receipts
+	 * waits receive the call signal; disconnect never cancels admitted Durable work.
 	 */
-	private async dispatch(call: ServiceCall, context: Context, state: AttachmentState): Promise<JsonValue | undefined> {
-		if (call.serviceId !== HOST_SERVICE_ID) throw new ServerError("service_not_found", `unknown host service ${call.serviceId}`);
-		const [rawParams, rawRequestId, rawContract] = call.args;
-		const params = rawParams === null ? undefined : rawParams;
-		const requestId = typeof rawRequestId === "string" && rawRequestId !== "" ? rawRequestId : randomUUID();
+	private async dispatch(request: TransportRequest, callerSignal: AbortSignal, state: AttachmentState): Promise<unknown> {
+		const { method, params, contract: rawContract } = request;
+		const requestId = request.requestId ?? randomUUID();
 		// Negotiate before parsing or dispatching an operation payload.
-		if (call.member === HOST_CONTRACT_MEMBER) return HOST_CONTRACT as unknown as JsonValue;
-		let mismatch: string | undefined;
-		try { mismatch = operationContractMismatch(call.member, parseOperationContract(rawContract)); }
-		catch { mismatch = "The caller does not provide a current operation contract."; }
-		if (mismatch) throw new ServerError("service_invalid_value", `${mismatch} Restart the caller or host with matching current agent code; no operation was admitted.`);
+		if (method === HOST_CONTRACT_MEMBER) return HOST_CONTRACT;
+		this.validateOperation(method, rawContract);
 		// Process shutdown owns the transport, runtime, writer claim, and done promise.
-		if (call.member === "close") {
-			await this.shutdown();
+		if (method === "close") {
+			// Chord.close joins method invocations. Leave this invocation after writer release
+			// so process shutdown can join it without awaiting itself.
+			await Promise.race([this.shutdown(), this.writerReleased]);
 			return {};
 		}
-		if (this.closing) throw new ServerError("service_invalid_value", "The durable host process is shutting down");
+		if (this.closing) throw new ChordError("unavailable", "The durable host process is shutting down", { reason: "closing" });
+		const token = this.prepareObservationToken(method, params, state);
 		try {
 			// Only an observational wait receives the disconnect or cancel signal;
 			// admitted Durable work never sees one.
-			const signal = isCancelableHostWait(call.member, params) ? this.waitSignal(context.abortSignal) : undefined;
-			const result = await this.runtime.request(call.member, params, requestId, signal);
-			this.trackObservationResult(call.member, params, result, state);
-			return result as JsonValue | undefined;
+			const signal = isCancelableHostWait(method, params) ? this.waitSignal(callerSignal) : undefined;
+			if (method === "observe-close" && token !== undefined) await state.closingTokens.get(token);
+			const result = await this.runtime.request(method, params, requestId, signal);
+			this.trackObservationResult(method, params, result, state);
+			return result;
 		} catch (error) {
-			// The public protocol carries bounded structural codes; the runtime
-			// message is preserved so consumers keep actionable errors.
-			throw new ServerError("service_invalid_value", error instanceof Error ? error.message : String(error));
+			if (method === "observe-open" && token !== undefined) state.tokens.delete(token);
+			throw hostOperationError(error);
 		} finally { this.shutdownIfRequired(); }
+	}
+
+	private validateOperation(method: string, rawContract: unknown): void {
+		let mismatch: string | undefined;
+		try { mismatch = operationContractMismatch(method, parseOperationContract(rawContract)); }
+		catch { mismatch = "The caller does not provide a current operation contract."; }
+		if (mismatch) throw new ChordError("unavailable", `${mismatch} Restart the caller or host with matching current agent code; no operation was admitted.`, { reason: "version" });
+	}
+
+	private prepareObservationToken(method: string, params: unknown, state: AttachmentState): string | undefined {
+		const token = params !== null && typeof params === "object" && "token" in params && typeof params.token === "string" ? params.token : undefined;
+		if (method === "observe-frame" && (token === undefined || !state.tokens.has(token) || state.closingTokens.has(token))) throw invalid("observation", "The observation token does not belong to this connection");
+		if ((method === "observe-open" || method === "observe-close") && token !== undefined) {
+			if ([...this.attachments.values()].some((owner) => owner !== state && (owner.tokens.has(token) || owner.closingTokens.has(token)))) throw invalid("observation", "The observation token belongs to another connection");
+		}
+		if (method === "observe-open" && token !== undefined) {
+			if (state.closingTokens.has(token)) throw invalid("observation", "The observation token is still closing");
+			state.tokens.add(token);
+		}
+		return token;
 	}
 
 	private trackObservationResult(method: string, params: unknown, result: unknown, state: AttachmentState): void {
@@ -590,7 +544,7 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private hasObservations(): boolean {
-		return [...this.attachments].some((state) => state.tokens.size > 0);
+		return [...this.attachments.values()].some((state) => state.tokens.size > 0);
 	}
 
 	private scheduleRetirement(): void {
@@ -649,6 +603,7 @@ class HostProcessServer implements HostProcess {
 			await closeRuntime(this.runtime, this.exit);
 			this.unpublishSocket();
 			this.claim.release();
+			this.resolveWriterReleased();
 			// A clean transport close follows writer release, so clients need no filesystem notification.
 			await this.server?.close();
 			this.resolveDone();

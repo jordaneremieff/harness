@@ -5,11 +5,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AssistantMessage, JsonObject, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import { initTheme, createCodemodeExtension, AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent, getMarkdownTheme, type ExtensionAPI, type ToolDefinition, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { Container, MouseRegion, Text, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
-import { buildLiveEntries } from "./live-frames.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
@@ -380,8 +379,7 @@ for (const partial of [false, true]) it(`matches a real native codemode componen
 	assert.equal(typeof definitions[0].renderResult, "function");
 	assert.ok([undefined, "default", "self"].includes(definitions[0].renderShell));
 	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i}");`).join("\n") };
-	const details = { calls: Array.from({ length: 12 }, (_, i) => ({ name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", "running"][i % 4], id: `nested-${i}`, args: "a".repeat(200), error: "failure", cost: i === 0 ? 0 : 0.02, durationMs: i * 100 })), fullOutputPath: "output.txt" };
-	const terminalDetails = { ...details, calls: details.calls.map((call) => ({ ...call, status: call.status === "running" ? "cancelled" : call.status })) };
+	const details = { calls: Array.from({ length: 12 }, (_, i) => ({ name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", partial ? "running" : "cancelled"][i % 4], id: i + 1, args: "a".repeat(200), error: "failure", durationMs: i * 100 })), fullOutputPath: "output.txt" };
 	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const isError of [false, true]) {
 		const call = assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: args }]);
 		const completed = result(partial ? "live:tool:outer" : "result", "outer", "codemode", "", isError);
@@ -390,17 +388,23 @@ for (const partial of [false, true]) it(`matches a real native codemode componen
 		message.details = details;
 		const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, definitions[0], tui, "/work");
 		native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
-		native.updateResult({ ...message, details: partial ? details : terminalDetails }, partial);
-		const rendered = new AgentConversation([call, completed], "/work", tui, expanded, false).render(width).lines;
+		native.updateResult(message, partial);
+		const conversation = new AgentConversation([call, completed], "/work", tui, expanded, false);
+		const rendered = conversation.render(width).lines;
 		assert.deepEqual(rendered, native.render(width));
 		const after = assistant("after", [{ type: "text", text: "Adjacent answer" }]);
 		const adjacent = new Container();
 		adjacent.addChild(new UserMessageComponent("Adjacent question", getMarkdownTheme()));
 		adjacent.addChild(native);
 		adjacent.addChild(new AssistantMessageComponent(after.model?.[0] as AssistantMessage, true, getMarkdownTheme(), "Thinking..."));
-		assert.deepEqual(new AgentConversation([user("before", "Adjacent question"), call, completed, after], "/work", tui, expanded, false).render(width).lines, adjacent.render(width));
+		const withAdjacent = new AgentConversation([user("before", "Adjacent question"), call, completed, after], "/work", tui, expanded, false);
+		assert.deepEqual(withAdjacent.render(width).lines, adjacent.render(width));
 		assert.match(stripVTControlCharacters(rendered.join("\n")), /lookup/u);
 		assert.equal(details.calls[0].args.length, 200);
+		const settled = { ...completed, id: "result" };
+		conversation.update([call, settled]);
+		withAdjacent.update([call, settled]);
+		native.updateResult(message, false);
 	}
 });
 
@@ -535,18 +539,6 @@ it("renderer invalidation refreshes lines and heights and remains safe after evi
 	assert.deepEqual(conversation.render(80).lines, []);
 });
 
-it("old codemode details use native result fallback without reconstructing missing fields", () => {
-	const call = assistant("call", [{ type: "toolCall", id: "old", name: "codemode", arguments: { code: 'text("hello")' } }]);
-	const done = result("done", "old", "codemode", "Script completed\nWall time 0.1 seconds\nOutput:\n\nhello");
-	const message = done.model?.[0]; assert.ok(message?.role === "toolResult");
-	message.details = { calls: [{ name: "read", status: "ok", durationMs: 1 }] };
-	const text = screen(new AgentConversation([call, done], "/work", tui, false, false), 50);
-	assert.match(text, /codemode/); assert.match(text, /text\("hello"\)/);
-	assert.match(text, /Script completed/); assert.match(text, /Wall time 0.1 seconds/); assert.match(text, /Output:/); assert.match(text, /hello/);
-	assert.doesNotMatch(text, /unavailable|TypeError|read/);
-});
-
-
 it("global toggles reset every native instance without replacing components", (t) => {
 	const state = agentState(createDashboardState(), "one").view;
 	const entries = [assistant("first", [{ type: "thinking", thinking: "first reason" }, { type: "toolCall", id: "one", name: "custom", arguments: {} }]), assistant("second", [{ type: "thinking", thinking: "second reason" }, { type: "toolCall", id: "two", name: "custom", arguments: {} }])];
@@ -627,87 +619,26 @@ it("a result-first custom card keeps its instance when the call adds no renderer
 	assert.match(screen(conversation), /published card/);
 });
 
-it("live nested codemode details match native partial cards and retain the card through commit", (t) => {
-	const definitions: ToolDefinition[] = [];
-	createCodemodeExtension()({ registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] } as ExtensionAPI);
-	assert.equal(definitions.length, 1);
+it("passes settled native codemode rows unchanged and preserves final nested visibility", (t) => {
 	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
-	const args = { code: 'const value = await tools.lookup({ topic: "example" });\nconsole.log(value);' };
-	const call = assistant("call", [{ type: "toolCall", id: "script", name: "codemode", arguments: args }]);
-	const phases: JsonObject[] = [
-		{ calls: [{ id: "script/1", name: "lookup", args: '{"topic":"example"}', status: "running" }] },
-		{ calls: [{ id: "script/1", name: "lookup", args: '{"topic":"example"}', status: "ok", durationMs: 4 }, { id: "script/2", name: "other", args: "{}", status: "error", durationMs: 2, error: "rejected" }] },
-	];
-	for (const width of [40, 80, 120]) for (const expanded of [false, true]) {
-		const conversation = new AgentConversation([], "/work", tui, expanded, false);
-		const native = new ToolExecutionComponent("codemode", "script", args, { showImages: false }, definitions[0], tui, "/work");
-		native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
-		let instance: unknown;
-		for (const [index, details] of phases.entries()) {
-			const live = buildLiveEntries({ tools: [{ callId: "script", name: "codemode", status: "running", output: "partial-output-sentinel", details }] }, [call]);
-			conversation.update([call, ...live]);
-			const update = updates.mock.calls.at(-1); assert.ok(update);
-			instance ??= update.this;
-			assert.equal(update.this, instance);
-			assert.equal(update.arguments[1], true);
-			const message = live[0].model?.[0]; assert.ok(message?.role === "toolResult");
-			native.updateResult({ ...message, details }, true);
-			const lines = conversation.render(width).lines;
-			assert.deepEqual(lines, native.render(width));
-			const text = stripVTControlCharacters(lines.join("\n"));
-			assert.match(text, index === 0 ? /… lookup/u : /✓ lookup/u);
-			assert.equal(/✗ other/u.test(text), index === 1);
-			assert.doesNotMatch(text, /partial-output-sentinel/u);
-		}
-		const done = result("done", "script", "codemode", "");
-		const message = done.model?.[0]; assert.ok(message?.role === "toolResult");
-		message.content = [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }, { type: "text", text: "final-output-sentinel" }];
-		message.details = phases[1];
-		conversation.update([call, done]);
-		const update = updates.mock.calls.at(-1); assert.ok(update);
-		assert.equal(update.this, instance); assert.equal(update.arguments[1], false);
-		native.updateResult(message, false);
-		assert.deepEqual(conversation.render(width).lines, native.render(width));
-		assert.match(screen(conversation, width), /final-output-sentinel/u);
-	}
-});
-
-for (const expanded of [false, true]) for (const isError of [false, true]) it(`terminal codemode settles running calls without changing stored details: expanded=${expanded}, error=${isError}`, (t) => {
-	const definitions: ToolDefinition[] = [];
-	createCodemodeExtension()({ registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] } as ExtensionAPI);
-	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
-	const args = { code: "await tools.pending({});" };
-	const call = assistant("call", [{ type: "toolCall", id: "script", name: "codemode", arguments: args }]);
-	const calls: JsonObject[] = [
-		{ id: "script/1", name: "pending", args: "{}", status: "running", durationMs: 12, error: "existing text", cost: 0.25, extra: { retained: true } },
-		{ id: "script/2", name: "done", args: "{}", status: "ok", durationMs: 3 },
-		{ id: "script/3", name: "failed", args: "{}", status: "error", error: "rejected" },
-		{ id: "script/4", name: "stopped", args: "{}", status: "cancelled" },
-	];
-	const details = { calls, fullOutputPath: "/output.txt", extra: { retained: true } };
-	const settled = { ...details, calls: [{ ...calls[0], status: "cancelled" }, ...calls.slice(1)] };
-	calls.forEach((item) => { Object.freeze(item); }); Object.freeze(calls); Object.freeze(details);
-	const entry = result("result", "script", "codemode", "Aborted");
+	const call = assistant("call", [{ type: "toolCall", id: "script", name: "codemode", arguments: { code: "await tools.lookup({});" } }]);
+	const entry = result("done", "script", "codemode", "Script completed\nWall time 0.1 seconds\nOutput:\n");
 	const message = entry.model?.[0]; assert.ok(message?.role === "toolResult");
-	message.details = details; message.isError = isError;
+	message.details = { calls: [
+		{ id: 1, name: "lookup", args: "{}", status: "ok", durationMs: 4 },
+		{ id: 2, name: "failed", args: "{}", status: "error", error: "rejected", durationMs: 2 },
+		{ id: 3, name: "stopped", args: "{}", status: "cancelled" },
+	] };
 	const original = structuredClone(entry);
-	const conversation = new AgentConversation([], "/work", tui, expanded, false);
-	const native = new ToolExecutionComponent("codemode", "script", args, { showImages: false }, definitions[0], tui, "/work");
-	native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
-	conversation.update([call, { ...entry, id: "live:tool:script" }]);
-	const liveUpdate = updates.mock.calls.at(-1); assert.ok(liveUpdate);
-	assert.deepEqual(liveUpdate.arguments, [message, true]);
-	native.updateResult(message, true);
-	assert.deepEqual(conversation.render(80).lines, native.render(80));
-	assert.match(screen(conversation), /… pending/u);
-	conversation.update([call, entry]);
-	const finalUpdate = updates.mock.calls.at(-1); assert.ok(finalUpdate);
-	assert.equal(finalUpdate.this, liveUpdate.this);
-	assert.deepEqual(finalUpdate.arguments, [{ ...message, details: settled }, false]);
-	native.updateResult({ ...message, details: settled }, false);
-	assert.deepEqual(conversation.render(80).lines, native.render(80));
-	assert.match(screen(conversation), /⊘ pending/u);
-	assert.doesNotMatch(screen(conversation), /… pending/u);
+	for (const width of [40, 80, 120]) for (const expanded of [false, true]) {
+		const conversation = new AgentConversation([call, entry], "/work", tui, expanded, false);
+		assert.deepEqual(updates.mock.calls.at(-1)?.arguments, [message, false]);
+		const text = screen(conversation, width);
+		assert.match(text, /✓ lookup.*4ms/u);
+		assert.match(text, /✗ failed/u);
+		assert.match(text, /⊘ stopped/u);
+		assert.doesNotMatch(text, /\$/u);
+	}
 	assert.deepEqual(entry, original);
 });
 

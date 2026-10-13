@@ -3,9 +3,9 @@
  *
  * These describe the current JSON that `DurableHost`/`DurableObservation` return
  * and that `AgentManager` aggregates for the primary tools. The primary tools
- * and the native agent-control tools import these schemas for `outputSchema` and
- * `structuredContent`; no consumer maps the outputs through an ordinary-session
- * shape.
+ * import these schemas for ordinary `outputSchema`/`structuredContent` and native
+ * `structuredOutputSchema`/`structuredOutput` contracts. Neither path maps native
+ * observations through an ordinary-session shape.
  *
  * Every object schema closes its properties. Optional properties are absent in
  * the JSON round trip, never present with an undefined value. Open-ended
@@ -14,6 +14,8 @@
  * `JsonValueSchema`, which validates JSON exactly rather than accepting
  * anything.
  */
+import type { JsonValue } from "@earendil-works/chord";
+import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { FleetStatusSchema } from "./fleet-status.ts";
@@ -104,6 +106,21 @@ const toolSlot = object({
 	diagnostics: Type.Optional(Type.Array(toolDiagnostic)),
 	entry: Type.Optional(id),
 });
+const nestedToolSlot = object({
+	callId: string,
+	name: string,
+	taskId: id,
+	parentCallId: string,
+	parentTaskId: id,
+	arguments: jsonObject,
+	status: union([literal("pending"), literal("running"), literal("done")]),
+	output: Type.Optional(string),
+	droppedBytes: Type.Optional(count),
+	droppedLines: Type.Optional(count),
+	details: Type.Optional(JsonValueSchema),
+	diagnostics: Type.Optional(Type.Array(toolDiagnostic)),
+	summary: Type.Optional(object({ isError: boolean, durationMs: Type.Optional(number), usage: Type.Optional(UsageSchema), error: Type.Optional(string) })),
+});
 const compactionStatus = object({
 	taskId: id,
 	reason: union([literal("manual"), literal("threshold"), literal("overflow")]),
@@ -122,7 +139,9 @@ export const LiveStateSchema = object({
 		}),
 	),
 	tools: Type.Optional(Type.Array(toolSlot)),
+	nestedTools: Type.Optional(Type.Array(nestedToolSlot)),
 	compactions: Type.Optional(Type.Array(compactionStatus)),
+	compactionFailure: Type.Optional(object({ taskId: id, reason: union([literal("manual"), literal("threshold"), literal("overflow")]), error: string })),
 });
 
 const inboxItem = union([
@@ -194,7 +213,7 @@ export const ConversationStatusSchema = object({
 	ownerTaskId: Type.Optional(id),
 });
 
-const compactionFailure = object({ reason: union([literal("manual"), literal("threshold"), literal("overflow")]), errorMessage: Type.Optional(string), at: string });
+const compactionFailure = object({ reason: union([literal("manual"), literal("threshold"), literal("overflow")]), errorMessage: Type.Optional(string), at: Type.Optional(string) });
 const autoRetry = object({ attempt: count, maxAttempts: count, delayMs: count, errorMessage: string });
 const dashboardHealth = object({ lastError: Type.Optional(string), compactionFailure: Type.Optional(compactionFailure), autoRetry: Type.Optional(autoRetry) });
 
@@ -379,6 +398,9 @@ export const ExactOutputSchema = object({
 const runningTool = object({
 	toolCallId: string,
 	name: string,
+	taskId: Type.Optional(id),
+	parentToolCallId: Type.Optional(string),
+	parentTaskId: Type.Optional(id),
 	issuedAt: Type.Optional(string),
 	elapsedMs: Type.Optional(count),
 	elapsedFrom: Type.Optional(literal("tool-call-entry")),
@@ -450,7 +472,7 @@ export type InspectOutput = Static<typeof InspectOutputSchema>;
 /** Tool routing also accepts ordinary retained evidence; the native host contract stays separate. */
 export const InspectToolOutputSchema = union([InspectOutputSchema, OrdinaryPrimaryObservationSchema]);
 
-/** The schema for one observation method, for `outputSchema` registration. */
+/** The schema for one observation method, shared by ordinary and native tool declarations. */
 export function observationSchema(method: "list" | "status" | "inspect"): TSchema {
 	switch (method) {
 		case "list":
@@ -462,11 +484,6 @@ export function observationSchema(method: "list" | "status" | "inspect"): TSchem
 	}
 }
 
-/**
- * JSON-round-trip one observation value for `structuredContent` and prove it
- * against its schema. A mismatch throws with the failing paths instead of
- * shipping a shape the declared schema rejects.
- */
 /** Select the structurally relevant union member for an actionable error path. */
 type DiagnosticBranch = TSchema & { anyOf?: TSchema[]; properties?: Record<string, TSchema>; required?: string[] };
 
@@ -489,6 +506,7 @@ function diagnosticScore(schema: DiagnosticBranch, record: Record<string, unknow
 	return score;
 }
 
+/** JSON-round-trip and validate an observation, with schema paths on mismatch. */
 export function structuredObservation<T extends TSchema>(schema: T, value: unknown): Static<T> {
 	const parsed: unknown = JSON.parse(JSON.stringify(value ?? null));
 	if (!Value.Check(schema, parsed)) {
@@ -500,4 +518,12 @@ export function structuredObservation<T extends TSchema>(schema: T, value: unkno
 		throw new Error(`Observation output does not match its schema: ${detail.join("; ")}`);
 	}
 	return parsed as Static<T>;
+}
+
+/** Keep model text and validated program output on the native result's separate channels. */
+export function nativeStructuredObservation<T extends TSchema>(schema: T, value: unknown, text: string): ToolExecutionResult & { readonly structuredOutput: Static<T> } {
+	return {
+		output: [{ type: "text", text }],
+		structuredOutput: structuredObservation(schema, value) as Static<T> & JsonValue,
+	};
 }

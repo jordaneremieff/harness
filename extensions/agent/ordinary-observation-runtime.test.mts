@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
-import { AssistantEntry, ROOT_CONVERSATION_ID, ToolTask, type JsonObject, type RegistryReader } from "@earendil-works/pi-durable";
-import type { TSchema } from "typebox";
+import { AssistantEntry, ROOT_CONVERSATION_ID, ToolTask, defineExtension, defineTool, type JsonObject, type NestedToolExecutionResult, type Registry, type RegistryReader } from "@earendil-works/pi-durable";
+import { Type, type TSchema } from "typebox";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { AgentDeliveryDoc } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
@@ -20,7 +19,8 @@ import type { OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
 it("native peer tools read ordinary retained work and errors without admitting primary work or acquiring its host", { timeout: 20000 }, async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "ordinary-native-observation-"));
+	// Keep the primary socket below the platform pathname limit.
+	const root = mkdtempSync("/tmp/pi-oo-");
 	let runtime: Awaited<ReturnType<typeof createDurableRuntime>> | undefined;
 	let channel: PrimaryChannel | undefined;
 	t.after(async () => {
@@ -54,11 +54,22 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	const open = DurableHost.open.bind(DurableHost);
 	let native: DurableHost | undefined;
 	let registry: RegistryReader | undefined;
+	let nestedResult: NestedToolExecutionResult | undefined;
+	const driver = defineTool({
+		name: "observation_driver",
+		description: "Read one native tool result through its program channel",
+		parameters: Type.Object({ name: Type.String(), args: Type.Record(Type.String(), Type.Unknown()) }),
+		execute: async (args, api, context) => {
+			nestedResult = await api.executeTool(args.name, args.args as JsonObject, context);
+			return {};
+		},
+	});
 	const opened: string[] = [];
 	t.mock.method(DurableHost, "open", async (...args: Parameters<typeof open>) => {
 		opened.push(args[0].storageId);
 		assert.equal(args[0].storageId, record.storageId, "only the caller storage opens a Durable host");
 		registry = args[0].registry;
+		(registry as Registry).install(defineExtension({ name: "ordinary-observation-driver", tools: [driver] }));
 		native = await open(...args);
 		return native;
 	});
@@ -68,29 +79,34 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	const tools = registry.snapshot().extension("agent")?.tools;
 	assert.ok(tools);
 	const recoveryBefore = catalog.read(record.storageId).recoveryDue;
-	const invoke = async (name: string, args: JsonObject) => {
-		const message = toolCallMessage(name, args);
+	const invoke = async (name: string, args: JsonObject): Promise<NestedToolExecutionResult> => {
+		nestedResult = undefined;
+		const message = toolCallMessage(driver.name, { name, args });
 		const taskId = await peer.harness.commit(async (tx) => {
 			const assistant = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [message] });
-			return tx.createTask(ToolTask, { assistant: assistant.id, callId: `fixture-call-${name}` }, { ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID });
+			return tx.createTask(ToolTask, { kind: "model", assistant: assistant.id, callId: `fixture-call-${driver.name}` }, { ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID });
 		}, context);
 		const task = await peer.harness.waitForTask(taskId, context);
 		assert.equal(task.state.outcome.status, "completed");
 		assert.ok(task.state.outcome.result);
+		assert.equal(task.state.outcome.result.kind, "model");
+		if (task.state.outcome.result.kind !== "model") assert.fail("the driver must finish its model-issued call");
 		const entryId = task.state.outcome.result.entryId;
 		const entry = await peer.harness.commit((tx) => tx.entry(entryId), context);
 		assert.equal(entry?.kind, "pi.tool-result");
 		const result = entry?.model?.[0];
 		assert.ok(result?.role === "toolResult");
-		return result;
+		assert.equal(result.isError, false, JSON.stringify(result));
+		const nested = nestedResult as NestedToolExecutionResult | undefined;
+		assert.ok(nested, "executeTool returns the native program result");
+		return nested;
 	};
 	for (const [name, view] of [["agent_status", "status"], ["agent_inspect", "activity"], ["agent_inspect", "history"]] as const) {
 		const result = await invoke(name, { sessionId: ordinaryId, ...(name === "agent_inspect" ? { view } : {}) });
 		assert.equal(result.isError, false, JSON.stringify(result));
-		const observed = (result.details as { structuredContent: OrdinaryPrimaryObservation }).structuredContent;
-		const schema = (tools.find((tool) => tool.name === name) as { outputSchema?: TSchema } | undefined)?.outputSchema;
+		const schema = (tools.find((tool) => tool.name === name) as { structuredOutputSchema?: TSchema } | undefined)?.structuredOutputSchema;
 		assert.ok(schema);
-		structuredObservation(schema, observed);
+		const observed = structuredObservation(schema, result.structuredOutput) as OrdinaryPrimaryObservation;
 		assert.equal(observed.kind, "ordinary-primary");
 		assert.equal(observed.view, view);
 		assert.equal(observed.sessionId, ordinaryId);
@@ -102,7 +118,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	}
 	const unsupported = await invoke("agent_inspect", { sessionId: ordinaryId, view: "exact", entryId: 1 });
 	assert.equal(unsupported.isError, true);
-	assert.match(JSON.stringify(unsupported.content), /supports activity and history only/u);
+	assert.match(JSON.stringify(unsupported.diagnostics), /supports activity and history only/u);
 	assert.deepEqual(opened, [record.storageId]);
 	assert.equal(existsSync(catalog.path(ordinaryId)), false);
 	assert.equal(existsSync(join(catalog.root, `${ordinaryId}.sqlite`)), false);
@@ -123,7 +139,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	for (const { field, fields } of invalidIdentities) await t.test(`native collaboration identifies invalid ${field}`, async () => {
 		const result = await invoke("agent_collaborate", { action: "create", sessionId: record.storageId, ...frame, ...fields });
 		assert.equal(result.isError, true);
-		const text = JSON.stringify(result.content);
+		const text = JSON.stringify(result.structuredOutput);
 		assert.ok(text.includes(`${field} requires an exact discovered identity`), text);
 		assert.match(text, /canonical lowercase UUID for a bare root/u);
 		assert.match(text, /UUID:positive nonroot conversation ID/u);
@@ -139,7 +155,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	for (const { field, fields } of invalidHandles) await t.test(`native collaboration identifies an unavailable handle in ${field}`, async () => {
 		const result = await invoke("agent_collaborate", { action: "create", sessionId: record.storageId, ...frame, ...fields });
 		assert.equal(result.isError, true);
-		const text = JSON.stringify(result.content);
+		const text = JSON.stringify(result.structuredOutput);
 		assert.ok(text.includes(`${field}: handle resolution failed`), text);
 		assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
 		assert.equal((await peer.harness.snapshot(AgentDeliveryDoc, context))?.reports.length ?? 0, 0);
@@ -149,7 +165,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		const { source: _source, ...withoutSource } = frame;
 		const result = await invoke("agent_collaborate", { action: "create", sessionId: record.storageId, ...withoutSource });
 		assert.equal(result.isError, true);
-		assert.match(JSON.stringify(result.content), /source is required and must be nonblank text/u);
+		assert.match(JSON.stringify(result.structuredOutput), /source is required and must be nonblank text/u);
 	});
 	assert.equal(delivered.length, 0);
 	assert.equal(trustCalls, 0);
@@ -157,7 +173,8 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	await t.test("default native send remains separate from ordinary observation", async () => {
 		const sent = await invoke("agent_send", { sessionId: ordinaryId, message: "Separate delivery after observation", checkInMinutes: 0 });
 		assert.equal(sent.isError, false, JSON.stringify(sent));
-		const receipt = (sent.details as { structuredContent: Record<string, unknown> }).structuredContent;
+		const receipt = sent.structuredOutput as Record<string, unknown>;
+		assert.ok(receipt);
 		assert.equal(receipt.sessionId, ordinaryId);
 		assert.equal(receipt.admitted, true);
 		assert.equal(typeof receipt.sourceId, "string");

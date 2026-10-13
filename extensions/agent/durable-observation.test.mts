@@ -32,6 +32,25 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 	return { promise, resolve };
 }
 
+it("reports retained compaction failure and nested calls after the parent model call starts", async (t) => {
+	const storagePath = join(fixtureRoot(t), "nested-activity.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	t.after(() => host.close());
+	await host.harness.commit(async (tx) => {
+		const live = await tx.doc(LiveDoc, 1 as ConversationId);
+		live.compactionFailure = { taskId: 40 as import("@earendil-works/pi-durable").TaskId<import("@earendil-works/pi-durable").CompactionResult>, reason: "manual", error: "summarization failed" };
+		live.nestedTools = [
+			{ taskId: 42 as import("@earendil-works/pi-durable").TaskId, parentTaskId: 41 as import("@earendil-works/pi-durable").TaskId, parentCallId: "parent", callId: "parent/read", name: "read", arguments: { path: "fixture.txt" }, status: "running", output: "partial" },
+			{ taskId: 43 as import("@earendil-works/pi-durable").TaskId, parentTaskId: 41 as import("@earendil-works/pi-durable").TaskId, parentCallId: "parent", callId: "parent/done", name: "read", arguments: {}, status: "done", summary: { isError: false } },
+		];
+	}, BACKGROUND_CONTEXT);
+	const activity = await host.request("inspect", { view: "activity" }) as { metadata: import("./durable-observation.ts").DurableActivityMetadata };
+	const retainedFailure: import("./dashboard-types.ts").DashboardCompactionFailure = { reason: "manual", errorMessage: "summarization failed" };
+	assert.deepEqual(activity.metadata.compactionFailure, retainedFailure);
+	assert.deepEqual(activity.metadata.runningTools, [{ toolCallId: "parent/read", name: "read", taskId: 42, parentToolCallId: "parent", parentTaskId: 41 }]);
+	structuredObservation(InspectOutputSchema, activity);
+});
+
 it("returns the documented missing-request result and enforces native selector agreement", async t => {
 	const docs = readFileSync(new URL("../../docs/agent-host-contract.md", import.meta.url), "utf8");
 	assert.ok(Buffer.byteLength(docs) <= 512 * 1024, "Documented contract byte bound");

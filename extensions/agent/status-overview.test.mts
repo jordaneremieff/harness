@@ -535,9 +535,11 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 					entry: 9,
 				},
 			],
+			nestedTools: [{ callId: "call-1/child", parentCallId: "call-1", parentTaskId: 9, taskId: 10, name: "read", arguments: { path: "/work/file" }, status: "running", output: fullText, droppedBytes: 7, droppedLines: 8, details: { retained: fullText }, diagnostics: [{ severity: "warn", message: fullText, code: "test" }], summary: { isError: true, durationMs: 12, usage, error: fullText } }],
 			compactions: [
 				{ taskId: 10, reason: "threshold", blocking: true, attempt: 2, retry: { at: 11, error: fullText } },
 			],
+			compactionFailure: { taskId: 10, reason: "threshold", error: fullText },
 		},
 		inbox: {
 			items: [

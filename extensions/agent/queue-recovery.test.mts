@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
@@ -12,17 +11,13 @@ import type { HostMetadata } from "./host-protocol.ts";
 import type { AgentProfile } from "./profile-schema.ts";
 import type { DeliveryReceipt } from "./durable-controls.ts";
 
-// This revision admits base queues without profile metadata. Exercise its actual source, not a wire mock.
-const BASE_SOURCE = "0c2b4d5ed9c12acc9ce6fd62e75a56464b366ef2";
 const checkout = fileURLToPath(new URL("../../", import.meta.url));
 type Receipts = { receipts: DeliveryReceipt[]; pending: number };
 
-it("recovers every input in a pre-profile process queue above the explicit-route admission limit", { timeout: 60000 }, async (t) => {
+it("recovers every native input without profile routes above the explicit-route admission limit", { timeout: 60000 }, async (t) => {
 	const scratch = process.env.PROFILE_TEST_ROOT ?? tmpdir();
 	mkdirSync(scratch, { recursive: true });
 	const root = mkdtempSync(join(scratch, "queue-recovery-"));
-	const original = join(root, "source");
-	mkdirSync(original);
 	const metadata: HostMetadata = {
 		storageId: randomUUID(), storagePath: join(root, "storage.sqlite"), cwd: root, agentDir: join(root, "agent"), packageDir: checkout,
 		model: { provider: "agent-test", modelId: "model" }, thinkingLevel: "off", ownerId: "base-owner",
@@ -47,22 +42,17 @@ it("recovers every input in a pre-profile process queue above the explicit-route
 		}
 	});
 	await new Promise<void>((resolve, reject) => { keepAlive.once("error", reject); keepAlive.listen(0, "127.0.0.1", resolve); });
-	const archive = execFileSync("git", ["archive", BASE_SOURCE, "package.json", "extensions/agent"], { cwd: checkout, maxBuffer: 16 * 1024 * 1024 });
-	execFileSync("tar", ["-x", "-C", original], { input: archive });
 	const messages = Array.from({ length: 129 }, (_, index) => `Retained base task ${index}`);
 	const requestIds = messages.map((_, index) => index === messages.length - 1 ? "r".repeat(1025) : `queued-${index}`);
 	const launch = (source: string, seed?: { messages: string[]; requestIds: string[] }) => acquireHost(metadata, {
 		runner: fileURLToPath(new URL("./queue-recovery-runner.mts", import.meta.url)), runnerArgs: [source, JSON.stringify(seed ?? null)],
 		env: { ...process.env, NODE_PATH: join(checkout, "node_modules"), PI_AGENT_DIR: metadata.agentDir, PI_AGENT_SESSIONS_DIR: join(root, "sessions"), PI_AGENT_IDLE_MINUTES: "0" },
 	});
-	client = await launch(join(original, "extensions/agent"), { messages, requestIds });
-	assert.equal(client.runtimeContract.operations["profile-read"], undefined, "the producer runs the source before profiles");
-	await assert.rejects(client.request("command", { sessionId: metadata.storageId, name: "seed", messages, requestIds }),
-		(error: Error & { code?: string }) => error.code === "unavailable" && error.message.includes("command request contract"));
-	await assert.rejects(client.request("receipts", { ownerId: metadata.ownerId, wait: false }),
-		(error: Error & { code?: string }) => error.code === "unavailable" && error.message.includes("receipts request contract"));
+	client = await launch(fileURLToPath(new URL("./", import.meta.url)), { messages, requestIds });
+	assert.equal(client.runtimeContract.operations["profile-read"].request, "profile-read/1.0.0");
+	await assert.rejects(client.request("task-submit", { sessionId: metadata.storageId, requestId: "x".repeat(1025), requester: metadata.ownerId, origin: "operator", message: "Oversized explicit route", whenBusy: "followUp" }), /requestId/u);
 	const seeded = JSON.parse(readFileSync(`${metadata.storagePath}.seed.json`, "utf8")) as Receipts;
-	assert.equal(seeded.pending, messages.length, "the producer seeds its own storage without crossing a changed submit or receipt contract");
+	assert.equal(seeded.pending, messages.length, "native admission retains every input without an explicit profile route");
 	await stop();
 	client = await launch(fileURLToPath(new URL("./", import.meta.url)));
 	assert.equal((await client.request("receipts", { ownerId: metadata.ownerId, wait: false }) as Receipts).pending, messages.length);

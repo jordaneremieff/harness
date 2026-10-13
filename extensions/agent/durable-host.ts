@@ -34,7 +34,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
-import { Harness, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
+import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
@@ -209,6 +209,7 @@ export class DurableHost {
 	private readonly storagePath: string;
 	private readonly lifecycle = new AbortController();
 	private closed = false;
+	private sessionClosing = false;
 	private idleValue = false;
 	private idleDirty = true;
 	private commitGeneration = 0;
@@ -240,6 +241,13 @@ export class DurableHost {
 		this.commands = commandMap;
 		this.contributionHost = contributionHost;
 		this.defaultCwd = cwd;
+		harness.subscribeClose(() => {
+			this.sessionClosing = true;
+			this.idleDirty = true;
+		});
+		void harness.closed.then((end) => {
+			this.lifecycle.abort(end.reason === "failed" ? new SessionFailed(end.error) : new DurableHostClosedError());
+		});
 		// A commit may add or remove work; the cached idle result is stale until the refresh settles.
 		harness.subscribeCommits((publication) => {
 			if (publication.changes.length > 0) liveObservations.get(harness)?.invalidate();
@@ -261,7 +269,19 @@ export class DurableHost {
 	 * pending, so a race cannot retire a host that just admitted work.
 	 */
 	get idle(): boolean {
-		return !this.closed && !this.idleDirty && this.idleValue;
+		return !this.closed && !this.sessionClosing && !this.idleDirty && this.idleValue;
+	}
+
+	/** Native Session closure seals host admission, including after a fatal storage error. */
+	get sessionEnded(): boolean { return this.sessionClosing; }
+
+	private async requireOpen(): Promise<void> {
+		if (this.sessionClosing) {
+			const end = await this.harness.closed;
+			if (end.reason === "failed") throw new SessionFailed(end.error);
+			throw new DurableHostClosedError();
+		}
+		if (this.closed) throw new DurableHostClosedError();
 	}
 
 	isIdle(): boolean {
@@ -280,7 +300,7 @@ export class DurableHost {
 	 * submissions count.
 	 */
 	async refreshIdle(context: Context = BACKGROUND_CONTEXT): Promise<boolean> {
-		if (this.closed) return false;
+		if (this.closed || this.sessionClosing) return false;
 		const generation = this.commitGeneration;
 		const inspection = await this.harness.inspect(context);
 		const graphState = await this.harness.taskGraph(context);
@@ -361,8 +381,8 @@ export class DurableHost {
 	}
 
 	/** Resume only after the caller installs contributions and model-facing sections. */
-	resume(context: Context = BACKGROUND_CONTEXT): Promise<void> {
-		if (this.closed) return Promise.reject(new DurableHostClosedError());
+	async resume(context: Context = BACKGROUND_CONTEXT): Promise<void> {
+		await this.requireOpen();
 		this.resumeWork ??= (async () => {
 			this.recovery = new StrandedInputRecovery(this.harness, (error) => this.recoveryError?.(error));
 			try { await reconcileInputCommunications(this.harness, this.storageId, context); }
@@ -406,7 +426,7 @@ export class DurableHost {
 	 * without closing the host.
 	 */
 	async request(method: string, params?: RequestParams, context: Context | AbortSignal = BACKGROUND_CONTEXT): Promise<unknown> {
-		if (this.closed) throw new DurableHostClosedError();
+		await this.requireOpen();
 		const requestContext = context instanceof AbortSignal ? withAbortSignal(context, BACKGROUND_CONTEXT) : context;
 		switch (method) {
 			case "collaboration-list": return listCollaboration(this.harness, params ?? {}, requestContext);

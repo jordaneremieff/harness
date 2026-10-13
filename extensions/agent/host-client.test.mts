@@ -5,12 +5,9 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { JsonValue, ServiceCall } from "@earendil-works/chord";
-import { ServerError, type ServerHost } from "@earendil-works/pi-server";
-import { Client } from "@earendil-works/pi-client";
-import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
-import { createUnixServer } from "@earendil-works/pi-server/unix";
-import { HOST_SERVICE_ID, HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
+import type { JsonValue } from "@earendil-works/chord";
+import { connectTransport, createTransportServer } from "../../transport/index.ts";
+import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
 import { acquireHost, connectHost, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose, writeFixtureState } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
@@ -55,7 +52,7 @@ async function observeFrames(connection: HostConnection, scope: HostObservationS
 	return connection.observe(scope);
 }
 
-/** A service fixture with independently declared operation contracts. */
+/** A transport fixture with independently declared operation contracts. */
 async function openVersionedHost(root: string, contract: RuntimeContract | undefined, status?: JsonValue): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; calls: string[]; close(): Promise<void> }> {
 	const metadata = fixtureMetadata(root);
 	const paths = hostPaths(metadata);
@@ -67,22 +64,15 @@ async function openVersionedHost(root: string, contract: RuntimeContract | undef
 		{ mode: 0o600 },
 	);
 	const calls: string[] = [];
-	const host: ServerHost = {
-		serverServices: {
-			attachClient: () => ({
-				invokeService: async (call: ServiceCall) => {
-					calls.push(call.member);
-					if (contract && call.member === "runtime-contract") return contract as unknown as JsonValue;
-					if (status !== undefined && call.member === "status") return status;
-					throw new ServerError("service_invalid_value", `unknown durable host method ${call.member}`);
-				},
-				release: () => {},
-			}),
+	const server = createTransportServer({
+		serverId: paths.serverId, path: paths.socket,
+		request: async (request) => {
+			calls.push(request.method);
+			if (contract && request.method === "runtime-contract") return contract;
+			if (status !== undefined && request.method === "status") return status;
+			throw new Error(`unknown durable host method ${request.method}`);
 		},
-		resolveSession: async () => { throw new ServerError("session_not_found", "this fixture routes no sessions"); },
-		openSession: async () => { throw new ServerError("session_not_found", "this older host routes no sessions"); },
-	};
-	const server = createUnixServer(host, { serverId: paths.serverId, path: paths.socket, mode: 0o600 });
+	});
 	await server.start();
 	return { metadata, calls, close: async () => { await server.close().catch(() => undefined); } };
 }
@@ -143,9 +133,9 @@ it("waits for an owned launch's readiness frame instead of probing its socket", 
 	const attaching = connectHost(config).then((client) => { attached = true; return client; });
 	t.after(async () => { await (await attaching).close(); });
 	const paths = hostPaths(config);
-	const raw = await Client.connect({ serverId: paths.serverId, transportFactory: createUnixTransportFactory({ path: paths.socket }) });
+	const raw = await connectTransport({ serverId: paths.serverId, path: paths.socket });
 	t.after(() => raw.dispose());
-	await raw.request({ serverId: paths.serverId }, { serviceId: HOST_SERVICE_ID, member: "status", args: [null, randomUUID(), HOST_CONTRACT.operations.status as unknown as JsonValue] });
+	await raw.request({ method: "status", requestId: randomUUID(), contract: HOST_CONTRACT.operations.status });
 	assert.equal(attached, false, "a listening socket does not replace the held readiness frame");
 	release();
 	const [first, second] = await Promise.all([started, attaching]);
@@ -229,7 +219,7 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	const pending = connection.request("abort");
 	await waitForFixtureState(connection, statePath, (state) => (state.hangsStarted ?? 0) >= 1);
 	process.kill(connection.pid, "SIGKILL");
-	await assert.rejects(pending, /connection was lost|disconnected|closed/iu);
+	await assert.rejects(pending, /connection was lost|disconnected|closed|peer ended/iu);
 	await waitForConnectionClose(connection);
 	await connection.close();
 	const again = await acquireHost(config, launch());
@@ -461,6 +451,7 @@ it("signals unavailable without relaunching after a host kill while observing", 
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
 	await events.waitFor((items) => items.some((event) => event.state === "unavailable"), 40000);
+	await waitForConnectionClose(connection);
 	const unavailable = events.filter((event) => event.state === "unavailable");
 	assert.equal(unavailable.length, 1, "one unavailable signal per listener");
 	assert.equal(unavailable[0]?.fresh, false);

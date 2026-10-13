@@ -76,5 +76,6 @@ export class AgentConsole {
 	}
 	dispose(): void {
 		this.unsubscribe();
+		this.conversation.dispose();
 	}
 }

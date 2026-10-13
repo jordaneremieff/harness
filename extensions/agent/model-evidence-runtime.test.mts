@@ -99,7 +99,7 @@ it("publishes real host evidence and reads fleet status locally from ordinary an
 		await observer.wait(submitted.submissionId, context);
 		assert.ok(native);
 		assert.equal(native.isError, false, JSON.stringify(native.content));
-		const nativeFleet = (native.details as { structuredContent: FleetStatus }).structuredContent;
+		const nativeFleet = native.details as FleetStatus;
 		assert.deepEqual(nativeFleet.models, fleet.models);
 		assert.equal(nativeFleet.effort.membership, "creation-records");
 		assert.equal(nativeFleet.effort.members, 1);

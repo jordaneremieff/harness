@@ -4,13 +4,11 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import type { JsonValue } from "@earendil-works/chord";
-import { Client } from "@earendil-works/pi-client";
-import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
+import { connectTransport } from "../../transport/index.ts";
 import { existsSync, writeFileSync } from "node:fs";
 import { it } from "node:test";
 import type { AgentProfile } from "./profile-schema.ts";
-import { HOST_SERVICE_ID, hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { connectHost } from "./host-client.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 import { HOST_CONTRACT } from "./version-contract.ts";
@@ -39,9 +37,8 @@ type Admitted = { submissionId: number | string; deduped: boolean; identity: str
 function toolData<T>(request: ProviderRequest, name: string): T {
 	const result = lastTool(request, name);
 	assert.equal(result.isError, false, result.text);
-	const details = result.details as { structuredContent?: T } | undefined;
-	assert.ok(details?.structuredContent, `${name} supplies its declared structured result`);
-	return details.structuredContent;
+	assert.ok(result.details, `${name} supplies its declared observation in native details`);
+	return result.details as T;
 }
 
 async function send(requester: Requester, sessionId: string, requestId: string, replyTo = requester.identity): Promise<Admitted> {
@@ -252,18 +249,18 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	const paths = hostPaths(metadata);
 	const observation = await a.raw<{ token: string }>(expert.sessionId, "observe-open", { scope: "conversation", token: randomUUID() });
 	assert.deepEqual(Object.keys(BASE_OPERATIONS), ["status", "submit", "reset", "list", "dashboard"]);
-	const unchangedOperations = ["reset", "list", "dashboard"];
-	const changedOperations = ["status", "submit"];
+	const unchangedOperations = ["reset", "list"];
+	const changedOperations = ["status", "submit", "dashboard"];
 	for (const method of unchangedOperations) assert.deepEqual(HOST_CONTRACT.operations[method], BASE_OPERATIONS[method], `${method} keeps its declared base contract`);
 	for (const method of changedOperations) assert.notDeepEqual(HOST_CONTRACT.operations[method], BASE_OPERATIONS[method], `${method} requires its changed contract`);
 	assert.equal(HOST_CONTRACT.operations.status.request, BASE_OPERATIONS.status.request);
 	assert.notEqual(HOST_CONTRACT.operations.status.response, BASE_OPERATIONS.status.response);
 	assert.notEqual(HOST_CONTRACT.operations.submit.request, BASE_OPERATIONS.submit.request);
 	assert.equal(HOST_CONTRACT.operations.submit.response, BASE_OPERATIONS.submit.response);
-	const oldClient = await Client.connect({ serverId: paths.serverId, transportFactory: createUnixTransportFactory({ path: paths.socket }) });
+	const oldClient = await connectTransport({ serverId: paths.serverId, path: paths.socket });
 	t.after(() => oldClient.dispose());
-	const base = async (member: string, params: Record<string, unknown> = {}, contract = BASE_OPERATIONS[member]) => oldClient.request({ serverId: paths.serverId }, {
-		serviceId: HOST_SERVICE_ID, member, args: [{ sessionId: expert.sessionId, ...params } as JsonValue, randomUUID(), contract as unknown as JsonValue],
+	const base = async (method: string, params: Record<string, unknown> = {}, contract = BASE_OPERATIONS[method]) => oldClient.request({
+		method, params: { sessionId: expert.sessionId, ...params }, requestId: randomUUID(), contract,
 	});
 	await assert.rejects(base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }), /configure request contract configure\/1\.0\.0 differs from configure\/1\.3\.0.*no operation was admitted/u);
 	const unchanged = await a.control<AgentProfile>("profile-read", { sessionId: expert.sessionId });
@@ -287,7 +284,7 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	await a.control("configure", { sessionId: expert.sessionId, name: "Renamed contract expert" });
 	await base("reset", { requestId: "base-reset" });
 	await base("list");
-	await base("dashboard");
+	await assert.rejects(base("dashboard"), /dashboard response contract .* differs from .*no operation was admitted/u);
 	const after = await a.control<AgentProfile>("profile-read", { sessionId: expert.sessionId });
 	assert.equal(after.name, "Renamed contract expert");
 	assert.equal(after.handle, "@contract-expert");
@@ -313,7 +310,7 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	assert.deepEqual(forwarded, [], "changed and unavailable operations never dispatch to the peer");
 	await newClient.request("reset", { sessionId: expert.sessionId, requestId: "base-only-reset" });
 	await newClient.request("list");
-	await newClient.request("dashboard");
+
 	await forwarded.waitFor((methods) => methods.length === unchangedOperations.length, 15000);
 	assert.deepEqual(forwarded, unchangedOperations, "only unchanged operations reach native storage");
 	await send(a, expert.sessionId, "current-only-admission");

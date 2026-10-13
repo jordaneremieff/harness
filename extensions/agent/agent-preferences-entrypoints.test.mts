@@ -93,7 +93,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		const messages = requests.flat();
 		const outcome = messages.find((message) => message.role === "toolResult" && message.toolName === "agent_spawn");
 		assert.ok(outcome?.role === "toolResult" && !outcome.isError);
-		const result = (outcome.details as { structuredContent: { selection: ExecutionSelection; conversationId: Durable.ConversationId } }).structuredContent;
+		const result = outcome.details as { selection: ExecutionSelection; conversationId: Durable.ConversationId };
 		assert.equal(result.selection.source.path, ordinarySnapshot.source.path);
 		assert.equal(result.selection.source.digest, ordinarySnapshot.source.digest);
 		assert.equal(result.selection.values.model, ordinarySnapshot.document?.presets.review.model);
@@ -115,7 +115,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		await (await native.submit({ type: "input", content: "Create another review worker" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		const latest = requests.at(-1)?.findLast((message) => message.role === "toolResult" && message.toolName === "agent_spawn");
 		assert.ok(latest?.role === "toolResult" && !latest.isError);
-		const replacement = (latest.details as { structuredContent: { selection: ExecutionSelection; conversationId: Durable.ConversationId } }).structuredContent;
+		const replacement = latest.details as { selection: ExecutionSelection; conversationId: Durable.ConversationId };
 		assert.notEqual(replacement.conversationId, result.conversationId);
 		assert.notEqual(replacement.selection.source.digest, result.selection.source.digest);
 		assert.equal(replacement.selection.values.model, "other/model-y");
@@ -154,7 +154,7 @@ it("native local creation uses the common default, override, and refusal precede
 	};
 	const selectionOf = (result: Message) => {
 		assert.ok(result.role === "toolResult" && !result.isError, JSON.stringify(result));
-		return (result.details as { structuredContent: { selection: ExecutionSelection; conversationId: Durable.ConversationId } }).structuredContent;
+		return result.details as { selection: ExecutionSelection; conversationId: Durable.ConversationId };
 	};
 	const first = selectionOf(await run({}));
 	assert.equal(first.selection.values.model, "other/model-y");
@@ -309,7 +309,7 @@ for (const operation of ["creation", "configure"] as const) it(`native ${operati
 });
 
 it("advertises preset-aware process interfaces without changing message admission", () => {
-	assert.equal(MANAGER_CONTRACT, "manager/2.2.0");
+	assert.equal(MANAGER_CONTRACT, "manager/3.0.0");
 	assert.match(CONTROL_BINDING_CONTRACT, /^native-controls\/2\.0\.0;durable=/u);
 	for (const method of ["spawn", "resolve-agent", "place"]) assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/2.0.0`, response: `${method}/2.0.0` });
 	assert.deepEqual(HOST_CONTRACT.operations.configure, { request: "configure/1.3.0", response: "configure/1.3.0" });

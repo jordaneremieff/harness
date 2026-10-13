@@ -3,14 +3,12 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
-import { Client } from "@earendil-works/pi-client";
-import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
+import { connectTransport } from "../../transport/index.ts";
 import { connectHost, type HostConnection } from "./host-client.ts";
 import { eventLog, fixtureMetadata } from "./host-fixture.mts";
-import { HOST_CHANGE_SERVICE_ID, HOST_SERVICE_ID, hostPaths } from "./host-protocol.ts";
+import { hostPaths } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
-import type { JsonValue } from "@earendil-works/chord";
 
 function deferred() {
 	let resolve!: () => void;
@@ -108,12 +106,12 @@ it("protects open observation tokens before subscription and releases them on ex
 it("releases a token after observation subscription setup fails", { timeout: 3000 }, async (t) => {
 	const f = await fixture(t, { request: async (method) => method === "observe-open" ? { token: "bad-frame" } : {}, isIdle: () => true, close: async () => {} });
 	const paths = hostPaths(f.metadata);
-	const client = await Client.connect({ serverId: paths.serverId, transportFactory: createUnixTransportFactory({ path: paths.socket }) });
+	const client = await connectTransport({ serverId: paths.serverId, path: paths.socket });
 	t.after(() => client.dispose());
-	await client.request({ serverId: paths.serverId }, { serviceId: HOST_SERVICE_ID, member: "observe-open", args: [{ scope: "tasks" }, "open", HOST_CONTRACT.operations["observe-open"] as unknown as JsonValue] });
-	await assert.rejects(client.subscribeService({ serverId: paths.serverId }, "pi.agent.host.observe:bad-frame", "singleton", () => {}));
+	await client.request({ method: "observe-open", params: { scope: "tasks" }, requestId: "open", contract: HOST_CONTRACT.operations["observe-open"] });
+	await assert.rejects(client.subscribe("observation", "bad-frame", () => {}));
 	// A normal change subscription is not a conversation or task observation.
-	await client.subscribeService({ serverId: paths.serverId }, HOST_CHANGE_SERVICE_ID, "singleton", () => {});
+	await client.subscribe("changes", undefined, () => {});
 	f.checks[f.checks.length - 1].fire();
 	await f.host.done;
 });

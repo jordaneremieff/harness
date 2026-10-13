@@ -4,10 +4,8 @@ import { createRequire } from "node:module";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { JsonValue } from "@earendil-works/chord";
 import { VERSION as CODING_AGENT_VERSION } from "@earendil-works/pi-coding-agent";
-import { ServerError, type ServerHost } from "@earendil-works/pi-server";
-import { createUnixServer } from "@earendil-works/pi-server/unix";
+import { createTransportServer } from "../../transport/index.ts";
 import { connectHost } from "./host-client.ts";
 import { hostPaths, parseHostMetadata } from "./host-protocol.ts";
 import { parseOperationContract, type OperationContract, type RuntimeContract } from "./version-contract.ts";
@@ -37,22 +35,17 @@ async function main(): Promise<void> {
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: metadata.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
-	const host: ServerHost = {
-		serverServices: { attachClient: () => ({
-			invokeService: async (call) => {
-				if (call.member === "runtime-contract") return baseContract as unknown as JsonValue;
-				const expected = BASE_OPERATIONS[call.member];
-				const supplied = parseOperationContract(call.args[2]);
-				if (!expected || supplied.request !== expected.request || supplied.response !== expected.response || supplied.durable !== expected.durable) throw new ServerError("service_invalid_value", `Unavailable base operation: ${call.member}`);
-				process.send?.({ event: "forwarded", method: call.member });
-				return await connection.request(call.member, call.args[0]) as JsonValue;
-			},
-			release: () => {},
-		}) },
-		resolveSession: async () => { throw new ServerError("session_not_found", "No session routing in the contract fixture"); },
-		openSession: async () => { throw new ServerError("session_not_found", "No session routing in the contract fixture"); },
-	};
-	const server = createUnixServer(host, { serverId: paths.serverId, path: paths.socket, mode: 0o600 });
+	const server = createTransportServer({
+		serverId: paths.serverId, path: paths.socket,
+		request: async (request) => {
+			if (request.method === "runtime-contract") return baseContract;
+			const expected = BASE_OPERATIONS[request.method];
+			const supplied = parseOperationContract(request.contract);
+			if (!expected || supplied.request !== expected.request || supplied.response !== expected.response || supplied.durable !== expected.durable) throw new Error(`Unavailable base operation: ${request.method}`);
+			process.send?.({ event: "forwarded", method: request.method });
+			return connection.request(request.method, request.params);
+		},
+	});
 	await server.start();
 	process.once("disconnect", () => {
 		void server.close().finally(async () => { await connection.close(); rmSync(paths.claim, { force: true }); process.exit(0); });

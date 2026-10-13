@@ -7,9 +7,7 @@ import { hostname, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { JsonValue, ServiceCall } from "@earendil-works/chord";
-import { ServerError, type ServerHost } from "@earendil-works/pi-server";
-import { createUnixServer } from "@earendil-works/pi-server/unix";
+import { createTransportServer } from "../../transport/index.ts";
 import { connectHost } from "./host-client.ts";
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
@@ -25,8 +23,8 @@ import { retainedRead, retainedReadDescriptor, RETAINED_READ_VERSION, RETAINED_R
 import { RetainedReadError } from "./retained-errors.ts";
 
 // Fixed consumer expectations, not a contract discovered and echoed into a request.
-const snapshotContract = { request: "snapshot/1.0.0", response: "snapshot/2.0.0", durable: "1.1.0" };
-const inspectContract = { request: "inspect/1.1.0", response: "9619e4000b74259b8b63a83bd1e009003d01682365adfbed3147eb650f304a8a", durable: "1.1.0" };
+const snapshotContract = { request: "snapshot/1.0.0", response: "snapshot/2.0.0", durable: "1.2.0" };
+const inspectContract = { request: "inspect/1.1.0", response: "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b", durable: "1.2.0" };
 const storageId = "00000000-0000-4000-8000-000000000001";
 const cli = fileURLToPath(new URL("./retained-read.ts", import.meta.url));
 
@@ -241,16 +239,14 @@ it("ignores an incompatible live advertisement while existing negotiation still 
 	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: f.record.storageId, cwd: f.record.cwd, createdAt: new Date().toISOString() }));
 	const altered = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, snapshot: { ...snapshotContract, response: "snapshot/9.0.0" } } };
 	const calls: string[] = [];
-	const endpoint: ServerHost = {
-		serverServices: { attachClient: () => ({ invokeService: async (call: ServiceCall) => {
-			calls.push(call.member);
-			if (call.member === "runtime-contract") return altered as unknown as JsonValue;
-			throw new ServerError("service_invalid_value", "Unexpected retained reader connection");
-		}, release: () => {} }) },
-		resolveSession: async () => { throw new ServerError("session_not_found", "No routed session"); },
-		openSession: async () => { throw new ServerError("session_not_found", "No routed session"); },
-	};
-	const server = createUnixServer(endpoint, { serverId: paths.serverId, path: paths.socket, mode: 0o600 });
+	const server = createTransportServer({
+		serverId: paths.serverId, path: paths.socket,
+		request: async (request) => {
+			calls.push(request.method);
+			if (request.method === "runtime-contract") return altered;
+			throw new Error("Unexpected retained reader connection");
+		},
+	});
 	await server.start();
 	t.after(() => server.close());
 	const client = await connectHost(hostMetadata(f.record), { retryAttempts: 0 });

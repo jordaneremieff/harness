@@ -28,6 +28,7 @@ import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel 
 import {
 	AssistantEntry,
 	CompactionEntry,
+	SessionFailed,
 	defineDoc,
 	defineDocFamily,
 	type AgentChange,
@@ -1201,6 +1202,12 @@ export async function waitForReceipts(
 		const unsubscribe = harness.subscribeCommits(() => {
 			queueMicrotask(wake);
 		});
+		let end!: (error: Error) => void;
+		const ended = new Promise<never>((_resolve, reject) => { end = reject; });
+		const unsubscribeClose = harness.subscribeClose(() => {
+			void harness.closed.then((result) => end(result.reason === "failed" ? new SessionFailed(result.error) : new Error("Session closed while waiting for receipts")));
+		});
+		void ended.catch(() => {});
 		const signals = [context.abortSignal, closeSignal].filter((signal): signal is AbortSignal => signal !== undefined);
 		const abort = abortWatch(signals, () => cancellationReason(signals) ?? new Error("request cancelled while waiting for receipts"));
 		// The race attaches later, after the read below; keep an early rejection handled.
@@ -1208,13 +1215,14 @@ export async function waitForReceipts(
 		try {
 			const deliveries = await undeliveredForOwner(harness, ownerId, context);
 			if (deliveries.receipts.length > 0 || deliveries.reports.length > 0) return deliveries;
-			await Promise.race([woke, abort.promise]);
+			await Promise.race([woke, abort.promise, ended]);
 		} catch (error) {
 			const cancelled = cancellationReason(signals);
 			if (cancelled !== undefined) throw cancelled;
 			throw error;
 		} finally {
 			unsubscribe();
+			unsubscribeClose();
 			abort.dispose();
 		}
 	}

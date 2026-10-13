@@ -6,6 +6,28 @@ import { stripVTControlCharacters } from "node:util";
 import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 import { dashboardGeometry } from "./dashboard-layout.ts";
 import { sessionAppearance } from "./dashboard-roster.ts";
+import { buildLiveEntries } from "./live-frames.ts";
+it("dashboard close releases a native nested renderer timer through the console", async (t) => {
+	const intervals = t.mock.method(globalThis, "setInterval");
+	const clears = t.mock.method(globalThis, "clearInterval");
+	const observed = source([row("one", { state: "working" })]);
+	const live = buildLiveEntries({ nestedTools: [{ callId: "parent/key", parentCallId: "parent", parentTaskId: 1, taskId: 2, name: "bash", arguments: { command: "echo synthetic" }, status: "running", output: "partial" }] }, []);
+	observed.frame = () => conversationFrame({ entries: [], live });
+	const f = fixture(100, 30, observed);
+	try {
+		await turn();
+		f.ui.render(100);
+		const toolTimers = intervals.mock.calls.filter((call) => call.arguments[1] === 1000);
+		assert.equal(toolTimers.length, 1);
+		f.ui.dispose(); f.ui.dispose();
+		const toolClears = clears.mock.calls.filter((call) => call.arguments[0] === toolTimers[0].result);
+		assert.equal(toolClears.length, 1);
+	} finally {
+		f.ui.dispose();
+		for (const call of intervals.mock.calls) clearInterval(call.result);
+	}
+});
+
 it("opened console focuses the editor and routes all letters and slash text only to the agent", async () => {
 	const sent: Array<{ id: string; text: string; mode: string }> = [];
 	const f = fixture(80, 24, undefined, {

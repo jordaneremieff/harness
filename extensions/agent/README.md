@@ -137,7 +137,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/2.2.0`; a reload over an older retained manager
+The manager contract is `manager/3.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -615,19 +615,16 @@ reset after instance eviction, selection changes, or dashboard close/reopen.
 Ctrl+T resets every retained assistant through Pi's thinking setter; Ctrl+O
 sets every retained card and clears recorded tool choices. Reopened dashboards
 create fresh components and use the current runtime's renderer definitions.
-Codemode nested calls use published result details without record reconstruction.
-Collapsed cards with old args-less details use Pi's generic result fallback,
-including the original output header, instead of the nested-call list.
-Expanded cards use Pi's native nested-call summary with names, status, and
-available durations. Missing arguments stay absent. The host publishes nested-call
-snapshots through Durable's `api.details`; live observation forwards each tool
-slot's details into its partial `ToolResultMessage`. Pi's native codemode card
-updates call status marks and suppresses partial output until the committed
-result arrives. Durable throttles these publications; the dashboard does not
-reconstruct nested-call details. A whole-conversation abort can leave the last
-committed snapshot with `running` calls. For nonpartial codemode results, the
-dashboard applies Pi's terminal rule: existing `running` calls display as
-`cancelled`. Partial results and all other fields stay unchanged; stored
+Native nested calls arrive through Durable's `pi.live.nestedTools`, separate
+from model-issued calls. The dashboard shows their native arguments, parent call,
+status, partial output, details, and recorded duration when present. Nested
+slots do not become synthetic assistant messages or reconstructed codemode
+result details. Native tool components retain their instances across slot updates.
+Final codemode results use the public `details.calls` shape: numeric script call
+IDs, names, bounded arguments, statuses, and optional `durationMs`, without a
+fabricated cost field. The dashboard passes these details to Pi's codemode
+renderer. Missing arguments stay absent. For nonpartial results, remaining
+`running` rows display as `cancelled`; partial results stay unchanged. Stored
 snapshots are never mutated.
 The primary's no-target `agent_status` is a compact fleet overview. Working
 and starting rows without an attention reason come first, then attention rows,
@@ -797,9 +794,8 @@ and process guarantees.
 
 The dashboard does not embed InteractiveMode. The published extension API has
 no complete InteractiveMode view, editor state, dialog, widget, or renderer
-registry to mount. The experimental coding-agent client and services remain
-source-only. The dashboard composes public chat, editor, and scrolling primitives
-instead.
+registry to mount. The dashboard composes public chat, editor, and scrolling
+primitives instead.
 
 ## Roster and coverage
 
@@ -1449,15 +1445,22 @@ The host supplies:
   prompts, cwd, date, and capability limits.
 - Agent controls as a native contribution. Background ownership and reports use
   native tasks, documents, and submission request IDs.
-- Codemode through public `CodemodeSandbox`, and MCP through public `McpClient`.
-  Nested calls are Durable tasks with committed intent, validation, hooks, and
-  retained results. Scripts remain unsafe after interruption.
+- Codemode and tool search through Durable's public `createCodemodeExtension()`
+  and `createToolSearchExtension()` factories, with public `CodemodeSandbox` and
+  `McpClient`. Nested calls are native Durable tasks with validation, hooks,
+  output limits, replay policy, and retained results. Codemode journals delivered
+  results and replays deterministically after a restart. A changed sandbox
+  fingerprint or module version, divergence, or an expired deadline refuses
+  replay; each nested tool retains its own replay policy.
 
-Structured tool objects use `details.structuredContent` and an `outputSchema`
-registration. A tool with an output schema returns explicitly supplied structured
-data to scripts even when its result marks an error. A failed call without that
-data throws its diagnostic text to the script. The native read adapter preserves
-Pi's output schema and structured result, alongside truncation and error details.
+Native tools return model-facing `output` and declare `structuredOutputSchema`
+for their `structuredOutput` values. Ordinary tools retain Pi's
+`content`/`outputSchema`/`structuredContent` contract. These are separate host
+contracts, not aliases stored in `details`. A schema tool's explicitly supplied
+structured error value still resolves in a script; a failed call without such
+a value rejects with diagnostic text. Native `bash` returns its structured
+output and exit code on a nonzero exit. The native read adapter maps Pi's public
+schema and result into the native contract while preserving truncation details.
 Text reads resolve to strings; image reads resolve to an image block with its
 note. Use `image(await tools.read({ path }))` in a script. Direct image reads
 retain image blocks; missing-file errors still reject.
@@ -1467,9 +1470,11 @@ Script discovery uses `ALL_TOOLS`, `await searchTools(...)`,
 non-console text items, including a returned value, start with
 `==> text N/M <==`. Console lines follow other output in one
 `<console_output>` block. Adjacent text joins on separate lines without moving
-text across images, and full-text spill files retain that format. Native
-codemode does not automatically save displayed images as ordinary codemode
-does. Tool selection and MCP server configuration follow the current Pi settings.
+text across images, and full-text spill files retain that format. Native codemode
+saves displayed images and adds their file paths to its output. Native namespace
+discovery uses names and prefixes; Durable's public namespace contract has no
+alias field. Tool selection and MCP server configuration follow the current Pi
+settings.
 
 MCP configuration is read at host startup or native host reload. In a trusted
 project, an entry in `.pi/mcp.json` without `command`, `url`, or `type` overrides
@@ -1519,11 +1524,14 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
 - Each storage has one writer claim. The process takes it before it opens
   SQLite or resumes the Durable scheduler. A live or unverified claim refuses
   a second writer. A dead local owner permits a replacement.
-- The primary talks to the host through the public `pi-server`/`pi-client`
-  Unix transport (the Pi service protocol). A private 0700 directory, an
-  owner-only 0600 socket, and the exact `serverId` handshake are the boundary;
-  no token crosses it. Closing a client or canceling an observation does not
-  cancel admitted work.
+- The primary talks to the host through the package-level Chord transport at
+  `transport/index.ts`, shared with other host clients. Its typed Endpoint
+  contract is `pi.agent.endpoint/1`, separate from the manager and primary
+  delivery contracts. A private 0700 directory, an owner-only 0600 socket, and
+  the exact `serverId` handshake are the boundary; no token crosses it. Closing
+  a client or canceling an observation does not cancel admitted work.
+  Both connect and listen paths default to a 16 MiB encoded-frame limit and a
+  64 MiB queue limit, with caller-configurable `maxFrameBytes` and `maxQueueBytes`.
 - The primary registers one channel over the same public transport. That channel
   returns peer messages and answers the host's project-trust prompts.
 - Host retirement ignores passive clients and footer change subscriptions.
@@ -1834,7 +1842,8 @@ observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/2.2.0` includes joined communication display and awaited primary endpoint teardown,
+clearance. `manager/3.0.0` uses the package-level Chord transport and includes
+joined communication display and awaited primary endpoint teardown,
 preset-first creation resolution and machine
 preference snapshots, alongside caller usage for fleet observations, effective
 thinking from catalog validation, ordinary retained observation, first-input
@@ -1848,12 +1857,16 @@ for recovery links. Submit requests use 1.2.0 for structured retry notices;
 submit responses remain at 1.1.0. Receipts responses use 1.2.0 for retained
 provider-block facts; their request identity remains at 1.1.0.
 `native-controls/2.0.0` binds the preset-first dispatch behavior to the loaded
-Durable release. `primary-delivery/1.1.0` carries retry notices and blocked
-causes alongside exact continuations.
-Restart Pi windows to load the changed manager.
-Let idle Durable hosts retire, then attach to load the changed runtime routing
-and native tool bindings in a fresh host. An extension reload alone does not
-replace the running host module. Keep active work intact.
+Durable release. `primary-delivery/2.0.0` uses the package-level Chord transport
+and carries retry notices and blocked causes alongside exact continuations.
+The Endpoint identity remains separate from both retained interfaces.
+
+Before replacing active host source or dependencies, drain admitted work under
+an agreed restart plan. Restart Pi windows to load the changed manager and
+start fresh Durable hosts for changed runtime modules and native contributions.
+A primary `/reload` does not replace the retained manager or running host
+modules. Do not mutate live stores as part of a source upgrade; store migration
+requires separate authority. Keep active work intact.
 The recovery-state request contract remains at 1.0.0.
 
 `version-contract.ts` separates source release, actual loaded upstream releases,
@@ -2155,11 +2168,14 @@ default, and explicit `model` only when a task or direction requires an override
 The preset parameter descriptions list names, file state, and digest at tool
 registration. Ordinary Pi supports `registerTool` replacement: the extension
 refreshes these declarations at session start, prompt start, fresh control reads,
-and before peer-message delivery. Thus result-started turns receive names without
-`before_agent_start`. Pi does not invoke that hook for custom-message turns, so
-the extension does not rely on its roster section for those turns. Base tool
-guidelines and parameter descriptions deliver preset-first guidance. Refreshed
-parameter descriptions and dispatch receipts supply current names and digest.
+and before peer-message delivery. Pi invokes `before_agent_start` for both user
+prompts and idle custom-message runs started by peer delivery. Both receive fresh
+agent preferences and effort awareness before the first model request; these
+sections remain present after tool results in that run. Startup counts as busy,
+so another delivery joins that run rather than starting a competing run. Base
+tool guidelines and parameter descriptions also deliver preset-first guidance.
+Refreshed parameter descriptions and dispatch receipts supply current names and
+digest.
 No watcher exists. Native declarations refresh on explicit
 host reload; native prompt sections and fresh receipts read current file facts.
 Direct file edits between these boundaries do not imply instant declaration

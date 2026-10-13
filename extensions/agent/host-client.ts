@@ -3,7 +3,7 @@
  *
  * `acquireHost` attaches when a live writer claim exists and launches the
  * detached runner when the claim is absent, stale, or dead. The connection
- * speaks the public Pi service protocol over a `pi-client` Unix transport and
+ * uses the package-level Chord Unix transport and
  * keeps the storage host's request surface: stable request IDs, automatic
  * recovery and resend of retry-safe methods, and caller abort that reaches the
  * wire only for observational waits. Admitted Durable work is never cancelled.
@@ -11,21 +11,16 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { JsonValue, ServiceCall, ServiceSubscriptionSnapshot } from "@earendil-works/chord";
-import { Client, ServerError, type ServiceSubscription } from "@earendil-works/pi-client";
-import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
+import { isChordError } from "@earendil-works/chord";
+import { connectTransport, type TransportClient, type TransportRequest, type TransportSubscription } from "../../transport/index.ts";
 import { observeClaim, readClaimFile } from "./claims.ts";
 import {
-	HOST_CHANGE_SERVICE_ID,
-	HOST_OBSERVE_MEMBER,
 	HOST_CONTRACT_MEMBER,
-	HOST_SERVICE_ID,
 	HostError,
 	hostRequestVersionError,
 	hostPaths,
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
-	observationServiceId,
 	parseHostMetadata,
 	parseHostReadyLine,
 	type HostMetadata,
@@ -33,7 +28,7 @@ import {
 	type HostReady,
 } from "./host-protocol.ts";
 import { HOST_CONTRACT, parseRuntimeContract, type RuntimeContract } from "./version-contract.ts";
-import { frameFromOps, isObservationFrame, type ObservationFrame } from "./live-frames.ts";
+import { isObservationFrame, type ObservationFrame } from "./live-frames.ts";
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000;
 // An unresolved project trust decision includes time for the primary UI answer.
@@ -43,11 +38,6 @@ const STDIO_CAPTURE_LIMIT = 64 * 1024;
 const CONNECT_WAIT_LIMIT_MS = 5000;
 const launchedChildren = new Map<number, ChildProcess>();
 const launchedReadiness = new WeakMap<ChildProcess, Promise<HostReady>>();
-
-/** Pi exposes codec failures by Error.name, but does not re-export their class from pi-client. */
-function isProtocolValidationError(error: unknown): error is Error {
-	return error instanceof Error && error.name === "ProtocolValidationError";
-}
 
 export interface HostRequestOptions {
 	/** Durable request ID. Resends reuse it; for `submit` the runtime maps it to the Durable request ID. */
@@ -117,7 +107,7 @@ export interface HostConnection {
 }
 
 interface Link {
-	readonly client: Client;
+	readonly client: TransportClient;
 	readonly pid: number;
 	readonly socketPath: string;
 	readonly runtimeContract: RuntimeContract;
@@ -127,7 +117,7 @@ interface PendingCall {
 	readonly id: string;
 	readonly method: string;
 	readonly params: unknown;
-	readonly call: ServiceCall;
+	readonly call: TransportRequest;
 	readonly signal: AbortSignal | undefined;
 	attempts: number;
 	readonly resolve: (value: unknown) => void;
@@ -138,7 +128,7 @@ interface PendingCall {
 interface ChangeEntry {
 	readonly listener: () => void;
 	readonly signal: AbortSignal | undefined;
-	subscription: ServiceSubscription | undefined;
+	subscription: TransportSubscription | undefined;
 	disposed: boolean;
 	removeAbort: () => void;
 }
@@ -148,8 +138,9 @@ interface ObservationEntry {
 	readonly scope: HostObservationScope;
 	readonly listeners: Set<HostObservationListener>;
 	token: string | undefined;
-	subscription: ServiceSubscription | undefined;
+	subscription: TransportSubscription | undefined;
 	frame: ObservationFrame | undefined;
+	unavailable?: boolean;
 	disposed: boolean;
 	removeAbort: () => void;
 }
@@ -162,18 +153,6 @@ function observationParams(scope: HostObservationScope, token: string): Record<s
 		sessionId: scope.sessionId,
 		...(scope.scope === "conversation" && scope.conversationId !== undefined ? { conversationId: scope.conversationId } : {}),
 	};
-}
-
-/** Latest frame carried in the subscription baseline, when the host published one. */
-function frameFromSnapshot(snapshot: ServiceSubscriptionSnapshot): ObservationFrame | undefined {
-	for (const instance of snapshot.instances) {
-		for (const member of instance.members) {
-			if (member.kind !== "state" || member.name !== HOST_OBSERVE_MEMBER) continue;
-			const frame = frameFromOps(member.ops as unknown as readonly unknown[]);
-			if (frame !== undefined) return frame;
-		}
-	}
-	return undefined;
 }
 
 function toError(value: unknown): Error {
@@ -210,18 +189,12 @@ function claimPid(paths: HostPaths): number {
 	return 0;
 }
 
-async function connectClient(serverId: string, socketPath: string): Promise<Client> {
-	const client = new Client({ serverId, transportFactory: createUnixTransportFactory({ path: socketPath }) });
-	const deadline = AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS);
-	const abort = (): void => client.disconnect("Durable host connect or handshake did not complete before its deadline");
-	deadline.addEventListener("abort", abort, { once: true });
-	try { await client.connect(); return client; }
-	catch (error) { await client.dispose(); throw error; }
-	finally { deadline.removeEventListener("abort", abort); }
+async function connectClient(serverId: string, socketPath: string): Promise<TransportClient> {
+	return connectTransport({serverId, path: socketPath, timeoutMs: CONNECT_WAIT_LIMIT_MS});
 }
 
 /** Owned launches have a readiness event. A foreign launch gets one attach attempt, never timed retries. */
-async function connectWhenReady(paths: HostPaths): Promise<Client> {
+async function connectWhenReady(paths: HostPaths): Promise<TransportClient> {
 	const child = launchedChildren.get(claimPid(paths));
 	if (child) await launchedReadiness.get(child);
 	try { return await connectClient(paths.serverId, paths.socket); }
@@ -327,7 +300,7 @@ async function attachLink(metadata: HostMetadata): Promise<Link> {
 	if (observeClaim(paths.claim, paths.identity).kind !== "live") throw new Error(`no live durable host for ${metadata.storageId}`);
 	const client = await connectWhenReady(paths);
 	try {
-		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeContract: await readRuntimeContract(client, paths.serverId) };
+		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeContract: await readRuntimeContract(client) };
 	} catch (error) {
 		const answered = client.connected;
 		await client.dispose().catch(() => undefined);
@@ -337,11 +310,12 @@ async function attachLink(metadata: HostMetadata): Promise<Link> {
 }
 
 /** Read the advertised current contract without an older-handshake fallback. */
-async function readRuntimeContract(client: Client, serverId: string): Promise<RuntimeContract> {
+async function readRuntimeContract(client: TransportClient): Promise<RuntimeContract> {
 	try {
-		const value = await client.request({ serverId }, { serviceId: HOST_SERVICE_ID, member: HOST_CONTRACT_MEMBER, args: [] }, AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS));
+		const value = await client.request({ method: HOST_CONTRACT_MEMBER }, AbortSignal.timeout(CONNECT_WAIT_LIMIT_MS));
 		return parseRuntimeContract(value);
 	} catch (error) {
+		if (!client.connected) throw new Error("The host link closed during runtime contract negotiation", { cause: error });
 		throw new HostError(`The host does not provide a usable current operation contract. Restart the agent host after active work ends. ${toError(error).message}`, "unavailable", { cause: error });
 	}
 }
@@ -398,7 +372,7 @@ async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): 
 		try {
 			return await attachLink(metadata);
 		} catch (error) {
-			if (error instanceof HostError || error instanceof ServerError || isProtocolValidationError(error)) throw error;
+			if (error instanceof HostError || isChordError(error)) throw error;
 			// A killed owner still reads as live until the process is reaped; wait
 			// for the claim to release, then launch the replacement.
 			await waitForHostRelease(metadata, { signal: AbortSignal.timeout(Math.min(options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS, CONNECT_WAIT_LIMIT_MS)) });
@@ -416,8 +390,7 @@ async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): 
 class HostConnectionImpl implements HostConnection {
 	readonly metadata: HostMetadata;
 	readonly storageId: string;
-	private readonly serverId: string;
-	private client: Client;
+	private client: TransportClient;
 	private pidValue: number;
 	private socketPathValue: string;
 	private runtimeContractValue: RuntimeContract;
@@ -439,7 +412,6 @@ class HostConnectionImpl implements HostConnection {
 	private constructor(metadata: HostMetadata, link: Link, launchOptions: HostLaunchOptions) {
 		this.metadata = metadata;
 		this.storageId = metadata.storageId;
-		this.serverId = hostPaths(metadata).serverId;
 		this.client = link.client;
 		this.pidValue = link.pid;
 		this.socketPathValue = link.socketPath;
@@ -493,9 +465,10 @@ class HostConnectionImpl implements HostConnection {
 		this.pidValue = link.pid;
 		this.socketPathValue = link.socketPath;
 		this.runtimeContractValue = link.runtimeContract;
-		this.unsubscribeState = link.client.onConnectionStateChange((change) => {
+		this.unsubscribeState = link.client.onClose((reason) => {
 			if (this.closedValue || link.client !== this.client) return;
-			if (change.state === "disconnected") this.startRecovery(change.error ?? new Error("durable host connection was lost"));
+			for (const entry of this.observationEntries.values()) this.markObservationUnavailable(entry);
+			this.startRecovery(new Error(`durable host connection closed: ${reason}`));
 		});
 	}
 
@@ -513,7 +486,7 @@ class HostConnectionImpl implements HostConnection {
 				id,
 				method,
 				params,
-				call: { serviceId: HOST_SERVICE_ID, member: method, args: [params === undefined ? null : (params as JsonValue), id, HOST_CONTRACT.operations[method] as unknown as JsonValue] },
+				call: { method, ...(params === undefined ? {} : { params }), requestId: id, contract: HOST_CONTRACT.operations[method] },
 				signal,
 				attempts: 0,
 				resolve: (value) => {
@@ -547,13 +520,14 @@ class HostConnectionImpl implements HostConnection {
 		// The wire sees a caller signal only for observational waits, so a
 		// cancel envelope can never reach admitted Durable work.
 		const wireSignal = isCancelableHostWait(call.method, call.params) ? call.signal : undefined;
-		void this.client.request({ serverId: this.serverId }, call.call, wireSignal).then(
+		const client = this.client;
+		void client.request(call.call, wireSignal).then(
 			(result) => {
 				if (!this.pending.delete(call.id)) return;
 				try { call.resolve(result); }
 				catch (error) { call.reject(toError(error)); }
 			},
-			(error) => this.handleFailure(call, error),
+			(error) => { if (client === this.client) this.handleFailure(call, error); },
 		);
 	}
 
@@ -588,13 +562,7 @@ class HostConnectionImpl implements HostConnection {
 		if (this.closedValue || entry.disposed) return;
 		const refusal = hostRequestVersionError("changes", this.runtimeContractValue);
 		if (refusal) throw refusal;
-		const subscription = await this.client.subscribeService(
-			{ serverId: this.serverId },
-			HOST_CHANGE_SERVICE_ID,
-			"singleton",
-			() => this.queueChange(entry.listener),
-			entry.signal,
-		);
+		const subscription = await this.client.subscribe("changes", undefined, () => this.queueChange(entry.listener), entry.signal);
 		if (this.closedValue || entry.disposed) {
 			await subscription.dispose().catch(() => undefined);
 			return;
@@ -602,7 +570,6 @@ class HostConnectionImpl implements HostConnection {
 		const previous = entry.subscription;
 		if (previous) await previous.dispose().catch(() => undefined);
 		entry.subscription = subscription;
-		subscription.start();
 		queueMicrotask(() => {
 			if (!this.closedValue && !entry.disposed) entry.listener();
 		});
@@ -698,41 +665,33 @@ class HostConnectionImpl implements HostConnection {
 	private async bindObservation(entry: ObservationEntry): Promise<void> {
 		if (this.closedValue || entry.disposed) return;
 		const token = randomUUID();
-		const opened = (await this.client.request(
-			{ serverId: this.serverId },
-			{ serviceId: HOST_SERVICE_ID, member: "observe-open", args: [observationParams(entry.scope, token) as JsonValue, token, HOST_CONTRACT.operations["observe-open"] as unknown as JsonValue] },
-		)) as { frame?: unknown } | undefined;
+		const opened = (await this.client.request({ method: "observe-open", params: observationParams(entry.scope, token), requestId: token, contract: HOST_CONTRACT.operations["observe-open"] })) as { frame?: unknown } | undefined;
 		if (this.closedValue || entry.disposed) {
 			this.closeObservationToken(token);
 			return;
 		}
-		const subscription = await this.client.subscribeService({ serverId: this.serverId }, observationServiceId(token), "singleton", (update) => {
-			if (update.type === "unavailable") { this.failObservation(entry); return; }
-			if (update.type !== "state") return;
-			const frame = frameFromOps(update.ops as unknown as readonly unknown[]);
-			if (frame !== undefined) this.deliverObservation(entry, frame, false);
-		}).catch((error: unknown) => {
-			this.closeObservationToken(token);
-			throw error;
-		});
+		const subscription = await this.client.subscribe("observation", token, (value) => {
+			if (value === null) { this.failObservation(entry); return; }
+			if (isObservationFrame(value)) this.deliverObservation(entry, value, false);
+		}).catch((error: unknown) => { this.closeObservationToken(token); throw error; });
 		if (this.closedValue || entry.disposed) {
 			await subscription.dispose().catch(() => undefined);
 			this.closeObservationToken(token);
 			return;
 		}
 		const openedFrame = isObservationFrame(opened?.frame) ? opened.frame : undefined;
-		const baseline = frameFromSnapshot(subscription.snapshot) ?? openedFrame;
+		const baseline = isObservationFrame(subscription.value) ? subscription.value : openedFrame;
 		const previous = entry.subscription;
 		entry.token = token;
 		entry.subscription = subscription;
 		if (baseline !== undefined) entry.frame = baseline;
 		if (previous) await previous.dispose().catch(() => undefined);
-		subscription.start();
 		if (baseline !== undefined) this.deliverObservation(entry, baseline, true);
 	}
 
 	private deliverObservation(entry: ObservationEntry, frame: ObservationFrame, fresh: boolean, state: HostObservationState = "live"): void {
 		entry.frame = frame;
+		entry.unavailable = state === "unavailable";
 		for (const listener of [...entry.listeners]) {
 			try {
 				listener(frame, fresh, state);
@@ -753,22 +712,28 @@ class HostConnectionImpl implements HostConnection {
 		const subscription = entry.subscription;
 		entry.subscription = undefined;
 		if (subscription) await subscription.dispose().catch(() => undefined);
-		if (token !== undefined) this.closeObservationToken(token);
+		if (token !== undefined) await this.closeObservationToken(token);
 	}
 
-	private closeObservationToken(token: string): void {
+	private async closeObservationToken(token: string): Promise<void> {
 		if (this.closedValue) return;
 		if (hostRequestVersionError("observe-close", this.runtimeContractValue)) return;
-		void this.client
-			.request({ serverId: this.serverId }, { serviceId: HOST_SERVICE_ID, member: "observe-close", args: [{ token }, randomUUID(), HOST_CONTRACT.operations["observe-close"] as unknown as JsonValue] })
+		await this.client
+			.request({ method: "observe-close", params: { token }, requestId: randomUUID(), contract: HOST_CONTRACT.operations["observe-close"] })
 			.catch(() => undefined);
 	}
 
-	private notifyObservationUnavailable(entry: ObservationEntry): void {
+	private markObservationUnavailable(entry: ObservationEntry): void {
+		if (entry.unavailable) return;
+		entry.unavailable = true;
 		for (const listener of [...entry.listeners]) {
 			try { listener(entry.frame, false, "unavailable"); }
 			catch { /* One listener failure never stops the others. */ }
 		}
+	}
+
+	private notifyObservationUnavailable(entry: ObservationEntry): void {
+		this.markObservationUnavailable(entry);
 		entry.listeners.clear();
 	}
 
@@ -809,15 +774,9 @@ class HostConnectionImpl implements HostConnection {
 
 	private handleFailure(call: PendingCall, error: unknown): void {
 		if (!this.pending.has(call.id)) return;
-		// Encoder validation leaves the link connected; a decoder failure closes it.
-		if (isProtocolValidationError(error) && this.client.connected) {
+		if (this.client.connected || isChordError(error) && error.code !== "unavailable") {
 			this.pending.delete(call.id);
-			call.reject(toError(error));
-			return;
-		}
-		if (error instanceof ServerError) {
-			this.pending.delete(call.id);
-			call.reject(new HostError(error.message, error.code));
+			call.reject(isChordError(error) ? new HostError(error.message, error.reason === "claim" || error.reason === "internal" ? error.reason : error.code) : toError(error));
 			return;
 		}
 		if (call.signal?.aborted) {

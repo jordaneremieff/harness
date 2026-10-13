@@ -34,7 +34,7 @@ export type AgentConversationOwner = "here" | "unavailable" | "unknown";
 export interface DashboardCompactionFailure {
 	reason: "manual" | "threshold" | "overflow";
 	errorMessage?: string;
-	at: string;
+	at?: string;
 }
 
 /** One in-progress provider retry retained in the host-published view. */

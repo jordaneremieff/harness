@@ -6,11 +6,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
-import type { JsonValue, ServiceCall } from "@earendil-works/chord";
-import { Client } from "@earendil-works/pi-client";
-import { createUnixTransportFactory } from "@earendil-works/pi-client/unix";
+import { isChordError } from "@earendil-works/chord";
+import { connectTransport, type TransportClient, type TransportRequest } from "../../transport/index.ts";
 import { observeClaim } from "./claims.ts";
-import { HOST_CHANGE_SERVICE_ID, HOST_SERVICE_ID, HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
+import { HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { eventLog } from "./host-fixture.mts";
@@ -46,16 +45,16 @@ function echoRuntime(): HostRuntime {
 	};
 }
 
-async function connectClient(config: HostMetadata): Promise<Client> {
-	return Client.connect({ serverId: hostPaths(config).serverId, transportFactory: createUnixTransportFactory({ path: hostPaths(config).socket }) });
+async function connectClient(config: HostMetadata): Promise<TransportClient> {
+	return connectTransport({ serverId: hostPaths(config).serverId, path: hostPaths(config).socket });
 }
 
-function serviceCall(method: string, params?: unknown, id = randomUUID()): ServiceCall {
-	return { serviceId: HOST_SERVICE_ID, member: method, args: [params === undefined ? null : (params as JsonValue), id, HOST_CONTRACT.operations[method] as unknown as JsonValue] };
+function transportRequest(method: string, params?: unknown, requestId = randomUUID()): TransportRequest {
+	return { method, ...(params === undefined ? {} : { params }), requestId, contract: HOST_CONTRACT.operations[method] };
 }
 
-function call(client: Client, config: HostMetadata, method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
-	return client.request({ serverId: hostPaths(config).serverId }, serviceCall(method, params), signal);
+function call(client: TransportClient, _config: HostMetadata, method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
+	return client.request(transportRequest(method, params), signal);
 }
 
 async function startHost(root: string, idleMs = 0, runtime: () => HostRuntime = echoRuntime): Promise<{ host: HostProcess; metadata: HostMetadata }> {
@@ -79,7 +78,7 @@ it("serves a request and rejects a client with the wrong serverId", { timeout: 1
 	const client = await connectClient(config);
 	assert.deepEqual(await call(client, config, "timer-list", { value: 1 }), { method: "timer-list", params: { value: 1 } });
 	await client.dispose();
-	await assert.rejects(Client.connect({ serverId: randomUUID(), transportFactory: createUnixTransportFactory({ path: hostPaths(config).socket }) }));
+	await assert.rejects(connectTransport({ serverId: randomUUID(), path: hostPaths(config).socket }));
 });
 
 it("refuses absent or mismatched caller contracts before any runtime effect", async (t) => {
@@ -90,7 +89,7 @@ it("refuses absent or mismatched caller contracts before any runtime effect", as
 	const client = await connectClient(config);
 	t.after(() => client.dispose());
 	for (const contract of [null, { ...HOST_CONTRACT.operations.submit, request: "submit/2.0.0" }, { ...HOST_CONTRACT.operations.submit, response: "changed" }]) {
-		await assert.rejects(client.request({ serverId: hostPaths(config).serverId }, { serviceId: HOST_SERVICE_ID, member: "submit", args: [{ message: "task" }, randomUUID(), contract] }), /no operation was admitted/u);
+		await assert.rejects(client.request({ method: "submit", params: { message: "task" }, requestId: randomUUID(), contract }), /no operation was admitted/u);
 	}
 	assert.equal(effects, 0);
 	await call(client, config, "submit", { message: "safe" });
@@ -102,7 +101,7 @@ it("preserves a runtime error message", { timeout: 15000 }, async (t) => {
 	const { host, metadata: config } = await startHost(root);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
-	await assert.rejects(call(client, config, "configure"), (error: unknown) => error instanceof Error && error.message === "not allowed");
+	await assert.rejects(call(client, config, "configure"), (error: unknown) => isChordError(error, "invalid") && error.message === "invalid/invalid: not allowed");
 	await client.dispose();
 });
 
@@ -257,13 +256,13 @@ it("publishes changed state to a public subscription", { timeout: 15000 }, async
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
 	const updates = eventLog<unknown>();
-	const subscription = await client.subscribeService({ serverId: hostPaths(config).serverId }, HOST_CHANGE_SERVICE_ID, "singleton", (update) => {
+	const subscription = await client.subscribe("changes", undefined, (update) => {
 		updates.push(update);
 	});
-	assert.equal(subscription.snapshot.serviceId, HOST_CHANGE_SERVICE_ID);
-	subscription.start();
+	const initial = subscription.value as { revision: number };
+	assert.equal(typeof initial.revision, "number");
 	await call(client, config, "report");
-	await updates.waitForCount(1);
+	await updates.waitFor((values) => values.some((value) => (value as { revision: number }).revision > initial.revision));
 	await subscription.dispose();
 	await client.dispose();
 });

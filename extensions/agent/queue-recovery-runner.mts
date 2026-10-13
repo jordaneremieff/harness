@@ -9,11 +9,12 @@ import { answerMessage, completed, fixtureRegistry, hostOptions, pending } from 
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { DurableHost as DurableHostType } from "./durable-host.ts";
+import { linkDeliveryIntent, recordDeliveryIntent } from "./durable-controls.ts";
 
 const [source, seedInput, encoded] = process.argv.slice(2);
 if (!source || !seedInput || !encoded) throw new Error("Expected source directory, queue seed, and host metadata");
 const metadata = JSON.parse(encoded) as HostMetadata;
-// An archived tree uses the same installed public packages, without node_modules copies or links.
+// Resolve current fixture source against the installed public packages.
 const packageParent = new URL("../../package.json", import.meta.url).href;
 registerHooks({ resolve(specifier, input, next) {
 	const bare = !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.includes(":") && !isBuiltin(specifier);
@@ -40,7 +41,14 @@ models.registerNativeProvider({
 async function seedQueue(host: DurableHostType, input: Record<string, unknown>): Promise<unknown> {
 	const messages = input.messages as string[]; const requestIds = input.requestIds as string[];
 	if (!Array.isArray(messages) || messages.length > 129 || requestIds.length !== messages.length) throw new Error("Expected a bounded queue seed");
-	for (const [index, message] of messages.entries()) await host.request("submit", { sessionId: metadata.storageId, requestId: requestIds[index], ownerId: metadata.ownerId, origin: "operator", message, whenBusy: "followUp", checkInMinutes: 0 });
+	const conversation = host.root();
+	for (const [index, message] of messages.entries()) {
+		const requestId = requestIds[index];
+		// Native admission omits an explicit route, as retained queues do before profile reconstruction.
+		await conversation.commit((tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId: metadata.ownerId ?? "fixture-owner", origin: "operator", message, whenBusy: "followUp", checkInMinutes: 0 }), context);
+		const submission = await conversation.submit({ type: "input", content: message, requestId, whenBusy: "followUp" }, context);
+		await conversation.commit((tx) => linkDeliveryIntent(tx, conversation.id, requestId, submission.id), context);
+	}
 	return host.request("receipts", { ownerId: metadata.ownerId, wait: false });
 }
 const running = await runHost(async () => {

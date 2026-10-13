@@ -7,8 +7,7 @@ import { it } from "node:test";
 import { createServer, type Socket } from "node:net";
 import { spawnSync } from "node:child_process";
 import { eventLog } from "./host-fixture.mts";
-import { ServerError, type ServerHost } from "@earendil-works/pi-server";
-import { createUnixServer } from "@earendil-works/pi-server/unix";
+import { createTransportServer, unixSocketPath } from "../../transport/index.ts";
 import { connectPrimaryChannel, createPrimaryChannel, PRIMARY_ENDPOINT_VERSION, primaryEndpointOwnerState, primaryEndpointPath, primaryEndpointStatus, PrimaryChannelConflictError, PrimaryChannelUnavailableError, probePrimaryChannel, type PrimaryChannelOptions, type PrimaryDelivery } from "./primary-channel.ts";
 
 interface Fixture {
@@ -205,7 +204,9 @@ it("publishes exactly one of two simultaneous same-id registrations", async (t) 
 	});
 	const id = uuidV7();
 	const options = channelOptions(root, id);
-	const socketDirs = [join(root, ".primaries"), join(socketRoot, "pi-primary")];
+	const endpointDirectory = join(root, ".primaries");
+	const socketDirectory = dirname(unixSocketPath(randomUUID(), endpointDirectory));
+	const socketDirs = [endpointDirectory, socketDirectory];
 	const before = new Map(socketDirs.map((directory) => [directory, new Set(existsSync(directory) ? readdirSync(directory).filter((name) => name.endsWith(".sock")) : [])]));
 	const results = await Promise.allSettled([createPrimaryChannel(options), createPrimaryChannel(options)]);
 	const fulfilled = results.filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof createPrimaryChannel>>> => result.status === "fulfilled");
@@ -216,7 +217,9 @@ it("publishes exactly one of two simultaneous same-id registrations", async (t) 
 	assert.ok(rejected[0]?.reason instanceof PrimaryChannelConflictError);
 	assert.ok(fulfilled[0]);
 	const winner = fulfilled[0].value;
-	assert.equal(dirname(winner.socketPath), join(socketRoot, "pi-primary"), "the long root exercises the private fallback directory");
+	assert.equal(dirname(winner.socketPath), socketDirectory, "the shared transport selects the private socket directory");
+	assert.notEqual(dirname(winner.socketPath), endpointDirectory, "the long endpoint root uses a short private socket directory");
+	assert.ok(Buffer.byteLength(winner.socketPath, "utf8") <= 100, "the address fits the Unix socket limit");
 	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string; pid: number };
 	assert.equal(record.socketPath, winner.socketPath, "the published record points at the winner");
 	assert.equal(record.pid, process.pid);
@@ -273,12 +276,7 @@ it("refuses a channel whose handshake serverId does not match", async (t) => {
 	const id = uuidV7();
 	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
 	const socketPath = join(root, "foreign.sock");
-	const host: ServerHost = {
-		serverServices: { attachClient: () => ({ invokeService: async () => { throw new ServerError("service_not_found", "no service"); }, release: () => {} }) },
-		resolveSession: async () => { throw new ServerError("session_not_found", "none"); },
-		openSession: async () => { throw new ServerError("session_not_found", "none"); },
-	};
-	const server = createUnixServer(host, { serverId: randomUUID(), path: socketPath, mode: 0o600 });
+	const server = createTransportServer({ serverId: randomUUID(), path: socketPath, request: async () => { throw new Error("no operation"); } });
 	await server.start();
 	t.after(() => void server.close().catch(() => undefined));
 	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { socketPath }));

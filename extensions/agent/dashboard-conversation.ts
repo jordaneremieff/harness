@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage, Message, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { NestedToolSlot } from "@earendil-works/pi-durable";
 import {
 	AssistantMessageComponent,
 	CustomMessageComponent,
@@ -41,21 +42,6 @@ function displayObject(value: object, depth: number): unknown {
 			.filter(([key]) => !["signature", "thinkingSignature", "textSignature"].includes(key))
 			.map(([key, item]) => [key, displayValue(item, depth + 1)]),
 	);
-}
-
-/** Pi settles unfinished nested calls when a script ends, including timeout and abort. */
-function terminalCodemodeResult(message: ToolResultMessage): ToolResultMessage {
-	const details = message.details;
-	if (message.toolName !== "codemode" || !details || typeof details !== "object" || Array.isArray(details)) return message;
-	const calls = "calls" in details ? details.calls : undefined;
-	if (!Array.isArray(calls)) return message;
-	const settled = calls.map((call) =>
-		call && typeof call === "object" && !Array.isArray(call) && call.status === "running"
-			? { ...call, status: "cancelled" }
-			: call,
-	);
-	if (settled.every((call, index) => call === calls[index])) return message;
-	return { ...message, details: { ...details, calls: settled } };
 }
 
 /** Display-only source facts; the original entry remains available through exact inspection. */
@@ -158,6 +144,10 @@ export function firstTaskEntry(
 	};
 }
 
+function liveNestedTool(entry: AgentConversationEntry): NestedToolSlot | undefined {
+	return entry.id.startsWith("live:") ? (entry.data as { nestedTool?: NestedToolSlot } | undefined)?.nestedTool : undefined;
+}
+
 function entryTimestamp(entry: AgentConversationEntry): number {
 	for (const message of entry.model ?? [])
 		if ("timestamp" in message && typeof message.timestamp === "number") return message.timestamp;
@@ -171,6 +161,7 @@ export class AgentConversation {
 	private readonly resultKeys = new WeakMap<Component, string>();
 	private readonly callCards = new Map<string, { signature: string; component: ReadingToolComponent }>();
 	private readonly unmatched = new Map<string, ReadingToolComponent>();
+	private readonly nestedTools = new Map<string, ReadingToolComponent>();
 	private readonly assistants = new Map<string, AssistantMessageComponent>();
 	private readonly rendered = new Map<Component, { width: number; lines: string[] }>();
 	private signatures: string[] = [];
@@ -219,7 +210,7 @@ export class AgentConversation {
 		entries.forEach((entry, index) => {
 			const cached = this.entryBlocks.get(entry.id);
 			const start = this.blocks.length;
-			const result = (entry.model ?? []).some((message) => message.role === "toolResult");
+			const result = (entry.model ?? []).some((message) => message.role === "toolResult") || liveNestedTool(entry) !== undefined;
 			if (cached?.signature === signatures[index] && !result) {
 				this.blocks.push(...cached.blocks);
 				this.restoreEntryTools(entry);
@@ -237,6 +228,13 @@ export class AgentConversation {
 		this.entryBlocks = next;
 		this.signatures = signatures;
 		this.pruneComponents();
+	}
+	/** Release renderer-owned timers before the transcript leaves its view. */
+	dispose(): void {
+		for (const [id, tool] of this.tools) {
+			if (!this.nestedTools.has(id)) tool.updateResult({ content: [], isError: false });
+		}
+		this.update([]);
 	}
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
@@ -278,7 +276,16 @@ export class AgentConversation {
 		for (const component of this.heights.keys()) if (!retained.has(component)) this.heights.delete(component);
 		for (const [id, card] of this.callCards) if (!retained.has(card.component)) this.callCards.delete(id);
 		for (const [id, component] of this.unmatched) if (!retained.has(component)) this.unmatched.delete(id);
+		this.pruneNestedTools(retained);
 		for (const [id, component] of this.assistants) if (!retained.has(component)) this.assistants.delete(id);
+	}
+	private pruneNestedTools(retained: Set<Component>): void {
+		for (const [id, component] of this.nestedTools) {
+			if (retained.has(component)) continue;
+			// Release native renderer timers when the live slot disappears.
+			component.updateResult({ content: [], isError: false });
+			this.nestedTools.delete(id);
+		}
 	}
 	private restoreEntryTools(entry: AgentConversationEntry): void {
 		const calls = (entry.model ?? []).flatMap((message) =>
@@ -324,6 +331,11 @@ export class AgentConversation {
 			}
 			if (communication?.state === "unavailable") this.blocks.push({ id: `${source.id}:communication`, component: new Text(`[Communication metadata unavailable: ${communication.reason}]`, 1, 0) });
 			const entry = displayValue(source) as AgentConversationEntry;
+			const nested = liveNestedTool(entry);
+			if (nested) {
+				this.appendNestedTool(entry.id, nested);
+				return;
+			}
 			if (entry.kind === "pi.custom_message" && this.renderCustom) {
 				const component = this.renderCustom(entry);
 				if (component) {
@@ -401,6 +413,31 @@ export class AgentConversation {
 		}
 	}
 
+	/** Native nested slots are live presentation, not model-issued transcript messages. */
+	private appendNestedTool(id: string, slot: NestedToolSlot): void {
+		let tool = this.nestedTools.get(slot.callId);
+		if (!tool) {
+			tool = this.tool(slot.name, slot.callId, slot.arguments);
+			this.nestedTools.set(slot.callId, tool);
+		}
+		tool.updateArgs(slot.arguments);
+		tool.setArgsComplete();
+		if (slot.status !== "pending") tool.markExecutionStarted();
+		const status = slot.status !== "done" ? slot.status : slot.summary ? slot.summary.isError ? "error" : "ok" : "done (result unavailable)";
+		const duration = slot.summary?.durationMs === undefined ? "" : ` ${slot.summary.durationMs}ms`;
+		this.blocks.push({ id: `${id}:parent`, component: new Text(`Nested tool ${slot.callId} under ${slot.parentCallId}: ${status}${duration}`, 1, 0) });
+		tool.updateResult({
+			content: slot.output ? [{ type: "text", text: slot.output }] : slot.summary?.error ? [{ type: "text", text: slot.summary.error }] : [],
+			details: slot.details,
+			isError: slot.summary?.isError ?? false,
+			...(slot.summary?.durationMs === undefined ? {} : { durationMs: slot.summary.durationMs }),
+		}, slot.status !== "done");
+		this.tools.set(slot.callId, tool);
+		this.blocks.push({ id, component: tool });
+		this.rendered.delete(tool);
+		this.heights.delete(tool);
+	}
+
 	private appendResult(id: string, message: ToolResultMessage, partial = false): void {
 		let tool = this.tools.get(message.toolCallId);
 		if (!tool) {
@@ -413,7 +450,7 @@ export class AgentConversation {
 		const signature = JSON.stringify([message, partial]);
 		if (this.resultKeys.get(tool) === signature) return;
 		tool.markExecutionStarted();
-		tool.updateResult(partial ? message : terminalCodemodeResult(message), partial);
+		tool.updateResult(message, partial);
 		this.resultKeys.set(tool, signature);
 		this.rendered.delete(tool);
 		this.heights.delete(tool);

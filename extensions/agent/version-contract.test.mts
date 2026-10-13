@@ -49,7 +49,7 @@ it("advertises actual upstream releases separately from current operation contra
 	assert.match(parsed.operations.status.response, /^[a-f0-9]{64}$/u);
 	assert.equal(parsed.operations.status.durable, parsed.upstream.durable);
 	assert.equal(parsed.operations.submit.durable, undefined);
-	assert.deepEqual(parsed.requires, { codingAgent: "1.0.0", durable: "1.0.0" });
+	assert.deepEqual(parsed.requires, { codingAgent: "1.2.0", durable: "1.2.0" });
 });
 
 it("refuses only recovery-state for a peer without the active-delivery response", () => {
@@ -79,12 +79,26 @@ it("isolates missing operations, changed requests, changed responses, and native
 	assert.match(refusal?.message ?? "", /Pi Durable.*Restart.*Active work stays intact/u);
 });
 
-it("checks necessary upstream floors without pinning newer package releases", () => {
-	const newer = { ...HOST_CONTRACT, upstream: { codingAgent: "2.0.0", durable: "2.0.0" } };
-	assert.equal(parseRuntimeContract(newer).upstream.codingAgent, "2.0.0");
-	for (const version of ["0.99.9", "1.0.0-alpha", "0.1.0+build"]) {
-		assert.throws(() => parseRuntimeContract({ ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, codingAgent: version } }), /requirements are unmet.*Update/u);
+it("requires the custom-run guidance and native nested-tool API floors without pinning newer releases", () => {
+	assert.deepEqual(HOST_CONTRACT.requires, { codingAgent: "1.2.0", durable: "1.2.0" });
+	for (const upstream of ["codingAgent", "durable"] as const) {
+		for (const version of ["0.99.9", "1.0.0", "1.0.4", "1.1.0", "1.1.99", "1.2.0-alpha", "1.2.0-rc.1+build"]) {
+			assert.throws(() => parseRuntimeContract({ ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, [upstream]: version } }), /requirements are unmet: Pi >=1\.2\.0, Durable >=1\.2\.0.*Update/u, `${upstream} ${version}`);
+		}
+		for (const version of ["1.2.0", "1.2.0+build", "1.2.1", "1.10.0", "2.0.0"]) {
+			const peer = { ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, [upstream]: version } };
+			const parsed = parseRuntimeContract(peer);
+			assert.equal(parsed.upstream[upstream], version);
+			assert.deepEqual(parsed.operations, HOST_CONTRACT.operations);
+			for (const method of Object.keys(HOST_CONTRACT.operations)) assert.equal(contractRefusal(method, parsed), undefined);
+		}
 	}
+});
+
+it("keeps necessary upstream API floors separate from wildcard package declarations", () => {
+	const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+	assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");
+	assert.equal(manifest.dependencies["@earendil-works/pi-durable"], "*");
 });
 
 it("refuses malformed descriptors instead of assuming a retired contract", () => {

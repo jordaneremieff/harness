@@ -81,23 +81,23 @@ it("uses Pi standard named-argument calls and ten logical output lines for unkno
 	}
 });
 
-it("uses collapsed fallback and expanded native summaries for args-less codemode details", () => {
+it("shows native codemode summaries with numeric call IDs and no invented cost", () => {
 	const definition = createDashboardToolDefinitions(cwd)("codemode");
 	for (const expanded of [false, true]) {
 		const tool = new ToolExecutionComponent("codemode", "outer", { code: "return 42;" }, { showImages: false }, definition, tui, cwd);
 		tool.setExpanded(expanded);
-		tool.updateResult({ content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }, { type: "text", text: "answer" }], details: { calls: [{ name: "lookup", status: "ok", durationMs: 2 }] }, isError: false });
+		tool.updateResult({ content: [{ type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" }, { type: "text", text: "answer" }], details: { calls: [{ id: 1, name: "lookup", args: "{}", status: "ok", durationMs: 2 }] }, isError: false });
 		const visible = stripVTControlCharacters(tool.render(80).join("\n"));
 		assert.match(visible, /return 42;/u);
-		assert.deepEqual(visible.split("\n").map((line) => line.trim()).filter(Boolean), ["codemode", "return 42;", ...(expanded ? ["✓ lookup 2ms"] : ["Script completed", "Wall time 0.1 seconds", "Output:"]), "answer"]);
+		assert.deepEqual(visible.split("\n").map((line) => line.trim()).filter(Boolean), ["codemode", "return 42;", "✓ lookup {} 2ms", "answer"]);
 	}
 });
 
 it("matches a fresh native codemode card line for line at equal widths", () => {
 	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i + 1}");`).join("\n") };
 	const details = { calls: Array.from({ length: 12 }, (_, i) => ({
-		id: `outer/${i + 1}`, name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", "running"][i % 4],
-		args: "a".repeat(200), error: "error ".repeat(80), cost: i === 0 ? 0 : 0.02, durationMs: i * 100,
+		id: i + 1, name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", "running"][i % 4],
+		args: "a".repeat(200), error: "error ".repeat(80), durationMs: i * 100,
 	})), fullOutputPath: "output.txt" };
 	const native = nativeCodemode();
 	const display = createDashboardToolDefinitions(cwd)("codemode");

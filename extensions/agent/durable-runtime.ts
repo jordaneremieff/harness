@@ -101,6 +101,8 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	let closed = false;
 	let reloading = false;
 	let reloadFailed = false;
+	let sessionFailed = false;
+	let reloadClosingHost: DurableHost | undefined;
 	let activeRequests = 0;
 	let activityGeneration = 0;
 	let retirementSealed = false;
@@ -108,6 +110,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	const activityListeners = new Set<() => void>();
 	function notifyActivity(): void { for (const listener of activityListeners) listener(); }
 	let unsubscribeChanges: (() => void) | undefined;
+	let unsubscribeClose: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
 	let publishTimer: ReturnType<typeof setTimeout> | undefined;
 	let publishPromise: Promise<void> | undefined;
@@ -333,6 +336,19 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			await services.install(opened.harness);
 			host = opened;
 			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(() => host.harness)] });
+			unsubscribeClose?.();
+			unsubscribeClose = opened.harness.subscribeClose(() => {
+				activityGeneration++;
+				queueMicrotask(notifyActivity);
+			});
+			void opened.harness.closed.then((end) => {
+				if (end.reason !== "failed" || host !== opened || closed) return;
+				sessionFailed = true;
+				try { markRecoveryDue(true); }
+				catch (error) { process.stderr.write(`Recovery marker: ${String(error)}\n`); }
+				activityGeneration++;
+				notifyActivity();
+			});
 			unsubscribeChanges?.();
 			unsubscribeChanges = opened.harness.subscribeCommits((publication) => {
 				activityGeneration++;
@@ -387,9 +403,14 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			unsubscribeChanges = undefined;
 			await flushCatalogView();
 			await settleRecoveryMarker();
+			// Only this host has an expected close; a replacement still needs failure supervision.
+			reloadClosingHost = host;
+			unsubscribeClose?.();
+			unsubscribeClose = undefined;
 			await services.close(); await host.close();
 			services = await bootstrap(metadata, controller, true, options);
 			host = await openHost();
+			reloadClosingHost = undefined;
 			deliveries = delivery();
 		} catch (error) {
 			// Teardown has started; only a fresh process can own a usable runtime.
@@ -494,7 +515,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		if (closed) return;
 		closed = true;
 		// A failed reload no longer provides a reliable native work or delivery snapshot.
-		const processExit = reloadFailed || !(await host.refreshIdle());
+		const processExit = reloadFailed || host.sessionEnded || !(await host.refreshIdle());
 		restoreDispatch();
 		activityListeners.clear();
 		controller.abort();
@@ -503,6 +524,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			publishTimer = undefined;
 		}
 		unsubscribeChanges?.();
+		unsubscribeClose?.();
 		if (processExit) {
 			markRecoveryDue(true);
 			try { await flushCatalogView(); } catch (error) { process.stderr.write(`Catalog view: ${String(error)}\n`); }
@@ -517,7 +539,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		await closeIdleRuntime();
 		return undefined;
 	};
-	return { request, get shutdownRequired() { return reloadFailed; }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, close: closeHost };
+	return { request, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, close: closeHost };
 }
 
 /** Cold inspection writes a bounded disposable SQLite snapshot; it never writes source content. */

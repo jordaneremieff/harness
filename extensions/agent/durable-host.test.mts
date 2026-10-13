@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { LiveDoc, type ConversationId, type EntryId, type HarnessInspection, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
+import { LiveDoc, SessionFailed, type Storage, type ConversationId, type EntryId, type HarnessInspection, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import { AgentDeliveryDoc, DurableHost, sessionIsIdle, type ConfigurationResult, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, reasoningRuntime, redactedAnswerMessage, scriptedRuntime, slowEffectTool, toolCallMessage } from "./durable-host-fixture.mts";
@@ -794,6 +794,25 @@ async function crashAndResume(mode: "request" | "effect"): Promise<void> {
 		rmSync(root, { recursive: true, force: true });
 	}
 }
+
+it("seals host admission and idle retirement after a fatal Session storage read", { timeout: 10000 }, async (t) => {
+	const storagePath = join(fixtureRoot(t), "failed.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	t.after(() => host.close());
+	assert.equal(host.isIdle(), true);
+	const cause = new Error("synthetic host storage failure");
+	const storage = (host as unknown as { storage: Storage }).storage;
+	storage.conversation = async () => { throw cause; };
+	const failed = (error: unknown) => error instanceof SessionFailed && error.cause === cause;
+	await assert.rejects(host.harness.conversation(999 as ConversationId, BACKGROUND_CONTEXT), (error) => error === cause);
+	assert.equal(host.sessionEnded, true);
+	assert.equal(host.isIdle(), false);
+	assert.equal(await host.refreshIdle(), false);
+	assert.deepEqual(await host.harness.closed, { reason: "failed", error: cause });
+	await assert.rejects(host.request("submit", { message: "never admitted" }), failed);
+	await assert.rejects(host.request("unknown"), failed);
+	await assert.rejects(host.resume(), failed);
+});
 
 it("resumes a request-phase crash from the committed checkpoint", { timeout: 30000 }, async () => {
 	await crashAndResume("request");

@@ -44,6 +44,7 @@ import {
 	formatSkillsForPrompt,
 	getAgentDir,
 	hasTrustRequiringProjectResources,
+	createReadToolDefinition,
 	type AgentSessionServices,
 	type InlineExtension,
 	type LoadExtensionsResult,
@@ -217,6 +218,7 @@ interface PiRuntime {
 	SessionManager: typeof SessionManager;
 	createEventBus: typeof createEventBus;
 	createReadTool: typeof createReadTool;
+	createReadToolDefinition: typeof createReadToolDefinition;
 	formatSkillsForPrompt: typeof formatSkillsForPrompt;
 	getAgentDir: typeof getAgentDir;
 	hasTrustRequiringProjectResources: typeof hasTrustRequiringProjectResources;
@@ -236,6 +238,7 @@ const localRuntime: PiRuntime = {
 	hasTrustRequiringProjectResources,
 	ProjectTrustStore,
 	SettingsManager,
+	createReadToolDefinition,
 };
 
 /** Read the `import` target of one package `exports` value, then the `default` target. */
@@ -266,7 +269,7 @@ async function loadPiRuntime(packageDir: string | undefined): Promise<PiRuntime>
 	if (packageDir === undefined) return localRuntime;
 	const entry = resolvePackageEntry(packageDir);
 	const loaded = await import(pathToFileURL(entry).href) as Record<string, unknown>;
-	for (const name of ["createAgentSessionServices", "createAgentSessionFromServices", "resolveModelScopeWithDiagnostics", "SessionManager", "createEventBus", "createReadTool", "formatSkillsForPrompt", "getAgentDir", "hasTrustRequiringProjectResources", "ProjectTrustStore", "SettingsManager"] as const) {
+	for (const name of ["createAgentSessionServices", "createAgentSessionFromServices", "resolveModelScopeWithDiagnostics", "SessionManager", "createEventBus", "createReadTool", "createReadToolDefinition", "formatSkillsForPrompt", "getAgentDir", "hasTrustRequiringProjectResources", "ProjectTrustStore", "SettingsManager"] as const) {
 		if (typeof loaded[name] !== "function") throw new Error(`packageDir ${packageDir} does not export ${name}`);
 	}
 	return loaded as unknown as PiRuntime;
@@ -344,10 +347,12 @@ function localDate(now = new Date()): string {
 /** Build the durable read tool from the selected installation's public read tool, which returns images. */
 function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal) {
 	const piRead = pi.createReadTool(cwd);
+	const definition = pi.createReadToolDefinition(cwd);
 	const tool = Durable.defineTool({
 		name: piRead.name,
-		description: piRead.description,
+		description: [piRead.description, ...(definition.promptGuidelines ?? [])].join("\n"),
 		parameters: piRead.parameters,
+		structuredOutputSchema: piRead.outputSchema,
 		replay: "safe",
 		async execute(args, api, context) {
 			const signal = context.abortSignal === undefined ? hostSignal : AbortSignal.any([hostSignal, context.abortSignal]);
@@ -355,16 +360,16 @@ function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal) {
 			const truncation = (result.details as { truncation?: object } | undefined)?.truncation;
 			const details: Record<string, JsonValue> = {
 				...truncation,
-				...(result.structuredContent === undefined ? {} : { structuredContent: result.structuredContent as JsonValue }),
 			};
 			return {
-				content: result.content,
+				output: result.content,
+				...(result.structuredContent === undefined ? {} : { structuredOutput: result.structuredContent as JsonValue }),
 				...(Object.keys(details).length === 0 ? {} : { details }),
 				...(result.isError === undefined ? {} : { isError: result.isError }),
 			};
 		},
 	});
-	return { ...tool, outputSchema: piRead.outputSchema };
+	return tool;
 }
 
 /** The host built-in extension: coding tools and resource-derived prompt sections. */
@@ -397,10 +402,11 @@ function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: 
 					...files.map(({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`),
 				].join("\n\n");
 			}),
-			Durable.section("skills", () => {
+			Durable.section("skills", (input) => {
 				const { skills } = services.resourceLoader.getSkills();
 				if (skills.length === 0) return undefined;
-				const text = pi.formatSkillsForPrompt(skills, "read").trim();
+				const read = services.settingsManager.getSettings().codemode?.mode !== "only" && input.agent.tools.some((tool) => tool.name === "read") ? "read" : "indirect";
+				const text = pi.formatSkillsForPrompt(skills, read).trim();
 				return text === "" ? undefined : text;
 			}),
 			Durable.section("cwd", () => services.cwd.replaceAll("\\", "/")),

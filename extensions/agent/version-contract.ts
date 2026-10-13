@@ -62,14 +62,15 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 	format: "pi.agent.contract/1",
 	release: "1.0.0",
 	upstream: Object.freeze({ codingAgent: CODING_AGENT_VERSION, durable: durableVersion }),
-	requires: Object.freeze({ codingAgent: "1.0.0", durable: "1.0.0" }),
+	// Custom-message run guidance and native nested tools/Session.closed need the 1.2 APIs.
+	requires: Object.freeze({ codingAgent: "1.2.0", durable: "1.2.0" }),
 	operations: Object.freeze(Object.fromEntries(Object.entries(operations).map(([name, contract]) => [name, Object.freeze(contract)]))),
 });
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
-export const MANAGER_CONTRACT = "manager/2.2.0";
+export const MANAGER_CONTRACT = "manager/3.0.0";
 export const CONTROL_BINDING_CONTRACT = `native-controls/2.0.0;durable=${durableVersion}`;
-export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/1.1.0";
+export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/2.0.0";
 
 function record(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);

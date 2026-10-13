@@ -72,7 +72,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 		return events;
 	};
 	models.registerNativeProvider({ id: testModel.provider, name: "Live tool fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream: streamSimple, streamSimple });
-	const registry = fixtureRegistry([Durable.defineTool({ name: "probe", description: "Read fixture arguments", parameters: Type.Object({ path: Type.String(), partialArgs: Type.String() }), execute: async () => { executions++; return { content: [{ type: "text", text: "Read" }] }; } })]);
+	const registry = fixtureRegistry([Durable.defineTool({ name: "probe", description: "Read fixture arguments", parameters: Type.Object({ path: Type.String(), partialArgs: Type.String() }), execute: async () => { executions++; return { output: [{ type: "text", text: "Read" }] }; } })]);
 	const dispatch: AgentControlDispatch = async (method, params) => {
 		assert.ok(host);
 		const value = await host.request(method, params, context);
@@ -93,7 +93,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 	await (await observer.submit({ type: "input", content: "Observe the storage", requestId: "observe" }, context)).wait(context);
 	assert.ok(observed, "the model issued native agent_status({}) through the real contribution and host dispatch");
 	assert.equal(observed.isError, false, JSON.stringify(observed.content));
-	const status = structuredObservation(StatusOutputSchema, (observed.details as { structuredContent: unknown }).structuredContent) as { conversations: { conversationId: number; live: Durable.LiveState }[] };
+	const status = structuredObservation(StatusOutputSchema, observed.details) as { conversations: { conversationId: number; live: Durable.LiveState }[] };
 	const workerStatus = status.conversations.find((row) => row.conversationId === worker.id);
 	assert.ok(workerStatus?.live.generation?.message);
 	assert.deepEqual(workerStatus.live.generation.message.content[1], call);

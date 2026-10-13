@@ -555,16 +555,42 @@ it("publishes a bounded catalog view and clears recovery due on a clean close", 
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false, "a clean idle close clears the marker");
 });
 
+it("keeps the same native process and usable controls after successful reload", { timeout: 30000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const first = await acquireHost(f.metadata, { env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "0" }, retryAttempts: 0 });
+	trackHost(t, first.pid);
+	let attached: HostConnection | undefined;
+	try {
+		for (const invocationId of ["reload-first", "reload-second"]) {
+			const outcome = await first.request("command", { name: "reload", invocationId }) as { reloaded: boolean };
+			assert.equal(outcome.reloaded, true);
+			const status = await first.request("status") as { pid: number; storageId: string };
+			assert.equal(status.pid, first.pid);
+			assert.equal(status.storageId, f.metadata.storageId);
+		}
+		attached = await acquireHost(f.metadata, { retryAttempts: 0 });
+		assert.equal(attached.pid, first.pid, "reload keeps the original writer process");
+		await attached.request("configure", { name: "after successful reload" });
+		const status = await first.request("status", { sessionId: f.metadata.storageId }) as { conversation: { name: string } };
+		assert.equal(status.conversation.name, "after successful reload");
+		const submission = await attached.request("submit", { message: "answer after reload", requestId: "reload-answer", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+		const receipt = await waitForReceipt(attached, f.ownerId, submission.submissionId);
+		assert.equal(receipt.status, "done");
+		await attached.request("acknowledge", { ownerId: f.ownerId, submissionIds: [submission.submissionId] });
+	} finally {
+		await attached?.close().catch(() => {});
+		await first.close().catch(() => {});
+	}
+});
+
 for (const pendingDelivery of [false, true]) it(`exits after a failed reload with pending delivery=${pendingDelivery} and serves controls after acquisition`, { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const runner = join(f.testDir, "failed-reload.mts");
 	const hostModule = new URL("./durable-host.ts", import.meta.url).href;
 	const runtimeModule = new URL("./durable-runtime.ts", import.meta.url).href;
-	const signalModule = new URL("./testdata/durable-runtime/signal.ts", import.meta.url).href;
 	writeFileSync(runner, `
 		import { writeFileSync } from "node:fs";
 		import { DurableHost } from ${JSON.stringify(hostModule)};
-		import { publishFixtureMarker } from ${JSON.stringify(signalModule)};
 		const original = DurableHost.open;
 		let opens = 0;
 		DurableHost.open = async function (...args) {
@@ -586,7 +612,6 @@ for (const pendingDelivery of [false, true]) it(`exits after a failed reload wit
 						try { await request("status", {}, "after-failure"); }
 						catch (next) { nextError = next.message; }
 						writeFileSync(${JSON.stringify(join(f.testDir, "reload-state.json"))}, JSON.stringify({ shutdownRequired: runtime.shutdownRequired ?? false, idle: runtime.isIdle(), nextError }));
-						await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "reload-failed");
 					}
 					throw error;
 				}
@@ -605,7 +630,6 @@ for (const pendingDelivery of [false, true]) it(`exits after a failed reload wit
 			await first.request("recovery-state");
 		}
 		await assert.rejects(first.request("command", { name: "reload" }), /forced reload open failure/u);
-		await f.marker("reload-failed");
 		const state = JSON.parse(readFileSync(join(f.testDir, "reload-state.json"), "utf8"));
 		assert.equal(state.idle, false, "a closed native host does not retire as idle");
 		assert.match(state.nextError, /closed/u, "later controls cannot use the torn-down runtime");

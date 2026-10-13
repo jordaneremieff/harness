@@ -6,7 +6,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext, type StreamOptions } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { ProjectTrustStore, getPackageDir } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, createReadToolDefinition, getPackageDir } from "@earendil-works/pi-coding-agent";
 import { createDurableServices, LOAD_FAILURE_MAX_CHARS } from "./durable-services.ts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { promptProjectTrust } from "./trust-support.ts";
@@ -149,6 +149,10 @@ it("collects contributions, matches sources, and installs the built-in registry"
 		assert.deepEqual(snapshot.installed().map((extension) => extension.name), ["pi.host", "fixture.emit"]);
 		const builtinTools = snapshot.tools().filter(({ extension }) => extension.name === "pi.host");
 		assert.deepEqual(builtinTools.map(({ tool }) => tool.name), ["read", "write", "edit", "bash"]);
+		const reader = builtinTools.find(({ tool }) => tool.name === "read")?.tool;
+		const readDefinition = createReadToolDefinition(f.cwd);
+		assert.equal(reader?.description, [readDefinition.description, ...(readDefinition.promptGuidelines ?? [])].join("\n"));
+		assert.deepEqual(reader?.structuredOutputSchema, readDefinition.outputSchema);
 		assert.deepEqual(Object.fromEntries(builtinTools.map(({ tool }) => [tool.name, tool.replay])), {
 			read: "safe",
 			write: "unsafe",
@@ -673,4 +677,20 @@ it("names configured extensions that failed to load in the inventory, status, an
 	} finally {
 		await installed.close();
 	}
+});
+
+for (const modelTools of [[], [{ name: "read" }]]) it(
+	modelTools.length === 0 ? "omits the reader name from skill guidance when its declaration is hidden" : "names the visible reader in skill guidance", async (t) => {
+	const f = fixture(t);
+	const skillDir = join(f.root, "sample-skill");
+	mkdirSync(skillDir);
+	writeFileSync(join(skillDir, "SKILL.md"), "---\nname: sample-skill\ndescription: Inspect a sample file.\n---\n# Sample\nRead the sample.\n");
+	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-skills", skillPaths: [skillDir], extensionPaths: [f.silentPath], trusted: true });
+	t.after(() => services.close());
+	const section = services.registry.snapshot().sections().find(({ section }) => section.key === "skills")?.section;
+	assert.ok(section);
+	const text = await section.render({ agent: { tools: modelTools } } as never, BACKGROUND_CONTEXT);
+	assert.match(text ?? "", /sample-skill/u);
+	if (modelTools.length === 0) assert.doesNotMatch(text ?? "", /Use the read tool/u);
+	else assert.match(text ?? "", /Use the read tool/u);
 });

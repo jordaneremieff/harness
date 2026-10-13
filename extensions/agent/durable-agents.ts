@@ -41,7 +41,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
-import { type Static, Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_TOOL_NAMES, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
@@ -52,6 +52,7 @@ import {
 	InspectToolOutputSchema,
 	StatusToolOutputSchema,
 	structuredObservation,
+	nativeStructuredObservation,
 } from "./observation-schema.ts";
 
 // ─── Contribution contract ──────────────────────────────────────────────────
@@ -266,20 +267,35 @@ function thinkingNotice(child: Pick<AgentChild, "thinking" | "selection">): stri
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
-type ControlDetails = { structuredContent: Record<string, JsonValue> };
+type ControlDetails = Record<string, JsonValue>;
 
 function textResult(
 	text: string,
-	structuredContent: Record<string, JsonValue> = {},
+	details: ControlDetails = {},
 ): Durable.ToolExecutionResult<ControlDetails> {
-	return { content: [{ type: "text", text }], details: { structuredContent } };
+	return { output: [{ type: "text", text }], details };
 }
 
-function errorResult(
-	text: string,
-	structuredContent?: Record<string, JsonValue>,
-): Durable.ToolExecutionResult<ControlDetails> {
-	return { content: [{ type: "text", text }], isError: true, ...(structuredContent === undefined ? {} : { details: { structuredContent } }) };
+function errorResult(text: string): Durable.ToolExecutionResult<ControlDetails> {
+	return { output: [{ type: "text", text }], isError: true };
+}
+
+/** Control facts remain UI details and also become validated values for nested callers. */
+function structuredControl<P extends TSchema, D extends JsonValue>(
+	tool: Durable.ToolRegistration<P, D>,
+	schema: TSchema,
+): Durable.ToolRegistration<P, D> {
+	return {
+		...tool,
+		structuredOutputSchema: schema,
+		execute: async (args, api, context) => {
+			const result = await tool.execute(args, api, context);
+			if (result.isError) return result;
+			const text = result.output?.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n") ?? "";
+			const native = nativeStructuredObservation(schema, result.details, text);
+			return { ...result, output: native.output, structuredOutput: native.structuredOutput };
+		},
+	};
 }
 
 /** Render a host control result for the model without losing structure. */
@@ -596,7 +612,7 @@ async function fleetObservation(catalogRoot: string | undefined, sessionId: stri
 		if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
 		if (!catalogRoot) throw new Error("Fleet discovery requires a configured local catalog root");
 		const value = structuredObservation(StatusToolOutputSchema, await readFleetStatus(new AgentCatalog(dirname(catalogRoot)), { effort })) as Record<string, JsonValue>;
-		return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: { structuredContent: value } };
+		return { ...nativeStructuredObservation(StatusToolOutputSchema, value, JSON.stringify(value)), details: value };
 	} catch (error) {
 		return errorResult(`Fleet status failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
@@ -680,7 +696,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		try {
 			const value = await dispatch(method, params);
 			const structured = structuredObservation(schema, value) as Record<string, JsonValue>;
-			return { content: [{ type: "text", text: controlText(structured) }], details: { structuredContent: structured } };
+			return { ...nativeStructuredObservation(schema, structured, controlText(structured)), details: structured };
 		} catch (error) {
 			return errorResult(`${failure}: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -1088,7 +1104,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				? foreignSpawnResult(api, context, args, requestedCwd)
 				: localSpawnResult(api, context, args, requestedCwd);
 		},
-	}), outputSchema: DispatchOutputSchema };
+	}) };
 
 	const sendReporter = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -1447,8 +1463,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const structured = parsed as Record<string, JsonValue>;
 			const failed = (structured as { outcome?: unknown }).outcome === "failed";
 			return {
-				content: [{ type: "text", text: controlText(structured) }],
-				details: { structuredContent: structured },
+				output: [{ type: "text", text: controlText(structured) }],
+				details: structured,
 				...(failed ? { isError: true } : {}),
 			};
 		} catch (error) {
@@ -1501,7 +1517,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				return hostControl("compact", params);
 			},
 		}),
-		exposure: "model-only",
+		callers: ["model"] as const,
 	};
 
 	const commandTool = durable.defineTool({
@@ -1534,7 +1550,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				if (args.sessionId !== undefined || result.isError) return result;
 				const createdAgents = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
 				if (createdAgents === undefined && host.catalogRoot === undefined) return result;
-				const observed: Record<string, unknown> = { ...result.details?.structuredContent };
+				const observed: Record<string, unknown> = { ...result.details };
 				if (host.catalogRoot !== undefined) {
 					const agent = await api.agent(context);
 					observed.awareness = await readEffortAwareness(dirname(host.catalogRoot), { id: identity(api.conversationId), cwd: agent.cwd ?? host.cwd });
@@ -1545,10 +1561,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					text.push(renderCreatedAgents(createdAgents));
 				}
 				const structured = structuredObservation(StatusToolOutputSchema, observed) as Record<string, JsonValue>;
-				return { ...result, content: [{ type: "text" as const, text: text.join("\n\n") }], details: { ...result.details, structuredContent: structured } };
+				return { ...result, ...nativeStructuredObservation(StatusToolOutputSchema, structured, text.join("\n\n")), details: structured };
 			},
 		}),
-		outputSchema: StatusToolOutputSchema,
+		structuredOutputSchema: StatusToolOutputSchema,
 	};
 
 	const listTool = {
@@ -1565,7 +1581,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					ProfiledListOutputSchema,
 				),
 		}),
-		outputSchema: ProfiledListOutputSchema,
+		structuredOutputSchema: ProfiledListOutputSchema,
 	};
 
 	const inspectTool = {
@@ -1598,7 +1614,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					InspectToolOutputSchema,
 				),
 		}),
-		outputSchema: InspectToolOutputSchema,
+		structuredOutputSchema: InspectToolOutputSchema,
 	};
 
 	const attachTool = durable.defineTool({
@@ -1691,7 +1707,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: ProfileParams,
 		replay: "safe",
 		execute: async (args, api) => hostObservation(args.action === "read" ? "profile-read" : "profile-update", { ...args, sessionId: args.sessionId ?? identity(api.conversationId), senderIdentity: identity(api.conversationId), requestId: `profile:${host.storageId}:${api.taskId}` }, "Profile operation failed", ProfileOutputSchema),
-	}), outputSchema: ProfileOutputSchema };
+	}), structuredOutputSchema: ProfileOutputSchema };
 
 	const collaborateTool = durable.defineTool({
 		name: "agent_collaborate",
@@ -1739,11 +1755,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		name: "agent",
 		tasks: [Anchor, Reporter, TimerTask],
 		tools: [
-			spawnTool,
-			{ ...awaitTool, outputSchema: AwaitOutputSchema },
+			structuredControl(spawnTool, DispatchOutputSchema),
+			structuredControl(awaitTool, AwaitOutputSchema),
 			profileTool,
-			{ ...sendTool, outputSchema: DispatchOutputSchema },
-			{ ...steerTool, outputSchema: DispatchOutputSchema },
+			structuredControl(sendTool, DispatchOutputSchema),
+			structuredControl(steerTool, DispatchOutputSchema),
 			abortTool,
 			forkTool,
 			rewindTool,

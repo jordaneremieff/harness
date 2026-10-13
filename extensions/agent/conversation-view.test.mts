@@ -9,11 +9,44 @@ import { AgentConversation } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import { fixture } from "./dashboard-test-fixture.mts";
+import { buildLiveEntries } from "./live-frames.ts";
 const user = (id: number): AgentConversationEntry => ({
 	id: String(id),
 	kind: "pi.user",
 	model: [{ role: "user", content: `message ${id}`, timestamp: id }],
 });
+it("cwd replacement and repeat disposal release native parent and nested renderer timers", (t) => {
+	const intervals = t.mock.method(globalThis, "setInterval");
+	const clears = t.mock.method(globalThis, "clearInterval");
+	const state = agentState(createDashboardState(), "one").view;
+	state.toolExpanded.set("parent/key", true);
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "parent", name: "bash", arguments: { command: "echo synthetic parent" } }]);
+	const live = buildLiveEntries({
+		tools: [{ callId: "parent", name: "bash", status: "running", output: "parent progress" }],
+		nestedTools: [{ callId: "parent/key", parentCallId: "parent", parentTaskId: 1, taskId: 2, name: "bash", arguments: { command: "echo synthetic child" }, status: "running", output: "child progress" }],
+	}, []);
+	try {
+		view.setContent([call], live, "/one");
+		view.render(80, 30);
+		assert.equal(intervals.mock.calls.length, 2);
+		view.setContent([], [], "/two");
+		assert.equal(clears.mock.calls.length, 2);
+		assert.equal(state.toolExpanded.get("parent/key"), true);
+		view.setContent([call], live, "/two");
+		view.render(80, 30);
+		assert.equal(intervals.mock.calls.length, 4);
+		view.dispose(); view.dispose();
+		assert.equal(clears.mock.calls.length, 4);
+		assert.deepEqual(new Set(clears.mock.calls.map((call) => call.arguments[0])), new Set(intervals.mock.calls.map((call) => call.result)));
+		assert.equal(state.toolExpanded.get("parent/key"), true);
+		assert.deepEqual(view.render(80, 3), ["", "", ""]);
+	} finally {
+		view.dispose();
+		for (const call of intervals.mock.calls) clearInterval(call.result);
+	}
+});
+
 it("a repeated revision does not rebuild or rerender committed components", (t) => {
 	const f = fixture();
 	const render = t.mock.method(UserMessageComponent.prototype, "render");

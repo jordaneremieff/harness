@@ -214,6 +214,7 @@ export class ConversationView {
 		this.transferLiveInstance(entries);
 		const merged = [...committed, ...this.liveEntries(committed, live, ids)];
 		if (!this.transcript || this.cwd !== cwd) {
+			this.transcript?.dispose();
 			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay);
 			this.cwd = cwd;
 			this.expanded = this.state.expanded;
@@ -294,6 +295,17 @@ export class ConversationView {
 		const anchor = [...this.document.anchors].reverse().find((item) => item.line <= this.state.scroll);
 		this.state.anchor =
 			!this.state.follow && anchor ? { id: anchor.id, offset: this.state.scroll - anchor.line } : undefined;
+	}
+	dispose(): void {
+		this.save();
+		this.transcript?.dispose();
+		this.transcript = undefined;
+		this.viewport = undefined;
+		this.liveIdentity = undefined;
+		this.restored = false;
+		this.contentHeight = 0;
+		this.estimatedHeight = false;
+		this.document = { lines: [], anchors: [] };
 	}
 	invalidate(): void {
 		this.viewport = undefined;

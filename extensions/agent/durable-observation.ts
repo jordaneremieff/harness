@@ -834,12 +834,14 @@ function blockedTasks(inspection: HarnessInspection, conversationId: Conversatio
 
 /**
  * Recovery health from committed live state and blocked tasks: a scheduled
- * provider retry, a compaction waiting to retry, and the latest blocked task.
+ * provider retry, a compaction failure or retry, and the latest blocked task.
  * Absent when nothing is failing, and never computed for a cold snapshot.
  */
 export function dashboardHealth(live: LiveState | undefined, blocked: readonly { readonly error?: string; readonly reason: string }[], now: number, retryMaxAttempts: number | undefined): DashboardHealth | undefined {
 	const failing = live?.compactions?.find((status) => status.retry !== undefined);
-	const compactionFailure: DashboardCompactionFailure | undefined = failing?.retry === undefined ? undefined : { reason: failing.reason, errorMessage: failing.retry.error, at: new Date(failing.retry.at).toISOString() };
+	const compactionFailure: DashboardCompactionFailure | undefined = failing?.retry !== undefined
+		? { reason: failing.reason, errorMessage: failing.retry.error, at: new Date(failing.retry.at).toISOString() }
+		: live?.compactionFailure === undefined ? undefined : { reason: live.compactionFailure.reason, errorMessage: live.compactionFailure.error };
 	const retry = live?.generation?.retry;
 	const autoRetry: DashboardAutoRetry | undefined = retry === undefined || retryMaxAttempts === undefined ? undefined : { attempt: live?.generation?.attempt ?? 1, maxAttempts: retryMaxAttempts, delayMs: Math.max(0, retry.at - now), errorMessage: retry.error };
 	const lastError = blocked.find((task) => task.error !== undefined)?.error ?? blocked[0]?.reason;
@@ -1491,6 +1493,9 @@ export interface DurableActivityMetadata {
 	readonly runningTools: readonly {
 		readonly toolCallId: string;
 		readonly name: string;
+		readonly taskId?: number;
+		readonly parentToolCallId?: string;
+		readonly parentTaskId?: number;
 		/** Assistant tool-call commit time; predates execution, so it is not a start time. */
 		readonly issuedAt?: string;
 		readonly elapsedMs?: number;
@@ -1600,9 +1605,12 @@ async function activityMetadata(harness: Harness, conversation: Conversation, op
 	const issuedAt = live?.generation?.message?.timestamp;
 	// The assistant tool-call timestamp predates execution; it is an issue time, not a start time.
 	// A running call without a committed generation message is still real work, listed without times.
-	const runningTools = (live?.tools ?? [])
-		.filter((tool) => tool.status !== "done")
-		.map((tool) => ({ toolCallId: tool.callId, name: tool.name, ...(issuedAt === undefined ? {} : { issuedAt: new Date(issuedAt).toISOString(), elapsedMs: Math.max(0, now - issuedAt), elapsedFrom: "tool-call-entry" as const }) }));
+	const runningTools = [
+		...(live?.tools ?? []).filter((tool) => tool.status !== "done")
+			.map((tool) => ({ toolCallId: tool.callId, name: tool.name, ...(tool.taskId === undefined ? {} : { taskId: tool.taskId }), ...(issuedAt === undefined ? {} : { issuedAt: new Date(issuedAt).toISOString(), elapsedMs: Math.max(0, now - issuedAt), elapsedFrom: "tool-call-entry" as const }) })),
+		...(live?.nestedTools ?? []).filter((tool) => tool.status !== "done")
+			.map((tool) => ({ toolCallId: tool.callId, name: tool.name, taskId: tool.taskId, parentToolCallId: tool.parentCallId, parentTaskId: tool.parentTaskId })),
+	];
 	const health = dashboardHealth(live, blockedTasks(await harness.inspect(context), conversation.id), now, options.retryMaxAttempts);
 	const streamedText = live?.generation?.message === undefined ? undefined : textOfMessage(live.generation.message);
 	return {

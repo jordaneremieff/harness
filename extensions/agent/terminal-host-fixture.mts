@@ -122,7 +122,7 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 					context.abortSignal?.addEventListener("abort", aborted, { once: true });
 					try { await gate.released; }
 					finally { context.abortSignal?.removeEventListener("abort", aborted); }
-					return { content: [{ type: "text", text: `released:${args.marker}` }] };
+					return { output: [{ type: "text", text: `released:${args.marker}` }] };
 				},
 			});
 			let durable!: DurableHost;

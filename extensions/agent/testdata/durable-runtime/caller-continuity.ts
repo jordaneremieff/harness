@@ -57,7 +57,7 @@ export default function register(pi: ExtensionAPI) {
 					const abort = () => record("tool-abort"); context.abortSignal?.addEventListener("abort", abort, { once: true });
 					try { await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY ?? "", "continuity-blocked"); }
 					finally { context.abortSignal?.removeEventListener("abort", abort); }
-					record("tool-release"); return { content: [{ type: "text", text: "RELEASED_X" }] };
+					record("tool-release"); return { output: [{ type: "text", text: "RELEASED_X" }] };
 				},
 			})] });
 		},

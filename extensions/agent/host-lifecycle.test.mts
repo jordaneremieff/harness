@@ -7,8 +7,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ServerError, type ServerHost } from "@earendil-works/pi-server";
-import { createUnixServer } from "@earendil-works/pi-server/unix";
+import { createTransportServer } from "../../transport/index.ts";
 import { acquireHost, connectHost } from "./host-client.ts";
 import * as hostClient from "./host-client.ts";
 import { fixtureMetadata } from "./host-fixture.mts";
@@ -39,7 +38,7 @@ it("rejects a local protocol validation error without recovering the host", { ti
 	t.after(() => host.close());
 	const client = await connectHost(metadata, { retryAttempts: 0 });
 	t.after(() => client.close());
-	await assert.rejects(client.request("list", { limit: 5, cursor: undefined }), /Invalid client protocol message/u);
+	await assert.rejects(client.request("list", { limit: 5, cursor: undefined }), /invalid[/]json:.*strict JSON value/u);
 	assert.equal(client.closed, false, "a local encoding error leaves the transport healthy");
 	assert.equal(requests, 0, "invalid parameters never reached the server");
 	assert.deepEqual(await client.request("list", { limit: 5 }), { requests: 1 });
@@ -52,19 +51,19 @@ async function rejectingVersionHost(t: { after(fn: () => void | Promise<void>): 
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: path, createdAt: new Date().toISOString() }));
 	const released = deferred();
-	let count = 0;
-	const routed: ServerHost = {
-		serverServices: { attachClient: () => ({
-			invokeService: async () => { if (malformed) return { format: "pi.agent.contract/1", release: "invalid" }; throw new ServerError("service_invalid_value", "durable host is closed"); },
-			release: () => { released.resolve(); },
-		}) },
-		resolveSession: async () => { throw new Error("no session"); },
-		openSession: async () => { throw new Error("no session"); },
-	};
-	const server = createUnixServer(routed, { serverId: paths.serverId, path: paths.socket, onConnectionCountChanged: (value) => { count = value; } });
+	const peers = new Set<string>();
+	const server = createTransportServer({
+		serverId: paths.serverId, path: paths.socket,
+		request: async (_request, peerId) => {
+			peers.add(peerId);
+			if (malformed) return { format: "pi.agent.contract/1", release: "invalid" };
+			throw new Error("durable host is closed");
+		},
+		release: (peerId) => { peers.delete(peerId); released.resolve(); },
+	});
 	await server.start();
 	t.after(() => server.close());
-	return { metadata, released: released.promise, count: () => count };
+	return { metadata, released: released.promise, count: () => peers.size };
 }
 
 it("disposes a client when its runtime contract request fails", { timeout: 15000 }, async (t) => {
@@ -219,4 +218,28 @@ it("wire close and local close share one complete shutdown", { timeout: 15000 },
 	await Promise.all([host.done, host.close(), host.close()]);
 	assert.equal(closes, 1);
 	assert.equal(existsSync(hostPaths(metadata).claim), false);
+});
+
+it("shuts down on spontaneous runtime failure without a client request", { timeout: 5000 }, async (t) => {
+	const metadata = fixtureMetadata(root(t));
+	let activity = () => {};
+	let failed = false;
+	let closes = 0;
+	let unsubscribed = false;
+	const host = await runHost(() => ({
+		request: async () => { assert.fail("failure supervision needs no request"); },
+		isIdle: () => true,
+		get shutdownRequired() { return failed; },
+		onActivity: (listener) => { activity = listener; return () => { unsubscribed = true; }; },
+		close: async () => { closes++; },
+	}), { metadata, idleMs: 0, announceReady: () => {} });
+	t.after(() => host.close());
+	assert.equal(existsSync(hostPaths(metadata).claim), true);
+	failed = true;
+	activity();
+	await host.done;
+	assert.equal(closes, 1);
+	assert.equal(unsubscribed, true);
+	assert.equal(existsSync(hostPaths(metadata).claim), false);
+	assert.equal(existsSync(hostPaths(metadata).socket), false);
 });

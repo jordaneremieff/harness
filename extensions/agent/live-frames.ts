@@ -134,7 +134,17 @@ export function buildLiveEntries(live: unknown, committed: readonly AgentConvers
 			data: { live: true, status: slot.status, droppedBytes: slot.droppedBytes, droppedLines: slot.droppedLines, details: slot.details },
 		});
 	}
+	out.push(...nestedEntries(state.nestedTools));
 	return out;
+}
+
+/** Keep the public nested slot intact; it is not a model-issued message. */
+function nestedEntries(slots: LiveState["nestedTools"] = []): AgentConversationEntry[] {
+	return slots.map((slot) => ({
+		id: `${LIVE_TOOL_PREFIX}${slot.callId}`,
+		kind: "pi.tool-result",
+		data: { live: true, nestedTool: slot },
+	}));
 }
 
 /** Flatten every live task in ID order. Terminal tasks are absent from the graph by construction. */

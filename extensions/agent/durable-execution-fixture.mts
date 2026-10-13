@@ -12,9 +12,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, getCurrentTools, type AssistantMessage, type ToolResultMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage, type Conversation, type Extension } from "@earendil-works/pi-durable";
 import { createDurableServices, type DurableContributionHost, type DurableServices } from "./durable-services.ts";
-import { reconcileDeliveries } from "./durable-controls.ts";
 import { createDurableExecution, type DurableExecution } from "./durable-execution.ts";
-import { DurableHost } from "./durable-host.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
 export const fixtureProvider = testModel.provider;
@@ -25,7 +23,7 @@ const USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2
 
 /**
  * The fixture contribution: `guarded` records an effect unless the policy hook blocks it,
- * `structured` returns `details.structuredContent` with a declared output schema, and
+ * `structured` returns `structuredOutput` with a declared output schema, and
  * `slow-effect` records an effect and optionally blocks until the process dies.
  */
 export function executionExtensionSource(): string {
@@ -47,7 +45,7 @@ export default function (pi) {
 				replay: "unsafe",
 				async execute(args) {
 					if (typeof state().guardedPath === "string") appendFileSync(state().guardedPath, \`\${args.marker ?? "effect"}\\n\`);
-					return { content: [{ type: "text", text: "guarded ran" }] };
+					return { output: [{ type: "text", text: "guarded ran" }] };
 				},
 			});
 			const structured = {
@@ -57,10 +55,10 @@ export default function (pi) {
 					parameters: Type.Object({}),
 					replay: "safe",
 					async execute() {
-						return { details: { structuredContent: { answer: "42" } } };
+						return { structuredOutput: { answer: "42" } };
 					},
 				}),
-				outputSchema: Type.Object({ answer: Type.String() }),
+				structuredOutputSchema: Type.Object({ answer: Type.String() }),
 			};
 			const slow = durable.defineTool({
 				name: "slow-effect",
@@ -75,7 +73,7 @@ export default function (pi) {
 						process.stdout.write("READY\\n");
 						await new Promise(() => {});
 					}
-					return { content: [{ type: "text", text: "slow-effect ran" }] };
+					return { output: [{ type: "text", text: "slow-effect ran" }] };
 				},
 			});
 			const hanging = durable.defineTool({
@@ -93,7 +91,7 @@ export default function (pi) {
 							reject(new Error("aborted"));
 						}, { once: true });
 					});
-					return { content: [{ type: "text", text: "hanging ran" }] };
+					return { output: [{ type: "text", text: "hanging ran" }] };
 				},
 			});
 			const policy = durable.hook(durable.ToolTask, {
@@ -103,7 +101,7 @@ export default function (pi) {
 				},
 				afterTool(call, result) {
 					if (call.name === "structured" && state().rewriteStructured === true) {
-						return { content: [{ type: "text", text: "rewritten by afterTool" }], details: { structuredContent: { answer: "rewritten" } } };
+						return { output: [{ type: "text", text: "rewritten by afterTool" }], structuredOutput: { answer: "rewritten" } };
 					}
 					return result;
 				},
@@ -320,7 +318,7 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 /** All text of one model message. */
 export function messageText(message: unknown): string {
 	if (message === undefined || message === null) return "";
-	const content = (message as { content?: unknown }).content;
+	const content = (message as { content?: unknown; output?: unknown }).content ?? (message as { output?: unknown }).output;
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content.flatMap((part) => (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : [])).join("\n");
@@ -431,6 +429,8 @@ export const CRASH_STORAGE_ID = "durable-execution-crash";
  * then block until the test kills the process.
  */
 export async function crashFixtureMain(argv: readonly string[]): Promise<number> {
+	const { DurableHost } = await import("./durable-host.ts");
+	const { reconcileDeliveries } = await import("./durable-controls.ts");
 	const [storagePath, runId, prompt] = argv;
 	if (storagePath === undefined || runId === undefined) throw new Error("crash fixture requires storagePath and runId");
 	const root = dirname(storagePath);

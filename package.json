@@ -56,8 +56,6 @@
   },
   "dependencies": {
     "@earendil-works/chord": "*",
-    "@earendil-works/pi-client": "*",
-    "@earendil-works/pi-server": "*",
     "@earendil-works/pi-codemode": "*",
     "@earendil-works/pi-durable": "*",
     "@earendil-works/pi-mcp": "*",

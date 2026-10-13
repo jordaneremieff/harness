@@ -381,7 +381,7 @@ const siblingExtension = Durable.defineExtension({
 			description: "Return a fixed marker.",
 			parameters: Type.Object({}),
 			replay: "safe",
-			execute: async () => ({ content: [{ type: "text" as const, text: "SIBLING-OK" }] }),
+			execute: async () => ({ output: [{ type: "text" as const, text: "SIBLING-OK" }] }),
 		}),
 	],
 });
@@ -589,7 +589,7 @@ it("keeps an aborted request unanswered while a late producer report starts an o
 	await say(root, "Dispatch independent work");
 	const outcome = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn");
 	assert.ok(outcome);
-	const result = (outcome.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	const result = (outcome.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
 	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
 	route.script.push({ tool: "agent_await", args: { results: [result] } });
 	const original = await root.submit({ type: "input", content: "Await independent work" }, context);
@@ -606,7 +606,7 @@ it("keeps an aborted request unanswered while a late producer report starts an o
 	const observed = await toolOutcomes(harness, root.id);
 	const resumed = observed.findLast((item) => item.name === "agent_await" && item.isError !== true);
 	assert.ok(resumed, JSON.stringify({ observed, queued: route.script.length, latestInput: route.requests.at(-1)?.map((message) => ({ role: message.role, text: messageText(message).slice(0, 160) })) }));
-	assert.equal((resumed.details as { structuredContent: { results: { answer?: string }[] } }).structuredContent.results[0]?.answer, "RESULT", "a new explicit request still reads the retained producer result");
+	assert.equal((resumed.details as { results: { answer?: string }[] }).results[0]?.answer, "RESULT", "a new explicit request still reads the retained producer result");
 });
 
 it("releases failed admission provenance before preparation exhausts its bound", async (t) => {
@@ -637,7 +637,7 @@ for (const tool of ["agent_spawn", "agent_send"]) it(`${tool} returns an admitte
 	await say(root, "Dispatch background work");
 	const outcome = (await toolOutcomes(harness, root.id)).find((candidate) => candidate.name === tool);
 	assert.equal(outcome?.isError, false, outcome?.text);
-	const reference = (outcome?.details as { structuredContent?: { result?: { sessionId: string; submissionId: number; requestId: string } } })?.structuredContent?.result;
+	const reference = (outcome?.details as { result?: { sessionId: string; submissionId: number; requestId: string } })?.result;
 	assert.ok(reference);
 	assert.ok(outcome?.text.includes(JSON.stringify(reference)));
 	const conversationId = Number(reference.sessionId.split(":")[1]) as Durable.ConversationId;
@@ -786,7 +786,7 @@ for (const tool of ["agent_spawn", "agent_send"] as const) it(`keeps an original
 	route.script.push({ tool, args: tool === "agent_spawn" ? { name: "await-recipient", prompt: "RECIPIENT-WAIT" } : { sessionId: `${storageId}:${target.id}`, message: "RECIPIENT-WAIT" } });
 	await say(first.root, "Dispatch an original request");
 	const output = (await toolOutcomes(first.harness, first.root.id)).find((item) => item.name === tool); assert.ok(output);
-	const result = (output.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	const result = (output.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
 	const admission = await foreign.request("submit", { sessionId: "foreign", message: "HELD-DEPENDENCY", requestId: "dependency", ownerId: result.sessionId, origin: "model" }, context) as { submissionId: number };
 	releaseRecipient(fauxAssistantMessage([fauxToolCall("agent_await", { results: [{ sessionId: "foreign", submissionId: admission.submissionId, requestId: "dependency" }] })], { stopReason: "toolUse" }));
 	await ready;
@@ -867,7 +867,7 @@ it("withdraws a queued same-storage Reporter input by its actual request ID", { 
 	route.script.push({ tool: "agent_spawn", args: { prompt: "HELD-REPORT", name: "report-producer", checkInMinutes: 0 } });
 	await say(root, "Dispatch report work");
 	const admission = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(admission);
-	const result = (admission.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	const result = (admission.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
 	const reportId = `agent-report:${result.requestId.slice("agent-deliver:".length)}`;
 	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
 	route.script.push({ tool: "agent_await", args: { results: [result] } });
@@ -891,7 +891,7 @@ it("projects native awaiting facts and releases only the selected live run witho
 	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
 	route.script.push({ tool: "agent_spawn", args: { prompt: "HELD-FACTS", name: "facts-producer", checkInMinutes: 0 } }); await say(root, "Dispatch fact work");
 	const admission = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(admission);
-	const result = (admission.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	const result = (admission.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
 	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
 	route.script.push({ tool: "agent_await", args: { results: [result] } }); const original = await root.submit({ type: "input", content: "Await facts" }, context); await ready;
 	const automatic = await root.submit({ type: "input", content: "ORDINARY-QUEUED", whenBusy: "followUp", requestId: "ordinary-fact" }, context);
@@ -1150,7 +1150,7 @@ it("reports the requested and effective thinking level when native creation clam
 	assert.equal((await harness.snapshot(Durable.AgentDoc, child.conversationId, context))?.thinkingLevel, "off");
 	assert.match(spawn?.text ?? "", /requested max; effective off/u);
 	assert.ok(spawn);
-	assert.deepEqual((spawn.details as { structuredContent: { thinking: unknown } }).structuredContent.thinking, { requested: "max", effective: "off" });
+	assert.deepEqual((spawn.details as { thinking: unknown }).thinking, { requested: "max", effective: "off" });
 });
 
 it("retains native preset selection through replay after a machine file edit", async (t) => {
@@ -1163,7 +1163,7 @@ it("retains native preset selection through replay after a machine file edit", a
 	let original: ExecutionSelection | undefined;
 	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : { ...tool, execute: async (args, api, ctx) => {
 		const first = await tool.execute(args, api, ctx);
-		original = (first.details as { structuredContent: { selection: ExecutionSelection } }).structuredContent.selection;
+		original = (first.details as { selection: ExecutionSelection }).selection;
 		writeFileSync(path, "invalid json");
 		return tool.execute(args, api, ctx);
 	} }) });
@@ -1173,7 +1173,7 @@ it("retains native preset selection through replay after a machine file edit", a
 	await say(root, "Create a preset child");
 	const outcome = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_spawn");
 	assert.ok(outcome && !outcome.isError, outcome?.text);
-	const selection = (outcome.details as { structuredContent: { selection: ExecutionSelection } }).structuredContent.selection;
+	const selection = (outcome.details as { selection: ExecutionSelection }).selection;
 	assert.deepEqual(selection, original);
 	assert.equal(selection.preset, "review");
 	assert.deepEqual(selection.unapplied, ["role", "checkInMinutes"]);
@@ -1228,7 +1228,7 @@ it("uses isolated preferences despite an ambient agent directory", async (t) => 
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
 	assert.ok(outcome && !outcome.isError, outcome?.text);
 	assert.doesNotMatch(getCurrentSystemPrompt(route.requests.at(-1) ?? []), /AMBIENT-PREFERENCES-MARKER/u);
-	const selection = (outcome.details as { structuredContent: { selection: ExecutionSelection } }).structuredContent.selection;
+	const selection = (outcome.details as { selection: ExecutionSelection }).selection;
 	assert.equal(selection.source.status, "loaded");
 	assert.equal(selection.origins.model, "defaultPreset");
 	assert.equal(selection.source.path, join(testAgentDir, "harness.json"));
@@ -1553,15 +1553,15 @@ it("drives one model-issued call per control tool", async (t) => {
 	const inspected = outcomes.find((outcome) => outcome.name === "agent_inspect");
 	assert.match(inspected?.text ?? "", /inspection-evidence/u);
 	const statusDetails = outcomes.find((outcome) => outcome.name === "agent_status")?.details as
-		| { structuredContent?: { conversation?: { conversationId?: number } } }
+		| { conversation?: { conversationId?: number } }
 		| undefined;
-	assert.ok(statusDetails?.structuredContent?.conversation, "status carries validated structured content");
+	assert.ok(statusDetails?.conversation, "status carries validated structured content");
 	const listDetails = outcomes.find((outcome) => outcome.name === "agent_list")?.details as
-		| { structuredContent?: { rows?: unknown[] } }
+		| { rows?: unknown[] }
 		| undefined;
-	assert.ok(Array.isArray(listDetails?.structuredContent?.rows), "list carries validated structured content");
-	const inspectDetails = inspected?.details as { structuredContent?: { view?: string } } | undefined;
-	assert.equal(inspectDetails?.structuredContent?.view, "history", "inspect carries validated structured content");
+	assert.ok(Array.isArray(listDetails?.rows), "list carries validated structured content");
+	const inspectDetails = inspected?.details as { view?: string } | undefined;
+	assert.equal(inspectDetails?.view, "history", "inspect carries validated structured content");
 	const commanded = outcomes.find((outcome) => outcome.name === "agent_command");
 	assert.match(commanded?.text ?? "", /command:echo/u);
 
@@ -1697,7 +1697,7 @@ it("spawns a native child through the existing temporary-directory alias", async
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
 	assert.ok(outcome);
 	assert.equal(outcome.isError, false);
-	const reference = (outcome.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	const reference = (outcome.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
 	assert.equal(reference.sessionId, `${storageId}:${child.conversationId}`);
 	const admitted = await harness.commit((tx) => tx.submissionByRequest(child.conversationId as Durable.ConversationId, reference.requestId), context);
 	assert.equal(admitted?.id, reference.submissionId);
@@ -1753,10 +1753,10 @@ for (const adjusted of [false, true]) it(`spawns a child in a new storage and pr
 	assert.equal(child?.conversationId, undefined, "no local conversation is created");
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
 	assert.ok(outcome && !outcome.isError, "the spawn result is not an error");
-	const reference = (outcome.details as { structuredContent: { result: { sessionId: string; submissionId: number; requestId: string } } }).structuredContent.result;
+	const reference = (outcome.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
 	assert.deepEqual(reference, { sessionId: "other-storage:7", submissionId: 23, requestId: spawn.params.requestId });
 	assert.equal(outcome.text, `Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}${adjusted ? "\nThinking level: requested max; effective off." : ""}`);
-	assert.deepEqual((outcome.details as { structuredContent: { thinking?: unknown } }).structuredContent.thinking, holder.spawnThinking);
+	assert.deepEqual((outcome.details as { thinking?: unknown }).thinking, holder.spawnThinking);
 });
 
 it("adds only the caller's retained children to storage status text and structured data", async (t) => {
@@ -1784,9 +1784,9 @@ it("adds only the caller's retained children to storage status text and structur
 	assert.ok(local?.conversationId !== undefined);
 	const populated = await status();
 	assert.equal(populated.text, `${empty.text}\n\nCreated agents (newest first; retained creation labels):\n- foreign-child "foreign": storage with own host\n- ${storageId}:${local.conversationId} "native": conversation in this storage`);
-	assert.deepEqual(populated.details, { ...(empty.details as object), structuredContent: { ...(empty.details as { structuredContent: object }).structuredContent, createdAgents: {
+	assert.deepEqual(populated.details, { ...(empty.details as object), createdAgents: {
 		agents: [{ identity: "foreign-child", name: "foreign", kind: "storage" }, { identity: `${storageId}:${local.conversationId}`, name: "native", kind: "conversation" }], omitted: 0,
-	} } }, "lineage is available to structured tool consumers without changing host fields");
+	} }, "lineage is available to structured tool consumers without changing host fields");
 	assert.deepEqual(calls.filter((call) => call.method === "status").map((call) => call.params), [{}, {}]);
 	const child = await harness.conversation(local.conversationId, context);
 	assert.ok(child);
@@ -1918,10 +1918,10 @@ it("forwards an object inspect cursor for pagination", async (t) => {
 	const page = JSON.parse(first.text) as { nextCursor?: { at: number; tag: string } };
 	assert.deepEqual(page.nextCursor, { at: 7, tag: "more" });
 	const firstDetails = first.details as
-		| { structuredContent?: { nextCursor?: { at: number; tag: string } } }
+		| { nextCursor?: { at: number; tag: string } }
 		| undefined;
 	assert.deepEqual(
-		firstDetails?.structuredContent?.nextCursor,
+		firstDetails?.nextCursor,
 		{ at: 7, tag: "more" },
 		"the validated structured content carries the cursor",
 	);
@@ -1952,7 +1952,7 @@ it("renders the delegation guidance into the model-facing section", async () => 
 	} as unknown as Durable.PromptInput["read"];
 	const input = {
 		conversationId: Durable.ROOT_CONVERSATION_ID,
-		agent: { thinkingLevel: "off" as const, extensions: [], tools: extension.tools ?? [], sections: [] },
+		agent: { thinkingLevel: "off" as const, extensions: [], tools: extension.tools ?? [], callable: (extension.tools ?? []).filter((tool) => tool.callers === undefined || tool.callers.includes("tools")), deferred: [], sections: [] },
 		env: undefined,
 		shown: {},
 		read,
@@ -2002,8 +2002,8 @@ it("returns the host configure outcome and refuses self configuration", async (t
 	await say(root, "CONFIGURE-FAILED");
 	const failed = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_configure");
 	assert.equal(failed?.isError, true, "a failed outcome is an error result");
-	const details = failed?.details as { structuredContent?: { outcome?: string } } | undefined;
-	assert.equal(details?.structuredContent?.outcome, "failed", "the outcome is structured");
+	const details = failed?.details as { outcome?: string } | undefined;
+	assert.equal(details?.outcome, "failed", "the outcome is structured");
 
 	holder.configureOutcome = "applied";
 	route.script.push({ tool: "agent_configure", args: { sessionId: storageId, thinkingLevel: "high" } });

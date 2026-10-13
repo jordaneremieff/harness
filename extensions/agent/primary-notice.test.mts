@@ -288,7 +288,7 @@ it("keeps a provider request consumer pending until the provider leaves its gate
 	assert.equal(fixture.requests.length, 1);
 });
 
-it("refreshes preset descriptions and base guidance before peer-message turns without the prompt-start hook", { timeout: 30000 }, async (t) => {
+it("refreshes preset descriptions and guidance through the peer-message prompt-start hook", { timeout: 30000 }, async (t) => {
 	const f = await noticeFixture(t);
 	const dependency = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.resolve("@earendil-works/pi-coding-agent"))), "utf8")) as { version: string };
 	t.diagnostic(`Coding-agent runtime dependency: ${dependency.version}`);
@@ -302,12 +302,10 @@ it("refreshes preset descriptions and base guidance before peer-message turns wi
 		await f.session.waitForIdle();
 		const request = f.requests.at(-1);
 		assert.ok(request);
-		assert.equal(f.promptStarts(), starts, "peer turns skip before_agent_start");
-		if (index > 1) {
-			const prompt = getCurrentSystemPrompt(request.messages);
-			assert.match(prompt, /Delegate with preset/u);
-			assert.match(prompt, /machine defaultPreset/u);
-		}
+		assert.equal(f.promptStarts(), starts + 1, "each custom peer run invokes before_agent_start");
+		const prompt = getCurrentSystemPrompt(request.messages);
+		assert.match(prompt, /Delegate with preset/u);
+		assert.match(prompt, /machine defaultPreset/u);
 		for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
 			const declaration = f.session.getAllTools().find((tool) => tool.name === name);
 			assert.ok(declaration);
@@ -322,7 +320,7 @@ it("refreshes preset descriptions and base guidance before peer-message turns wi
 		}
 		if (index === 1) {
 			await f.session.prompt("Prepare the ordinary base prompt");
-			assert.equal(f.promptStarts(), starts + 1, "an ordinary prompt invokes before_agent_start");
+			assert.equal(f.promptStarts(), starts + 2, "the subsequent ordinary prompt also invokes before_agent_start");
 			const normal = f.requests.at(-1);
 			assert.ok(normal);
 			assert.match(getCurrentSystemPrompt(normal.messages), /Delegate with preset/u);
