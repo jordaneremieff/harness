@@ -390,16 +390,21 @@ Replay classes:
 | `web_read` | `safe` | A rerun repeats an idempotent public GET with no credential and no external mutation. Each call rebuilds the snapshot from the live page and checks the same source digest, so a continuation still refuses a changed source. |
 | `web_search` | `unsafe` | A rerun would repeat a billed Brave query. If the process dies after intent and before the result, the model receives an interrupted result instead. |
 
-The native tool result carries the same text and details data as the ordinary
-tool. Durable results must be strict JSON, so an optional details key with no
+The native tool result places the ordinary tool's text blocks in `output` and
+preserves its details data in `details`. Neither tool declares an output schema.
+Pi Durable derives the bounded string in a nested call's `structuredOutput` from
+that text, so native codemode scripts receive the same string as ordinary
+scripts. Failed calls reject in scripts; details remain UI data, not script
+results. Durable results must be strict JSON, so an optional details key with no
 value (`alteredQuery`, `nextOffset`) is absent instead of `undefined`. The
 Durable form has no terminal cards: `renderCall` and `renderResult` are
 ordinary-session surfaces.
 
 `extensions/brave/durable.test.mts` runs the contribution in a real Durable
-Harness over `MemoryStorage` with the pi-ai faux provider. It drives one
-model-issued call per tool and checks both replay classes across a close and
-reopen over retained storage.
+Harness over `MemoryStorage` with the pi-ai faux provider and controlled network
+fixtures. It checks model-issued text and details, public native codemode string
+results and error rejection, nested result details, and both replay classes
+across a close and reopen over retained storage.
 
 ## Tool cards
 

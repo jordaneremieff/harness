@@ -113,7 +113,7 @@ export function braveDurableContribution(
 						replay: "safe",
 						execute: async (args, _api, context: Context) => {
 							const result = await readWebPage(args, context.abortSignal);
-							return { content: result.content, details: jsonDetails(result.details) };
+							return { output: result.content, details: jsonDetails(result.details) };
 						},
 					}),
 					defineTool({
@@ -124,7 +124,7 @@ export function braveDurableContribution(
 						replay: "unsafe",
 						execute: async (args, _api, context: Context) => {
 							const result = await runWebSearch(args, context.abortSignal, { agentDir: host.agentDir });
-							return { content: result.content, details: jsonDetails(result.details) };
+							return { output: result.content, details: jsonDetails(result.details) };
 						},
 					}),
 				],

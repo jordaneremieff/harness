@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { Duplex } from "node:stream";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { Type } from "typebox";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models, ToolResultMessage } from "@earendil-works/pi-ai";
@@ -18,6 +19,10 @@ import { createEventBus, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { runWebSearch } from "./capability.ts";
+import { readWebPage } from "./page-reader.ts";
 import { braveDurableContribution, type DurableContributionHost } from "./durable.ts";
 
 const source = fileURLToPath(new URL("./index.ts", import.meta.url));
@@ -123,6 +128,7 @@ describe("brave durable contribution", () => {
 		);
 		assert.equal(tools[0]?.replay, "safe");
 		assert.equal(tools[1]?.replay, "unsafe");
+		assert.ok(tools.every((tool) => tool.structuredOutputSchema === undefined));
 		assert.match(tools[0]?.description ?? "", /public HTTP\(S\) page/);
 		assert.match(tools[1]?.description ?? "", /Brave Search/);
 		assert.equal(extension.hooks, undefined);
@@ -191,6 +197,138 @@ describe("brave durable contribution", () => {
 		assert.equal((read?.details as { extraction?: unknown } | undefined)?.extraction, "plain-text");
 
 		await harness.close(BACKGROUND_CONTEXT);
+	});
+
+	it("returns ordinary strings through public native codemode", async (t) => {
+		t.mock.timers.enable({ apis: ["Date"], now: 1700000000000 });
+		process.env.PI_BRAVE_API_KEY = "durable-test-key";
+		globalThis.fetch = (async () =>
+			new Response(
+				JSON.stringify({
+					web: {
+						results: [{ title: "Nested evidence", url: "https://example.com/evidence", description: "A source" }],
+					},
+				}),
+				{ headers: { "content-type": "application/json" } },
+			)) as typeof fetch;
+		t.mock.method(Agent.prototype, "createConnection", () => responseSocket("Nested page evidence.\n"));
+		const searchArgs = { query: "nested evidence" };
+		const readArgs = { url: "http://8.8.8.8/evidence" };
+		const ordinarySearch = await runWebSearch(searchArgs, undefined, { agentDir: getAgentDir() });
+		const ordinaryRead = await readWebPage(readArgs);
+		const expected = [ordinarySearch.content[0]?.text, ordinaryRead.content[0]?.text];
+		const { faux, models, registry } = nativeModels();
+		registry.install(await nativeExtension());
+		const sandbox = new CodemodeSandbox();
+		t.after(() => sandbox.close());
+		registry.install(createCodemodeExtension({ sandbox, models: false }));
+		registry.install(
+			Durable.defineExtension({
+				name: "web-result-probe",
+				tools: [
+					Durable.defineTool({
+						name: "inspect_web_results",
+						description: "Inspect nested web results",
+						parameters: Type.Object({}),
+						execute: async (_args, api, context) => {
+							const results = await Promise.all([
+								api.executeTool("web_search", searchArgs, context),
+								api.executeTool("web_read", readArgs, context),
+							]);
+							return { output: [{ type: "text", text: JSON.stringify(results) }] };
+						},
+					}),
+				],
+			}),
+		);
+		const { harness, root } = await openRoot(models, registry, new Durable.MemoryStorage());
+		t.after(() => harness.close(BACKGROUND_CONTEXT));
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("codemode", {
+					code: `text(JSON.stringify(await Promise.all([tools.web_search(${JSON.stringify(searchArgs)}), tools.web_read(${JSON.stringify(readArgs)})])));`,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(fauxToolCall("inspect_web_results", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Done."),
+		]);
+		const settled = await (await root.submit({ type: "input", content: "research" }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		assert.equal(settled.status, "done");
+		const results = await toolResults(root);
+		assert.equal(results.length, 2, "only model-issued calls add model tool-result messages");
+		assert.equal(results[0]?.isError, false);
+		assert.ok(expected.every((value) => typeof value === "string" && value.length > 0));
+		assert.ok(
+			toolText(results[0]).includes(JSON.stringify(expected)),
+			"both nested values equal ordinary text exactly",
+		);
+		const nested = JSON.parse(toolText(results[1])) as Durable.NestedToolExecutionResult[];
+		assert.deepEqual(
+			nested.map((result) => result.structuredOutput),
+			expected,
+		);
+		assert.deepEqual(
+			nested.map((result) => result.details),
+			JSON.parse(JSON.stringify([ordinarySearch.details, ordinaryRead.details])),
+		);
+		assert.ok(nested.every((result) => !result.isError && result.diagnostics.length === 0));
+		const calls = (results[0]?.details as Durable.JsonObject | undefined)?.calls as { name: string; status: string }[];
+		assert.deepEqual(
+			calls.map(({ name, status }) => ({ name, status })),
+			[
+				{ name: "web_search", status: "ok" },
+				{ name: "web_read", status: "ok" },
+			],
+		);
+	});
+
+	it("rejects schema-less errors in public native codemode", async (t) => {
+		let fetches = 0;
+		globalThis.fetch = (async () => {
+			fetches += 1;
+			throw new Error("Unexpected network request");
+		}) as typeof fetch;
+		const { faux, models, registry } = nativeModels();
+		registry.install(await nativeExtension());
+		const sandbox = new CodemodeSandbox();
+		t.after(() => sandbox.close());
+		registry.install(createCodemodeExtension({ sandbox, models: false }));
+		const { harness, root } = await openRoot(models, registry, new Durable.MemoryStorage());
+		t.after(() => harness.close(BACKGROUND_CONTEXT));
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("codemode", {
+					code: `
+				const outcomes = await Promise.allSettled([
+					tools.web_search({ query: "no configured key" }),
+					tools.web_read({ url: "http://127.0.0.1/private" })
+				]);
+				text(outcomes.map(item => ({status: item.status, error: item.status === "rejected" ? String(item.reason) : "resolved"})));`,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(
+				fauxToolCall("codemode", { code: `await tools.web_read({url: "http://127.0.0.1/private"});` }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Done."),
+		]);
+		const settled = await (await root.submit({ type: "input", content: "errors" }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		assert.equal(settled.status, "done");
+		const results = await toolResults(root);
+		assert.equal(results.length, 2);
+		assert.equal(results[0]?.isError, false, "the script handles both rejected promises");
+		assert.equal((toolText(results[0]).match(/rejected/g) ?? []).length, 2);
+		assert.match(toolText(results[0]), /PI_BRAVE_API_KEY/);
+		assert.match(toolText(results[0]), /public|private|loopback/i);
+		assert.equal(results[1]?.isError, true, "an uncaught rejected call fails the script");
+		assert.match(toolText(results[1]), /public|private|loopback/i);
+		assert.equal(fetches, 0);
 	});
 
 	it("reruns a replay-safe web_read after the harness interrupts the call", async (t) => {
