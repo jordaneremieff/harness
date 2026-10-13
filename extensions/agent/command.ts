@@ -220,7 +220,7 @@ export function createAgentCommand(
 			await showAgentDashboard({
 				ctx,
 				state,
-				source: sources,
+				source: { ...sources, list: (input) => sources.list({ ...input, ownerId: ctx.sessionManager.getSessionId() }) },
 				operations: {
 					toolDisplay,
 					saveLayout: preferences ? (layout) => preferences.save(layout) : undefined,

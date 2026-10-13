@@ -23,7 +23,7 @@ import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, type HostConnection, type HostObservationListener } from "./host-client.ts";
 import { hostRequestVersionError, hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { observeClaim, observeClaimAsync } from "./claims.ts";
+import { observeClaim, observeClaimAsync, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
 import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./durable-observation.ts";
@@ -137,6 +137,11 @@ function compactStatus(value: unknown): unknown {
 		},
 		...(ordinaryOnly.length === 0 ? {} : { limits: { ordinaryOnly } }),
 	};
+}
+
+function claimOwner(claim: ClaimObservation | undefined): AgentConversationSummary["owner"] {
+	if (claim?.kind === "live") return "here";
+	return claim?.kind === "unknown" ? "unavailable" : "unknown";
 }
 
 function errorText(error: unknown): string {
@@ -661,33 +666,27 @@ export class AgentManager {
 		return { rows, nextCursor: complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url"), coverage: { complete, storagesVisited: visits, unavailable, profileHints }, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
 	}
 
-	async dashboardPage(input: { cursor?: string } = {}): Promise<AgentConversationPage> {
+	async dashboardPage(input: { cursor?: string; ownerId?: string } = {}): Promise<AgentConversationPage> {
 		const rows: AgentConversationSummary[] = [];
-		const coverage = { complete: false, storagesVisited: 0, skipped: 0, omitted: 0, nextCursor: null as string | null };
-		const observedAt = new Date().toISOString();
-		let cursor: string | undefined = input.cursor;
-		for (let pageIndex = 0; pageIndex < MAX_INVENTORY_PAGES; pageIndex++) {
-			const page = await this.catalog.page({ cursor, limit: 20 });
-			coverage.skipped += page.coverage.skipped;
-			for (const record of page.records) {
-				coverage.storagesVisited++;
-				const projection = await this.catalogRows(record);
-				coverage.skipped += projection.skipped;
-				coverage.omitted += projection.omitted;
-				const recoveryError = this.recoveryErrors.get(record.storageId);
-				const note = this.recoveryNotes.get(record.storageId);
-				rows.push(...projection.rows.map((row) => ({ ...row, ...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}),
-					...(note === undefined || row.owner !== "here" ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
-					...(recoveryError === undefined ? {} : { health: { ...row.health, lastError: recoveryError } }) })));
-			}
-			coverage.nextCursor = page.nextCursor;
-			if (!page.nextCursor) { coverage.complete = true; break; }
-			cursor = page.nextCursor;
+		const page = await this.catalog.priorityPage({ cursor: input.cursor, ownerIds: input.ownerId ? [input.ownerId] : [...this.primaries.keys()], limit: MAX_INVENTORY_PAGES * 20 });
+		const coverage = { complete: page.nextCursor === null && page.coverage.unreadable === 0 && page.coverage.unknownClaims === 0, storagesVisited: page.coverage.inspected,
+			skipped: page.coverage.unreadable, omitted: 0, nextCursor: page.nextCursor, inventory: page.coverage,
+			projections: {} as Record<string, { skipped: number; omitted: number }> };
+		for (const { record, modifiedAt, priority, claim } of page.items) {
+			const projection = await this.catalogRows(record, claim);
+			coverage.skipped += projection.skipped;
+			coverage.omitted += projection.omitted;
+			coverage.projections[record.storageId] = { skipped: projection.skipped, omitted: projection.omitted };
+			const recoveryError = this.recoveryErrors.get(record.storageId);
+			const note = this.recoveryNotes.get(record.storageId);
+			rows.push(...projection.rows.map((row) => ({ ...row, rosterOrder: { priority, modifiedAt }, ...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}),
+				...(note === undefined || row.owner !== "here" ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
+				...(recoveryError === undefined ? {} : { health: { ...row.health, lastError: recoveryError } }) })));
 		}
-		return { rows, coverage, observedAt };
+		return { rows, coverage, observedAt: page.observedAt };
 	}
 
-	private async catalogRows(record: CatalogRecord): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
+	private async catalogRows(record: CatalogRecord, observedClaim?: ClaimObservation): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
 		const starting = this.launchRows.get(record.storageId);
 		const view = record.view;
 		if (starting) {
@@ -697,13 +696,13 @@ export class AgentManager {
 			this.launchRows.delete(record.storageId);
 		}
 		if (!view || view.unavailable) {
-			return { skipped: 1, omitted: 0, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: "unknown", state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
+			return { skipped: 1, omitted: 0, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: claimOwner(observedClaim), state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
 		}
 		const paths = hostPaths(record);
-		const claim = await observeClaimAsync(paths.claim, paths.identity);
+		const claim = observedClaim ?? await observeClaimAsync(paths.claim, paths.identity);
 		const rows = view.rows.map((source) => {
 			const row = { ...source } as AgentConversationSummary;
-			row.owner = claim.kind === "unknown" ? "unavailable" : claim.kind === "live" ? "here" : "unknown";
+			row.owner = claimOwner(claim);
 			row.ownerLabel = `Host metadata at ${view.updatedAt}${claim.kind === "unknown" ? `; ${claim.error}` : ""}`;
 			if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";
 			if (claim.kind !== "live") row.currentTool = undefined;
@@ -786,7 +785,7 @@ export class AgentManager {
 			}
 			return this.observe(record, "status", { sessionId });
 		}
-		const page = await this.dashboardPage();
+		const page = await this.dashboardPage({ ownerId: caller?.id });
 		const failures = [
 			[...this.failures.entries].map(([storageId, error]) => ({ storageId, error })),
 		].flat();
@@ -1143,8 +1142,11 @@ export class AgentManager {
 
 	/** UI-local session totals reuse the roster and the primary's retained sent-work identities. */
 	async sessionFigures(ownerId: string, page?: AgentConversationPage): Promise<string> {
-		const observed = page ?? await this.dashboardPage();
-		return this.figuresForRows(ownerId, observed.rows);
+		const observed = page ?? await this.dashboardPage({ ownerId });
+		const text = this.figuresForRows(ownerId, observed.rows);
+		const inventory = observed.coverage.inventory;
+		return inventory && (inventory.remaining || inventory.unreadable || inventory.unknownClaims)
+			? text.replace(/(agents: \d+\/\d+)( active)/u, "$1+$2") : text;
 	}
 
 	private figuresForRows(ownerId: string, rows: readonly AgentConversationSummary[]): string {
@@ -1162,9 +1164,9 @@ export class AgentManager {
 		try {
 			do {
 				this.refreshAgain = false;
-				const page = await this.dashboardPage();
-				this.observeToolCardRows(page);
 				for (const [ownerId, primary] of this.primaries) {
+					const page = await this.dashboardPage({ ownerId });
+					this.observeToolCardRows(page);
 					const text = await this.sessionFigures(ownerId, page);
 					if (!primary.signal.aborted) primary.status?.(text || undefined);
 				}

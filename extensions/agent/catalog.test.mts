@@ -147,6 +147,46 @@ it("refuses malformed catalog cursors even when the catalog is absent", async (t
 	}
 });
 
+it("reports complete priority scans, output overflow, and unreadable records separately", async (t) => {
+	const { catalog, input } = fixture(t);
+	const records = Array.from({ length: 6 }, () => catalog.create(input));
+	for (const [index, record] of records.entries()) {
+		catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [
+			{ id: record.storageId, storageId: record.storageId, cwd: input.cwd, modifiedAt: 0, owner: "unknown", state: "idle", cost: 0, partial: false },
+			{ id: `${record.storageId}:2`, storageId: record.storageId, cwd: input.cwd, modifiedAt: 0, owner: "unknown", state: "idle", cost: 0, partial: false },
+		], coverage: { complete: true, omitted: 0 } });
+		utimesSync(catalog.path(record.storageId), index + 1, index + 1);
+	}
+	writeFileSync(catalog.path(records[0].storageId), "invalid");
+	const first = await catalog.priorityPage({ ownerIds: [input.ownerId], limit: 3 });
+	assert.deepEqual(first.items.map((item) => item.record.storageId), records.slice(-3).reverse().map((record) => record.storageId));
+	assert.deepEqual(first.coverage, { candidates: 6, inspected: 6, unreadable: 1, unknownClaims: 0, returned: 3, remaining: 2, priorityRemaining: 2,
+		remainingRows: 4, priorityRemainingRows: 4, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 3 });
+	assert.ok(first.nextCursor);
+	const next = await catalog.priorityPage({ ownerIds: [input.ownerId], limit: 3, cursor: first.nextCursor });
+	assert.deepEqual(next.items.map((item) => item.record.storageId), records.slice(1, 3).reverse().map((record) => record.storageId));
+	assert.equal(next.nextCursor, null);
+	await assert.rejects(catalog.priorityPage({ ownerIds: ["different"], limit: 3, cursor: first.nextCursor }), /caller changed/u);
+	await assert.rejects(catalog.priorityPage({ limit: 0 }), /output limit/u);
+});
+
+it("reports unknown writer claims without treating them as dead or live", async (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create(input);
+	const paths = hostPaths(record);
+	mkdirSync(dirname(paths.claim), { recursive: true });
+	writeFileSync(paths.claim, "invalid");
+	const page = await catalog.priorityPage({ limit: 3 });
+	assert.equal(page.coverage.inspected, 1);
+	assert.equal(page.coverage.unreadable, 0);
+	assert.equal(page.coverage.unknownClaims, 1);
+	assert.equal(page.items[0].claim.kind, "unknown");
+	assert.equal(page.items[0].priority, false);
+	const owned = await catalog.priorityPage({ limit: 3, ownerIds: [input.ownerId] });
+	assert.equal(owned.items[0].priority, true, "known creation ownership remains independent of the unknown host claim");
+	assert.equal(owned.coverage.unknownClaims, 1);
+});
+
 it("deduplicates a spawn request by owner and request identity", (t) => {
 	const { catalog, input } = fixture(t);
 	const first = catalog.create(input, "request");

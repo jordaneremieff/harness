@@ -3,13 +3,14 @@
  * dashboard. The board reads only the bounded views a Durable host publishes
  * beside its catalog record: it bootstraps no services, copies no database, and
  * launches no host for the roster. A deep snapshot is available only for the
- * selected conversation. This module names the data the UI consumes and imports
- * no storage, worker, or activity module.
+ * selected conversation. This module names the UI data and merges coverage;
+ * it imports no runtime storage, worker, or activity module.
  */
 import type { Message } from "@earendil-works/pi-ai";
 import type { CommunicationView } from "./communication.ts";
 import type { ProfileHint } from "./profile-schema.ts";
 import type { AwaitFact } from "./await-facts.ts";
+import type { CatalogPriorityCoverage } from "./catalog.ts";
 
 /** Dashboard lifecycle bucket for one durable conversation. */
 export type AgentConversationState =
@@ -65,6 +66,8 @@ export interface AgentConversationSummary {
 	storageId: string;
 	/** Creating-session provenance, not the current requester or task owner. */
 	creatingOwnerId?: string;
+	/** Presentation-only catalog rank; never part of host-published or native wire rows. */
+	rosterOrder?: { priority: boolean; modifiedAt: number };
 	/** Stored conversation name when one exists. */
 	name?: string;
 	/** Retained profile hint, joined outside the base observation wire contract. Absent means unknown coverage. */
@@ -133,16 +136,31 @@ export interface AgentConversationSnapshot {
 
 /** Bounded coverage of one dashboard page. */
 export interface AgentDashboardCoverage {
-	/** True when the catalog scan reached its end within the visited-storage bound. */
+	/** Candidate scan and output bounds for the live priority reader, when used. */
+	inventory?: CatalogPriorityCoverage;
+	/** Per-storage view exclusions for distinct accounting across refreshed priority pages. */
+	projections?: Record<string, { skipped: number; omitted: number }>;
+	/** True when the catalog scan and page output reached the inventory end. */
 	complete: boolean;
 	/** Storages visited for this page. */
 	storagesVisited: number;
 	/** Stores skipped as unreadable or unavailable, plus stores whose published view was incomplete. */
 	skipped: number;
-	/** Rows excluded by a host view or page budget; the unscanned extent is unknown. */
+	/** Rows excluded by host views; inventory separately counts rows outside the page output limit. */
 	omitted: number;
-	/** Continuation cursor; a non-null value means more inventory may exist, and the cursor can end at an empty page, so the remaining extent is unknown. */
+	/** Continuation for more output; priority reads report the snapshot remainder in inventory, while generic pages leave its extent unknown. */
 	nextCursor: string | null;
+}
+
+/** Merge retained rows while counting one latest inventory scan and one projection per storage. */
+export function mergeAgentCoverage(previous: AgentDashboardCoverage, current: AgentDashboardCoverage): AgentDashboardCoverage {
+	if (!current.inventory || !previous.projections || !current.projections) return { ...current,
+		skipped: previous.skipped + current.skipped, omitted: previous.omitted + current.omitted,
+		storagesVisited: previous.storagesVisited + current.storagesVisited };
+	const projections = { ...previous.projections, ...current.projections };
+	return { ...current, projections, storagesVisited: current.inventory.inspected,
+		skipped: current.inventory.unreadable + Object.values(projections).reduce((total, item) => total + item.skipped, 0),
+		omitted: Object.values(projections).reduce((total, item) => total + item.omitted, 0) };
 }
 
 /** One bounded dashboard page: roster rows plus the coverage of their collection. */

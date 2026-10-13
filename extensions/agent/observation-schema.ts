@@ -277,6 +277,9 @@ export const ListOutputSchema = object({
 });
 export type ListOutput = Static<typeof ListOutputSchema>;
 
+const catalogPriorityCoverage = object({ candidates: count, inspected: count, unreadable: count, unknownClaims: count, returned: count, remaining: count, priorityRemaining: count,
+	remainingRows: count, priorityRemainingRows: count, recordByteLimit: count, claimByteLimit: count, outputLimit: count });
+
 /**
  * `agent_status` union:
  * - compact manager overview: priority rows, bounded samples, summary counts, and explicit coverage;
@@ -307,7 +310,7 @@ export const StatusOutputSchema = union([
 			primaries: object({ observed: count, summarized: count }),
 			failures: object({ observed: count, summarized: count }),
 		}),
-		coverage: object({ complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: Type.Null(), reasons: Type.Array(string) }),
+		coverage: object({ complete: boolean, storagesVisited: count, inventory: Type.Optional(catalogPriorityCoverage), omittedPriorityRows: Type.Optional(count), omittedPriorityRecords: Type.Optional(count), skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: Type.Null(), reasons: Type.Array(string) }),
 		observedAt: string,
 		discovery: string,
 	}),

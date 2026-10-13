@@ -83,8 +83,28 @@ then bounds entry visits and record reads. Records created behind the cursor,
 or changed to match a filter after their name was visited, appear on the next
 fresh scan. Removed records are absent. Complete catalog coverage means the end
 of that page's sorted directory listing was reached, not that all pages observed
-one instant. Dashboard and cross-storage thread discovery use the same catalog
-continuations.
+one instant. Cross-storage thread discovery uses the same catalog continuations.
+
+Dashboard, footer, and no-target status use a separate priority read. Each read
+lists the initial catalog names, inspects every catalog candidate once, and ranks
+live hosts and records created by the caller before other records. Catalog file
+modification time orders each group, with identity as the tie-breaker. Creation
+time is immutable; file modification time reflects published views and recovery
+marker changes. It describes metadata recency, not proof of current work.
+Individual record and writer-claim reads have byte limits. The initial directory
+snapshot bounds the scan, and a separate output limit bounds returned records.
+Coverage reports candidates, inspections, unreadable records, unknown writer
+claims, output limits, remaining records and published rows, and live or
+caller-owned exclusions. An unknown claim leaves live-host priority unestablished;
+known creation ownership still supplies caller priority. Loaded pages count the
+latest inventory scan once and each retained storage's latest view exclusions once.
+Priority does not grant unlimited output when the priority set itself exceeds a
+limit. The reader opens no conversation database and starts no host.
+
+Roster continuation uses the last priority, modification time, and identity,
+bound to the caller. Each page ranks a fresh catalog snapshot. Activity or claim
+changes between pages can move records across this position; refresh the roster
+to rediscover them. Use `agent_list` for stable filename-based continuation.
 
 Agent hosts have process lifetimes independent of the primary. There is no
 separate detach operation or detached-run registry.
@@ -626,21 +646,27 @@ fabricated cost field. The dashboard passes these details to Pi's codemode
 renderer. Missing arguments stay absent. For nonpartial results, remaining
 `running` rows display as `cancelled`; partial results stay unchanged. Stored
 snapshots are never mutated.
-The primary's no-target `agent_status` is a compact fleet overview. Working
-and starting rows without an attention reason come first, then attention rows,
-then recent quiet rows. Independent host, recovery, or availability faults make
+The primary's no-target `agent_status` is a compact fleet overview. Live hosts
+and records created by the caller come first, including idle conversations.
+Other records follow catalog metadata recency. Independent host, recovery, or availability faults make
 any state an attention row; a deliberate stop alone does not. Summary counts
-are priority groups, not state totals: `working` counts the first group,
-`attention` counts every attention row, and `quiet` counts the remaining rows. Each
-priority group uses newest update first with a stable identity tie-breaker.
+are semantic groups, not state totals: `working` counts working or starting rows
+without an attention reason, `attention` counts every attention row, and `quiet`
+counts the remaining rows. Summary groups remain independent of roster priority.
 Excerpts have visible shortening markers. Working and attention rows retain
 identity, cwd, ownership, model, update time, state, cost, partial-cost flag,
 current tool, tool count, duration, latest reply, errors, and recovery health
-when those fields exist. Quiet history, connected primaries, and failures have
-bounded samples and explicit `summary` totals rather than silent row drops.
+when those fields exist. Live or caller-owned quiet rows are not restricted to
+the quiet-history sample, but all rows remain subject to the overview byte limit.
+Other quiet history, connected primaries, and failures have bounded samples and
+explicit `summary` totals rather than silent row drops.
 
-`coverage` states source visits, skipped views, excluded rows, byte omissions,
-and the exact serialized byte size. Counts cover the supplied catalog page,
+`coverage` states source inspections, skipped views, excluded rows, byte omissions,
+and the exact serialized byte size. Its `inventory` reports the priority scan
+and source output limit. `omittedPriorityRows` counts live or caller-owned rows
+excluded by the overview byte limit. `omittedPriorityRecords` counts distinct
+records with at least one such excluded row, even when another row from that
+record remains visible. Counts cover the supplied catalog page,
 not unseen inventory. `complete` remains true for an intentional quiet summary
 only when source coverage is complete; source gaps or byte exclusions make it
 false. `coverage.reasons` names recovery paths and boundaries. The overview
@@ -827,8 +853,9 @@ identity suffixes. Unknown cost shows `$?`; a known partial cost shows a trailin
 use the same marker, such as `$1.50+ retained`, for a known subtotal with incomplete
 cost or inventory coverage. These totals keep their roster scope.
 
-The roster is one flat list ordered by recent activity, with identity as the
-tie-breaker. State glyphs replace group headers. Failure text uses the actual
+The roster is one flat list. Live hosts and records created by the caller come
+first, then other records. Each group uses catalog file modification time and
+identity as the tie-breaker; displayed row times remain source-published facts. State glyphs replace group headers. Failure text uses the actual
 retained error, without a `Work failed:` prefix. The host publishes the native
 unanswered submission's error detail, or the last assistant error, in the
 existing error field. A delivery receipt defines the outcome only while no
@@ -910,7 +937,9 @@ that every request settled. No catalog schema or host protocol carries this scop
 The status says `agents: <working>/<total> active · ~$<cost>` and disappears when
 no session-scoped rows are found. The numerator counts only `working` rows;
 the denominator includes every scoped row. Each registered primary receives its
-own figures. Catalog publication notices refresh these figures even when the
+own caller-prioritized page and figures. A `+` after the denominator marks
+catalog output exclusions, unreadable records, or unknown writer claims; the
+loaded count is not a global total. Catalog publication notices refresh these figures even when the
 dashboard is closed and the primary has no connection to the publishing host.
 The primary and dashboard share one catalog observer; it closes after the last
 primary and dashboard listener leave. This observation starts no host and adds no

@@ -14,6 +14,7 @@ import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { sessionFigures } from "./footer.ts";
 import type { AwaitFact } from "./await-facts.ts";
+import type { AgentConversationPage } from "./dashboard-types.ts";
 
 it("dashboard shows current machine file state, digest, default, names and models without a new command", async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "dashboard-machine-preferences-"));
@@ -734,20 +735,25 @@ it("Load more is selected before admission and loaded coverage survives reconcil
 	const observed = source();
 	let rosterChange = () => {};
 	const calls: Array<string | undefined> = [];
+	const inventory = { candidates: 4, inspected: 4, unreadable: 1, unknownClaims: 0, returned: 1, remaining: 0, priorityRemaining: 0,
+		remainingRows: 0, priorityRemainingRows: 0, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 2 };
 	observed.subscribeRoster = (listener) => {
 		rosterChange = listener;
 		return () => {};
 	};
-	observed.list = async (input) => {
+	observed.list = async (input): Promise<AgentConversationPage> => {
 		calls.push(input?.cursor);
 		return input?.cursor
 			? {
 					...page([row("c")]),
-					coverage: { complete: true, storagesVisited: 1, skipped: 2, omitted: 0, nextCursor: null },
+					coverage: { complete: false, storagesVisited: 4, skipped: 2, omitted: 0, nextCursor: null, inventory,
+						projections: { c: { skipped: 1, omitted: 0 } } },
 				}
 			: {
 					...page([row("a"), row("b")]),
-					coverage: { complete: false, storagesVisited: 1, skipped: 1, omitted: 0, nextCursor: "more" },
+					coverage: { complete: false, storagesVisited: 4, skipped: 1, omitted: 0, nextCursor: "more",
+						inventory: { ...inventory, returned: 2, remaining: 1, remainingRows: 1 },
+						projections: { a: { skipped: 0, omitted: 0 }, b: { skipped: 0, omitted: 0 } } },
 				};
 	};
 	const f = fixture(80, 24, observed, { sessionFigures: async (roster) => sessionFigures(roster.rows, "primary", () => "primary") });
@@ -766,7 +772,7 @@ it("Load more is selected before admission and loaded coverage survives reconcil
 	await turn();
 	assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
 	assert.match(f.ui.render(80)[0], /Agents: 3\/3 active · ~\$1\.26/);
-	assert.match(f.ui.render(80).join("\n"), /3 unreadable/);
+	assert.match(f.ui.render(80).join("\n"), /2 unreadable/);
 	f.ui.dispose();
 });
 

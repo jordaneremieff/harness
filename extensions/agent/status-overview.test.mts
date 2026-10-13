@@ -96,6 +96,23 @@ it("puts working and attention before quiet rows, then orders each group by rece
 	check(result);
 });
 
+it("keeps idle priority rows outside quiet sampling and counts priority byte omissions", () => {
+	const rows = Array.from({ length: 100 }, (_, index) => summary(index, { rosterOrder: { priority: true, modifiedAt: index }, name: "😀".repeat(1000), storageId: `storage-${Math.floor(index / 2)}` }));
+	const source = page(rows);
+	source.coverage.inventory = { candidates: 50, inspected: 50, unreadable: 0, unknownClaims: 0, returned: 50, remaining: 0, priorityRemaining: 0,
+		remainingRows: 0, priorityRemainingRows: 0, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 320 };
+	const result = buildStatusOverview(source, [], []);
+	assert.ok(result.sessions.length > 5, "priority quiet rows are not restricted to the quiet sample");
+	assert.ok(result.coverage.byteLimitReached);
+	assert.equal(result.coverage.omittedPriorityRows, rows.length - result.sessions.length);
+	const retained = new Set(result.sessions.map((row) => row.id));
+	assert.equal(result.coverage.omittedPriorityRecords, new Set(rows.filter((row) => !retained.has(row.id)).map((row) => row.storageId)).size);
+	assert.equal(result.sessions[0].id, "agent-99");
+	assert.equal(result.sessions.some((row) => "rosterOrder" in row), false);
+	assert.ok(result.coverage.reasons.some((reason) => /live or caller-owned rows/u.test(reason)));
+	check(result);
+});
+
 it("retains every coordinator field on live rows with short Unicode-safe text excerpts", () => {
 	const text = "😀".repeat(1000);
 	const row = summary(1, {

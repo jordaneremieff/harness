@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
 import { DashboardResize } from "./dashboard-resize.ts";
-import type { AgentConversationPage, AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
+import { mergeAgentCoverage, type AgentConversationPage, type AgentConversationSummary, type AgentConversationSnapshot } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentComposer } from "./agent-composer.ts";
@@ -297,12 +297,7 @@ export class AgentDashboard implements Component, Focusable {
 		return {
 			...page,
 			rows: [...new Map([...previous.rows, ...page.rows].map((row) => [row.id, row])).values()],
-			coverage: {
-				...page.coverage,
-				skipped: previous.coverage.skipped + page.coverage.skipped,
-				omitted: previous.coverage.omitted + page.coverage.omitted,
-				storagesVisited: previous.coverage.storagesVisited + page.coverage.storagesVisited,
-			},
+			coverage: mergeAgentCoverage(previous.coverage, page.coverage),
 		};
 	}
 	private async readRosterPages(cursor?: string): Promise<AgentConversationPage[]> {

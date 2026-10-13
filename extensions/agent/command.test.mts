@@ -71,7 +71,7 @@ it("the dashboard gets its context window and session figures from the current p
 	const published = rosterPage([row("one")]);
 	const observed = source(published.rows);
 	let reads = 0;
-	observed.list = async () => { reads++; return published; };
+	observed.list = async (input) => { reads++; assert.equal(input?.ownerId, "current-primary"); return published; };
 	observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160000, output: 3300, cacheRead: 0, cacheWrite: 0, totalTokens: 163300, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
 	const lookups: Array<[string, string]> = [];
 	let dashboard: AgentDashboard | undefined;

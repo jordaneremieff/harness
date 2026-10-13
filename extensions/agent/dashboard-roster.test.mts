@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { dashboardRecords, dashboardText, rosterLines, coverageText, rosterTotals } from "./dashboard-roster.ts";
 import { row, theme } from "./dashboard-test-fixture.mts";
+import { mergeAgentCoverage } from "./dashboard-types.ts";
 for (const [width, height, compact] of [
 	[38, 36, false],
 	[80, 4, true],
@@ -27,6 +28,32 @@ it("selected exact-time blocks close their styles before the adjacent pane", () 
 	const selected = lines.filter((line) => line.includes("▌"));
 	assert.equal(selected.length, 3);
 	assert.ok(selected.every((line) => line.endsWith("\x1b[0m")));
+});
+
+it("merges one current inventory scan and one latest projection per retained storage", () => {
+	const inventory = { candidates: 4, inspected: 4, unreadable: 1, unknownClaims: 0, returned: 2, remaining: 0, priorityRemaining: 0,
+		remainingRows: 0, priorityRemainingRows: 0, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 2 };
+	const previous = { complete: false, storagesVisited: 4, skipped: 2, omitted: 2, nextCursor: "more", inventory,
+		projections: { a: { skipped: 1, omitted: 2 } } };
+	const current = { complete: false, storagesVisited: 4, skipped: 2, omitted: 3, nextCursor: null, inventory,
+		projections: { a: { skipped: 0, omitted: 0 }, b: { skipped: 1, omitted: 3 } } };
+	const merged = mergeAgentCoverage(previous, current);
+	assert.equal(merged.storagesVisited, 4);
+	assert.equal(merged.skipped, 2);
+	assert.equal(merged.omitted, 3);
+	assert.deepEqual(merged.projections, current.projections);
+	assert.equal(previous.projections.a.omitted, 2, "the prior observation is unchanged");
+});
+
+it("distinguishes priority output continuation from an incomplete generic inventory scan", () => {
+	const coverage = { complete: false, storagesVisited: 4, skipped: 0, omitted: 0, nextCursor: "more" };
+	assert.match(coverageText(coverage), /more inventory to inspect/);
+	const inventory = { candidates: 4, inspected: 4, unreadable: 0, unknownClaims: 0, returned: 2, remaining: 2, priorityRemaining: 1,
+		remainingRows: 2, priorityRemainingRows: 1, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 2 };
+	const text = coverageText({ ...coverage, inventory });
+	assert.match(text, /4\/4 catalog records inspected/);
+	assert.match(text, /more records to load/);
+	assert.doesNotMatch(text, /more inventory to inspect/);
 });
 
 it("starting agents show their launch state without a group header", () => {

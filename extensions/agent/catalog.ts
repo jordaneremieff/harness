@@ -17,7 +17,7 @@ import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { type CatalogView, parseCatalogView } from "./catalog-view.ts";
 import { parseCollaborationProjection, type CollaborationProjection } from "./collaboration.ts";
-import { observeClaim } from "./claims.ts";
+import { CLAIM_BYTES, observeClaim, observeClaimAsync, type ClaimObservation } from "./claims.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { type HostMetadata, hostPaths, parseHostMetadata } from "./host-protocol.ts";
 
@@ -25,7 +25,7 @@ import { handleSlug, handleStorageId } from "./identity.ts";
 import { profileText } from "./profile.ts";
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
-const MAX_RECORD_BYTES = 32_768;
+export const MAX_RECORD_BYTES = 32_768;
 const MAX_VISITS = 256;
 interface CatalogQuery {
 	cursor?: string;
@@ -96,6 +96,47 @@ export interface CatalogPage {
 	nextCursor: string | null;
 	coverage: { visited: number; skipped: number; complete: boolean };
 	observedAt: string;
+}
+
+export interface CatalogPriorityCoverage {
+	/** Initial directory snapshot bounds this scan; each candidate is read at most once. */
+	candidates: number;
+	inspected: number;
+	unreadable: number;
+	/** Claims whose live/dead owner classification is unavailable. */
+	unknownClaims: number;
+	returned: number;
+	remaining: number;
+	priorityRemaining: number;
+	remainingRows: number;
+	priorityRemainingRows: number;
+	recordByteLimit: number;
+	claimByteLimit: number;
+	outputLimit: number;
+}
+export interface CatalogPriorityRecord {
+	record: CatalogRecord;
+	modifiedAt: number;
+	priority: boolean;
+	claim: ClaimObservation;
+}
+interface PriorityKey { priority: boolean; modifiedAt: number; storageId: string }
+function comparePriority(left: PriorityKey, right: PriorityKey): number {
+	return Number(right.priority) - Number(left.priority) || right.modifiedAt - left.modifiedAt ||
+		(left.storageId < right.storageId ? -1 : left.storageId > right.storageId ? 1 : 0);
+}
+
+function checkPriorityLimit(limit: number): void {
+	if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Invalid roster output limit");
+}
+function priorityCursor(cursor: string | undefined, binding: string): PriorityKey | undefined {
+	if (!cursor) return;
+	try {
+		const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+		if (value.binding !== binding || typeof value.after?.priority !== "boolean" ||
+			!Number.isFinite(value.after.modifiedAt) || !UUID.test(value.after.storageId)) throw new Error();
+		return value.after;
+	} catch { throw new Error("Invalid roster cursor or caller changed; restart the roster"); }
 }
 
 /** Result of one catalog create: the retained record and whether this call created it. */
@@ -202,7 +243,9 @@ export class AgentCatalog {
 	path(identity: string): string {
 		return join(this.root, `${storageIdOf(identity)}.json`);
 	}
-	read(identity: string): CatalogRecord {
+	read(identity: string): CatalogRecord { return this.readWithTime(identity).record; }
+
+	private readWithTime(identity: string): { record: CatalogRecord; modifiedAt: number } {
 		const storageId = storageIdOf(identity);
 		const fd = openSync(this.path(storageId), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		try {
@@ -237,10 +280,53 @@ export class AgentCatalog {
 			this.parseProjections(record);
 			if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
 				throw new Error("Agent metadata has an invalid recovery marker");
-			return record;
+			return { record, modifiedAt: info.mtimeMs };
 		} finally {
 			closeSync(fd);
 		}
+	}
+
+	/**
+	 * Scan the initial catalog snapshot completely before selecting a bounded
+	 * priority page. Individual record and claim reads remain byte-bounded.
+	 * This live ordering is independent of filename-based discovery cursors.
+	 */
+	async priorityPage(options: { ownerIds?: readonly string[]; cursor?: string; limit: number }): Promise<{
+		items: CatalogPriorityRecord[]; coverage: CatalogPriorityCoverage; nextCursor: string | null; observedAt: string;
+	}> {
+		checkPriorityLimit(options.limit);
+		const ownerIds = options.ownerIds ?? [];
+		const binding = JSON.stringify([...ownerIds].sort());
+		const after = priorityCursor(options.cursor, binding);
+		const entries = (await directoryEntries(this.root)).filter((entry) => entry.name.endsWith(".json") && UUID.test(entry.name.slice(0, -5)));
+		const coverage: CatalogPriorityCoverage = { candidates: entries.length, inspected: 0, unreadable: 0, unknownClaims: 0, returned: 0, remaining: 0, priorityRemaining: 0, remainingRows: 0, priorityRemainingRows: 0,
+			recordByteLimit: MAX_RECORD_BYTES, claimByteLimit: CLAIM_BYTES, outputLimit: options.limit };
+		const items: CatalogPriorityRecord[] = [];
+		for (const entry of entries) {
+			coverage.inspected++;
+			try {
+				if (!entry.isFile()) throw new Error("Catalog record is not a regular file");
+				const { record, modifiedAt } = this.readWithTime(entry.name.slice(0, -5));
+				const paths = hostPaths(record);
+				const claim = await observeClaimAsync(paths.claim, paths.identity);
+				coverage.unknownClaims += Number(claim.kind === "unknown");
+				const priority = claim.kind === "live" || ownerIds.includes(record.ownerId ?? "");
+				if (after && comparePriority({ priority, modifiedAt, storageId: record.storageId }, after) <= 0) continue;
+				items.push({ record, modifiedAt, priority, claim });
+			} catch { coverage.unreadable++; }
+		}
+		items.sort((left, right) => comparePriority({ ...left, storageId: left.record.storageId }, { ...right, storageId: right.record.storageId }));
+		const selected = items.slice(0, options.limit);
+		coverage.returned = selected.length;
+		coverage.remaining = items.length - selected.length;
+		const remaining = items.slice(selected.length);
+		coverage.priorityRemaining = remaining.filter((item) => item.priority).length;
+		const rowCount = (item: CatalogPriorityRecord) => !item.record.view || item.record.view.unavailable ? 1 : item.record.view.rows.length;
+		coverage.remainingRows = remaining.reduce((total, item) => total + rowCount(item), 0);
+		coverage.priorityRemainingRows = remaining.filter((item) => item.priority).reduce((total, item) => total + rowCount(item), 0);
+		const last = selected.at(-1);
+		const nextCursor = coverage.remaining && last ? Buffer.from(JSON.stringify({ binding, after: { priority: last.priority, modifiedAt: last.modifiedAt, storageId: last.record.storageId } })).toString("base64url") : null;
+		return { items: selected, coverage, nextCursor, observedAt: new Date().toISOString() };
 	}
 
 	/**

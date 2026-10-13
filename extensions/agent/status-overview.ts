@@ -1,6 +1,7 @@
 /** Compact fleet orientation over one supplied dashboard page, without host acquisition. */
 import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
+import type { CatalogPriorityCoverage } from "./catalog.ts";
 
 export interface StatusOverviewPrimary {
 	readonly sessionId: string;
@@ -19,8 +20,13 @@ export interface StatusOverviewCoverage {
 	/** Complete source inventory for this page, with no additional byte omissions. Summaries are intentional. */
 	readonly complete: boolean;
 	readonly storagesVisited: number;
+	readonly inventory?: CatalogPriorityCoverage;
+	/** Live or caller-owned rows excluded by the overview byte limit. */
+	readonly omittedPriorityRows?: number;
+	/** Distinct records with at least one priority row excluded by the overview byte limit. */
+	readonly omittedPriorityRecords?: number;
 	readonly skipped: number;
-	/** Source-excluded rows plus live or attention rows excluded by this byte bound. */
+	/** Host-view omissions plus working or attention byte omissions; inventory counts source-output exclusions. */
 	readonly omitted: number;
 	readonly omittedPrimaries: number;
 	readonly omittedFailures: number;
@@ -102,7 +108,7 @@ function compactHealth(
 }
 
 function compact(row: AgentConversationSummary): AgentConversationSummary {
-	const { creatingOwnerId: _creatingOwnerId, ...result } = row;
+	const { creatingOwnerId: _creatingOwnerId, rosterOrder: _rosterOrder, ...result } = row;
 	for (const key of ["name", "firstMessage", "latestReply", "ownerLabel", "error"] as const) {
 		const text = row[key];
 		if (text !== undefined) result[key] = excerpt(text);
@@ -138,12 +144,20 @@ function initialOverview(
 	awareness?: EffortAwareness,
 ) {
 	const ordered = [...page.rows].sort(
-		(a, b) => priority(a) - priority(b) || b.modifiedAt - a.modifiedAt || byIdentity(a.id, b.id),
+		(a, b) => a.rosterOrder || b.rosterOrder
+			? Number(b.rosterOrder?.priority ?? false) - Number(a.rosterOrder?.priority ?? false) ||
+				(b.rosterOrder?.modifiedAt ?? b.modifiedAt) - (a.rosterOrder?.modifiedAt ?? a.modifiedAt) || byIdentity(a.id, b.id)
+			: priority(a) - priority(b) || b.modifiedAt - a.modifiedAt || byIdentity(a.id, b.id),
 	);
 	const working = ordered.filter((row) => priority(row) === 0).length;
 	const attention = ordered.filter((row) => priority(row) === 1).length;
 	const quiet = ordered.length - working - attention;
-	const sessions = ordered.slice(0, working + attention + QUIET_SAMPLE).map(compact);
+	let sampledQuiet = 0;
+	const selected = ordered.filter((row) => {
+		if (row.rosterOrder?.priority || priority(row) < 2) return true;
+		return sampledQuiet++ < QUIET_SAMPLE;
+	});
+	const sessions = selected.map(compact);
 	const value = {
 		...(awareness === undefined ? {} : { awareness: structuredClone(awareness) }),
 		sessions,
@@ -161,7 +175,7 @@ function initialOverview(
 				working,
 				attention,
 				quiet,
-				summarizedQuiet: Math.max(0, quiet - QUIET_SAMPLE),
+				summarizedQuiet: quiet - selected.filter((row) => priority(row) === 2).length,
 			},
 			primaries: { observed: primaries.length, summarized: Math.max(0, primaries.length - PRIMARY_SAMPLE) },
 			failures: { observed: failures.length, summarized: Math.max(0, failures.length - FAILURE_SAMPLE) },
@@ -169,6 +183,7 @@ function initialOverview(
 		coverage: {
 			complete: false,
 			storagesVisited: page.coverage.storagesVisited,
+			...(page.coverage.inventory ? { inventory: page.coverage.inventory, omittedPriorityRows: 0, omittedPriorityRecords: 0 } : {}),
 			skipped: page.coverage.skipped,
 			omitted: page.coverage.omitted,
 			omittedPrimaries: 0,
@@ -185,10 +200,13 @@ function initialOverview(
 }
 
 type MutableOverview = ReturnType<typeof initialOverview>;
-type ByteOmissions = { sessions: number; quiet: number; rows: number };
+type ByteOmissions = { sessions: number; quiet: number; rows: number; priority: number };
 
 function sourceReasons(page: AgentConversationPage): string[] {
 	const reasons: string[] = [];
+	const inventory = page.coverage.inventory;
+	if (inventory?.unknownClaims) reasons.push(`${inventory.unknownClaims} writer claims have unknown owners; live-host priority is not established for those records.`);
+	if (inventory?.remaining) reasons.push(`${inventory.remaining} catalog records (${inventory.remainingRows} published rows) fall outside the source output limit; ${inventory.priorityRemaining} records (${inventory.priorityRemainingRows} rows) are live or caller-owned.`);
 	if (
 		!page.coverage.complete ||
 		page.coverage.nextCursor !== null ||
@@ -196,7 +214,9 @@ function sourceReasons(page: AgentConversationPage): string[] {
 		page.coverage.omitted > 0
 	) {
 		reasons.push(
-			"Source inventory is incomplete; counts describe only the supplied page, and the remaining extent is unknown.",
+			inventory
+				? "Source output or published views are incomplete; inventory reports the initial catalog scan and excluded published rows."
+				: "Source inventory is incomplete; counts describe only the supplied page, and the remaining extent is unknown.",
 		);
 		reasons.push(
 			"agent_status has no continuation parameter; use fresh agent_list discovery. Call agent_list without a cursor, then repeat its nextCursor to see more.",
@@ -232,12 +252,13 @@ function excludeAwareness(awareness: EffortAwareness | undefined): boolean {
 	return true;
 }
 
-function excludeRow(value: MutableOverview, dropped: ByteOmissions): void {
+function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds: ReadonlySet<string>): void {
 	const rowBudget = STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
 	const oversized = value.sessions.findIndex((row) => measure(row) > rowBudget);
 	const last = value.sessions.at(-1);
 	if (oversized >= 0 || (last !== undefined && priority(last) === 2)) {
 		const [row] = value.sessions.splice(oversized >= 0 ? oversized : value.sessions.length - 1, 1);
+		dropped.priority += Number(priorityIds.has(row.id));
 		if (priority(row) === 2) {
 			value.summary.sessions.summarizedQuiet++;
 			dropped.quiet++;
@@ -257,7 +278,8 @@ function excludeRow(value: MutableOverview, dropped: ByteOmissions): void {
 		dropped.rows++;
 		return;
 	} else if (value.sessions.length > 0) {
-		value.sessions.pop();
+		const row = value.sessions.pop() as AgentConversationSummary;
+		dropped.priority += Number(priorityIds.has(row.id));
 		dropped.sessions++;
 		value.coverage.omitted++;
 	} else {
@@ -275,9 +297,16 @@ export function buildStatusOverview(
 ): StatusOverview {
 	const value = initialOverview(page, primaries, failures, awareness);
 	const reasons = sourceReasons(page);
-	const dropped: ByteOmissions = { sessions: 0, quiet: 0, rows: 0 };
+	const dropped: ByteOmissions = { sessions: 0, quiet: 0, rows: 0, priority: 0 };
+	const priorityIds = new Set(page.rows.filter((row) => row.rosterOrder?.priority).map((row) => row.id));
 	for (;;) {
 		value.coverage.reasons = [...reasons];
+		if (value.coverage.omittedPriorityRows !== undefined) {
+			value.coverage.omittedPriorityRows = dropped.priority;
+			const retained = new Set(value.sessions.map((row) => row.id));
+			value.coverage.omittedPriorityRecords = new Set(page.rows.filter((row) => priorityIds.has(row.id) && !retained.has(row.id)).map((row) => row.storageId)).size;
+		}
+		if (dropped.priority) value.coverage.reasons.push(`Status byte limit excluded ${dropped.priority} live or caller-owned rows from ${value.coverage.omittedPriorityRecords} records; a record counts once when any of its priority rows was excluded.`);
 		if (dropped.rows > 0)
 			value.coverage.reasons.push(
 				`Status byte limit excluded ${dropped.sessions} working or attention rows, ${dropped.quiet} quiet sample rows, ${value.coverage.omittedPrimaries} primary sample rows, and ${value.coverage.omittedFailures} failure sample rows; use fresh agent_list discovery or targeted agent_status. agent_status has no continuation parameter; call agent_list without a cursor to rediscover these rows.`,
@@ -286,6 +315,6 @@ export function buildStatusOverview(
 		value.coverage.complete = value.coverage.reasons.length === 0 && dropped.rows === 0;
 		if (fixedPointBytes(value) <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
 		value.coverage.byteLimitReached = true;
-		excludeRow(value, dropped);
+		excludeRow(value, dropped, priorityIds);
 	}
 }

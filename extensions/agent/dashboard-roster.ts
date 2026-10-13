@@ -76,6 +76,11 @@ function stateLabel(row: AgentConversationSummary): string {
 				: "";
 	return `${row.awaiting === undefined ? sessionAppearance[row.state].label : "Awaiting"}${owner}`;
 }
+/** Catalog priority and publication time govern roster selection; source row times remain display facts. */
+export function compareRosterRows(left: AgentConversationSummary, right: AgentConversationSummary): number {
+	return Number(right.rosterOrder?.priority ?? false) - Number(left.rosterOrder?.priority ?? false) ||
+		(right.rosterOrder?.modifiedAt ?? right.modifiedAt) - (left.rosterOrder?.modifiedAt ?? left.modifiedAt) || left.id.localeCompare(right.id);
+}
 /** Attention means the operator must act; a terminal outcome alone is a record. */
 export function needsAttention(row: AgentConversationSummary): boolean {
 	if (row.owner === "unavailable" || row.state === "unavailable") return true;
@@ -107,16 +112,24 @@ export function dashboardRecords(
 				`${titleOf(row)} ${row.profile?.role ?? ""} ${row.firstMessage ?? ""} ${row.cwd} ${row.id} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
 			return terms.every((term) => text.includes(term));
 		})
-		.sort((a, b) => b.modifiedAt - a.modifiedAt || a.id.localeCompare(b.id));
+		.sort(compareRosterRows);
+}
+function inventoryText(inventory: NonNullable<AgentDashboardCoverage["inventory"]>): string[] {
+	const parts = [`${inventory.inspected}/${inventory.candidates} catalog records inspected`];
+	if (inventory.unknownClaims) parts.push(`${inventory.unknownClaims} writer claims unknown; live priority not established`);
+	if (inventory.remaining) parts.push(`${inventory.remaining} records (${inventory.remainingRows} rows) outside this page`);
+	if (inventory.priorityRemaining) parts.push(`${inventory.priorityRemaining} live or caller-owned records (${inventory.priorityRemainingRows} rows) outside this page`);
+	return parts;
 }
 /** Coverage of the returned page; an empty or bounded page is not proof of absence. */
 export function coverageText(coverage: AgentDashboardCoverage | undefined): string {
 	if (!coverage) return "";
 	const parts: string[] = [];
+	if (coverage.inventory) parts.push(...inventoryText(coverage.inventory));
 	if (coverage.skipped)
 		parts.push(`${coverage.skipped} store${coverage.skipped === 1 ? "" : "s"} skipped (unknown, not absent)`);
 	if (coverage.omitted) parts.push(`${coverage.omitted} row${coverage.omitted === 1 ? "" : "s"} not loaded`);
-	if (coverage.nextCursor) parts.push("more inventory to inspect");
+	if (coverage.nextCursor) parts.push(coverage.inventory ? "more records to load" : "more inventory to inspect");
 	if (!coverage.complete && !coverage.nextCursor) parts.push("coverage incomplete");
 	return parts.join(" · ");
 }

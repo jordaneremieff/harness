@@ -4,7 +4,7 @@ import type { ConversationFrame, ObservationFrame, TasksFrame } from "./live-fra
 import { storageIdOf } from "./catalog.ts";
 
 export interface AgentObservationHost {
-	list(input?: { cursor?: string }): Promise<AgentConversationPage>;
+	list(input?: { cursor?: string; ownerId?: string }): Promise<AgentConversationPage>;
 	snapshot(id: string, params?: { before?: number }): Promise<ConversationSnapshotPage>;
 	observeLive(
 		id: string,
@@ -15,7 +15,7 @@ export interface AgentObservationHost {
 	subscribeRoster(listener: () => void): () => void;
 }
 export interface AgentObservationSource {
-	list(input?: { cursor?: string }): Promise<AgentConversationPage>;
+	list(input?: { cursor?: string; ownerId?: string }): Promise<AgentConversationPage>;
 	select(id: string | undefined): void;
 	/** Reattach an unavailable selection; a pending or live attachment is unchanged. */
 	refresh(id: string): void;
