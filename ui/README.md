@@ -2,8 +2,6 @@
 
 A local browser interface for ordinary Pi conversations and retained Durable agents. The terminal harness remains independent: the UI does not load as a Pi extension and imports no harness TypeScript. Stop this process to return to terminal-only use.
 
-[Design goals](DESIGN.md) records the operator's guardrails, visual direction, acceptance method and next-version outcomes.
-
 ## Start
 
 ```sh
