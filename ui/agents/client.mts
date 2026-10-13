@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { connectTransport, type FeedKind, type TransportClient, type TransportSubscription } from "../../transport/index.ts";
+import { connectTransport, LocalTransportRefusal, type FeedKind, type TransportClient, type TransportSubscription } from "../../transport/index.ts";
 import { assertOperation, decodeDescriptor, decodeFrame, decodeInput, decodeNativeMessage, decodeResponse, supportedOperations, type Admission, type ConversationFrame, type JsonObject, type OperationName, type RuntimeDescriptor } from "./contract.mts";
 
 export interface HostEndpoint { serverId: string; socketPath: string }
@@ -12,6 +12,7 @@ import { LIMITS } from "../shared/api.ts";
 export interface RequestContext { wireRequestId?: string; identity?: string; requestId?: string; token?: string }
 export interface ObservationSubscription { baseline: ConversationFrame; start(): void; dispose(): Promise<void> }
 const mutations = new Set<OperationName>(["task-submit", "abort", "configure"]);
+const localRefusalCodes = { "frame-limit": "payload_too_large", "queue-limit": "capacity", serialization: "invalid_request" } as const;
 
 /** One negotiated connection. Disconnect never replays work or opens another connection. */
 export class HostLink {
@@ -49,7 +50,8 @@ export class HostLink {
     const timer = setTimeout(() => { controller.abort(expired); void client?.dispose(); }, timeout);
     try {
       client = await connectTransport({ serverId: endpoint.serverId, path: endpoint.socketPath,
-        timeoutMs: timeout, maxFrameBytes: 16 * 1024 * 1024, maxQueueBytes: LIMITS.agentPendingBytes });
+        timeoutMs: timeout, maxFrameBytes: 16 * 1024 * 1024,
+        maxSendFrameBytes: LIMITS.inputFrameBytes - 1, maxQueueBytes: LIMITS.agentPendingBytes });
       controller.signal.throwIfAborted();
       const descriptor = decodeDescriptor(await client.request({ method: "runtime-contract" }, controller.signal));
       controller.signal.throwIfAborted();
@@ -111,6 +113,7 @@ export class HostLink {
       return await this.#client.request({ method: member, params,
         requestId: context.wireRequestId ?? randomUUID(), contract: supportedOperations[member] }, signal);
     } catch (error) {
+      if (error instanceof LocalTransportRefusal) throw new AgentError(localRefusalCodes[error.reason], error.message);
       if (!this.connected) throw new AgentError("host_unavailable", "Host connection lost. Remote admission is not known.", mutations.has(member));
       if (signal?.aborted) throw new AgentError("cancelled", "Host request wait was cancelled. Accepted work continues independently.", mutations.has(member));
       throw error;
