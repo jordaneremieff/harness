@@ -19,10 +19,13 @@ import type { ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as DurableModule from "@earendil-works/pi-durable";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { Type } from "typebox";
 import { createPolicyDurableExtension, type PolicyDurableHost } from "./durable.ts";
 import { makeRuleAudit, proposalRevision, RuleRegistry } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
+import { localDate } from "./store.ts";
 
 const context = BACKGROUND_CONTEXT;
 const MODEL = { provider: "faux", modelId: "faux-1" } as const;
@@ -125,7 +128,7 @@ function probeExtension(counter: { executed: number }): DurableModule.Extension 
 				parameters: Type.Object({}),
 				execute: async () => {
 					counter.executed += 1;
-					return { content: [{ type: "text", text: "probe ran" }] };
+					return { output: [{ type: "text", text: "probe ran" }] };
 				},
 			}),
 		],
@@ -150,11 +153,11 @@ function textOf(message: ToolResultMessage | undefined): string {
 		.join("\n");
 }
 
-function structuredOf(message: ToolResultMessage | undefined): Record<string, unknown> | undefined {
+function detailsOf(message: ToolResultMessage | undefined): Record<string, unknown> | undefined {
 	const details = message?.details;
 	if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
-	const value = (details as Record<string, unknown>).structuredContent;
-	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	assert.equal("structuredContent" in details, false);
+	return details as Record<string, unknown>;
 }
 
 interface Fixture {
@@ -288,7 +291,7 @@ test("native tools use host-relative document settings and environment precedenc
 				fauxAssistantMessage("inspected"),
 			], "inspect mode");
 			const results = await toolResults(fixture.root, "policy_control");
-			assert.equal(structuredOf(results.at(-1))?.mode, override === undefined ? "enforce" : override === "notice" ? "notice" : "observe");
+			assert.equal(detailsOf(results.at(-1))?.mode, override === undefined ? "enforce" : override === "notice" ? "notice" : "observe");
 			assert.equal((await fixture.policy.snapshot()).health.status, "ok");
 			await assert.rejects(readFile(join(fixture.directory, "policy", "rules.jsonl")), /ENOENT/);
 		} finally { await fixture.close(); }
@@ -305,10 +308,10 @@ test("every policy tool answers a model-issued call", async () => {
 		);
 		const rules = await toolResults(fixture.root, "policy_rules");
 		assert.match(textOf(rules.at(-1)), /RULES/);
-		assert.equal(structuredOf(rules.at(-1))?.rules !== undefined, true);
+		assert.equal(detailsOf(rules.at(-1))?.rules !== undefined, true);
 		const rulesDetails = rules.at(-1)?.details as Record<string, unknown> | undefined;
 		assert.equal(typeof rulesDetails?.rules, "number");
-		assert.equal(typeof rulesDetails?.structuredContent, "object");
+		assert.equal(rulesDetails?.structuredContent, undefined);
 
 		await submit(
 			fixture,
@@ -316,14 +319,14 @@ test("every policy tool answers a model-issued call", async () => {
 			"propose a rule",
 		);
 		const proposals = await toolResults(fixture.root, "policy_propose");
-		const proposal = structuredOf(proposals.at(-1));
+		const proposal = detailsOf(proposals.at(-1));
 		assert.equal(proposal?.state, "pending");
 		assert.equal(proposal?.ruleId, "durable-tool-test");
 		assert.equal(typeof proposal?.proposalId, "string");
 		assert.equal(typeof proposal?.proposalRevision, "string");
 		const proposalDetails = proposals.at(-1)?.details as Record<string, unknown> | undefined;
 		assert.equal(typeof proposalDetails?.proposalId, "string");
-		assert.equal(typeof proposalDetails?.structuredContent, "object");
+		assert.equal(proposalDetails?.structuredContent, undefined);
 
 		await submit(
 			fixture,
@@ -342,8 +345,8 @@ test("every policy tool answers a model-issued call", async () => {
 			"approve it",
 		);
 		const approvals = await toolResults(fixture.root, "policy_approve");
-		assert.equal(structuredOf(approvals.at(-1))?.decision, "approved");
-		assert.equal(structuredOf(approvals.at(-1))?.ruleId, "durable-tool-test");
+		assert.equal(detailsOf(approvals.at(-1))?.decision, "approved");
+		assert.equal(detailsOf(approvals.at(-1))?.ruleId, "durable-tool-test");
 		const store = await readFile(join(fixture.storeDir, "rules.jsonl"), "utf8");
 		assert.match(store, /"kind":"decision"/);
 
@@ -353,10 +356,183 @@ test("every policy tool answers a model-issued call", async () => {
 			"report mode",
 		);
 		const controls = await toolResults(fixture.root, "policy_control");
-		assert.equal(structuredOf(controls.at(-1))?.mode, "observe");
+		assert.equal(detailsOf(controls.at(-1))?.mode, "observe");
 	} finally {
 		await fixture.close();
 	}
+});
+
+test("native codemode receives structured policy results and rejects tool errors", async () => {
+	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
+	const fixture = await openFixture({ extension: createCodemodeExtension({ sandbox, models: false }) });
+	try {
+		await submit(fixture, [
+			fauxAssistantMessage(fauxToolCall("codemode", { code: `
+const rules = await tools.policy_rules({ view: "rules" });
+const proposal = await tools.policy_propose(${JSON.stringify(proposeArgs)});
+const approved = await tools.policy_approve({ proposalId: proposal.proposalId, proposalRevision: proposal.proposalRevision, effect: "exact", authorization: "The fixture operator approved this exact proposal." });
+const control = await tools.policy_control({ operation: "mode" });
+text({ rules: rules.rules, pending: proposal.state, approved: approved.decision, mode: control.mode });
+try { await tools.policy_approve({ proposalId: proposal.proposalId, proposalRevision: proposal.proposalRevision, effect: "exact", authorization: "The fixture operator approved this exact proposal." }); }
+catch (error) { text(String(error)); }
+` }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		], "inspect and change the isolated fixture rule");
+		const result = (await toolResults(fixture.root, "codemode")).at(-1);
+		assert.equal(result?.isError, false);
+		assert.match(textOf(result), /"rules":\s*\d+/);
+		assert.match(textOf(result), /"pending":\s*"pending"/);
+		assert.match(textOf(result), /"approved":\s*"approved"/);
+		assert.match(textOf(result), /"mode":\s*"observe"/);
+		assert.match(textOf(result), /No pending proposal with that ID/);
+		assert.equal((await toolResults(fixture.root, "policy_rules")).length, 0);
+	} finally {
+		await fixture.close();
+		await sandbox.close();
+	}
+});
+
+test("nested tools-only and deferred calls receive schema-validated policy corrections", async () => {
+	const seen: string[] = [];
+	const tools = ["tools_only", "deferred_probe"].map((name) => DurableModule.defineTool({
+		name,
+		description: "Return a corrected fixture value",
+		parameters: Type.Object({ old: Type.Optional(Type.String()), value: Type.Optional(Type.String()) }, { additionalProperties: false }),
+		...(name === "tools_only" ? { callers: ["tools"] as const } : { deferred: true as const }),
+		execute: async (args) => {
+			assert.ok(typeof args.value === "string");
+			assert.equal(args.old, undefined);
+			seen.push(args.value);
+			return { output: [{ type: "text" as const, text: args.value }] };
+		},
+	}));
+	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
+	const fixture = await openFixture({ mode: "enforce", extension: DurableModule.defineExtension({ name: "nested-probes", tools }) });
+	fixture.registry.install(createCodemodeExtension({ sandbox, models: false }));
+	try {
+		await addRule(fixture.policy, "nested-correction", {
+			phase: "input",
+			selector: { tools: ["tools_only", "deferred_probe"] },
+			when: { op: "exists", path: ["input", "old"] },
+			action: { kind: "rename-key", path: [], from: "old", to: "value" },
+			onUnavailable: "deny",
+		});
+		const agent = await fixture.root.agent(context);
+		assert.equal(agent.tools.some((tool) => tools.some((probe) => probe.name === tool.name)), false);
+		await submit(fixture, [
+			fauxAssistantMessage(fauxToolCall("codemode", { code: 'text(await tools.tools_only({ old: "first" })); text(await tools.deferred_probe({ old: "second" }));' }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		], "run the nested fixture probes");
+		const result = (await toolResults(fixture.root, "codemode")).at(-1);
+		assert.equal(result?.isError, false, textOf(result));
+		assert.deepEqual(seen, ["first", "second"]);
+		assert.match(textOf(result), /first/);
+		assert.match(textOf(result), /second/);
+	} finally {
+		await fixture.close();
+		await sandbox.close();
+	}
+});
+
+test("the shell contract card reaches a model when bash is callable only", async () => {
+	const fixture = await openFixture({ mode: "annotate", extension: DurableModule.defineExtension({
+		name: "nested-shell",
+		tools: [DurableModule.defineTool({
+			name: "bash", description: "A nonexecuting shell fixture", callers: ["tools"],
+			parameters: Type.Object({ command: Type.String() }),
+			execute: async () => ({ output: [{ type: "text", text: "fixture only" }] }),
+		})],
+	}) });
+	try {
+		const agent = await fixture.root.agent(context);
+		assert.equal(agent.tools.some((tool) => tool.name === "bash"), false);
+		assert.equal(agent.callable.some((tool) => tool.name === "bash"), true);
+		let request = "";
+		await submit(fixture, [(modelContext: unknown) => {
+			request = JSON.stringify(modelContext);
+			return fauxAssistantMessage("done");
+		}], "inspect shell guidance");
+		assert.match(request, /Shell contract snapshot/);
+	} finally { await fixture.close(); }
+});
+
+test("native result.content rules preserve structured values and mark nested errors", async () => {
+	const fixture = await openFixture({ mode: "enforce", extension: DurableModule.defineExtension({
+		name: "structured-probe",
+		tools: [DurableModule.defineTool({
+			name: "structured_probe",
+			description: "Return separate output and structured data",
+			parameters: Type.Object({}),
+			structuredOutputSchema: Type.Object({ value: Type.Number() }),
+			execute: async () => ({ output: [{ type: "text", text: "review this result" }], structuredOutput: { value: 7 }, details: { label: "fixture" } }),
+		}), DurableModule.defineTool({
+			name: "nested_probe",
+			description: "Read a nested result at the public API",
+			parameters: Type.Object({}),
+			execute: async (_args, api, callContext) => {
+				const result = await api.executeTool("structured_probe", {}, callContext);
+				assert.equal(result.isError, true);
+				assert.deepEqual(result.structuredOutput, { value: 7 });
+				assert.deepEqual(result.details, { label: "fixture" });
+				return { output: [{ type: "text", text: "nested error and data preserved" }] };
+			},
+		})],
+	}) });
+	try {
+		for (const [id, action] of [
+			["result-error", { kind: "assert-error" }],
+			["result-guide", { kind: "guide", text: "Inspect the reviewed result." }],
+		] as const) {
+			await addRule(fixture.policy, id, {
+				phase: "result", selector: { tools: ["structured_probe"] },
+				when: { op: "eq", path: ["result", "content", "0", "text"], value: "review this result" },
+				action, onUnavailable: "skip",
+			});
+		}
+		await submit(fixture, [
+			fauxAssistantMessage(fauxToolCall("structured_probe", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("nested_probe", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		], "review direct and nested fixture output");
+		const direct = (await toolResults(fixture.root, "structured_probe")).at(-1);
+		assert.equal(direct?.isError, true);
+		assert.match(textOf(direct), /review this result/);
+		assert.match(textOf(direct), /Inspect the reviewed result/);
+		assert.match(textOf((await toolResults(fixture.root, "nested_probe")).at(-1)), /nested error and data preserved/);
+	} finally { await fixture.close(); }
+});
+
+test("native telemetry preserves the full call interval from the input memo", async (t) => {
+	const start = Date.now();
+	let now = start;
+	t.mock.method(Date, "now", () => now);
+	const fixture = await openFixture({ extension: DurableModule.defineExtension({
+		name: "clock-probe",
+		tools: [DurableModule.defineTool({
+			name: "clock_probe", description: "Advance a controlled clock", parameters: Type.Object({}),
+			execute: async () => {
+				now += 500;
+				return { output: [{ type: "text", text: "clock advanced" }] };
+			},
+		})],
+		hooks: [DurableModule.hook(DurableModule.ToolTask, {
+			beforeTool: (call) => {
+				if (call.name === "clock_probe") now += 250;
+				return undefined;
+			},
+		})],
+	}) });
+	try {
+		await submit(fixture, [
+			fauxAssistantMessage(fauxToolCall("clock_probe", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		], "measure the isolated fixture interval");
+		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date(start))}.jsonl`), "utf8"))
+			.trim().split("\n").map((line) => JSON.parse(line));
+		const record = records.find((entry) => entry.tool === "clock_probe");
+		assert.equal(record?.durationMs, 750);
+		assert.equal(record?.at, new Date(start).toISOString());
+	} finally { await fixture.close(); }
 });
 
 test("every tool declares its replay class explicitly", async () => {
@@ -378,7 +554,7 @@ test("every tool declares its replay class explicitly", async () => {
 				.tools()
 				.map((entry) => [
 					entry.tool.name,
-					(entry.tool as unknown as { outputSchema?: { properties?: Record<string, unknown> } }).outputSchema,
+					entry.tool.structuredOutputSchema as { properties?: Record<string, unknown> } | undefined,
 				]),
 		);
 		const rulesSchema = schemas.get("policy_rules")?.properties;
@@ -636,7 +812,7 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 		assert.match(textOf(explain), /durable-guide-probe/);
 
 		const resetPreview = await call("policy_control", { operation: "reset-preview", id: "durable-guide-probe" });
-		const resetRevision = structuredOf(resetPreview)?.revision;
+		const resetRevision = detailsOf(resetPreview)?.revision;
 		assert.equal(typeof resetRevision, "string");
 		await call("policy_control", {
 			operation: "reset",
@@ -647,7 +823,7 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 		});
 
 		const inspect = await call("policy_control", { operation: "inspect", id: "durable-guide-probe" });
-		const targetRevision = structuredOf(inspect)?.revision;
+		const targetRevision = detailsOf(inspect)?.revision;
 		assert.equal(typeof targetRevision, "string");
 		const disable = await call("policy_control", {
 			operation: "disable",
@@ -656,11 +832,11 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 			revision: targetRevision as string,
 			authorization: "The operator asked to disable the rule.",
 		});
-		assert.equal(structuredOf(disable)?.applied, true);
-		assert.equal(structuredOf(disable)?.state, "disabled");
+		assert.equal(detailsOf(disable)?.applied, true);
+		assert.equal(detailsOf(disable)?.state, "disabled");
 
 		const importPreview = await call("policy_control", { operation: "import-preview", selection: "routing.cat-read" });
-		assert.equal(typeof structuredOf(importPreview)?.revision, "string");
+		assert.equal(typeof detailsOf(importPreview)?.revision, "string");
 	} finally {
 		await fixture.close();
 	}
@@ -692,7 +868,7 @@ test("a reset revision survives process loss", async () => {
 		]);
 		const firstSubmission = await firstRoot.submit({ type: "input", content: "preview reset" }, context);
 		await firstSubmission.wait(context);
-		const firstRevision = structuredOf((await toolResults(firstRoot, "policy_control")).at(-1))?.revision;
+		const firstRevision = detailsOf((await toolResults(firstRoot, "policy_control")).at(-1))?.revision;
 		assert.equal(typeof firstRevision, "string");
 		await first.close(context);
 
@@ -707,7 +883,7 @@ test("a reset revision survives process loss", async () => {
 		]);
 		const secondSubmission = await secondRoot.submit({ type: "input", content: "preview reset again" }, context);
 		await secondSubmission.wait(context);
-		const secondRevision = structuredOf((await toolResults(secondRoot, "policy_control")).at(-1))?.revision;
+		const secondRevision = detailsOf((await toolResults(secondRoot, "policy_control")).at(-1))?.revision;
 		assert.equal(secondRevision, firstRevision);
 		await second.close(context);
 	} finally {

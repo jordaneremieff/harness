@@ -309,46 +309,40 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 		stateDoc: StateDoc,
 	});
 
-	const rulesTool = {
-		...defineTool({
-			name: "policy_rules",
-			description: POLICY_RULES_DESCRIPTION,
-			parameters: PolicyRulesParams,
-			replay: "safe",
-			execute: (args, api, context) => runtime.executeRules(args, api, context),
-		}),
-		outputSchema: Type.Object({
+	const rulesTool = defineTool({
+		name: "policy_rules",
+		description: POLICY_RULES_DESCRIPTION,
+		parameters: PolicyRulesParams,
+		replay: "safe",
+		execute: (args, api, context) => runtime.executeRules(args, api, context),
+		structuredOutputSchema: Type.Object({
 			rules: Type.Number(),
 			pending: Type.Number(),
 			ruleStoreDegraded: Type.Boolean(),
 			ruleStorePath: Type.String(),
 		}),
-	};
-	const proposeTool = {
-		...defineTool({
-			name: "policy_propose",
-			description: POLICY_PROPOSE_DESCRIPTION,
-			parameters: PolicyProposeParams,
-			replay: "unsafe",
-			execute: (args, api, context) => runtime.executePropose(args, api, context),
-		}),
-		outputSchema: Type.Object({
+	});
+	const proposeTool = defineTool({
+		name: "policy_propose",
+		description: POLICY_PROPOSE_DESCRIPTION,
+		parameters: PolicyProposeParams,
+		replay: "unsafe",
+		execute: (args, api, context) => runtime.executePropose(args, api, context),
+		structuredOutputSchema: Type.Object({
 			proposalId: Type.String(),
 			proposalRevision: Type.String(),
 			state: Type.Literal("pending"),
 			operation: Type.String(),
 			ruleId: Type.String(),
 		}),
-	};
-	const approveTool = {
-		...defineTool({
-			name: "policy_approve",
-			description: POLICY_APPROVE_DESCRIPTION,
-			parameters: PolicyApproveParams,
-			replay: "unsafe",
-			execute: (args, api, context) => runtime.executeApprove(args, api, context),
-		}),
-		outputSchema: Type.Object({
+	});
+	const approveTool = defineTool({
+		name: "policy_approve",
+		description: POLICY_APPROVE_DESCRIPTION,
+		parameters: PolicyApproveParams,
+		replay: "unsafe",
+		execute: (args, api, context) => runtime.executeApprove(args, api, context),
+		structuredOutputSchema: Type.Object({
 			proposalId: Type.String(),
 			proposalRevision: Type.String(),
 			decision: Type.Literal("approved"),
@@ -364,17 +358,15 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 			registryHealth: Type.String(),
 			boundary: Type.String(),
 		}),
-	};
-	const controlTool = {
-		...defineTool({
-			name: "policy_control",
-			description: POLICY_CONTROL_DESCRIPTION,
-			parameters: PolicyControlParams,
-			replay: "unsafe",
-			execute: (args, api, context) => runtime.executeControl(args, api, context),
-		}),
-		outputSchema: Type.Record(Type.String(), Type.Unknown()),
-	};
+	});
+	const controlTool = defineTool({
+		name: "policy_control",
+		description: POLICY_CONTROL_DESCRIPTION,
+		parameters: PolicyControlParams,
+		replay: "unsafe",
+		execute: (args, api, context) => runtime.executeControl(args, api, context),
+		structuredOutputSchema: Type.Record(Type.String(), Type.Unknown()),
+	});
 
 	return defineExtension({
 		name: "policy",
@@ -728,7 +720,7 @@ class DurablePolicyRuntime {
 			tool,
 			facts: { input, context: this.publicContext(snapshot, agent, turn, installed) },
 			states: this.statesOf(state, now, turn),
-			schema: agent.tools.find((entry) => entry.name === tool)?.parameters,
+			schema: [...agent.tools, ...agent.callable].find((entry) => entry.name === tool)?.parameters,
 			data: snapshotData([...snapshot.data.values()], now),
 			now,
 			mode: this.effectiveMode(snapshot),
@@ -906,7 +898,7 @@ class DurablePolicyRuntime {
 			...observed,
 			at: memo.at,
 			startedAt: memo.startedAt,
-			pending: startCall(memo.tool, memo.callId, input ?? {}, new Date(now), now, memo.captured),
+			pending: startCall(memo.tool, memo.callId, input ?? {}, new Date(memo.at), memo.startedAt, memo.captured),
 			requested: memoOriginal ?? input,
 			input,
 			rules: rules.filter((rule) => memoRuleIds.has(rule.id)),
@@ -1332,13 +1324,13 @@ class DurablePolicyRuntime {
 		observed.generation = reading.state.generation;
 		observed.resultSeen = true;
 		observed.abortRequested = context.abortSignal?.aborted === true;
-		observed.preGuidanceBytes = textContentBytes(result.content);
+		observed.preGuidanceBytes = textContentBytes(result.output);
 		observed.outputBytes = observed.preGuidanceBytes;
 		const details = objectValue(result.details);
 		const truncation = objectValue(details?.truncation);
 		const update = await this.completeCall(
 			observed,
-			result,
+			{ ...result, content: result.output },
 			result.isError === true ? "execution-error" : "success",
 			this.effectiveMode(snapshot),
 			rules,
@@ -1351,12 +1343,13 @@ class DurablePolicyRuntime {
 		await this.writeTelemetry(update.record);
 		const guidance = update.guidance;
 		if (!guidance && !update.correction) return undefined;
-		let content = result.content;
-		if (guidance) content = [...(content ?? []), { type: "text" as const, text: guidance }];
+		const output = guidance
+			? [...(result.output ?? []), { type: "text" as const, text: guidance }]
+			: result.output;
 		return {
 			...result,
 			...(update.correction ? { isError: true } : {}),
-			...(content !== undefined ? { content } : {}),
+			...(output !== undefined ? { output } : {}),
 		};
 	}
 
@@ -1448,7 +1441,7 @@ class DurablePolicyRuntime {
 		);
 		if (guidance) effect.guidance = guidance;
 		state.retainedGuidance = this.retainedGuidanceOf(state).filter((entry) => !projected.has(entry.id));
-		if (!state.shellCardDelivered && agent.tools.some((tool) => tool.name === "bash")) {
+		if (!state.shellCardDelivered && [...agent.tools, ...agent.callable].some((tool) => tool.name === "bash")) {
 			const card = shellContractCard(
 				snapshot.records.values(),
 				scope,
@@ -1502,8 +1495,9 @@ class DurablePolicyRuntime {
 			ruleStorePath: snapshot.health.path,
 		};
 		return {
-			content: [{ type: "text", text: output }],
-			details: { ...detail, structuredContent: detail },
+			output: [{ type: "text", text: output }],
+			structuredOutput: detail,
+			details: detail,
 		};
 	}
 
@@ -1534,7 +1528,7 @@ class DurablePolicyRuntime {
 		if (view === "check") {
 			const draftContext: DraftCheckContext = toolScope(scope, agent.model);
 			const catalog = {
-				getAllTools: () => agent.tools.map((tool) => ({ name: tool.name, parameters: tool.parameters })),
+				getAllTools: () => [...agent.tools, ...agent.callable].map((tool) => ({ name: tool.name, parameters: tool.parameters })),
 				getActiveTools: () => agent.tools.map((tool) => tool.name),
 			} as unknown as Parameters<typeof checkDraft>[2];
 			return boundedInspection(JSON.stringify(await checkDraft(params, snapshot, catalog, draftContext, parseAuthoringDraft)));
@@ -1568,13 +1562,14 @@ class DurablePolicyRuntime {
 			ruleId: event.ruleId,
 		};
 		return {
-			content: [
+			output: [
 				{
 					type: "text",
 					text: `Pending proposal ${event.id}: ${event.operation} ${event.ruleId}. Revision: ${revision}. It is inert until operator approval. After clear contextual approval, use policy_approve with this proposal ID, revision, and authorized effect. The operator need not type identifiers or a command.`,
 				},
 			],
-			details: { ...detail, structuredContent: detail },
+			structuredOutput: detail,
+			details: detail,
 		};
 	}
 
@@ -1623,8 +1618,9 @@ class DurablePolicyRuntime {
 			snapshot.health.status,
 		);
 		return {
-			content: [{ type: "text", text: boundedInspection(result) }],
-			details: { ...result, structuredContent: result },
+			output: [{ type: "text", text: boundedInspection(result) }],
+			structuredOutput: result,
+			details: result,
 		};
 	}
 
@@ -1652,13 +1648,10 @@ class DurablePolicyRuntime {
 			value,
 			params.operation === "inspect" ? MAX_RULE_EVENT_BYTES * 6 + 4096 : 48 * 1024,
 		);
-		const detail = objectValue(result.details);
 		return {
-			...result,
-			details: {
-				...(detail ?? {}),
-				structuredContent: result.details as JsonValue,
-			} as unknown as Durable.JsonObject,
+			output: result.content,
+			structuredOutput: result.details as JsonValue,
+			details: result.details as Durable.JsonObject,
 		};
 	}
 

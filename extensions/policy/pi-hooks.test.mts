@@ -205,7 +205,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 				result: async () => message,
 			};
 		};
-		const prepared = await runner.emitBeforeAgentStart("Run controlled tools", undefined, {
+		const prepared = await runner.emitBeforeAgentStart({ messageType: "user", prompt: "Run controlled tools" }, {
 			cwd: base,
 			selectedTools: tools.map((tool) => tool.name),
 		});

@@ -234,8 +234,9 @@ if (process.argv[2] === "--transaction-child") {
 	}
 	process.disconnect();
 } else {
-	describe("rule registry transactions", { timeout: 15000 }, () => {
-		it("keeps same-instance data creation serialized", async (t) => {
+	// Each case owns its deadline, including its child process setup and lock retries.
+	describe("rule registry transactions", () => {
+		it("keeps same-instance data creation serialized", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const reg = registry(dir);
 			const results = await Promise.allSettled([
@@ -249,7 +250,7 @@ if (process.argv[2] === "--transaction-child") {
 			assert.equal((await reg.snapshot()).data.get("synthetic")?.revision, binding("first").revision);
 		});
 		for (const kind of ["set/set", "set/remove", "approve/reject"]) {
-			it(`rejects the conflicting ${kind} across registry instances`, async (t) => {
+			it(`rejects the conflicting ${kind} across registry instances`, { timeout: 15000 }, async (t) => {
 				const dir = await directory(t);
 				const first = registry(dir);
 				const second = registry(dir);
@@ -270,7 +271,7 @@ if (process.argv[2] === "--transaction-child") {
 				);
 				await assertWinner(first, left);
 			});
-			it(`rejects the conflicting ${kind} across OS processes`, async (t) => {
+			it(`rejects the conflicting ${kind} across OS processes`, { timeout: 15000 }, async (t) => {
 				const dir = await directory(t);
 				const reg = registry(dir);
 				const [left, right] = await conflictEvents(reg, kind);
@@ -292,7 +293,7 @@ if (process.argv[2] === "--transaction-child") {
 				await assertWinner(reg, left);
 			});
 		}
-		it("serializes catalog initialization across instances", async (t) => {
+		it("serializes catalog initialization across instances", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const rows = [row()];
 			const first = registry(dir, rows);
@@ -308,7 +309,7 @@ if (process.argv[2] === "--transaction-child") {
 			for (const state of await Promise.all([left, right])) assert.equal(state.health.status, "ok");
 			assert.equal((await events(first)).filter((event) => event.kind === "catalog").length, 1);
 		});
-		it("serializes catalog initialization across OS processes", async (t) => {
+		it("serializes catalog initialization across OS processes", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const catalog = [row()];
 			const first = worker(t, { dir, catalog, hold: "transaction" });
@@ -324,7 +325,7 @@ if (process.argv[2] === "--transaction-child") {
 			await Promise.all([first.exited, second.exited]);
 			assert.equal((await events(registry(dir, catalog))).filter((event) => event.kind === "catalog").length, 1);
 		});
-		it("rejects a conflicting exact catalog import before append", async (t) => {
+		it("rejects a conflicting exact catalog import before append", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const rows = [row()];
 			const first = registry(dir, rows);
@@ -342,7 +343,7 @@ if (process.argv[2] === "--transaction-child") {
 			await Promise.all([left, right]);
 			assert.equal((await events(first)).filter((event) => event.kind === "import").length, 1);
 		});
-		it("rejects a conflicting catalog import across OS processes", async (t) => {
+		it("rejects a conflicting catalog import across OS processes", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const catalog = [row()];
 			const reg = registry(dir, catalog);
@@ -368,7 +369,7 @@ if (process.argv[2] === "--transaction-child") {
 			await Promise.all([first.exited, second.exited]);
 			assert.equal((await events(reg)).filter((item) => item.kind === "import").length, 1);
 		});
-		it("releases the lock after validation and append failures", async (t) => {
+		it("releases the lock after validation and append failures", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const reg = registry(dir);
 			await reg.snapshot();
@@ -394,7 +395,7 @@ if (process.argv[2] === "--transaction-child") {
 			await reg.setData(binding("good"), null, audit);
 		});
 		for (const kind of ["symlink", "directory", "mode", "ownership"]) {
-			it(`refuses a lock with unsafe ${kind} without removing it`, async (t) => {
+			it(`refuses a lock with unsafe ${kind} without removing it`, { timeout: 15000 }, async (t) => {
 				const dir = await directory(t);
 				const reg = registry(dir);
 				await reg.snapshot();
@@ -426,7 +427,7 @@ if (process.argv[2] === "--transaction-child") {
 				assert.equal((await reg.snapshot()).data.size, 0);
 			});
 		}
-		it("bounds contention and preserves the orphan lock after process death", async (t) => {
+		it("bounds contention and preserves the orphan lock after process death", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const reg = registry(dir);
 			const [event] = await conflictEvents(reg, "set/set");
@@ -445,7 +446,7 @@ if (process.argv[2] === "--transaction-child") {
 			await reg.writeEvent(event);
 			await assertWinner(reg, event);
 		});
-		it("retains a replaced lock and refuses a success acknowledgement", async (t) => {
+		it("retains a replaced lock and refuses a success acknowledgement", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const reg = registry(dir);
 			await reg.snapshot();
@@ -459,7 +460,7 @@ if (process.argv[2] === "--transaction-child") {
 			await assert.rejects(reg.setData(binding("committed"), null, audit), /lock changed; refusing to remove/);
 			assert.equal(await readFile(join(dir, lockName), "utf8"), "replacement");
 		});
-		it("reports lock cleanup failure without a success acknowledgement", async (t) => {
+		it("reports lock cleanup failure without a success acknowledgement", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const reg = registry(dir);
 			await reg.snapshot();

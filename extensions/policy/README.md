@@ -116,9 +116,17 @@ Harness by call or task identity, and the resolved agent comes from the host's
 conversation handle. Every state update recomputes and commits inside one
 in-process tail.
 
-Durable tool results carry the ordinary `details` fields and add
-`structuredContent` beside them. Each registration declares an `outputSchema`
-that describes that structured object.
+Durable tools return model-visible `output`, program-visible `structuredOutput`,
+and UI `details` separately. Each registration declares `structuredOutputSchema`.
+Ordinary tools keep their `content`, `structuredContent`, and `outputSchema`
+contract. Native hooks project `output` onto the policy authoring fact
+`result.content`; stored rules need no path changes. Result guidance preserves
+structured values and UI details.
+
+Native input checks resolve parameter schemas from both model-offered tools and
+`Agent.callable`, so tools-only and deferred nested calls receive the same
+approved checks. The shell contract card also covers callable-only `bash`.
+Policy telemetry measures the full call-to-result interval, not just execution.
 
 Replay classes: `policy_rules` is `safe` because it only reads.
 `policy_propose`, `policy_approve`, and `policy_control` declare `unsafe` replay,
