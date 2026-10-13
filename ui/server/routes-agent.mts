@@ -35,8 +35,7 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     const message=v.text(body.message, images.length > 0); const mode=v.choice(body.mode,['steer','followUp'],'agent mode'); const draftRevision=v.integer(body.draftRevision,'draft revision');
     const state=await registry.store.target(workspace,target);
     return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.input',target,body,input:{targetKey:state.targetKey,text:message,mode,draftRevision,images}},async()=> {
-      if (images.length) throw new ApiError('unsupported', 'This connection does not accept images. Use a file reference.', 409);
-      const admission=await registry.agents.submit(identity,{operationId:context.operationId ?? '',message,mode});
+      const admission=await registry.agents.submit(identity,{operationId:context.operationId ?? '',message,mode,targetKey:state.targetKey,images});
       return {state:'accepted',receipt:{kind:'durable',identity:admission.identity,submissionId:admission.submissionId,requestId:admission.result.requestId ?? '',deduped:admission.deduped}};
     });
   }

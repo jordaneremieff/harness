@@ -31,7 +31,7 @@ function agents() {
   const counts = {refresh: 0, disconnect: 0, close: 0};
   let detached!: () => void; const disconnected = new Promise<void>(resolve => { detached = resolve; });
   const forbidden = async (): Promise<never> => { throw new Error('No native agent work belongs in this fixture'); };
-  const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, refresh: async () => { counts.refresh++; return empty.scan; },
+  const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, imageInputAvailable: () => false, refresh: async () => { counts.refresh++; return empty.scan; },
     prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
     configure: () => { throw new Error('No native agent configuration'); }, hide: async () => {},
     disconnectWorkspace: async () => { counts.disconnect++; detached(); }, close: async () => { counts.close++; }};
@@ -526,9 +526,9 @@ test('raw image intake authenticates before bytes, saves a target-local lease an
   const draft = data<import('../shared/api.ts').DraftView>(await app.call(path.replace(/images$/, 'draft'), 'PUT', {expectedRevision: 0, text: '', mode: 'prompt', images: [staged.image]}));
   const id = await app.reserve('primary.input', primary.target);
   const receipt = data<OperationView>(await app.call(`/api/primaries/${primary.target.key}/inputs`, 'POST', {epoch: primary.target.epoch, message: '', mode: 'prompt', draftRevision: draft.revision, images: draft.images}, {'Idempotency-Key': id}));
-  assert.equal(receipt.state, 'rejected'); assert.equal(receipt.error?.code, 'unsupported');
-  assert.equal((await app.registry.store.getTarget(boot.workspace.id, saved.targetKey)).draft.images.length, 1);
-  assert.equal(app.registry.primary(primary.target.key).view.activity, 'idle');
+  assert.equal(receipt.state, 'accepted'); assert.equal(receipt.receipt?.kind, 'rpc');
+  if (receipt.receipt?.kind === 'rpc') assert.equal(receipt.receipt.disposition, 'started');
+  assert.equal((await app.registry.store.getTarget(boot.workspace.id, saved.targetKey)).draft.images.length, 0);
 });
 test('raw body deadline cancels a stalled producer without an unhandled rejection', async context => {
   const f = inProcessHttp(context); context.mock.timers.enable({apis: ['setTimeout']}); let reached!: () => void; let cancelled = false;

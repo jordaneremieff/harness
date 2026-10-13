@@ -107,11 +107,11 @@ async function operations(registry:Registry,context:RequestContext) {
   const record=registry.store.record(id);
   if(record.view.kind!=='agent.input'||record.view.state!=='uncertain'||record.view.target?.kind!=='agent'||!record.input) throw new ApiError('unsupported','Only uncertain native inputs support explicit same-key retry.');
   const input=record.input; const target=record.view.target;
-  if (input.images?.length) throw new ApiError('unsupported', 'Image retry requires a connection with validated image input support.', 409);
-  const captured={message:input.text,mode:input.mode,draftRevision:input.submittedDraftRevision};
+  const images = structuredClone(input.images ?? []);
+  const captured={message:input.text,mode:input.mode,draftRevision:input.submittedDraftRevision,...(images.length ? {images} : {})};
   return execute(registry,id,{workspaceId:record.workspaceId,kind:'agent.input',target,body:captured,
-    input:{targetKey:input.targetKey,text:input.text,mode:input.mode,draftRevision:input.submittedDraftRevision},retryUncertainNative:true},async()=> {
-    const admission=await registry.agents.retrySubmit(target.identity,{operationId:id,message:input.text,mode:input.mode as 'steer'|'followUp'});
+    input:{targetKey:input.targetKey,text:input.text,mode:input.mode,draftRevision:input.submittedDraftRevision,images},retryUncertainNative:true},async()=> {
+    const admission=await registry.agents.retrySubmit(target.identity,{operationId:id,message:input.text,mode:input.mode as 'steer'|'followUp',targetKey:input.targetKey,images});
     return {state:'accepted',receipt:{kind:'durable',identity:admission.identity,submissionId:admission.submissionId,requestId:admission.result.requestId??'',deduped:admission.deduped}};
   });
 }

@@ -116,9 +116,9 @@ async function input(registry: Registry, context: RequestContext, workspace: str
   if(body.literal!==undefined) v.boolean(body.literal,'literal flag');
   const state=await registry.store.target(workspace,target);
   return execute(registry,context.operationId,{workspaceId:workspace,kind:'primary.input',target,body,input:{targetKey:state.targetKey,text:message,mode,draftRevision,images,...(body.differentMessage === true ? {differentMessage:true as const} : {})}},async()=> {
-    if (images.length) throw new ApiError('unsupported', 'Image dispatch requires validated RPC image support.', 409);
     const session=registry.primary(target.key,target.epoch,true);
-    const result=await session.input(message,mode,body.literal===true) as {disposition:'started'|'queued'|'handled'};
+    const source=images.length ? registry.store.blobReadSpecForOperation(workspace,state.targetKey,images) : undefined;
+    const result=await session.input(message,mode,body.literal===true,source) as {disposition:'started'|'queued'|'handled'};
     return {state:'accepted',receipt:{kind:'rpc',disposition:result.disposition,result:projectJson(result)}};
   });
 }

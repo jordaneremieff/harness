@@ -15,8 +15,8 @@ export async function execute(registry: Registry, id: string | undefined, reques
     try { return await work(); }
     catch(error) {
       const definite = error instanceof ApiError || error instanceof StateError ||
-        (error instanceof RpcError && !error.uncertain && ['invalid_request','unsupported','not_ready','capacity','rpc_rejected','stale_epoch'].includes(error.code)) ||
-        (error instanceof AgentError && !error.uncertain && ['invalid_request','unsupported','not_ready','capacity','host_unavailable','contract_mismatch','stored'].includes(error.code));
+        (error instanceof RpcError && !error.uncertain && ['invalid_request','unsupported','not_ready','capacity','rpc_rejected','stale_epoch','image_unavailable','image_storage_unavailable','payload_too_large'].includes(error.code)) ||
+        (error instanceof AgentError && !error.uncertain && ['invalid_request','unsupported','not_ready','capacity','host_unavailable','contract_mismatch','stored','image_unavailable','image_storage_unavailable','payload_too_large'].includes(error.code));
       if(!definite) throw error;
       return {state:'rejected',error:errorView(error)};
     }

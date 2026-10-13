@@ -18,7 +18,7 @@ import { dispatchAgent } from './routes-agent.mts';
 import { dispatchView } from './routes-view.mts';
 import { StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
 
-export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'>;
+export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'>;
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
   agents?: (options: AgentServiceOptions) => AgentAdapter; primary?: (options: PrimarySessionOptions) => PrimarySession; measure?: Measure;
   agentStart?: Pick<StartOptions,'spawn'|'timeoutMs'|'agentDir'>};
@@ -58,7 +58,7 @@ export class Registry {
   private constructor(store: StateStore, options: RegistryOptions, journal: Journal) {
     this.store=store;this.options=options;this.journal = journal; this.operations = new Operations(store);
     this.starter = new StoredAgentStarter({store:options.agentStore,executable:options.executable,...options.agentStart});
-    this.agents = (options.agents ?? createAgentService)({store: options.agentStore, installationId: store.instanceId, agentDir: options.agentStart?.agentDir,
+    this.agents = (options.agents ?? createAgentService)({store: options.agentStore, stateDir: store.root, installationId: store.instanceId, agentDir: options.agentStart?.agentDir,
       onRoster: page => {
         const roster = projectRoster({...page,rows:page.changed??page.rows});
         this.rosterRevision++;
@@ -76,7 +76,7 @@ export class Registry {
         if (!this.admitObservation(workspaceId,identity,connectionEpoch)) return;
         const slot = this.observations.get(workspaceId)?.desired.get(identity);
         if(slot) slot.failed = state !== 'live';
-        const capabilities = this.capabilities(supported);
+        const capabilities = this.capabilities(identity,supported);
         const data={identity,connectionEpoch,state,...(reason ? {reason:safeText(reason,512)} : {}),capabilities};
         const availability = this.availability.get(workspaceId) ?? new Map();
         availability.set(identity,data); this.availability.set(workspaceId,availability);
@@ -95,9 +95,9 @@ export class Registry {
       return registry;
     } catch (error) { await store.close(); throw error; }
   }
-  private capabilities(supported?: Record<string,boolean>): AgentCapabilities {
+  private capabilities(identity: string, supported?: Record<string,boolean>): AgentCapabilities {
     return {history: supported?.snapshot === true, observe: ['observe-open','observe-frame','observe-close','snapshot'].every(key=>supported?.[key] === true),
-      input:supported?.['task-submit'] === true,images:false,abort:supported?.abort === true,configure:false,inspect:supported?.inspect === true};
+      input:supported?.['task-submit'] === true,images:supported?.['task-submit'] === true && this.agents.imageInputAvailable(identity),abort:supported?.abort === true,configure:false,inspect:supported?.inspect === true};
   }
   async prepareTarget(workspace: string, target: Extract<Target,{kind:'agent'}>): Promise<TargetPreparation> {
     let availability: TargetPreparation['availability'] = 'live';
@@ -117,7 +117,7 @@ export class Registry {
       this.frames.get(workspace)?.delete(target.identity); this.availability.get(workspace)?.delete(target.identity);
       await this.observe(workspace);
     }
-    return {targetState:await this.store.target(workspace,target),availability,capabilities:this.capabilities(supported),...(reason ? {reason} : {})};
+    return {targetState:await this.store.target(workspace,target),availability,capabilities:this.capabilities(target.identity,supported),...(reason ? {reason} : {})};
   }
   /** Request receipts are separate from input operations and never contain composer text. */
   startAgent(workspace: string, identity: string, requestId: string): Promise<TargetPreparation> {
@@ -190,19 +190,16 @@ export class Registry {
   }
   private async openOnce(cwd: string, sessionFile?: string, workspaceId?: string) {
     this.admitPrimary();
-    const key = randomUUID(); let session: PrimarySession; let textClearId: string | undefined;
+    const key = randomUUID(); let session: PrimarySession;
     try {
       if(sessionFile) await this.claimPath(sessionFile,key);
       this.admitPrimary();
       session = (this.options.primary ?? (options=>new PrimarySession(options)))({key,cwd,sessionFile,executable:this.options.executable,
         measure:this.options.measure ? (stage,id,at,bytes)=>this.options.measure?.(stage,`${key}:${id}`,at,bytes) : undefined,
         publish: (name,target,data) => this.publish(name,target,data), onChange:()=>this.metadataChanged(),
-        onRecoveredQueue: async queue => {
-          textClearId ??= await this.operations.beginQueueClear(this.queueWorkspaces.get(key) ?? await this.workspace(), {kind: 'primary', key, epoch: session.view.epoch}, queue.steering.length + queue.followUp.length);
-          const clearId = textClearId;
-          try { await this.operations.retainQueue(clearId, queue); textClearId = undefined; }
-          catch (error) { await this.operations.settleQueueClearFailure(clearId, true); throw error; }
-        }});
+        onBeforeClearQueue: async (target, pendingCount) => this.operations.beginQueueClear(this.queueWorkspaces.get(key) ?? await this.workspace(), target, pendingCount),
+        onRecoveredQueue: (clearOperationId, queue) => this.operations.retainQueue(clearOperationId, queue),
+        onQueueClearFailed: (clearOperationId, uncertain) => this.operations.settleQueueClearFailure(clearOperationId, uncertain)});
       this.sessions.set(key,session); this.saved.set(key,session.view);
       if(workspaceId) this.queueWorkspaces.set(key,workspaceId);
       await this.store.savePrimaries(this.views());
@@ -346,11 +343,14 @@ export class Registry {
     const name = v.imageName(context.url.searchParams.get('name'));
     const epoch = saved.target.kind === 'primary' ? v.integer(Number(context.url.searchParams.get('epoch')), 'primary epoch', 1) : undefined;
     if (saved.target.kind === 'primary' && context.url.searchParams.getAll('epoch').length !== 1) throw new ApiError('invalid_request', 'Image intake requires one primary epoch.');
+    context.authorize();
+    if (this.closing) throw new ApiError('not_ready', 'The backend no longer accepts work.', 503);
+    if (saved.target.kind === 'agent') await this.agents.prepare(saved.target.identity);
     const guard = () => {
       context.authorize();
       if (this.closing) throw new ApiError('not_ready', 'The backend no longer accepts work.', 503);
       if (saved.target.kind === 'primary') this.primary(saved.target.key, saved.target.epoch, true);
-      else throw new ApiError('unsupported', 'This connection does not accept images. Use a file reference.', 409);
+      else if (!this.agents.imageInputAvailable(saved.target.identity)) throw new ApiError('unsupported', 'This connection does not accept images. Use a file reference.', 409);
     };
     const reservation = await this.store.reserveImageUpload(workspace, key, {name, mimeType: headers.mimeType, epoch, declaredBytes: headers.declaredBytes}, guard);
     try {
