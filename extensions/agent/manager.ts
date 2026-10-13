@@ -23,9 +23,9 @@ import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, type HostConnection, type HostObservationListener } from "./host-client.ts";
 import { hostRequestVersionError, hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { observeClaim, observeClaimAsync, type ClaimObservation } from "./claims.ts";
+import { observeClaim, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
-import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
+import type { AgentConversationPage, AgentConversationSummary, AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
 import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
@@ -139,9 +139,9 @@ function compactStatus(value: unknown): unknown {
 	};
 }
 
-function claimOwner(claim: ClaimObservation | undefined): AgentConversationSummary["owner"] {
-	if (claim?.kind === "live") return "here";
-	return claim?.kind === "unknown" ? "unavailable" : "unknown";
+function claimOwner(claim: ClaimObservation): AgentConversationSummary["owner"] {
+	if (claim.kind === "live") return "here";
+	return claim.kind === "unknown" ? "unavailable" : "unknown";
 }
 
 function errorText(error: unknown): string {
@@ -666,8 +666,8 @@ export class AgentManager {
 		return { rows, nextCursor: complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url"), coverage: { complete, storagesVisited: visits, unavailable, profileHints }, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
 	}
 
-	async dashboardPage(input: { cursor?: string; ownerId?: string } = {}): Promise<AgentConversationPage> {
-		const rows: AgentConversationSummary[] = [];
+	async dashboardPage(input: { cursor?: string; ownerId?: string } = {}): Promise<AgentPriorityPage> {
+		const rows: AgentPrioritySummary[] = [];
 		const page = await this.catalog.priorityPage({ cursor: input.cursor, ownerIds: input.ownerId ? [input.ownerId] : [...this.primaries.keys()], limit: MAX_INVENTORY_PAGES * 20 });
 		const coverage = { complete: page.nextCursor === null && page.coverage.unreadable === 0 && page.coverage.unknownClaims === 0, storagesVisited: page.coverage.inspected,
 			skipped: page.coverage.unreadable, omitted: 0, nextCursor: page.nextCursor, inventory: page.coverage,
@@ -686,7 +686,7 @@ export class AgentManager {
 		return { rows, coverage, observedAt: page.observedAt };
 	}
 
-	private async catalogRows(record: CatalogRecord, observedClaim?: ClaimObservation): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
+	private async catalogRows(record: CatalogRecord, observedClaim: ClaimObservation): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
 		const starting = this.launchRows.get(record.storageId);
 		const view = record.view;
 		if (starting) {
@@ -698,8 +698,7 @@ export class AgentManager {
 		if (!view || view.unavailable) {
 			return { skipped: 1, omitted: 0, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: claimOwner(observedClaim), state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
 		}
-		const paths = hostPaths(record);
-		const claim = observedClaim ?? await observeClaimAsync(paths.claim, paths.identity);
+		const claim = observedClaim;
 		const rows = view.rows.map((source) => {
 			const row = { ...source } as AgentConversationSummary;
 			row.owner = claimOwner(claim);
@@ -1145,7 +1144,7 @@ export class AgentManager {
 		const observed = page ?? await this.dashboardPage({ ownerId });
 		const text = this.figuresForRows(ownerId, observed.rows);
 		const inventory = observed.coverage.inventory;
-		return inventory && (inventory.remaining || inventory.unreadable || inventory.unknownClaims)
+		return (inventory.remaining || inventory.unreadable || inventory.unknownClaims)
 			? text.replace(/(agents: \d+\/\d+)( active)/u, "$1+$2") : text;
 	}
 

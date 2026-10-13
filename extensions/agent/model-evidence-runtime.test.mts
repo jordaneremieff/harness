@@ -18,6 +18,7 @@ import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { AgentManager } from "./manager.ts";
 import { buildStatusOverview, type StatusOverview } from "./status-overview.ts";
 import { MODEL_SELECTION_GUIDANCE } from "./control-guidance.ts";
+import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import type { FleetStatus } from "./fleet-status.ts";
 
 function primaryTools(): Map<string, ToolDefinition> {
@@ -166,7 +167,7 @@ it("keeps default manager status byte-equivalent to its established overview and
 	const selected = { conversation: { fixture: "unchanged" } };
 	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.root, observe: async (_record, method, params) => { assert.equal(method, "status"); assert.equal(params.sessionId, f.metadata.storageId); return selected; } });
 	t.after(() => manager.close());
-	const page = { rows: [], coverage: { complete: true, storagesVisited: 0, skipped: 0, omitted: 0, nextCursor: null }, observedAt: "2026-01-01T00:00:00.000Z" };
+	const page = { ...rosterPage([]), observedAt: "2026-01-01T00:00:00.000Z" };
 	t.mock.method(manager, "dashboardPage", async () => page);
 	assert.equal(JSON.stringify(await manager.status()), JSON.stringify(buildStatusOverview(page, [], [])));
 	assert.equal(await manager.status(f.metadata.storageId), selected);

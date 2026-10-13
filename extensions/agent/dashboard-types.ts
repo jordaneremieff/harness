@@ -136,10 +136,10 @@ export interface AgentConversationSnapshot {
 
 /** Bounded coverage of one dashboard page. */
 export interface AgentDashboardCoverage {
-	/** Candidate scan and output bounds for the live priority reader, when used. */
-	inventory?: CatalogPriorityCoverage;
+	/** Candidate scan and output bounds from the manager's priority reader. */
+	inventory: CatalogPriorityCoverage;
 	/** Per-storage view exclusions for distinct accounting across refreshed priority pages. */
-	projections?: Record<string, { skipped: number; omitted: number }>;
+	projections: Record<string, { skipped: number; omitted: number }>;
 	/** True when the catalog scan and page output reached the inventory end. */
 	complete: boolean;
 	/** Storages visited for this page. */
@@ -148,15 +148,12 @@ export interface AgentDashboardCoverage {
 	skipped: number;
 	/** Rows excluded by host views; inventory separately counts rows outside the page output limit. */
 	omitted: number;
-	/** Continuation for more output; priority reads report the snapshot remainder in inventory, while generic pages leave its extent unknown. */
+	/** Continuation for more output; inventory reports the snapshot remainder. */
 	nextCursor: string | null;
 }
 
 /** Merge retained rows while counting one latest inventory scan and one projection per storage. */
 export function mergeAgentCoverage(previous: AgentDashboardCoverage, current: AgentDashboardCoverage): AgentDashboardCoverage {
-	if (!current.inventory || !previous.projections || !current.projections) return { ...current,
-		skipped: previous.skipped + current.skipped, omitted: previous.omitted + current.omitted,
-		storagesVisited: previous.storagesVisited + current.storagesVisited };
 	const projections = { ...previous.projections, ...current.projections };
 	return { ...current, projections, storagesVisited: current.inventory.inspected,
 		skipped: current.inventory.unreadable + Object.values(projections).reduce((total, item) => total + item.skipped, 0),
@@ -169,6 +166,14 @@ export interface AgentConversationPage {
 	coverage: AgentDashboardCoverage;
 	/** Observation time as an ISO timestamp. */
 	observedAt: string;
+}
+
+/** Manager roster rows carry caller-side rank; native publications and startup rows do not. */
+export interface AgentPrioritySummary extends AgentConversationSummary {
+	rosterOrder: { priority: boolean; modifiedAt: number };
+}
+export interface AgentPriorityPage extends AgentConversationPage {
+	rows: readonly AgentPrioritySummary[];
 }
 
 /**

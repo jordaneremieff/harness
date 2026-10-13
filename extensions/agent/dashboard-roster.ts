@@ -76,7 +76,7 @@ function stateLabel(row: AgentConversationSummary): string {
 				: "";
 	return `${row.awaiting === undefined ? sessionAppearance[row.state].label : "Awaiting"}${owner}`;
 }
-/** Catalog priority and publication time govern roster selection; source row times remain display facts. */
+/** Catalog rank orders observed rows; a just-created startup row uses its source time until the next catalog refresh. */
 export function compareRosterRows(left: AgentConversationSummary, right: AgentConversationSummary): number {
 	return Number(right.rosterOrder?.priority ?? false) - Number(left.rosterOrder?.priority ?? false) ||
 		(right.rosterOrder?.modifiedAt ?? right.modifiedAt) - (left.rosterOrder?.modifiedAt ?? left.modifiedAt) || left.id.localeCompare(right.id);
@@ -125,11 +125,11 @@ function inventoryText(inventory: NonNullable<AgentDashboardCoverage["inventory"
 export function coverageText(coverage: AgentDashboardCoverage | undefined): string {
 	if (!coverage) return "";
 	const parts: string[] = [];
-	if (coverage.inventory) parts.push(...inventoryText(coverage.inventory));
+	parts.push(...inventoryText(coverage.inventory));
 	if (coverage.skipped)
 		parts.push(`${coverage.skipped} store${coverage.skipped === 1 ? "" : "s"} skipped (unknown, not absent)`);
 	if (coverage.omitted) parts.push(`${coverage.omitted} row${coverage.omitted === 1 ? "" : "s"} not loaded`);
-	if (coverage.nextCursor) parts.push(coverage.inventory ? "more records to load" : "more inventory to inspect");
+	if (coverage.nextCursor) parts.push("more records to load");
 	if (!coverage.complete && !coverage.nextCursor) parts.push("coverage incomplete");
 	return parts.join(" · ");
 }

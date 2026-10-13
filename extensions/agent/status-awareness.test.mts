@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { buildStatusOverview, STATUS_OVERVIEW_BYTE_LIMIT } from "./status-overview.ts";
 import { StatusToolOutputSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 
 function awareness(): EffortAwareness {
@@ -11,7 +12,7 @@ function awareness(): EffortAwareness {
 		threads: { items: [], coverage: { visited: 0, records: 0, unreadable: 0, missingHints: 0, omittedHints: 0, omittedResults: 0, unvisited: false, complete: true, reasons: [] }, limits: { visits: 256, results: 12, bytes: 8192, hintsPerRecord: 8 } },
 	};
 }
-const page = { rows: [], coverage: { complete: true, storagesVisited: 0, skipped: 0, omitted: 0, nextCursor: null }, observedAt: "2026-01-01T00:00:00.000Z" };
+const page = { ...rosterPage([]), observedAt: "2026-01-01T00:00:00.000Z" };
 
 it("adds current effort awareness only to the tool schema, not the native host response", () => {
 	const result = buildStatusOverview(page, [], [], awareness());
@@ -25,7 +26,7 @@ it("adds current effort awareness only to the tool schema, not the native host r
 it("accounts for awareness omissions within the existing status byte bound", () => {
 	const source = awareness();
 	for (let i = 0; i < 20; i++) source.presence.efforts.push({ id: `effort-${i}`, cwd: "/work", startedAt: "2026-01-01", liveness: "live", relationship: "cwd", intentClaim: { purpose: "😀".repeat(256), integration: "next".repeat(400), authority: "quoted".repeat(300), scope: { paths: ["src"], branches: ["work"] }, updatedAt: "2026-01-01" } });
-	const result = buildStatusOverview({ ...page, rows: [{ id: "active", storageId: "active", cwd: "/work", modifiedAt: 1, owner: "here", state: "working", cost: 0, partial: false }] }, [], [], source);
+	const result = buildStatusOverview({ ...page, rows: [{ id: "active", storageId: "active", cwd: "/work", modifiedAt: 1, rosterOrder: { priority: false, modifiedAt: 1 }, owner: "here", state: "working", cost: 0, partial: false }] }, [], [], source);
 	assert.equal(result.sessions[0]?.id, "active", "optional awareness does not evict active work that fits");
 	structuredObservation(StatusToolOutputSchema, result);
 	assert.ok(result.coverage.bytes <= STATUS_OVERVIEW_BYTE_LIMIT);

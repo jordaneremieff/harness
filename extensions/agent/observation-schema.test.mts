@@ -9,7 +9,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId, ToolExecutionResult } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { AgentManager } from "./manager.ts";
-import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, nativeStructuredObservation, structuredObservation } from "./observation-schema.ts";
+import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, structuredObservation } from "./observation-schema.ts";
+import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { boundCatalogView } from "./catalog-view.ts";
@@ -226,8 +227,8 @@ it("recovery health accepts retained failures without timestamps and timed compa
 		assert.deepEqual(nativeStructuredObservation(AgentConversationSummarySchema, summary, "Recovery health").structuredOutput, summary);
 		const activity = { ...metadata, compactionFailure: failure };
 		assert.deepEqual(structuredObservation(ActivityOutputSchema.properties.metadata, activity), activity);
-		const overview = { ...buildStatusOverview({ rows: [row], observedAt: new Date(0).toISOString(), coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null } }, [], []), sessions: [summary] };
-		structuredObservation(StatusOutputSchema, overview);
+		const overview = { ...buildStatusOverview(rosterPage([row]), [], []), sessions: [summary] };
+		structuredObservation(StatusToolOutputSchema, overview);
 	}
 	assert.throws(() => structuredObservation(AgentConversationSummarySchema, { ...row, health: { compactionFailure: { ...retained, at: 7 } } }), /\/health\/compactionFailure\/at/u);
 	assert.throws(() => structuredObservation(ActivityOutputSchema.properties.metadata, { ...metadata, compactionFailure: { ...retained, at: 7 } }), /\/compactionFailure\/at/u);
@@ -243,8 +244,8 @@ it("recovery health accepts retained failures without timestamps and timed compa
 it("validates the starting roster row and no-target status overview", () => {
 	const row = { id: "new-storage", storageId: "new-storage", cwd: "/work", firstMessage: "New task", model: { provider: "test", modelId: "model", thinkingLevel: "high" }, modifiedAt: 0, owner: "unknown" as const, state: "starting" as const, cost: 0, partial: false };
 	structuredObservation(AgentConversationSummarySchema, row);
-	const overview = buildStatusOverview({ rows: [row], observedAt: new Date(0).toISOString(), coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null } }, [], []);
-	structuredObservation(StatusOutputSchema, overview);
+	const overview = buildStatusOverview(rosterPage([row]), [], []);
+	structuredObservation(StatusToolOutputSchema, overview);
 	assert.equal(overview.sessions[0]?.state, "starting");
 	assert.equal(overview.sessions[0]?.firstMessage, "New task");
 });
@@ -292,7 +293,7 @@ it("validates every status variant, including unavailable rows", async (t) => {
 	const record = manager.catalog.create({ cwd: "/work", agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "test", modelId: "model" }, thinkingLevel: "off", ownerId: "owner-1" });
 	const rows = await readDashboard(host.harness, fixtureStorageId, {}, { owner: "here", cwd: "/work" }, BACKGROUND_CONTEXT);
 	manager.catalog.updateView(record.storageId, boundCatalogView({ updatedAt: new Date().toISOString(), rows: rows.map((row) => ({ ...row, storageId: record.storageId })), storageId: record.storageId }));
-	const overview = structuredObservation(StatusOutputSchema, buildStatusOverview(await manager.dashboardPage(), [], [])) as { sessions: readonly { state: string }[]; coverage: { complete: boolean; bytes: number } };
+	const overview = structuredObservation(StatusToolOutputSchema, buildStatusOverview(await manager.dashboardPage(), [], [])) as { sessions: readonly { state: string }[]; coverage: { complete: boolean; bytes: number } };
 	assert.equal(overview.sessions[0]?.state, "done");
 	assert.ok(overview.coverage.bytes > 0);
 	const session = structuredObservation(StatusOutputSchema, await manager.status(`${record.storageId}:1`)) as { conversation?: unknown };
@@ -308,7 +309,7 @@ it("validates every status variant, including unavailable rows", async (t) => {
 	});
 	t.after(() => failing.close());
 	failing.catalog.create({ cwd: "/work", agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "test", modelId: "model" }, thinkingLevel: "off", ownerId: "owner-1" });
-	const unavailable = structuredObservation(StatusOutputSchema, buildStatusOverview(await failing.dashboardPage(), [], [])) as { sessions: readonly { state: string; owner: string; error?: string; partial: boolean }[] };
+	const unavailable = structuredObservation(StatusToolOutputSchema, buildStatusOverview(await failing.dashboardPage(), [], [])) as { sessions: readonly { state: string; owner: string; error?: string; partial: boolean }[] };
 	const unavailableRow = unavailable.sessions.find((row) => row.state === "unavailable");
 	assert.ok(unavailableRow);
 	assert.equal(unavailableRow?.partial, true);

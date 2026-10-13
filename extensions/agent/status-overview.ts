@@ -1,5 +1,5 @@
 /** Compact fleet orientation over one supplied dashboard page, without host acquisition. */
-import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
+import type { AgentPriorityPage, AgentConversationSummary } from "./dashboard-types.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { CatalogPriorityCoverage } from "./catalog.ts";
 
@@ -20,11 +20,11 @@ export interface StatusOverviewCoverage {
 	/** Complete source inventory for this page, with no additional byte omissions. Summaries are intentional. */
 	readonly complete: boolean;
 	readonly storagesVisited: number;
-	readonly inventory?: CatalogPriorityCoverage;
+	readonly inventory: CatalogPriorityCoverage;
 	/** Live or caller-owned rows excluded by the overview byte limit. */
-	readonly omittedPriorityRows?: number;
+	readonly omittedPriorityRows: number;
 	/** Distinct records with at least one priority row excluded by the overview byte limit. */
-	readonly omittedPriorityRecords?: number;
+	readonly omittedPriorityRecords: number;
 	readonly skipped: number;
 	/** Host-view omissions plus working or attention byte omissions; inventory counts source-output exclusions. */
 	readonly omitted: number;
@@ -138,23 +138,21 @@ function byIdentity(a: string, b: string): number {
 }
 
 function initialOverview(
-	page: AgentConversationPage,
+	page: AgentPriorityPage,
 	primaries: readonly StatusOverviewPrimary[],
 	failures: readonly StatusOverviewFailure[],
 	awareness?: EffortAwareness,
 ) {
 	const ordered = [...page.rows].sort(
-		(a, b) => a.rosterOrder || b.rosterOrder
-			? Number(b.rosterOrder?.priority ?? false) - Number(a.rosterOrder?.priority ?? false) ||
-				(b.rosterOrder?.modifiedAt ?? b.modifiedAt) - (a.rosterOrder?.modifiedAt ?? a.modifiedAt) || byIdentity(a.id, b.id)
-			: priority(a) - priority(b) || b.modifiedAt - a.modifiedAt || byIdentity(a.id, b.id),
+		(a, b) => Number(b.rosterOrder.priority) - Number(a.rosterOrder.priority) ||
+			b.rosterOrder.modifiedAt - a.rosterOrder.modifiedAt || byIdentity(a.id, b.id),
 	);
 	const working = ordered.filter((row) => priority(row) === 0).length;
 	const attention = ordered.filter((row) => priority(row) === 1).length;
 	const quiet = ordered.length - working - attention;
 	let sampledQuiet = 0;
 	const selected = ordered.filter((row) => {
-		if (row.rosterOrder?.priority || priority(row) < 2) return true;
+		if (row.rosterOrder.priority || priority(row) < 2) return true;
 		return sampledQuiet++ < QUIET_SAMPLE;
 	});
 	const sessions = selected.map(compact);
@@ -183,7 +181,7 @@ function initialOverview(
 		coverage: {
 			complete: false,
 			storagesVisited: page.coverage.storagesVisited,
-			...(page.coverage.inventory ? { inventory: page.coverage.inventory, omittedPriorityRows: 0, omittedPriorityRecords: 0 } : {}),
+			inventory: page.coverage.inventory, omittedPriorityRows: 0, omittedPriorityRecords: 0,
 			skipped: page.coverage.skipped,
 			omitted: page.coverage.omitted,
 			omittedPrimaries: 0,
@@ -202,11 +200,11 @@ function initialOverview(
 type MutableOverview = ReturnType<typeof initialOverview>;
 type ByteOmissions = { sessions: number; quiet: number; rows: number; priority: number };
 
-function sourceReasons(page: AgentConversationPage): string[] {
+function sourceReasons(page: AgentPriorityPage): string[] {
 	const reasons: string[] = [];
 	const inventory = page.coverage.inventory;
-	if (inventory?.unknownClaims) reasons.push(`${inventory.unknownClaims} writer claims have unknown owners; live-host priority is not established for those records.`);
-	if (inventory?.remaining) reasons.push(`${inventory.remaining} catalog records (${inventory.remainingRows} published rows) fall outside the source output limit; ${inventory.priorityRemaining} records (${inventory.priorityRemainingRows} rows) are live or caller-owned.`);
+	if (inventory.unknownClaims) reasons.push(`${inventory.unknownClaims} writer claims have unknown owners; live-host priority is not established for those records.`);
+	if (inventory.remaining) reasons.push(`${inventory.remaining} catalog records (${inventory.remainingRows} published rows) fall outside the source output limit; ${inventory.priorityRemaining} records (${inventory.priorityRemainingRows} rows) are live or caller-owned.`);
 	if (
 		!page.coverage.complete ||
 		page.coverage.nextCursor !== null ||
@@ -214,9 +212,7 @@ function sourceReasons(page: AgentConversationPage): string[] {
 		page.coverage.omitted > 0
 	) {
 		reasons.push(
-			inventory
-				? "Source output or published views are incomplete; inventory reports the initial catalog scan and excluded published rows."
-				: "Source inventory is incomplete; counts describe only the supplied page, and the remaining extent is unknown.",
+			"Source output or published views are incomplete; inventory reports the initial catalog scan and excluded published rows.",
 		);
 		reasons.push(
 			"agent_status has no continuation parameter; use fresh agent_list discovery. Call agent_list without a cursor, then repeat its nextCursor to see more.",
@@ -290,7 +286,7 @@ function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds:
 
 /** Keep coordinator fields on working and attention rows; sample quiet history after those rows. */
 export function buildStatusOverview(
-	page: AgentConversationPage,
+	page: AgentPriorityPage,
 	primaries: readonly StatusOverviewPrimary[],
 	failures: readonly StatusOverviewFailure[],
 	awareness?: EffortAwareness,
@@ -298,14 +294,12 @@ export function buildStatusOverview(
 	const value = initialOverview(page, primaries, failures, awareness);
 	const reasons = sourceReasons(page);
 	const dropped: ByteOmissions = { sessions: 0, quiet: 0, rows: 0, priority: 0 };
-	const priorityIds = new Set(page.rows.filter((row) => row.rosterOrder?.priority).map((row) => row.id));
+	const priorityIds = new Set(page.rows.filter((row) => row.rosterOrder.priority).map((row) => row.id));
 	for (;;) {
 		value.coverage.reasons = [...reasons];
-		if (value.coverage.omittedPriorityRows !== undefined) {
-			value.coverage.omittedPriorityRows = dropped.priority;
-			const retained = new Set(value.sessions.map((row) => row.id));
-			value.coverage.omittedPriorityRecords = new Set(page.rows.filter((row) => priorityIds.has(row.id) && !retained.has(row.id)).map((row) => row.storageId)).size;
-		}
+		value.coverage.omittedPriorityRows = dropped.priority;
+		const retained = new Set(value.sessions.map((row) => row.id));
+		value.coverage.omittedPriorityRecords = new Set(page.rows.filter((row) => priorityIds.has(row.id) && !retained.has(row.id)).map((row) => row.storageId)).size;
 		if (dropped.priority) value.coverage.reasons.push(`Status byte limit excluded ${dropped.priority} live or caller-owned rows from ${value.coverage.omittedPriorityRecords} records; a record counts once when any of its priority rows was excluded.`);
 		if (dropped.rows > 0)
 			value.coverage.reasons.push(

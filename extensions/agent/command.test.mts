@@ -264,11 +264,7 @@ it("passes the dashboard creation callback through the native new action", async
 	assert.deepEqual(result, { text: "Started", sessionId: rows[0].id });
 });
 
-const page = (items: readonly AgentConversationSummary[]) => ({
-	rows: items,
-	coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null },
-	observedAt: new Date().toISOString(),
-});
+const page = rosterPage;
 function completionFixture(sessions: () => Promise<readonly AgentConversationSummary[]> = async () => rows) {
 	return createAgentCommand(
 		[

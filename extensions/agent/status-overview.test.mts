@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import type { AgentConversationPage, AgentConversationSummary } from "./dashboard-types.ts";
+import type { AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
 import type { AwaitFact } from "./await-facts.ts";
+import { coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
 
 const awaiting: AwaitFact = {
 	runId: 1, heldInputs: [2], results: [{ result: { sessionId: "producer:3", submissionId: 4, requestId: "exact-request" }, status: "pending" }],
@@ -17,18 +18,20 @@ import {
 	InboxStateSchema,
 	LiveStateSchema,
 	StatusOutputSchema,
+	StatusToolOutputSchema,
 	structuredObservation,
 	UsageSchema,
 	UsageStateSchema,
 } from "./observation-schema.ts";
 import { buildStatusOverview, STATUS_OVERVIEW_BYTE_LIMIT, STATUS_OVERVIEW_DISCOVERY } from "./status-overview.ts";
 
-function summary(index: number, fields: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
+function summary(index: number, fields: Partial<AgentPrioritySummary> = {}): AgentPrioritySummary {
 	return {
 		id: `agent-${index}`,
 		storageId: `agent-${index}`,
 		cwd: "/work",
 		modifiedAt: index,
+		rosterOrder: { priority: false, modifiedAt: fields.modifiedAt ?? index },
 		owner: "here",
 		state: "idle",
 		cost: 0,
@@ -38,14 +41,14 @@ function summary(index: number, fields: Partial<AgentConversationSummary> = {}):
 }
 
 function page(
-	rows: readonly AgentConversationSummary[],
+	rows: readonly AgentPrioritySummary[],
 	complete = true,
 	omitted = 0,
 	nextCursor: string | null = null,
-): AgentConversationPage {
+): AgentPriorityPage {
 	return {
 		rows,
-		coverage: { complete, storagesVisited: 1, skipped: 0, omitted, nextCursor },
+		coverage: rosterCoverage(rows, { complete, omitted, nextCursor }),
 		observedAt: "2026-10-03T00:00:00.000Z",
 	};
 }
@@ -54,7 +57,7 @@ const measure = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "ut
 function check(result: ReturnType<typeof buildStatusOverview>): void {
 	assert.equal(measure(result), result.coverage.bytes);
 	assert.ok(result.coverage.bytes <= STATUS_OVERVIEW_BYTE_LIMIT);
-	structuredObservation(StatusOutputSchema, result);
+	structuredObservation(StatusToolOutputSchema, result);
 }
 
 it("keeps a small overview complete with an exact strict output schema", () => {
@@ -71,10 +74,10 @@ it("keeps a small overview complete with an exact strict output schema", () => {
 	assert.equal(result.summary.sessions.summarizedQuiet, 0);
 	assert.deepEqual(result.coverage.reasons, []);
 	check(result);
-	assert.throws(() => structuredObservation(StatusOutputSchema, { ...result, unexpected: true }));
+	assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...result, unexpected: true }));
 });
 
-it("puts working and attention before quiet rows, then orders each group by recency and identity", () => {
+it("uses catalog recency and identity independently of working and attention summary groups", () => {
 	const rows = [
 		summary(90),
 		summary(3, { state: "failed", error: "failure" }),
@@ -86,7 +89,7 @@ it("puts working and attention before quiet rows, then orders each group by rece
 	const result = buildStatusOverview(page(rows), [], []);
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
-		["agent-2", "agent-2-b", "agent-1", "agent-4", "agent-3", "agent-90"],
+		["agent-90", "agent-4", "agent-3", "agent-2", "agent-2-b", "agent-1"],
 	);
 	assert.deepEqual(result.summary.sessions, { observed: 6, working: 3, attention: 2, quiet: 1, summarizedQuiet: 0 });
 	assert.deepEqual(
@@ -135,8 +138,9 @@ it("retains every coordinator field on live rows with short Unicode-safe text ex
 			autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 4, errorMessage: text },
 		},
 	});
+	const { rosterOrder: _rank, ...published } = row;
 	assert.deepEqual(
-		Object.keys(row).sort(),
+		Object.keys(published).sort(),
 		Object.keys(AgentConversationSummarySchema.properties).sort(),
 		"the fixture populates every roster coordinator field",
 	);
@@ -146,7 +150,7 @@ it("retains every coordinator field on live rows with short Unicode-safe text ex
 	assert.deepEqual(
 		live,
 		{
-			...row,
+			...published,
 			firstMessage: shortened,
 			latestReply: shortened,
 			ownerLabel: shortened,
@@ -237,7 +241,7 @@ it("recognizes recovery failures and exhausted retries without treating stopped 
 	assert.equal(result.summary.sessions.quiet, 3);
 	assert.deepEqual(
 		result.sessions.map((row) => row.modifiedAt),
-		[3, 2, 1, 9, 8, 4],
+		[9, 8, 4, 3, 2, 1],
 	);
 	check(result);
 });
@@ -259,16 +263,18 @@ it("keeps the stopped aborted unknown-owner reproduction quiet without dropping 
 	assert.deepEqual(result.summary.sessions, { observed: 5, working: 1, attention: 1, quiet: 3, summarizedQuiet: 0 });
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
-		["agent-1", "agent-2", "agent-10", "agent-9", "agent-8"],
+		["agent-10", "agent-9", "agent-8", "agent-2", "agent-1"],
 	);
+	const { rosterOrder: _abortedRank, ...abortedPublication } = aborted;
+	const { rosterOrder: _stoppedRank, ...stoppedPublication } = stopped;
 	assert.deepEqual(
 		result.sessions.find((row) => row.id === aborted.id),
-		aborted,
+		abortedPublication,
 		"quiet classification preserves the retained evidence",
 	);
 	assert.deepEqual(
 		result.sessions.find((row) => row.id === stopped.id),
-		stopped,
+		stoppedPublication,
 	);
 	check(result);
 });
@@ -308,7 +314,7 @@ it("preserves every dashboard health and ownership attention reason on stopped r
 	check(result);
 });
 
-it("keeps genuine health attention on working and starting rows while sorting healthy work first", () => {
+it("keeps genuine health attention on working and starting rows without overriding catalog order", () => {
 	const result = buildStatusOverview(
 		page([
 			summary(1, { state: "working" }),
@@ -326,7 +332,7 @@ it("keeps genuine health attention on working and starting rows while sorting he
 	assert.deepEqual(result.summary.sessions, { observed: 5, working: 2, attention: 2, quiet: 1, summarizedQuiet: 0 });
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
-		["agent-4", "agent-1", "agent-3", "agent-2", "agent-5"],
+		["agent-5", "agent-4", "agent-3", "agent-2", "agent-1"],
 	);
 	check(result);
 });
@@ -379,7 +385,7 @@ it("never exposes opaque catalog cursors or presents them as agent_list continua
 			assert.ok(!JSON.stringify(result).includes(cursor));
 			assert.equal(result.coverage.complete, false);
 			assert.equal(result.coverage.byteLimitReached, false, "discarded source cursors consume no output byte budget");
-			assert.match(reasons, /Source inventory is incomplete/u);
+			assert.match(reasons, /Source output or published views are incomplete/u);
 			assert.match(reasons, /agent_status has no continuation parameter/u);
 			assert.match(reasons, /fresh agent_list/u);
 			assert.doesNotMatch(reasons, /coverage\.nextCursor/u);
@@ -387,7 +393,7 @@ it("never exposes opaque catalog cursors or presents them as agent_list continua
 			check(result);
 			assert.throws(
 				() =>
-					structuredObservation(StatusOutputSchema, {
+					structuredObservation(StatusToolOutputSchema, {
 						...result,
 						coverage: { ...result.coverage, nextCursor: cursor },
 					}),
@@ -410,10 +416,10 @@ it("does not claim complete coverage when source counters or cursor contradict c
 	}
 });
 
-it("retains working rows ahead of quiet samples under byte pressure and accounts for every omitted live row", () => {
+it("retains live priority rows ahead of unowned quiet samples under byte pressure and counts excluded work", () => {
 	const rows = [
 		summary(10000),
-		...Array.from({ length: 200 }, (_, index) => summary(index, { state: "working", cwd: `/${"p".repeat(400)}` })),
+		...Array.from({ length: 200 }, (_, index) => summary(index, { state: "working", rosterOrder: { priority: true, modifiedAt: index }, cwd: `/${"p".repeat(400)}` })),
 	];
 	const result = buildStatusOverview(page(rows, true, 3, "source-cursor"), [], []);
 	assert.equal(result.coverage.byteLimitReached, true);

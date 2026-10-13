@@ -120,27 +120,68 @@ it("resumes the last storage's native page after catalog publication", async (t)
 	assert.equal(next.nextCursor, null);
 });
 
-it("finishes a multi-page dashboard scan while another writer publishes views", async (t) => {
+it("ranks caller ownership and concurrent publication across the full initial dashboard inventory", async (t) => {
+	const f = fixture(t, { acquire: async () => { throw new Error("Dashboard acquired a host"); }, observe: async () => { throw new Error("Dashboard observed native state"); } });
+	const existing = Array.from({ length: 321 }, () => f.create()).sort((left, right) => left.storageId.localeCompare(right.storageId));
+	const writer = new AgentCatalog(f.root);
+	const owned = existing[existing.length - 1];
+	const published = existing[existing.length - 2];
+	const publish = (record: typeof owned, name: string, time: number) => {
+		writer.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [{ id: record.storageId, storageId: record.storageId, name, cwd: record.cwd, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
+		utimesSync(writer.path(record.storageId), time, time);
+	};
+	for (const record of existing) publish(record, "Retained history", 100);
+	writeFileSync(writer.path(owned.storageId), JSON.stringify({ ...writer.read(owned.storageId), ownerId: "caller" }));
+	utimesSync(writer.path(owned.storageId), 1, 1);
+	const corrupt = f.create();
+	writeFileSync(writer.path(corrupt.storageId), "{");
+	const originalPage = f.manager.catalog.priorityPage.bind(f.manager.catalog);
+	let publication = false;
+	t.mock.method(f.manager.catalog, "priorityPage", async (options: Parameters<AgentCatalog["priorityPage"]>[0]) => {
+		assert.deepEqual(options.ownerIds, ["caller"]);
+		assert.ok(existing.length > options.limit);
+		const scan = originalPage(options);
+		publish(published, "Concurrent publication", 10_000);
+		publication = true;
+		return await scan;
+	});
+	const result = await f.manager.dashboardPage({ ownerId: "caller" });
+	assert.equal(publication, true);
+	assert.deepEqual(result.rows.slice(0, 2).map((row) => row.storageId), [owned.storageId, published.storageId]);
+	assert.equal(result.rows[1].name, "Concurrent publication");
+	assert.equal(result.rows[1].rosterOrder?.modifiedAt, 10_000_000);
+	const inventory = result.coverage.inventory;
+	assert.equal(inventory.candidates, existing.length + 1);
+	assert.equal(inventory.inspected, inventory.candidates);
+	assert.equal(result.coverage.storagesVisited, inventory.inspected);
+	assert.equal(inventory.unreadable, 1);
+	assert.equal(result.coverage.skipped, 1);
+	assert.equal(result.coverage.omitted, 0);
+	assert.equal(inventory.unknownClaims, 0);
+	assert.equal(inventory.returned, inventory.outputLimit);
+	assert.equal(inventory.remaining, existing.length - inventory.returned);
+	assert.equal(inventory.remainingRows, inventory.remaining);
+	assert.equal(inventory.priorityRemaining, 0);
+	assert.equal(inventory.priorityRemainingRows, 0);
+	assert.equal(result.coverage.complete, false);
+	assert.ok(result.coverage.nextCursor);
+	const expected = [owned, published, ...existing.filter((record) => record !== owned && record !== published)];
+	assert.deepEqual(result.rows.map((row) => row.storageId), expected.slice(0, inventory.outputLimit).map((record) => record.storageId));
+	assert.equal(new Set(result.rows.map((row) => row.storageId)).size, inventory.returned);
+});
+
+it("finishes a dashboard inventory with every readable published record exactly once", async (t) => {
 	const f = fixture(t);
 	const existing = Array.from({ length: 65 }, () => f.create());
-	const writer = new AgentCatalog(f.root);
-	const originalPage = f.manager.catalog.page.bind(f.manager.catalog);
-	let pages = 0;
-	utimesSync(f.manager.catalog.root, 1, 1);
-	t.mock.method(f.manager.catalog, "page", async (options: Parameters<AgentCatalog["page"]>[0]) => {
-		const page = await originalPage(options);
-		pages++;
-		writer.updateView(page.records[0].storageId, { updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } });
-		return page;
-	});
+	for (const record of existing) f.manager.catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
 	const result = await f.manager.dashboardPage();
-	assert.ok(pages > 3);
 	assert.equal(result.coverage.complete, true);
+	assert.equal(result.coverage.nextCursor, null);
 	assert.equal(result.coverage.storagesVisited, existing.length);
-	const identities = result.rows.map((row) => row.storageId);
-	assert.equal(new Set(identities).size, identities.length);
-	assert.equal(identities.length, existing.length);
-	for (const record of existing) assert.ok(identities.includes(record.storageId));
+	assert.equal(result.coverage.skipped, 0);
+	assert.equal(result.coverage.omitted, 0);
+	assert.equal(result.coverage.inventory?.remaining, 0);
+	assert.deepEqual(result.rows.map((row) => row.storageId).sort(), existing.map((record) => record.storageId).sort());
 });
 
 it("lists a first page from a live host without undefined wire fields", { timeout: 15000 }, async (t) => {

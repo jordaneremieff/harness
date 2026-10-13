@@ -457,6 +457,8 @@ H-profile-list  0eb5c60290d491535a1dd158e5d5ed4432eb8f89fe26a496a395e08b58ff4db4
 
 Schema owners in table order are `InspectOutputSchema`, `StatusOutputSchema`, `ListRowSchema`, `AgentConversationSummarySchema`, `AgentProfileSchema`, `ProfileUpdateSchema`, and `ProfiledListOutputSchema`. `dashboard` returns an array despite its response identity hashing the row schema. Maintain these identities with the defining schemas; do not infer a complete result shape from the schema name alone. Source: `extensions/agent/version-contract.ts:30-56`; `extensions/agent/durable-host.ts:454-457`.
 
+`StatusOutputSchema` owns the host response identity. Caller-side catalog rank, inventory coverage, and priority omission counts belong to the existing `ToolStatusSchema` overview extension, not to that wire schema. The caller's catalog scan produces those facts; a host status response does not. An actual host schema change changes its generated operation identity.
+
 The table lists advertised identities, not a claim that all members have the same target or side-effect policy. The consumer operations below define the relevant payloads. `changes` gates a Feed subscription; it is not an ordinary runtime request member.
 
 The current `extensions/agent/observation-schema.ts` permits optional native
@@ -522,7 +524,7 @@ A manager roster composes retained views with current claim observations:
 
 `ownerLabel` records publication time and any claim error. Published state, cost, and health remain observations at `updatedAt`, not fresh native assertions. Source: `extensions/agent/manager.ts:677-700`.
 
-Manager `dashboardPage()` returns `{rows, observedAt, coverage:{complete,storagesVisited,skipped,omitted,nextCursor}}`; this composition is not a host operation. Catalog page results carry records, record cursors, skipped storage IDs, observedAt, nextCursor, and `{visited,skipped,complete}`. Catalog pages default to 20 records, cap at 32, and visit at most 256 entries. Manager roster composition visits at most sixteen pages. Each catalog page still enumerates and sorts the entire directory before its bounded reads. Its continuation is not a frozen snapshot; insertion behind a cursor requires a fresh scan. Source: `extensions/agent/catalog.ts:28-75,343-386`; `extensions/agent/manager.ts:90,652-675`; `extensions/agent/dashboard-types.ts:139-163`.
+Manager `dashboardPage()` composes caller-local roster rows and coverage; it is not a host operation. `AgentCatalog.priorityPage()` inspects every candidate in the initial directory snapshot with bounded record and claim reads, then selects a finite output. Live hosts and caller-owned records come first; file modification time and identity order each group. Coverage includes the complete scan, output bounds, unknown claims, excluded records and rows, and per-storage view exclusions. Roster continuations rank a fresh snapshot, so changed publication time or claims can move records across the cursor; refresh to rediscover them. `AgentCatalog.page()` retains bounded filename-based reads for stable `agent_list` and thread discovery. Neither read is a frozen snapshot. Sources: `extensions/agent/catalog.ts`; `extensions/agent/manager.ts` `dashboardPage`; `extensions/agent/dashboard-types.ts`.
 
 ## Transcript pages and inspection
 

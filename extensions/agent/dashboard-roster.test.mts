@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { dashboardRecords, dashboardText, rosterLines, coverageText, rosterTotals } from "./dashboard-roster.ts";
-import { row, theme } from "./dashboard-test-fixture.mts";
+import { row, theme, coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
 import { mergeAgentCoverage } from "./dashboard-types.ts";
 for (const [width, height, compact] of [
 	[38, 36, false],
@@ -45,9 +45,8 @@ it("merges one current inventory scan and one latest projection per retained sto
 	assert.equal(previous.projections.a.omitted, 2, "the prior observation is unchanged");
 });
 
-it("distinguishes priority output continuation from an incomplete generic inventory scan", () => {
-	const coverage = { complete: false, storagesVisited: 4, skipped: 0, omitted: 0, nextCursor: "more" };
-	assert.match(coverageText(coverage), /more inventory to inspect/);
+it("describes continuation as excluded output after the complete priority inventory scan", () => {
+	const coverage = rosterCoverage([], { complete: false, storagesVisited: 4, nextCursor: "more" });
 	const inventory = { candidates: 4, inspected: 4, unreadable: 0, unknownClaims: 0, returned: 2, remaining: 2, priorityRemaining: 1,
 		remainingRows: 2, priorityRemainingRows: 1, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 2 };
 	const text = coverageText({ ...coverage, inventory });
@@ -87,7 +86,7 @@ it("incomplete roster coverage qualifies a known subtotal", () => {
 		rosterTotals({
 			observedAt: 0,
 			sessions: [row()],
-			coverage: { complete: false, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: "more" },
+			coverage: rosterCoverage([row()], { complete: false, nextCursor: "more" }),
 		}),
 		"1 working · $0.42+ retained",
 	);
@@ -166,8 +165,8 @@ it("duplicate titles receive distinct shortest suffixes and coverage remains exp
 	assert.match(lines.join("\n"), /Audit -one/);
 	assert.match(lines.join("\n"), /Audit -two/);
 	assert.match(
-		coverageText({ complete: false, storagesVisited: 2, skipped: 1, omitted: 2, nextCursor: "more" }),
-		/skipped.*not loaded.*more inventory/,
+		coverageText(rosterCoverage(rows, { complete: false, skipped: 1, omitted: 2, nextCursor: "more" })),
+		/skipped.*not loaded.*more records/,
 	);
 });
 it("roster identifies handles and roles separately from the historical first input", () => {

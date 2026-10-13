@@ -310,7 +310,7 @@ export const StatusOutputSchema = union([
 			primaries: object({ observed: count, summarized: count }),
 			failures: object({ observed: count, summarized: count }),
 		}),
-		coverage: object({ complete: boolean, storagesVisited: count, inventory: Type.Optional(catalogPriorityCoverage), omittedPriorityRows: Type.Optional(count), omittedPriorityRecords: Type.Optional(count), skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: Type.Null(), reasons: Type.Array(string) }),
+		coverage: object({ complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: Type.Null(), reasons: Type.Array(string) }),
 		observedAt: string,
 		discovery: string,
 	}),
@@ -325,7 +325,9 @@ export type StatusOutput = Static<typeof StatusOutputSchema>;
 /** Tool-only local observations extend status without changing the host response contract. */
 const ToolStatusSchema = Type.Union(StatusOutputSchema.anyOf.map((schema) => {
 	const properties = (schema as TSchema & { properties: Record<string, TSchema> }).properties;
+	const overviewCoverage = "sessions" in properties ? (properties.coverage as TSchema & { properties: Record<string, TSchema> }).properties : undefined;
 	return object({ ...properties, awareness: Type.Optional(EffortAwarenessSchema),
+		...(overviewCoverage ? { coverage: object({ ...overviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count }) } : {}),
 		...("conversations" in properties ? { createdAgents: Type.Optional(CreatedAgentsSchema) } : {}),
 	});
 }));

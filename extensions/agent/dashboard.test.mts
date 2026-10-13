@@ -78,7 +78,7 @@ for (const [width, height] of [
 		const observed = source();
 		observed.list = async () => ({
 			...page([row()]),
-			coverage: { complete: false, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: "more" },
+			coverage: { ...page([row()]).coverage, complete: false, nextCursor: "more" },
 		});
 		const f = fixture(width, height, observed);
 		try {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initTheme, type KeybindingsManager as AppKeys, type Theme } from "@earendil-works/pi-coding-agent";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TUI } from "@earendil-works/pi-tui";
-import type { AgentConversationSummary, AgentConversationPage } from "./dashboard-types.ts";
+import type { AgentConversationSummary, AgentDashboardCoverage, AgentPriorityPage } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
@@ -84,10 +84,17 @@ export function row(id = "storage:1", patch: Partial<AgentConversationSummary> =
 		...patch,
 	};
 }
-export function page(rows: readonly AgentConversationSummary[]): AgentConversationPage {
+export function coverage(rows: readonly AgentConversationSummary[] = [], patch: Partial<AgentDashboardCoverage> = {}): AgentDashboardCoverage {
+	const storages = new Set(rows.map((row) => row.storageId));
+	return { complete: true, storagesVisited: storages.size, skipped: 0, omitted: 0, nextCursor: null,
+		inventory: { candidates: storages.size, inspected: storages.size, unreadable: 0, unknownClaims: 0, returned: storages.size, remaining: 0, priorityRemaining: 0,
+			remainingRows: 0, priorityRemainingRows: 0, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 320 },
+		projections: Object.fromEntries([...storages].map((id) => [id, { skipped: 0, omitted: 0 }])), ...patch };
+}
+export function page(rows: readonly AgentConversationSummary[]): AgentPriorityPage {
 	return {
-		rows,
-		coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null },
+		rows: rows.map((row) => ({ ...row, rosterOrder: row.rosterOrder ?? { priority: false, modifiedAt: row.modifiedAt } })),
+		coverage: coverage(rows),
 		observedAt: new Date(0).toISOString(),
 	};
 }

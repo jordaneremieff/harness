@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { page as rosterPage } from "./dashboard-test-fixture.mts";
+import { buildStatusOverview } from "./status-overview.ts";
 import { HOST_CONTRACT, contractRefusal, operationContractMismatch, parseOperationContract, parseRuntimeContract, type RuntimeContract } from "./version-contract.ts";
 
 it("implements the operation identities and schema hashes published in the host contract", () => {
@@ -22,6 +26,31 @@ it("implements the operation identities and schema hashes published in the host 
 		documented[cells[1]] = { request: cells[2], response: hash, ...(cells[4] === "D" ? { durable: HOST_CONTRACT.upstream.durable } : {}) };
 	}
 	assert.deepEqual(HOST_CONTRACT.operations, documented);
+});
+
+it("keeps roster coverage local without changing the published host status identity", () => {
+	const docs = readFileSync(new URL("../../docs/agent-host-contract.md", import.meta.url), "utf8");
+	const published = /^H-status\s+([a-f0-9]{64})$/mu.exec(docs)?.[1];
+	assert.ok(published);
+	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
+	assert.equal(hash(StatusOutputSchema), published);
+	assert.equal(HOST_CONTRACT.operations.status.response, hash(StatusOutputSchema));
+	const overview = buildStatusOverview(rosterPage([]), [], []);
+	const inventory = { candidates: 3, inspected: 3, unreadable: 0, unknownClaims: 0, returned: 2, remaining: 1, priorityRemaining: 1,
+		remainingRows: 2, priorityRemainingRows: 2, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 2 };
+	const local = { ...overview, coverage: { ...overview.coverage, inventory, omittedPriorityRows: 2, omittedPriorityRecords: 1 } };
+	assert.deepEqual(structuredObservation(StatusToolOutputSchema, local), local);
+	const { inventory: _inventory, omittedPriorityRows: _rows, omittedPriorityRecords: _records, ...wireCoverage } = overview.coverage;
+	const wire = { ...overview, coverage: wireCoverage };
+	assert.deepEqual(structuredObservation(StatusOutputSchema, wire), wire);
+	for (const [field, value] of Object.entries({ inventory, omittedPriorityRows: 2, omittedPriorityRecords: 1 })) {
+		assert.throws(() => structuredObservation(StatusOutputSchema, { ...wire, coverage: { ...wireCoverage, [field]: value } }), /does not match its schema/u);
+		assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, [field]: "invalid" } }), /does not match its schema/u);
+	}
+	assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, inventory: { ...inventory, inspected: -1 } } }), /does not match its schema/u);
+	assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, unexpected: true } }), /does not match its schema/u);
+	assert.equal(hash(StatusOutputSchema), published, "local output validation does not alter the wire schema");
+	assert.equal(contractRefusal("status", { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, response: published } } }), undefined);
 });
 
 it("refuses self-owned rewind and timer requests in both contract directions without changing responses", () => {

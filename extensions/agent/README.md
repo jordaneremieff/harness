@@ -1924,6 +1924,12 @@ reader waits for an upgrade.
 An unavailable change feed leaves compatible reads and controls usable;
 `agent_status` reports the live-update failure.
 
+The caller's catalog scan owns roster rank, inventory coverage, and priority
+omission counts. `ToolStatusSchema` adds these local overview facts to tool output;
+`StatusOutputSchema` describes host responses and contains none of those facts.
+Local roster fields do not belong in the host schema. If an actual host response
+schema changes, its generated operation identity changes with it.
+
 Typed observation results use schema hashes, so a changed published schema
 changes its contract without a manual stamp. Opaque native results and native
 ABI-dependent operations also require the same experimental Pi Durable release.

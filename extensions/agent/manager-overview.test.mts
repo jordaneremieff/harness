@@ -8,7 +8,7 @@ import { dashboardRecords, rosterLines } from "./dashboard-roster.ts";
 import { theme } from "./dashboard-test-fixture.mts";
 import { it } from "node:test";
 import { AgentManager } from "./manager.ts";
-import { StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview, type StatusOverview } from "./status-overview.ts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
@@ -49,7 +49,7 @@ it("returns a partial dashboard page with a cursor at the storage bound instead 
 	assert.equal(continuation.coverage.nextCursor, null);
 	assert.equal(continuation.rows.some((row) => page.rows.some((previous) => previous.id === row.id)), false);
 	assert.equal(observes, 0);
-	const overview = structuredObservation(StatusOutputSchema, buildStatusOverview(page, [], [])) as { coverage: { byteLimitReached: boolean; complete: boolean } };
+	const overview = structuredObservation(StatusToolOutputSchema, buildStatusOverview(page, [], [])) as { coverage: { byteLimitReached: boolean; complete: boolean } };
 	assert.equal(overview.coverage.byteLimitReached, true, "unavailable metadata rows reach the status byte bound");
 	assert.equal(overview.coverage.complete, false);
 	assert.ok(Buffer.byteLength(JSON.stringify(overview), "utf8") <= 48 * 1024);
@@ -110,7 +110,7 @@ it("keeps unknown host claims visible in roster and overview coverage", async (t
 	assert.equal(page.coverage.inventory?.unknownClaims, 1);
 	assert.equal(page.coverage.complete, false);
 	assert.equal(page.rows[0].owner, "unavailable");
-	const overview = structuredObservation(StatusOutputSchema, await manager.status()) as StatusOverview;
+	const overview = structuredObservation(StatusToolOutputSchema, await manager.status()) as StatusOverview;
 	assert.equal(overview.coverage.inventory?.unknownClaims, 1);
 	assert.ok(overview.coverage.reasons.some((reason) => /live-host priority is not established/u.test(reason)));
 });

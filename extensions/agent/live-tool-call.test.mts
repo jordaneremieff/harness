@@ -12,10 +12,10 @@ import { Type } from "typebox";
 import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, completed, fixtureRegistry, fixtureStorageId, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
-import { deferred } from "./dashboard-test-fixture.mts";
+import { deferred, page as rosterPage } from "./dashboard-test-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { LiveObservationService } from "./live-observation.ts";
-import { AssistantMessageSchema, ConversationStatusSchema, InspectOutputSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { AssistantMessageSchema, ConversationStatusSchema, InspectOutputSchema, StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 
@@ -120,8 +120,8 @@ it("observes a provider's live tool call through native status, frames, and comp
 	const snapshot = await host.request("snapshot", { sessionId: fixtureStorageId }, context);
 	assert.doesNotMatch(JSON.stringify(snapshot), /private scratch|partialJson|streamIndex/u);
 	const rows = await host.request("dashboard", {}, context) as AgentConversationSummary[];
-	const overview = buildStatusOverview({ rows, observedAt: new Date().toISOString(), coverage: { complete: true, storagesVisited: 1, skipped: 0, omitted: 0, nextCursor: null } }, [], []);
-	structuredObservation(StatusOutputSchema, overview);
+	const overview = buildStatusOverview(rosterPage(rows), [], []);
+	structuredObservation(StatusToolOutputSchema, overview);
 	assert.equal(overview.sessions.length, rows.length);
 	assert.doesNotMatch(JSON.stringify(overview), /private scratch|partialJson|streamIndex/u);
 	const native = await host.harness.snapshot(Durable.LiveDoc, worker.id, context);
