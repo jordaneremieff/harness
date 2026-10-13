@@ -138,7 +138,9 @@ export function pillarsDurableContribution(
 			const enabled = snapshot.values.collect && !invalidCollect;
 			for (const issue of snapshot.diagnostics) process.stderr.write(`${issue.field}: ${issue.message}\n`);
 			if (invalidCollect)
-				process.stderr.write("pillars.collect requires a boolean (environment: 0, 1, false, or true). The collector is disabled.\n");
+				process.stderr.write(
+					"pillars.collect requires a boolean (environment: 0, 1, false, or true). The collector is disabled.\n",
+				);
 			const collector = enabled
 				? new Collector(store, { diagnostic: (message) => process.stderr.write(`${message}\n`) })
 				: undefined;
@@ -256,8 +258,35 @@ export function pillarsDurableContribution(
 					agent,
 					(reference) =>
 						call.name === "pillars"
-							? accessEvidence(result.content, resource.resourceId, result.isError === true, delivered)
-							: readEvidence(result.content, reference, result.isError === true),
+							? accessEvidence(result.output, resource.resourceId, result.isError === true, delivered)
+							: readEvidence(result.output, reference, result.isError === true),
+					context,
+				);
+			}
+
+			/** Nested diagnostics stay with the caller; admit the assessment into the conversation instead. */
+			async function assessNested(
+				call: Durable.ToolHookCall,
+				result: Durable.ToolExecutionResult,
+				api: Durable.HookApi,
+				context: Context,
+			): Promise<void> {
+				if (call.name !== "pillars" || call.parent === undefined || result.isError || context.abortSignal?.aborted)
+					return;
+				if ((result.details as { schema?: string } | undefined)?.schema !== "pillars-source") return;
+				const { draft } = splitDraft(call.arguments);
+				if (draft === undefined) return;
+				const conversation = await host.harness.conversation(api.conversationId, context);
+				if (conversation === undefined) return;
+				await conversation.submit(
+					{
+						type: "write",
+						requestId: `pillars:draft:${String(api.taskId)}`,
+						entry: {
+							kind: "pillars-draft",
+							model: [{ role: "user", content: draftAssessment(draft), timestamp: Date.now() }],
+						},
+					},
 					context,
 				);
 			}
@@ -322,12 +351,12 @@ export function pillarsDurableContribution(
 								if (result.schema === "pillars-source") await recordDelivery(result, api, context);
 								if (result.schema === "pillars-source-error")
 									return {
-										content: [{ type: "text", text: JSON.stringify(result) }],
+										output: [{ type: "text", text: JSON.stringify(result) }],
 										isError: true,
 										details: asDetails(result),
 									};
 								return {
-									content: [{ type: "text", text: JSON.stringify(result) }],
+									output: [{ type: "text", text: JSON.stringify(result) }],
 									details: asDetails(result),
 									diagnostics: assessmentDiagnostics(input, context.abortSignal),
 								};
@@ -358,7 +387,7 @@ export function pillarsDurableContribution(
 							async execute(args, _api, context) {
 								const result = await reader.read(args, context.abortSignal);
 								return {
-									content: [{ type: "text", text: JSON.stringify(result) }],
+									output: [{ type: "text", text: JSON.stringify(result) }],
 									details: asDetails(result),
 								};
 							},
@@ -383,6 +412,7 @@ export function pillarsDurableContribution(
 						},
 						afterTool: async (call, result, api, context) => {
 							await observeResult(call, result, api, context);
+							await assessNested(call, result, api, context);
 							return undefined;
 						},
 					}),

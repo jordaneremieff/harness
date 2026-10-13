@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
@@ -27,7 +28,7 @@ function text(message: { content: unknown }): string {
 }
 
 test("native draft assessment follows source results without a context transform or extra turn", { timeout: 30000 }, async (t) => {
-	const root = await mkdtemp(join(process.cwd(), ".pillars-draft-test-"));
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pillars-draft-test-")));
 	const corpus = join(root, "corpus");
 	const prior = {
 		PI_PILLARS_DIR: process.env.PI_PILLARS_DIR,

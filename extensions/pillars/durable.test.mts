@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { draftAssessment } from "./draft.ts";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -30,7 +34,7 @@ interface TestScope {
 }
 
 async function makeFixture(t: TestScope): Promise<Fixture> {
-	const root = await mkdtemp(join(process.cwd(), ".pillars-durable-test-"));
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pillars-durable-test-")));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const corpus = join(root, "corpus");
 	await mkdir(corpus, { recursive: true });
@@ -102,11 +106,13 @@ async function openContribution(
 	const registry = Durable.createRegistry();
 	registry.install(CodingTools);
 	for (const extra of options.extra ?? []) registry.install(extra);
+	const reports: unknown[] = [];
 	const harness = await Durable.Harness.open(
 		options.storage ?? new Durable.MemoryStorage(),
 		{
 			models,
 			registry,
+			onReport: (error) => reports.push(error),
 			settings: { compaction: { enabled: false }, retry: { enabled: false } },
 			env: () => new NodeExecutionEnv({ cwd: fixture.corpus }),
 		},
@@ -131,7 +137,7 @@ async function openContribution(
 	const root = await harness.root(BACKGROUND_CONTEXT, {
 		agent: { model: { provider: faux.provider.id, modelId: "faux-1" } },
 	});
-	return { faux, harness, root, host, closeAll, controller, contribution, extension, registry };
+	return { faux, harness, root, host, closeAll, controller, contribution, extension, registry, reports };
 }
 
 function toolResults(messages: readonly { role: string }[]): ToolResultMessage[] {
@@ -267,7 +273,8 @@ test("a model-issued call reaches each tool and both declare safe replay", async
 		const tools = opened.extension.tools ?? [];
 		assert.equal(tools.find((tool) => tool.name === "pillars")?.replay, "safe");
 		assert.equal(tools.find((tool) => tool.name === "pillars_usage")?.replay, "safe");
-		assert.equal("outputSchema" in (tools.find((tool) => tool.name === "pillars") ?? {}), false);
+		assert.equal(tools.find((tool) => tool.name === "pillars")?.structuredOutputSchema, undefined);
+		assert.equal(tools.find((tool) => tool.name === "pillars_usage")?.structuredOutputSchema, undefined);
 		faux.setResponses([
 			fauxAssistantMessage(
 				[
@@ -537,3 +544,154 @@ function captureSettings(bus: SettingsBus) {
 	refresh();
 	return { snapshots: () => publications, refresh, dispose };
 }
+
+test("native codemode receives bounded JSON text and rejects source errors while the next request receives nested draft guidance", {
+	timeout: 30000,
+}, async (t) => {
+	const fixture = await makeFixture(t);
+	useFixtureEnvironment(t, fixture);
+	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
+	t.after(() => sandbox.close());
+	const calls: Array<{ name: string; parent: boolean; output: unknown; structuredOutput: unknown; isError: boolean }> =
+		[];
+	const observer = Durable.defineExtension({
+		name: "pillars-test-observer",
+		hooks: [
+			Durable.hook(Durable.ToolTask, {
+				afterTool(call, result) {
+					if (call.name === "pillars" || call.name === "pillars_usage")
+						calls.push({
+							name: call.name,
+							parent: call.parent !== undefined,
+							output: result.output,
+							structuredOutput: result.structuredOutput,
+							isError: result.isError === true,
+						});
+					return undefined;
+				},
+			}),
+		],
+	});
+	const opened = await openContribution(fixture, {
+		extra: [createCodemodeExtension({ sandbox, models: false }), observer],
+	});
+	t.after(() => opened.controller.abort());
+	const draft = "Return the checked result, not an unsupported claim.";
+	const code = [
+		`const source = await tools.pillars({resource:"principle-one", draft:${JSON.stringify(draft)}});`,
+		'if (typeof source !== "string") throw new Error("source text contract");',
+		"const page = JSON.parse(source);",
+		'if (page.schema !== "pillars-source" || !page.text.includes("Checked evidence.")) throw new Error("source contract");',
+		'let sourceError; try { await tools.pillars({resource:"governance",offset:1,referenceBodyDigest:"0".repeat(64),draft:"Do not deliver this failed draft."}); } catch(error) { sourceError = JSON.parse(error.message); }',
+		'if (sourceError?.schema !== "pillars-source-error" || sourceError.code !== "source_changed") throw new Error("source error rejection contract");',
+		'let rejected=false; try { await tools.pillars({draft:""}); } catch(error) { rejected=error.message.includes("invalid_input"); }',
+		'if (!rejected) throw new Error("invalid input contract");',
+		"const usageText = await tools.pillars_usage({});",
+		'if (typeof usageText !== "string") throw new Error("usage text contract");',
+		"const usage = JSON.parse(usageText);",
+		'if (usage.schema !== "pillars-usage-response") throw new Error("usage contract");',
+		"text({resource:page.resource,error:sourceError.code,usage:usage.schema});",
+	].join("\n");
+	let next: readonly import("@earendil-works/pi-ai").Message[] = [];
+	opened.faux.setResponses([
+		fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
+		(context) => {
+			next = context.messages;
+			return fauxAssistantMessage("Corrected.");
+		},
+	]);
+	try {
+		const settled = await (
+			await opened.root.submit({ type: "input", content: "Check a draft through code mode." }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
+		assert.equal(settled.status, "done");
+		assert.equal(opened.faux.state.callCount, 2, "assessment starts no extra turn");
+		const results = toolResults(next);
+		assert.equal(results.length, 1, "nested results stay outside the transcript");
+		assert.equal(results[0].isError, false, textOf(results[0]));
+		assert.match(textOf(results[0]), /source_changed/);
+		const assessments = next.filter((message) => message.role === "user" && message.content === draftAssessment(draft));
+		assert.equal(assessments.length, 1);
+		assert.equal(next.at(-1), assessments[0], "assessment follows the parent result");
+		assert.ok(
+			!JSON.stringify(next.filter((message) => message.role === "user")).includes("Do not deliver this failed draft."),
+		);
+		assert.equal(calls.length, 3, "invalid preparation never reaches afterTool");
+		assert.ok(calls.every((call) => call.parent));
+		for (const call of calls) {
+			assert.ok(Array.isArray(call.output));
+			const output = call.output as Array<{ type: string; text: string }>;
+			assert.equal(call.structuredOutput, undefined, "the tool adds no program-output contract");
+			assert.equal(typeof JSON.parse(output[0].text).schema, "string");
+		}
+		assert.equal(calls.filter((call) => call.isError).length, 1);
+		const cells = await storedCells(fixture.store);
+		assert.equal(sumCounter(cells, "bodyVerifiedAtObservation"), 1);
+		assert.equal(sumCounter(cells, "readResults"), 2);
+		assert.deepEqual(opened.reports, []);
+		await opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+		assert.equal(opened.faux.state.callCount, 2);
+	} finally {
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		await opened.closeAll();
+	}
+});
+
+test("native afterTool replacement rejects the nested text result without admitting an assessment", {
+	timeout: 30000,
+}, async (t) => {
+	const fixture = await makeFixture(t);
+	useFixtureEnvironment(t, fixture);
+	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
+	t.after(() => sandbox.close());
+	const replacement = { schema: "pillars-source-error", code: "source_unavailable" };
+	const guard = Durable.defineExtension({
+		name: "pillars-test-result-guard",
+		hooks: [
+			Durable.hook(Durable.ToolTask, {
+				afterTool(call, result) {
+					if (call.name !== "pillars") return undefined;
+					return {
+						...result,
+						isError: true,
+						output: [{ type: "text", text: JSON.stringify(replacement) }],
+						diagnostics: [],
+					};
+				},
+			}),
+		],
+	});
+	const opened = await openContribution(fixture, {
+		extra: [guard, createCodemodeExtension({ sandbox, models: false })],
+	});
+	t.after(() => opened.controller.abort());
+	opened.faux.setResponses([
+		fauxAssistantMessage(
+			fauxToolCall("codemode", {
+				code: 'const result=await tools.pillars({resource:"principle-one",draft:"Do not deliver a replaced result."}); text(result);',
+			}),
+			{ stopReason: "toolUse" },
+		),
+		fauxAssistantMessage("Guarded."),
+	]);
+	try {
+		await (await opened.root.submit({ type: "input", content: "Use the guarded corpus." }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		const view = await opened.root.context(BACKGROUND_CONTEXT);
+		const [result] = toolResults(view.messages);
+		assert.equal(result.isError, true, "the schema-less nested error rejects and fails the script");
+		assert.match(textOf(result), /source_unavailable/);
+		assert.ok(!JSON.stringify(view.messages).includes("Pillars extension assessment task"));
+		const cells = await storedCells(fixture.store);
+		assert.equal(sumCounter(cells, "bodyVerifiedAtObservation"), 0);
+		assert.equal(
+			cells.reduce((sum, cell) => sum + cell.counters.resultError, 0),
+			1,
+		);
+		assert.deepEqual(opened.reports, []);
+	} finally {
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		await opened.closeAll();
+	}
+});

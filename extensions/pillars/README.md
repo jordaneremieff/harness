@@ -383,8 +383,11 @@ runs inside the Durable form.
 The tools declare replay class `safe`. A corpus read and an in-memory page
 capture repeat no external effect. Attribution writes are deduplicated with
 stable task memo keys, so a replay after process loss does not silently count
-another access. Native `details` equal the ordinary tool details; the
-ordinary tools return no `structuredContent`, so the native form adds none.
+another access. Native `details` equal the ordinary tool details. Native tools
+return bounded model text through `output` and declare no structured output
+schema. Code mode scripts receive the source page or usage response as a JSON
+string. Source errors and invalid arguments reject the script's call. The
+ordinary tools keep their `content` results and return no `structuredContent`.
 
 Attribution uses the native tool and generation hooks. `beforeTool` and
 `afterTool` on `ToolTask` admit request and result observations for `pillars`
@@ -399,9 +402,14 @@ ordinary entrypoint.
 Documented differences from the ordinary entrypoint:
 
 - A draft assessment arrives as an `info` diagnostic attached to the tool
-  result, not as a separate hidden custom message. The model still receives it
-  exactly once, in the same continuation, and the source page stays unchanged
-  in the tool content.
+  result for a model-issued call. For a nested call, `afterTool` submits a
+  `pillars-draft` entry with a user message through the public conversation
+  write API. Native code mode does not forward successful nested diagnostics to
+  the model. The write waits for the next boundary after the parent result,
+  starts no additional turn, and uses the nested task ID as its deduplication
+  key. The hook uses the tool's existing source details to identify a successful
+  read. Source errors and cancellation before submission admit no assessment.
+  The source page stays unchanged.
 - Collector diagnostics go to standard error, because a Durable agent session
   has no UI host. Invalid `PI_PILLARS_COLLECT` values still disable collection.
 - The `pillars` command admits the judgment actions only. It submits the same
@@ -613,8 +621,11 @@ help rendering at narrow widths, and actual Pi discovery/callback/command/shutdo
 integration with a synthetic provider. Draft tests cover Unicode and byte bounds,
 private diagnostics, unchanged source output, native batch ordering, ordinary
 transcript preservation, cancellation, reload, disk resume, and source-only
-aggregate evidence. Provider assertions use Pi's public
-transcript helpers to resolve the effective prompt and tools from system
+aggregate evidence. Controlled Pi Durable Harness tests use the public native
+code mode extension and a real sandbox. They check bounded source and usage
+strings, source-error rejection, argument rejection, nested draft delivery in the
+next provider request, and `afterTool` replacement of the text result. Provider
+assertions use Pi's public transcript helpers to resolve the effective prompt and tools from system
 messages. Event mocks return the host's unsubscribe function shape.
 Command integration covers operator-only
 help, model-visible check/derive/review requests, and delivery during an active turn.
