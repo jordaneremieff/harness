@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { isAbsolute } from "node:path";
+import { captureSubmitInput, submitInputDigest } from "./input.mts";
 import type { ImageSource } from "../shared/api.ts";
 import type { ImageBytes } from "../server/images.mts";
 import { Worker } from "node:worker_threads";
 import type { WorkerOptions } from "node:worker_threads";
-import { AgentError, validateSubmitInput } from "./client.mts";
+import { AgentError } from "./client.mts";
 import type { SubmitInput } from "./client.mts";
 import type { CatalogPage, CatalogRow, CatalogScan } from "./catalog.mts";
 import { compareRosterRows } from "./catalog-state.mts";
@@ -14,7 +15,7 @@ import type {
 	InspectOptions,
 	UnavailableConfiguration,
 } from "./service-runtime.mts";
-export type AgentServiceOptions = Omit<RuntimeOptions, "frameProjection">;
+export type AgentServiceOptions = Omit<RuntimeOptions, "frameProjection" | "onImageInput">;
 export { AgentError, HostLink } from "./client.mts";
 export { AgentCatalog, deriveEndpoint, readClaim } from "./catalog.mts";
 export type { CatalogPage, CatalogRecord, CatalogScan, CatalogRow } from "./catalog.mts";
@@ -63,6 +64,7 @@ export class AgentService {
 	readonly #options: AgentServiceOptions;
 	readonly #pending = new Map<number, Pending>();
 	readonly #inputs = new Map<string, InputReceipt>();
+	readonly #imageInputs = new Map<string, Set<string>>();
 	readonly #rows = new Map<string, { row: CatalogRow; bytes: number }>();
 	#orderedRows: { row: CatalogRow; bytes: number }[] = [];
 	readonly #selections = new Map<string, Map<string, Selection>>();
@@ -90,9 +92,11 @@ export class AgentService {
 			throw new AgentError("invalid_request", "Invalid UI installation identity.");
 		if (typeof options.store !== "string" || !options.store)
 			throw new AgentError("invalid_request", "Catalog store is required.");
+		if (typeof options.stateDir !== "string" || !isAbsolute(options.stateDir))
+			throw new AgentError("invalid_request", "An absolute image state directory is required.");
 		this.#options = options;
 		this.#worker = factory(new URL("./service-worker.mts", import.meta.url), {
-			workerData: { store: options.store, installationId: options.installationId, agentDir: options.agentDir },
+			workerData: { store: options.store, stateDir: options.stateDir, installationId: options.installationId, agentDir: options.agentDir },
 		});
 		this.#worker.on("message", (message: Response) => this.#message(message));
 		this.#worker.on("error", () => this.#failure("Agent worker failed."));
@@ -115,12 +119,30 @@ export class AgentService {
 	}
 	#event(event: string, args: unknown[]): void {
 		if (this.#closed || this.#failed || this.#exited) return;
+		if (event === "imageInput") { this.#imageInputEvent(args); return; }
 		if (event === "roster") this.#rosterUpdate(args[0] as CatalogPage);
 		else if ((event === "frame" || event === "availability") && !this.#callbackTarget(args)) return;
 		else if (event === "frame")
 			this.#options.onFrame?.(...(args as Parameters<NonNullable<AgentServiceOptions["onFrame"]>>));
 		else if (event === "availability")
 			this.#options.onAvailability?.(...(args as Parameters<NonNullable<AgentServiceOptions["onAvailability"]>>));
+	}
+	#imageInputEvent(args: unknown[]): void {
+		const [storageId, identity, available] = args;
+		if (typeof storageId !== "string") return;
+		if (available === false) {
+			if (typeof identity === "string") this.#imageInputs.get(storageId)?.delete(identity);
+			else this.#imageInputs.delete(storageId);
+		} else if (available === true && typeof identity === "string" && (identity === storageId || identity.startsWith(`${storageId}:`))) {
+			const identities = this.#imageInputs.get(storageId) ?? new Set<string>();
+			if ((!this.#imageInputs.has(storageId) && this.#imageInputs.size >= 32) || identities.size >= 2048) return;
+			identities.add(identity); this.#imageInputs.set(storageId, identities);
+		}
+	}
+	imageInputAvailable(identity: string): boolean {
+		if (this.#closed || this.#failed || this.#exited) return false;
+		const storageId = identity.split(":")[0];
+		return this.#imageInputs.get(storageId)?.has(identity) ?? false;
 	}
 	#callbackTarget(args: unknown[]): boolean {
 		const [workspaceId, identity, epoch] = args;
@@ -178,6 +200,7 @@ export class AgentService {
 	#failure(message: string): void {
 		const first = !this.#failed;
 		this.#failed = true;
+		this.#imageInputs.clear();
 		for (const request of this.#pending.values()) {
 			request.cleanup?.();
 			request.reject(new AgentError("host_unavailable", message, request.mutation));
@@ -316,6 +339,7 @@ export class AgentService {
 	}
 	async prepare(identity: string): Promise<Record<string, boolean>> {
 		this.#ready();
+		this.#imageInputs.get(identity.split(":")[0])?.delete(identity);
 		return this.#request("prepare", [identity]);
 	}
 	async history(identity: string, options: HistoryOptions = {}, signal?: AbortSignal): Promise<Snapshot> {
@@ -331,11 +355,8 @@ export class AgentService {
 		return this.#request("inspect", [identity, options], signal);
 	}
 	#input(identity: string, input: SubmitInput): { digest: string; prior?: InputReceipt; captured: SubmitInput } {
-		validateSubmitInput(input);
-		const captured: SubmitInput = { operationId: input.operationId, message: input.message, mode: input.mode };
-		const digest = createHash("sha256")
-			.update(JSON.stringify({ identity, operationId: input.operationId, message: input.message, mode: input.mode }))
-			.digest("hex");
+		const captured = captureSubmitInput(input);
+		const digest = submitInputDigest(identity, captured);
 		const prior = this.#inputs.get(input.operationId);
 		if (prior && prior.digest !== digest)
 			throw new AgentError("operation_conflict", "Agent operation key was reused with changed input or target.");

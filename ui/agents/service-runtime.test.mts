@@ -19,7 +19,7 @@ test('pure concurrent runtime replaces an unshared endpoint but preserves anothe
     request:async(member:string,params:Record<string,unknown>)=>{if(member==='observe-open')tokens.add(params.token as string);if(member==='observe-close')tokens.delete(params.token as string);return {};},
     subscribeObservation:async(_token:string,_callback:unknown,identity:string)=>({baseline:frame(1,identity) as unknown as ConversationFrame,start:()=>{},dispose:async()=>{}}),
     close:async()=>{closes++;}} as unknown as HostLink));
-  const service=new AgentService({store:'synthetic',installationId:'synthetic',onAvailability:(...args)=>availability.push(args)},()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog));
+  const service=new AgentService({store:'synthetic',stateDir:'/fixture/state',installationId:'synthetic',onAvailability:(...args)=>availability.push(args)},()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog));
   try {
     await service.select('w',STORAGE,1);await service.select('w',CHILD,2);assert.equal(tokens.size,2);
     record.agentDir='/project/replacement';
@@ -36,7 +36,7 @@ test('pure concurrent runtime forwards target and lifetime without acquiring a c
   context.mock.method(ObservationManager.prototype,'hide',async (...args: unknown[]) => {calls.push(['hide',...args]);});
   context.mock.method(ObservationManager.prototype,'reconnect',async (...args: unknown[]) => {calls.push(['reconnect',...args]);});
   let catalogs = 0; let closed = 0;
-  const service = new AgentService({store:'synthetic-store',installationId:'synthetic'},() => {
+  const service = new AgentService({store:'synthetic-store',stateDir:'/fixture/state',installationId:'synthetic'},() => {
     catalogs++; return {close:async()=>{closed++;}} as unknown as AgentCatalog;
   });
   await service.select('w','a',11); await service.select('w','b',12);

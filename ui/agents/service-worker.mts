@@ -7,7 +7,8 @@ import { transferFrame, transferInspect, transferSnapshot } from "./transfer.mts
 interface Request { id: number; member: string; args: unknown[] }
 const port = parentPort;
 if (!port) throw new Error("Agent service worker requires a parent port.");
-const service = new AgentService({ store: workerData.store, installationId: workerData.installationId, agentDir: workerData.agentDir,
+const service = new AgentService({ store: workerData.store, stateDir: workerData.stateDir, installationId: workerData.installationId, agentDir: workerData.agentDir,
+  onImageInput: (...args) => port.postMessage({ event: "imageInput", args }),
   frameProjection: transferFrame,
   onRoster: page => port.postMessage({ event: "roster", args: [page] }),
   onFrame: (workspace, identity, epoch, frame) => port.postMessage({ event: "frame", args: [workspace, identity, epoch, frame] }),

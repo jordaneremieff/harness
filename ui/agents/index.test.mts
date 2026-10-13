@@ -17,7 +17,7 @@ function memoryService() {
   const port=Object.assign(new EventEmitter(),{postMessage(request:{id:number;member:string;args:unknown[]}) {
     requests.push(request); queueMicrotask(()=>port.emit('message',{id:request.id,result:undefined}));
   },terminate:async()=>0});
-  const service=new AgentService({store:'synthetic-store',installationId:'synthetic',onFrame:(...args)=>events.push(args),onAvailability:(...args)=>events.push(args)},()=>port);
+  const service=new AgentService({store:'synthetic-store',stateDir:'/fixture/state',installationId:'synthetic',onFrame:(...args)=>events.push(args),onAvailability:(...args)=>events.push(args)},()=>port);
   return {service,port,requests,events};
 }
 test('pure concurrent parent routing admits only owned identity and exact lifetime epoch',async()=> {
@@ -62,7 +62,7 @@ test('pure concurrent parent caps four targets per workspace and sixteen overall
 });
 
 const storageId = "00000000-0000-4000-8000-000000000001";
-const input = { operationId: "operation-example", message: "An exact retained input.", mode: "steer" as const };
+const input = { targetKey: "00000000-0000-4000-8000-000000000009", images: [], operationId: "operation-example", message: "An exact retained input.", mode: "steer" as const };
 const hasCode = (code: string) => (error: unknown) => {
   assert.equal((error as { code: string }).code, code); return true;
 };
@@ -73,7 +73,7 @@ async function stored(t: { after(fn: () => Promise<void>): void }) {
     storagePath: join(directory, "durable", `${storageId}.sqlite`),
     model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off", createdAt: "2026-01-01T00:00:00.000Z" };
   await writeFile(join(directory, "durable", `${storageId}.json`), JSON.stringify(record));
-  const service = createAgentService({ store: directory, installationId: "fixture-installation", agentDir: directory });
+  const service = createAgentService({ store: directory, stateDir: directory, installationId: "fixture-installation", agentDir: directory });
   t.after(async () => { await service.close(); await rm(directory, { recursive: true, force: true }); });
   return { service, directory };
 }
@@ -231,7 +231,7 @@ test("explicit target reconnect opens a fresh connection and epoch after idempot
   await writeFile(endpoint.claimPath, JSON.stringify({ sessionId: storageId, cwd: directory,
     host: hostname(), createdAt: "2026-01-01T00:00:00.000Z", pid: process.pid }));
   const next = deferred<void>();
-  const service = createAgentService({ store: directory, installationId: "fixture-installation", onFrame: (_workspace, _identity, epoch) => {
+  const service = createAgentService({ store: directory, stateDir: directory, installationId: "fixture-installation", onFrame: (_workspace, _identity, epoch) => {
     epochs.push(epoch); if (epochs.length === 2) next.resolve();
   } });
   const host = await FakeHost.start({ endpoint, subscriptionFrame: () => frame(3) });

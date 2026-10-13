@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { LIMITS } from "../shared/api.ts";
+import type { NativeInputMessage, NativeInputPart } from "./input.mts";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export type JsonObject = { [key: string]: JsonValue };
@@ -501,16 +503,64 @@ export function decodeResponse<M extends OperationName>(member: M, value: unknow
 	requireValue(Object.hasOwn(decoders, member) && decoder, "Unsupported operation"); return decoder() as Responses[M];
 }
 function token(value: unknown): void { string(value, 128); requireValue(/^[A-Za-z0-9._:-]+$/.test(value), "Invalid observation token"); }
+function inputObject(value: unknown): JsonObject {
+	const result = object(value);
+	requireValue(Object.getPrototypeOf(result) === Object.prototype || Object.getPrototypeOf(result) === null, "Invalid input object");
+	requireValue(Object.getOwnPropertySymbols(result).length === 0, "Invalid input symbol");
+	for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(result)))
+		requireValue("value" in descriptor && descriptor.enumerable && descriptor.value !== undefined, "Invalid input property");
+	return result;
+}
+function imagePart(value: JsonValue): {part: NativeInputPart; bytes: number; encoded: number} {
+	const part = inputObject(value); only(part, ["type", "data", "mimeType"]);
+	requireValue(part.type === "image" && (part.mimeType === "image/png" || part.mimeType === "image/jpeg"), "Invalid input image type");
+	const data = part.data;
+	requireValue(typeof data === "string" && data.length > 0 && data.length <= LIMITS.imageBase64Bytes && data.length % 4 === 0, "Invalid input image size");
+	requireValue(/^[A-Za-z0-9+/]*={0,2}$/.test(data), "Invalid input image base64");
+	const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+	if (padding === 2) requireValue(/[AQgw]/.test(data[data.length - 3]), "Noncanonical image base64");
+	if (padding === 1) requireValue(/[AEIMQUYcgkosw048]/.test(data[data.length - 2]), "Noncanonical image base64");
+	const bytes = data.length / 4 * 3 - padding;
+	requireValue(bytes > 0 && bytes <= LIMITS.imageBytes, "Input image exceeds its byte bound");
+	return {part: {type: "image", data, mimeType: part.mimeType}, bytes, encoded: data.length};
+}
+export function decodeNativeMessage(value: JsonValue): NativeInputMessage {
+	if (typeof value === "string") {
+		requireValue(value.length > 0 && Buffer.byteLength(value) <= LIMITS.inputFrameBytes, "Invalid input text");
+		return value;
+	}
+	requireValue(Array.isArray(value) && value.length > 0 && value.length <= LIMITS.imagesPerDraft + 1, "Invalid input parts");
+	requireValue(Object.getPrototypeOf(value) === Array.prototype && Reflect.ownKeys(value).length === value.length + 1, "Invalid input array");
+	for (let i = 0; i < value.length; i++) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, i);
+		requireValue(descriptor && "value" in descriptor && descriptor.enumerable, "Invalid input array item");
+	}
+	const parts: NativeInputPart[] = []; let start = 0, bytes = 0, encoded = 0;
+	const first = inputObject(value[0]);
+	if (first.type === "text") {
+		only(first, ["type", "text"]); string(first.text, LIMITS.textBytes);
+		requireValue(Buffer.byteLength(first.text) <= LIMITS.textBytes, "Input text exceeds its byte bound");
+		parts.push({type: "text", text: first.text}); start = 1;
+	}
+	requireValue(value.length - start >= 1 && value.length - start <= LIMITS.imagesPerDraft, "Invalid input image count");
+	for (let i = start; i < value.length; i++) {
+		const image = imagePart(value[i]); bytes += image.bytes; encoded += image.encoded;
+		requireValue(bytes <= LIMITS.draftImageBytes && encoded <= LIMITS.imageBase64Bytes, "Input images exceed their aggregate bound");
+		parts.push(image.part);
+	}
+	return parts;
+}
 export function decodeOperatorInput(value: unknown): JsonObject {
-	const o = object(json(value)); only(o, ["sessionId", "message", "origin", "requester", "replyTo", "requestId",
+	const o = inputObject(value); only(o, ["sessionId", "message", "origin", "requester", "replyTo", "requestId",
 		"whenBusy", "operationId", "checkInMinutes"]);
-	identity(o.sessionId); string(o.message, 1024 * 1024); requireValue(o.origin === "operator", "Operator origin required");
+	identity(o.sessionId); decodeNativeMessage(o.message); requireValue(o.origin === "operator", "Operator origin required");
 	fields(o, ["requester", "replyTo", "requestId"], v => string(v, 512));
 	requireValue(o.replyTo === o.sessionId, "Operator input requires a self-owned reply route");
 	if (o.whenBusy !== undefined) choice(o.whenBusy, ["steer", "followUp", "reject"]);
 	optional(o, ["operationId"], v => string(v, 512));
 	if (o.checkInMinutes !== undefined) requireValue(typeof o.checkInMinutes === "number" && o.checkInMinutes >= 0
 		&& o.checkInMinutes <= 35791, "Invalid check-in interval");
+	requireValue(Buffer.byteLength(JSON.stringify(o)) + 4 <= LIMITS.inputFrameBytes, "Input envelope exceeds its byte bound");
 	return o;
 }
 export function decodeInput(member: OperationName, value: unknown, context: Context = {}): JsonObject {

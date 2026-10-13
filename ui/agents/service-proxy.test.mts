@@ -32,7 +32,7 @@ class FakeWorker extends EventEmitter {
 function fixture(t: { after: (fn: () => Promise<void>) => void }, callbacks: Partial<AgentServiceOptions> = {}) {
 	const worker = new FakeWorker();
 	const service = new AgentService(
-		{ store: "/private-fixture", installationId: "fixture", ...callbacks },
+		{ store: "/private-fixture", stateDir: "/private-fixture", installationId: "fixture", ...callbacks },
 		() => worker,
 	);
 	t.after(() => service.close());
@@ -63,7 +63,7 @@ function page(changed: CatalogRow[] = [], removed: string[] = []): CatalogPage {
 		scan: { scanId: "scan", state: "ready", complete: true, visited: 50, skipped: 0, omitted: 0 },
 	};
 }
-const input = { operationId: "operation", message: "Exact text", mode: "steer" as const };
+const input = { targetKey: "00000000-0000-4000-8000-000000000009", images: [], operationId: "operation", message: "Exact text", mode: "steer" as const };
 function code(expected: string, uncertain = false) {
 	return (error: unknown) => {
 		assert.equal((error as { code: string }).code, expected);
@@ -71,6 +71,30 @@ function code(expected: string, uncertain = false) {
 		return true;
 	};
 }
+
+test("image input readiness follows exact worker facts and stale prepare responses never restore it", async t => {
+  const {worker,service}=fixture(t); const storage="00000000-0000-4000-8000-000000000001", identity=`${storage}:2`;
+  assert.equal(service.imageInputAvailable(identity),false);
+  const prepared=service.prepare(identity), request=worker.requests.at(-1); assert.ok(request);
+  worker.callback("imageInput",storage,identity,true);
+  assert.equal(service.imageInputAvailable(identity),true); assert.equal(service.imageInputAvailable(storage),false);
+  worker.callback("imageInput",storage,undefined,false);
+  worker.respond(request.id,{"task-submit":true,images:true}); await prepared;
+  assert.equal(service.imageInputAvailable(identity),false);
+  worker.callback("imageInput",storage,identity,true); assert.equal(service.imageInputAvailable(identity),true);
+  worker.emit("exit",1); assert.equal(service.imageInputAvailable(identity),false);
+  worker.callback("imageInput",storage,identity,true); assert.equal(service.imageInputAvailable(identity),false);
+});
+test("image metadata crosses the proxy as a deep capture without private paths or encoded bytes", async t => {
+  const {worker,service}=fixture(t);
+  const image={digest:"a".repeat(64),mimeType:"image/png" as const,bytes:3,width:1,height:1,name:"original.png"};
+  const original={...input,message:"",images:[image]}, saved=structuredClone(original);
+  const pending=service.submit("fixture",original); original.images[0].name="changed.png";
+  const request=worker.requests.at(-1); assert.ok(request);
+  assert.deepEqual(request.args,["fixture",saved]);
+  await assert.rejects(service.submit("fixture",original),{code:"operation_conflict"});
+  worker.respond(request.id,{identity:"fixture"}); await pending;
+});
 
 test("retained failures keep explicit read retry policy through the worker", async t => {
   const {worker,service}=fixture(t);
@@ -162,7 +186,7 @@ test("same input keys return the same promise and changed content never crosses 
 	const { worker, service } = fixture(t);
 	const one = service.submit("fixture", input);
 	assert.equal(
-		service.submit("fixture", { mode: "steer", message: input.message, operationId: input.operationId }),
+		service.submit("fixture", { mode: "steer", message: input.message, operationId: input.operationId, targetKey: input.targetKey, images: [] }),
 		one,
 	);
 	await assert.rejects(service.submit("fixture", { ...input, message: "Changed" }), code("operation_conflict"));
@@ -176,7 +200,7 @@ test("same input keys return the same promise and changed content never crosses 
 	const retry = service.retrySubmit("fixture", {
 		mode: "steer",
 		message: input.message,
-		operationId: input.operationId,
+		operationId: input.operationId, targetKey: input.targetKey, images: [],
 	});
 	assert.equal(worker.requests.at(-1)?.member, "retrySubmit");
 	assert.deepEqual(worker.requests.at(-1)?.args, request.args);

@@ -1,21 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { connectTransport, type FeedKind, type TransportClient, type TransportSubscription } from "../../transport/index.ts";
-import { assertOperation, decodeDescriptor, decodeFrame, decodeInput, decodeResponse, supportedOperations, type Admission, type ConversationFrame, type JsonObject, type OperationName, type RuntimeDescriptor } from "./contract.mts";
+import { assertOperation, decodeDescriptor, decodeFrame, decodeInput, decodeNativeMessage, decodeResponse, supportedOperations, type Admission, type ConversationFrame, type JsonObject, type OperationName, type RuntimeDescriptor } from "./contract.mts";
 
 export interface HostEndpoint { serverId: string; socketPath: string }
 export interface LinkOptions { handshakeTimeoutMs?: number; maxPending?: number; onMeasure?: (name: string, durationMs: number) => void }
-export class AgentError extends Error {
-  readonly code: string;
-  readonly uncertain: boolean;
-  readonly retryable: boolean;
-  constructor(code: string, message: string, uncertain = false, retryable = false) {
-    super(message); this.name = "AgentError"; this.code = code; this.uncertain = uncertain; this.retryable = retryable;
-  }
-}
+export { AgentError, validateSubmitInput } from "./input.mts";
+export type { SubmitInput, NativeSubmitInput } from "./input.mts";
+import { AgentError, nativeInputDigest, type NativeSubmitInput } from "./input.mts";
+import { LIMITS } from "../shared/api.ts";
 export interface RequestContext { wireRequestId?: string; identity?: string; requestId?: string; token?: string }
 export interface ObservationSubscription { baseline: ConversationFrame; start(): void; dispose(): Promise<void> }
-export interface SubmitInput { operationId: string; message: string; mode: "steer" | "followUp" }
 const mutations = new Set<OperationName>(["task-submit", "abort", "configure"]);
 
 /** One negotiated connection. Disconnect never replays work or opens another connection. */
@@ -54,7 +49,7 @@ export class HostLink {
     const timer = setTimeout(() => { controller.abort(expired); void client?.dispose(); }, timeout);
     try {
       client = await connectTransport({ serverId: endpoint.serverId, path: endpoint.socketPath,
-        timeoutMs: timeout, maxFrameBytes: 16 * 1024 * 1024, maxQueueBytes: 1024 * 1024 });
+        timeoutMs: timeout, maxFrameBytes: 16 * 1024 * 1024, maxQueueBytes: LIMITS.agentPendingBytes });
       controller.signal.throwIfAborted();
       const descriptor = decodeDescriptor(await client.request({ method: "runtime-contract" }, controller.signal));
       controller.signal.throwIfAborted();
@@ -121,11 +116,14 @@ export class HostLink {
       throw error;
     }
   }
-  submit(identity: string, input: SubmitInput, installationId: string, signal?: AbortSignal): Promise<Admission> {
-    try { validateSubmitInput(input); } catch (error) { return Promise.reject(error); }
+  submit(identity: string, input: NativeSubmitInput, installationId: string, signal?: AbortSignal): Promise<Admission> {
+    if (!input || typeof input.operationId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/.test(input.operationId)
+      || !["steer", "followUp"].includes(input.mode)) return Promise.reject(new AgentError("invalid_request", "Invalid native input."));
     const requestId = `ui:${input.operationId}`;
     const params = { sessionId: identity, message: input.message, origin: "operator", requester: `ui:${installationId}`, replyTo: identity, requestId, whenBusy: input.mode };
-    const digest = JSON.stringify(params);
+    try { decodeNativeMessage(input.message); }
+    catch (error) { return Promise.reject(new AgentError("invalid_request", error instanceof Error ? error.message : "Invalid native input.")); }
+    const digest = nativeInputDigest(identity, input, installationId);
     const previous = this.#inputs.get(requestId);
     if (previous) {
       if (previous.digest !== digest) return Promise.reject(new AgentError("operation_conflict", "Agent request key was reused with changed input."));
@@ -225,9 +223,6 @@ export class HostLink {
     })();
     return this.#closePromise;
   }
-}
-export function validateSubmitInput(input: SubmitInput): void {
-  if (!input || typeof input.operationId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/.test(input.operationId) || typeof input.message !== "string" || !input.message.trim() || Buffer.byteLength(input.message) > 65536 || !["steer", "followUp"].includes(input.mode)) throw new AgentError("invalid_request", "Invalid agent input.");
 }
 function assertResponseContext(member: OperationName, value: unknown, params: JsonObject | null): void {
   if (!params || !value || typeof value !== "object") return;

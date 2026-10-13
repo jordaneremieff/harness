@@ -218,7 +218,7 @@ test("isolated agent facade measures bounded snapshot and live projection on the
 	const info = await fixture.ready(); const measures = new Measures();
 	let received: number[] = []; let all: ReturnType<typeof deferred<void>> | undefined;
 	let firstRevision = 0; let finalRevision = 0;
-	service = createAgentService({ store: stored.directory, installationId: "native-performance",
+	service = createAgentService({ store: stored.directory, stateDir: stored.directory, installationId: "native-performance",
 		onFrame: (_workspace, _identity, _epoch, value) => {
 			if (!all || value.revision < firstRevision) return;
 			try {

@@ -25,7 +25,7 @@ for(const state of ["stored","incompatible"] as const) test(`${state} reads rema
   });syncBuiltinESMExports();t.after(()=>{opened.mock.restore();syncBuiltinESMExports();});t.mock.method(process,"kill",()=>true);
   let connections=0, readerClosed=0;const reads:unknown[][]=[];const availability:unknown[][]=[];
   t.mock.method(HostLink,"connect",async()=>{connections++;throw new AgentError("contract_mismatch","Host uses another contract");});
-  const service=new AgentService({store:"/trusted/backend/store",installationId:"fixture",onAvailability:(...args)=>availability.push(args)},
+  const service=new AgentService({store:"/trusted/backend/store",stateDir:"/fixture/state",installationId:"fixture",onAvailability:(...args)=>availability.push(args)},
     ()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog),
     ()=>({request:async(method:string,identity:string,params:unknown)=>{reads.push([method,identity,params]);return method==="snapshot"?snapshot:exact;},close:async()=>{readerClosed++;}} as unknown as RetainedReader));
   t.after(()=>service.close());
@@ -45,8 +45,8 @@ test("compatible live snapshot preserves the live path without a reader call",as
   const opened=t.mock.method(fs,"open",async()=>({stat:async()=>({isFile:()=>true,size:claim.length}),read:async(buffer:Buffer,offset:number,length:number,position:number)=>({bytesRead:claim.copy(buffer,offset,position,position+length),buffer}),close:async()=>{}}));
   syncBuiltinESMExports();t.after(()=>{opened.mock.restore();syncBuiltinESMExports();});t.mock.method(process,"kill",()=>true);
   const calls:string[]=[];
-  t.mock.method(HostLink,"connect",async(endpoint:unknown)=>({endpoint,connected:true,request:async(member:string)=>{calls.push(member);return snapshot;},close:async()=>{}} as unknown as HostLink));
-  const service=new AgentService({store:"/backend",installationId:"fixture"},()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog),()=>({request:()=>{throw Error("No cold reader for compatible live read");},close:async()=>{}} as unknown as RetainedReader));
+  t.mock.method(HostLink,"connect",async(endpoint:unknown)=>({endpoint,connected:true,onDisconnect:()=>()=>{},request:async(member:string)=>{calls.push(member);return snapshot;},close:async()=>{}} as unknown as HostLink));
+  const service=new AgentService({store:"/backend",stateDir:"/fixture/state",installationId:"fixture"},()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog),()=>({request:()=>{throw Error("No cold reader for compatible live read");},close:async()=>{}} as unknown as RetainedReader));
   t.after(()=>service.close());assert.deepEqual(await service.history(ROOT),snapshot);assert.deepEqual(calls,["snapshot"]);
 });
 for (const failed of [false, true]) test(`service shutdown ${failed ? "reports failed" : "awaits acknowledged"} token cleanup before link cancellation`, async t => {
@@ -90,7 +90,7 @@ async function claimedService(t: TestContext) {
   await fs.mkdir(dirname(endpoint.socketPath),{recursive:true});
   await fs.writeFile(endpoint.claimPath,JSON.stringify({sessionId:ROOT,cwd:dir,host:hostname(),createdAt:record.createdAt,pid:process.pid}));
   const reads:unknown[][]=[];const availability:unknown[][]=[];
-  const service=new AgentService({store:dir,installationId:"fixture",onAvailability:(...args)=>availability.push(args)},
+  const service=new AgentService({store:dir,stateDir:dir,installationId:"fixture",onAvailability:(...args)=>availability.push(args)},
     ()=>({get:()=>record,close:async()=>{}} as unknown as AgentCatalog),
     ()=>({request:async(method:string,identity:string,params:unknown)=>{reads.push([method,identity,params]);return method==="snapshot"?snapshot:exact;},close:async()=>{}} as unknown as RetainedReader));
   t.after(async()=>{await service.close();await fs.rm(endpoint.socketPath,{force:true});await fs.rm(dir,{recursive:true,force:true});});
@@ -130,7 +130,7 @@ for(const member of ["snapshot","inspect"] as const) test(`malformed negotiated 
 });
 test("retained refusal never becomes an empty snapshot and never loops",async()=> {
   let reads=0;
-  const service=new AgentService({store:"/backend",installationId:"fixture"},()=>({get:()=>undefined,close:async()=>{}} as unknown as AgentCatalog),()=>({request:async()=>{reads++;throw new AgentError("source_changed","Source changed",false,true);},close:async()=>{}} as unknown as RetainedReader));
+  const service=new AgentService({store:"/backend",stateDir:"/fixture/state",installationId:"fixture"},()=>({get:()=>undefined,close:async()=>{}} as unknown as AgentCatalog),()=>({request:async()=>{reads++;throw new AgentError("source_changed","Source changed",false,true);},close:async()=>{}} as unknown as RetainedReader));
   try {await assert.rejects(service.history(ROOT),{code:"source_changed",retryable:true});assert.equal(reads,1);}
   finally {await service.close();}
 });
