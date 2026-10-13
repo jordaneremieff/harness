@@ -182,7 +182,7 @@ test('input recovery capacity refuses new work and never evicts unresolved recor
   await store.transaction(async () => {
     for (let index = 0; index < 128; index++) {
       const copy = store.record(view.id); copy.view.id = crypto.randomUUID(); copy.view.state = 'uncertain';
-      copy.input = {operationId: copy.view.id, target: capturedTarget, targetKey: captured.targetKey, text: 'saved intent', mode: 'prompt', submittedDraftRevision: 1, createdAt: copy.view.createdAt, reason: 'uncertain'};
+      copy.input = {operationId: copy.view.id, target: capturedTarget, targetKey: captured.targetKey, text: 'saved intent', mode: 'prompt', images: [], submittedDraftRevision: 1, createdAt: copy.view.createdAt, reason: 'uncertain'};
       await store.writeOperation(copy);
     }
   });

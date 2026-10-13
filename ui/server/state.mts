@@ -18,7 +18,7 @@ const FORMAT = 'ui-state/1';
 export type ChangeHook = (name: EventName, data: EventData[EventName], workspaceId?: string, target?: Target) => void;
 export type QueueClearRecord = {recoveryWorkspaceId: string; phase: 'prepared' | 'retaining' | 'retained' | 'uncertain' | 'refused'; imageCopies: {workspaceId: string; operationId: string}[]; rowBudget: number; returned?: {steering: number; followUp: number}};
 export type OperationMetadata = {view: Pick<OperationView, 'id' | 'kind' | 'target' | 'state' | 'createdAt' | 'updatedAt'>; workspaceId: string; input?: true; inputResolved?: boolean; retainedInput?: RetainedAdmission; protected?: boolean};
-export type OperationRecord = {view: OperationView; workspaceId: string; digest?: string; input?: Omit<InputCopy, 'images' | 'queueRecovery'> & {targetKey: string; images?: DraftImage[]}; inputResolved?: boolean; retainedInput?: RetainedAdmission; queueRecovery?: QueueRecovery; queueClear?: QueueClearRecord};
+export type OperationRecord = {view: OperationView; workspaceId: string; digest?: string; input?: Omit<InputCopy, 'queueRecovery'> & {targetKey: string}; inputResolved?: boolean; retainedInput?: RetainedAdmission; queueRecovery?: QueueRecovery; queueClear?: QueueClearRecord};
 export type ImageLease = {image: ValidatedImage; expiresAt: string};
 type StoredTarget = Omit<TargetState, 'draft' | 'unconfirmed' | 'retainedInputs' | 'imageAvailability' | 'imageStorageError' | 'recoveryPreviewTruncated'> & {workspaceId: string; draft: StoredDraft; imageLeases?: ImageLease[]};
 
@@ -151,6 +151,10 @@ function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace
   return value;
 }
 
+function savedImages(value: unknown, owner: 'draft' | 'input'): DraftImage[] {
+  if (!Array.isArray(value)) throw new StateError('state_record_refused', `Saved ${owner} image metadata requires an array`, 503);
+  return normalizeDraftImages(value);
+}
 function validateOrigin(value: RecoveryOrigin): void {
   if (!value || typeof value !== 'object' || Object.keys(value).length !== 2 || !UUID.test(value.clearOperationId) || !UUID.test(value.recoveryOperationId)) throw new StateError('queue_recovery_provenance', 'Recovery source is invalid', 409);
 }
@@ -165,6 +169,10 @@ export class StateStore {
   private closed = false;
   private closePromise?: Promise<void>;
   private poisoned = false;
+  private readonly refusedTargets = new Set<string>();
+  private imageRecordsRefused = false;
+  private refusedOperationCount = 0;
+  private refusedOperationBytes = 0;
   private workspaces = new Map<string, Workspace>();
   private targetRecords = new Map<string, StoredTarget>();
   private operationRecords = new Map<string, OperationRecord>();
@@ -236,7 +244,7 @@ export class StateStore {
       await this.load('targets', LIMITS.targets, 96 * 1024, value => {
         const record = value as StoredTarget; validateTarget(record.target);
         if (!UUID.test(record.targetKey) || !this.workspaces.has(record.workspaceId)) throw new StateError('not_ready', 'Invalid saved target', 503);
-        validateText(record.draft.text); validateMode(record.draft.mode); record.draft.images = normalizeDraftImages(record.draft.images);
+        validateText(record.draft.text); validateMode(record.draft.mode); record.draft.images = savedImages(record.draft.images, 'draft');
         if (record.draft.recoveryOrigin) validateOrigin(record.draft.recoveryOrigin);
         this.validateImageLeases(record.imageLeases);
         if ([...this.targetRecords.values()].some(saved => saved.workspaceId === record.workspaceId && sameTarget(saved.target, record.target))) throw new StateError('not_ready', 'Duplicate saved target identity', 503);
@@ -253,6 +261,7 @@ export class StateStore {
         this.operationSizes.set(record.view.id, Buffer.byteLength(JSON.stringify(record)));
         this.cacheInput(record);
       });
+      if (this.operationBytes + this.refusedOperationBytes > 32 * 1024 * 1024) throw new StateError('capacity', 'Saved operation store exceeds its limit', 429);
   }
   private async acquireLock(recover: boolean): Promise<void> {
     const path = join(this.root, 'lock.json');
@@ -289,8 +298,17 @@ export class StateStore {
       if (!item.name.endsWith('.json')) continue;
       if (!UUID.test(item.name.slice(0, -5)) || !item.isFile()) throw new StateError('not_ready', 'Invalid saved state file', 503);
       if (--count < 0) throw new StateError('capacity', 'Saved state record limit reached', 429);
-      accept(await readJson(join(this.root, directory, item.name), bound));
+      const value = await readJson(join(this.root, directory, item.name), bound);
+      try { accept(value); }
+      catch (error) { this.refuseSavedRecord(directory, item.name, value, error); }
     }
+  }
+  private refuseSavedRecord(directory: string, name: string, value: unknown, error: unknown): void {
+    if (!(error instanceof StateError) || error.code !== 'state_record_refused') throw error;
+    if (directory === 'targets') this.refusedTargets.add(name.slice(0, -5));
+    if (directory === 'operations') { this.refusedOperationCount++; this.refusedOperationBytes += Buffer.byteLength(JSON.stringify(value)); }
+    this.imageRecordsRefused = true;
+    this.changed('notice', {level: 'warning', code: 'state_record_refused', message: `${directory}/${name}: ${error.message}. The saved file remains unchanged.`});
   }
   private async atomic(relative: string, value: unknown, bound: number): Promise<void> {
     const data = JSON.stringify(value);
@@ -387,7 +405,7 @@ export class StateStore {
     return this.transaction(async () => {
       this.requireWorkspace(wid); validateTarget(target);
       for (const value of this.targetRecords.values()) if (value.workspaceId === wid && sameTarget(value.target, target)) return this.targetView(value);
-      if (this.targetRecords.size >= LIMITS.targets) throw new StateError('capacity', 'Saved target limit reached', 429);
+      if (this.targetRecords.size + this.refusedTargets.size >= LIMITS.targets) throw new StateError('capacity', 'Saved target limit reached', 429);
       const value: StoredTarget = {workspaceId: wid, targetKey: randomUUID(), target: structuredClone(target), draft: {revision: 0, text: '', mode: target.kind === 'agent' ? 'followUp' : 'prompt', images: [], persisted: true}, reading: {revision: 0, anchorId: null, offsetPx: 0, followTail: true}, presentation: {revision: 0, expanded: [], showThinking: false}};
       await this.atomic(`targets/${value.targetKey}.json`, value, 96 * 1024); this.targetRecords.set(value.targetKey, value); return this.targetView(value);
     });
@@ -400,7 +418,7 @@ export class StateStore {
       if (record.workspaceId !== wid || !record.input || record.inputResolved) continue;
       const ids = links.get(record.input.targetKey) ?? []; ids.push(record.view.id); links.set(record.input.targetKey, ids);
     }
-    return [...this.targetRecords.values()].filter(value => value.workspaceId === wid).map(value => ({targetKey: value.targetKey, target: structuredClone(value.target), draftRevision: value.draft.revision, hasDraft: draftHasContent({...value.draft, images: value.draft.images ?? []}), draftPreview: Array.from(value.draft.text).slice(0, LIMITS.draftPreviewChars).join(''), draftPreviewTruncated: Array.from(value.draft.text).length > LIMITS.draftPreviewChars, unconfirmedOperationIds: links.get(value.targetKey) ?? [], retainedInputOperationIds: [...this.operationRecords.values()].filter(record => record.workspaceId === wid && record.input?.targetKey === value.targetKey && record.retainedInput).map(record => record.view.id)}));
+    return [...this.targetRecords.values()].filter(value => value.workspaceId === wid).map(value => ({targetKey: value.targetKey, target: structuredClone(value.target), draftRevision: value.draft.revision, hasDraft: draftHasContent(value.draft), draftPreview: Array.from(value.draft.text).slice(0, LIMITS.draftPreviewChars).join(''), draftPreviewTruncated: Array.from(value.draft.text).length > LIMITS.draftPreviewChars, unconfirmedOperationIds: links.get(value.targetKey) ?? [], retainedInputOperationIds: [...this.operationRecords.values()].filter(record => record.workspaceId === wid && record.input?.targetKey === value.targetKey && record.retainedInput).map(record => record.view.id)}));
   }
   snapshot(wid: string, selectedTargets?: Target[]): {workspace: Workspace; targets: TargetState[]; targetIndex: TargetIndex[]} {
     const workspace = structuredClone(this.requireWorkspace(wid));
@@ -490,19 +508,19 @@ export class StateStore {
   async writeOperation(value: OperationRecord): Promise<void> {
     if (!UUID.test(value.view.id)) throw new StateError('invalid_request', 'Invalid operation identity');
     this.requireWorkspace(value.workspaceId); this.validateOperationInput(value);
-    if (this.operationRecords.size + (this.operationRecords.has(value.view.id) ? 0 : 1) + this.reservedQueueRows(value) > LIMITS.operations) throw new StateError('capacity', 'Operation record limit reached', 429);
+    if (this.operationRecords.size + this.refusedOperationCount + (this.operationRecords.has(value.view.id) ? 0 : 1) + this.reservedQueueRows(value) > LIMITS.operations) throw new StateError('capacity', 'Operation record limit reached', 429);
     if (Buffer.byteLength(JSON.stringify(value)) > 128 * 1024) throw new StateError('payload_too_large', 'Operation exceeds its file limit', 413);
     const previous = this.operationRecords.get(value.view.id);
     const size = Buffer.byteLength(JSON.stringify(value));
     const total = this.operationBytes - (this.operationSizes.get(value.view.id) ?? 0) + size;
-    if (total + this.reservedQueueRows(value) * 128 * 1024 > 32 * 1024 * 1024) throw new StateError('capacity', 'Operation store byte limit reached', 429);
+    if (total + this.refusedOperationBytes + this.reservedQueueRows(value) * 128 * 1024 > 32 * 1024 * 1024) throw new StateError('capacity', 'Operation store byte limit reached', 429);
     if (this.recoveryContentCount(value) + this.reservedQueueRows(value) > LIMITS.unconfirmed) throw new StateError('capacity', 'Recovery copy capacity is occupied', 429);
     await this.atomic(`operations/${value.view.id}.json`, value, 128 * 1024); this.operationRecords.set(value.view.id, structuredClone(value)); this.operationBytes = total; this.operationSizes.set(value.view.id, size);
     this.cacheInput(value, previous);
     this.changed('operation.changed', value.view, value.workspaceId, value.view.target); this.publishRecoveryGuards();
   }
-  operationStoreBytes(): number { return this.operationBytes + this.reservedQueueRows() * 128 * 1024; }
-  operationStoreCount(): number { return this.operationRecords.size + this.reservedQueueRows(); }
+  operationStoreBytes(): number { return this.operationBytes + this.refusedOperationBytes + this.reservedQueueRows() * 128 * 1024; }
+  operationStoreCount(): number { return this.operationRecords.size + this.refusedOperationCount + this.reservedQueueRows(); }
   operationMetadata(): OperationMetadata[] {
     const protectedIds = this.protectedOperationIds();
     return [...this.operationRecords.values()].map(({view, workspaceId, input, inputResolved, retainedInput}) => ({workspaceId, inputResolved, ...(input ? {input: true as const} : {}), ...(retainedInput ? {retainedInput} : {}), ...(protectedIds.has(view.id) ? {protected: true} : {}), view: {id: view.id, kind: view.kind, state: view.state, createdAt: view.createdAt, updatedAt: view.updatedAt, ...(view.target ? {target: structuredClone(view.target)} : {})}}));
@@ -541,9 +559,10 @@ export class StateStore {
   }
   private validateCapturedInput(record: OperationRecord, input: NonNullable<OperationRecord['input']>): void {
     validateText(input.text); validateMode(input.mode); validateTarget(input.target);
+    if (this.refusedTargets.has(input.targetKey)) throw new StateError('state_record_refused', 'The captured input belongs to a refused saved target', 503);
     const saved = this.requireTarget(record.workspaceId, input.targetKey);
     if (!sameTarget(saved.target, input.target) || !sameTarget(record.view.target, input.target) || input.operationId !== record.view.id) throw new StateError('operation_conflict', 'Recovery copy target is invalid', 409);
-    input.images = normalizeDraftImages(input.images);
+    input.images = savedImages(input.images, 'input');
     if (input.recoveryOrigin) validateOrigin(input.recoveryOrigin);
     if (input.differentMessage !== undefined && input.differentMessage !== true) throw new StateError('invalid_request', 'Invalid different-message assertion');
   }
@@ -653,7 +672,7 @@ export class StateStore {
   }
   private addInputImagePins(record: OperationRecord, add: (key: string, image: ValidatedImage, pin: {unresolved?: string; retained?: string}) => void): void {
     if (!record.input || record.inputResolved && !record.retainedInput) return;
-    for (const image of record.input.images ?? []) add(record.input.targetKey, image, record.retainedInput ? {retained: record.view.id} : {unresolved: record.view.id});
+    for (const image of record.input.images) add(record.input.targetKey, image, record.retainedInput ? {retained: record.view.id} : {unresolved: record.view.id});
   }
   imageGraphForMutation(): BlobReferenceGraph {
     this.assertImageProvenance();
@@ -670,7 +689,7 @@ export class StateStore {
       entries.set(id, value);
     };
     for (const target of this.targetRecords.values()) {
-      for (const image of target.draft.images ?? []) add(target.targetKey, image, {draft: true});
+      for (const image of target.draft.images) add(target.targetKey, image, {draft: true});
       for (const lease of target.imageLeases ?? []) if (Date.parse(lease.expiresAt) > this.now()) add(target.targetKey, lease.image, {lease: lease.expiresAt});
     }
     for (const record of this.operationRecords.values()) this.addInputImagePins(record, add);
@@ -686,6 +705,7 @@ export class StateStore {
     }
   }
   private async refreshImageIndex(): Promise<void> {
+    if (this.imageRecordsRefused) { this.imageIndex.error = 'Saved image metadata is unavailable. Image cleanup and upload are disabled; saved bytes remain unchanged.'; return; }
     try {
       const graph = this.imageGraphForMutation();
       const index = await this.images.scan({targetKeys: graph.targetKeys, references: []});
@@ -818,7 +838,7 @@ export class StateStore {
 
   async clearSubmittedDraft(wid: string, input: NonNullable<OperationRecord['input']>): Promise<void> {
     const value = this.requireTarget(wid, input.targetKey);
-    if (value.draft.revision !== input.submittedDraftRevision || !sameDraftTuple({...value.draft, images: value.draft.images ?? []}, {...input, images: input.images ?? []})) return;
+    if (value.draft.revision !== input.submittedDraftRevision || !sameDraftTuple(value.draft, input)) return;
     const draft: StoredDraft = {...value.draft, revision: value.draft.revision + 1, text: '', images: []};
     delete draft.recoveryOrigin;
     await this.writeTarget({...value, draft}); await this.cleanupImagesForMutation();

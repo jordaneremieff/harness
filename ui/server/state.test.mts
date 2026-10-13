@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { StateError, StateStore, validateConversationLayout } from './state.mts';
+import { Operations } from './operations.mts';
+import { Journal } from './journal.mts';
 import type { Appearance, ConversationLayout, Workspace } from '../shared/api.ts';
 
 test('conversation layout accepts one bounded target-object tree and rejects flat records', () => {
@@ -69,6 +71,69 @@ test('private state survives restart, retains distinct epochs, and publishes onl
     assert.equal(reopened.snapshot(workspace.id).workspace.sidebarVisible, false);
     assert.equal(reopened.snapshot(workspace.id).workspace.sidebarWidth, 328);
   } finally { await reopened.close(); }
+});
+
+async function savedTextInput(t: test.TestContext) {
+  const fixture = await setup(t), {store, workspace, target} = fixture;
+  const draft = await store.putDraft(workspace.id, target.targetKey, {expectedRevision: 0, text: 'exact text-only input', mode: 'prompt'});
+  const operations = new Operations(store), view = await operations.reserve(workspace.id, 'primary.input', target.target);
+  const result = await operations.execute(view.id, {workspaceId: workspace.id, kind: 'primary.input', target: target.target,
+    body: {message: draft.text, mode: draft.mode, draftRevision: draft.revision},
+    input: {targetKey: target.targetKey, text: draft.text, mode: draft.mode, draftRevision: draft.revision}},
+  async () => {throw new Error('Fixture admission has no receipt');});
+  assert.equal(result.state, 'uncertain');
+  await store.close();
+  return {...fixture, operationId: view.id, targetPath: join(fixture.root, 'targets', `${target.targetKey}.json`), operationPath: join(fixture.root, 'operations', `${view.id}.json`)};
+}
+
+for (const owner of ['draft', 'input'] as const) {
+  test(`saved ${owner} without image metadata stays refused while valid queue recovery continues`, async t => {
+    const f = await savedTextInput(t), initial = await StateStore.open(f.root);
+    const validTarget = {kind: 'primary' as const, key: 'other-primary', epoch: 1};
+    const valid = await initial.target(f.workspace.id, validTarget);
+    const operations = new Operations(initial), clearId = await operations.beginQueueClear(f.workspace.id, validTarget, 1);
+    await operations.retainQueue(clearId, {steering: ['exact recovered text'], followUp: []});
+    const recoveredId = initial.records().find(record => record.queueRecovery?.clearOperationId === clearId)?.view.id; assert.ok(recoveredId);
+    const operationCount = initial.operationStoreCount();
+    await initial.close();
+    const source = owner === 'draft' ? f.targetPath : f.operationPath;
+    const record = JSON.parse(await readFile(source, 'utf8')); delete record[owner].images;
+    await writeFile(source, JSON.stringify(record));
+    const imageDirectory = join(f.root, 'images', f.target.targetKey); await mkdir(imageDirectory, {recursive: true});
+    const imagePath = join(imageDirectory, `${'a'.repeat(64)}.bin`); await writeFile(imagePath, 'unclassified saved image bytes');
+    const paths = [f.targetPath, f.operationPath, imagePath, join(f.root, 'instance.json'), join(f.root, 'workspaces', `${f.workspace.id}.json`)];
+    const before = await Promise.all(paths.map(path => readFile(path, 'utf8')));
+    const journal = new Journal(); t.after(() => journal.close());
+    const reopened = await StateStore.open(f.root, {onChange: (name, data, workspace, target) => journal.publish(name, target, data, workspace)});
+    try {
+      assert.equal(journal.notices(f.workspace.id).some(notice => notice.code === 'state_record_refused' && notice.message.includes(`Saved ${owner} image metadata requires an array`)), true);
+      assert.equal(reopened.records().some(record => record.view.id === f.operationId), false);
+      assert.equal(reopened.operationStoreCount(), operationCount);
+      assert.equal(reopened.targetIndex(f.workspace.id).some(target => target.targetKey === f.target.targetKey), owner === 'input');
+      assert.equal((await reopened.getRetainedInput(f.workspace.id, recoveredId)).text, 'exact recovered text');
+      const next = new Operations(reopened), nextId = await next.beginQueueClear(f.workspace.id, validTarget, 1);
+      await next.retainQueue(nextId, {steering: [], followUp: ['new recovered text']});
+      const draft = await reopened.putDraft(f.workspace.id, valid.targetKey, {expectedRevision: 0, text: 'text remains available', mode: 'prompt'});
+      assert.deepEqual(draft.images, []);
+      assert.equal((await reopened.getTarget(f.workspace.id, valid.targetKey)).imageStorageError?.code, 'image_storage_unavailable');
+      await assert.rejects(reopened.reserveImageUpload(f.workspace.id, valid.targetKey, {name: 'image.png', mimeType: 'image/png', epoch: 1}, () => {}), {code: 'image_storage_unavailable'});
+    } finally {await reopened.close();}
+    assert.deepEqual(await Promise.all(paths.map(path => readFile(path, 'utf8'))), before);
+    await assert.rejects(stat(join(f.root, 'lock.json')), {code: 'ENOENT'});
+  });
+}
+
+test('current text-only writers persist explicit image arrays and reopen without normalization', async t => {
+  const f = await savedTextInput(t);
+  assert.deepEqual(JSON.parse(await readFile(f.targetPath, 'utf8')).draft.images, []);
+  assert.deepEqual(JSON.parse(await readFile(f.operationPath, 'utf8')).input.images, []);
+  const reopened = await StateStore.open(f.root);
+  try {
+    const target = await reopened.getTarget(f.workspace.id, f.target.targetKey);
+    assert.equal(target.draft.text, 'exact text-only input'); assert.deepEqual(target.draft.images, []);
+    assert.equal(reopened.record(f.operationId).input?.text, target.draft.text);
+    assert.deepEqual(reopened.record(f.operationId).input?.images, []);
+  } finally {await reopened.close();}
 });
 
 test('Enter preference is workspace-local, revisioned, optional and durable', async t => {
