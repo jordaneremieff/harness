@@ -188,6 +188,10 @@ export class Transcript {
   private follow = true;
   private readingRevision = 0;
   private pending = false;
+  private renderFrame?: number;
+  private renderTask?: ReturnType<typeof setTimeout>;
+  private inputFrame?: number;
+  private streamPending = false;
   private scheduledAt?: number;
   private receivedAt?: number;
   private deferred?: () => void;
@@ -225,6 +229,17 @@ export class Transcript {
       this.elapsed.sync();
     };
     this.listen(document, 'visibilitychange', visibilityChange);
+    this.listen(document, 'beforeinput', event => {
+      if (!nativeEditingTarget(event.target) || this.hidden() || document.hidden) return;
+      const pending = this.pending; this.cancelRender(); this.pending = pending;
+      if (this.inputFrame !== undefined) return;
+      // A posted task after this frame leaves every editor RAF callback ahead of stream work.
+      this.inputFrame = this.frame(() => {
+        this.inputFrame = undefined;
+        if (!this.pending) return;
+        this.pending = false; this.schedule();
+      });
+    }, {capture: true});
     if (typeof MutationObserver === 'function') {
       const visibility = new MutationObserver(visibilityChange);
       const pane = this.node.closest('.conversation');
@@ -280,13 +295,22 @@ export class Transcript {
     target.addEventListener(type, listener, {...options, signal: this.listenerAbort.signal});
     this.listenerCleanup.push(() => target.removeEventListener(type, listener, options?.capture));
   }
-  private frame(callback: () => void): void {
-    const id = requestAnimationFrame(() => { this.frames.delete(id); if (!this.destroyed) callback(); });
-    this.frames.add(id);
+  private frame(callback: () => void): number {
+    const id = requestAnimationFrame(() => { if (this.frames.delete(id) && !this.destroyed) callback(); });
+    this.frames.add(id); return id;
+  }
+  private cancelRender(): void {
+    if (this.renderFrame === undefined && this.renderTask === undefined) return;
+    if (this.renderFrame !== undefined) {
+      this.frames.delete(this.renderFrame);
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.renderFrame);
+    }
+    if (this.renderTask !== undefined) clearTimeout(this.renderTask);
+    this.renderFrame = undefined; this.renderTask = undefined; this.pending = false;
   }
   destroy(): void {
     if (this.destroyed) return;
-    this.destroyed = true; this.listenerAbort.abort();
+    this.destroyed = true; this.listenerAbort.abort(); this.cancelRender();
     for (const remove of this.listenerCleanup) remove(); this.listenerCleanup = [];
     for (const id of this.frames) if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id);
     this.frames.clear(); this.pending = false;
@@ -348,7 +372,8 @@ export class Transcript {
     this.paint(anchor); this.hooks.presentation([...this.expanded], this.showThinking, this.view); this.saveReading();
   }
   reset(): void {
-    this.clearTiming(); this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
+    this.cancelRender(); if (this.inputFrame !== undefined) this.pending = false;
+    this.clearTiming(); this.streamPending = false; this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
     this.elapsed.stop();
     if (this.geometryTimer !== undefined) clearTimeout(this.geometryTimer);
@@ -362,11 +387,14 @@ export class Transcript {
     if (this.destroyed) return;
     this.deferred = refresh;
     if (this.hidden() || document.hidden || !this.node.isConnected) this.clearTiming();
-    else if (this.hooks.timing && this.receivedAt === undefined && receivedAt !== undefined && Number.isFinite(receivedAt) && receivedAt >= 0 && receivedAt <= performance.now()) this.receivedAt = receivedAt;
+    else if (receivedAt !== undefined && Number.isFinite(receivedAt) && receivedAt >= 0 && receivedAt <= performance.now()) {
+      this.streamPending = true;
+      if (this.hooks.timing && this.receivedAt === undefined) this.receivedAt = receivedAt;
+    }
     this.schedule();
   }
   set(entries: EntryView[], tools: ReadonlyMap<string, ToolState> = new Map()): void {
-    this.receivedAt = undefined; this.deferred = undefined;
+    this.receivedAt = undefined; this.streamPending = false; this.deferred = undefined;
     const sessions = new Map(this.index.sessions);
     this.entries = entries; this.index.update(entries, tools, this.visibilityPredicate, {incrementalVisibility: true}); this.retireForks(); this.reconcileSessions(sessions);
     for (const id of this.index.changed) {
@@ -421,18 +449,32 @@ export class Transcript {
     if (this.destroyed) return;
     if (this.hidden() || document.hidden || !this.node.isConnected) this.clearTiming();
     else if (this.hooks.timing && this.scheduledAt === undefined) this.scheduledAt = performance.now();
-    if (this.pending) return; this.pending = true;
-    this.frame(() => {
-      const start = this.scheduledAt, receivedAt = this.receivedAt, generation = this.generation; this.clearTiming();
-      const refresh = this.deferred; this.deferred = undefined; let updated = false; let end: number | undefined;
-      try { refresh?.(); updated = this.paint(); if (updated && start !== undefined) end = performance.now(); }
-      finally { this.pending = false; this.clearTiming(); }
-      if (!this.hidden()) this.queueGeometry();
-      const current = () => !this.destroyed && generation === this.generation && !this.hidden() && !document.hidden && this.node.isConnected;
-      if (!updated || start === undefined || end === undefined || !current()) return;
-      this.hooks.timing?.('render', start, end);
-      if (receivedAt !== undefined && receivedAt <= end && current()) this.hooks.timing?.('stream-to-render', receivedAt, end);
-    });
+    if (this.inputFrame !== undefined) { this.pending = true; return; }
+    // Transport batches need no second frame after native input. Layout-only work stays frame-aligned.
+    const task = this.streamPending && !this.hidden() && !document.hidden && this.node.isConnected;
+    if (this.pending) {
+      if (task ? this.renderFrame === undefined : this.renderTask === undefined) return;
+      this.cancelRender();
+    }
+    this.pending = true;
+    if (task) {
+      const id = setTimeout(() => {
+        if (this.renderTask !== id || this.destroyed) return;
+        this.renderTask = undefined; this.flushRender();
+      }, 0);
+      this.renderTask = id;
+    } else this.renderFrame = this.frame(() => { this.renderFrame = undefined; this.flushRender(); });
+  }
+  private flushRender(): void {
+    const start = this.scheduledAt, receivedAt = this.receivedAt, generation = this.generation; this.clearTiming();
+    const refresh = this.deferred; this.deferred = undefined; let updated = false; let end: number | undefined;
+    try { refresh?.(); updated = this.paint(); if (updated && start !== undefined) end = performance.now(); }
+    finally { this.pending = false; this.streamPending = false; this.clearTiming(); }
+    if (!this.hidden()) this.queueGeometry();
+    const current = () => !this.destroyed && generation === this.generation && !this.hidden() && !document.hidden && this.node.isConnected;
+    if (!updated || start === undefined || end === undefined || !current()) return;
+    this.hooks.timing?.('render', start, end);
+    if (receivedAt !== undefined && receivedAt <= end && current()) this.hooks.timing?.('stream-to-render', receivedAt, end);
   }
   private anchor(): {id: string; offsetPx: number} | null {
     let first = true;

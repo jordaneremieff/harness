@@ -152,7 +152,7 @@ const fakeDocument = {
   getSelection: () => selection,
   addEventListener: (name: string, handler: Handler) => { documentHandlers.set(name, [...documentHandlers.get(name) ?? [], handler]); },
   removeEventListener: (name: string, handler: Handler) => { documentHandlers.set(name, (documentHandlers.get(name) ?? []).filter(item => item !== handler)); },
-  dispatch: (name: string) => { for (const handler of documentHandlers.get(name) ?? []) handler({}); },
+  dispatch: (name: string, event: Record<string, unknown> = {}) => { for (const handler of documentHandlers.get(name) ?? []) handler(event); },
 };
 function setup(): void {
   roots = []; frames = []; ids.clear(); documentHandlers.clear(); selection = null; fakeDocument.activeElement = null;
@@ -2345,7 +2345,7 @@ test('retained Transcript disposal removes listeners and cancels queued work wit
     assert.equal(f.rafs.size, 3);
     const queuedFrames = [...f.rafs.values()], queuedTimers = [...f.timeouts.values(), ...f.intervals.values()];
     const targets = [root, latest, f.fonts, ...f.media]; const queuedListeners = [...targets.flatMap(f.listeners), ...[...documentHandlers.values()].flat()];
-    assert.equal(queuedListeners.length, 12); const observations = resize.observations;
+    assert.equal(queuedListeners.length, 13); const observations = resize.observations;
     view.destroy(); const disconnected = [resize.disconnects, ...f.mutations.map(observer => observer.disconnects)];
     const counts = [root.moves, root.writes, latest.writes, readings.length, presentations.length, region.textContent, original.textContent];
     view.destroy(); assert.deepEqual([resize.disconnects, ...f.mutations.map(observer => observer.disconnects)], disconnected);
@@ -2374,7 +2374,7 @@ test('two independent scoped Transcript roots keep Source, reading and shared si
     assert.equal(left.presentations.length, 0); assert.equal(right.presentations.length, 1); f.drain();
     left.root.dispatch('scrollend'); assert.equal(left.readings.length, 1); assert.equal(right.readings.length, 0);
     left.view.destroy(); const rightResize = f.resizes[1]; assert.ok(rightResize); assert.equal(rightResize.disconnects, 0); assert.equal(rightResize.targets.has(right.root as unknown as Element), true);
-    assert.equal(f.listeners(left.root).length, 0); assert.equal(f.listeners(right.root).length, 5); assert.equal([...documentHandlers.values()].flat().length, 2);
+    assert.equal(f.listeners(left.root).length, 0); assert.equal(f.listeners(right.root).length, 5); assert.equal([...documentHandlers.values()].flat().length, 3);
     assert.equal(f.listeners(f.fonts).length, 2); assert.equal(f.media.every(target => f.listeners(target).length === 1), true);
     assert.equal(f.mutations.filter(observer => observer.disconnects === 0).length, 2);
     const leftCounts = [left.root.moves, left.root.writes, left.latest.writes, left.readings.length, left.presentations.length];
@@ -2402,7 +2402,9 @@ function transcriptTimingFixture() {
     return {pane, root, view};
   };
   const restore = () => { for (const view of owners) view.destroy(); if (previous) Object.defineProperty(globalThis, 'performance', previous); else Reflect.deleteProperty(globalThis, 'performance'); f.restore(); };
-  return {...f, create, entries, at: (value: number) => { now = value; }, restore};
+  const tasks = () => { for (const callback of [...f.timeouts.values()]) callback(); };
+  const drain = () => { tasks(); f.drain(); };
+  return {...f, create, entries, tasks, drain, at: (value: number) => { now = value; }, restore};
 }
 
 test('Transcript timing coalesces each owned root and emits only after its real DOM update', () => {
@@ -2414,7 +2416,7 @@ test('Transcript timing coalesces each owned root and emits only after its real 
     f.at(110); left.view.defer(() => { f.at(154); left.view.set([entry('same', 'Left latest')]); }, 95);
     right.view.defer(() => { replaced++; }, 108);
     f.at(120); right.view.defer(() => { f.at(161); right.view.set([entry('same', 'Right latest')]); }, 109);
-    assert.equal(f.rafs.size, 2); assert.deepEqual(samples, []); f.at(150); f.drain();
+    assert.equal(f.rafs.size, 0); assert.equal(f.timeouts.size, 2); assert.deepEqual(samples, []); f.at(150); f.drain();
     assert.equal(replaced, 0); assert.deepEqual(samples, [['left', 'render', 100, 154], ['left', 'stream-to-render', 90, 154], ['right', 'render', 110, 161], ['right', 'stream-to-render', 108, 161]]);
     assert.deepEqual(f.entries, []);
   } finally { f.restore(); }
@@ -2452,5 +2454,53 @@ test('Transcript timing drops hidden, reset, cancelled and destroyed receipts wi
     f.at(600); defer(); const queued = [...f.rafs.values()]; owner.view.destroy(); f.at(610); for (const callback of queued) callback(0); owner.view.defer(() => { throw new Error('Destroyed refresh'); }, 605); owner.view.schedule(); assert.deepEqual([...samples], []); assert.equal(f.rafs.size, 0);
     const sinkReset = f.create((metric, start, end) => { samples.push([metric, start, end]); if (metric === 'render') sinkReset.view.reset(); });
     f.at(700); sinkReset.view.defer(() => sinkReset.view.set([entry('same', 'Before sink reset')]), 690); f.at(710); f.drain(); assert.deepEqual(samples, [['render', 700, 710]]); assert.deepEqual(f.entries, []);
+  } finally { f.restore(); }
+});
+
+test('stream tasks coalesce after native echo and invalidate superseded frame and timer callbacks', () => {
+  const f = transcriptTimingFixture(), owner = f.create(); const order: string[] = [];
+  const editor = {closest: () => editor};
+  try {
+    f.at(10); owner.view.schedule(); const oldFrame = [...f.rafs.values()][0]; assert.ok(oldFrame);
+    owner.view.defer(() => { order.push('stale'); }, 9);
+    const oldTask = [...f.timeouts.values()][0]; assert.ok(oldTask); assert.equal(f.rafs.size, 0);
+    fakeDocument.dispatch('beforeinput', {target: editor}); assert.equal(f.timeouts.size, 0);
+    owner.view.defer(() => { order.push('first'); }, 10);
+    owner.view.defer(() => { order.push('latest'); owner.view.set([entry('latest')]); }, 10);
+    requestAnimationFrame(() => order.push('editor echo'));
+    oldTask(); oldFrame(0); assert.deepEqual(order, []);
+    const callbacks = [...f.rafs.values()]; f.rafs.clear(); for (const callback of callbacks) callback(0);
+    assert.deepEqual(order, ['editor echo']); assert.equal(f.timeouts.size, 1);
+    f.tasks(); assert.deepEqual(order, ['editor echo', 'latest']); assert.match(owner.root.textContent, /latest/);
+    f.drain(); assert.deepEqual(order, ['editor echo', 'latest']); assert.equal(f.rafs.size, 0);
+  } finally { f.restore(); }
+});
+
+test('native echo guards do not create extra renders and retain only current pending work', () => {
+  const f = transcriptTimingFixture(); const samples: string[] = []; const owner = f.create(metric => samples.push(metric));
+  const editor = {closest: () => editor};
+  try {
+    f.at(10); fakeDocument.dispatch('beforeinput', {target: editor}); f.drain(); f.drain();
+    assert.deepEqual(samples, []); assert.equal(f.rafs.size, 0); assert.equal(f.timeouts.size, 0);
+    fakeDocument.dispatch('beforeinput', {target: editor}); owner.view.set([entry('current')]); f.at(20); f.drain();
+    assert.deepEqual(samples, []); assert.equal(f.rafs.size, 1); f.drain(); assert.deepEqual(samples, ['render']); samples.length = 0;
+    fakeDocument.dispatch('beforeinput', {target: editor}); owner.view.defer(() => { throw new Error('Reset must discard guarded refresh'); }, 19); owner.view.reset();
+    f.drain(); assert.deepEqual(samples, []); assert.equal(f.rafs.size, 0); assert.equal(f.timeouts.size, 0);
+    fakeDocument.dispatch('beforeinput', {target: editor}); owner.view.reset(); owner.view.defer(() => owner.view.set([entry('fresh')]), 19);
+    f.drain(); assert.deepEqual(samples, []); f.tasks(); assert.deepEqual(samples, ['render', 'stream-to-render']); assert.match(owner.root.textContent, /fresh/);
+  } finally { f.restore(); }
+});
+
+test('stream tasks are inert after reset, disposal or a direct replacement, and hidden views stay frame-bound', () => {
+  const f = transcriptTimingFixture(), owner = f.create(); let stale = 0;
+  try {
+    f.at(10); owner.view.defer(() => { stale++; }, 9); const resetTask = [...f.timeouts.values()][0]; assert.ok(resetTask);
+    owner.view.reset(); resetTask(); assert.equal(stale, 0);
+    owner.view.defer(() => { stale++; }, 9); owner.view.set([entry('direct')]); f.drain(); assert.equal(stale, 0); assert.match(owner.root.textContent, /direct/);
+    f.tasks(); owner.pane.hidden = true; owner.view.defer(() => owner.view.set([entry('hidden')]), 9);
+    assert.equal(f.timeouts.size, 0); assert.equal(f.rafs.size, 1); f.drain(); assert.doesNotMatch(owner.root.textContent, /hidden/);
+    owner.pane.hidden = false; owner.view.visibilityChanged(); f.drain(); assert.match(owner.root.textContent, /hidden/); f.tasks();
+    owner.view.defer(() => { stale++; }, 9); const disposedTask = [...f.timeouts.values()][0]; assert.ok(disposedTask);
+    owner.view.destroy(); disposedTask(); assert.equal(stale, 0); assert.equal(f.timeouts.size, 0); assert.equal(f.rafs.size, 0);
   } finally { f.restore(); }
 });
