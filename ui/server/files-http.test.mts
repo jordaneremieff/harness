@@ -7,7 +7,7 @@ import {LocalHttp} from './http.mts';
 import {Files} from './files.mts';
 import {Journal} from './journal.mts';
 import {ApiError} from './errors.mts';
-import type {FileRootSelection,FileText,FileDraft} from '../shared/files.ts';
+import type {FileRootSelection,FileText,FileDraft,FileSave} from '../shared/files.ts';
 const workspace = '00000000-0000-4000-8000-000000000001';
 test('authenticated file routes preserve source and enforce strict draft/save requests',async context=> {
   const path = await mkdtemp(join(tmpdir(),'ui-files-http-'));await mkdir(join(path,'state'));await mkdir(join(path,'project'));
@@ -43,7 +43,9 @@ test('authenticated file routes preserve source and enforce strict draft/save re
   assert.deepEqual((await (await call(route)).json() as {data:unknown}).data,{revision:0,draft:null});
   const put = await call(route,'PUT',{expectedRevision:0,base:loaded.data.revision,encoding:{bom:false,ending:'lf',writable:true},text:'\t'.repeat(1024*1024)});assert.equal(put.status,200);
   const draft = (await put.json() as {data:FileDraft}).data;assert.equal(draft.revision,1);
-  assert.equal((await call(`${base}/text?workspace=${workspace}&path=escaped.txt`,'PUT',{expectedRevision:draft.revision})).status,200);
+  const save = await call(`${base}/text?workspace=${workspace}&path=escaped.txt`,'PUT',{expectedRevision:draft.revision});assert.equal(save.status,200);
+  const saved = (await save.json() as {data:FileSave}).data;assert.deepEqual(Object.keys(saved).sort(),['draft','source']);assert.equal(saved.draft.text,draft.text);assert.equal(saved.source.text,draft.text);
+  assert.deepEqual((await (await call(route)).json() as {data:unknown}).data,{revision:saved.draft.revision,draft:null});
   assert.equal((await call(route,'PUT',{expectedRevision:0,base:loaded.data.revision,encoding:{bom:false,ending:'lf',writable:true},text:'stale'})).status,409);
   assert.equal((await call(`${base}/text?workspace=${workspace}&path=text.md`,'GET',undefined,{Origin:'http://foreign.test'})).status,403);
   assert.equal(dispatched,0);assert.deepEqual((await readdir(join(path,'project'))).sort(),['escaped.txt','text.md']);

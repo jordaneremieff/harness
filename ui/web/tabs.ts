@@ -51,6 +51,11 @@ export function duplicateTabTails(tabs:ConversationTab[],label:(tab:Conversation
       const candidate = parts.slice(-length).join('/');
       if (peers.filter(peer=>peer.path.split('/').slice(0,-1).slice(-length).join('/') === candidate).length === 1) {suffix = candidate;break;}
     }
+    const roots = [...new Set(peers.filter(peer=>peer.path === tab.path).map(peer=>peer.rootId))];
+    if (roots.length > 1) {
+      const rootTails = duplicateIdentityTails(roots.map(identity=>({name:'',identity})));
+      suffix += ` · ${rootTails.get(tab.rootId) ?? tab.rootId}`;
+    }
     tails.set(tabKey(tab),suffix);
   }
   return tails;

@@ -18,6 +18,13 @@ test('same-name file labels use useful shortest directory suffixes, never serial
   const labels = duplicateTabTails(tabs,tab=>tab.kind === 'file' ? tab.path.split('/').at(-1) ?? '' : '');
   assert.deepEqual([...labels.values()],['one','two','docs']);assert.equal([...labels.values()].some(value=>value.includes('root-identity') || value.includes('[')),false);
 });
+test('identical relative file paths in different roots have quiet unique captions',()=> {
+  const ids = ['00000000-0000-4000-8000-00000001a000','00000000-0000-4000-8000-00000002a000'];
+  const tabs = ids.map(rootId=>({kind:'file' as const,rootId,path:'docs/README.md'}));
+  const labels = duplicateTabTails(tabs,()=> 'README.md');
+  assert.deepEqual([...labels.values()],['docs · 1a000','docs · 2a000']);
+  assert.equal(new Set(labels.values()).size,2);
+});
 test('file focus survives retained conversation selection and repeated selection reuses its tab',()=> {
   const file = {kind:'file' as const,rootId:'r',path:'note.md'},layout = openTab(openTab(base(),agent('a')),file);
   const value = {...workspace(layout),selectedTarget:{kind:'agent' as const,identity:'a'}};

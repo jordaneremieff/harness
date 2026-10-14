@@ -9,7 +9,8 @@ import {registerRoot, readText, writeText, filePath, type RegisteredRoot} from '
 const STATE_BYTES = 2 * 1024 * 1024;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 type Data = {format:'ui.files/1'; roots:RegisteredRoot[]; selections:Record<string,FileRootSelection>};
-type DraftData = {format:'ui.file-drafts/1'; drafts:Record<string,FileDraft>};
+type DraftRecord = Omit<FileDraft,'text'> & {text?:string};
+type DraftData = {format:'ui.file-drafts/2'; drafts:Record<string,DraftRecord>};
 function draftKey(rootId:string,path:string):string {return JSON.stringify([rootId,filePath(path,false)]);}
 export function validateFileRevision(value:unknown):asserts value is FileRevision {
   const revision = value as FileRevision;
@@ -33,11 +34,11 @@ function validate(raw:Data):Data {
 }
 function validateDrafts(raw:DraftData,roots:RegisteredRoot[]):DraftData {
   const invalid = () => {throw new ApiError('not_ready','Saved file drafts are invalid.',503);};
-  if (raw?.format !== 'ui.file-drafts/1' || Object.keys(raw).length !== 2 || !raw.drafts || typeof raw.drafts !== 'object' || Array.isArray(raw.drafts)) invalid();
+  if (raw?.format !== 'ui.file-drafts/2' || Object.keys(raw).length !== 2 || !raw.drafts || typeof raw.drafts !== 'object' || Array.isArray(raw.drafts)) invalid();
   for (const [key,draft] of Object.entries(raw.drafts)) {
     const identity = JSON.parse(key) as unknown[];
-    if (!Array.isArray(identity) || identity.length !== 2 || typeof identity[0] !== 'string' || typeof identity[1] !== 'string' || !roots.some(root=>root.id === identity[0]) || draftKey(identity[0],identity[1]) !== key || !draft || Object.keys(draft).length !== 4 || !Number.isSafeInteger(draft.revision) || draft.revision < 1) invalid();
-    validateFileRevision(draft.base);validateFileDraftText(draft.text);
+    if (!Array.isArray(identity) || identity.length !== 2 || typeof identity[0] !== 'string' || typeof identity[1] !== 'string' || !roots.some(root=>root.id === identity[0]) || draftKey(identity[0],identity[1]) !== key || !draft || Object.keys(draft).length !== (Object.hasOwn(draft,'text') ? 4 : 3) || !Number.isSafeInteger(draft.revision) || draft.revision < 1) invalid();
+    validateFileRevision(draft.base);if (Object.hasOwn(draft,'text')) validateFileDraftText(draft.text);
     if (!draft.encoding || Object.keys(draft.encoding).length !== 3 || typeof draft.encoding.bom !== 'boolean' || typeof draft.encoding.writable !== 'boolean' || !['lf','crlf'].includes(draft.encoding.ending)) invalid();
   }
   return raw;
@@ -45,7 +46,7 @@ function validateDrafts(raw:DraftData,roots:RegisteredRoot[]):DraftData {
 /** The enclosing UI state lock owns this file. No project directory contains UI metadata. */
 export class FileState {
   private data:Data = {format:'ui.files/1',roots:[],selections:{}};
-  private drafts:DraftData = {format:'ui.file-drafts/1',drafts:{}};
+  private drafts:DraftData = {format:'ui.file-drafts/2',drafts:{}};
   private poisoned = false;
   readonly directory:string;
   constructor(directory:string) {this.directory = directory;}
@@ -89,11 +90,12 @@ export class FileState {
     return structuredClone(selection);
   }
   draft(rootId:string,path:string):FileDraftState {
-    this.root(rootId);const draft = this.drafts.drafts[draftKey(rootId,path)];return structuredClone({revision:draft?.revision ?? 0,draft:draft ?? null});
+    this.root(rootId);const record = this.drafts.drafts[draftKey(rootId,path)];
+    return structuredClone({revision:record?.revision ?? 0,draft:record?.text === undefined ? null : {...record,text:record.text}});
   }
-  private currentDraft(rootId:string,path:string,expectedRevision:number):FileDraft|undefined {
+  private currentDraft(rootId:string,path:string,expectedRevision:number):DraftRecord|undefined {
     if (this.poisoned) throw new ApiError('not_ready','File state requires a backend restart.',503,'manual');
-    const draft = this.draft(rootId,path).draft ?? undefined;
+    this.root(rootId);const draft = this.drafts.drafts[draftKey(rootId,path)];
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== (draft?.revision ?? 0)) throw new ApiError('stale_revision','The file draft changed. Reload it before retry.',409,'read');
     if (expectedRevision >= Number.MAX_SAFE_INTEGER) throw new ApiError('capacity','The file draft revision bound is full.',429);
     return draft;
@@ -111,11 +113,15 @@ export class FileState {
   async saveDraft(rootId:string,path:string,expectedRevision:number):Promise<FileSave> {
     const current = this.currentDraft(rootId,path,expectedRevision);
     if (!current) throw new ApiError('invalid_request','Save requires an acknowledged file draft.');
-    const draft:FileDraft = {...current,revision:expectedRevision+1};const next = structuredClone(this.drafts);next.drafts[draftKey(rootId,path)] = draft;
-    // The fixed revision shape grows by fewer than these bytes when disk metadata is rebased.
+    const clean:DraftRecord = {revision:expectedRevision+1,base:{...current.base},encoding:{...current.encoding}};
+    const next = structuredClone(this.drafts);next.drafts[draftKey(rootId,path)] = clean;
+    // Reserve disk metadata growth before the project file changes.
     this.stateBytes(next,'file-drafts.json',64);
-    const source = await writeText(this.root(rootId),path,current.base,current.text,current.encoding);draft.base = source.revision;
+    const source = current.text === undefined ? await readText(this.root(rootId),path) : await writeText(this.root(rootId),path,current.base,current.text,current.encoding);
+    if (current.text === undefined && (!sameFileRevision(source.revision,current.base) || !sameFileEncoding(fileSource(source.text).encoding,current.encoding))) throw new ApiError('file_changed','The file changed on disk. Re-read it or keep editing the draft.',409,'read');
+    clean.base = source.revision;
     try {await this.persist(next,'file-drafts.json');this.drafts = next;} catch (error) {this.poisoned = true;throw error;}
+    const draft:FileDraft = {...clean,text:current.text ?? fileSource(source.text).text};
     return structuredClone({source,draft});
   }
   private stateBytes(data:Data|DraftData,name:string,reserve = 0):Buffer {

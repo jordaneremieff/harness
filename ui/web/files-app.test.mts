@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {app,arrive,settle,byId,hostDocument,primaryFixture,primaryControl,agentFixture,targetFixture,transportLog,paneNode} from './app-fixture.mts';
+import {app,arrive,settle,byId,hostDocument,beforeUnload,primaryFixture,primaryControl,agentFixture,targetFixture,transportLog,paneNode} from './app-fixture.mts';
 import {activeTab,tabKey} from './tabs.ts';
 import {splitPane,paneLeaves} from './pane-layout.ts';
 import {contextMenu} from './context-menu.ts';
+import {Composer} from './composer.ts';
 import type {FileTab,ConversationLayout} from '../shared/api.ts';
 function currentLayout():ConversationLayout {const layout = app.state.workspace?.conversationLayout;assert.ok(layout);return layout;}
 function fileTransport(context:test.TestContext):void {
@@ -35,4 +36,27 @@ test('focused explicit Message owns the footer while a file remains the active p
   const editor = hostDocument.body.querySelector('.composer[data-message-panel="true"]')?.querySelector('textarea');assert.ok(editor);editor.focus();editor.setSelectionRange(2,6,'backward');app.renderConnection();await settle();
   assert.equal(byId('workbench-status').dataset.pane,'agent');assert.equal(byId('workbench-scope').title,recipient.identity);assert.equal(byId('workbench-status-agent').hidden,false);assert.equal(byId('workbench-status-primary').hidden,true);assert.equal(editor.value,'Message draft');assert.equal(hostDocument.activeElement,editor);assert.deepEqual([editor.selectionStart,editor.selectionEnd],[2,6]);assert.equal(activeTab(currentLayout())?.kind,'file');assert.deepEqual(app.state.workspace?.selectedTarget,target);
   byId('agent-message-close').click();await settle();assert.equal(byId('workbench-status').dataset.pane,'file');assert.equal(paneNode(app.focusedPane).querySelectorAll('.conversation-tab').find(node=>node.dataset.tabKey === tabKey(tab))?.getAttribute('aria-selected'),'true');
+});
+test('the existing unload guard protects immediate file input, pending acknowledgment and failed drafts',async context=> {
+  fileTransport(context);const previous = globalThis.fetch;let release!:()=>void, failed = false, revision = 0;
+  const gate = new Promise<void>(resolve=> {release = resolve;});
+  globalThis.fetch = async(input,init)=> {
+    const url = new URL(String(input),'http://ui.test');
+    if (url.pathname.endsWith('/draft') && init?.method === 'PUT') {
+      if (failed) throw new Error('forced draft failure');await gate;
+      const body = JSON.parse(String(init.body));return Response.json({ok:true,data:{revision:++revision,base:body.base,text:body.text,encoding:body.encoding}});
+    }
+    return previous(input,init);
+  };
+  const target = {kind:'primary' as const,key:'p',epoch:902};
+  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:902})],roster:[],targets:[targetFixture('file-unload-primary',target)]});
+  const tab:FileTab = {kind:'file',rootId:'/fixture/project',path:'unload.md'};app.chooseFile(tab.rootId,tab.path);await settle();
+  const workspace = app.state.workspace;assert.ok(workspace);const owner = app.filesViews.view(workspace,tab).owner;
+  const composers = context.mock.getter(Composer.prototype,'canDispose',()=>true);
+  assert.equal(beforeUnload(),false);owner.edit('immediate input');assert.equal(beforeUnload(),true);
+  const writing = owner.drain();await new Promise(resolve=>setImmediate(resolve));assert.equal(owner.persisting,true);assert.equal(beforeUnload(),true);
+  release();await writing;assert.equal(owner.modified,true);assert.equal(beforeUnload(),false);
+  composers.mock.mockImplementation(()=>false);assert.equal(beforeUnload(),true);composers.mock.mockImplementation(()=>true);
+  failed = true;owner.edit('unacknowledged');await assert.rejects(owner.drain(),/forced draft failure/);assert.equal(beforeUnload(),true);
+  app.filesViews.reconcile(workspace,[],[]);await assert.rejects(owner.drain(),/forced draft failure/);assert.equal(beforeUnload(),true);
 });

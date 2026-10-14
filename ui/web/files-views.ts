@@ -31,6 +31,7 @@ export class FilesViews {
     const workspace = this.current();
     if (workspace?.id === pending.workspace && workspace.conversationLayout && paneLeaves(workspace.conversationLayout.root).some(pane=>pane.tabs.some(tab=>workspaceTabKey(tab) === pending.key))) this.save(pending.workspace,pending.key,{...pending.position});
   }
+  get canDispose():boolean {return [...this.owners.values()].every(owner=>owner.canDispose);}
   async drain():Promise<void> {for (const key of this.saves.keys()) this.flush(key);await Promise.all([...this.owners.values()].map(owner=>owner.drain()));}
   reconcile(workspace:Workspace,tabs:FileTab[],active:FileTab[]):void {
     const open = new Set(tabs.map(tab=>this.key(workspace.id,tab))), shown = new Set(active.map(tab=>this.key(workspace.id,tab)));

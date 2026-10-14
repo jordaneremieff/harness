@@ -148,6 +148,8 @@ function matchesHost(node: HostNode, selector: string): boolean {
 const hostRoots: HostNode[] = [];
 const hostIds = new Map<string, HostNode>();
 const documentHandlers = new Map<string, Handler[]>();
+const windowHandlers = new Map<string, Handler[]>();
+function beforeUnload():boolean {let prevented = false;for (const handler of windowHandlers.get('beforeunload') ?? []) handler({preventDefault:()=> {prevented = true;}});return prevented;}
 const hostDocument = {
   activeElement: null as HostNode | null,
   title: '',
@@ -183,7 +185,8 @@ const view = {
     getPropertyValue: (key: string) => key === '--palette-row-size' ? '24px' : ''}),
   requestAnimationFrame: (callback: FrameRequestCallback) => hostRequestAnimationFrame(callback),
   cancelAnimationFrame: (id: number) => hostCancelAnimationFrame(id),
-  addEventListener: () => {}, removeEventListener: () => {},
+  addEventListener: (name:string,handler:Handler) => {windowHandlers.set(name,[...windowHandlers.get(name) ?? [],handler]);},
+  removeEventListener: (name:string,handler:Handler) => {windowHandlers.set(name,(windowHandlers.get(name) ?? []).filter(item=>item !== handler));},
   setTimeout: (callback: () => void, ms = 0): ReturnType<typeof setTimeout> | number => setTimeout(callback, ms),
   clearTimeout: (handle: ReturnType<typeof setTimeout> | number) => clearTimeout(handle),
   innerWidth: 1200, innerHeight: 800,
@@ -398,5 +401,5 @@ function event(name: string, data: unknown, target?: Target): void {
 await settle(); event('ready', {bootId: 'boot'}); await settle();
 
 
-export {app, host, hostDocument, HostNode, arrive, settle, event, byId, primaryControl, agentControl, controls, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, singlePane, observation, coverage, transportLog, selectionSaves};
+export {app, host, hostDocument, HostNode, beforeUnload, arrive, settle, event, byId, primaryControl, agentControl, controls, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, singlePane, observation, coverage, transportLog, selectionSaves};
 export function failSelection(value: typeof selectionFailure): void {selectionFailure = value;}

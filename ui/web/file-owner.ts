@@ -11,11 +11,12 @@ export class FileOwner {
   text?:string;acknowledged?:string;loading = false;saving = false;persisting = false;conflict = false;error?:string;draftError?:string;
   replacement = 0;
   private generation = 0;private abort?:AbortController;private pending?:Promise<void>;private disposed = false;
-  private revision = 0;private timer?:ReturnType<typeof setTimeout>;private tail:Promise<void> = Promise.resolve();
+  private revision = 0;private queued = 0;private timer?:ReturnType<typeof setTimeout>;private tail:Promise<void> = Promise.resolve();
   private read:FileRead;private changed:()=>void;private io?:FileIO;
   constructor(workspace:string,tab:FileTab,read:FileRead,changed:()=>void,io?:FileIO) {this.workspace = workspace;this.read = read;this.changed = changed;this.io = io;this.tab = Object.freeze({kind:'file',rootId:tab.rootId,path:tab.path});}
   get modified():boolean {return this.text !== undefined && (this.conflict || !this.source || this.text !== fileSource(this.source.text).text);}
   get unsaved():boolean {return this.text !== this.acknowledged || !!this.draftError;}
+  get canDispose():boolean {return !this.unsaved && !this.timer && !this.queued && !this.persisting && !this.saving && !this.error;}
   get status():string {
     if (this.saving) return 'Saving file…';if (this.persisting) return 'Saving draft…';
     const unsaved = `${this.conflict ? 'Local edits' : 'Draft'} not saved.${this.draftError ? ` ${this.draftError}` : ''}`;
@@ -57,7 +58,7 @@ export class FileOwner {
     if (this.disposed || this.loading || this.text === undefined || text === this.text) return;this.text = text;this.changed();clearTimeout(this.timer);
     this.timer = setTimeout(()=> {this.timer = undefined;void this.enqueue(()=>this.persist(this.text ?? '')).catch(()=>{});},120);
   }
-  private enqueue(task:()=>Promise<void>):Promise<void> {const work = this.tail.then(task);this.tail = work.catch(()=>{});return work;}
+  private enqueue(task:()=>Promise<void>):Promise<void> {this.queued++;const work = this.tail.then(task).finally(()=> {this.queued--;});this.tail = work.catch(()=>{});return work;}
   private acknowledge(draft:FileDraft,text:string,base:FileRevision):void {
     if (draft.text !== text || draft.revision <= this.revision || !sameFileRevision(draft.base,base)) throw new Error('The file draft acknowledgment changed.');
     this.draft = draft;this.revision = draft.revision;this.acknowledged = draft.text;

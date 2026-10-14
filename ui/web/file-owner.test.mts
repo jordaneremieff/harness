@@ -39,6 +39,27 @@ test('draft acknowledgments and captured saves never replace newer native source
   saving.resolve({source,draft:{revision:++revision,base:source.revision,encoding:fileSource(source.text).encoding,text:'captured'}});await work;await owner.drain();
   assert.equal(owner.text,'newer');assert.equal(owner.acknowledged,'newer');assert.equal(owner.source?.text,'captured');assert.equal(owner.modified,true);assert.deepEqual(puts,['captured','newer']);owner.dispose();
 });
+test('unload protection covers unacknowledged input, queued writes and errors but releases acknowledged drafts',async()=> {
+  const disk = {...text,text:'base'}, writing = deferred<FileDraft>();let revision = 0;
+  const owner = new FileOwner('w',{kind:'file',rootId:'r',path:'note.md'},async()=>disk,()=>{}, {
+    draft:async()=>({revision:0,draft:null}),put:()=>writing.promise,save:async()=> {throw new Error('save failed');},
+  });
+  await owner.load();assert.equal(owner.canDispose,true);owner.edit('draft');assert.equal(owner.canDispose,false);
+  const drain = owner.drain();assert.equal(owner.canDispose,false);await new Promise(resolve=>setImmediate(resolve));assert.equal(owner.persisting,true);
+  writing.resolve({revision:++revision,base:disk.revision,text:'draft',encoding:fileSource(disk.text).encoding});await drain;
+  assert.equal(owner.modified,true);assert.equal(owner.canDispose,true);
+  const saving = owner.save();assert.equal(owner.canDispose,false);await assert.rejects(saving,/save failed/);assert.equal(owner.canDispose,false);
+  owner.dispose();
+  const failed = new FileOwner('w',owner.tab,async()=>disk,()=>{}, {draft:async()=>({revision:0,draft:null}),put:async()=> {throw new Error('draft failed');},save:async()=> {throw new Error('unused');}});
+  await failed.load();failed.edit('unacknowledged');await assert.rejects(failed.drain(),/draft failed/);assert.equal(failed.canDispose,false);assert.match(failed.draftError ?? '',/draft failed/);failed.dispose();
+});
+test('compact clean state retains its CAS revision for the next local edit',async()=> {
+  const disk = {...text,text:'saved'}, revisions:number[] = [];
+  const owner = new FileOwner('w',{kind:'file',rootId:'r',path:'note.md'},async()=>disk,()=>{}, {
+    draft:async()=>({revision:8,draft:null}),put:async(_w,_tab,revision,base,value,encoding)=> {revisions.push(revision);return {revision:revision+1,base,text:value,encoding};},save:async()=> {throw new Error('unused');},
+  });
+  await owner.load();assert.equal(owner.text,'saved');assert.equal(owner.canDispose,true);owner.edit('next');await owner.drain();assert.deepEqual(revisions,[8]);assert.equal(owner.acknowledged,'next');owner.dispose();
+});
 test('a restored stale draft keeps its text and explicit re-read alone replaces it',async()=> {
   const disk:FileText = {...text,text:'new disk'}, draft:FileDraft = {revision:2,base:{...text.revision,digest:'b'.repeat(64)},encoding:fileSource('old disk').encoding,text:'unsaved'};
   const owner = new FileOwner('w',{kind:'file',rootId:'r',path:'note.md'},async()=>disk,()=>{}, {draft:async()=>({revision:2,draft}),put:async(_w,_tab,revision,base,value,encoding)=>({revision:revision+1,base,text:value,encoding}),save:async()=> {throw new Error('The file changed on disk.');}});

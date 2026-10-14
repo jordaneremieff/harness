@@ -1486,7 +1486,7 @@ function bind(): void {
 
   document.addEventListener('keydown', appKey);
   window.addEventListener('resize', () => { renderNavigation(); for (const controller of controllers.values()) controller.composer.resize(); roster.schedule(); });
-  window.addEventListener('beforeunload', event => { if ([...controllers.values()].some(controller => !controller.composer.canDispose)) event.preventDefault(); });
+  window.addEventListener('beforeunload', event => { if (!filesViews.canDispose || [...controllers.values()].some(controller => !controller.composer.canDispose)) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {
     diagnostics.setHidden(document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
     if (document.hidden) {
