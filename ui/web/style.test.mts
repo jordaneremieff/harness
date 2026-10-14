@@ -21,14 +21,14 @@ test('two families: system sans for interface and prose, system monospace for co
 });
 test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headings 18', () => {
   const glyphs = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*font-size: (11px|16px);/g)].map(match => [match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), match[2]]);
-  assert.deepEqual(glyphs, [['.pane-actions', '16px'], ['.message-menu', '16px'], ['.message-source-close', '16px']]);
+  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.pane-actions', '16px'], ['.message-menu', '16px'], ['.message-source-close', '16px']]);
   assert.deepEqual([...new Set(declarations('font-size'))].filter(value => value !== '11px' && value !== '16px').sort(), ['12px', '13px', '14px', '15px', '18px', 'inherit']);
-  assert.match(rule('.message-role'), /font-size: 13px; line-height: 18px; font-weight: 600/);
+  assert.match(rule('.message-role'), /font-size: 12px; line-height: 18px; font-weight: 500/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 15px; line-height: 1\.6; font-weight: 400; font-style: normal/);
   assert.match(rule('.message-body'), /font-size: 15px; line-height: 1\.6/);
   assert.match(rule('.message-body h1'), /font-size: 18px/);
   assert.match(rule('.composer textarea'), /font-size: 15px/);
-  assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '600']);
+  assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '500', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== 'inherit'), []);
 });
 test('attachment metadata uses the fixed scale and preview inherits the dialog hairline', () => {
@@ -54,7 +54,6 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   assert.deepEqual(values.filter(item => item.value.includes('--accent')), [{selector: '.pane-split > .pane-divider:focus-visible::after', property: 'background', value: 'var(--accent)'}]);
   const fills = values.filter(item => item.property === 'background' || item.property === 'background-color');
   assert.deepEqual(fills.filter(item => item.value.includes('--edge')), [
-    {selector: '.pane-split > .pane-divider::after', property: 'background', value: 'var(--edge)'},
     {selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'},
   ]);
   const graphicTokens = new Map([['.tab-dot', 'var(--muted)'], ['.tab-dot[data-state=working]', 'var(--link)'], ['.tab-dot[data-state=failed]', 'var(--error)']]);
@@ -65,10 +64,13 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   assert.match(rule('.context-menu-item > .choice-check'), /color: var\(--muted\)/);
   assert.match(rule('.context-menu-item[aria-checked=false] > .choice-check'), /visibility: hidden/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
-  assert.match(rule('.nav-row[aria-current=page], .row-select[aria-current=page]'), /border-left-color: var\(--edge\)/);
-  assert.match(rule('.command-option[aria-selected=true], .palette-row[aria-selected=true]'), /border-left-color: var\(--edge\)/);
-  assert.match(rule('.conversation-tab[aria-selected=true]'), /border-top-color: var\(--edge\); background: var\(--canvas\)/);
-  assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /border-top-color: var\(--accent\)/);
+  assert.match(rule('.nav-row[aria-current=page], .row-select[aria-current=page]'), /background: var\(--raised\)/);
+  assert.match(rule('.command-option[aria-selected=true], .palette-row[aria-selected=true]'), /background: var\(--canvas\)/);
+  assert.match(rule('.context-menu > button:hover'), /background: var\(--canvas\)/);
+  assert.doesNotMatch(rule('.context-menu > button:hover'), /outline:/);
+  assert.match(rule('.context-menu > button:focus-visible'), /outline: 2px solid var\(--accent\)/);
+  assert.match(rule('.conversation-tab[aria-selected=true]'), /background: transparent;[^}]*box-shadow: inset 0 -2px var\(--edge\)/);
+  assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
   assert.match(rule('.pane-split > .pane-divider:focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: -2px/);
 });
 test('pane statusline focus retains a full indicator inside compact controls', () => {
@@ -86,7 +88,7 @@ test('stored and live conversation names use primary text while metadata stays q
 });
 test('small radius, one floating shadow and no gradients or motion', () => {
   for (const value of declarations('border-radius')) for (const length of value.match(/[\d.]+px/g) ?? []) assert.ok(Number.parseFloat(length) <= 4, `radius ${value}`);
-  assert.deepEqual([...new Set(declarations('box-shadow'))], ['var(--shadow)', 'none']);
+  assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
   assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.command-menu', '.context-menu', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
@@ -129,7 +131,7 @@ test('structured content uses readable prose, wrapped fields, compact tables and
   assert.match(rule('details[open] > .card-disclosure > .card-icon-chevron'), /transform: rotate\(90deg\)/);
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
   assert.match(rule('.tool-source > pre'), /white-space: pre-wrap; overflow-wrap: anywhere/);
-  assert.match(rule('.tool-shell .kv'), /grid-template-columns: minmax\(0,32%\) minmax\(0,1fr\)/);
+  assert.match(rule('.tool-shell .kv'), /grid-template-columns: minmax\(6ch,max-content\) minmax\(0,1fr\)/);
   assert.match(rule('.tool-shell .kv > dt, .tool-shell .kv > dd'), /min-width: 0; white-space: pre-wrap/);
   assert.match(rule('.tool-shell .kv > dd'), /overflow-wrap: anywhere/);
   assert.match(rule('.tool-rows'), /max-width: 100%; overflow-x: auto/);
@@ -152,13 +154,15 @@ test('structured key labels wrap at semantic breaks and long keys retain the ful
   assert.match(narrow, /\.tool-shell \.kv \{ grid-template-columns: minmax\(0,1fr\); \}/);
   assert.match(rule('.tool-shell .kv > dd'), /overflow-wrap: anywhere/);
 });
-test('compact message headers retain keyboard actions above content without target reservations', () => {
+test('compact message headers retain keyboard actions within their own reserved content slots', () => {
   assert.match(rule('.message.tool-only'), /margin: 0/); assert.match(rule('.tool-shell'), /margin: 0;/);
   const header = rule('.message:is(.thinking-only, .tool-only) > .message-header');
-  assert.match(header, /position: absolute; top: 0; right: 0/); assert.match(header, /transform: translateY\(-100%\)/);
+  assert.match(header, /position: absolute; top: 2px; right: 2px/); assert.doesNotMatch(header, /transform:/);
+  assert.match(rule('.message.tool-only > .message-body > .tool-shell:first-child .tool-tier'), /padding-right: 48px/);
+  assert.match(rule('.message.tool-only > .message-body > .tool-shell:first-child > .tool-copy'), /right: 28px/);
   assert.doesNotMatch(header, /display: none|overflow: hidden|bottom:/);
   assert.match(rule('.message:is(.thinking-only, .tool-only) > .message-body'), /margin-top: 0/);
-  assert.match(rule('.tool-copy'), /top: 8px; right: 8px/);
+  assert.match(rule('.tool-copy'), /top: 2px; right: 2px/);
   assert.doesNotMatch(css, /padding-right: 184px|padding-top: 34px|padding-top: 54px/);
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.message:is\(\.thinking-only, \.tool-only\) > \.message-header \{ position: static; transform: none; min-height: 44px/);
@@ -166,14 +170,14 @@ test('compact message headers retain keyboard actions above content without targ
 
 test('ordinary role and actions share a stable header and compact actions retain focus access', async () => {
   const communication = await readFile(new URL('./communication.ts', import.meta.url), 'utf8');
-  assert.match(rule('.message-header'), /display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 24px/);
+  assert.match(rule('.message-header'), /display: flex; align-items: center; gap: var\(--s2\); min-width: 0; min-height: 24px/);
   assert.doesNotMatch(rule('.message-header'), /grid-template-columns:|background:|border:/);
   assert.match(rule('.message-role'), /flex: 0 1 auto; min-width: 0/);
   assert.match(rule('.communication-card'), /padding: 0; border: 0; background: transparent; font-family: var\(--sans\)/);
   assert.match(rule('.communication-header > .communication-sender'), /min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 15px; line-height: 1\.6; font-weight: 400; font-style: normal/);
   assert.doesNotMatch(css, /\.communication-(?:kind|time|trust|copy)\b[^{}]*\{/);
-  assert.match(rule('.message-header + .message-body'), /margin-top: 4px/);
+  assert.match(rule('.message-header + .message-body'), /margin-top: 2px/);
   assert.match(rule('.message-actions'), /display: flex; flex: none;[^}]*min-height: 24px; margin-top: 0/);
   assert.doesNotMatch(rule('.message-actions'), /display: none|visibility: hidden/);
   assert.match(rule('.message-menu'), /min-width: 24px; min-height: 24px; font-size: 16px/);
@@ -196,7 +200,7 @@ test('collapsed session event groups add no surrounding margins while turns and 
   assert.doesNotMatch(rule('.entry.session-event-group'), /display: none|max-height:|overflow: hidden/);
 });
 test('the sidebar resizes through a persisted width and the column sits beside it at a fixed gutter', () => {
-  assert.match(rule('.workbench'), /grid-template-columns: var\(--sidebar-width,248px\) minmax\(0,1fr\)/);
+  assert.match(rule('.workbench'), /grid-template-columns: var\(--sidebar-width,224px\) minmax\(0,1fr\)/);
   assert.match(rule('.resizer[data-axis=x]'), /cursor: col-resize/);
   assert.match(rule('.resizer[data-axis=y]'), /cursor: row-resize/);
   assert.match(rule('.resizer:hover::after, .resizer[data-dragging=true]::after'), /opacity: 1/);
@@ -206,7 +210,7 @@ test('the sidebar resizes through a persisted width and the column sits beside i
   assert.match(rule('.conversation'), /padding: 0 var\(--gutter\)/);
   assert.doesNotMatch(rule('.workspace'), /padding-left|margin-left/);
   assert.match(rule('.conversation > :not(.transcript-region), .transcript > .entry, .transcript > button'), /width: 100%/); assert.doesNotMatch(css, /--column/);
-  assert.doesNotMatch(css, /margin-inline: auto|margin: 0 auto|margin-left: auto; margin-right: auto/);
+  assert.doesNotMatch(rule('.conversation'), /margin-inline: auto|margin: 0 auto|margin-left: auto; margin-right: auto/);
 });
 test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and no duplicate title band', () => {
   const user = rule('.message.user > .message-body');
@@ -231,7 +235,7 @@ test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and 
   assert.match(rule('.agent-row:is([data-action=message],[data-action=resume]) > .row-select'), /padding-right: 104px/);
   assert.doesNotMatch(css, /\.conversation-title-line|\.conversation-title\s*\{/);
   assert.doesNotMatch(html, /conversation-title-line|conversation-head|head-actions|header-band/);
-  assert.match(rule('.pane-actions'), /display: inline-flex; flex: none;[^}]*min-width: 28px; min-height: 28px/);
+  assert.match(rule('.pane-actions'), /display: inline-flex; flex: none;[^}]*min-width: 24px; min-height: 24px/);
   assert.doesNotMatch(html, /id="session-actions"|id="tabs-list"|id="tabs-split"/);
   assert.doesNotMatch(css, /\.tab-actions\s*\{|\.tab-overflow\s*\{/);
 });
@@ -275,14 +279,14 @@ test('three direct utility controls retain named SVG slots and a separate unread
   assert.match(rule('.sidebar-footer > .icon-button > .card-icon'), /margin-inline: 2px/);
   assert.match(media('@media (pointer:coarse)'), /\.sidebar-footer > \.icon-button > \.card-icon \{ margin-inline: 10px/);
   assert.match(rule('.ui-icon'), /display: block;[^}]*width: 16px; height: 16px/);
-  assert.match(rule('.icon-button'), /display: inline-flex;[^}]*min-width: 28px; height: 28px/);
+  assert.match(rule('.icon-button'), /display: inline-flex;[^}]*min-width: 24px; height: 24px/);
   assert.doesNotMatch(css, /\.sidebar-footer \.ui-icon\s*\{/);
 });
 test('card actions and expanded content share fixed geometry without label-width drift', () => {
-  assert.match(rule('.card-action'), /width: 28px; height: 28px; min-width: 28px; min-height: 28px/);
+  assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(rule('.card-icon'), /width: 16px; height: 16px/);
-  assert.match(rule('.tool-tier'), /padding-right: 32px/);
-  assert.match(rule('.tool-expanded'), /margin-left: 24px/);
+  assert.match(rule('.tool-tier'), /padding-right: 24px/);
+  assert.match(rule('.tool-expanded'), /margin: var\(--s1\) 0 0 var\(--s4\)/);
   assert.match(rule('.tool-expanded .card-disclosure > .card-icon-chevron'), /left: -24px; margin: -8px 0 0/);
   assert.match(rule('.tool-expanded .source-disclosure > summary.source-header'), /padding: 2px 32px 2px 0/);
   assert.match(rule('.tool-copy'), /border: 0; background: transparent/);
@@ -291,10 +295,10 @@ test('multiline tool targets retain a first-line header and centered one-line co
   const tier = rule('.tool-tier');
   assert.match(tier, /align-items: flex-start/);
   assert.doesNotMatch(tier, /align-items: center/);
-  assert.match(rule('.tool-name, .tool-target'), /padding-top: 4px/);
-  assert.match(rule('.tool-secondary'), /padding-top: 5px/);
-  assert.match(rule('.tool-status'), /align-items: center; min-height: 28px/);
-  assert.match(rule('.tool-card > summary > .card-icon-chevron'), /margin: 6px 0 0/);
+  assert.match(rule('.tool-name, .tool-target'), /padding-top: 2px/);
+  assert.match(rule('.tool-secondary'), /padding-top: 2px/);
+  assert.match(rule('.tool-status'), /align-items: center; min-height: 24px/);
+  assert.match(rule('.tool-card > summary > .card-icon-chevron'), /margin: var\(--s1\) 0 0/);
   assert.match(rule('.tool-target'), /white-space: normal; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-target'), /line-clamp|text-overflow: ellipsis|overflow: hidden/);
 });
@@ -341,10 +345,10 @@ test('code wraps, output scrolls inside its block, and disclosures stay reachabl
 });
 test('expanded output retains bounded native scrollports with fixed gutters', () => {
   const output = rule('.tool-expanded pre');
-  assert.match(output, /box-sizing: border-box; max-height: 480px/);
-  assert.match(output, /padding: 0; border-block: 6px solid transparent/);
-  assert.match(output, /border-radius: 0; background: var\(--code\)/);
-  assert.match(rule('.tool-expanded'), /margin-left: 24px/);
+  assert.match(output, /box-sizing: border-box; width: fit-content; min-width: min\(24ch,100%\); max-width: 100%; max-height: 480px/);
+  assert.match(output, /padding: var\(--s1\) var\(--s2\); border: 0/);
+  assert.match(output, /border-radius: 3px; background: var\(--code\)/);
+  assert.match(rule('.tool-expanded'), /margin: var\(--s1\) 0 0 var\(--s4\)/);
   assert.match(rule('pre'), /line-height: 1\.5; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto/);
   assert.doesNotMatch(output, /(?:^|;\s*)(?:height|line-height):|padding-(?:top|bottom|block):|overflow(?:-y)?:|clip-path:|transform:|margin:/);
   assert.doesNotMatch(css, /\.tool-output-frame/);
@@ -375,17 +379,37 @@ test('responsive, short, coarse, reduced-motion and forced-color paths remain', 
   assert.match(css, /@media \(prefers-reduced-motion:reduce\)/);
   assert.match(media('@media (forced-colors:active)'), /:focus-visible \{ outline: 2px solid Highlight; \}/);
 });
-test('Latest occupies a flow lane outside the transcript scrollport', async () => {
-  assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\) auto; flex: 1/);
+test('Find occupies app flow above status with visible coverage and compact controls', () => {
+  assert.match(html, /<dialog id="modal"[\s\S]*?<\/dialog>\s*<footer[^>]*class="workbench-status/);
+  assert.match(rule('dialog[open][data-variant=find]'), /position: relative; display: flex; flex: none/);
+  assert.match(rule('dialog[open][data-variant=find]'), /max-height: 30dvh/);
+  assert.match(rule('dialog[data-variant=find] #modal-body'), /flex-wrap: wrap/);
+  assert.match(rule('dialog[data-variant=find] #modal-body > input'), /height: 24px/);
+  assert.doesNotMatch(rule('dialog[data-variant=find] :is(.find-status, .find-coverage)'), /display: none|visibility: hidden/);
+  assert.match(rule('dialog[data-variant=find] #modal-title'), /width: 1px; height: 1px/);
+  assert.match(media('@media (pointer:coarse)'), /dialog\[data-variant=find\] #modal-body > input \{ min-height: 44px/);
+});
+test('short tool output sizes to content and wrap controls retain reserved space', () => {
+  assert.match(rule('.tool-expanded pre'), /width: fit-content;[^}]*max-width: 100%/);
+  assert.match(rule('.tool-inspection > .source-header + pre'), /padding-right: 32px/);
+  assert.match(rule('.tool-inspection > .source-header'), /opacity: 0/);
+  const coarse = media('@media (pointer:coarse)');
+  assert.match(coarse, /\.tool-inspection > \.source-header \{ opacity: 1/);
+  assert.match(coarse, /\.tool-expanded details > summary \{ min-height: 44px/);
+  assert.match(coarse, /\.card-action, \.section-toggle, \.modes select, \.attachment-row > button, \.source-header button\.card-action, \.source-disclosure > \.source-wrap\.card-action \{ min-height: 44px; min-width: 44px/);
+});
+test('Latest occupies the existing composer control line outside the transcript scrollport', async () => {
+  assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\); flex: 1/);
   assert.match(rule('.transcript-region > .transcript'), /grid-area: 1 \/ 1; min-height: 0/);
-  assert.match(rule('.transcript-region > .latest'), /grid-area: 2 \/ 1; justify-self: start/);
+  assert.doesNotMatch(css, /\.transcript-region > \.latest/);
   const latest = rule('.latest');
   assert.match(latest, /position: static; flex: none/);
   assert.doesNotMatch(latest, /position: absolute|bottom:|transform:|z-index:/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /const scroller = add\('transcript', 'div', 'transcript'\)/);
   assert.match(app, /const latest = add\('latest', 'button', 'latest'\)/);
-  assert.match(app, /region\.append\(absent, scroller, latest\)/);
+  assert.match(app, /region\.append\(absent, scroller\)/);
+  assert.match(app, /composerLine\.prepend\(latest\)/);
   assert.doesNotMatch(html, /id="(?:primary|agent)-(?:transcript|latest)"/);
 });
 test('native text flow preserves scroll boundaries without line paint clipping', () => {
@@ -397,8 +421,8 @@ test('native text flow preserves scroll boundaries without line paint clipping',
 });
 test('editor text and prose share the pane gutter without horizontal correction offsets', () => {
   assert.match(rule('.conversation'), /padding: 0 var\(--gutter\)/);
-  assert.match(rule('.transcript'), /padding: 16px 0/);
-  assert.match(rule('.composer-input'), /padding: 10px 0 4px; border: 0; border-top: 1px solid var\(--edge\)/);
+  assert.match(rule('.transcript'), /padding: var\(--s3\) 0/);
+  assert.match(rule('.composer-input'), /padding: var\(--s2\) 0 2px; border: 0; border-top: 1px solid var\(--rule\)/);
   assert.match(rule('.composer textarea'), /padding: 0; border: 0/);
   for (const selector of ['.transcript', '.composer-input', '.composer textarea']) {
     assert.doesNotMatch(rule(selector), /margin-left: -|translateX|left: -/);
@@ -413,7 +437,7 @@ test('exceptional tab state remains readable and a sole tab fills its available 
   assert.match(rule('.conversation-tab'), /overflow: hidden/);
   assert.match(rule('.tab-label'), /min-width: 8ch; white-space: nowrap/);
   assert.doesNotMatch(rule('.tab-label'), /text-overflow:|overflow:/);
-  assert.match(rule('.tab-close'), /flex: none; width: 28px/);
+  assert.match(rule('.tab-close'), /flex: none; width: 24px/);
 });
 test('neutral tabs and split panes retain 320px tracks with divider-aware equal-width defaults', async () => {
   const layout = await readFile(new URL('./pane-layout.ts', import.meta.url), 'utf8');
@@ -423,7 +447,7 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
   assert.match(rule('.tab-label'), /min-width: 8ch; white-space: nowrap/);
   assert.match(rule('.tab-dot'), /color: var\(--muted\)/);
   assert.doesNotMatch(rule('.tab-dot'), /background:|border:|border-radius:/);
-  assert.match(rule('.conversation-tab[aria-selected=true]'), /border-top-color: var\(--edge\); background: var\(--canvas\)/);
+  assert.match(rule('.conversation-tab[aria-selected=true]'), /background: transparent;[^}]*box-shadow: inset 0 -2px var\(--edge\)/);
   assert.match(rule('.conversation-tab:hover .tab-close, .conversation-tab:focus-within .tab-close'), /opacity: 1/);
   assert.match(rule('.pane-tree'), /display: flex; flex: 1; min-width: 0; min-height: 0/);
   assert.match(rule('.pane-tree > :is(.pane-split, .pane-leaf)'), /flex: 1/);
@@ -518,8 +542,8 @@ test('project and pane controls have unique identities without a global toolbar 
 });
 
 test('supplied roles stay inline metadata and expanded thinking separates from prose only', () => {
-  const role = rule('.message-role'); assert.match(role, /font-size: 13px; line-height: 18px; font-weight: 600/);
-  assert.match(role, /min-width: 0; overflow: hidden; color: var\(--fg\)/);
+  const role = rule('.message-role'); assert.match(role, /font-size: 12px; line-height: 18px; font-weight: 500/);
+  assert.match(role, /min-width: 0; overflow: hidden; color: var\(--muted\)/);
   assert.doesNotMatch(role, /display:|grid|border|background|padding|margin/);
   assert.equal(rule('.message-body > .thinking[open] + :not(.tool-shell):not(.message-coverage)').trim(), 'margin-top: 16px;');
   assert.match(rule('.message-body > .thinking + *'), /margin-top: 8px/);
@@ -529,8 +553,8 @@ test('supplied roles stay inline metadata and expanded thinking separates from p
 test('focus marks the actual editor and its local split identity without changing placement', () => {
   assert.match(rule('.composer textarea:focus-visible'), /outline: 1px solid var\(--accent\); outline-offset: 3px/);
   assert.doesNotMatch(css, /\.composer:has\(textarea:focus-visible\).*border-color: var\(--accent\)/);
-  assert.match(rule('.composer-input'), /border-top: 1px solid var\(--edge\)/);
-  assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /border-top-color: var\(--accent\)/);
+  assert.match(rule('.composer-input'), /border-top: 1px solid var\(--rule\)/);
+  assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
   assert.doesNotMatch(css, /\.pane-heading/);
 });
 
@@ -603,7 +627,7 @@ test('mixed thinking and tool turns use compact spacing and raw inspections have
 
 test('navigation identities stay separate from ellipsis and overflow controls remain quiet', () => {
   assert.match(rule('.tab-identity'), /flex: none;.*font-size: 12px/);
-  assert.match(rule('.pane-actions'), /display: inline-flex; flex: none;[^}]*min-width: 28px; min-height: 28px;[^}]*color: var\(--muted\)/);
+  assert.match(rule('.pane-actions'), /display: inline-flex; flex: none;[^}]*min-width: 24px; min-height: 24px;[^}]*color: var\(--muted\)/);
   assert.match(rule('.pane-actions:hover, .pane-actions[aria-expanded=true]'), /background: var\(--raised\); color: var\(--fg\)/);
   assert.doesNotMatch(rule('.pane-actions'), /overflow: hidden|text-overflow:|display: none/);
   assert.doesNotMatch(css, /\.tab-overflow\s*\{/);
@@ -631,7 +655,7 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
   assert.match(app, /bar\.append\(previous, next, tabs, plus, menu\); node\.append\(bar, content\)/);
   assert.match(rule('.pane-menu > .card-icon'), /transform: rotate\(90deg\)/);
   assert.match(app, /cardAction\('previous', 'Previous tab'/); assert.match(app, /cardAction\('next', 'Next tab'/);
-  assert.match(rule('.pane-actions'), /align-items: center; justify-content: center; min-width: 28px; min-height: 28px/);
+  assert.match(rule('.pane-actions'), /align-items: center; justify-content: center; min-width: 24px; min-height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /\.message-menu, \.communication-unverified, \.message-source-close, \.pane-actions, \.context-menu > \.context-menu-item \{ min-height: 44px; min-width: 44px; \}/);
   assert.doesNotMatch(html, /id="tabs-list"|id="tabs-split"/);
   assert.doesNotMatch(css, /\.tab-overflow\s*\{|\.tab-actions\s*\{/);
@@ -643,7 +667,7 @@ test('agent status uses one plain line and a flat action row in normal flow', ()
   assert.match(rule('.agent-state-actions > button, #agent-message-retry'), /border: 0; border-radius: 0/);
   assert.doesNotMatch(rule('.agent-state-actions > button, #agent-message-retry'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent/);
   assert.match(rule('.conversation'), /display: flex; flex-direction: column;[^}]*min-height: 0/);
-  assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\) auto; flex: 1;[^}]*min-height: 0/);
+  assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\); flex: 1;[^}]*min-height: 0/);
   assert.doesNotMatch(css, /\.conversation\.agent-empty > \.transcript-region\s*\{/);
   assert.match(rule('.composer'), /flex: none/);
   assert.match(rule('.conversation.agent-empty .transcript'), /padding-block: 0/);
@@ -658,16 +682,16 @@ test('Message connection recovery shares flat state actions and retains native f
   assert.match(html, /id="agent-message-retry" type="button"/);
 });
 
-test('the sidebar footer uses one separated action row and a visible edge', () => {
+test('the sidebar footer stays at the bottom without a heavy separator', () => {
   assert.equal([...css.matchAll(/\.sidebar-footer \{/g)].length, 1);
-  assert.match(rule('.sidebar-footer'), /align-items: center; gap: 4px; padding: 8px 8px 0/); assert.match(rule('.sidebar-footer'), /border-top: 1px solid var\(--edge\)/);
+  assert.match(rule('.sidebar-footer'), /align-items: center; gap: var\(--s1\); margin-top: auto; padding: var\(--s1\) var\(--s2\) 0/); assert.doesNotMatch(rule('.sidebar-footer'), /border-top:/);
 });
 
 test('the visible sidebar owns its close control and inherits coarse pointer targets', () => {
   assert.match(rule('.sidebar-close'), /display: inline-flex/);
   assert.match(html, /id="sidebar-close" class="icon-button sidebar-close"[^>]+aria-label="Hide navigation"/);
   assert.match(media('@media (max-width:899px)'), /\.sidebar-close \{ display: inline-flex/);
-  assert.match(rule('.icon-button'), /width: 28px; height: 28px/);
+  assert.match(rule('.icon-button'), /width: 24px; height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /min-height: 44px; min-width: 44px/);
 });
 
@@ -683,7 +707,7 @@ test('dialog word-button chrome never changes shared SVG action geometry', () =>
   assert.match(words, /padding: 4px 10px; border: 1px solid var\(--edge\)/);
   assert.doesNotMatch(css, /(?:#modal-body|\.dialog-actions|\.picker-project-actions) > button(?:\s*,[^{}]+)?\s*\{[^}]*border:/);
   assert.match(rule('.card-action'), /padding: 0; border: 0/);
-  assert.match(rule('.icon-button'), /min-width: 28px; height: 28px; padding: 0 4px/);
+  assert.match(rule('.icon-button'), /min-width: 24px; height: 24px; padding: 0 var\(--s1\)/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
 });
 test('primary history details and retry share a flat wrapping action row', () => {
@@ -713,7 +737,7 @@ test('empty-session guidance has a distinct heading and caption inside the trans
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /const region = element\('div', 'transcript-region'\); const absent = add\('empty', 'div', 'empty-state'\)/);
   assert.match(app, /absent\.append\(add\('empty-heading', 'h2'\), add\('empty-caption', 'p'\)\)/);
-  assert.match(app, /region\.append\(absent, scroller, latest\)/);
+  assert.match(app, /region\.append\(absent, scroller\)/);
   assert.doesNotMatch(html, /id="primary-empty"|id="primary-empty-heading"|id="primary-empty-caption"/);
   assert.match(rule('.transcript-region'), /position: relative/);
   assert.match(rule('.transcript-region > .empty-state'), /position: absolute; top: 0; left: 0/);

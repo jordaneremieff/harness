@@ -16,8 +16,9 @@ class FakeNode extends EventTarget {
   replaceChildren(...nodes: FakeNode[]): void {this.children = []; this.textContent = ''; this.append(...nodes);}
   setAttribute(name: string, value: string): void {this.properties.set(name, value); if (name === 'class') this.className = value;}
   querySelector(selector: string): FakeNode | undefined {return this.children.find(node => node.className.split(' ').includes(selector.slice(1)));}
-  showModal(): void {this.open = true;}
-  show(): void {this.open = true;}
+  modal = false;
+  showModal(): void {this.open = true; this.modal = true;}
+  show(): void {this.open = true; this.modal = false;}
   close(): void {this.open = false; this.dispatchEvent(new Event('close'));}
   focus(): void {this.focused = true;}
 }
@@ -153,12 +154,16 @@ test('Find uses a nonmodal dialog and replacement or Escape closes its session o
   try {
     const modal = new Modal(); let closed = 0;
     modal.open('Find text', undefined, () => {closed++;}, 'find');
-    assert.equal(fake.nodes.get('modal')?.dataset.variant, 'find');
-    modal.open('Appearance'); assert.equal(closed, 1); assert.equal(fake.nodes.get('modal')?.dataset.variant, undefined);
+    assert.equal(fake.nodes.get('modal')?.dataset.variant, 'find'); assert.equal(fake.nodes.get('modal')?.modal, false);
+    modal.open('Appearance'); assert.equal(closed, 1); assert.equal(fake.nodes.get('modal')?.dataset.variant, undefined); assert.equal(fake.nodes.get('modal')?.modal, true);
     modal.close(); assert.equal(closed, 1);
     modal.open('Find text', undefined, () => {closed++;}, 'find');
     const key = Object.assign(new Event('keydown', {cancelable: true}), {key: 'Escape', isComposing: false}); fake.nodes.get('modal')?.dispatchEvent(key);
     assert.equal(key.defaultPrevented, true); assert.equal(modal.openNow, false); assert.equal(closed, 2);
+    assert.equal(fake.nodes.get('invoke')?.focused, true);
+    modal.open('Find text', undefined, () => {closed++;}, 'find');
+    fake.nodes.get('modal-close')?.dispatchEvent(new Event('click'));
+    assert.equal(modal.openNow, false); assert.equal(closed, 3);
   } finally {fake.restore();}
 });
 test('modal failures disclose the exact cause and preserve caller summaries and confirmation actions', () => {

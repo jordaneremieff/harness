@@ -27,6 +27,8 @@ const decorativeHairlines = new Set([
   ".transcript-group-header|border-top", ".message-source|border",
   ".communication-source-section + .communication-source-section|border-top",
   ".context-menu-separator|border-top",
+  ".nav-top|border-bottom", ".nav-filter|border", ".composer-input|border-top",
+  ".context-menu|border", "dialog[data-variant=find] #modal-body > input|border",
 	".source-header|border-bottom",
 	".sidebar|border-right",
 	".sidebar-footer|border-top",
@@ -52,8 +54,8 @@ const decorativeHairlines = new Set([
 	".notification|border-bottom",
 	".palette-input-row|border-bottom",
 ]);
-// Non-content paint: the dialog backdrop dims the page behind a dialog.
-const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)"]);
+// Non-content paint: the backdrop dims the page; the resting divider separates positioned panes.
+const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)", ".pane-split > .pane-divider::after|var(--rule)"]);
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
 const graphicForegrounds = new Map([
   [".tab-dot", "muted"],
@@ -61,10 +63,13 @@ const graphicForegrounds = new Map([
   [".tab-dot[data-state=failed]", "error"],
 ]);
 const graphicBackgrounds = new Map([
-  [".pane-split > .pane-divider::after", "edge"],
   [".pane-split > .pane-divider:hover::after", "edge"],
   [".pane-split > .pane-divider:focus-visible::after", "accent"],
 
+]);
+const graphicShadows = new Map([
+  ['.conversation-tab[aria-selected=true]', 'edge'],
+  ['.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]', 'accent'],
 ]);
 type RGB = [number, number, number];
 type Rule = { selector: string; contexts: string[]; declarations: { property: string; value: string }[] };
@@ -328,6 +333,11 @@ function backgroundDeclaration(context: Context, value: string) {
 	else if (!surfaces.includes(name)) issues.push(`${theme}: non-surface background ${source}: ${value}`);
 	else for (const fg of foregrounds) measure("background-declaration", `${source} --${fg} / --${name}`, fg, name, 4.5);
 }
+function selectionShadow(context: Context, value: string) {
+  const name = graphicShadows.get(context.rule.selector); if (!name) return;
+  if (value !== `inset 0 -2px var(--${name})`) context.issues.push(`${context.theme}: unmodeled selection shadow ${context.source}: ${value}`);
+  else for (const bg of surfaces) context.measure('graphic-paint', `${context.source} selected underline / --${bg}`, name, bg, 3);
+}
 function decorativeEdge(context: Context, property: string, edge: string, name: string | undefined): boolean {
 	if (edge !== "transparent" && name !== "rule") return false;
 	const { theme, rule, source, issues, exclusions } = context;
@@ -388,6 +398,7 @@ function auditDeclaration(context: Context, property: string, raw: string): bool
 	if (text) textDeclaration(context, property, value);
   if (caret) caretDeclaration(context, value);
 	if (background) backgroundDeclaration(context, value);
+  if (property === 'box-shadow') selectionShadow(context, value);
 	if (edge) return edgeDeclaration(context, property, value);
 	if (contrastEffects.has(property))
 		issues.push(`${theme}: contrast-altering property requires analysis: ${source} ${property}: ${value}`);
@@ -505,7 +516,7 @@ test('native insertion caret is measured as graphics without weakening text or i
 test("all color declarations use modeled semantic tokens", () => assert.deepEqual(result.issues, []));
 test("graphic paint measures selected marks and divider hover/focus without opening a surface exception", () => {
   const rows = result.measurements.filter(row => row.kind === "graphic-paint");
-  assert.equal(rows.length, (graphicBackgrounds.size + graphicForegrounds.size) * surfaces.length * (2 + flavors.length));
+  assert.equal(rows.length, (graphicBackgrounds.size + graphicForegrounds.size + graphicShadows.size) * surfaces.length * (2 + flavors.length));
   for (const selector of graphicForegrounds.keys()) {
     const marks = rows.filter(row => row.source.startsWith(`${selector} color:`));
     assert.equal(marks.length, surfaces.length * (2 + flavors.length));

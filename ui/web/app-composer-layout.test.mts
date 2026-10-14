@@ -30,6 +30,12 @@ test('conversation state and split width changes retain editor ancestry, draft i
   await arrive(baseline);
   const editor = agentControl('editor'), chain = ancestors(editor), root = agentControl('root'), form = agentControl('composer');
   const primaryEditor = primaryControl('editor'), primaryChain = ancestors(primaryEditor);
+  for (const control of [primaryControl, agentControl]) {
+    const latest = control('latest'), line = control('composer').querySelector('.composer-line');
+    assert.ok(line); assert.equal(latest.parentNode, line); assert.equal(line.firstChild, latest);
+    assert.equal(control('transcript').parentNode?.contains(latest), false);
+    assert.equal(control('editor').parentNode?.classList.contains('composer-surface'), true);
+  }
   app.agentComposer().setManualHeight(160); editor.focus(); editor.setSelectionRange(2, 9, 'backward'); editor.dispatch('select'); await settle();
   const height = (editor.style as {height?: string}).height;
   assert.equal(height, '160px');

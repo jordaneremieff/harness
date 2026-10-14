@@ -2215,7 +2215,7 @@ test('whole-workbench status retains controls and selects only the focused fact 
 });
 test('static workbench markup owns one footer and keeps composer actions without fact rings', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-  assert.equal([...html.matchAll(/<footer id="workbench-status"/g)].length, 1); assert.match(html, /<\/main>\s*<\/div>\s*<footer id="workbench-status"/);
+  assert.equal([...html.matchAll(/<footer id="workbench-status"/g)].length, 1); assert.match(html, /<\/main>\s*<\/div>\s*<dialog id="modal"[\s\S]*?<\/dialog>\s*<footer id="workbench-status"/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const composer = readFileSync(new URL('./composer.ts', import.meta.url), 'utf8');
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
@@ -2332,7 +2332,7 @@ test('one reference renderer links only resolved identities and preserves text a
 });
 test('mode and reference CSS retain direct controls, coarse targets and honest link cues', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8'); const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-  assert.match(css, /\.pane-actions \{ display: inline-flex; flex: none;[^}]*min-width: 28px; min-height: 28px/);
+  assert.match(css, /\.pane-actions \{ display: inline-flex; flex: none;[^}]*min-width: 24px; min-height: 24px/);
   assert.match(css, /\.message-menu, \.communication-unverified, \.message-source-close, \.pane-actions, \.context-menu > \.context-menu-item \{ min-height: 44px; min-width: 44px/);
   const menu = readFileSync(new URL('./context-menu.ts', import.meta.url), 'utf8');
   const app = readFileSync(new URL('./app.ts', import.meta.url), 'utf8');

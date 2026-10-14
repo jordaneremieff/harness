@@ -130,8 +130,9 @@ function conversationController(target: Target): ConversationController {
   if (target.kind === 'primary') absent.append(add('empty-heading', 'h2'), add('empty-caption', 'p'));
   const scroller = add('transcript', 'div', 'transcript'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', 'Conversation messages');
   const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; controlIcon(latest, 'latest', 'Latest message'); latest.hidden = true;
-  region.append(absent, scroller, latest); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
+  region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
+  const composerLine = elements.root.querySelector('.composer-line') as HTMLElement; composerLine.prepend(latest);
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
@@ -278,8 +279,8 @@ function refreshPaneSizes(): void {
     const panelKey = `ui:pane:${workspace.id}:message-panel`;
     let panelHeight = tabSize(panelKey, 160, 640) ?? 320;
     paneResizers = [
-      createResizer({handle: byId('sidebar-resizer'), axis: 'x', min: 200, max: 480, defaultValue: 248,
-        read: () => state.workspace?.sidebarWidth ?? 248,
+      createResizer({handle: byId('sidebar-resizer'), axis: 'x', min: 200, max: 480, defaultValue: 224,
+        read: () => state.workspace?.sidebarWidth ?? (innerWidth <= 1100 ? 200 : 224),
         write: value => app.style.setProperty('--sidebar-width', `${value}px`),
         onCommit: value => {void selectionQueue.select({sidebarWidth: value}).catch(showError);}}),
 
