@@ -38,10 +38,12 @@ test('focused explicit Message owns the footer while a file remains the active p
   byId('agent-message-close').click();await settle();assert.equal(byId('workbench-status').dataset.pane,'file');assert.equal(paneNode(app.focusedPane).querySelectorAll('.conversation-tab').find(node=>node.dataset.tabKey === tabKey(tab))?.getAttribute('aria-selected'),'true');
 });
 test('the existing unload guard protects immediate file input, pending acknowledgment and failed drafts',async context=> {
-  fileTransport(context);const previous = globalThis.fetch;let release!:()=>void, failed = false, revision = 0;
+  fileTransport(context);const previous = globalThis.fetch;let release!:()=>void, failed = false, readFailed = false, revision = 0;
   const gate = new Promise<void>(resolve=> {release = resolve;});
   globalThis.fetch = async(input,init)=> {
     const url = new URL(String(input),'http://ui.test');
+    if (url.pathname.endsWith('/text') && readFailed) throw new Error('forced read failure');
+    if (url.pathname.endsWith('/text') && init?.method === 'PUT') throw new Error('forced Save failure');
     if (url.pathname.endsWith('/draft') && init?.method === 'PUT') {
       if (failed) throw new Error('forced draft failure');await gate;
       const body = JSON.parse(String(init.body));return Response.json({ok:true,data:{revision:++revision,base:body.base,text:body.text,encoding:body.encoding}});
@@ -57,6 +59,10 @@ test('the existing unload guard protects immediate file input, pending acknowled
   const writing = owner.drain();await new Promise(resolve=>setImmediate(resolve));assert.equal(owner.persisting,true);assert.equal(beforeUnload(),true);
   release();await writing;assert.equal(owner.modified,true);assert.equal(beforeUnload(),false);
   composers.mock.mockImplementation(()=>false);assert.equal(beforeUnload(),true);composers.mock.mockImplementation(()=>true);
+  readFailed = true;await owner.reread();assert.match(owner.error ?? '',/forced read failure/);assert.equal(beforeUnload(),false);
+  readFailed = false;await assert.rejects(owner.save(),/forced Save failure/);assert.equal(beforeUnload(),true);
+  readFailed = true;await owner.reread();assert.equal(beforeUnload(),true);
+  readFailed = false;await owner.reread();assert.equal(beforeUnload(),false);
   failed = true;owner.edit('unacknowledged');await assert.rejects(owner.drain(),/forced draft failure/);assert.equal(beforeUnload(),true);
   app.filesViews.reconcile(workspace,[],[]);await assert.rejects(owner.drain(),/forced draft failure/);assert.equal(beforeUnload(),true);
 });

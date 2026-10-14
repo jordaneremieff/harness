@@ -11,12 +11,12 @@ export class FileOwner {
   text?:string;acknowledged?:string;loading = false;saving = false;persisting = false;conflict = false;error?:string;draftError?:string;
   replacement = 0;
   private generation = 0;private abort?:AbortController;private pending?:Promise<void>;private disposed = false;
-  private revision = 0;private queued = 0;private timer?:ReturnType<typeof setTimeout>;private tail:Promise<void> = Promise.resolve();
+  private revision = 0;private queued = 0;private saveFailed = false;private timer?:ReturnType<typeof setTimeout>;private tail:Promise<void> = Promise.resolve();
   private read:FileRead;private changed:()=>void;private io?:FileIO;
   constructor(workspace:string,tab:FileTab,read:FileRead,changed:()=>void,io?:FileIO) {this.workspace = workspace;this.read = read;this.changed = changed;this.io = io;this.tab = Object.freeze({kind:'file',rootId:tab.rootId,path:tab.path});}
   get modified():boolean {return this.text !== undefined && (this.conflict || !this.source || this.text !== fileSource(this.source.text).text);}
   get unsaved():boolean {return this.text !== this.acknowledged || !!this.draftError;}
-  get canDispose():boolean {return !this.unsaved && !this.timer && !this.queued && !this.persisting && !this.saving && !this.error;}
+  get canDispose():boolean {return !this.unsaved && !this.timer && !this.queued && !this.persisting && !this.saving && !this.saveFailed;}
   get status():string {
     if (this.saving) return 'Saving file…';if (this.persisting) return 'Saving draft…';
     const unsaved = `${this.conflict ? 'Local edits' : 'Draft'} not saved.${this.draftError ? ` ${this.draftError}` : ''}`;
@@ -53,6 +53,7 @@ export class FileOwner {
     const loaded = this.source ? fileSource(this.source.text) : undefined, previous = this.text;
     this.text = draft?.text ?? loaded?.text;if (refresh && previous !== this.text) this.replacement++;
     this.encoding = draft?.encoding ?? loaded?.encoding;this.acknowledged = this.text;this.draftError = undefined;
+    if (disk.status === 'fulfilled') this.saveFailed = false;
   }
   edit(text:string):void {
     if (this.disposed || this.loading || this.text === undefined || text === this.text) return;this.text = text;this.changed();clearTimeout(this.timer);
@@ -78,13 +79,13 @@ export class FileOwner {
   }
   private receiveSave(saved:FileSave,captured:string):void {
     this.identity(saved.source);this.acknowledge(saved.draft,captured,saved.source.revision);
-    this.source = frozenSource(saved.source);this.encoding = saved.draft.encoding;this.conflict = false;
+    this.source = frozenSource(saved.source);this.encoding = saved.draft.encoding;this.conflict = false;this.saveFailed = false;
   }
   private async saveCaptured(captured:string):Promise<void> {
     await this.persist(captured,true);if (!this.io || !this.draft || this.disposed) return;
     const generation = this.generation;this.saving = true;this.error = undefined;this.changed();
     try {const saved = await this.io.save(this.workspace,this.tab,this.revision);if (this.current(generation)) this.receiveSave(saved,captured);}
-    catch(error) {if (this.current(generation)) {this.error = failureText(error,'The file was not saved.');this.conflict = /changed|conflict/i.test(this.error);}throw error;}
+    catch(error) {if (this.current(generation)) {this.saveFailed = true;this.error = failureText(error,'The file was not saved.');this.conflict = /changed|conflict/i.test(this.error);}throw error;}
     finally {if (this.current(generation)) {this.saving = false;this.changed();}}
     if (this.current(generation) && this.text !== captured) await this.persist(this.text ?? '');
   }
@@ -96,7 +97,7 @@ export class FileOwner {
     const generation = this.generation, source = await this.read(this.workspace,this.tab,new AbortController().signal);
     if (!this.current(generation)) return;this.identity(source);const loaded = fileSource(source.text);
     if (this.io) {const draft = await this.io.put(this.workspace,this.tab,this.revision,source.revision,loaded.text,loaded.encoding);if (!this.current(generation)) return;this.acknowledge(draft,loaded.text,source.revision);}
-    this.source = frozenSource(source);this.text = loaded.text;this.acknowledged = loaded.text;this.encoding = loaded.encoding;this.conflict = false;this.error = undefined;this.draftError = undefined;this.replacement++;this.changed();
+    this.source = frozenSource(source);this.text = loaded.text;this.acknowledged = loaded.text;this.encoding = loaded.encoding;this.conflict = false;this.error = undefined;this.draftError = undefined;this.saveFailed = false;this.replacement++;this.changed();
   }
   dispose():void {clearTimeout(this.timer);this.disposed = true;this.generation++;this.abort?.abort();}
 }

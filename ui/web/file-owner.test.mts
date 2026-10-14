@@ -53,6 +53,32 @@ test('unload protection covers unacknowledged input, queued writes and errors bu
   const failed = new FileOwner('w',owner.tab,async()=>disk,()=>{}, {draft:async()=>({revision:0,draft:null}),put:async()=> {throw new Error('draft failed');},save:async()=> {throw new Error('unused');}});
   await failed.load();failed.edit('unacknowledged');await assert.rejects(failed.drain(),/draft failed/);assert.equal(failed.canDispose,false);assert.match(failed.draftError ?? '',/draft failed/);failed.dispose();
 });
+test('read failures do not guard unload unless local text remains unacknowledged',async()=> {
+  const unavailable = new FileOwner('w',{kind:'file',rootId:'r',path:'missing.md'},async()=> {throw new Error('read unavailable');},()=>{});
+  await unavailable.load();assert.match(unavailable.error ?? '',/read unavailable/);assert.equal(unavailable.canDispose,true);unavailable.dispose();
+  let failRead = false;const disk = {...text,text:'base'};
+  const owner = new FileOwner('w',{kind:'file',rootId:'r',path:'note.md'},async()=> {if (failRead) throw new Error('read unavailable');return disk;},()=>{});
+  await owner.load();failRead = true;await owner.reread();assert.match(owner.error ?? '',/read unavailable/);
+  assert.equal(owner.text,'base');assert.equal(owner.acknowledged,'base');assert.equal(owner.canDispose,true);
+  owner.edit('local text');await owner.reread();assert.equal(owner.canDispose,false);assert.equal(owner.text,'local text');owner.dispose();
+});
+test('uncertain Save remains guarded through read errors until authoritative recovery succeeds',async()=> {
+  for (const recovery of ['refresh','reread','save']) {
+    let failRead = false,failSave = true,revision = 0,stored:FileDraft|undefined;const disk = {...text,text:'base'};
+    const owner = new FileOwner('w',{kind:'file',rootId:'r',path:'note.md'},async()=> {if (failRead) throw new Error('read unavailable');return disk;},()=>{}, {
+      draft:async()=>({revision:stored?.revision ?? 0,draft:stored ?? null}),
+      put:async(_w,_tab,_revision,base,value,encoding)=> {stored = {revision:++revision,base,text:value,encoding};return stored;},
+      save:async()=> {if (failSave) throw new Error('save acknowledgment lost');stored = {revision:++revision,base:disk.revision,text:'base',encoding:fileSource(disk.text).encoding};return {source:disk,draft:stored};},
+    });
+    await owner.load();await assert.rejects(owner.save(),/save acknowledgment lost/);
+    assert.equal(owner.unsaved,false);assert.equal(owner.modified,false);assert.equal(owner.canDispose,false);
+    failRead = true;await owner.load(true);assert.match(owner.error ?? '',/read unavailable/);assert.equal(owner.canDispose,false);
+    await owner.reread();assert.equal(owner.canDispose,false);
+    failRead = false;failSave = false;
+    if (recovery === 'refresh') await owner.load(true);else if (recovery === 'reread') await owner.reread();else await owner.save();
+    assert.equal(owner.canDispose,true,recovery);owner.dispose();
+  }
+});
 test('compact clean state retains its CAS revision for the next local edit',async()=> {
   const disk = {...text,text:'saved'}, revisions:number[] = [];
   const owner = new FileOwner('w',{kind:'file',rootId:'r',path:'note.md'},async()=>disk,()=>{}, {
