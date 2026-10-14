@@ -23,21 +23,26 @@ function scopeChange(state:RootWatch,scope:Scope,dirty:Map<string,Set<string>>,r
 }
 /** Watches are hints for bounded scoped reads, never a filesystem inventory or a readiness handshake. */
 export class FileWatches {
-  private scopes = new Map<string,FileWatchScope[]>();
+  private scopes = new Map<string,Map<string,FileWatchScope[]>>();
   private roots = new Map<string,RootWatch>();
   private stopped = false;
   private root:(id:string)=>RegisteredRoot;
   private publish:(change:FileChanges,workspace:string)=>void;
   private factory:WatchFactory;
   constructor(root:(id:string)=>RegisteredRoot,publish:(change:FileChanges,workspace:string)=>void,factory:WatchFactory = watch) {this.root = root;this.publish = publish;this.factory = factory;}
-  state(workspace:string):FileWatchState {return {roots:(this.scopes.get(workspace) ?? []).map(scope=>({...this.roots.get(scope.rootId)?.state ?? {rootId:scope.rootId,watch:'unavailable' as const,reason:'Live files are unavailable. Refresh files explicitly.'}}))};}
-  async replace(workspace:string,scopes:FileWatchScope[]):Promise<FileWatchState> {
+  state(workspace:string,clientId:string):FileWatchState {return {roots:(this.scopes.get(workspace)?.get(clientId) ?? []).map(scope=>({...this.roots.get(scope.rootId)?.state ?? {rootId:scope.rootId,watch:'unavailable' as const,reason:'Live files are unavailable. Refresh files explicitly.'}}))};}
+  async replace(workspace:string,clientId:string,scopes:FileWatchScope[]):Promise<FileWatchState> {
     if (this.stopped) throw new ApiError('file_unavailable','Live files are unavailable.',503,'read');
+    this.validateRequest(workspace,scopes);
+    const clients = this.scopes.get(workspace) ?? new Map<string,FileWatchScope[]>();
+    if (!clients.has(clientId) && clients.size >= LIMITS.eventClients) throw new ApiError('capacity','The live-file client bound is full.',429,'read');
+    this.validate(scopes);if (scopes.length) {clients.set(clientId,structuredClone(scopes));this.scopes.set(workspace,clients);} else {clients.delete(clientId);if (!clients.size) this.scopes.delete(workspace);}await this.reconcile();
+    for (const scope of scopes) {const state = this.roots.get(scope.rootId);if (state) this.publish({rootId:scope.rootId,directories:[],files:[],rescan:true,watch:state.state.watch,...(state.state.reason ? {reason:state.state.reason} : {})},workspace);}
+    return this.state(workspace,clientId);
+  }
+  private validateRequest(workspace:string,scopes:FileWatchScope[]) {
     if (scopes.length > LIMITS.fileRoots || new Set(scopes.map(scope=>scope.rootId)).size !== scopes.length) throw new ApiError('invalid_request','The watch roots exceed their bound or repeat.');
     if (Buffer.byteLength(JSON.stringify({roots:scopes})) > LIMITS.requestBytes || !this.scopes.has(workspace) && this.scopes.size >= LIMITS.workspaces) throw new ApiError('capacity','The live-file scope exceeds its byte or workspace bound.',429,'read');
-    this.validate(scopes);this.scopes.set(workspace,structuredClone(scopes));await this.reconcile();
-    for (const scope of scopes) {const state = this.roots.get(scope.rootId);if (state) this.publish({rootId:scope.rootId,directories:[],files:[],rescan:true,watch:state.state.watch,...(state.state.reason ? {reason:state.state.reason} : {})},workspace);}
-    return this.state(workspace);
   }
   private validate(scopes:FileWatchScope[]) {
     let files = 0;
@@ -48,8 +53,14 @@ export class FileWatches {
       if (new Set(scope.directories).size !== scope.directories.length || new Set(scope.files).size !== scope.files.length) throw new ApiError('invalid_request','The watch scope repeats a path.');
     }
   }
-  async release(workspace:string) {this.scopes.delete(workspace);await this.reconcile();}
-  private all():Scope[] {return [...this.scopes].flatMap(([workspace,scopes])=>scopes.map(scope=>({...scope,workspace})));}
+  async release(workspace:string,clientId:string) {const clients = this.scopes.get(workspace);clients?.delete(clientId);if (!clients?.size) this.scopes.delete(workspace);await this.reconcile();}
+  private all():Scope[] {
+    return [...this.scopes].flatMap(([workspace,clients])=> {
+      const roots = new Map<string,{directories:Set<string>;files:Set<string>}>();
+      for (const scopes of clients.values()) for (const scope of scopes) {const paths = roots.get(scope.rootId) ?? {directories:new Set<string>(),files:new Set<string>()};scope.directories.forEach(path=> {paths.directories.add(path);});scope.files.forEach(path=> {paths.files.add(path);});roots.set(scope.rootId,paths);}
+      return [...roots].map(([rootId,paths])=>({workspace,rootId,directories:[...paths.directories],files:[...paths.files]}));
+    });
+  }
   private desired(scopes:Scope[]):Set<string> {return new Set(scopes.flatMap(scope=>[...scope.directories,...scope.files.map(parentPath)]));}
   private async reconcile() {
     const all = this.all(),rootIds = new Set(all.map(scope=>scope.rootId));
@@ -116,7 +127,7 @@ export class FileWatches {
     for (const scope of this.all()) if (scope.rootId === rootId && scope.files.some(path=> !(path === from || path.startsWith(`${from}/`)) && (path === to || path.startsWith(`${to}/`)))) throw new ApiError('file_changed','The destination has an open file identity. Choose another name.',409,'read');
   }
   async moved(rootId:string,from:string,to:string) {
-    for (const scopes of this.scopes.values()) for (const scope of scopes) if (scope.rootId === rootId) {scope.directories = scope.directories.map(path=>movedFilePath(path,from,to));scope.files = scope.files.map(path=>movedFilePath(path,from,to));}
+    for (const clients of this.scopes.values()) for (const scopes of clients.values()) for (const scope of scopes) if (scope.rootId === rootId) {scope.directories = scope.directories.map(path=>movedFilePath(path,from,to));scope.files = scope.files.map(path=>movedFilePath(path,from,to));}
     await this.reconcile();
   }
   close() {this.stopped = true;for (const state of this.roots.values()) this.stopRoot(state);this.roots.clear();this.scopes.clear();}

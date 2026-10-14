@@ -53,14 +53,20 @@ function watchScope(value:unknown):FileWatchScope[] {
     return {rootId:v.string(raw.rootId,'root ID'),directories:raw.directories.map((path:unknown)=>filePath(path)),files:raw.files.map((path:unknown)=>filePath(path,false))};
   });
 }
+export function fileWatchClientId(value:unknown):string {
+  if (typeof value !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value)) throw new ApiError('invalid_request','The page scope ID is invalid.');return value;
+}
 async function watchRequest(files:Files,backend:HttpBackend,context:RequestContext) {
-  queryFields(context.url,['workspace']);if (context.operationId) throw new ApiError('invalid_request','File requests do not accept an operation key.');
+  queryFields(context.url,context.method === 'GET' ? ['workspace','clientId'] : ['workspace']);if (context.operationId) throw new ApiError('invalid_request','File requests do not accept an operation key.');
   const workspace = v.string(context.parts[2],'workspace ID'), query = context.url.searchParams.get('workspace');
   if (query !== null && query !== workspace) throw new ApiError('invalid_request','The workspace query does not match the route.');
   await backend.workspace(workspace);
-  if (context.method === 'GET') return files.request({kind:'watch-state',workspace},context.signal);
-  if (context.method !== 'PUT') throw new ApiError('invalid_request','The watch route does not accept this request.',405);
-  v.fields(context.body,['roots'],['roots']);return files.request({kind:'watch',workspace,roots:watchScope(context.body.roots)},context.signal);
+  if (context.method !== 'GET' && context.method !== 'PUT') throw new ApiError('invalid_request','The watch route does not accept this request.',405);
+  if (context.method === 'PUT') v.fields(context.body,['clientId','roots'],['clientId','roots']);
+  const clientId = fileWatchClientId(context.method === 'GET' ? context.url.searchParams.get('clientId') : context.body.clientId);
+  if (!backend.journal.hasClient(workspace,context.session,clientId)) throw new ApiError('file_unavailable','The page update stream is not active. Reconnect it before file watches.',503,'read');
+  if (context.method === 'GET') return files.request({kind:'watch-state',workspace,clientId},context.signal);
+  return files.request({kind:'watch',workspace,clientId,roots:watchScope(context.body.roots)},context.signal);
 }
 function moveRequest(files:Files,backend:HttpBackend,rootId:string,body:Record<string,unknown>) {
   v.fields(body,['from','to'],['from','to']);const from = filePath(body.from,false),to = filePath(body.to,false);
@@ -69,7 +75,18 @@ function moveRequest(files:Files,backend:HttpBackend,rootId:string,body:Record<s
     const response = await files.settled({kind:'move',rootId,from,to}),result = JSON.parse(response.json);
     if (!result.ok) throw new ApiError(result.error.code,result.error.message,response.status,result.error.retry);
     return result.data as FileMutation;
-  });
+  }).catch(error=> {if (error?.code === 'file_identity_uncertain') files.poisonIdentity();throw error;});
+}
+async function createRequest(files:Files,backend:HttpBackend,rootId:string,body:Record<string,unknown>) {
+  v.fields(body,['path','kind'],['path','kind']);if (body.kind !== 'file' && body.kind !== 'directory') throw new ApiError('invalid_request','The entry kind is invalid.');
+  const path = filePath(body.path,false),entryKind = body.kind;
+  if (!backend.createFiles) throw new ApiError('not_ready','Workspace file creation is unavailable.',503);
+  const created = await backend.createFiles(rootId,path,async()=> {
+    const reply = await files.request({kind:'create',rootId,path,entryKind}),result = JSON.parse(reply.json);
+    if (!result.ok) throw new ApiError(result.error.code,result.error.message,reply.status,result.error.retry);return result.data as FileMutation;
+  }).catch(error=> {if (error?.code === 'file_identity_uncertain') files.poisonIdentity();throw error;});
+  const parent = dirname(created.path);backend.journal.publish('files.changed',undefined,{rootId,directories:[parent === '.' ? '' : parent],files:[created.path],rescan:false,watch:'live'});
+  return created;
 }
 async function treeRequest(files:Files,backend:HttpBackend,context:RequestContext) {
   const {parts,method,url,body,signal} = context;queryFields(url,parts[4] === 'entry' ? ['workspace','path'] : ['workspace']);
@@ -77,10 +94,8 @@ async function treeRequest(files:Files,backend:HttpBackend,context:RequestContex
   await backend.workspace(v.string(url.searchParams.get('workspace'),'workspace ID'));const rootId = v.string(parts[3],'root ID');
   if (parts[4] === 'move' && method === 'POST') return moveRequest(files,backend,rootId,body);
   let response:FileResponse;
-  if (parts[4] === 'entries' && method === 'POST') {
-    v.fields(body,['path','kind'],['path','kind']);if (body.kind !== 'file' && body.kind !== 'directory') throw new ApiError('invalid_request','The entry kind is invalid.');
-    response = await files.request({kind:'create',rootId,path:filePath(body.path,false),entryKind:body.kind},signal);
-  } else if (parts[4] === 'entry' && method === 'DELETE') {v.fields(body,[],[]);response = await files.request({kind:'trash',rootId,path:filePath(url.searchParams.get('path'),false)},signal);}
+  if (parts[4] === 'entries' && method === 'POST') return createRequest(files,backend,rootId,body);
+  if (parts[4] === 'entry' && method === 'DELETE') {v.fields(body,[],[]);response = await files.request({kind:'trash',rootId,path:filePath(url.searchParams.get('path'),false)},signal);}
   else throw new ApiError('invalid_request','The file route does not accept this request.',405);
   const result = JSON.parse(response.json);
   if (result.ok) {const value = result.data as FileMutation, parent = dirname(value.path);backend.journal.publish('files.changed',undefined,{rootId,directories:[parent === '.' ? '' : parent],files:[value.path],rescan:false,watch:'live'});}

@@ -149,10 +149,14 @@ export class FileOwner {
     this.retainedState = true;clearTimeout(this.timer);this.timer = undefined;this.generation++;this.diskGeneration++;this.abort?.abort();
     this.loading = false;this.pending = undefined;this.saving = false;this.persisting = false;this.moving = false;this.changed();
   }
+  private clearMovedMissing():void {
+    if (!this.missing) return;this.missing = false;this.error = undefined;
+    if (!this.draftError && !this.saveFailed && this.source && this.editBase && sameFileRevision(this.editBase,this.source.revision)) this.conflict = false;
+  }
   remap(path:string):void {
     this.generation++;this.diskGeneration++;this.abort?.abort();this.loading = false;this.pending = undefined;
     if (this.saving) this.saveFailed = true;this.saving = false;this.persisting = false;
-    this.documentTab = Object.freeze({...this.tab,path});if (this.source) this.source = frozenSource({...this.source,path});this.changed();
+    this.clearMovedMissing();this.documentTab = Object.freeze({...this.tab,path});if (this.source) this.source = frozenSource({...this.source,path});this.changed();
   }
   dispose():void {clearTimeout(this.timer);this.disposed = true;this.generation++;this.diskGeneration++;this.abort?.abort();}
 }

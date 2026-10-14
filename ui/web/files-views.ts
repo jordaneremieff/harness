@@ -68,9 +68,13 @@ export class FilesViews {
     for (const [key] of moved) this.owners.delete(key);
     for (const [,owner] of moved) {
       const path = movedFilePath(owner.tab.path,move),key = this.ownerKey(workspace,{...owner.tab,path}),destination = this.owners.get(key);
-      if (destination) this.retainOwner(key,destination);
+      if (destination) this.displaceOwner(key,destination);
       owner.remap(path);this.owners.set(key,owner);
     }
+  }
+  private displaceOwner(key:string,owner:FileOwner):void {
+    if (owner.canDispose && !owner.modified && ![...this.views.values()].some(view=>view.owner === owner)) {this.owners.delete(key);this.refreshQueue.delete(owner);owner.dispose();return;}
+    this.retainOwner(key,owner);
   }
   private retainOwner(key:string,owner:FileOwner):void {
     this.owners.delete(key);this.owners.set(JSON.stringify([key,'retained',++this.retainedSequence]),owner);this.refreshQueue.delete(owner);

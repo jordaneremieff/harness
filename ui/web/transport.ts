@@ -60,8 +60,8 @@ export async function operation(kind: OperationKind, path: string, body: unknown
 }
 export const eventNames: EventName[] = ['ready', 'resync', 'primary.state', 'primary.message', 'primary.delta', 'primary.tool', 'primary.entry', 'primary.queue', 'primary.recovery', 'extension.request', 'extension.expired', 'agent.roster', 'agent.frame', 'agent.availability', 'workspace.changed', 'files.changed', 'draft.changed', 'reading.changed', 'operation.changed', 'notice'];
 export type ReceivedEvent = {name: EventName; id: string; envelope: EventEnvelope; bytes?: number; receivedAt?: number};
-export function connect(workspace: string, cursor: string, receive: (event: ReceivedEvent) => void, lost: () => void): EventSource {
-  const source = new EventSource(`/api/events?workspace=${encodeURIComponent(workspace)}&after=${encodeURIComponent(cursor)}`);
+export function connect(workspace: string, cursor: string, receive: (event: ReceivedEvent) => void, lost: () => void, clientId?:string): EventSource {
+  const source = new EventSource(`/api/events?workspace=${encodeURIComponent(workspace)}&after=${encodeURIComponent(cursor)}${clientId ? `&clientId=${encodeURIComponent(clientId)}` : ''}`);
   for (const name of eventNames) source.addEventListener(name, (event: MessageEvent<string>) => {
     const receivedAt = performance.now();
     try { receive({name, id: event.lastEventId, envelope: JSON.parse(event.data) as EventEnvelope, bytes: event.data.length * 2, receivedAt}); }

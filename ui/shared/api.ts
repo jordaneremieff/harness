@@ -8,7 +8,7 @@ export const LIMITS = {
   targets: 128, draftPreviewChars: 240, rpcPending: 64, hostPending: 32, workspaceReservations: 16,
   operations: 2048, unconfirmed: 128, journalEvents: 4096,
   sidebarWidthMin: 200, sidebarWidthMax: 480, conversationTabs: 128,
-  journalBytes: 8 * 1024 * 1024, clientQueueBytes: 512 * 1024,
+  journalBytes: 8 * 1024 * 1024, clientQueueBytes: 512 * 1024, eventClients: 8,
   reservationMs: 10 * 60 * 1000, jsonDepth: 8, jsonNodes: 2048,
   imagesPerDraft: 4, imageBytes: 8 * 1024 * 1024, draftImageBytes: 8 * 1024 * 1024,
   imagePixels: 16_777_216, imageEdge: 8192, imageNameCodePoints: 240,

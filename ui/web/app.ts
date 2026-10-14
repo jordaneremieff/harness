@@ -224,7 +224,7 @@ const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversa
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 let fileActionStatus = '';
-export const fileWatch = new FileWatch({put:(workspace,roots)=>request<FileWatchState>(`/api/workspaces/${encodeURIComponent(workspace)}/files/watch`,'PUT',{roots}),changed:()=>renderWorkbenchStatus()});
+export const fileWatch = new FileWatch({put:(workspace,roots,clientId)=>request<FileWatchState>(`/api/workspaces/${encodeURIComponent(workspace)}/files/watch`,'PUT',{clientId,roots}),changed:()=>renderWorkbenchStatus()});
 function watchFiles(force = false):Promise<void> {
   const workspace = state.workspace;if (!workspace) return Promise.resolve();
   const roots = new Map<string,FileWatchScope>();for (const root of filesViews.scopes(workspace.id)) roots.set(root.rootId,{...root,directories:[]});
@@ -640,7 +640,7 @@ function stream(signal?: AbortSignal): Promise<void> {
   if (!state.workspace || !state.cursor) return Promise.reject(new Error('No current workspace baseline.'));
   const ready = {resolve: () => {}, reject: (_error: unknown) => {}};
   const promise = new Promise<void>((resolve, reject) => { ready.resolve = resolve; ready.reject = reject; }); streamWait = ready;
-  const current = connect(state.workspace.id, state.cursor, event => { if (source === current) receive(event); }, () => { if (source === current) disconnected(); });
+  const current = connect(state.workspace.id, state.cursor, event => { if (source === current) receive(event); }, () => { if (source === current) disconnected(); },fileWatch.clientId);
   source = current;
   const timer = window.setTimeout(() => { if (source === current) disconnected(new Error('The event stream did not become ready.')); }, 15_000);
   return (signal ? waitForSignal(promise, signal) : promise).finally(() => { window.clearTimeout(timer); if (streamWait === ready) streamWait = undefined; });

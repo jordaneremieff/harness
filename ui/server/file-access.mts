@@ -4,7 +4,7 @@ import {createHash, createHmac, randomBytes, randomUUID} from 'node:crypto';
 import {isAbsolute, join, relative, basename, dirname} from 'node:path';
 import {LIMITS} from '../shared/api.ts';
 import {fileSource, sameFileEncoding, sameFileRevision, type FileRoot, type FileEntry, type FileCoverage, type FileDirectoryPage, type FileText, type FileRevision, type FileEncoding} from '../shared/files.ts';
-import {ApiError} from './errors.mts';
+import {ApiError,fileIdentityUncertain} from './errors.mts';
 
 export type RegisteredRoot = FileRoot & {dev: number; ino: number};
 const excluded = new Set(['.git', '.hg', '.svn', '.bzr']);
@@ -104,11 +104,11 @@ export function encodeFileText(text:string, encoding:FileEncoding):Buffer {
 }
 /** Revision checks detect ordinary external changes; the final path check cannot make rename a compare-and-swap. */
 export async function writeText(root:RegisteredRoot,path:string,base:FileRevision,text:string,encoding:FileEncoding):Promise<FileText> {
-  const bytes = encodeFileText(text,encoding);
-  return withFileSnapshot(root,path,async snapshot=> {
+  const bytes = encodeFileText(text,encoding);let renamed = false;
+  try {return await withFileSnapshot(root,path,async snapshot=> {
     if (!sameFileRevision(snapshot.revision,base)) throw new ApiError('file_changed','The file changed on disk. Re-read it or keep editing the draft.',409,'read');
     if (!sameFileEncoding(fileSource(snapshot.text).encoding,encoding)) throw new ApiError('invalid_request','The file encoding does not match its disk revision.');
-    const parent = dirname(snapshot.target.path), temp = join(parent,`.ui-file-${randomUUID()}.tmp`);let handle:FileHandle|undefined, renamed = false;
+    const parent = dirname(snapshot.target.path), temp = join(parent,`.ui-file-${randomUUID()}.tmp`);let handle:FileHandle|undefined;
     try {
       handle = await open(temp,constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,0o600);
       await handle.writeFile(bytes);await handle.chmod(snapshot.info.mode & 0o7777);await handle.sync();await handle.close();handle = undefined;
@@ -119,7 +119,7 @@ export async function writeText(root:RegisteredRoot,path:string,base:FileRevisio
       const result = await readText(root,path);
       if (result.revision.digest !== digest(bytes)) changed();return result;
     } finally {await handle?.close();if (!renamed) await unlink(temp).catch(()=>{});}
-  });
+  });} catch (error) {if (renamed) throw fileIdentityUncertain();throw error;}
 }
 function kind(entry: {isDirectory():boolean;isFile():boolean;isSymbolicLink():boolean}): FileEntry['kind'] {return entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other';}
 function compare(a:FileEntry,b:FileEntry) {return Number(b.kind === 'directory') - Number(a.kind === 'directory') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);}

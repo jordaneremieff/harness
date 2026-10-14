@@ -27,5 +27,5 @@ test('native Trash reports success and retains a recoverable file and directory'
   const folder = `${basename(directory)}-folder`;await mkdir(join(directory,folder));await writeFile(join(directory,folder,'nested.md'),'nested');
   await trashFileEntry(root,folder);const trashedFolder = join(homedir(),'.Trash',folder);assert.equal(await readFile(join(trashedFolder,'nested.md'),'utf8'),'nested');
   await nativeFileOperation('move',trashedFolder,join(directory,'recovered-folder'));
-  await assert.rejects(nativeFileOperation('trash',join(directory,'missing')),{code:'file_unavailable'});
+  await assert.rejects(nativeFileOperation('trash',join(directory,'missing')),{code:'file_identity_uncertain',retry:'manual'});
 });

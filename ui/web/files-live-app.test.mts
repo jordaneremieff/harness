@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {app,arrive,event,settle,byId,hostDocument,type HostNode} from './app-fixture.mts';
+import {app,arrive,event,settle,byId,hostDocument,type HostNode,transportLog} from './app-fixture.mts';
 import {createPaneLayout} from './pane-layout.ts';
 import {movedWorkspaceFiles} from './file-identity.ts';
 import type {FileTab} from '../shared/api.ts';
@@ -35,6 +35,9 @@ function files(context:test.TestContext) {
   };
   return {disk,failDraft(text:string,code:typeof failedCode = 'file_missing') {failedText = text;failedCode = code;},change(path:string,text:string) {disk.set(path,text);clock++;event('files.changed',{rootId:'root',directories:[''],files:[path],rescan:false,watch:'live'});}};
 }
+test('watch PUTs use the page scope ID and ready resends the full current scope',async context=> {
+  files(context);await arrive({workspace:{id:'page-watch',revision:1,conversationLayout:createPaneLayout([])},primaries:[],roster:[],targets:[]});await settle();const puts = ()=>transportLog.filter(call=>call.method === 'PUT' && call.path.endsWith('/files/watch'));const before = puts().length;assert.equal((puts().at(-1)?.body as {clientId:string})?.clientId,app.fileWatch.clientId);event('ready',{bootId:'boot'});await settle();assert.equal(puts().length,before + 1,JSON.stringify(puts().slice(before).map(call=>call.body)));assert.deepEqual(puts().at(-1)?.body,{clientId:app.fileWatch.clientId,roots:[{rootId:'root',files:[],directories:['']}]});
+});
 test('live file events refresh clean source, preserve typed draft, and place unavailable state only in the bottom line',async context=> {
   const fixture = files(context),tab:FileTab = {kind:'file',rootId:'root',path:'note.md'};await arrive({workspace:{id:'live-files',revision:1,conversationLayout:createPaneLayout([tab])},primaries:[],roster:[],targets:[]});const workspace = app.state.workspace;assert.ok(workspace);const view = app.filesViews.view(workspace,tab);await view.owner.load();await settle();const editor = view.editor;assert.ok(editor);
   fixture.change('note.md','# External');await settle();assert.equal(editor.value,'# External');editor.value = '# Local';(editor as unknown as HostNode).dispatch('input');fixture.change('note.md','# Another');await settle();assert.equal(editor.value,'# Local');assert.equal(view.owner.conflict,true);assert.match(byId('workbench-activity').textContent,/changed on disk/);

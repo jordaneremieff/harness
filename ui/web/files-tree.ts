@@ -1,6 +1,6 @@
 import type {FileDirectoryPage, FileEntry, FileRoot} from '../shared/files.ts';
 import {cardIcon} from './card-icons.ts';
-import {element, placeRetained} from './dom.ts';
+import {element, placeRetained, setText} from './dom.ts';
 import {contextMenu, nativeEditingTarget} from './context-menu.ts';
 import {movedFilePath, type FileMove} from './file-identity.ts';
 
@@ -47,7 +47,12 @@ export class FilesTree {
   remap(move:FileMove):void {
     if (move.rootId !== this.root?.id) return;
     for (const [path,directory] of [...this.directories]) {const next = movedFilePath(path,move);directory.entries = directory.entries.map(entry=> {const path = movedFilePath(entry.path,move);return path === entry.path ? entry : {...entry,path,name:path.split('/').at(-1) ?? entry.name};});if (next !== path) {this.directories.delete(path);this.directories.set(next,directory);}}
-    if (this.selected) this.selected = movedFilePath(this.selected,move);this.buttons.clear();this.paint();this.hooks.scope?.();
+    if (this.selected) this.selected = movedFilePath(this.selected,move);this.remapButtons(move);this.paint();this.hooks.scope?.();
+  }
+  private remapButtons(move:FileMove):void {
+    const buttons = [...this.buttons];this.buttons.clear();
+    for (const [path,button] of buttons) if (movedFilePath(path,move) === path) this.buttons.set(path,button);
+    for (const [path,button] of buttons) {const next = movedFilePath(path,move);if (next === path) continue;button.dataset.path = next;this.buttons.set(next,button);}
   }
   reveal(rootId:string,parent:string,path?:string):void {
     if (rootId !== this.root?.id) return;
@@ -100,6 +105,7 @@ export class FilesTree {
   private rowButton(entry: FileEntry): HTMLButtonElement {
     const existing = this.buttons.get(entry.path); if (existing) return existing;
     const button = element('button', 'file-row'); button.type = 'button'; button.dataset.path = entry.path;
+    const disclosure = cardIcon('chevron');disclosure.classList.add('file-disclosure');button.append(disclosure,cardIcon(entry.kind === 'directory' ? 'folder' : 'file'),element('span','file-name',entry.name));
     this.buttons.set(entry.path, button); button.addEventListener('click', () => {const current = this.entry(button.dataset.path ?? '');if (current) this.choose(current);});button.addEventListener('dblclick',()=> {const current = this.entry(button.dataset.path ?? '');if (current?.kind === 'file' && this.root) this.hooks.keep?.(this.root.id,current.path);}); return button;
   }
   private paintRow({entry, depth}: FileTreeRow, tabStop?: string): HTMLButtonElement {
@@ -109,8 +115,12 @@ export class FilesTree {
     button.disabled = entry.kind === 'other' || entry.kind === 'symlink';
     const expanded = this.directories.get(entry.path)?.expanded ?? false;
     if (entry.kind === 'directory') button.setAttribute('aria-expanded', String(expanded)); else button.removeAttribute('aria-expanded');
-    const disclosure = cardIcon('chevron'); disclosure.classList.add('file-disclosure'); if (entry.kind !== 'directory') disclosure.setAttribute('data-hidden', 'true'); disclosure.dataset.expanded = String(expanded);
-    button.replaceChildren(disclosure, cardIcon(entry.kind === 'directory' ? 'folder' : 'file'), element('span', 'file-name', entry.name)); return button;
+    const disclosure = button.children[0] as SVGSVGElement;disclosure.dataset.hidden = String(entry.kind !== 'directory');disclosure.dataset.expanded = String(expanded);
+    this.paintRowIcon(button.children[1] as SVGSVGElement,entry.kind === 'directory' ? 'folder' : 'file');setText(button.children[2] as HTMLElement,entry.name);return button;
+  }
+  private paintRowIcon(icon:SVGSVGElement,name:'file'|'folder'):void {
+    if (icon.classList.contains(`card-icon-${name}`)) return;
+    const next = cardIcon(name);icon.setAttribute('class',next.getAttribute('class') ?? '');icon.querySelector('path')?.setAttribute('d',next.querySelector('path')?.getAttribute('d') ?? '');
   }
   private directoryStatus(path: string, directory: Directory, depth: number): HTMLElement[] {
     const children: HTMLElement[] = []; if (!directory.expanded) return children;

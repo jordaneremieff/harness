@@ -70,7 +70,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
   let startupHttp:LocalHttp|undefined;
   let files:Files|undefined;
   try {
-    files = await Files.open(stateDir);
+    files = await Files.open(stateDir,()=>registry.fileIdentityFailed());
     files.observe((change,workspace)=>registry.journal.publish('files.changed',undefined,change,workspace));
     await registry.validatePath(options.cwd,true);
     const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics,identity,files});startupHttp=http;

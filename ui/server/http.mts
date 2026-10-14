@@ -10,7 +10,7 @@ import { IMAGE_BYTES, ImageResponse } from './images.mts';
 import { isImageRoute } from './image-request.mts';
 import type { Journal } from './journal.mts';
 import {FileResponse, type Files} from './files.mts';
-import {dispatchFiles, isFileRoute} from './routes-files.mts';
+import {dispatchFiles, isFileRoute,fileWatchClientId} from './routes-files.mts';
 import { SessionStore, validateSessionProject } from './sessions.mts';
 import type { AssetGenerations } from './asset-generations.mts';
 import type { DiagnosticSink } from './diagnostics.mts';
@@ -25,7 +25,8 @@ export type ImageUploadHeaders = {mimeType: 'image/png' | 'image/jpeg'; declared
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
   uploadImage?(context: ImageUploadContext, headers: ImageUploadHeaders, body: AsyncIterable<Uint8Array>): Promise<unknown>;
   workspace(id?: string): Promise<string>; observe(workspace: string): Promise<void>; detached(workspace: string): void;
-  moveFiles?(rootId:string,from:string,to:string,work:()=>Promise<import('../shared/files.ts').FileMutation>):Promise<import('../shared/files.ts').FileMutation>};
+  moveFiles?(rootId:string,from:string,to:string,work:()=>Promise<import('../shared/files.ts').FileMutation>):Promise<import('../shared/files.ts').FileMutation>;
+  createFiles?(rootId:string,path:string,work:()=>Promise<import('../shared/files.ts').FileMutation>):Promise<import('../shared/files.ts').FileMutation>};
 export type Asset = {type: string; data: Buffer};
 export const ASSET_FILE_BYTES = 2 * 1024 * 1024;
 export const ASSET_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -371,13 +372,15 @@ export class LocalHttp {
   }
   private async events(request: IncomingMessage, response: ServerResponse, url: URL, session: string) {
     const workspace = await this.backend.workspace(url.searchParams.get('workspace') ?? undefined);
-    if (this.backend.journal.workspaceClients(workspace) >= 8) throw new ApiError('capacity', 'Too many event streams use this workspace.', 429);
+    const rawClient = url.searchParams.get('clientId'),clientId = rawClient === null ? undefined : fileWatchClientId(rawClient);
+    if (url.searchParams.getAll('clientId').length > 1) throw new ApiError('invalid_request','The page scope repeats.');
+    if (this.backend.journal.workspaceClients(workspace) >= LIMITS.eventClients && !(clientId && this.backend.journal.hasClient(workspace,session,clientId))) throw new ApiError('capacity', 'Too many event streams use this workspace.', 429);
     const last = request.headers['last-event-id'];
     if (Array.isArray(last)) throw new ApiError('invalid_request', 'The replay cursor is invalid.');
     this.backend.journal.attach(response, workspace, session, last ?? url.searchParams.get('after') ?? undefined, () => {
       this.backend.detached(workspace);
-      if (!this.backend.journal.workspaceClients(workspace)) void this.development.files?.request({kind:'unwatch',workspace}).catch(()=>{});
-    });
+      if (clientId) this.development.files?.releaseWatch(workspace,clientId);
+    },clientId);
     if (this.backend.journal.workspaceClients(workspace)) void this.backend.observe(workspace).catch(() => {
       this.backend.journal.publish('notice', undefined, {level: 'warning', message: 'The selected agent observation is unavailable.'}, workspace);
     });

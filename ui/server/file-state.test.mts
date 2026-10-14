@@ -72,11 +72,11 @@ test('post-rename persistence failure retains the draft and poisons mutations un
   const draft = await state.putDraft(root.id,'note.md',0,source.revision,'saved bytes',fileSource(source.text).encoding);
   const destination = join(path,'state','file-drafts.json'), before = await readFile(destination);
   context.mock.method(state as unknown as {persist(...args:unknown[]):Promise<void>},'persist',async()=> {throw new Error('forced persistence failure');});
-  await assert.rejects(state.saveDraft(root.id,'note.md',draft.revision),/forced persistence failure/);
+  await assert.rejects(state.saveDraft(root.id,'note.md',draft.revision),{code:'file_identity_uncertain',retry:'manual'});
   assert.equal(await readFile(file,'utf8'),'saved bytes');assert.deepEqual(state.draft(root.id,'note.md').draft,draft);assert.deepEqual(await readFile(destination),before);
-  await assert.rejects(state.saveDraft(root.id,'note.md',draft.revision),{code:'not_ready'});
-  await assert.rejects(state.putDraft(root.id,'note.md',draft.revision,source.revision,'new',draft.encoding),{code:'not_ready'});
-  await assert.rejects(state.select(workspace,join(path,'project'),1),{code:'not_ready'});
+  await assert.rejects(state.saveDraft(root.id,'note.md',draft.revision),{code:'file_identity_uncertain'});
+  await assert.rejects(state.putDraft(root.id,'note.md',draft.revision,source.revision,'new',draft.encoding),{code:'file_identity_uncertain'});
+  await assert.rejects(state.select(workspace,join(path,'project'),1),{code:'file_identity_uncertain'});
   const reopened = new FileState(join(path,'state'));await reopened.load();assert.deepEqual(reopened.draft(root.id,'note.md').draft,draft);
   await assert.rejects(reopened.saveDraft(root.id,'note.md',draft.revision),{code:'file_changed'});
   assert.equal(await readFile(file,'utf8'),'saved bytes');

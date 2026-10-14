@@ -58,6 +58,12 @@ test('event receipt carries a monotonic timestamp without a global receive mark'
     assert.equal(lost, 0); assert.equal(performance.getEntriesByName('ui:event:receive').length, count);
   } finally {if (original) Object.defineProperty(globalThis, 'EventSource', original); else Reflect.deleteProperty(globalThis, 'EventSource');}
 });
+test('event connections preserve the supplied page scope across reconnects and workspace changes',t=> {
+  const previous = Object.getOwnPropertyDescriptor(globalThis,'EventSource'),urls:string[] = [];class Source {constructor(url:string) {urls.push(url);}addEventListener() {}close() {}}
+  Object.defineProperty(globalThis,'EventSource',{configurable:true,value:Source});t.after(()=> {if (previous) Object.defineProperty(globalThis,'EventSource',previous);else Reflect.deleteProperty(globalThis,'EventSource');});const clientId = crypto.randomUUID();
+  connect('one','first',()=>{},()=>{},clientId);connect('one','second',()=>{},()=>{},clientId);connect('two','next',()=>{},()=>{},clientId);connect('other','plain',()=>{},()=>{});
+  assert.deepEqual(urls.map(url=>new URL(url,'http://fixture').searchParams.get('clientId')),[clientId,clientId,clientId,null]);assert.deepEqual(urls.map(url=>new URL(url,'http://fixture').searchParams.get('workspace')),['one','one','two','other']);
+});
 test('later draft and control refusals report access without replacing the typed error or retrying', async () => {
   for (const [path, method] of [['/api/workspaces/w/drafts', 'PUT'], ['/api/primaries/p/control', 'POST']]) {
     let notified: ApiError | undefined; let calls = 0; let reports = 0;

@@ -30,7 +30,7 @@ export class StateError extends Error {
   readonly details?: unknown;
   constructor(code: string, message: string, status = 400, details?: unknown) {
     super(message); this.code = code; this.status = status; this.details = details;
-    this.name = 'StateError'; this.retry = ['stale_revision', 'file_changed', 'unknown_image_digest', 'image_unavailable', 'queue_recovery_guard', 'queue_recovery_provenance'].includes(code) ? 'read' : code === 'capacity' ? 'manual' : 'none';
+    this.name = 'StateError'; this.retry = ['stale_revision', 'file_changed', 'unknown_image_digest', 'image_unavailable', 'queue_recovery_guard', 'queue_recovery_provenance'].includes(code) ? 'read' : ['capacity','file_identity_uncertain'].includes(code) ? 'manual' : 'none';
   }
 }
 export function sameTarget(a?: Target, b?: Target): boolean {
@@ -211,7 +211,8 @@ export class StateStore {
   private readonly refusedOperations = new Set<string>();
   private refusedOperationBytes = 0;
   private workspaces = new Map<string, Workspace>();
-  private fileIdentityFailure = false;
+  private fileIdentity:'ready'|'pending'|'uncertain' = 'ready';
+  private fileDeadlineMs:number = LIMITS.fileReadMs;
   private targetRecords = new Map<string, StoredTarget>();
   private operationRecords = new Map<string, OperationRecord>();
   private operationBytes = 0;
@@ -225,8 +226,8 @@ export class StateStore {
   private readonly now: () => number;
   private constructor(root: string, onChange?: ChangeHook, now: () => number = Date.now) { this.root = resolve(root); this.onChange = onChange; this.now = now; }
 
-  static async open(root: string, options: {recoverDeadLock?: boolean; onChange?: ChangeHook; now?: () => number} = {}): Promise<StateStore> {
-    const store = new StateStore(root, options.onChange, options.now);
+  static async open(root: string, options: {recoverDeadLock?: boolean; onChange?: ChangeHook; now?: () => number; fileDeadlineMs?:number} = {}): Promise<StateStore> {
+    const store = new StateStore(root, options.onChange, options.now);store.fileDeadlineMs = options.fileDeadlineMs ?? LIMITS.fileReadMs;
     await mkdir(store.root, {recursive: true, mode: 0o700});
     const info = await lstat(store.root);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new StateError('not_ready', 'State root must be a private directory', 503);
@@ -399,23 +400,54 @@ export class StateStore {
     this.changed('workspace.changed', value, value.id); return structuredClone(value);
   }
   createWorkspace(): Promise<Workspace> { return this.transaction(() => this.createWorkspaceRecord()); }
-  /** Move admission shares workspace serialization, so old selection revisions cannot recreate old tabs. */
-  moveFiles(rootId:string,from:string,to:string,work:()=>Promise<FileMutation>):Promise<FileMutation> {
-    return this.transaction(async()=> {
-      if (this.fileIdentityFailure) throw new StateError('not_ready','File identities require a backend restart.',503);
-      const changed:Workspace[] = [];
-      for (const current of this.workspaces.values()) changed.push(movedWorkspace(current,rootId,from,to));
-      const result = await work();
-      try {for (const value of changed) await this.atomic(`workspaces/${value.id}.json`,value,LIMITS.requestBytes);}
-      catch {this.fileIdentityFailure = true;throw new StateError('file_unavailable','The file moved, but its workspace identity did not complete. Restart and inspect both paths.',503);}
-      this.changed('files.changed',{rootId,directories:[],files:[],rescan:true,watch:'live',move:{from,to,kind:result.kind}});
-      for (const value of changed) {this.workspaces.set(value.id,value);this.changed('workspace.changed',value,value.id);}
-      return result;
+  fileIdentityFailed():void {this.fileIdentity = 'uncertain';}
+  private requireFileIdentity():void {
+    if (this.fileIdentity === 'pending') throw new StateError('file_identity_busy','A file operation has not completed. Wait before another file or layout action.',503);
+    if (this.fileIdentity === 'uncertain') throw new StateError('file_identity_uncertain','A file operation did not confirm its identity. Restart the backend and inspect both paths before another action.',503);
+  }
+  moveFiles(rootId:string,from:string,to:string,work:()=>Promise<FileMutation>):Promise<FileMutation> {return this.fileEntry(rootId,to,work,from);}
+  createFiles(rootId:string,path:string,work:()=>Promise<FileMutation>):Promise<FileMutation> {return this.fileEntry(rootId,path,work);}
+  /** Only admission and publication use the state queue; external file I/O never owns it. */
+  private async fileEntry(rootId:string,to:string,work:()=>Promise<FileMutation>,from?:string):Promise<FileMutation> {
+    await this.transaction(async()=> {
+      this.requireFileIdentity();
+      for (const current of this.workspaces.values()) {
+        if (from !== undefined) movedWorkspace(current,rootId,from,to);
+        else if (current.conversationLayout) moveLayoutFiles(structuredClone(current.conversationLayout.root),rootId,'',to,new Map());
+      }
+      this.fileIdentity = 'pending';
     });
+    let timer:NodeJS.Timeout|undefined,confirmed = false;
+    try {
+      const deadline = new Promise<never>((_resolve,reject)=> {timer = setTimeout(()=>reject(new StateError('file_identity_uncertain','The file operation did not complete. Restart the backend and inspect both paths before another action.',503)),this.fileDeadlineMs);timer.unref();});
+      const result = await Promise.race([work(),deadline]);confirmed = true;
+      return await this.transaction(async()=> {
+        if (this.fileIdentity !== 'pending') throw new StateError('file_identity_uncertain','File identities require a backend restart and inspection.',503);
+        if (from !== undefined) {
+          const changed = await this.persistMovedWorkspaces(rootId,from,to);
+          if (this.fileIdentity !== 'pending') throw new StateError('file_identity_uncertain','File identities changed during workspace publication. Restart the backend and inspect both paths.',503);
+          this.changed('files.changed',{rootId,directories:[],files:[],rescan:true,watch:'live',move:{from,to,kind:result.kind}});
+          for (const value of changed) {this.workspaces.set(value.id,value);this.changed('workspace.changed',value,value.id);}
+        }
+        this.fileIdentity = 'ready';return result;
+      });
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+      const uncertain = this.fileIdentity === 'uncertain' || confirmed || code === 'file_identity_uncertain' || typeof code !== 'string';
+      this.fileIdentity = uncertain ? 'uncertain' : 'ready';
+      if (uncertain && code !== 'file_identity_uncertain') throw new StateError('file_identity_uncertain','The file operation did not confirm its complete identity. Restart the backend and inspect both paths.',503);
+      throw error;
+    } finally {clearTimeout(timer);}
+  }
+  private async persistMovedWorkspaces(rootId:string,from:string,to:string) {
+    const changed = [...this.workspaces.values()].map(current=>movedWorkspace(current,rootId,from,to));
+    try {for (const value of changed) await this.atomic(`workspaces/${value.id}.json`,value,LIMITS.requestBytes);}
+    catch {throw new StateError('file_identity_uncertain','The file moved, but its workspace identity did not complete. Restart the backend and inspect both paths.',503);}
+    return changed;
   }
   updateSelection(id: string, input: SelectionInput): Promise<Workspace> {
     return this.transaction(async () => {
-      if (this.fileIdentityFailure) throw new StateError('not_ready','File identities require a backend restart.',503);
+      if (this.fileIdentity === 'uncertain' || input.conversationLayout !== undefined || input.filePositions !== undefined) this.requireFileIdentity();
       const current = this.requireWorkspace(id); revision(current.revision, input.expectedRevision, current);
       validateSelection(input);
       const value = selectedWorkspace(current, input);

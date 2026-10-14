@@ -10,16 +10,21 @@ import {Journal} from './journal.mts';
 import {nativeFileOperation} from './file-operations.mts';
 import {workspaceTabKey} from '../shared/api.ts';
 import {fileSource,type FileRootSelection,type FileText,type FileDraft,type FileWatchState,type FileChanges} from '../shared/files.ts';
+async function streamReady(response:Response):Promise<void> {
+  assert.equal(response.status,200);const reader = response.body?.getReader();assert.ok(reader);let text = '';
+  try {for (let count = 0;count < 8;count++) {const chunk = await reader.read();if (chunk.done) break;text += new TextDecoder().decode(chunk.value);assert.ok(text.length < 16384);if (text.includes('event: ready')) return;}throw new Error('No stream ready event.');} finally {reader.releaseLock();}
+}
 test('authenticated tree operations publish remaps before workspace changes and deliver live scoped hints',{timeout:15000},async context=> {
   const directory = await mkdtemp(join(tmpdir(),'ui-files-tree-http-')),stateDir = join(directory,'state'),project = join(directory,'project');await mkdir(stateDir);await mkdir(project);
   const journal = new Journal(),store = await StateStore.open(stateDir,{onChange:(name,data,workspace,target)=>journal.publish(name,target,data,workspace)}),workspace = (await store.workspace()).id,files = await Files.open(stateDir);
   files.observe((change,workspace)=>journal.publish('files.changed',undefined,change,workspace));
-  const http = new LocalHttp({journal,workspace:async (id=workspace)=>(await store.workspace(id)).id,observe:async()=>{},detached:()=>{},dispatch:async()=>({}),moveFiles:(rootId,from,to,work)=>store.moveFiles(rootId,from,to,work)},new Map(),undefined,{files});
+  const http = new LocalHttp({journal,workspace:async (id=workspace)=>(await store.workspace(id)).id,observe:async()=>{},detached:()=>{},dispatch:async()=>({}),moveFiles:(rootId,from,to,work)=>store.moveFiles(rootId,from,to,work),createFiles:(rootId,path,work)=>store.createFiles(rootId,path,work)},new Map(),undefined,{files});
   const launch = new URL(await http.listen(0)),origin = launch.origin;context.after(async()=> {await http.close();await files.close();await store.close();await rm(directory,{recursive:true,force:true});});let cookie = '';
   const call = (route:string,method = 'GET',body?:unknown)=>fetch(new URL(route,origin),{method,headers:{Origin:origin,...(cookie ? {Cookie:cookie} : {}),...(body === undefined ? {} : {'Content-Type':'application/json'})},...(body === undefined ? {} : {body:JSON.stringify(body)})});
   const login = await call('/api/auth/launch','POST',{capability:new URLSearchParams(launch.hash.slice(1)).get('launch')});const header = login.headers.get('set-cookie');assert.ok(header);const sessionCookie = header.split(';')[0];assert.ok(sessionCookie);cookie = sessionCookie;
   const selected = (await (await call(`/api/workspaces/${workspace}/files/root`,'PUT',{path:project,expectedRevision:0})).json() as {data:FileRootSelection}).data;assert.ok(selected.root);const rootId = selected.root.id,base = `/api/files/roots/${rootId}`,query = `workspace=${workspace}`;
-  const watchRoute = `/api/workspaces/${workspace}/files/watch`;const watched = await call(watchRoute,'PUT',{roots:[{rootId,directories:[''],files:[]}]});assert.equal(watched.status,200);assert.equal((await watched.json() as {data:FileWatchState}).data.roots[0]?.watch,'live');
+  const clientId = '00000000-0000-4000-8000-000000000001';await streamReady(await call(`/api/events?workspace=${workspace}&after=${journal.cursor}&clientId=${clientId}`));
+  const watchRoute = `/api/workspaces/${workspace}/files/watch`;const watched = await call(watchRoute,'PUT',{clientId,roots:[{rootId,directories:[''],files:[]}]});assert.equal(watched.status,200);assert.equal((await watched.json() as {data:FileWatchState}).data.roots[0]?.watch,'live');
   assert.equal((await call(`${base}/entries?${query}`,'POST',{path:'folder',kind:'directory'})).status,200);assert.equal((await call(`${base}/entries?${query}`,'POST',{path:'folder/note.md',kind:'file'})).status,200);
   assert.equal((await call(`${base}/entries?${query}`,'POST',{path:'folder/note.md',kind:'file'})).status,409);
   assert.equal((await call(`${base}/entries?${query}`,'POST',{path:'../escape',kind:'file'})).status,400);assert.equal((await call(watchRoute,'PUT',{roots:[],unknown:true})).status,400);
@@ -30,16 +35,37 @@ test('authenticated tree operations publish remaps before workspace changes and 
   const records = journal.replay(cursor,workspace).records,identity = records.findIndex(record=>record.name === 'files.changed' && 'move' in record.envelope.data),changed = records.findIndex(record=>record.name === 'workspace.changed');assert.ok(identity >= 0 && changed > identity);
   assert.equal((await call(`${base}/draft?${query}&path=folder/note.md`,'PUT',{expectedRevision:draft.revision,base:source.revision,text:'ghost',encoding:fileSource(source.text).encoding})).status,409);
   assert.equal((await (await call(`${base}/draft?${query}&path=renamed/note.md`)).json() as {data:{draft:FileDraft}}).data.draft.text,'unsaved');
-  await call(watchRoute,'PUT',{roots:[{rootId,directories:['','renamed'],files:['renamed/note.md']}]});
+  await call(watchRoute,'PUT',{clientId,roots:[{rootId,directories:['','renamed'],files:['renamed/note.md']}]});
   let resolveChange!:(change:FileChanges)=>void;const changedFile = new Promise<FileChanges>(resolve=> {resolveChange = resolve;});const stop = files.observe(change=> {if (change.files.includes('renamed/note.md')) resolveChange(change);});
   const guard = setTimeout(()=>resolveChange({rootId,directories:[],files:[],rescan:false,watch:'unavailable'}),5000);
   await writeFile(join(project,'renamed','note.md'),'external');const hint = await changedFile;clearTimeout(guard);stop();assert.deepEqual(hint.files,['renamed/note.md']);assert.equal(hint.move,undefined);
   assert.equal((await (await call(`${base}/text?${query}&path=renamed/note.md`)).json() as {data:FileText}).data.text,'external');
   const other = await store.createWorkspace(),otherWatch = `/api/workspaces/${other.id}/files/watch`;
-  await call(otherWatch,'PUT',{roots:[{rootId,directories:[],files:['protected.md']}]});const refusedCursor = journal.cursor,revision = (await store.workspace(workspace)).revision;
+  await streamReady(await call(`/api/events?workspace=${other.id}&after=${journal.cursor}&clientId=${clientId}`));await call(otherWatch,'PUT',{clientId,roots:[{rootId,directories:[],files:['protected.md']}]});const refusedCursor = journal.cursor,revision = (await store.workspace(workspace)).revision;
   assert.equal((await call(`${base}/move?${query}`,'POST',{from:'renamed/note.md',to:'protected.md'})).status,409);assert.equal(await readFile(join(project,'renamed','note.md'),'utf8'),'external');assert.equal((await store.workspace(workspace)).revision,revision);
-  assert.ok(!journal.replay(refusedCursor,workspace).records.some(record=>record.name === 'workspace.changed' || record.name === 'files.changed' && 'move' in record.envelope.data));await call(otherWatch,'PUT',{roots:[]});
+  assert.ok(!journal.replay(refusedCursor,workspace).records.some(record=>record.name === 'workspace.changed' || record.name === 'files.changed' && 'move' in record.envelope.data));await call(otherWatch,'PUT',{clientId,roots:[]});
   const trashName = `${basename(directory)}-trash.md`;await call(`${base}/entries?${query}`,'POST',{path:trashName,kind:'file'});await writeFile(join(project,trashName),'trash retained');assert.equal((await call(`${base}/entry?${query}&path=${trashName}`,'DELETE')).status,200);
   const trashed = join(homedir(),'.Trash',trashName);assert.equal(await readFile(trashed,'utf8'),'trash retained');await nativeFileOperation('move',trashed,join(project,'recovered.md'));
-  assert.equal((await call(watchRoute,'PUT',{roots:[]})).status,200);assert.deepEqual((await (await call(watchRoute)).json() as {data:FileWatchState}).data,{roots:[]});
+  assert.equal((await call(watchRoute,'PUT',{clientId,roots:[]})).status,200);assert.deepEqual((await (await call(`${watchRoute}?clientId=${clientId}`)).json() as {data:FileWatchState}).data,{roots:[]});
+});
+test('watch scopes bind to live page streams and survive another page close or reconnect',{timeout:15000},async context=> {
+  const directory = await mkdtemp(join(tmpdir(),'ui-page-scopes-')),stateDir = join(directory,'state'),project = join(directory,'project');await mkdir(stateDir);await mkdir(project);await mkdir(join(project,'visible'));await mkdir(join(project,'hidden'));
+  const journal = new Journal(),store = await StateStore.open(stateDir),workspace = (await store.workspace()).id,files = await Files.open(stateDir,()=>store.fileIdentityFailed());let detached:(()=>void)|undefined;
+  const http = new LocalHttp({journal,workspace:async(id=workspace)=>(await store.workspace(id)).id,observe:async()=>{},detached:()=> {detached?.();detached = undefined;},dispatch:async()=>({}),moveFiles:(rootId,from,to,work)=>store.moveFiles(rootId,from,to,work),createFiles:(rootId,path,work)=>store.createFiles(rootId,path,work)},new Map(),undefined,{files});
+  context.after(async()=> {await http.close();await files.close();await store.close();await rm(directory,{recursive:true,force:true});});const launch = new URL(await http.listen(0)),origin = launch.origin;let cookie = '';
+  const call = (route:string,method = 'GET',body?:unknown)=>fetch(new URL(route,origin),{method,headers:{Origin:origin,...(cookie ? {Cookie:cookie} : {}),...(body === undefined ? {} : {'Content-Type':'application/json'})},...(body === undefined ? {} : {body:JSON.stringify(body)})});
+  const login = await call('/api/auth/launch','POST',{capability:new URLSearchParams(launch.hash.slice(1)).get('launch')});cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';assert.ok(cookie);
+  const selected = (await (await call(`/api/workspaces/${workspace}/files/root`,'PUT',{path:project,expectedRevision:0})).json() as {data:FileRootSelection}).data;assert.ok(selected.root);const rootId = selected.root.id,route = `/api/workspaces/${workspace}/files/watch`,one = '00000000-0000-4000-8000-000000000001',two = '00000000-0000-4000-8000-000000000002';
+  const scope = (clientId:string,path:string)=>({clientId,roots:[{rootId,directories:[path],files:[`${path}/open.md`]}]});
+  assert.equal((await call(route,'PUT',scope(one,'visible'))).status,503);assert.equal((await call(route,'PUT',{clientId:'bad',roots:[]})).status,400);
+  const stream = (clientId:string)=>call(`/api/events?workspace=${workspace}&after=${journal.cursor}&clientId=${clientId}`);
+  const first = await stream(one);await streamReady(first);const second = await stream(two);await streamReady(second);
+  assert.equal((await call(route,'PUT',scope(one,'visible'))).status,200);assert.equal((await call(route,'PUT',scope(two,'hidden'))).status,200);
+  for (const clientId of [one,two]) assert.equal((await (await call(`${route}?clientId=${clientId}`)).json() as {data:FileWatchState}).data.roots[0]?.watch,'live');
+  const blocked = await files.request({kind:'move',rootId,from:'absent',to:'visible/open.md'});assert.equal(blocked.status,409);assert.match(blocked.json,/open file identity/);
+  const left = new Promise<void>(resolve=> {detached = resolve;});await first.body?.cancel();await left;
+  assert.equal((await files.request({kind:'watch-state',workspace,clientId:one})).json,'{"ok":true,"data":{"roots":[]}}');assert.equal((await (await call(`${route}?clientId=${two}`)).json() as {data:FileWatchState}).data.roots[0]?.watch,'live');assert.equal((await call(route,'PUT',scope(one,'visible'))).status,503);
+  const reconnected = await stream(one);await streamReady(reconnected);assert.deepEqual((await (await call(`${route}?clientId=${one}`)).json() as {data:FileWatchState}).data,{roots:[]});assert.equal((await call(route,'PUT',scope(one,'visible'))).status,200);
+  const duplicate = await stream(one);await streamReady(duplicate);assert.equal(journal.workspaceClients(workspace),2);assert.deepEqual((await (await call(`${route}?clientId=${one}`)).json() as {data:FileWatchState}).data,{roots:[]});assert.equal((await call(route,'PUT',scope(one,'visible'))).status,200);
+  await call(route,'PUT',{clientId:two,roots:[]});assert.deepEqual((await (await call(`${route}?clientId=${two}`)).json() as {data:FileWatchState}).data,{roots:[]});assert.equal((await (await call(`${route}?clientId=${one}`)).json() as {data:FileWatchState}).data.roots[0]?.watch,'live');
 });

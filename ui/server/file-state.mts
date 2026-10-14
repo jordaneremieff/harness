@@ -4,8 +4,9 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {LIMITS} from '../shared/api.ts';
 import {fileSource, sameFileEncoding, sameFileRevision, movedFilePath, type FileRootSelection, type FileDraft, type FileDraftState, type FileRevision, type FileSave, type FileEncoding, type FileMutation} from '../shared/files.ts';
-import {moveFileEntry} from './file-operations.mts';
-import {ApiError} from './errors.mts';
+import {moveFileEntry,createFileEntry,trashFileEntry} from './file-operations.mts';
+type EntryOperations = {move:typeof moveFileEntry;create:typeof createFileEntry;trash:typeof trashFileEntry};
+import {ApiError,fileIdentityUncertain} from './errors.mts';
 import {registerRoot, readText, writeText, filePath, type RegisteredRoot} from './file-access.mts';
 const STATE_BYTES = 2 * 1024 * 1024;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -50,7 +51,10 @@ export class FileState {
   private drafts:DraftData = {format:'ui.file-drafts/2',drafts:{}};
   private poisoned = false;
   readonly directory:string;
-  constructor(directory:string) {this.directory = directory;}
+  private operations:EntryOperations;
+  constructor(directory:string,operations:Partial<EntryOperations> = {}) {this.directory = directory;this.operations = {move:moveFileEntry,create:createFileEntry,trash:trashFileEntry,...operations};}
+  poisonIdentity():void {this.poisoned = true;}
+  private healthy():void {if (this.poisoned) throw fileIdentityUncertain();}
   async load() {
     const roots = await this.read('files.json');if (roots !== undefined) this.data = validate(roots as Data);
     const drafts = await this.read('file-drafts.json',LIMITS.fileResponseBytes);if (drafts !== undefined) this.drafts = validateDrafts(drafts as DraftData,this.data.roots);
@@ -77,7 +81,7 @@ export class FileState {
   }
   async select(workspace:string,path:string,expectedRevision:number):Promise<FileRootSelection> {
     if (!uuid.test(workspace) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new ApiError('invalid_request','The working-folder selection is invalid.');
-    if (this.poisoned) throw new ApiError('not_ready','File state requires a backend restart.',503,'manual');
+    this.healthy();
     const current = this.selection(workspace);
     if (expectedRevision !== current.revision) throw new ApiError('stale_revision','The working folder changed. Refresh it before retry.',409,'read');
     if (current.revision >= Number.MAX_SAFE_INTEGER) throw new ApiError('capacity','The working-folder revision bound is full.',429);
@@ -95,7 +99,7 @@ export class FileState {
     return structuredClone({revision:record?.revision ?? 0,draft:record?.text === undefined ? null : {...record,text:record.text}});
   }
   private currentDraft(rootId:string,path:string,expectedRevision:number):DraftRecord|undefined {
-    if (this.poisoned) throw new ApiError('not_ready','File state requires a backend restart.',503,'manual');
+    this.healthy();
     this.root(rootId);const draft = this.drafts.drafts[draftKey(rootId,path)];
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== (draft?.revision ?? 0)) throw new ApiError('stale_revision','The file draft changed. Reload it before retry.',409,'read');
     if (expectedRevision >= Number.MAX_SAFE_INTEGER) throw new ApiError('capacity','The file draft revision bound is full.',429);
@@ -118,27 +122,36 @@ export class FileState {
     const next = structuredClone(this.drafts);next.drafts[draftKey(rootId,path)] = clean;
     // Reserve disk metadata growth before the project file changes.
     this.stateBytes(next,'file-drafts.json',64);
-    const source = current.text === undefined ? await readText(this.root(rootId),path) : await writeText(this.root(rootId),path,current.base,current.text,current.encoding);
+    const source = await this.entryWork(()=>current.text === undefined ? readText(this.root(rootId),path) : writeText(this.root(rootId),path,current.base,current.text,current.encoding));
     if (current.text === undefined && (!sameFileRevision(source.revision,current.base) || !sameFileEncoding(fileSource(source.text).encoding,current.encoding))) throw new ApiError('file_changed','The file changed on disk. Re-read it or keep editing the draft.',409,'read');
     clean.base = source.revision;
-    try {await this.persist(next,'file-drafts.json');this.drafts = next;} catch (error) {this.poisoned = true;throw error;}
+    try {await this.persist(next,'file-drafts.json');this.drafts = next;} catch {this.poisonIdentity();throw fileIdentityUncertain();}
     const draft:FileDraft = {...clean,text:current.text ?? fileSource(source.text).text};
     return structuredClone({source,draft});
   }
+  private assertDestination(rootId:string,to:string):void {
+    this.healthy();this.root(rootId);filePath(to,false);
+    for (const key of Object.keys(this.drafts.drafts)) {const [id,path] = JSON.parse(key) as [string,string];if (id === rootId && (path === to || path.startsWith(`${to}/`))) throw new ApiError('file_changed','The destination has saved file state. Choose another name.',409,'read');}
+  }
+  private async entryWork<T>(work:()=>Promise<T>):Promise<T> {
+    this.healthy();try {return await work();} catch (error) {if (error instanceof ApiError && error.code === 'file_identity_uncertain') this.poisonIdentity();throw error;}
+  }
+  async create(rootId:string,path:string,kind:'file'|'directory'):Promise<FileMutation> {
+    this.assertDestination(rootId,path);return this.entryWork(()=>this.operations.create(this.root(rootId),path,kind));
+  }
+  async trash(rootId:string,path:string):Promise<FileMutation> {return this.entryWork(()=>this.operations.trash(this.root(rootId),path));}
   async move(rootId:string,from:string,to:string):Promise<FileMutation> {
-    if (this.poisoned) throw new ApiError('not_ready','File state requires a backend restart.',503,'manual');
+    this.assertDestination(rootId,to);
     filePath(from,false);filePath(to,false);const next = structuredClone(this.drafts);
     for (const [key,record] of Object.entries(this.drafts.drafts)) {
       const [id,path] = JSON.parse(key) as [string,string];if (id !== rootId) continue;
-      if (path === to || path.startsWith(`${to}/`)) throw new ApiError('file_changed','The destination has saved file state. Choose another name.',409,'read');
       const moved = movedFilePath(path,from,to);if (moved === path) continue;
       const destination = draftKey(rootId,moved);
-      if (Object.hasOwn(this.drafts.drafts,destination)) throw new ApiError('file_changed','The destination has a saved draft. Choose another name.',409,'read');
       delete next.drafts[key];next.drafts[destination] = record;
     }
     this.stateBytes(next,'file-drafts.json');
-    const result = await moveFileEntry(this.root(rootId),from,to);
-    try {await this.persist(next,'file-drafts.json');this.drafts = next;} catch {this.poisoned = true;throw new ApiError('file_unavailable','The file moved, but its saved identity did not complete. Restart and inspect both paths before another action.',503,'manual');}
+    const result = await this.entryWork(()=>this.operations.move(this.root(rootId),from,to));
+    try {await this.persist(next,'file-drafts.json');this.drafts = next;} catch {this.poisonIdentity();throw fileIdentityUncertain();}
     return result;
   }
   private stateBytes(data:Data|DraftData,name:string,reserve = 0):Buffer {
@@ -155,7 +168,7 @@ export class FileState {
       handle = await open(temp,'wx',0o600); await handle.writeFile(bytes); await handle.sync(); await handle.close(); handle = undefined;
       await rename(temp,destination); renamed = true;
       const directory = await open(this.directory,constants.O_RDONLY | constants.O_NOFOLLOW); try {await directory.sync();} finally {await directory.close();}
-    } catch (error) {if (renamed) this.poisoned = true; throw error;}
+    } catch (error) {if (renamed) {this.poisonIdentity();throw fileIdentityUncertain();}throw error;}
     finally {await handle?.close(); if (!renamed) await unlink(temp).catch(()=>{});}
   }
 }

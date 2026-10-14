@@ -12,6 +12,7 @@ export class ApiError extends Error {
   }
   view(): ErrorView { return {code: this.code, message: this.message, retry: this.retry, ...(this.details ? {details: this.details} : {})}; }
 }
+export function fileIdentityUncertain():ApiError {return new ApiError('file_identity_uncertain','The file operation did not confirm its outcome. The entry may have moved or changed. Restart the backend and inspect both paths before another action.',503,'manual');}
 export function errorView(error: unknown): ErrorView {
   if (error instanceof ApiError) return error.view();
   if(error instanceof StateError) return {code:error.code,message:safeText(error.message,512),retry:error.retry,...(error.details?{details:projectJson(error.details)}:{})};
