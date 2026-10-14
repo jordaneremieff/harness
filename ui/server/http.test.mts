@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AssetGeneration, AssetGenerations } from './asset-generations.mts';
 import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
-import { DevelopmentBuild } from './development-build.mts';
+import { captureInputs, compileBrowser, DevelopmentBuild } from './development-build.mts';
 import { Registry } from './registry.mts';
 import { Journal } from './journal.mts';
 import { access, chmod, mkdtemp, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises';
@@ -354,7 +354,7 @@ test('request rate accounting rejects the next request at a deterministic fixed 
   assert.equal(app.fake.counts.refresh, 1); assert.equal(app.registry.sessions.size, 0);
 });
 
-const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js'];
+const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js', 'dist/shared/files.js'];
 async function browserBuild(context: TestContext, emptyFiles = false) {
   const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));
   const apps: Awaited<ReturnType<typeof startBackend>>[] = [];
@@ -406,7 +406,7 @@ test('startup browser bytes survive overwrites and deletion; a fresh backend rea
   const {root, start} = await browserBuild(context); const extra = 'dist/web/extra-module.js';
   await writeFile(join(root, extra), Buffer.from([0, 255, 1, 127, 128]));
   const original = await assetMap(root);
-  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
+  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/files.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
   const app = await start(); const headers = await verifyBrowserBytes(app.origin, original);
   for (const path of [...requiredAssets, extra]) await writeFile(join(root, path), `Rebuilt ${path}`);
   assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
@@ -417,6 +417,19 @@ test('startup browser bytes survive overwrites and deletion; a fresh backend rea
   assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
   await verifyBrowserBytes(fresh.origin, rebuilt);
   await assert.rejects(assetMap(root), buildError('dist/web/app.js', 'missing'));
+});
+
+test('production routes retain every module in the compiled browser dependency graph', async context => {
+  const sourceRoot = fileURLToPath(new URL('../',import.meta.url)), inputs = await captureInputs(sourceRoot);
+  const generation = await compileBrowser(sourceRoot,inputs,async()=>{}), {root,start} = await browserBuild(context);
+  const modules = Object.keys(generation.manifest).filter(route=>route.endsWith('.js'));
+  for (const route of modules) {const asset = generation.asset(route);assert.ok(asset,route);await writeFile(join(root,`dist${route}`),asset.data);}
+  const assets = await assetMap(root);
+  for (const route of modules) assert.deepEqual(assets.get(route)?.data,generation.asset(route)?.data,route);
+  assert.match(assets.get('/web/file-owner.js')?.data.toString() ?? '',/from ['"]\.\.\/shared\/files\.js['"]/);
+  const app = await start();const response = await send(app.origin,'/shared/files.js');
+  assert.equal(response.status,200);assert.match(String(response.headers['content-type']),/^text\/javascript/);
+  assert.deepEqual(response.bytes,generation.asset('/shared/files.js')?.data);
 });
 
 test('missing browser builds reject before the backend creates its state directory or acquires a lock', async context => {
@@ -468,7 +481,7 @@ test('browser traversal ignores non-matching names and does not recurse', async 
   for (const name of ['bad.name.js', '.hidden.js', 'space name.js', 'note.txt', 'app.js.map', '雪.js']) await writeFile(join(root, 'dist/web', name), 'ignored');
   await mkdir(join(root, 'dist/web/nested')); await writeFile(join(root, 'dist/web/nested/valid.js'), 'ignored');
   await writeFile(join(root, 'dist/web/Valid_0-module.js'), 'routed');
-  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
+  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/files.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
 });
 
 test('browser startup rejects special build files without waiting on them', async context => {
@@ -496,7 +509,7 @@ test('malformed build directories name the path and the build command; other rea
 test('browser asset routes preserve method errors and Host, Origin, and fetch metadata validation', async context => {
   const {root, start} = await browserBuild(context); const app = await start();
   await verifyBrowserBytes(app.origin, await assetMap(root));
-  for (const path of ['/', '/style.css', '/favicon.svg', '/web/app.js', '/shared/api.js']) {
+  for (const path of ['/', '/style.css', '/favicon.svg', '/web/app.js', '/shared/api.js', '/shared/files.js']) {
     const post = await send(app.origin, path, 'POST', {}, {Origin: app.origin});
     assert.equal(post.status, 405); assert.equal(post.json?.ok, false);
     assert.equal(post.headers['content-type'], 'application/json; charset=utf-8');

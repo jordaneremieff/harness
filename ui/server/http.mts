@@ -84,6 +84,7 @@ export async function assetMap(root = fileURLToPath(new URL('../', import.meta.u
   for (const name of files) await add(`/web/${name}`, `dist/web/${name}`, MIME['.js']);
   await add('/shared/api.js', 'dist/shared/api.js', MIME['.js']);
   await add('/shared/version.js', 'dist/shared/version.js', MIME['.js']);
+  await add('/shared/files.js', 'dist/shared/files.js', MIME['.js']);
   return assets;
 }
 function matchRoute(method: string, parts: string[]) {
