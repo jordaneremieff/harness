@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {FileOwner} from './file-owner.ts';
 import {FileRootChoice} from './file-root.ts';
-import {fileSource, type FileText, type FileRootSelection, type FileDraft, type FileSave} from '../shared/files.ts';
+import {ApiError} from './transport.ts';
+import {fileSource, type FileText, type FileRootSelection, type FileDraft, type FileSave, type FileRevision} from '../shared/files.ts';
 function deferred<T>() {let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise = new Promise<T>((yes,no)=> {resolve=yes;reject=no;});return {promise,resolve,reject};}
 const text:FileText = {rootId:'r',path:'note.md',text:'\ufeffexact\r\nlast\r',revision:{size:20,mtimeMs:1,digest:'a'.repeat(64)}};
 test('source owner deduplicates reads, freezes exact source and refuses mismatched responses',async()=> {
@@ -30,14 +31,14 @@ test('refresh pauses input before draft drain and resumes only after both reads 
   assert.equal(owner.text,'draft');assert.equal(owner.acknowledged,'draft');assert.equal(owner.loading,false);owner.edit('new edit');assert.equal(owner.text,'new edit');owner.dispose();
 });
 test('draft acknowledgments and captured saves never replace newer native source',async()=> {
-  const disk:FileText = {...text,text:'base',revision:{...text.revision,size:4}}, saving = deferred<FileSave>(), puts:string[] = [];let revision = 0;
+  const disk:FileText = {...text,text:'base',revision:{...text.revision,size:4}}, saving = deferred<FileSave>(), puts:string[] = [],bases:FileRevision[] = [];let revision = 0;
   const owner = new FileOwner('w',{kind:'file',rootId:'r',path:'note.md'},async()=>disk,()=>{}, {
-    draft:async()=>({revision:0,draft:null}),put:async(_w,_tab,_revision,base,value,encoding)=> {puts.push(value);return {revision:++revision,base,encoding,text:value};},save:()=>saving.promise,
+    draft:async()=>({revision:0,draft:null}),put:async(_w,_tab,_revision,base,value,encoding)=> {puts.push(value);bases.push(base);return {revision:++revision,base,encoding,text:value};},save:()=>saving.promise,
   });
   await owner.load();owner.edit('captured');const work = owner.save();await new Promise(resolve=>setImmediate(resolve));assert.equal(owner.saving,true);
   owner.edit('newer');const source = {...disk,text:'captured',revision:{size:8,mtimeMs:2,digest:'b'.repeat(64)}};
   saving.resolve({source,draft:{revision:++revision,base:source.revision,encoding:fileSource(source.text).encoding,text:'captured'}});await work;await owner.drain();
-  assert.equal(owner.text,'newer');assert.equal(owner.acknowledged,'newer');assert.equal(owner.source?.text,'captured');assert.equal(owner.modified,true);assert.deepEqual(puts,['captured','newer']);owner.dispose();
+  assert.equal(owner.text,'newer');assert.equal(owner.acknowledged,'newer');assert.equal(owner.source?.text,'captured');assert.equal(owner.modified,true);assert.deepEqual(puts,['captured','newer']);assert.deepEqual(bases,[disk.revision,source.revision]);owner.dispose();
 });
 test('unload protection covers unacknowledged input, queued writes and errors but releases acknowledged drafts',async()=> {
   const disk = {...text,text:'base'}, writing = deferred<FileDraft>();let revision = 0;
@@ -51,7 +52,16 @@ test('unload protection covers unacknowledged input, queued writes and errors bu
   const saving = owner.save();assert.equal(owner.canDispose,false);await assert.rejects(saving,/save failed/);assert.equal(owner.canDispose,false);
   owner.dispose();
   const failed = new FileOwner('w',owner.tab,async()=>disk,()=>{}, {draft:async()=>({revision:0,draft:null}),put:async()=> {throw new Error('draft failed');},save:async()=> {throw new Error('unused');}});
-  await failed.load();failed.edit('unacknowledged');await assert.rejects(failed.drain(),/draft failed/);assert.equal(failed.canDispose,false);assert.match(failed.draftError ?? '',/draft failed/);failed.dispose();
+  await failed.load();failed.edit('unacknowledged');await assert.rejects(failed.drain(),/draft failed/);assert.equal(failed.canDispose,false);assert.match(failed.draftError ?? '',/draft failed/);assert.equal(failed.conflict,false);failed.dispose();
+});
+test('first draft refusal immediately exposes conflict and keeps newer local text without a passive read',async context=> {
+  const disk:FileText = {...text,text:'base'},writing = deferred<FileDraft>();let reads = 0;const revisions:number[] = [];
+  const owner = new FileOwner('w',{kind:'file',rootId:'r',path:'note.md'},async()=> {reads++;return disk;},()=>{}, {
+    draft:async()=>({revision:0,draft:null}),put:(_w,_tab,revision)=> {revisions.push(revision);return writing.promise;},save:async()=> {throw new Error('unused');}
+  });context.after(()=>owner.dispose());
+  await owner.load();const source = owner.source,encoding = owner.encoding;owner.edit('captured');const pending = owner.drain();await new Promise(resolve=>setImmediate(resolve));owner.edit('newer local text');
+  const refusal = new ApiError({code:'file_changed',message:'The disk identity no longer matches.'});writing.reject(refusal);await assert.rejects(pending,error=>error === refusal);
+  assert.deepEqual(revisions,[0]);assert.equal(reads,1);assert.equal(owner.conflict,true);assert.equal(owner.text,'newer local text');assert.equal(owner.acknowledged,'base');assert.equal(owner.source,source);assert.equal(owner.encoding,encoding);assert.equal(owner.replacement,0);assert.equal(owner.canDispose,false);assert.match(owner.status,/File changed on disk\. Local edits not saved\./);
 });
 test('read failures do not guard unload unless local text remains unacknowledged',async()=> {
   const unavailable = new FileOwner('w',{kind:'file',rootId:'r',path:'missing.md'},async()=> {throw new Error('read unavailable');},()=>{});

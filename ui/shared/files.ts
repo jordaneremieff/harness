@@ -10,6 +10,14 @@ export type FileEncoding = {bom: boolean; ending: 'lf' | 'crlf'; writable: boole
 export type FileDraft = {revision: number; base: FileRevision; encoding: FileEncoding; text: string};
 export type FileDraftState = {revision: number; draft: FileDraft | null};
 export type FileSave = {source: FileText; draft: FileDraft};
+export type FileWatchScope = {rootId:string; directories:string[]; files:string[]};
+export type FileWatchRootState = {rootId:string; watch:'live'|'unavailable'; reason?:string};
+export type FileWatchState = {roots:FileWatchRootState[]};
+export type FileMove = {from:string; to:string; kind:'file'|'directory'};
+export type FileChanges = {rootId:string; directories:string[]; files:string[]; rescan:boolean; watch:'live'|'unavailable'; reason?:string; move?:FileMove};
+export type FileMutation = {rootId:string; operation:'create'|'move'|'trash'; path:string; kind:'file'|'directory'; previousPath?:string};
+/** Descendants follow a directory move; unrelated prefixes remain unchanged. */
+export function movedFilePath(path:string,from:string,to:string):string {return path === from ? to : path.startsWith(`${from}/`) ? `${to}${path.slice(from.length)}` : path;}
 export function sameFileEncoding(a:FileEncoding,b:FileEncoding):boolean {return a.bom === b.bom && a.ending === b.ending && a.writable === b.writable;}
 export function sameFileRevision(a: FileRevision, b: FileRevision): boolean {return a.size === b.size && a.mtimeMs === b.mtimeMs && a.digest === b.digest;}
 /** Native textarea source excludes only the initial BOM and normalizes CRLF. */

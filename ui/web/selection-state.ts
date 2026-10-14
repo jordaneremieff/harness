@@ -1,5 +1,6 @@
 import type { EventData, TargetPreparation, Workspace } from '../shared/api.ts';
 import type { SelectionChange } from './actions.ts';
+import {movedWorkspaceFiles, type FileMove} from './file-identity.ts';
 export function navigationState(workspace: Workspace | undefined, narrow: boolean, drawerOpen = false): {sidebarVisible: boolean; agentSelected: boolean; editor: 'primary-editor' | 'agent-editor'} {
   const agentSelected = workspace?.selectedTarget?.kind === 'agent';
   return {sidebarVisible: narrow ? drawerOpen : workspace?.sidebarVisible !== false, agentSelected, editor: agentSelected ? 'agent-editor' : 'primary-editor'};
@@ -83,6 +84,12 @@ export class SelectionQueue {
     if (lane && this.hooks.current()?.id === workspaceId) this.hooks.paint(this.overlay(lane),lane.pending.size > 0);
   }
   observe(workspace:Workspace):Workspace {return this.overlay(this.lane(workspace));}
+  remapFiles(workspaceId:string,move:FileMove):Workspace|undefined {
+    const lane = this.lanes.get(workspaceId);if (!lane) return;
+    lane.committed = movedWorkspaceFiles(lane.committed,move);
+    for (const [id,change] of lane.pending) {const moved = movedWorkspaceFiles({id:workspaceId,revision:0,...change} as Workspace,move);lane.pending.set(id,{...change,...(change.conversationLayout ? {conversationLayout:moved.conversationLayout} : {}),...(change.filePositions ? {filePositions:moved.filePositions} : {})});}
+    return this.overlay(lane);
+  }
   private async failed(workspaceId:string,id:number,error:unknown):Promise<void> {
     const lane = this.lanes.get(workspaceId);if (!lane) return;
     lane.pending.delete(id);this.paint(workspaceId);
@@ -96,7 +103,7 @@ export class SelectionQueue {
     lane.pending.set(id,change);this.paint(workspaceId);
     const task = this.tail.then(async()=> {
       try {
-        const result = await this.hooks.save(lane.committed,change);
+        const result = await this.hooks.save(lane.committed,lane.pending.get(id) ?? change);
         if (result.id !== workspaceId) throw new Error('The saved workspace identity changed.');
         this.observe(result);
       } catch (error) {await this.failed(workspaceId,id,error);return;}

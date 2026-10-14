@@ -1,3 +1,4 @@
+import type {FileChanges} from './files.ts';
 /** Browser/backend contract. This module has no runtime or platform imports. */
 export const LIMITS = {
   requestBytes: 128 * 1024, textBytes: 64 * 1024, displayBytes: 256 * 1024,
@@ -19,6 +20,8 @@ export const LIMITS = {
   fileTextBytes: 1024 * 1024, fileResponseBytes: 6 * 1024 * 1024 + 64 * 1024,
   fileDirectoryEntries: 4096, fileScanBytes: 1024 * 1024, filePageItems: 200,
   fileRoots: 128, filePending: 16, fileReadMs: 15_000,
+  fileWatchDirectories: 128, fileWatchHandles: 256, fileWatchFiles: 512,
+  fileChangePaths: 128, fileChangeBytes: 32 * 1024, fileWatchCoalesceMs: 100,
 } as const;
 /** Exact target captured before dispatch. Epochs never transfer drafts. */
 export type Target = {kind: 'primary'; key: string; epoch: number} | {kind: 'agent'; identity: string};
@@ -209,6 +212,7 @@ export type EventData = {
   'agent.roster': {revision: number; changed: AgentRow[]; removed: string[]; scan: ScanView; observedAt?: string; stale: boolean};
   'agent.frame': {identity: string; connectionEpoch: number; frame: ProjectedFrame};
   'agent.availability': {identity: string; connectionEpoch: number; state: 'live' | 'stored' | 'unavailable' | 'incompatible'; reason?: string; capabilities: AgentCapabilities};
+  'files.changed': FileChanges;
   'workspace.changed': Workspace;
   'draft.changed': {targetKey: string; target: Target; draft: DraftView};
   'reading.changed': {targetKey: string; reading: ReadingView};

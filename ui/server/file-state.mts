@@ -3,7 +3,8 @@ import {open, rename, unlink, lstat, type FileHandle} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {LIMITS} from '../shared/api.ts';
-import {fileSource, sameFileEncoding, sameFileRevision, type FileRootSelection, type FileDraft, type FileDraftState, type FileRevision, type FileSave, type FileEncoding} from '../shared/files.ts';
+import {fileSource, sameFileEncoding, sameFileRevision, movedFilePath, type FileRootSelection, type FileDraft, type FileDraftState, type FileRevision, type FileSave, type FileEncoding, type FileMutation} from '../shared/files.ts';
+import {moveFileEntry} from './file-operations.mts';
 import {ApiError} from './errors.mts';
 import {registerRoot, readText, writeText, filePath, type RegisteredRoot} from './file-access.mts';
 const STATE_BYTES = 2 * 1024 * 1024;
@@ -103,7 +104,7 @@ export class FileState {
   async putDraft(rootId:string,path:string,expectedRevision:number,base:FileRevision,text:string,encoding:FileEncoding):Promise<FileDraft> {
     validateFileRevision(base);validateFileDraftText(text);validateFileEncoding(encoding);const current = this.currentDraft(rootId,path,expectedRevision);
     if (current && sameFileRevision(current.base,base) && !sameFileEncoding(current.encoding,encoding)) throw new ApiError('invalid_request','The file draft encoding changed without a new disk revision.');
-    if (current && !sameFileRevision(current.base,base)) {
+    if (!current || !sameFileRevision(current.base,base)) {
       const source = await readText(this.root(rootId),path);
       if (!sameFileRevision(source.revision,base) || !sameFileEncoding(fileSource(source.text).encoding,encoding)) throw new ApiError('file_changed','The file changed on disk. Re-read it or keep editing the draft.',409,'read');
     }
@@ -123,6 +124,22 @@ export class FileState {
     try {await this.persist(next,'file-drafts.json');this.drafts = next;} catch (error) {this.poisoned = true;throw error;}
     const draft:FileDraft = {...clean,text:current.text ?? fileSource(source.text).text};
     return structuredClone({source,draft});
+  }
+  async move(rootId:string,from:string,to:string):Promise<FileMutation> {
+    if (this.poisoned) throw new ApiError('not_ready','File state requires a backend restart.',503,'manual');
+    filePath(from,false);filePath(to,false);const next = structuredClone(this.drafts);
+    for (const [key,record] of Object.entries(this.drafts.drafts)) {
+      const [id,path] = JSON.parse(key) as [string,string];if (id !== rootId) continue;
+      if (path === to || path.startsWith(`${to}/`)) throw new ApiError('file_changed','The destination has saved file state. Choose another name.',409,'read');
+      const moved = movedFilePath(path,from,to);if (moved === path) continue;
+      const destination = draftKey(rootId,moved);
+      if (Object.hasOwn(this.drafts.drafts,destination)) throw new ApiError('file_changed','The destination has a saved draft. Choose another name.',409,'read');
+      delete next.drafts[key];next.drafts[destination] = record;
+    }
+    this.stateBytes(next,'file-drafts.json');
+    const result = await moveFileEntry(this.root(rootId),from,to);
+    try {await this.persist(next,'file-drafts.json');this.drafts = next;} catch {this.poisoned = true;throw new ApiError('file_unavailable','The file moved, but its saved identity did not complete. Restart and inspect both paths before another action.',503,'manual');}
+    return result;
   }
   private stateBytes(data:Data|DraftData,name:string,reserve = 0):Buffer {
     const bytes = Buffer.from(JSON.stringify(data));

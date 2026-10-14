@@ -12,6 +12,7 @@ import type {ImageBytes, ValidatedImage} from './images.mts';
 import type { Appearance, ConversationLayout, DraftView, EventData, EventName, OperationView, PresentationView, PrimaryView, ReadingView, Target, TargetIndex, TargetState, UnconfirmedInput, Workspace } from '../shared/api.ts';
 
 import { safeText } from './projection.mts';
+import {movedFilePath, type FileMutation} from '../shared/files.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FORMAT = 'ui-state/1';
@@ -29,7 +30,7 @@ export class StateError extends Error {
   readonly details?: unknown;
   constructor(code: string, message: string, status = 400, details?: unknown) {
     super(message); this.code = code; this.status = status; this.details = details;
-    this.name = 'StateError'; this.retry = ['stale_revision', 'unknown_image_digest', 'image_unavailable', 'queue_recovery_guard', 'queue_recovery_provenance'].includes(code) ? 'read' : code === 'capacity' ? 'manual' : 'none';
+    this.name = 'StateError'; this.retry = ['stale_revision', 'file_changed', 'unknown_image_digest', 'image_unavailable', 'queue_recovery_guard', 'queue_recovery_provenance'].includes(code) ? 'read' : code === 'capacity' ? 'manual' : 'none';
   }
 }
 export function sameTarget(a?: Target, b?: Target): boolean {
@@ -176,6 +177,27 @@ function validateOrigin(value: RecoveryOrigin): void {
 function validateQueueRecovery(value: QueueRecovery): void {
   if (!value || Object.keys(value).length !== 3 || !UUID.test(value.clearOperationId) || !['steer', 'followUp'].includes(value.mode) || !Number.isSafeInteger(value.index) || value.index < 0 || value.index >= LIMITS.unconfirmed) throw new StateError('queue_recovery_provenance', 'Queue recovery source is invalid', 409);
 }
+function moveLayoutFiles(node:ConversationLayout['root'],rootId:string,from:string,to:string,keys:Map<string,string>):void {
+  if (node.kind === 'split') {moveLayoutFiles(node.first,rootId,from,to,keys);moveLayoutFiles(node.second,rootId,from,to,keys);return;}
+  for (const tab of node.tabs) {
+    if (tab.kind !== 'file' || tab.rootId !== rootId) continue;
+    const source = tab.path === from || tab.path.startsWith(`${from}/`);
+    if (!source && (tab.path === to || tab.path.startsWith(`${to}/`))) throw new StateError('file_changed','The destination has a retained file identity. Choose another name.',409);
+    const path = movedFilePath(tab.path,from,to);if (path === tab.path) continue;
+    const previous = workspaceTabKey(tab);tab.path = path;const next = workspaceTabKey(tab);keys.set(previous,next);
+    if (node.active === previous) node.active = next;
+  }
+}
+function movedWorkspace(current:Workspace,rootId:string,from:string,to:string):Workspace {
+  const value = structuredClone(current),keys = new Map<string,string>();
+  if (value.conversationLayout) moveLayoutFiles(value.conversationLayout.root,rootId,from,to,keys);
+  if (current.revision >= Number.MAX_SAFE_INTEGER) throw new StateError('capacity','The workspace revision bound is full.',429);
+  value.revision++;
+  if (value.filePositions) value.filePositions = Object.fromEntries(Object.entries(value.filePositions).map(([key,position])=>[keys.get(key) ?? key,position]));
+  if (value.conversationLayout) validateConversationLayout(value.conversationLayout);if (value.filePositions) validateFilePositions(value.filePositions,value.conversationLayout);
+  if (Buffer.byteLength(JSON.stringify(value)) > LIMITS.requestBytes) throw new StateError('capacity','The moved workspace exceeds its saved byte bound.',429);
+  return value;
+}
 export class StateStore {
   readonly root: string;
   instanceId = '';
@@ -189,6 +211,7 @@ export class StateStore {
   private readonly refusedOperations = new Set<string>();
   private refusedOperationBytes = 0;
   private workspaces = new Map<string, Workspace>();
+  private fileIdentityFailure = false;
   private targetRecords = new Map<string, StoredTarget>();
   private operationRecords = new Map<string, OperationRecord>();
   private operationBytes = 0;
@@ -376,8 +399,23 @@ export class StateStore {
     this.changed('workspace.changed', value, value.id); return structuredClone(value);
   }
   createWorkspace(): Promise<Workspace> { return this.transaction(() => this.createWorkspaceRecord()); }
+  /** Move admission shares workspace serialization, so old selection revisions cannot recreate old tabs. */
+  moveFiles(rootId:string,from:string,to:string,work:()=>Promise<FileMutation>):Promise<FileMutation> {
+    return this.transaction(async()=> {
+      if (this.fileIdentityFailure) throw new StateError('not_ready','File identities require a backend restart.',503);
+      const changed:Workspace[] = [];
+      for (const current of this.workspaces.values()) changed.push(movedWorkspace(current,rootId,from,to));
+      const result = await work();
+      try {for (const value of changed) await this.atomic(`workspaces/${value.id}.json`,value,LIMITS.requestBytes);}
+      catch {this.fileIdentityFailure = true;throw new StateError('file_unavailable','The file moved, but its workspace identity did not complete. Restart and inspect both paths.',503);}
+      this.changed('files.changed',{rootId,directories:[],files:[],rescan:true,watch:'live',move:{from,to,kind:result.kind}});
+      for (const value of changed) {this.workspaces.set(value.id,value);this.changed('workspace.changed',value,value.id);}
+      return result;
+    });
+  }
   updateSelection(id: string, input: SelectionInput): Promise<Workspace> {
     return this.transaction(async () => {
+      if (this.fileIdentityFailure) throw new StateError('not_ready','File identities require a backend restart.',503);
       const current = this.requireWorkspace(id); revision(current.revision, input.expectedRevision, current);
       validateSelection(input);
       const value = selectedWorkspace(current, input);

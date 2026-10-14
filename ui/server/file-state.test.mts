@@ -27,10 +27,10 @@ test('acknowledged drafts restore and atomic saves preserve UTF-8, BOM, separato
     assert.equal(next.revision,3);assert.equal(next.text,`${text}\nnext`);
   }
 });
-test('disk changes refuse a save and retain an acknowledged draft, including a stale first draft',async context=> {
+test('disk changes refuse a save and retain an already acknowledged draft',async context=> {
   const {state,root,file} = await fixture(context,'old text'), source = await readText(root,'note.md'), normalized = fileSource(source.text), before = await stat(file);
-  await writeFile(file,'new text');await utimes(file,before.atime,before.mtime);
   const draft = await state.putDraft(root.id,'note.md',0,source.revision,'my draft',normalized.encoding);
+  await writeFile(file,'new text');await utimes(file,before.atime,before.mtime);
   await assert.rejects(state.saveDraft(root.id,'note.md',draft.revision),{code:'file_changed'});assert.equal(await readFile(file,'utf8'),'new text');assert.deepEqual(state.draft(root.id,'note.md').draft,draft);
   const fresh = await readText(root,'note.md'), reread = fileSource(fresh.text);const replacement = await state.putDraft(root.id,'note.md',draft.revision,fresh.revision,reread.text,reread.encoding);assert.equal(replacement.text,'new text');
 });

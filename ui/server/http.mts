@@ -24,7 +24,8 @@ export type ImageUploadContext = Omit<RequestContext, 'body' | 'signal'> & {sign
 export type ImageUploadHeaders = {mimeType: 'image/png' | 'image/jpeg'; declaredBytes?: number};
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
   uploadImage?(context: ImageUploadContext, headers: ImageUploadHeaders, body: AsyncIterable<Uint8Array>): Promise<unknown>;
-  workspace(id?: string): Promise<string>; observe(workspace: string): Promise<void>; detached(workspace: string): void};
+  workspace(id?: string): Promise<string>; observe(workspace: string): Promise<void>; detached(workspace: string): void;
+  moveFiles?(rootId:string,from:string,to:string,work:()=>Promise<import('../shared/files.ts').FileMutation>):Promise<import('../shared/files.ts').FileMutation>};
 export type Asset = {type: string; data: Buffer};
 export const ASSET_FILE_BYTES = 2 * 1024 * 1024;
 export const ASSET_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -373,7 +374,10 @@ export class LocalHttp {
     if (this.backend.journal.workspaceClients(workspace) >= 8) throw new ApiError('capacity', 'Too many event streams use this workspace.', 429);
     const last = request.headers['last-event-id'];
     if (Array.isArray(last)) throw new ApiError('invalid_request', 'The replay cursor is invalid.');
-    this.backend.journal.attach(response, workspace, session, last ?? url.searchParams.get('after') ?? undefined, () => this.backend.detached(workspace));
+    this.backend.journal.attach(response, workspace, session, last ?? url.searchParams.get('after') ?? undefined, () => {
+      this.backend.detached(workspace);
+      if (!this.backend.journal.workspaceClients(workspace)) void this.development.files?.request({kind:'unwatch',workspace}).catch(()=>{});
+    });
     if (this.backend.journal.workspaceClients(workspace)) void this.backend.observe(workspace).catch(() => {
       this.backend.journal.publish('notice', undefined, {level: 'warning', message: 'The selected agent observation is unavailable.'}, workspace);
     });

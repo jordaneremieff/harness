@@ -2,8 +2,10 @@ import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, Ope
 import { draftImageFingerprint, LIMITS } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
-import type {FileDirectoryPage, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave} from '../shared/files.ts';
-import {FilesTree} from './files-tree.ts';
+import type {FileDirectoryPage, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave, FileMutation, FileWatchState, FileWatchScope, FileChanges} from '../shared/files.ts';
+import {FilesTree, type FileTreeAction} from './files-tree.ts';
+import {FileWatch} from './file-watch.ts';
+import {movedWorkspaceFiles, type FileMove} from './file-identity.ts';
 import {FilesViews} from './files-views.ts';
 import {FileRootChoice} from './file-root.ts';
 import { activeTab, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
@@ -221,6 +223,14 @@ const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversa
   status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : ''};}const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view)}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
+let fileActionStatus = '';
+export const fileWatch = new FileWatch({put:(workspace,roots)=>request<FileWatchState>(`/api/workspaces/${encodeURIComponent(workspace)}/files/watch`,'PUT',{roots}),changed:()=>renderWorkbenchStatus()});
+function watchFiles(force = false):Promise<void> {
+  const workspace = state.workspace;if (!workspace) return Promise.resolve();
+  const roots = new Map<string,FileWatchScope>();for (const root of filesViews.scopes(workspace.id)) roots.set(root.rootId,{...root,directories:[]});
+  const rootId = filesTree.rootId();if (rootId) {const root = roots.get(rootId) ?? {rootId,files:[],directories:[]};root.directories = filesTree.disclosed();roots.set(rootId,root);}
+  return fileWatch.scope(workspace.id,[...roots.values()].sort((a,b)=>a.rootId.localeCompare(b.rootId)),force);
+}
 export const filesViews = new FilesViews(stableViews,(workspace,tab,signal)=>request<FileText>(`/api/files/roots/${encodeURIComponent(tab.rootId)}/text?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`,'GET',undefined,undefined,signal),()=>state.workspace,
   (workspace,key,position)=> {if (state.workspace?.id === workspace) void selection({filePositions:{[key]:position}}).catch(showError);},()=> {if (state.workspace) for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) if (tab.kind === 'file' && filesViews.owner(state.workspace.id,tab)?.modified) fileBrowse.keep(tabKey(tab));tabStrip.render();renderWorkbenchStatus();}, {
     draft:(workspace,tab,signal)=>request<FileDraftState>(fileDocumentRoute(workspace,tab,'draft'),'GET',undefined,undefined,signal),
@@ -230,7 +240,7 @@ export const filesViews = new FilesViews(stableViews,(workspace,tab,signal)=>req
 function fileDocumentRoute(workspace:string,tab:FileTab,kind:'draft'|'text'):string {return `/api/files/roots/${encodeURIComponent(tab.rootId)}/${kind}?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`;}
 export const filesTree = new FilesTree(byId('files-tree'),{
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
-  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),escape:focusEditor});
+  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),escape:focusEditor,scope:()=>watchFiles(),status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
 export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();});
 export function chooseFile(rootId:string,path:string):void {
   if (!state.workspace) return;
@@ -242,6 +252,49 @@ function renderFiles():void {
   filesTree.setRoot(fileRoot.selection?.root ?? undefined,workspace.id);
   if (!fileRoot.selection?.root) filesTree.unavailable(fileRoot.loading ? 'Loading folder…' : fileRoot.error ?? 'Choose a working folder.');
   const tab = activeTab(currentLayout());filesTree.selectFile(tab?.kind === 'file' ? tab.rootId : undefined,tab?.kind === 'file' ? tab.path : undefined);
+}
+function remapFileViews(workspace:string,move:FileMove):void {
+  filesViews.remap(workspace,move);fileBrowse.remap(move);filesTree.remap(move);
+  if (state.workspace?.id === workspace) state = {...state,workspace:selectionQueue.remapFiles(workspace,move) ?? movedWorkspaceFiles(state.workspace,move)};
+}
+function fileChanges(change:FileChanges,workspaceId?:string):void {
+  const workspace = state.workspace;if (!workspace || workspaceId && workspaceId !== workspace.id) return;
+  if (change.move) remapFileViews(workspace.id,{rootId:change.rootId,...change.move});
+  fileWatch.change(change);filesTree.invalidate(change.rootId,change.directories,change.rescan);
+  void filesViews.refresh(workspace.id,change.rootId,change.files,change.rescan);if (change.move) renderAll();
+}
+async function mutateFile(workspace:string,rootId:string,action:FileTreeAction,path:string,value?:string):Promise<void> {
+  let release:(()=>void)|undefined;fileActionStatus = action === 'trash' ? 'Moving to Trash…' : 'Updating files…';renderWorkbenchStatus();
+  try {
+    if (action === 'rename' || action === 'move') {await filesViews.drain();await selectionQueue.drain();release = await filesViews.prepareMove(workspace,{rootId,from:path,to:value ?? ''});}
+    const result = await requestFileMutation(workspace,rootId,action,path,value);
+    if (result.rootId !== rootId) throw new Error('The file action response identity changed.');
+    await applyFileMutation(workspace,result);
+  } catch(error) {fileActionStatus = `File action not confirmed. ${errorMessage(error)}`;throw error;}
+  finally {release?.();renderWorkbenchStatus();void watchFiles();}
+}
+function requestFileMutation(workspace:string,rootId:string,action:FileTreeAction,path:string,value?:string):Promise<FileMutation> {
+  const route = `/api/files/roots/${encodeURIComponent(rootId)}`,query = `workspace=${encodeURIComponent(workspace)}`;
+  if (action === 'file' || action === 'directory') return request<FileMutation>(`${route}/entries?${query}`,'POST',{path:[path,value].filter(Boolean).join('/'),kind:action});
+  if (action === 'trash') return request<FileMutation>(`${route}/entry?${query}&path=${encodeURIComponent(path)}`,'DELETE');
+  const target = action === 'rename' ? [...path.split('/').slice(0,-1),value ?? ''].join('/') : value;return request<FileMutation>(`${route}/move?${query}`,'POST',{from:path,to:target});
+}
+async function showCreatedFile(workspace:string,result:FileMutation):Promise<void> {
+  chooseFile(result.rootId,result.path);await filesViews.owner(workspace,{kind:'file',rootId:result.rootId,path:result.path})?.load();
+  const tab = activeTab(currentLayout());if (tab?.kind === 'file' && tab.rootId === result.rootId && tab.path === result.path) focusEditor();
+}
+async function applyFileMutation(workspace:string,result:FileMutation):Promise<void> {
+  if (result.operation === 'move' && result.previousPath) remapFileViews(workspace,{rootId:result.rootId,from:result.previousPath,to:result.path});
+  if (state.workspace?.id !== workspace) return;
+  const parent = result.path.split('/').slice(0,-1).join('/');filesTree.reveal(result.rootId,parent,result.operation === 'create' && result.kind === 'directory' ? result.path : undefined);
+  if (result.operation === 'create' && result.kind === 'file') await showCreatedFile(workspace,result);
+  if (result.operation === 'trash') void filesViews.refresh(workspace,result.rootId,[result.path],true);
+  fileActionStatus = '';await reload();
+}
+function fileTreeOperation(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<void> {
+  const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));
+  if (action === 'trash') {modal.confirm('Move to Trash?',`Move “${path}” to the Trash? Unsaved drafts stay available.`,()=>mutateFile(workspace,rootId,action,path),'Move to Trash');return Promise.resolve();}
+  return mutateFile(workspace,rootId,action,path,value);
 }
 const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload: reloadSelection, project: projectPath, projectsChanged: renderIdentity,workingFolder:path=>fileRoot.choose(path)});
 actions.projectPicker = () => picker.open(projectPath());
@@ -370,6 +423,7 @@ function tabPresentation(tab: ConversationTab): ConversationPresentation { retur
 function activePresentation(): ConversationPresentation { return presentation(layoutTarget(currentLayout(), primaryTarget()) ?? undefined); }
 function projectPath(): string | undefined { return fileRoot.selection?.root?.path ?? primary()?.cwd ?? launchCwd; }
 function renderWorkbenchStatus(): void {
+  const retained = byId<HTMLButtonElement>('file-retained-drafts');retained.hidden = !filesViews.retained().length;setText(retained,'Review retained draft');retained.onclick = reviewRetainedDrafts;
   const tab = activeTab(currentLayout());
   const editingMessage = footerController && messageTarget.current?.identity === (footerController.target.kind === 'agent' ? footerController.target.identity : undefined) && footerController.elements.root.contains(document.activeElement);
   if (tab?.kind === 'file' && !editingMessage) {renderFileWorkbenchStatus(tab);return;}
@@ -377,13 +431,24 @@ function renderWorkbenchStatus(): void {
   const target = editingMessage ? footerController?.target : selected;
   const controller = target ? conversationController(target) : undefined; footerController = controller;
   const skip = byId<HTMLAnchorElement>('skip-composer'); skip.href = controller ? `#${controller.composer.editor.id}` : '#session-new';
-  const view = presentation(target); workbenchStatus.update(target?.kind ?? 'primary', view.name, view.activity, target?.kind === 'agent' ? target.identity : target?.key);
+  const view = presentation(target); workbenchStatus.update(target?.kind ?? 'primary', view.name, fileActionStatus || fileWatch.status || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
   const slot = byId('focused-composer-status'), nodes = controller ? [controller.elements.save, controller.elements.receiptDetails] : [];
   if (slot.children.length !== nodes.length || nodes.some((node, index) => slot.children[index] !== node)) slot.replaceChildren(...nodes);
   if (target?.kind === 'agent') renderAgentSettings(view, target);
 }
+function reviewRetainedDrafts():void {
+  const owners = filesViews.retained();if (!owners.length) return;
+  const body = modal.open('Retained draft');let first:HTMLTextAreaElement|undefined;
+  for (const owner of owners) {
+    const section = element('section'),text = element('textarea');text.readOnly = true;text.value = owner.text ?? '';text.setAttribute('aria-label',`Retained draft: ${owner.tab.path}`);first ??= text;
+    section.append(element('p',undefined,`${owner.tab.path} (${owner.tab.rootId}, ${owner.workspace}). Copy this text before you discard it. This retained text does not write to disk.`),text,
+      button('Discard retained draft',()=>modal.confirm('Discard retained draft?',`Discard retained text for “${owner.tab.path}”? This cannot be undone.`,async()=> {filesViews.discardRetained(owner);},'Discard retained draft'),'danger'));
+    body.append(section);
+  }
+  modal.actions(button('Close',()=>modal.close()));first?.focus();first?.setSelectionRange(0,first.value.length);
+}
 function renderFileWorkbenchStatus(tab:FileTab):void {
-  footerController = undefined;const owner = state.workspace && filesViews.owner(state.workspace.id,tab);workbenchStatus.update('file',tab.path,owner?.status ?? '',tab.path);
+  footerController = undefined;const owner = state.workspace && filesViews.owner(state.workspace.id,tab);workbenchStatus.update('file',tab.path,fileActionStatus || owner?.status || fileWatch.status,tab.path);
   const slot = byId('focused-composer-status');slot.replaceChildren();
   if (owner?.conflict) {const controls = element('span','file-status-actions');controls.append(button('Re-read file',()=> {void owner.reread();}),button('Keep editing',()=>focusEditor()));slot.append(controls);}
   byId<HTMLAnchorElement>('skip-composer').href = '#files-tree';
@@ -490,7 +555,7 @@ function renderPaneTree(layout: ConversationLayout): void {
   for (const controller of controllers.values()) if (controller.root.hidden && !controller.historyAbort.signal.aborted) controller.historyAbort.abort();
   refreshTreeGeometry();
   if (changed) restorePaneGeometry();
-  markFocusedPane(); collectControllers();
+  markFocusedPane(); collectControllers();void watchFiles();
 }
 function retainPaneGeometry(): void {
   for (const controller of controllers.values()) {
@@ -633,7 +698,7 @@ export function receive(event: ReceivedEvent): void {
   diagnostics.measure('reducer', reducerStartedAt, performance.now());
   if (state.needsResync) { disconnected(new Error('The event baseline needs a refresh.')); return; }
   if (event.name === 'workspace.changed' && state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
-  if (event.name === 'ready') { streamWait?.resolve(); return; }
+  if (event.name === 'ready') { streamWait?.resolve();refreshFileConnection();return; }
   if (old === state) return;
   applyEvent(event);
   if (event.name === 'primary.state') {
@@ -641,6 +706,7 @@ export function receive(event: ReceivedEvent): void {
     if (historyBecameReady(previous, current, state.workspace?.primaryKey)) void loadVisibleHistory();
   }
 }
+function refreshFileConnection():void {void watchFiles(true);filesTree.refresh();const workspace = state.workspace;if (workspace) for (const root of filesViews.scopes(workspace.id)) void filesViews.refresh(workspace.id,root.rootId,root.files);}
 function applyEvent(event: ReceivedEvent): void {
   const name = event.name;
   if (name === 'primary.delta' || name === 'primary.message' || name === 'primary.entry' || name === 'primary.tool') renderPrimaryEvent(event);
@@ -648,12 +714,18 @@ function applyEvent(event: ReceivedEvent): void {
   else if (name === 'primary.recovery' || name === 'primary.queue') renderPrimary();
   else if (name === 'agent.frame') renderObservedAgent(event.envelope.data as EventData['agent.frame'], event.receivedAt);
   else if (name === 'agent.roster' || name === 'agent.availability') renderRosterEvent(event);
-  else if (name === 'workspace.changed') { renderAll(); void loadVisibleHistory(); }
-  else if (name === 'draft.changed') updateDraft(event.envelope.data as EventData['draft.changed']);
-  else if (name === 'operation.changed') showOperation(event.envelope.data as OperationView);
-  else if (name === 'notice') noticesBadge();
-  else if (name === 'extension.request') applyExtension(event);
-  else if (name === 'extension.expired') extensionDialogs.update();
+  else applyShellEvent(event);
+}
+function applyShellEvent(event:ReceivedEvent):void {
+  switch (event.name) {
+    case 'workspace.changed': renderAll();void loadVisibleHistory();break;
+    case 'files.changed': fileChanges(event.envelope.data as FileChanges,event.envelope.workspaceId);break;
+    case 'draft.changed': updateDraft(event.envelope.data as EventData['draft.changed']);break;
+    case 'operation.changed': showOperation(event.envelope.data as OperationView);break;
+    case 'notice': noticesBadge();break;
+    case 'extension.request': applyExtension(event);break;
+    case 'extension.expired': extensionDialogs.update();break;
+  }
 }
 function renderPrimaryEvent(event: ReceivedEvent): void {
   const target = event.envelope.target; const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;

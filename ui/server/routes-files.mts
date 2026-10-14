@@ -1,10 +1,12 @@
 import {LIMITS} from '../shared/api.ts';
 import type {HttpBackend, RequestContext} from './http.mts';
-import type {Files} from './files.mts';
+import type {Files,FileResponse} from './files.mts';
 import {filePath} from './file-access.mts';
 import {ApiError} from './errors.mts';
 import {validateFileRevision, validateFileDraftText, validateFileEncoding} from './file-state.mts';
 import * as v from './validate.mts';
+import type {FileWatchScope, FileMutation} from '../shared/files.ts';
+import {dirname} from 'node:path';
 export function isFileRoute(parts:string[]):boolean {return parts[1] === 'files' || parts[1] === 'workspaces' && parts[3] === 'files';}
 function queryFields(url:URL,allowed:string[]):void {
   for (const key of url.searchParams.keys()) if (!allowed.includes(key) || url.searchParams.getAll(key).length !== 1) throw new ApiError('invalid_request','The file query has unknown or repeated fields.');
@@ -42,19 +44,67 @@ function mutationRequest(files:Files,rootId:string,path:string,context:RequestCo
   }
   throw new ApiError('invalid_request','The file route does not accept this request.',405);
 }
+function watchScope(value:unknown):FileWatchScope[] {
+  if (!Array.isArray(value) || value.length > LIMITS.fileRoots) throw new ApiError('invalid_request','The watch scope is invalid.');
+  return value.map(raw=> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new ApiError('invalid_request','The watch root is invalid.');
+    v.fields(raw,['rootId','directories','files'],['rootId','directories','files']);
+    if (!Array.isArray(raw.directories) || !Array.isArray(raw.files) || raw.directories.length > LIMITS.fileWatchDirectories || raw.files.length > LIMITS.fileWatchFiles) throw new ApiError('capacity','The live-file scope exceeds its bound.',429,'read');
+    return {rootId:v.string(raw.rootId,'root ID'),directories:raw.directories.map((path:unknown)=>filePath(path)),files:raw.files.map((path:unknown)=>filePath(path,false))};
+  });
+}
+async function watchRequest(files:Files,backend:HttpBackend,context:RequestContext) {
+  queryFields(context.url,['workspace']);if (context.operationId) throw new ApiError('invalid_request','File requests do not accept an operation key.');
+  const workspace = v.string(context.parts[2],'workspace ID'), query = context.url.searchParams.get('workspace');
+  if (query !== null && query !== workspace) throw new ApiError('invalid_request','The workspace query does not match the route.');
+  await backend.workspace(workspace);
+  if (context.method === 'GET') return files.request({kind:'watch-state',workspace},context.signal);
+  if (context.method !== 'PUT') throw new ApiError('invalid_request','The watch route does not accept this request.',405);
+  v.fields(context.body,['roots'],['roots']);return files.request({kind:'watch',workspace,roots:watchScope(context.body.roots)},context.signal);
+}
+function moveRequest(files:Files,backend:HttpBackend,rootId:string,body:Record<string,unknown>) {
+  v.fields(body,['from','to'],['from','to']);const from = filePath(body.from,false),to = filePath(body.to,false);
+  if (!backend.moveFiles) throw new ApiError('not_ready','Workspace file moves are unavailable.',503,'read');
+  return backend.moveFiles(rootId,from,to,async()=> {
+    const response = await files.settled({kind:'move',rootId,from,to}),result = JSON.parse(response.json);
+    if (!result.ok) throw new ApiError(result.error.code,result.error.message,response.status,result.error.retry);
+    return result.data as FileMutation;
+  });
+}
+async function treeRequest(files:Files,backend:HttpBackend,context:RequestContext) {
+  const {parts,method,url,body,signal} = context;queryFields(url,parts[4] === 'entry' ? ['workspace','path'] : ['workspace']);
+  if (context.operationId) throw new ApiError('invalid_request','File requests do not accept an operation key.');
+  await backend.workspace(v.string(url.searchParams.get('workspace'),'workspace ID'));const rootId = v.string(parts[3],'root ID');
+  if (parts[4] === 'move' && method === 'POST') return moveRequest(files,backend,rootId,body);
+  let response:FileResponse;
+  if (parts[4] === 'entries' && method === 'POST') {
+    v.fields(body,['path','kind'],['path','kind']);if (body.kind !== 'file' && body.kind !== 'directory') throw new ApiError('invalid_request','The entry kind is invalid.');
+    response = await files.request({kind:'create',rootId,path:filePath(body.path,false),entryKind:body.kind},signal);
+  } else if (parts[4] === 'entry' && method === 'DELETE') {v.fields(body,[],[]);response = await files.request({kind:'trash',rootId,path:filePath(url.searchParams.get('path'),false)},signal);}
+  else throw new ApiError('invalid_request','The file route does not accept this request.',405);
+  const result = JSON.parse(response.json);
+  if (result.ok) {const value = result.data as FileMutation, parent = dirname(value.path);backend.journal.publish('files.changed',undefined,{rootId,directories:[parent === '.' ? '' : parent],files:[value.path],rescan:false,watch:'live'});}
+  return response;
+}
+async function readRequest(files:Files,backend:HttpBackend,context:RequestContext) {
+  const {parts,method,url,signal} = context;queryFields(url,parts[4] === 'directory' ? ['path','workspace','limit','cursor'] : ['path','workspace']);
+  if (context.operationId) throw new ApiError('invalid_request','File requests do not accept an operation key.');
+  await backend.workspace(v.string(url.searchParams.get('workspace'),'workspace ID'));
+  const rootId = v.string(parts[3],'root ID'),path = filePath(url.searchParams.get('path'),parts[4] === 'directory');
+  if (method !== 'GET') return mutationRequest(files,rootId,path,context);
+  if (parts[4] === 'text' || parts[4] === 'draft') return files.request({kind:parts[4],rootId,path},signal);
+  return directoryRequest(files,rootId,path,url,signal);
+}
 export async function dispatchFiles(files:Files,backend:HttpBackend,context:RequestContext) {
-  const {parts,method,url,signal} = context;
-  if (parts[1] === 'workspaces' && parts.length === 5 && parts[3] === 'files' && parts[4] === 'root') return rootRequest(files,backend,context);
-  if (parts[1] === 'files' && parts[2] === 'roots' && parts.length === 5 && (parts[4] === 'directory' || parts[4] === 'text' || parts[4] === 'draft')) {
-    queryFields(url,parts[4] === 'directory' ? ['path','workspace','limit','cursor'] : ['path','workspace']);
-    if (context.operationId) throw new ApiError('invalid_request','File requests do not accept an operation key.');
-    await backend.workspace(v.string(url.searchParams.get('workspace'),'workspace ID'));
-    const rootId = v.string(parts[3],'root ID'), path = filePath(url.searchParams.get('path'),parts[4] === 'directory');
-    if (method === 'GET') {
-      if (parts[4] === 'text' || parts[4] === 'draft') return files.request({kind:parts[4],rootId,path},signal);
-      return directoryRequest(files,rootId,path,url,signal);
-    }
-    return mutationRequest(files,rootId,path,context);
+  const {parts} = context;
+  if (parts.length !== 5) throw new ApiError('invalid_request','The file route does not accept this request.',405);
+  if (parts[1] === 'workspaces' && parts[3] === 'files') {
+    if (parts[4] === 'watch') return watchRequest(files,backend,context);
+    if (parts[4] === 'root') return rootRequest(files,backend,context);
+  }
+  if (parts[1] === 'files' && parts[2] === 'roots') {
+    if (['entries','move','entry'].includes(parts[4] ?? '')) return treeRequest(files,backend,context);
+    if (['directory','text','draft'].includes(parts[4] ?? '')) return readRequest(files,backend,context);
   }
   throw new ApiError('invalid_request','The file route does not accept this request.',405);
 }

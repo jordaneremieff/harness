@@ -19,6 +19,13 @@ test('timed-out jobs retain admission until worker settlement and close stops ad
   const next = files.request({kind:'selection',workspace:'w'});worker.reply(worker.requests.at(-1)?.id ?? 0);await next;
   const closed = files.close();await assert.rejects(files.request({kind:'selection',workspace:'w'}),{code:'file_unavailable'});await closed;
 });
+test('identity transactions retain settlement beyond response deadlines and report lost watches',async context=> {
+  context.mock.timers.enable({apis:['setTimeout']});const worker = new FakeWorker(),files = new Files({worker:worker as unknown as Worker,deadlineMs:10});
+  const watched = files.request({kind:'watch',workspace:'workspace',roots:[{rootId:'root',directories:[''],files:[]}]});worker.reply(1);await watched;
+  const events:string[] = [];files.observe(change=>events.push(change.watch));let settled = false;
+  const moved = files.settled({kind:'move',rootId:'root',from:'from.md',to:'to.md'}).then(()=> {settled = true;});context.mock.timers.tick(100);await Promise.resolve();assert.equal(settled,false);worker.reply(2);await moved;
+  worker.emit('error',new Error('lost'));worker.emit('exit',1);assert.deepEqual(events,['unavailable']);await files.close();
+});
 test('close acknowledgment failure still waits for actual worker exit',async()=> {
   const worker = new FakeWorker();worker.postMessage = request=> {worker.requests.push(request);};
   const files = new Files({worker:worker as unknown as Worker});let settled = false;

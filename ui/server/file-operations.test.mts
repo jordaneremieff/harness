@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {mkdtemp,writeFile,readFile,mkdir,symlink,rm,lstat} from 'node:fs/promises';
+import {tmpdir,homedir} from 'node:os';
+import {join,basename} from 'node:path';
+import {registerRoot} from './file-access.mts';
+import {createFileEntry,moveFileEntry,trashFileEntry,nativeFileOperation} from './file-operations.mts';
+test('exclusive entries and native moves retain data and refuse existing destinations',async context=> {
+  const directory = await mkdtemp(join(tmpdir(),'ui-file-ops-'));context.after(()=>rm(directory,{recursive:true,force:true}));const root = await registerRoot(directory,'root');
+  await createFileEntry(root,'new.md','file');assert.equal(await readFile(join(directory,'new.md'),'utf8'),'');
+  await assert.rejects(createFileEntry(root,'new.md','file'),{code:'file_changed'});
+  await createFileEntry(root,'folder','directory');await writeFile(join(directory,'folder','source.md'),'source');await writeFile(join(directory,'target.md'),'target');
+  await assert.rejects(moveFileEntry(root,'folder/source.md','target.md'),{code:'file_changed'});
+  assert.equal(await readFile(join(directory,'folder','source.md'),'utf8'),'source');assert.equal(await readFile(join(directory,'target.md'),'utf8'),'target');
+  await moveFileEntry(root,'folder/source.md','moved.md');assert.equal(await readFile(join(directory,'moved.md'),'utf8'),'source');
+  await moveFileEntry(root,'folder','renamed');assert.ok((await lstat(join(directory,'renamed'))).isDirectory());
+  await assert.rejects(moveFileEntry(root,'renamed','renamed/child'),{code:'invalid_request'});
+  await symlink(directory,join(directory,'alias'));await assert.rejects(createFileEntry(root,'alias/escape.md','file'),{code:'file_unsafe'});
+  await assert.rejects(trashFileEntry(root,''),{code:'invalid_request'});await assert.rejects(moveFileEntry(root,'moved.md','../escape'),{code:'invalid_request'});
+});
+test('native Trash reports success and retains a recoverable file and directory',async context=> {
+  const directory = await mkdtemp(join(tmpdir(),'ui-file-trash-'));context.after(()=>rm(directory,{recursive:true,force:true}));const root = await registerRoot(directory,'root');
+  const name = `${basename(directory)}.md`;await writeFile(join(directory,name),'recoverable');
+  const result = await trashFileEntry(root,name);assert.equal(result.operation,'trash');
+  const trashed = join(homedir(),'.Trash',name);assert.equal(await readFile(trashed,'utf8'),'recoverable');
+  await nativeFileOperation('move',trashed,join(directory,'recovered.md'));assert.equal(await readFile(join(directory,'recovered.md'),'utf8'),'recoverable');
+  const folder = `${basename(directory)}-folder`;await mkdir(join(directory,folder));await writeFile(join(directory,folder,'nested.md'),'nested');
+  await trashFileEntry(root,folder);const trashedFolder = join(homedir(),'.Trash',folder);assert.equal(await readFile(join(trashedFolder,'nested.md'),'utf8'),'nested');
+  await nativeFileOperation('move',trashedFolder,join(directory,'recovered-folder'));
+  await assert.rejects(nativeFileOperation('trash',join(directory,'missing')),{code:'file_unavailable'});
+});

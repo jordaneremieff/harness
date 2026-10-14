@@ -310,6 +310,9 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-row:hover, .file-row[aria-selected=true] { background: var(--raised); }
 .file-row[aria-selected=true] { font-weight: 500; }
 .file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-naming { padding-left: calc(var(--s2) + 16px + var(--file-depth,0) * 14px); }
+.file-name-input { flex: 1; min-width: 0; width: 100%; padding: 0 var(--s1); border: 0; border-radius: 0; background: var(--raised); color: var(--fg); font: inherit; }
+.file-name-input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 .file-disclosure { flex: none; width: 12px; }
 .file-disclosure[data-hidden=true] { visibility: hidden; }
 .file-disclosure[data-expanded=true] { transform: rotate(90deg); }

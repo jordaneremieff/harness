@@ -145,6 +145,7 @@ export class Registry {
     return result;
   }
   async workspace(id?: string) { return (await this.store.workspace(id)).id; }
+  moveFiles(rootId:string,from:string,to:string,work:()=>Promise<import('../shared/files.ts').FileMutation>) {return this.store.moveFiles(rootId,from,to,work);}
   views() { return [...this.saved.values()].map(view=>structuredClone(this.sessions.get(view.key)?.view ?? view)); }
   primary(key: string, epoch?: number, requireReady = false) {
     const session = this.sessions.get(key);

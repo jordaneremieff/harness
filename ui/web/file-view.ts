@@ -9,7 +9,7 @@ export class FileView {
   readonly root = element('section','file-view');readonly scroller:HTMLElement;
   readonly editor?:HTMLTextAreaElement;
   private status = element('p','file-state');private content = element('div','file-content');
-  private displayed?:string;private initialized = false;private replacement = 0;private overlay?:ComposerOverlay;
+  private displayed?:string;private path = '';private initialized = false;private replacement = 0;private overlay?:ComposerOverlay;
   private restored = false;private frame = 0;private restoring = false;private saveButton?:HTMLButtonElement;
   position:FilePosition;readonly owner:FileOwner;readonly preview:boolean;
   private save:(position:FilePosition)=>void;
@@ -37,15 +37,21 @@ export class FileView {
   }
   paint():void {
     const owner = this.owner;
+    if (this.path !== owner.tab.path) {this.path = owner.tab.path;this.scroller.setAttribute('aria-label',this.path);this.overlay?.invalidate();}
     this.status.textContent = owner.loading ? 'Loading file…' : owner.text === undefined ? owner.error ?? '' : '';
     this.status.hidden = !this.status.textContent;
-    if (this.editor && owner.text !== undefined && (!this.initialized || this.replacement !== owner.replacement)) {
-      this.editor.value = owner.text;this.initialized = true;this.replacement = owner.replacement;this.restored = false;this.overlay?.invalidate();
-    }
-    if (this.editor) {this.editor.hidden = owner.text === undefined;this.editor.readOnly = owner.loading;}
+    this.syncSource();
+    if (this.editor) {this.editor.hidden = owner.text === undefined;this.editor.readOnly = owner.loading || owner.moving || owner.retained;}
     if (this.preview && owner.acknowledged !== undefined && this.displayed !== owner.acknowledged) {this.content.replaceChildren(markdownDom(owner.acknowledged));this.displayed = owner.acknowledged;this.restored = false;}
-    if (this.saveButton) this.saveButton.disabled = owner.text === undefined || owner.loading || owner.saving || owner.encoding?.writable === false;
+    if (this.saveButton) this.saveButton.disabled = owner.text === undefined || owner.loading || owner.moving || owner.retained || owner.saving || owner.encoding?.writable === false;
     this.restore();
+  }
+  private syncSource():void {
+    const editor = this.editor,text = this.owner.text;if (!editor || text === undefined || this.initialized && this.replacement === this.owner.replacement) return;
+    const start = editor.selectionStart,end = editor.selectionEnd,direction = editor.selectionDirection;
+    if (this.initialized) this.position = {scrollTop:editor.scrollTop,scrollLeft:editor.scrollLeft};
+    editor.value = text;if (this.initialized) editor.setSelectionRange(Math.min(start,text.length),Math.min(end,text.length),direction);
+    this.initialized = true;this.replacement = this.owner.replacement;this.restored = false;this.overlay?.invalidate();
   }
   restore():void {
     if (this.restored || (!this.initialized && this.displayed === undefined) || this.root.hidden || this.frame) return;

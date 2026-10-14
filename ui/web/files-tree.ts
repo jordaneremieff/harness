@@ -1,15 +1,22 @@
 import type {FileDirectoryPage, FileEntry, FileRoot} from '../shared/files.ts';
 import {cardIcon} from './card-icons.ts';
-import {element} from './dom.ts';
+import {element, placeRetained} from './dom.ts';
+import {contextMenu, nativeEditingTarget} from './context-menu.ts';
+import {movedFilePath, type FileMove} from './file-identity.ts';
 
-type Directory = {entries: FileEntry[]; nextCursor: string | null; expanded: boolean; loading: boolean; error?: string; incomplete?: string};
+type Directory = {entries: FileEntry[]; nextCursor: string | null; expanded: boolean; loading: boolean; again?:boolean; error?: string; incomplete?: string};
+export type FileTreeAction = 'file'|'directory'|'rename'|'move'|'trash';
+type Naming = {action:Exclude<FileTreeAction,'trash'>;path:string;parent:string;depth:number;row:HTMLElement;input:HTMLInputElement;busy:boolean};
+function createAction(action:FileTreeAction):boolean {return action === 'file' || action === 'directory';}
+function parentPath(path:string):string {return path.split('/').slice(0,-1).join('/');}
+function namingLabel(action:Naming['action']):string {switch (action) {case 'move':return 'Destination path from working folder';case 'rename':return 'New name';case 'directory':return 'New folder name';case 'file':return 'New file name';}}
 export type FileTreeRow = {entry: FileEntry; depth: number; parent: string};
 export function visibleFileRows(directories: ReadonlyMap<string, Directory>, path = '', depth = 0): FileTreeRow[] {
   const directory = directories.get(path); if (!directory?.expanded) return [];
   return directory.entries.flatMap(entry => [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
 }
-export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; escape(): void};
-/** Directory work starts only at root selection, refresh, or explicit disclosure. */
+export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<void>};
+/** Disclosed directories retain their rows while bounded disk changes refresh their pages. */
 export class FilesTree {
   readonly node: HTMLElement;
   private root?: FileRoot;
@@ -18,14 +25,35 @@ export class FilesTree {
   private selected?: string;
   private generation = 0;
   private scope = '';
-  private hooks: FilesTreeHooks;
-  constructor(node: HTMLElement, hooks: FilesTreeHooks) { this.node = node; this.hooks = hooks; node.setAttribute('role', 'tree'); node.setAttribute('aria-label', 'Files'); node.addEventListener('keydown', event => this.key(event)); }
+  private hooks: FilesTreeHooks;private naming?:Naming;private pendingFocus?:string;private dirty = new Set<string>();private frame = 0;private refreshing = 0;
+  constructor(node: HTMLElement, hooks: FilesTreeHooks) { this.node = node; this.hooks = hooks; node.setAttribute('role', 'tree'); node.setAttribute('aria-label', 'Files'); node.addEventListener('keydown', event => this.key(event));node.addEventListener('contextmenu',event=> {if (nativeEditingTarget(event.target)) return;event.preventDefault();this.menu(event.target as HTMLElement,{x:event.clientX,y:event.clientY});}); }
   setRoot(root?: FileRoot, scope = ''): void {
     if (root?.id === this.root?.id && scope === this.scope) return;
-    this.scope = scope;this.root = root; this.generation++; this.directories.clear(); this.buttons.clear(); this.selected = undefined;
+    this.scope = scope;this.root = root; this.generation++; this.directories.clear(); this.buttons.clear(); this.selected = undefined;this.naming = undefined;this.pendingFocus = undefined;this.dirty.clear();cancelAnimationFrame(this.frame);this.frame = 0;this.refreshing = 0;
     this.paint(); if (root) void this.load('');
   }
-  refresh(): void { this.generation++; this.directories.clear(); this.buttons.clear(); this.paint(); if (this.root) void this.load(''); }
+  refresh(): void {this.invalidate(this.root?.id ?? '',[],true);}
+  disclosed():string[] {return [...this.directories].filter(([path,directory])=>!path || directory.expanded).map(([path])=>path);}
+  rootId():string|undefined {return this.root?.id;}
+  invalidate(rootId:string,paths:string[],rescan = false):void {
+    if (rootId !== this.root?.id) return;const dirty = new Set(paths);
+    for (const [path,directory] of this.directories) if ((!path || directory.expanded) && (rescan || dirty.has(path))) {if (directory.loading) directory.again = true;else this.dirty.add(path);}
+    this.scheduleRefresh();
+  }
+  private scheduleRefresh():void {
+    if (this.frame || !this.dirty.size || this.refreshing >= 2) return;
+    this.frame = requestAnimationFrame(()=> {this.frame = 0;while (this.dirty.size && this.refreshing < 2) {const path = this.dirty.values().next().value as string;this.dirty.delete(path);this.refreshing++;const generation = this.generation;void this.load(path).finally(()=> {if (generation === this.generation) {this.refreshing--;this.scheduleRefresh();}});}});
+  }
+  remap(move:FileMove):void {
+    if (move.rootId !== this.root?.id) return;
+    for (const [path,directory] of [...this.directories]) {const next = movedFilePath(path,move);directory.entries = directory.entries.map(entry=> {const path = movedFilePath(entry.path,move);return path === entry.path ? entry : {...entry,path,name:path.split('/').at(-1) ?? entry.name};});if (next !== path) {this.directories.delete(path);this.directories.set(next,directory);}}
+    if (this.selected) this.selected = movedFilePath(this.selected,move);this.buttons.clear();this.paint();this.hooks.scope?.();
+  }
+  reveal(rootId:string,parent:string,path?:string):void {
+    if (rootId !== this.root?.id) return;
+    const parts = parent.split('/').filter(Boolean);for (let index = 1;index <= parts.length;index++) {const ancestor = parts.slice(0,index).join('/');const directory = this.directories.get(ancestor);if (directory) directory.expanded = true;else void this.load(ancestor);}
+    this.invalidate(rootId,[parent]);if (path) void this.load(path);
+  }
   selectFile(rootId?:string,path?:string):void {
     const selected = rootId === this.root?.id ? path : undefined;
     if (selected === this.selected) return;
@@ -52,23 +80,27 @@ export class FilesTree {
     const directory = this.prepareDirectory(path); if (!directory) return;
     const generation = this.generation;
     try {
+      if (this.hooks.scope) await this.hooks.scope();if (generation !== this.generation || root.id !== this.root?.id) return;
       const page = await this.hooks.page(root.id, path, append ? directory.nextCursor ?? undefined : undefined);
       if (generation !== this.generation || root.id !== this.root?.id) return;
       if (page.rootId !== root.id || page.path !== path) throw new Error('The folder response identity changed.');
       this.applyPage(directory, page, append);
     } catch (error) { this.loadError(directory, error, generation); }
-    finally { if (generation === this.generation) {directory.loading = false; this.paint();} }
+    finally {this.settleLoad(path,directory,generation);}
   }
+  private settleLoad(path:string,directory:Directory,generation:number):void {if (generation !== this.generation) return;directory.loading = false;this.paint();void this.hooks.scope?.();if (directory.again) {directory.again = false;this.dirty.add(path);this.scheduleRefresh();}}
+
   private choose(entry: FileEntry): void {
+    this.pendingFocus = undefined;
     if (entry.kind === 'directory') {
       const directory = this.directories.get(entry.path);
-      if (directory) {directory.expanded = !directory.expanded;this.paint();} else void this.load(entry.path);
+      if (directory) {directory.expanded = !directory.expanded;this.paint();this.hooks.scope?.();} else void this.load(entry.path);
     } else if (entry.kind === 'file' && this.root) {this.selected = entry.path;this.paint(); this.hooks.select(this.root.id, entry.path);}
   }
   private rowButton(entry: FileEntry): HTMLButtonElement {
     const existing = this.buttons.get(entry.path); if (existing) return existing;
     const button = element('button', 'file-row'); button.type = 'button'; button.dataset.path = entry.path;
-    this.buttons.set(entry.path, button); button.addEventListener('click', () => this.choose(entry));button.addEventListener('dblclick',()=> {if (entry.kind === 'file' && this.root) this.hooks.keep?.(this.root.id,entry.path);}); return button;
+    this.buttons.set(entry.path, button); button.addEventListener('click', () => {const current = this.entry(button.dataset.path ?? '');if (current) this.choose(current);});button.addEventListener('dblclick',()=> {const current = this.entry(button.dataset.path ?? '');if (current?.kind === 'file' && this.root) this.hooks.keep?.(this.root.id,current.path);}); return button;
   }
   private paintRow({entry, depth}: FileTreeRow, tabStop?: string): HTMLButtonElement {
     const button = this.rowButton(entry);
@@ -105,7 +137,22 @@ export class FilesTree {
       const row = rows.find(row => row.entry.path === path);
       if (path && row) children.push(...this.directoryStatus(path, directory, row.depth + 1));
     }
-    this.node.replaceChildren(...children); if (focus && tabStop) this.buttons.get(tabStop)?.focus({preventScroll: true});
+    this.namingChildren(children);this.syncChildren(children);
+    this.restoreFocus(focus,tabStop);
+    const retained = new Set(rows.map(row=>row.entry.path));for (const path of this.buttons.keys()) if (!retained.has(path)) this.buttons.delete(path);
+  }
+  private restoreFocus(focus?:string,tabStop?:string):void {
+    if (this.pendingFocus && !this.naming && this.node.contains(document.activeElement)) {const button = this.buttons.get(this.pendingFocus);if (button) {this.pendingFocus = undefined;button.focus({preventScroll:true});return;}}
+    if (focus && tabStop && !this.naming) this.buttons.get(tabStop)?.focus({preventScroll:true});
+  }
+  private namingChildren(children:HTMLElement[]):void {
+    const naming = this.naming;if (!naming) return;
+    if (!createAction(naming.action)) {const index = children.findIndex(node=>node.dataset.path === naming.path);if (index >= 0) children.splice(index,1,naming.row);else children.push(naming.row);}
+    else {const parent = children.findIndex(node=>node.dataset.path === naming.parent);children.splice(parent >= 0 ? parent + 1 : 0,0,naming.row);}
+  }
+  private syncChildren(children:HTMLElement[]):void {
+    const desired = new Set(children);for (const child of [...this.node.children]) if (!desired.has(child as HTMLElement)) child.remove();
+    let anchor:Node|null = this.node.firstChild;for (const child of children) {if (child === anchor) anchor = anchor.nextSibling;else placeRetained(child,this.node,anchor);}
   }
   private left(row: FileTreeRow, rows: FileTreeRow[]): FileTreeRow | undefined {
     const directory = this.directories.get(row.entry.path);
@@ -133,10 +180,61 @@ export class FilesTree {
     for (const button of this.buttons.values()) button.tabIndex = -1;
     const button = this.buttons.get(row.entry.path); if (button) {button.tabIndex = 0; button.focus();}
   }
+  private entry(path:string):FileEntry|undefined {return [...this.directories.values()].flatMap(directory=>directory.entries).find(entry=>entry.path === path);}
+  private menu(origin:HTMLElement,point:{x:number;y:number}):void {
+    if (!this.root || !this.hooks.operation || this.naming?.busy) return;
+    const root = this.root,entry = this.entry(origin.closest<HTMLElement>('[data-path]')?.dataset.path ?? '');
+    if (entry && entry.kind !== 'file' && entry.kind !== 'directory') return;
+    const items = [{label:'New file',run:()=>this.name('file',entry)},{label:'New folder',run:()=>this.name('directory',entry)}];
+    if (entry) items.push({label:'Rename',run:()=>this.name('rename',entry)},{label:'Move',run:()=>this.name('move',entry)},{label:'Move to Trash',run:()=>this.trash(entry)});
+    contextMenu.open(origin,point,'File actions',items,()=>this.root === root && (!entry || !!this.entry(entry.path)));
+  }
+  private name(action:Naming['action'],entry?:FileEntry):void {
+    if (!this.root || !this.hooks.operation || this.naming?.busy) return;
+    this.pendingFocus = undefined;
+    const path = entry?.path ?? '',parent = createAction(action) && entry?.kind === 'directory' ? path : parentPath(path);
+    const depth = parent ? parent.split('/').length : 0,row = element('div','file-row file-naming'),input = element('input','file-name-input');
+    row.style.setProperty('--file-depth',String(depth));row.setAttribute('role','treeitem');input.setAttribute('aria-label',namingLabel(action));input.autocomplete = 'off';input.spellcheck = false;
+    input.value = action === 'move' ? path : action === 'rename' ? entry?.name ?? '' : '';row.append(cardIcon(action === 'directory' || entry?.kind === 'directory' ? 'folder' : 'file'),input);
+    const naming:Naming = {action,path,parent,depth,row,input,busy:false};this.naming = naming;
+    input.addEventListener('keydown',event=>this.namingKey(event,naming));
+    this.paint();input.focus();input.setSelectionRange(0,input.value.length);
+    if (createAction(action) && parent && !this.directories.get(parent)?.expanded) void this.load(parent);
+  }
+  private namingKey(event:KeyboardEvent,naming:Naming):void {
+    if (event.isComposing) return;
+    if (event.key === 'Escape' && !naming.busy) {event.preventDefault();event.stopPropagation();this.naming = undefined;this.paint();this.buttons.get(naming.path)?.focus();}
+    else if (event.key === 'Enter') {event.preventDefault();event.stopPropagation();if (!event.repeat) void this.submit(naming);}
+  }
+  private async submit(naming:Naming):Promise<void> {
+    const root = this.root;if (!root || !this.hooks.operation || naming.busy || this.naming !== naming) return;
+    const value = naming.input.value;
+    if (!value || (naming.action !== 'move' && /[/\\]/.test(value))) {this.hooks.status?.('Enter a file or folder name without a separator.');return;}
+    const generation = this.generation;naming.busy = true;naming.input.readOnly = true;
+    try {await this.hooks.operation(root.id,naming.action,createAction(naming.action) ? naming.parent : naming.path,value);if (generation === this.generation && this.naming === naming) this.finishNaming(naming,value);}
+    catch(error) {if (generation === this.generation && this.naming === naming) {this.hooks.status?.(error instanceof Error ? error.message : 'The file action failed.');naming.busy = false;naming.input.readOnly = false;naming.input.focus();}}
+  }
+  private finishNaming(naming:Naming,value:string):void {
+    const focus = document.activeElement === naming.input;this.naming = undefined;this.paint();if (!focus || naming.action === 'file') return;
+    this.pendingFocus = naming.action === 'move' ? value : [naming.parent,value].filter(Boolean).join('/');this.node.focus({preventScroll:true});this.restoreFocus();
+  }
+  private trash(entry:FileEntry):void {if (this.root && this.hooks.operation) void this.hooks.operation(this.root.id,'trash',entry.path).catch(error=>this.hooks.status?.(error instanceof Error ? error.message : 'The file action failed.'));}
+  private menuKey(event:KeyboardEvent):boolean {
+    if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return false;
+    event.preventDefault();const origin = event.target as HTMLElement,rect = origin.getBoundingClientRect();this.menu(origin,{x:rect.left,y:rect.bottom});return true;
+  }
+  private operationKey(event:KeyboardEvent):boolean {
+    const origin = event.target as HTMLElement,entry = this.entry(origin.dataset.path ?? '');
+    if (event.key === 'F2' && entry) {event.preventDefault();this.name('rename',entry);return true;}
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {event.preventDefault();this.name(event.shiftKey ? 'directory' : 'file',entry);return true;}
+    if ((event.key === 'Delete' || event.key === 'Backspace' && event.metaKey) && entry) {event.preventDefault();this.trash(entry);return true;}
+    return false;
+  }
   private key(event: KeyboardEvent): void {
-    if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
+    if (nativeEditingTarget(event.target) || event.isComposing || this.menuKey(event) || this.operationKey(event)) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     const rows = visibleFileRows(this.directories).filter(row => row.entry.kind === 'file' || row.entry.kind === 'directory');
-    const path = (event.target as HTMLElement).dataset.path; const index = rows.findIndex(row => row.entry.path === path); const row = rows[index];
+    const focusedPath = (event.target as HTMLElement).dataset.path; const index = rows.findIndex(row => row.entry.path === focusedPath); const row = rows[index];
     if (event.key === 'Escape') {event.preventDefault(); this.hooks.escape(); return;}
     if (!row) return;
     const next = this.keyDestination(event.key, row, rows, index); if (next === false) return;

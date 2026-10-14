@@ -313,6 +313,7 @@ function fixtureCatalogRead(path:string):unknown {
   if (path.includes('/resources/')) return {items: [], nextCursor: null, revision: 'r'};
 }
 function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
+  if (path.endsWith('/files/watch')) return {roots:((body?.roots ?? []) as {rootId:string}[]).map(root=>({rootId:root.rootId,watch:'live'}))};
   if (path.endsWith('/files/root')) return fixtureFileRoot(path,body);
   if (path.endsWith('/directory')) return {rootId:decodeURIComponent(path.split('/')[4] ?? ''),path:'',entries:[],nextCursor:null,revision:'r',coverage:{complete:true,visited:0}};
   const catalog = fixtureCatalogRead(path);if (catalog !== undefined) return catalog;

@@ -1,4 +1,5 @@
 import { LIMITS, workspaceTabKey, type ConversationLayout, type WorkspaceTab as ConversationTab, type Target, type Workspace } from '../shared/api.ts';
+import {movedFileKey,type FileMove} from './file-identity.ts';
 import { activatePaneTab, closePaneTab, createPaneLayout, openPaneTab, paneById, paneForTab } from './pane-layout.ts';
 
 export const MAX_TABS = LIMITS.conversationTabs;
@@ -33,6 +34,7 @@ export class FileBrowseState {
   private transient = new Map<string,string>();
   keep(key:string):void {for (const [pane,current] of this.transient) if (current === key) this.transient.delete(pane);}
   hold():void {this.transient.clear();}
+  remap(move:FileMove):void {for (const [pane,key] of this.transient) this.transient.set(pane,movedFileKey(key,move));}
   choose(layout:ConversationLayout,tab:Extract<ConversationTab,{kind:'file'}>,modified:(key:string)=>boolean):ConversationLayout {
     const key = tabKey(tab), existing = paneForTab(layout,key);if (existing) return activatePaneTab(layout,existing.id,key);
     const pane = layout.focusedPane, previous = this.transient.get(pane);
