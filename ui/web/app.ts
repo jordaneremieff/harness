@@ -1,15 +1,15 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
-import { draftImageFingerprint } from '../shared/api.ts';
+import { draftImageFingerprint, LIMITS } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
-import type {FileDirectoryPage, FileRootSelection, FileText} from '../shared/files.ts';
+import type {FileDirectoryPage, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave} from '../shared/files.ts';
 import {FilesTree} from './files-tree.ts';
 import {FilesViews} from './files-views.ts';
 import {FileRootChoice} from './file-root.ts';
-import { activeTab, closeTab, duplicateIdentityTails, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
+import { activeTab, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
-import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
+import { cardAction, controlIcon, type CardIcon } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
@@ -123,7 +123,7 @@ function viewPane(node: HTMLElement): HTMLElement | null {return stableViews().s
 function conversationController(target: Target): ConversationController {
   const workspaceId = state.workspace?.id; if (!workspaceId) throw new Error('No workspace is selected.');
   const key = controllerKey(workspaceId, target); const existing = controllers.get(key); if (existing) return existing;
-  collectControllers(); if (controllers.size >= 16) throw new Error('Close a settled conversation before opening another.');
+  collectControllers(); if (controllers.size >= LIMITS.conversationTabs) throw new Error('Close a settled conversation before opening another.');
   const instanceId = `conversation-${++controllerSerial}`; const root = element('section', 'conversation'); root.id = instanceId; root.hidden = true; root.inert = true;
   const nodes = new Map<string, HTMLElement>(); const add = (name: string, tag: 'div' | 'p' | 'h2' | 'button', css?: string): HTMLElement => {
     const node = element(tag, css); node.id = `${instanceId}-${name}`; nodes.set(name, node); return node;
@@ -213,22 +213,28 @@ const references = new ReferenceResolver(resolveReference, destination => { void
 const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
+const fileBrowse = new FileBrowseState();
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
-  move: (key, pane, index) => applyLayout(movePaneTab(currentLayout(), key, pane, index)), label: tabLabel,
-  status: tab => { if (tab.kind === 'file') return {label:'',glyph:''};const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view)}; },
+  move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,keep:key=>fileBrowse.keep(key),
+  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : ''};}const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view)}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 export const filesViews = new FilesViews(stableViews,(workspace,tab,signal)=>request<FileText>(`/api/files/roots/${encodeURIComponent(tab.rootId)}/text?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`,'GET',undefined,undefined,signal),()=>state.workspace,
-  (workspace,key,position)=> {if (state.workspace?.id === workspace) void selection({filePositions:{[key]:position}}).catch(showError);},renderWorkbenchStatus);
+  (workspace,key,position)=> {if (state.workspace?.id === workspace) void selection({filePositions:{[key]:position}}).catch(showError);},()=> {if (state.workspace) for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) if (tab.kind === 'file' && filesViews.owner(state.workspace.id,tab)?.modified) fileBrowse.keep(tabKey(tab));tabStrip.render();renderWorkbenchStatus();}, {
+    draft:(workspace,tab,signal)=>request<FileDraftState>(fileDocumentRoute(workspace,tab,'draft'),'GET',undefined,undefined,signal),
+    put:(workspace,tab,expectedRevision,base,text,encoding)=>request<FileDraft>(fileDocumentRoute(workspace,tab,'draft'),'PUT',{expectedRevision,base,text,encoding}),
+    save:(workspace,tab,expectedRevision)=>request<FileSave>(fileDocumentRoute(workspace,tab,'text'),'PUT',{expectedRevision}),
+  });
+function fileDocumentRoute(workspace:string,tab:FileTab,kind:'draft'|'text'):string {return `/api/files/roots/${encodeURIComponent(tab.rootId)}/${kind}?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`;}
 export const filesTree = new FilesTree(byId('files-tree'),{
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
-  select:chooseFile,escape:focusEditor});
+  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),escape:focusEditor});
 export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();});
 export function chooseFile(rootId:string,path:string):void {
   if (!state.workspace) return;
-  try {applyLayout(openTab(currentLayout(),{kind:'file',rootId,path}));focusEditor();} catch (error) {showError(error);}
+  try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));focusEditor();} catch (error) {showError(error);}
 }
 function renderFiles():void {
   const workspace = state.workspace;if (!workspace) return;
@@ -366,7 +372,7 @@ function projectPath(): string | undefined { return fileRoot.selection?.root?.pa
 function renderWorkbenchStatus(): void {
   const tab = activeTab(currentLayout());
   const editingMessage = footerController && messageTarget.current?.identity === (footerController.target.kind === 'agent' ? footerController.target.identity : undefined) && footerController.elements.root.contains(document.activeElement);
-  if (tab?.kind === 'file' && !editingMessage) {footerController = undefined;workbenchStatus.update('file',tab.path,'',tab.path);byId('focused-composer-status').replaceChildren();byId<HTMLAnchorElement>('skip-composer').href = '#files-tree';return;}
+  if (tab?.kind === 'file' && !editingMessage) {renderFileWorkbenchStatus(tab);return;}
   const selected = layoutTarget(currentLayout(), primaryTarget()) ?? undefined;
   const target = editingMessage ? footerController?.target : selected;
   const controller = target ? conversationController(target) : undefined; footerController = controller;
@@ -375,6 +381,12 @@ function renderWorkbenchStatus(): void {
   const slot = byId('focused-composer-status'), nodes = controller ? [controller.elements.save, controller.elements.receiptDetails] : [];
   if (slot.children.length !== nodes.length || nodes.some((node, index) => slot.children[index] !== node)) slot.replaceChildren(...nodes);
   if (target?.kind === 'agent') renderAgentSettings(view, target);
+}
+function renderFileWorkbenchStatus(tab:FileTab):void {
+  footerController = undefined;const owner = state.workspace && filesViews.owner(state.workspace.id,tab);workbenchStatus.update('file',tab.path,owner?.status ?? '',tab.path);
+  const slot = byId('focused-composer-status');slot.replaceChildren();
+  if (owner?.conflict) {const controls = element('span','file-status-actions');controls.append(button('Re-read file',()=> {void owner.reread();}),button('Keep editing',()=>focusEditor()));slot.append(controls);}
+  byId<HTMLAnchorElement>('skip-composer').href = '#files-tree';
 }
 function renderIdentity(): void {
   renderWorkbenchStatus();
@@ -399,6 +411,8 @@ function currentLayout(): ConversationLayout { return workspaceLayout(state.work
 export function splitActive(): boolean { return paneLeaves(currentLayout().root).length > 1; }
 function hasConversation(): boolean { return !!primary() || paneLeaves(currentLayout().root).some(pane => !!pane.active); }
 export function applyLayout(layout: ConversationLayout): void {
+  const old = currentLayout();if (paneLeaves(old.root).length !== paneLeaves(layout.root).length) fileBrowse.hold();
+  for (const pane of paneLeaves(old.root)) for (const tab of pane.tabs) if (tab.kind === 'file' && !paneById(layout,pane.id)?.tabs.some(current=>tabKey(current) === tabKey(tab))) fileBrowse.keep(tabKey(tab));
   devInteractionRevision++; drawerOpen = false; tabStrip.requestReveal();
   const target = layoutTarget(layout, primaryTarget());
   void selection({conversationLayout: layout,...(activeTab(layout)?.kind === 'file' ? {} : {selectedTarget:target,panelVisible:target?.kind === 'agent'}),...(state.workspace ? {filePositions:Object.fromEntries(Object.entries(filesViews.positions(state.workspace)).filter(([key])=>paneLeaves(layout.root).some(pane=>pane.tabs.some(tab=>tabKey(tab) === key))))} : {})}).catch(showError);
@@ -1339,7 +1353,7 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
 function paneSpace(id: string): {width: number; height: number; divider: number} { const box = paneRegions.get(id)?.node.getBoundingClientRect(); return {width: box?.width ?? 0, height: box?.height ?? 0, divider: 4}; }
 function paneTabChoices(leaf: PaneLeaf, layout: ConversationLayout): ContextItem[] {
   const tabs = paneLeaves(layout.root).flatMap(pane => pane.tabs);
-  const tails = duplicateIdentityTails(tabs.map(tab => ({name: tabLabel(tab), identity: tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary'})));
+  const tails = duplicateTabTails(tabs,tabLabel);
   return leaf.tabs.map(tab => {
     const name = tabLabel(tab), tail = tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary');
     return {label: tail ? `${name} · ${tail}` : name, description: tab.kind === 'file' ? tab.path : tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(leaf.id, tabKey(tab))};
@@ -1359,12 +1373,24 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
     }, closeTab: key => applyLayout(closeTab(currentLayout(), key)), activate: activateConversationTab,
     conversation: openConversationActions,
     overflow: purpose === 'context' && region.menu.dataset.overflow === 'true'});
-  if (tab?.kind === 'file') items.push({label:'Refresh file',separatorBefore:true,run:()=> {if (valid()) void filesViews.view(workspace,tab).owner.load(true);}});
+  if (tab?.kind === 'file') items.push(...fileMenuItems(workspace,tab,valid));
+  if (leaf) items.push(...closeViewMenuItems(leaf,key ?? leaf.active,valid));
   if (purpose === 'list' && leaf) {
     const first = items[0]; if (first) items[0] = {...first, heading: 'Pane actions', separatorBefore: true};
     items.unshift(...paneTabChoices(leaf, layout));
   }
   const trigger = region.menu; const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, event ? {x: event.clientX, y: event.clientY} : {x: box.right, y: box.bottom}, purpose === 'list' ? 'Tabs in this pane' : 'Tab and view actions', items, () => valid() && (!owner || owner.workspaceId === state.workspace?.id));
+}
+function fileMenuItems(workspace:Workspace,tab:FileTab,valid:()=>boolean):ContextItem[] {
+  const items:ContextItem[] = [{label:'Keep tab',separatorBefore:true,run:()=> {if (valid()) fileBrowse.keep(tabKey(tab));}},
+    {label:'Re-read file',run:()=> {if (valid()) void filesViews.view(workspace,tab).owner.reread();}}];
+  if (/\.(md|markdown|mdown)$/i.test(tab.path)) items.push({label:tab.view === 'preview' ? 'File source' : 'Markdown preview',run:()=> {
+    if (!valid()) return;fileBrowse.keep(tabKey(tab));applyLayout(openTab(currentLayout(),{kind:'file',rootId:tab.rootId,path:tab.path,...(tab.view === 'preview' ? {} : {view:'preview'})}));focusEditor();
+  }});return items;
+}
+function closeViewMenuItems(leaf:PaneLeaf,key:string|null,valid:()=>boolean):ContextItem[] {
+  const close = (keep:string|null):void=> {if (!valid()) return;let next = currentLayout();for (const tab of leaf.tabs) if (tabKey(tab) !== keep) next = closeTab(next,tabKey(tab));applyLayout(next);};
+  return [{label:'Close others',enabled:leaf.tabs.length > 1,run:()=>close(key)},{label:'Close all',run:()=>close(null)}];
 }
 function choosePaneTarget(pane: string, axis?: 'x' | 'y'): void {
   const workspace = state.workspace, layout = currentLayout(); if (!workspace || !paneById(layout, pane)) return;
@@ -1380,7 +1406,7 @@ function choosePaneTarget(pane: string, axis?: 'x' | 'y'): void {
   });
 }
 export function openTabsList(pane: Pane = focusedPane): void { openPaneMenu(pane, undefined, undefined, 'list'); }
-function tabLabel(tab: ConversationTab): string { return tab.kind === 'file' ? tab.path.split('/').at(-1) ?? tab.path : tabPresentation(tab).name; }
+function tabLabel(tab: ConversationTab): string { return tab.kind === 'file' ? `${tab.path.split('/').at(-1) ?? tab.path}${tab.view === 'preview' ? ' preview' : ''}` : tabPresentation(tab).name; }
 let dismissedPointer = false;
 export function dismissDrawerPointer(event: PointerEvent): void {
   dismissedPointer = false;
@@ -1419,7 +1445,6 @@ function bind(): void {
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
     if (count) node.append(count);
   }
-  byId('agents-heading').prepend(cardIcon('chevron'));byId('files-heading').prepend(cardIcon('chevron'));
   byId('files-heading').addEventListener('click',()=>setSidebarSection('files',!sidebarSections.files));
   byId('files-refresh').addEventListener('click',()=>filesTree.refresh());
   for (const name of ['input', 'change', 'keydown', 'pointerdown', 'select', 'scroll', 'compositionstart', 'compositionend'] as const) document.addEventListener(name, event => {if (event.isTrusted) devInteractionRevision++;}, {capture: true, passive: true});
@@ -1487,7 +1512,7 @@ async function waitForSignal<T>(promise: Promise<T>, signal: AbortSignal): Promi
   try {return await Promise.race([promise, cancelled]);} finally {signal.removeEventListener('abort', abort);}
 }
 export async function drainDev(signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted();filesViews.drain(); await waitForSignal(selectionQueue.drain(), signal);
+  signal.throwIfAborted();await waitForSignal(filesViews.drain(),signal); await waitForSignal(selectionQueue.drain(), signal);
   await Promise.all([...controllers.values()].map(controller => controller.composer.drain(signal)));
   await waitForSignal(preferences.drain(), signal); signal.throwIfAborted();
   if (selectionQueue.unsettled || preferences.pending || [...controllers.values()].some(controller => controller.composer.unsaved || controller.composer.reloadHold)) throw new Error('Retained writes changed during the drain.');

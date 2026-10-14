@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type {ConversationLayout, Workspace} from '../shared/api.ts';
+import {LIMITS, type ConversationLayout, type Workspace} from '../shared/api.ts';
 import type {Registry} from './registry.mts';
 import {dispatchView} from './routes-view.mts';
 
@@ -34,11 +34,11 @@ test('pure concurrent selection responds before observation setup completes',{ti
     assert.deepEqual(saved.conversationLayout,layout());assert.equal(f.observed,1);assert.equal(completed,false);
   } finally {release();await observation;}
 });
-test('pure concurrent layout admits sixteen tabs and bounded split ratios',async()=> {
+test('pure concurrent layout admits the conversation bound and bounded split ratios',async()=> {
   const f=fixture();
   for(const ratio of [20,80]) {
     const conversationLayout:ConversationLayout={root:{kind:'split',id:'split',axis:'y',ratio,
-      first:{kind:'pane',id:'first',tabs:Array.from({length:15},(_,i)=>({kind:'agent',identity:`a${i}`})),active:'agent:a0'},
+      first:{kind:'pane',id:'first',tabs:Array.from({length:LIMITS.conversationTabs-1},(_,i)=>({kind:'agent',identity:`a${i}`})),active:'agent:a0'},
       second:{kind:'pane',id:'second',tabs:[{kind:'primary'}],active:'primary'}},focusedPane:'second'};
     assert.deepEqual((await f.select({expectedRevision:0,conversationLayout}) as Workspace).conversationLayout,conversationLayout);
   }
@@ -48,7 +48,7 @@ test('pure concurrent malformed closed trees reject before state or observation 
     {...one,root:{...one.root,active:'missing'}},{...one,root:{kind:'pane',id:'pane',tabs:[],active:'primary'}},
     {...one,root:{kind:'pane',id:'pane',tabs:[{kind:'primary'},{kind:'primary'}],active:'primary'}},
     {...one,root:{kind:'pane',id:'pane',tabs:[{kind:'agent',identity:'bad\nidentity'}],active:'agent:bad\nidentity'}},
-    {...one,root:{kind:'pane',id:'pane',tabs:Array.from({length:17},(_,i)=>({kind:'agent',identity:`a${i}`})),active:'agent:a0'}},
+    {...one,root:{kind:'pane',id:'pane',tabs:Array.from({length:LIMITS.conversationTabs+1},(_,i)=>({kind:'agent',identity:`a${i}`})),active:'agent:a0'}},
     {tabs:[{kind:'primary'}],active:0,splitRatio:50}];
   for(const conversationLayout of invalid) await assert.rejects(f.select({expectedRevision:0,conversationLayout}));
   assert.deepEqual(f.changes,[]);assert.equal(f.observed,0);

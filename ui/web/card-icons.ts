@@ -1,11 +1,12 @@
 import { button, element, setText } from './dom.ts';
 
-export type CardIcon = 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected' | 'file';
+export type CardIcon = 'copy' | 'wrap' | 'chevron' | 'disclosure' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected' | 'file';
 const paths: Record<CardIcon, string> = {
   file: 'M3 2h6l4 4v8H3Z M9 2v4h4 M5 9h6 M5 11h4',
   copy: 'M6 5V2h8v9h-3 M2 5h8v9H2Z',
   wrap: 'M2 3h12 M2 7h9a3 3 0 0 1 0 6H7 M9 11l-2 2 2 2 M2 11h2',
   chevron: 'M6 3l5 5-5 5',
+  disclosure: 'M3 8h10 M8 3v10',
   success: 'M3 8l3 3 7-7',
   error: 'M8 2v7 M8 12v1',
   working: 'M8 2a6 6 0 1 1-6 6',
@@ -57,5 +58,5 @@ export function cardActionLabel(node: HTMLButtonElement, label: string, descript
 }
 export function cardDisclosure(summary: HTMLElement): void {
   summary.classList.add('card-disclosure');
-  if (!summary.querySelector('.card-icon-chevron')) summary.prepend(cardIcon('chevron', summary.ownerDocument));
+  if (!summary.querySelector('.card-icon-disclosure')) summary.prepend(cardIcon('disclosure', summary.ownerDocument));
 }

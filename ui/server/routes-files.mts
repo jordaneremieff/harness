@@ -3,6 +3,7 @@ import type {HttpBackend, RequestContext} from './http.mts';
 import type {Files} from './files.mts';
 import {filePath} from './file-access.mts';
 import {ApiError} from './errors.mts';
+import {validateFileRevision, validateFileDraftText, validateFileEncoding} from './file-state.mts';
 import * as v from './validate.mts';
 export function isFileRoute(parts:string[]):boolean {return parts[1] === 'files' || parts[1] === 'workspaces' && parts[3] === 'files';}
 function queryFields(url:URL,allowed:string[]):void {
@@ -30,16 +31,30 @@ function directoryRequest(files:Files,rootId:string,path:string,url:URL,signal?:
   if (cursor !== null && (!cursor || cursor.length > LIMITS.cursorBytes)) throw new ApiError('invalid_request','The directory cursor is invalid.');
   return files.request({kind:'directory',rootId,path,limit,...(cursor ? {cursor} : {})},signal);
 }
+function mutationRequest(files:Files,rootId:string,path:string,context:RequestContext) {
+  const {parts,method,body,signal} = context;
+  if (method === 'PUT' && parts[4] === 'draft') {
+    v.fields(body,['expectedRevision','base','text','encoding'],['expectedRevision','base','text','encoding']);validateFileRevision(body.base);validateFileDraftText(body.text);validateFileEncoding(body.encoding);
+    return files.request({kind:'put-draft',rootId,path,expectedRevision:v.integer(body.expectedRevision,'file draft revision'),base:body.base,text:body.text,encoding:body.encoding},signal);
+  }
+  if (method === 'PUT' && parts[4] === 'text') {
+    v.fields(body,['expectedRevision'],['expectedRevision']);return files.request({kind:'save',rootId,path,expectedRevision:v.integer(body.expectedRevision,'file draft revision')},signal);
+  }
+  throw new ApiError('invalid_request','The file route does not accept this request.',405);
+}
 export async function dispatchFiles(files:Files,backend:HttpBackend,context:RequestContext) {
   const {parts,method,url,signal} = context;
   if (parts[1] === 'workspaces' && parts.length === 5 && parts[3] === 'files' && parts[4] === 'root') return rootRequest(files,backend,context);
-  if (parts[1] === 'files' && parts[2] === 'roots' && parts.length === 5 && method === 'GET' && (parts[4] === 'directory' || parts[4] === 'text')) {
+  if (parts[1] === 'files' && parts[2] === 'roots' && parts.length === 5 && (parts[4] === 'directory' || parts[4] === 'text' || parts[4] === 'draft')) {
     queryFields(url,parts[4] === 'directory' ? ['path','workspace','limit','cursor'] : ['path','workspace']);
-    if (context.operationId) throw new ApiError('invalid_request','File reads do not accept an operation key.');
+    if (context.operationId) throw new ApiError('invalid_request','File requests do not accept an operation key.');
     await backend.workspace(v.string(url.searchParams.get('workspace'),'workspace ID'));
     const rootId = v.string(parts[3],'root ID'), path = filePath(url.searchParams.get('path'),parts[4] === 'directory');
-    if (parts[4] === 'text') return files.request({kind:'text',rootId,path},signal);
-    return directoryRequest(files,rootId,path,url,signal);
+    if (method === 'GET') {
+      if (parts[4] === 'text' || parts[4] === 'draft') return files.request({kind:parts[4],rootId,path},signal);
+      return directoryRequest(files,rootId,path,url,signal);
+    }
+    return mutationRequest(files,rootId,path,context);
   }
   throw new ApiError('invalid_request','The file route does not accept this request.',405);
 }

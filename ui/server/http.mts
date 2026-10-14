@@ -124,8 +124,10 @@ async function readBody(request: IncomingMessage, limit: number = LIMITS.request
     return value as Record<string, unknown>;
   } catch { throw new ApiError('invalid_request', 'The request body is not a JSON object.'); }
 }
-function requestBody(request:IncomingMessage,method:string):Promise<Record<string,unknown>> {
-  return method === 'GET' || method === 'DELETE' ? Promise.resolve({}) : readBody(request);
+function fileMutationRoute(method:string,parts:string[]):boolean {return method === 'PUT' && parts.length === 5 && parts[1] === 'files' && parts[2] === 'roots' && (parts[4] === 'draft' || parts[4] === 'text');}
+function requestBody(request:IncomingMessage,method:string,parts:string[]):Promise<Record<string,unknown>> {
+  const fileMutation = fileMutationRoute(method,parts);
+  return method === 'GET' || method === 'DELETE' ? Promise.resolve({}) : readBody(request,fileMutation ? LIMITS.fileResponseBytes : LIMITS.requestBytes);
 }
 function respond(response: ServerResponse, data: unknown, status = 200) {
   const json = JSON.stringify({ok: true, data});
@@ -205,7 +207,8 @@ export class LocalHttp {
     if (asset) return this.staticAsset(method, url.pathname === '/' ? this.versionDocument(asset) : asset, response);
     if (!isFileRoute(parts)) matchRoute(method, parts);
     if (this.savedImageRoute(method, parts, 'POST', 6)) return this.uploadImage(request, response, url, parts, this.auth.session(request));
-    const body = await requestBody(request,method);
+    if (fileMutationRoute(method,parts)) this.auth.session(request);
+    const body = await requestBody(request,method,parts);
     if (url.pathname === '/api/auth/launch') return this.launch(body, response);
     const session = this.auth.session(request);
     if (url.pathname === '/api/auth/logout') return this.logout(session, response);

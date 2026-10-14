@@ -6,3 +6,15 @@ export type FileDirectoryPage = {rootId: string; path: string; entries: FileEntr
 export type FileRevision = {size: number; mtimeMs: number; digest: string};
 /** Exact decoded UTF-8 source, independent of display normalization. */
 export type FileText = {rootId: string; path: string; text: string; revision: FileRevision};
+export type FileEncoding = {bom: boolean; ending: 'lf' | 'crlf'; writable: boolean};
+export type FileDraft = {revision: number; base: FileRevision; encoding: FileEncoding; text: string};
+export type FileDraftState = {revision: number; draft: FileDraft | null};
+export type FileSave = {source: FileText; draft: FileDraft};
+export function sameFileEncoding(a:FileEncoding,b:FileEncoding):boolean {return a.bom === b.bom && a.ending === b.ending && a.writable === b.writable;}
+export function sameFileRevision(a: FileRevision, b: FileRevision): boolean {return a.size === b.size && a.mtimeMs === b.mtimeMs && a.digest === b.digest;}
+/** Native textarea source excludes only the initial BOM and normalizes CRLF. */
+export function fileSource(text: string): {text: string; encoding: FileEncoding} {
+  const bom = text.startsWith('\ufeff'); const source = bom ? text.slice(1) : text;
+  const crlf = source.includes('\r\n'), rest = source.replace(/\r\n/g, '');
+  return {text: source.replace(/\r\n?/g, '\n'), encoding: {bom, ending: crlf ? 'crlf' : 'lf', writable: !rest.includes('\r') && !(crlf && rest.includes('\n'))}};
+}

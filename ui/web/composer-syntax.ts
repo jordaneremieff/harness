@@ -4,10 +4,13 @@ export const DECORATION_LINES = 500;
 export const DECORATION_SPANS = 2048;
 type Fence = {char: string; length: number; language: string; body: number};
 function inlineRanges(line: string, offset: number): TokenRange[] {
-  const ranges: TokenRange[] = [], runs = [...line.matchAll(/`+/g)];
+  const ranges: TokenRange[] = [], runs = [...line.matchAll(/`+/g)], next = new Map<number,number>(), closes:number[] = [];
+  for (let i = runs.length - 1;i >= 0;i--) {
+    const run = runs[i];if (!run) continue;closes[i] = next.get(run[0].length) ?? -1;next.set(run[0].length,i);
+  }
   for (let i = 0; i < runs.length; i++) {
     const open = runs[i]; if (!open) continue;
-    const close = runs.findIndex((run, index) => index > i && run[0].length === open[0].length);
+    const close = closes[i] ?? -1;
     const match = runs[close]; if (!match || open.index === undefined || match.index === undefined) continue;
     ranges.push({start: offset + open.index, end: offset + match.index + match[0].length, tone: 'string'}); i = close;
   }

@@ -85,17 +85,17 @@ function entry(value: unknown): value is DevCheckpointEntry {
   return record(s, ['start', 'end', 'direction']) && integer(s.start) && integer(s.end) && s.start <= s.end && s.end <= 262144 && typeof s.direction === 'string' && ['forward', 'backward', 'none'].includes(s.direction);
 }
 function fileList(value:unknown):value is DevFileCheckpoint[] {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 16) return false;
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
   const descriptors = Object.getOwnPropertyDescriptors(value);
   if (Reflect.ownKeys(value).length !== value.length + 1) return false;
   return Array.from({length:value.length},(_,index)=>descriptors[String(index)]).every(descriptor=> {
     if (!descriptor || !Object.hasOwn(descriptor,'value')) return false;
     const file:unknown = descriptor.value;
-    return record(file,['tab','position','digest','focused']) && record(file.tab,['kind','rootId','path']) && validFileTab(file.tab) && filePosition(file.position) && typeof file.digest === 'string' && GENERATION.test(file.digest) && typeof file.focused === 'boolean';
+    return record(file,['tab','position','digest','focused']) && record(file.tab,['kind','rootId','path'],['view']) && validFileTab(file.tab) && filePosition(file.position) && typeof file.digest === 'string' && GENERATION.test(file.digest) && typeof file.focused === 'boolean';
   });
 }
 function targetList(value: unknown): value is DevCheckpointEntry[] {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 16) return false;
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 128) return false;
   const descriptors = Object.getOwnPropertyDescriptors(value);
   if (Reflect.ownKeys(value).length !== value.length + 1) return false;
   return Array.from({length: value.length}, (_, index) => descriptors[String(index)]).every(d => d && Object.hasOwn(d, 'value') && entry(d.value));

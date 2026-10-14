@@ -21,7 +21,7 @@ test('two families: system sans for interface and prose, system monospace for co
 });
 test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headings 18', () => {
   const glyphs = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*font-size: (11px|16px);/g)].map(match => [match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), match[2]]);
-  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.pane-actions', '16px'], ['.message-menu', '16px'], ['.message-source-close', '16px']]);
+  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.session-catalog', '11px'], ['.pane-actions', '16px'], ['.message-menu', '16px'], ['.message-source-close', '16px']]);
   assert.deepEqual([...new Set(declarations('font-size'))].filter(value => value !== '11px' && value !== '16px').sort(), ['12px', '13px', '14px', '15px', '18px', 'inherit']);
   assert.match(rule('.message-role'), /font-size: 12px; line-height: 18px; font-weight: 500/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 15px; line-height: 1\.6; font-weight: 400; font-style: normal/);
@@ -29,7 +29,7 @@ test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headin
   assert.match(rule('.message-body h1'), /font-size: 18px/);
   assert.match(rule('.composer textarea'), /font-size: 15px/);
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '500', '600']);
-  assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== 'inherit'), []);
+  assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== '13px/1.5 var(--mono)' && value !== 'inherit'), []);
 });
 test('attachment metadata uses the fixed scale and preview inherits the dialog hairline', () => {
   assert.match(rule('.attachment-digest'), /font-size: 12px; color: var\(--muted\)/);
@@ -107,13 +107,13 @@ test('neutral tools keep lifecycle accents in marks and errors while source diff
   assert.match(rule('a'), /color: var\(--link\)/);
   assert.match(rule('.stop'), /color: var\(--error\)/);
 });
-test('tool status labels have natural width and disclosure chevrons stay separate from status', () => {
+test('tool status labels have natural width and disclosure marks stay separate from status', () => {
   assert.match(rule('.tool-status'), /flex: none; min-width: 16px; width: auto/);
   assert.doesNotMatch(rule('.tool-status'), /(?:^|;\s*)width: 12px/);
   assert.match(rule('.tool-card > summary'), /display: grid; grid-template-columns: 16px minmax\(0,1fr\)/);
   assert.match(rule('.card-disclosure::before'), /content: none/);
-  assert.match(rule('.card-disclosure > .card-icon-chevron'), /transform: rotate\(0deg\)/);
-  assert.match(rule('details[open] > .card-disclosure > .card-icon-chevron'), /transform: rotate\(90deg\)/);
+  assert.match(rule('.card-disclosure > .card-icon-disclosure'), /display: inline-block/);
+  assert.match(rule('details[open] > .card-disclosure > .card-icon-disclosure path'), /d: path\('M3 8h10'\)/);
   assert.match(rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification'), /grid-column: 2/);
   assert.match(rule('.tool-preview'), /color: var\(--fg\)/);
   assert.match(rule('.tool-secondary'), /color: var\(--muted\)/);
@@ -127,8 +127,8 @@ test('structured content uses readable prose, wrapped fields, compact tables and
   assert.match(summary, /font-size: 12px; overflow-wrap: anywhere/);
   assert.doesNotMatch(summary, /background:|border:|min-height:|max-height:|overflow: hidden/);
   assert.match(rule('summary::before'), /content: none/);
-  assert.match(rule('.card-disclosure > .card-icon-chevron'), /transform: rotate\(0deg\)/);
-  assert.match(rule('details[open] > .card-disclosure > .card-icon-chevron'), /transform: rotate\(90deg\)/);
+  assert.match(rule('.card-disclosure > .card-icon-disclosure'), /display: inline-block/);
+  assert.match(rule('details[open] > .card-disclosure > .card-icon-disclosure path'), /d: path\('M3 8h10'\)/);
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
   assert.match(rule('.tool-source > pre'), /white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.match(rule('.tool-shell .kv'), /grid-template-columns: minmax\(6ch,max-content\) minmax\(0,1fr\)/);
@@ -287,7 +287,7 @@ test('card actions and expanded content share fixed geometry without label-width
   assert.match(rule('.card-icon'), /width: 16px; height: 16px/);
   assert.match(rule('.tool-tier'), /padding-right: 24px/);
   assert.match(rule('.tool-expanded'), /margin: var\(--s1\) 0 0 var\(--s4\)/);
-  assert.match(rule('.tool-expanded .card-disclosure > .card-icon-chevron'), /left: -24px; margin: -8px 0 0/);
+  assert.match(rule('.tool-expanded .card-disclosure > .card-icon-disclosure'), /left: -24px; margin: -8px 0 0/);
   assert.match(rule('.tool-expanded .source-disclosure > summary.source-header'), /padding: 2px 32px 2px 0/);
   assert.match(rule('.tool-copy'), /border: 0; background: transparent/);
 });
@@ -298,7 +298,7 @@ test('multiline tool targets retain a first-line header and centered one-line co
   assert.match(rule('.tool-name, .tool-target'), /padding-top: 2px/);
   assert.match(rule('.tool-secondary'), /padding-top: 2px/);
   assert.match(rule('.tool-status'), /align-items: center; min-height: 24px/);
-  assert.match(rule('.tool-card > summary > .card-icon-chevron'), /margin: var\(--s1\) 0 0/);
+  assert.match(rule('.tool-card > summary > .card-icon-disclosure'), /margin: var\(--s1\) 0 0/);
   assert.match(rule('.tool-target'), /white-space: normal; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-target'), /line-clamp|text-overflow: ellipsis|overflow: hidden/);
 });
@@ -306,7 +306,7 @@ test('partial output qualification shares the tool summary content column rather
   assert.match(rule('.tool-card > summary'), /grid-template-columns: 16px minmax\(0,1fr\)/);
   const content = rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification');
   assert.match(content, /grid-column: 2; min-width: 0/);
-  assert.match(rule('.tool-card > summary > .card-icon-chevron'), /grid-column: 1/);
+  assert.match(rule('.tool-card > summary > .card-icon-disclosure'), /grid-column: 1/);
   assert.match(rule('.tool-preview-qualification'), /color: var\(--muted\);[^}]*font-size: 12px/);
   assert.doesNotMatch(rule('.tool-preview-qualification'), /display: none|visibility: hidden/);
 });

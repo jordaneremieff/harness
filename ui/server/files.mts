@@ -1,10 +1,13 @@
 import {Worker} from 'node:worker_threads';
 import {LIMITS, type Retry} from '../shared/api.ts';
 import {ApiError} from './errors.mts';
+import type {FileRevision, FileEncoding} from '../shared/files.ts';
 export type FileJob = {kind:'open'; directory:string} | {kind:'selection'; workspace:string} |
   {kind:'select'; workspace:string; path:string; expectedRevision:number} |
   {kind:'directory'; rootId:string; path:string; limit:number; cursor?:string} |
-  {kind:'text'; rootId:string; path:string} | {kind:'close'};
+  {kind:'text'; rootId:string; path:string} | {kind:'draft'; rootId:string; path:string} |
+  {kind:'put-draft'; rootId:string; path:string; expectedRevision:number; base:FileRevision; text:string; encoding:FileEncoding} |
+  {kind:'save'; rootId:string; path:string; expectedRevision:number} | {kind:'close'};
 export class FileResponse {
   readonly json:string;readonly status:number;
   constructor(json:string,status:number) {this.json = json;this.status = status;}

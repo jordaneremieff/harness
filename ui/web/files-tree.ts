@@ -8,7 +8,7 @@ export function visibleFileRows(directories: ReadonlyMap<string, Directory>, pat
   const directory = directories.get(path); if (!directory?.expanded) return [];
   return directory.entries.flatMap(entry => [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
 }
-export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; escape(): void};
+export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; escape(): void};
 /** Directory work starts only at root selection, refresh, or explicit disclosure. */
 export class FilesTree {
   readonly node: HTMLElement;
@@ -68,7 +68,7 @@ export class FilesTree {
   private rowButton(entry: FileEntry): HTMLButtonElement {
     const existing = this.buttons.get(entry.path); if (existing) return existing;
     const button = element('button', 'file-row'); button.type = 'button'; button.dataset.path = entry.path;
-    this.buttons.set(entry.path, button); button.addEventListener('click', () => this.choose(entry)); return button;
+    this.buttons.set(entry.path, button); button.addEventListener('click', () => this.choose(entry));button.addEventListener('dblclick',()=> {if (entry.kind === 'file' && this.root) this.hooks.keep?.(this.root.id,entry.path);}); return button;
   }
   private paintRow({entry, depth}: FileTreeRow, tabStop?: string): HTMLButtonElement {
     const button = this.rowButton(entry);

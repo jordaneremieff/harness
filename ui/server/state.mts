@@ -59,21 +59,21 @@ function conversationTabKey(value: unknown): string {
   validateTarget({kind: 'agent', identity: tab.identity as string});
   return `agent:${tab.identity}`;
 }
-type LayoutValidation = {ids: Set<string>; leaves: Set<string>; keys: Set<string>; nodes: number; empty: number};
+type LayoutValidation = {ids: Set<string>; leaves: Set<string>; keys: Set<string>; conversations: number; nodes: number; empty: number};
 function layoutPaneId(value: unknown, state: LayoutValidation): string {
   if (typeof value !== 'string' || !value || value.length > 64 || /[\x00-\x1f]/.test(value) || state.ids.has(value)) throw new StateError('invalid_request', 'Invalid or duplicate conversation pane ID');
   state.ids.add(value); return value;
 }
 function layoutLeaf(node: Record<string, unknown>, state: LayoutValidation): void {
   state.leaves.add(node.id as string);
-  if (state.leaves.size > 4 || !Array.isArray(node.tabs) || node.tabs.length > LIMITS.conversationTabs) throw new StateError('invalid_request', 'Invalid conversation pane or tab count');
+  if (state.leaves.size > 4 || !Array.isArray(node.tabs)) throw new StateError('invalid_request', 'Invalid conversation pane or tab count');
   const local = new Set<string>();
   for (const tab of node.tabs) {
     const key = conversationTabKey(tab);
     if (state.keys.has(key)) throw new StateError('invalid_request', 'Duplicate conversation tab');
-    local.add(key); state.keys.add(key);
+    local.add(key); state.keys.add(key);if ((tab as {kind:string}).kind !== 'file') state.conversations++;
   }
-  if (state.keys.size > LIMITS.conversationTabs) throw new StateError('invalid_request', 'Invalid conversation tab count');
+  if (state.conversations > LIMITS.conversationTabs) throw new StateError('invalid_request', 'Invalid conversation tab count');
   if (local.size ? typeof node.active !== 'string' || !local.has(node.active) : node.active !== null) throw new StateError('invalid_request', 'Invalid active conversation tab');
   if (!local.size) state.empty++;
 }
@@ -92,7 +92,7 @@ function visitLayout(value: unknown, depth: number, state: LayoutValidation): vo
 /** One bounded tree owns tabs, active targets and pane focus. */
 export function validateConversationLayout(value: unknown): asserts value is ConversationLayout {
   const layout = layoutObject(value, ['root', 'focusedPane'], 'conversation layout');
-  const state: LayoutValidation = {ids: new Set(), leaves: new Set(), keys: new Set(), nodes: 0, empty: 0};
+  const state: LayoutValidation = {ids: new Set(), leaves: new Set(), keys: new Set(), conversations: 0, nodes: 0, empty: 0};
   visitLayout(layout.root, 0, state);
   if (typeof layout.focusedPane !== 'string' || !state.leaves.has(layout.focusedPane) || state.empty && state.leaves.size !== 1) throw new StateError('invalid_request', 'Invalid conversation pane focus or empty group');
 }
@@ -129,7 +129,7 @@ function fileKeys(layout?:ConversationLayout):Set<string> {
   if (layout) visit(layout.root); return keys;
 }
 export function validateFilePositions(value:unknown, layout?:ConversationLayout):asserts value is Record<string,FilePosition> {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > LIMITS.conversationTabs) throw new StateError('invalid_request','Invalid file positions');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StateError('invalid_request','Invalid file positions');
   const keys = fileKeys(layout);
   for (const [key,position] of Object.entries(value)) if (!keys.has(key) || !position || typeof position !== 'object' || Object.keys(position).length !== 2 || !Number.isFinite(position.scrollTop) || !Number.isFinite(position.scrollLeft) || position.scrollTop < 0 || position.scrollLeft < 0 || position.scrollTop > 1e9 || position.scrollLeft > 1e9) throw new StateError('invalid_request','Invalid file reading position');
 }

@@ -7,9 +7,9 @@ import {LocalHttp} from './http.mts';
 import {Files} from './files.mts';
 import {Journal} from './journal.mts';
 import {ApiError} from './errors.mts';
-import type {FileRootSelection,FileText} from '../shared/files.ts';
+import type {FileRootSelection,FileText,FileDraft} from '../shared/files.ts';
 const workspace = '00000000-0000-4000-8000-000000000001';
-test('authenticated file routes return exact worker-encoded text and reject writer/search/query escapes',async context=> {
+test('authenticated file routes preserve source and enforce strict draft/save requests',async context=> {
   const path = await mkdtemp(join(tmpdir(),'ui-files-http-'));await mkdir(join(path,'state'));await mkdir(join(path,'project'));
   const source = '\ufefftext\r\nlast\r';await writeFile(join(path,'project','text.md'),source);
   await writeFile(join(path,'project','escaped.txt'),'\t'.repeat(1024*1024));
@@ -38,7 +38,13 @@ test('authenticated file routes return exact worker-encoded text and reject writ
   assert.equal((await call(`${base}/directory?workspace=${workspace}&path=&limit=1`)).status,200);
   assert.equal((await call(`${base}/text?workspace=${workspace}&path=missing`)).status,404);
   for (const route of [`${base}/text?workspace=${workspace}&path=../secret`,`${base}/text?workspace=${workspace}&path=text.md&path=text.md`,`${base}/text?workspace=${workspace}&path=text.md&unknown=1`,`${base}/directory?workspace=${workspace}&path=&limit=201`,`${base}/search?workspace=${workspace}&path=`]) assert.ok((await call(route)).status >= 400,route);
-  assert.equal((await call(`${base}/text?workspace=${workspace}&path=text.md`,'PUT',{text:'changed'})).status,405);
+  assert.equal((await call(`${base}/text?workspace=${workspace}&path=text.md`,'PUT',{text:'changed'})).status,400);
+  const route = `${base}/draft?workspace=${workspace}&path=escaped.txt`, loaded = await (await call(`${base}/text?workspace=${workspace}&path=escaped.txt`)).json() as {data:FileText};
+  assert.deepEqual((await (await call(route)).json() as {data:unknown}).data,{revision:0,draft:null});
+  const put = await call(route,'PUT',{expectedRevision:0,base:loaded.data.revision,encoding:{bom:false,ending:'lf',writable:true},text:'\t'.repeat(1024*1024)});assert.equal(put.status,200);
+  const draft = (await put.json() as {data:FileDraft}).data;assert.equal(draft.revision,1);
+  assert.equal((await call(`${base}/text?workspace=${workspace}&path=escaped.txt`,'PUT',{expectedRevision:draft.revision})).status,200);
+  assert.equal((await call(route,'PUT',{expectedRevision:0,base:loaded.data.revision,encoding:{bom:false,ending:'lf',writable:true},text:'stale'})).status,409);
   assert.equal((await call(`${base}/text?workspace=${workspace}&path=text.md`,'GET',undefined,{Origin:'http://foreign.test'})).status,403);
   assert.equal(dispatched,0);assert.deepEqual((await readdir(join(path,'project'))).sort(),['escaped.txt','text.md']);
 });

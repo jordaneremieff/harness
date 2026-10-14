@@ -11,6 +11,9 @@ async function execute(job:FileJob):Promise<unknown> {
   if (!state) throw new ApiError('not_ready','File access is not ready.',503);
   if (job.kind === 'selection') return state.selection(job.workspace);
   if (job.kind === 'select') return state.select(job.workspace,job.path,job.expectedRevision);
+  if (job.kind === 'draft') return state.draft(job.rootId,job.path);
+  if (job.kind === 'put-draft') return state.putDraft(job.rootId,job.path,job.expectedRevision,job.base,job.text,job.encoding);
+  if (job.kind === 'save') return state.saveDraft(job.rootId,job.path,job.expectedRevision);
   const root = state.root(job.rootId);
   return job.kind === 'directory' ? directoryPage(root,job.path,job.limit,job.cursor) : readText(root,job.path);
 }

@@ -1517,8 +1517,8 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   assert.equal(byId('agents-section-body').hidden, true);
   Reflect.set(globalThis, 'sessionStorage', hostSessionStorage);
   assert.doesNotMatch(html, /id="primary-heading"/);
-  assert.match(html, /id="session-open"[^>]*>Saved sessions/);
-  assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">Agent catalog/);
+  assert.match(html, /id="session-open"[^>]*>SESSIONS/);
+  assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">AGENTS/);
 });
 test('palette key aliases prevent browser defaults and preserve IME, repeat and open-dialog guards', async () => {
   const modalNode = byId('modal');

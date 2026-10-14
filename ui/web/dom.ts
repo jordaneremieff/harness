@@ -4,7 +4,7 @@ export function element<K extends keyof HTMLElementTagNameMap>(tag: K, className
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
-  if (tag === 'summary') { node.className = `${node.className} card-disclosure`.trim(); node.prepend(cardIcon('chevron')); }
+  if (tag === 'summary') { node.className = `${node.className} card-disclosure`.trim(); node.prepend(cardIcon('disclosure')); }
   return node;
 }
 export function byId<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -29,7 +29,7 @@ export function setText(node: Node, text: string): void {
   if (node.textContent !== text) {
     node.textContent = text;
     const css = typeof (node as HTMLElement).className === 'string' ? (node as HTMLElement).className.split(' ') : [];
-    if (css.includes('card-disclosure') && !css.includes('icon-button')) (node as HTMLElement).prepend(cardIcon('chevron'));
+    if (css.includes('card-disclosure') && !css.includes('icon-button')) (node as HTMLElement).prepend(cardIcon('disclosure'));
   }
 }
 /** Only explicit UI status slots translate authored marks; supplied content stays text. */

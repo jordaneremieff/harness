@@ -216,6 +216,8 @@ test('checkpoint validation is closed, bounded and rejects duplicate or missing 
 test('file checkpoints contain only bounded identities, source digests, position and focus',()=> {
   const file = {tab:{kind:'file' as const,rootId:'r',path:'note.md'},position:{scrollTop:120,scrollLeft:8},digest:A,focused:false};
   const value = {...checkpoint(),files:[file]};assert.deepEqual(validateDevReloadCheckpoint(value,B,NOW),value);
+  const many = {...checkpoint(),files:Array.from({length:40},(_,index)=>({...file,tab:{...file.tab,path:`file-${index}.md`}}))};assert.deepEqual(validateDevReloadCheckpoint(many,B,NOW),many);
+  const preview = {...value,files:[file,{...file,tab:{...file.tab,view:'preview' as const}}]};assert.deepEqual(validateDevReloadCheckpoint(preview,B,NOW),preview);
   for (const files of [[file,file],[{...file,text:'source'}],[{...file,focused:true}],[{...file,position:{scrollTop:-1,scrollLeft:0}}],[{...file,digest:'wrong'}],[{...file,tab:{...file.tab,path:'../escape'}}]]) assert.equal(validateDevReloadCheckpoint({...value,files},B,NOW),null);
   let reads = 0;const entries = [file];Object.defineProperty(entries,'0',{get:()=> {reads++;return file;}});assert.equal(validateDevReloadCheckpoint({...value,files:entries},B,NOW),null);assert.equal(reads,0);
 });

@@ -1,14 +1,14 @@
 import {cardIcon} from './card-icons.ts';
 import {statusGlyph} from './dom.ts';
 import type { WorkspaceTab as ConversationTab } from '../shared/api.ts';
-import { duplicateIdentityTails, tabKey } from './tabs.ts';
+import { duplicateTabTails, tabKey } from './tabs.ts';
 import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout.ts';
 
 export type TabRegion = {id: string; tabs: HTMLElement; controls: string};
 export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
 export type TabHooks = {layout: () => PaneLayout; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
-  status: (tab: ConversationTab) => {label: string; glyph: string}; overflow?: (overflow: boolean, pane: string) => void};
+  status: (tab: ConversationTab) => {label: string; glyph: string}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
 /** Keyed tab and sidebar nodes follow real pane ownership, independent of target kind. */
 export class TabStrip {
   private nodes = new Map<string, HTMLElement>();
@@ -27,7 +27,7 @@ export class TabStrip {
   private regions: TabRegions;
   constructor(hooks: TabHooks, regions: TabRegions) {
     this.hooks = hooks; this.regions = regions;
-    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'Tabs';
+    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'TABS';
     regions.conversations.setAttribute('aria-label', 'Tabs'); regions.conversations.append(this.heading);
     this.observer = new ResizeObserver(() => {
       if (this.destroyed) return;
@@ -63,7 +63,7 @@ export class TabStrip {
     const doc = this.regions.conversations.ownerDocument; const focused = doc.activeElement as HTMLElement | null;
     const hadFocus = [...this.hosts.keys(), this.regions.conversations].some(host => host.contains(focused));
     this.syncHosts(regions);
-    this.tails = duplicateIdentityTails(tabs.map(tab => ({name: this.hooks.label(tab), identity: tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary'})));
+    this.tails = duplicateTabTails(tabs,this.hooks.label);
     this.pruneNodes(new Set(tabs.map(tabKey)), new Set(panes.map(pane => pane.id)));
     panes.forEach((pane, paneIndex) => {
       const region = regions.find(region => region.id === pane.id); if (!region) throw new Error(`Missing tab region for pane ${pane.id}.`);
@@ -138,7 +138,7 @@ export class TabStrip {
     const label = doc.createElement('span'); label.className = 'tab-label'; const identity = doc.createElement('span'); identity.className = 'tab-identity';
     const close = doc.createElement('button'); close.className = 'tab-close'; close.type = 'button'; close.append(cardIcon('close', doc)); close.tabIndex = -1;
     const remove = () => {if (this.owner(key)) this.hooks.close(key);};
-    close.addEventListener('click', event => {event.stopPropagation(); remove();}); node.addEventListener('click', () => this.activate(key));
+    close.addEventListener('click', event => {event.stopPropagation(); remove();}); node.addEventListener('click', () => this.activate(key));node.addEventListener('dblclick',()=>this.hooks.keep?.(key));
     node.addEventListener('auxclick', event => {if (event.button === 1) {event.preventDefault(); remove();}});
     node.addEventListener('keydown', event => {
       if (event.target === close || event.ctrlKey || event.metaKey || event.isComposing) return;

@@ -8,6 +8,13 @@ const space = {width: 1400, height: 1000, divider: 4};
 const base = () => createPaneLayout([{kind: 'primary'}, agent('a'), agent('b'), agent('c')], 'agent:a');
 const keys = (root: PaneNode) => paneLeaves(root).flatMap(pane => pane.tabs.map(tabKey));
 
+test('file views have no tab count cap and conversations alone exhaust admission',()=> {
+  let layout = createPaneLayout(Array.from({length:MAX_TABS},(_,index)=>agent(`conversation-${index}`)));
+  for (let index = 0;index < MAX_TABS+2;index++) layout = openPaneTab(layout,'pane-1',{kind:'file',rootId:'r',path:`file-${index}.md`});
+  assert.equal(validPaneLayout(layout),true);assert.equal(paneLeaves(layout.root)[0]?.tabs.length,MAX_TABS*2+2);
+  assert.throws(()=>openPaneTab(layout,'pane-1',agent('overflow')),/tab limit/);
+  const preview = openPaneTab(layout,'pane-1',{kind:'file',rootId:'r',path:'file-0.md',view:'preview'});assert.equal(validPaneLayout(preview),true);assert.equal(paneLeaves(preview.root)[0]?.tabs.length,MAX_TABS*2+3);
+});
 test('layout equality compares exact content and geometry rather than allocation identity', () => {
   const original = base(); assert.equal(samePaneLayout(original, structuredClone(original)), true);
   const next = structuredClone(original); next.focusedPane = 'changed'; assert.equal(samePaneLayout(original, next), false);
@@ -38,7 +45,7 @@ test('existing chooser target focuses its owner; deliberate move into provisiona
   let staged = splitPane(chosen, 'pane-1', 'x', space, 'agent:b'); staged = splitPane(staged, 'pane-2', 'y', space);
   const filled = movePaneTab(staged, 'agent:a', 'pane-3'); assert.equal(validPaneLayout(filled), true); assert.equal(keys(filled.root).filter(key => key === 'agent:a').length, 1);
 });
-test('four leaves and sixteen tabs bound the entire tree without eviction', () => {
+test('pane and conversation bounds cover the entire tree without eviction', () => {
   let layout = base(); for (let i = 0; i < 3; i++) layout = splitPane(layout, 'pane-1', i % 2 ? 'y' : 'x', space);
   assert.equal(paneLeaves(layout.root).length, MAX_PANES); assert.equal(validPaneLayout(layout), true);
   assert.equal(splitPane(layout, 'pane-1', 'x', space), layout);

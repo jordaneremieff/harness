@@ -280,7 +280,7 @@ function textDeclaration(context: Context, property: string, value: string) {
 		exclusions.push(`${theme}: inherited foreground ${source} ${property}: ${value}`);
 		return;
 	}
-  if (property === 'color' && value === 'transparent' && context.rule.selector === '.composer textarea[data-decorated=true]' && !context.rule.contexts.length) {
+  if (property === 'color' && value === 'transparent' && ['.composer textarea[data-decorated=true]', '.file-editor[data-decorated=true]'].includes(context.rule.selector) && !context.rule.contexts.length) {
     exclusions.push(`${theme}: exact syntax source replaces native glyph paint ${source}`); return;
   }
 	const name = token(value);

@@ -87,7 +87,7 @@ export function splitPane(layout: PaneLayout, id: string, axis: PaneAxis, space:
 export function openPaneTab(layout: PaneLayout, id: string, tab: ConversationTab): PaneLayout {
   const key = tabKey(tab); const owner = paneForTab(layout, key); if (owner) return activatePaneTab(layout, owner.id, key);
   if (!paneById(layout, id)) return layout;
-  if (paneLeaves(layout.root).reduce((count, pane) => count + pane.tabs.length, 0) >= MAX_TABS) throw new Error('This window has reached its tab limit. Close a tab to continue.');
+  if (tab.kind !== 'file' && paneLeaves(layout.root).reduce((count, pane) => count + pane.tabs.filter(item=>item.kind !== 'file').length, 0) >= MAX_TABS) throw new Error('This window has reached its tab limit. Close a tab to continue.');
   return withRoot(layout, mapPanes(layout.root, pane => pane.id === id ? {...pane, tabs: [...pane.tabs, tab], active: key} : pane), id);
 }
 export function movePaneTab(layout: PaneLayout, key: string, destination: string, index?: number): PaneLayout {
@@ -130,7 +130,7 @@ export function resizePaneSplit(layout: PaneLayout, id: string, ratio: number): 
   };
   return withRoot(layout, update(layout.root));
 }
-type Validation = {ids: Set<string>; tabs: Set<string>; leaves: Set<string>; nodes: number; empty: number};
+type Validation = {ids: Set<string>; tabs: Set<string>; leaves: Set<string>; conversations: number; nodes: number; empty: number};
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
@@ -139,12 +139,12 @@ function validTab(value: unknown): value is ConversationTab {
   return tab.kind === 'file' ? validFileTab(tab) : tab.kind === 'primary' ? Object.keys(tab).length === 1 : tab.kind === 'agent' && Object.keys(tab).length === 2 && typeof tab.identity === 'string' && !!tab.identity;
 }
 function validateLeaf(node: Record<string, unknown>, state: Validation): boolean {
-  if (Object.keys(node).length !== 4 || !Array.isArray(node.tabs) || node.tabs.length > MAX_TABS || !('active' in node)) return false;
+  if (Object.keys(node).length !== 4 || !Array.isArray(node.tabs) || !('active' in node)) return false;
   for (const tab of node.tabs) {
-    if (!validTab(tab)) return false; const key = tabKey(tab); if (state.tabs.has(key)) return false; state.tabs.add(key);
+    if (!validTab(tab)) return false; const key = tabKey(tab); if (state.tabs.has(key)) return false; state.tabs.add(key);if (tab.kind !== 'file') state.conversations++;
   }
   const selected = node.tabs.length ? typeof node.active === 'string' && node.tabs.some(tab => tabKey(tab as ConversationTab) === node.active) : node.active === null;
-  if (!selected || state.tabs.size > MAX_TABS) return false;
+  if (!selected || state.conversations > MAX_TABS) return false;
   state.leaves.add(node.id as string); if (!node.tabs.length) state.empty++;
   return state.leaves.size <= MAX_PANES;
 }
@@ -161,7 +161,7 @@ function validateNode(value: unknown, depth: number, state: Validation): boolean
 }
 function validate(value: unknown, provisional: boolean): value is PaneLayout {
   const object = record(value); if (!object || Object.keys(object).length !== 2 || !('root' in object) || typeof object.focusedPane !== 'string') return false;
-  const state: Validation = {ids: new Set(), tabs: new Set(), leaves: new Set(), nodes: 0, empty: 0};
+  const state: Validation = {ids: new Set(), tabs: new Set(), leaves: new Set(), conversations: 0, nodes: 0, empty: 0};
   return validateNode(object.root, 0, state) && state.leaves.has(object.focusedPane) && (provisional || state.empty === 0 || state.leaves.size === 1);
 }
 /** Durable validation rejects provisional empty groups and never reads flat records. */

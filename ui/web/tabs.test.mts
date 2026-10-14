@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {ConversationTab, Workspace} from '../shared/api.ts';
-import {activeTab, closeTab, duplicateIdentityTails, layoutTarget, MAX_TABS, openTab, switchTab, tabForTarget, workspaceLayout} from './tabs.ts';
+import {activeTab, closeTab, duplicateIdentityTails, duplicateTabTails, FileBrowseState, layoutTarget, MAX_TABS, openTab, switchTab, tabForTarget, workspaceLayout} from './tabs.ts';
 import {createPaneLayout, paneById, paneLeaves, splitPane} from './pane-layout.ts';
 const agent = (identity: string): ConversationTab => ({kind: 'agent', identity});
 const base = () => createPaneLayout([{kind: 'primary'}]);
 const workspace = (layout = base()): Workspace => ({id: 'fixture', revision: 0, primaryKey: 'primary-key', conversationLayout: layout});
 
+test('plain browsing reuses only a transient unmodified view and kept or held views remain',()=> {
+  const browse = new FileBrowseState(), file = (path:string)=>({kind:'file' as const,rootId:'r',path});let layout = base();
+  layout = browse.choose(layout,file('a'),()=>false);layout = browse.choose(layout,file('b'),()=>false);assert.deepEqual(paneLeaves(layout.root).flatMap(pane=>pane.tabs).filter(tab=>tab.kind === 'file'),[file('b')]);
+  browse.keep('file:["r","b"]');layout = browse.choose(layout,file('c'),()=>false);assert.equal(paneLeaves(layout.root)[0]?.tabs.length,3);
+  layout = browse.choose(layout,file('d'),()=>true);assert.equal(paneLeaves(layout.root)[0]?.tabs.length,4);browse.hold();layout = browse.choose(layout,file('e'),()=>false);assert.equal(paneLeaves(layout.root)[0]?.tabs.length,5);
+});
+test('same-name file labels use useful shortest directory suffixes, never serialized identity',()=> {
+  const tabs = ['packages/one/README.md','packages/two/README.md','docs/README.md'].map(path=>({kind:'file' as const,rootId:'root-identity',path}));
+  const labels = duplicateTabTails(tabs,tab=>tab.kind === 'file' ? tab.path.split('/').at(-1) ?? '' : '');
+  assert.deepEqual([...labels.values()],['one','two','docs']);assert.equal([...labels.values()].some(value=>value.includes('root-identity') || value.includes('[')),false);
+});
 test('file focus survives retained conversation selection and repeated selection reuses its tab',()=> {
   const file = {kind:'file' as const,rootId:'r',path:'note.md'},layout = openTab(openTab(base(),agent('a')),file);
   const value = {...workspace(layout),selectedTarget:{kind:'agent' as const,identity:'a'}};

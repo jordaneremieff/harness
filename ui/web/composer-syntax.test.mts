@@ -18,6 +18,11 @@ test('fence identity, closing length and malformed labels never mutate source', 
   assert.ok(composerSyntax('```ts\nconst x=1')?.some(range => range.tone === 'keyword'));
   assert.deepEqual(composerSyntax('``a ` b``')?.map(range => [range.start, range.end]), [[0, 9]]);
 });
+test('dense inline runs keep nearest equal-length pairing across the span bound', () => {
+  const text = '`x` '.repeat(DECORATION_SPANS), ranges = composerSyntax(text);assert.ok(ranges);assert.equal(ranges.length,DECORATION_SPANS);
+  for (let i = 0;i < ranges.length;i++) assert.deepEqual(ranges[i],{start:i*4,end:i*4+3,tone:'string'});
+  assert.deepEqual(composerSyntax('a `one `` nested` ``two``` tail')?.map(range=>[range.start,range.end]),[[2,17]]);
+});
 test('every decoration bound exits to whole-source plain text', () => {
   assert.ok(composerSyntax('x'.repeat(DECORATION_BYTES)));
   assert.equal(composerSyntax('x'.repeat(DECORATION_BYTES + 1)), undefined);

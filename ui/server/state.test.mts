@@ -27,7 +27,7 @@ test('conversation layout rejects duplicate targets, unknown tab fields, empty g
     {...leaf, tabs: [{kind: 'primary'}, {kind: 'primary'}]},
     {...leaf, tabs: [{kind: 'agent', identity: 'one', split: false}], active: 'agent:one'},
     {...leaf, active: 'agent:missing'}, {...leaf, id: 'x'.repeat(65)},
-    {...leaf, tabs: Array.from({length: 17}, (_, index) => ({kind: 'agent', identity: String(index)})), active: 'agent:0'},
+    {...leaf, tabs: Array.from({length: LIMITS.conversationTabs+1}, (_, index) => ({kind: 'agent', identity: String(index)})), active: 'agent:0'},
     {kind: 'split', id: 'split', axis: 'x', ratio: 50, first: leaf, second: {...leaf, id: 'pane-2', tabs: [], active: null}},
     {kind: 'split', id: 'split', axis: 'x', ratio: 50, first: leaf, second: {...leaf, id: 'pane-2'}},
     {kind: 'split', id: 'split', axis: 'z', ratio: 50, first: leaf, second: {...leaf, id: 'pane-2'}},
@@ -47,6 +47,15 @@ async function setup(t: test.TestContext, hook?: Parameters<typeof StateStore.op
   return {root, store, workspace, target};
 }
 
+test('file views and their positions exceed conversation counts without a hidden file cap',async t=> {
+  const {store,workspace} = await setup(t), tabs = Array.from({length:LIMITS.conversationTabs+2},(_,index)=>({kind:'file' as const,rootId:'root',path:`note-${index}.md`}));
+  const first = tabs[0];assert.ok(first);const active = workspaceTabKey(first);
+  const layout:ConversationLayout = {root:{kind:'pane',id:'files',tabs,active},focusedPane:'files'};
+  const filePositions = Object.fromEntries(tabs.map(tab=>[workspaceTabKey(tab),{scrollTop:120,scrollLeft:8}]));
+  const saved = await store.updateSelection(workspace.id,{expectedRevision:0,conversationLayout:layout,filePositions});assert.equal(Object.keys(saved.filePositions ?? {}).length,tabs.length);
+  const many:ConversationLayout = {root:{kind:'pane',id:'files',tabs:[...tabs,...Array.from({length:LIMITS.conversationTabs},(_,index)=>({kind:'agent' as const,identity:`agent-${index}`}))],active},focusedPane:'files'};
+  assert.doesNotThrow(()=>validateConversationLayout(many));if (many.root.kind === 'pane') many.root.tabs.push({kind:'agent',identity:'overflow'});assert.throws(()=>validateConversationLayout(many),StateError);
+});
 test('file positions stay inside their layout and closed file tabs lose their positions',async t=> {
   const {store,workspace} = await setup(t),file = {kind:'file' as const,rootId:'root',path:'note.md'},key = workspaceTabKey(file);
   const layout:ConversationLayout = {root:{kind:'pane',id:'pane-1',tabs:[file],active:key},focusedPane:'pane-1'};
@@ -225,7 +234,7 @@ test('invalid conversation layouts never advance revisions, write state or publi
   const invalid: unknown[] = [null, [], 1, {}, {...one, extra: true}, {root: leaf}, {focusedPane: 'pane'}, {...one, focusedPane: 'missing'},
     ...[null, {}, [], [{kind: 'primary'}, {kind: 'primary'}], [agent, agent], [null], [[]], [{kind: 'other'}], [{kind: 'primary', extra: true}],
       [{kind: 'primary', key: 'primary', epoch: 1}], [{...agent, split: false}], [{...agent, extra: true}],
-      Array.from({length: 17}, (_, index) => ({kind: 'agent', identity: String(index)}))].map(tabs => wrap({...leaf, tabs})),
+      Array.from({length: LIMITS.conversationTabs+1}, (_, index) => ({kind: 'agent', identity: String(index)}))].map(tabs => wrap({...leaf, tabs})),
     ...[null, '', 'missing', 0, 1, NaN, Infinity].map(active => wrap({...leaf, active})),
     ...['', 'x'.repeat(65), 'bad\nid', null, 1].map(id => wrap({...leaf, id})),
     ...[19, 81, 50.5, '50', NaN, Infinity].map(ratio => wrap({...split, ratio})),

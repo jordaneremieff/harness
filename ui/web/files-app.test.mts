@@ -10,6 +10,7 @@ function fileTransport(context:test.TestContext):void {
   const previous = globalThis.fetch;context.after(()=> {globalThis.fetch = previous;contextMenu.close();});
   globalThis.fetch = async(input,init)=> {
     const url = new URL(String(input),'http://ui.test');
+    if (url.pathname.endsWith('/draft')) return Response.json({ok:true,data:{revision:0,draft:null}});
     if (url.pathname.endsWith('/text')) {const text = '# Exact file\n\nRetained source.\n';return Response.json({ok:true,data:{rootId:decodeURIComponent(url.pathname.split('/')[4] ?? ''),path:url.searchParams.get('path'),text,revision:{size:text.length,mtimeMs:1,digest:'a'.repeat(64)}}});}
     return previous(input,init);
   };
@@ -23,7 +24,7 @@ test('file selection retains native conversation ancestors, caret, draft, source
   assert.deepEqual(activeTab(currentLayout()),tab);assert.equal(view.root.hidden,false);assert.equal(root.hidden,true);assert.equal(primaryControl('editor'),editor);assert.equal(form.parentNode,parent);assert.equal(editor.value,'Exact draft');assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,6,'backward']);assert.deepEqual(workspace.selectedTarget,target);
   app.chooseFile(tab.rootId,tab.path);await settle();assert.equal(app.filesViews.view(app.state.workspace as typeof workspace,tab),view);assert.equal(paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).filter(item=>item.kind === 'file').length,1);
   const layout = app.state.workspace?.conversationLayout;assert.ok(layout);app.applyLayout(splitPane(layout,layout.focusedPane,'x',{width:1000,height:700,divider:4}));await settle();assert.equal(view.owner,owner);assert.equal(owner.source,source);assert.equal(form.parentNode,parent);assert.equal(paneLeaves(currentLayout().root).length,2);
-  app.openTabsList();const menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);const choice = menu.children.find(item=>item.textContent === 'note.md');assert.ok(choice);assert.equal(choice.getAttribute('aria-description'),'note.md');assert.ok(menu.children.some(item=>item.textContent === 'Refresh file'));assert.equal(menu.children.some(item=>item.textContent === 'Conversation actions'),false);
+  app.openTabsList();const menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);const choice = menu.children.find(item=>item.textContent === 'note.md');assert.ok(choice);assert.equal(choice.getAttribute('aria-description'),'note.md');assert.ok(menu.children.some(item=>item.textContent === 'Re-read file'));assert.equal(menu.children.some(item=>item.textContent === 'Conversation actions'),false);
   assert.equal(transportLog.slice(before).filter(call=>call.path.endsWith('/start') || call.path === '/api/operations' || call.path.includes('/inputs')).length,0);
 });
 test('focused explicit Message owns the footer while a file remains the active pane',async context=> {

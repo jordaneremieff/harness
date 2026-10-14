@@ -6,7 +6,7 @@ export const LIMITS = {
   rosterRows: 2048, agentCacheBytes: 1024 * 1024, primaries: 4, workspaces: 16,
   targets: 128, draftPreviewChars: 240, rpcPending: 64, hostPending: 32, workspaceReservations: 16,
   operations: 2048, unconfirmed: 128, journalEvents: 4096,
-  sidebarWidthMin: 200, sidebarWidthMax: 480, conversationTabs: 16,
+  sidebarWidthMin: 200, sidebarWidthMax: 480, conversationTabs: 128,
   journalBytes: 8 * 1024 * 1024, clientQueueBytes: 512 * 1024,
   reservationMs: 10 * 60 * 1000, jsonDepth: 8, jsonNodes: 2048,
   imagesPerDraft: 4, imageBytes: 8 * 1024 * 1024, draftImageBytes: 8 * 1024 * 1024,
@@ -98,17 +98,17 @@ export type PrimaryView = {key: string; epoch: number; cwd: string;
 export type Appearance = 'dark' | 'light' | 'system' | 'latte' | 'frappe' | 'macchiato' | 'mocha';
 /** Primary tabs follow the workspace primary; closing a tab never stops its conversation. */
 export type ConversationTab = {kind: 'primary'} | {kind: 'agent'; identity: string};
-export type FileTab = {kind: 'file'; rootId: string; path: string};
+export type FileTab = {kind: 'file'; rootId: string; path: string; view?: 'preview'};
 export type WorkspaceTab = ConversationTab | FileTab;
 export function validFileTab(value: unknown): value is FileTab {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const tab = value as FileTab;
-  if (Object.keys(tab).length !== 3 || tab.kind !== 'file' || typeof tab.rootId !== 'string' || !tab.rootId || tab.rootId.length > LIMITS.idChars || typeof tab.path !== 'string' || !tab.path || tab.path.length > LIMITS.pathChars || /[\\\\\u0000-\u001f\u007f]|%2f|%5c|%2e/i.test(tab.path) || /[\ud800-\udfff]/u.test(tab.path.replace(/[\ud800-\udbff][\udc00-\udfff]/g,''))) return false;
+  if ((Object.keys(tab).length !== (tab.view === 'preview' ? 4 : 3)) || Object.keys(tab).some(key=>!['kind','rootId','path','view'].includes(key)) || tab.view !== undefined && tab.view !== 'preview' || tab.kind !== 'file' || typeof tab.rootId !== 'string' || !tab.rootId || tab.rootId.length > LIMITS.idChars || typeof tab.path !== 'string' || !tab.path || tab.path.length > LIMITS.pathChars || /[\\\\\u0000-\u001f\u007f]|%2f|%5c|%2e/i.test(tab.path) || /[\ud800-\udfff]/u.test(tab.path.replace(/[\ud800-\udbff][\udc00-\udfff]/g,''))) return false;
   const parts = tab.path.split('/');
   return parts.length <= 128 && parts.every(part=>!!part && part !== '.' && part !== '..' && !['.git','.hg','.svn','.bzr'].includes(part));
 }
 export function workspaceTabKey(tab: WorkspaceTab): string {
-  return tab.kind === 'file' ? `file:${JSON.stringify([tab.rootId, tab.path])}` : tab.kind === 'primary' ? 'primary' : `agent:${tab.identity}`;
+  return tab.kind === 'file' ? `${tab.view === 'preview' ? 'preview' : 'file'}:${JSON.stringify([tab.rootId, tab.path])}` : tab.kind === 'primary' ? 'primary' : `agent:${tab.identity}`;
 }
 export type FilePosition = {scrollTop: number; scrollLeft: number};
 export type PaneNode = {kind: 'pane'; id: string; tabs: WorkspaceTab[]; active: string | null} |

@@ -13,8 +13,9 @@ export class ComposerOverlay {
   private destroyed = false;
   private cleanup: (() => void)[] = [];
   private marks: {name: string; highlight: Highlight; range: Range}[] = [];
-  constructor(editor: HTMLTextAreaElement, layer: HTMLElement) {
-    this.editor = editor; this.layer = layer; this.content = element('div', 'composer-colors'); layer.append(this.content);
+  private ranges:(text:string)=>TokenRange[]|undefined;
+  constructor(editor: HTMLTextAreaElement, layer: HTMLElement, ranges:(text:string)=>TokenRange[]|undefined = composerSyntax) {
+    this.editor = editor; this.layer = layer;this.ranges = ranges; this.content = element('div', 'composer-colors'); layer.append(this.content);
     const invalidate = () => this.invalidate();
     for (const event of ['input', 'scroll'] as const) { editor.addEventListener(event, invalidate); this.cleanup.push(() => editor.removeEventListener(event, invalidate)); }
     const start = () => {this.composing = true; this.invalidate();}; const end = () => {this.composing = false; this.invalidate();};
@@ -57,6 +58,7 @@ export class ComposerOverlay {
     const canvas = document.createElement('canvas').getContext('2d'); if (!canvas || width <= 0) return true;
     canvas.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
     const spacing = Number.parseFloat(style.letterSpacing) || 0;
+    if (style.whiteSpace === 'pre') return false;
     return [...text.matchAll(/\S+/g)].some(match => canvas.measureText(match[0]).width + Math.max(0, match[0].length - 1) * spacing > width);
   }
   private clearMarks(): void {
@@ -76,7 +78,7 @@ export class ComposerOverlay {
   private decorate(): void {
     if (this.destroyed || this.composing || !this.editor.isConnected || this.editor.closest('[hidden],[inert]') || matchMedia('(forced-colors: active)').matches) return;
     const generation = this.generation, text = this.editor.value, top = this.editor.scrollTop, left = this.editor.scrollLeft;
-    const ranges = composerSyntax(text); if (!ranges?.length || typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight === 'undefined') return;
+    const ranges = this.ranges(text); if (!ranges?.length || typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight === 'undefined') return;
     const style = getComputedStyle(this.editor);
     if (!Number.isFinite(Number.parseFloat(style.lineHeight)) || style.writingMode !== 'horizontal-tb' || style.textAlign !== 'start' && style.textAlign !== 'left') return;
     if (this.unprovenMetrics(style, text)) return;
@@ -87,7 +89,7 @@ export class ComposerOverlay {
     const width = rect.width - this.editor.offsetWidth + this.editor.clientWidth;
     const height = rect.height - this.editor.offsetHeight + this.editor.clientHeight;
     this.layer.style.width = `${width}px`; this.layer.style.height = `${height}px`;
-    this.content.style.width = `${width}px`;
+    this.content.style.width = `${width}px`;this.content.style.minHeight = `${height}px`;
     if (generation !== this.generation || text !== this.editor.value || top !== this.editor.scrollTop || left !== this.editor.scrollLeft) return;
     this.content.replaceChildren(source); this.layer.hidden = false;
     this.layer.scrollTop = top; this.layer.scrollLeft = left;

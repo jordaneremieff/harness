@@ -1,9 +1,9 @@
 import {constants, type Stats} from 'node:fs';
-import {lstat, realpath, open, opendir, type FileHandle} from 'node:fs/promises';
-import {createHash, createHmac, randomBytes} from 'node:crypto';
-import {isAbsolute, join, relative, basename} from 'node:path';
+import {lstat, realpath, open, opendir, rename, unlink, type FileHandle} from 'node:fs/promises';
+import {createHash, createHmac, randomBytes, randomUUID} from 'node:crypto';
+import {isAbsolute, join, relative, basename, dirname} from 'node:path';
 import {LIMITS} from '../shared/api.ts';
-import type {FileRoot, FileEntry, FileCoverage, FileDirectoryPage, FileText, FileRevision} from '../shared/files.ts';
+import {fileSource, sameFileEncoding, sameFileRevision, type FileRoot, type FileEntry, type FileCoverage, type FileDirectoryPage, type FileText, type FileRevision, type FileEncoding} from '../shared/files.ts';
 import {ApiError} from './errors.mts';
 
 export type RegisteredRoot = FileRoot & {dev: number; ino: number};
@@ -94,6 +94,31 @@ export async function withFileSnapshot<T>(root: RegisteredRoot, path: string, us
 export async function readText(root: RegisteredRoot, path: string): Promise<FileText> {
   return withFileSnapshot(root,path,async snapshot => {
     return {rootId:root.id,path,text:snapshot.text,revision:snapshot.revision};
+  });
+}
+export function encodeFileText(text:string, encoding:FileEncoding):Buffer {
+  if (!encoding.writable) throw new ApiError('unsupported','Mixed line endings or lone carriage returns prevent exact file writes.');
+  if (typeof text !== 'string' || text.includes('\r') || /[\ud800-\udfff]/u.test(text.replace(/[\ud800-\udbff][\udc00-\udfff]/g,''))) throw new ApiError('unsupported','The edited text does not round-trip as normalized UTF-8.');
+  const bytes = Buffer.from(`${encoding.bom ? '\ufeff' : ''}${encoding.ending === 'crlf' ? text.replace(/\n/g,'\r\n') : text}`,'utf8');
+  decodeText(bytes);return bytes;
+}
+/** Revision checks detect ordinary external changes; the final path check cannot make rename a compare-and-swap. */
+export async function writeText(root:RegisteredRoot,path:string,base:FileRevision,text:string,encoding:FileEncoding):Promise<FileText> {
+  const bytes = encodeFileText(text,encoding);
+  return withFileSnapshot(root,path,async snapshot=> {
+    if (!sameFileRevision(snapshot.revision,base)) throw new ApiError('file_changed','The file changed on disk. Re-read it or keep editing the draft.',409,'read');
+    if (!sameFileEncoding(fileSource(snapshot.text).encoding,encoding)) throw new ApiError('invalid_request','The file encoding does not match its disk revision.');
+    const parent = dirname(snapshot.target.path), temp = join(parent,`.ui-file-${randomUUID()}.tmp`);let handle:FileHandle|undefined, renamed = false;
+    try {
+      handle = await open(temp,constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,0o600);
+      await handle.writeFile(bytes);await handle.chmod(snapshot.info.mode & 0o7777);await handle.sync();await handle.close();handle = undefined;
+      await withFileSnapshot(root,path,async current=> {if (!sameFileRevision(current.revision,base) || !unchanged(current.info,snapshot.info)) changed();return undefined;});
+      await revalidateFileComponents(snapshot.target.chain);
+      await rename(temp,snapshot.target.path);renamed = true;
+      const directory = await open(parent,constants.O_RDONLY | constants.O_NOFOLLOW);try {await directory.sync();} finally {await directory.close();}
+      const result = await readText(root,path);
+      if (result.revision.digest !== digest(bytes)) changed();return result;
+    } finally {await handle?.close();if (!renamed) await unlink(temp).catch(()=>{});}
   });
 }
 function kind(entry: {isDirectory():boolean;isFile():boolean;isSymbolicLink():boolean}): FileEntry['kind'] {return entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other';}
