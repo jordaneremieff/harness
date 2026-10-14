@@ -1,4 +1,4 @@
-import type { ConversationLayout, ConversationTab, PaneNode } from '../shared/api.ts';
+import {validFileTab, type ConversationLayout, type WorkspaceTab as ConversationTab, type PaneNode} from '../shared/api.ts';
 import { MAX_TABS, tabKey } from './tabs.ts';
 
 export type { PaneNode } from '../shared/api.ts';
@@ -136,7 +136,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 function validTab(value: unknown): value is ConversationTab {
   const tab = record(value); if (!tab) return false;
-  return tab.kind === 'primary' ? Object.keys(tab).length === 1 : tab.kind === 'agent' && Object.keys(tab).length === 2 && typeof tab.identity === 'string' && !!tab.identity;
+  return tab.kind === 'file' ? validFileTab(tab) : tab.kind === 'primary' ? Object.keys(tab).length === 1 : tab.kind === 'agent' && Object.keys(tab).length === 2 && typeof tab.identity === 'string' && !!tab.identity;
 }
 function validateLeaf(node: Record<string, unknown>, state: Validation): boolean {
   if (Object.keys(node).length !== 4 || !Array.isArray(node.tabs) || node.tabs.length > MAX_TABS || !('active' in node)) return false;

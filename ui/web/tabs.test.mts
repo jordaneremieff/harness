@@ -7,6 +7,11 @@ const agent = (identity: string): ConversationTab => ({kind: 'agent', identity})
 const base = () => createPaneLayout([{kind: 'primary'}]);
 const workspace = (layout = base()): Workspace => ({id: 'fixture', revision: 0, primaryKey: 'primary-key', conversationLayout: layout});
 
+test('file focus survives retained conversation selection and repeated selection reuses its tab',()=> {
+  const file = {kind:'file' as const,rootId:'r',path:'note.md'},layout = openTab(openTab(base(),agent('a')),file);
+  const value = {...workspace(layout),selectedTarget:{kind:'agent' as const,identity:'a'}};
+  assert.deepEqual(activeTab(workspaceLayout(value)),file);assert.equal(layoutTarget(layout,{kind:'primary',key:'p',epoch:1}),null);assert.deepEqual(openTab(layout,file),layout);
+});
 test('workspace defaults, explicit empty layouts and current selected targets use the single tree', () => {
   assert.deepEqual(workspaceLayout(), createPaneLayout([])); assert.deepEqual(workspaceLayout(workspace()), base());
   const selected = {...workspace(), selectedTarget: {kind: 'agent' as const, identity: 'a'}};

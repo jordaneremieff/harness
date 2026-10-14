@@ -5,6 +5,19 @@ import { ApiError, authenticate, operation, request, reserve, setUnauthorizedHan
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; setUnauthorizedHandler(); setRequestTiming(); });
 function json(data: unknown): Response { return Response.json({ok: true, data}); }
+test('working-folder requests carry the page workspace and the exact root selection body',async t=> {
+  const previous = Object.getOwnPropertyDescriptor(globalThis,'location');
+  Object.defineProperty(globalThis,'location',{configurable:true,value:{href:'http://fixture/?workspace=workspace'}});
+  t.after(()=> {if (previous) Object.defineProperty(globalThis,'location',previous);else Reflect.deleteProperty(globalThis,'location');});
+  const seen:{path:string;method:string;body:unknown}[] = [];
+  globalThis.fetch = async(path,init)=> {
+    seen.push({path:String(path),method:init?.method ?? 'GET',body:init?.body === undefined ? undefined : JSON.parse(String(init.body))});
+    return json({revision:0,root:null});
+  };
+  const path = '/api/workspaces/workspace/files/root',body = {path:'/project',expectedRevision:0};
+  await request(path);await request(path,'PUT',body);
+  assert.deepEqual(seen,[{path:`${path}?workspace=workspace`,method:'GET',body:undefined},{path:`${path}?workspace=workspace`,method:'PUT',body}]);
+});
 test('raw image upload retains its captured path, bytes and cancellation across page workspace changes', async t => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
   Object.defineProperty(globalThis, 'location', {configurable: true, value: {href: 'http://fixture/?workspace=new-page'}});

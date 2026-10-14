@@ -30,7 +30,7 @@ function projectPage(previous: RecentProjectPage | undefined, page: RecentProjec
 }
 
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
-  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; project?(): string | undefined; projectsChanged?(): void};
+  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; project?(): string | undefined; projectsChanged?(): void; workingFolder?(path:string):Promise<void>};
 
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
 export class ProjectPicker {
@@ -153,10 +153,21 @@ export class ProjectPicker {
       this.projects = projectPage(this.projects, page, !!cursor); this.ctx.projectsChanged?.(); loading = false; paint();
     }).catch(() => { if (current() && !signal.aborted) {loading = false; failed = true; paint();} });
   }
+  private workingFolderItems():ContextItem[] {
+    const labels = projectLabels(this.projectPaths());
+    return this.projectPaths().map(path=>({key:`project:${path}`,label:labels.get(path) ?? path,description:path,checked:path === this.project(),run:()=> {
+      void this.ctx.workingFolder?.(path).catch(cause=> {this.begin('Working folder');this.error(cause,'The working folder is unchanged.');});
+    }}));
+  }
+  private retainedPrimaryItems(snapshot?:Snapshot):ContextItem[] {
+    return (snapshot?.primaryIndex ?? []).filter(primary=>!snapshot?.primaries.some(item=>item.key === primary.key)).map(primary=>({key:`primary:${primary.key}`,label:`Session ${primary.key.slice(0,8)}`,description:primary.lifecycle,
+      run:()=> {void this.select({primaryKey:primary.key,selectedTarget:{kind:'primary',key:primary.key,epoch:primary.epoch}}).catch(cause=> {this.begin('Project could not be selected');this.error(cause);});}}));
+  }
   private projectItems(snapshot?: Snapshot): ContextItem[] {
     const items: ContextItem[] = []; const paths = new Set<string>();
     const labels = projectLabels(this.projectPaths());
     const name = (path: string) => labels.get(path) ?? path;
+    if (this.ctx.workingFolder) return this.workingFolderItems();
     for (const primary of snapshot?.primaries ?? []) {
       paths.add(primary.cwd);
       items.push({key: `primary:${primary.key}`, label: name(primary.cwd), description: [primary.cwd, primary.sessionName ?? primary.sessionId ?? primary.key, primary.lifecycle].join(' · '),
@@ -164,8 +175,7 @@ export class ProjectPicker {
         this.begin('Project could not be selected'); this.error(cause, 'The project choice is unchanged.');
         }); }});
     }
-    for (const primary of snapshot?.primaryIndex ?? []) if (!snapshot?.primaries.some(item => item.key === primary.key)) items.push({key: `primary:${primary.key}`, label: `Session ${primary.key.slice(0, 8)}`, description: primary.lifecycle,
-      run: () => { void this.select({primaryKey: primary.key, selectedTarget: {kind: 'primary', key: primary.key, epoch: primary.epoch}}).catch(cause => {this.begin('Project could not be selected'); this.error(cause);}); }});
+    items.push(...this.retainedPrimaryItems(snapshot));
     for (const path of [(snapshot as Bootstrap | undefined)?.launchCwd, this.project()]) if (path && !paths.has(path)) {
       paths.add(path); items.push({key: `project:${path}`, label: name(path), description: path, run: () => this.show(path)});
     }
@@ -189,6 +199,7 @@ export class ProjectPicker {
     const next = () => {
       if (!savedPathValid(directory.field.value)) {error.textContent = 'Enter a working folder path that starts with /.'; directory.field.focus(); return;}
       error.textContent = '';
+      if (this.ctx.workingFolder) {void this.run(async()=> {await this.ctx.workingFolder?.(directory.field.value);});return;}
       void this.sessions(directory.field.value).catch(cause => {if (this.owns(token)) {error.textContent = 'The working folder is unavailable.'; this.error(cause, '');}});
     };
     body.append(pickerField(directory, true), error); this.actions(button('Use folder', next));

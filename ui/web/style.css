@@ -303,6 +303,31 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .roster-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .roster-section > .nav-heading-row { flex: none; }
 .roster-section[data-collapsed=true] { flex: 1; }
+.files-section { display: flex; flex-direction: column; min-height: 0; max-height: 45%; }
+.files-section > .nav-heading-row { flex: none; }
+#files-section-body { min-height: 0; overflow: auto; scrollbar-width: thin; }
+.file-row { display: flex; align-items: center; gap: var(--s1); width: 100%; min-height: 26px; padding: 2px var(--s3) 2px calc(var(--s2) + var(--file-depth,0) * 14px); border: 0; border-radius: 0; text-align: left; }
+.file-row:hover, .file-row[aria-selected=true] { background: var(--raised); }
+.file-row[aria-selected=true] { font-weight: 500; }
+.file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-disclosure { flex: none; width: 12px; }
+.file-disclosure[data-hidden=true] { visibility: hidden; }
+.file-disclosure[data-expanded=true] { transform: rotate(90deg); }
+.file-row > .card-icon { flex: none; color: var(--muted); }
+.file-tree-status { padding: var(--s1) var(--s3); color: var(--muted); font-size: 12px; }
+.file-tree-more { margin: var(--s1) var(--s2); }
+.file-view { display: flex; min-width: 0; min-height: 0; padding: 0 var(--gutter); }
+.file-reading { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding-block: var(--s3); overflow-anchor: none; }
+.file-state { color: var(--muted); }
+.file-content { font-size: 15px; line-height: 1.6; }
+.file-text { margin: 0; white-space: pre; font-family: var(--mono); tab-size: 4; }
+.file-content > * { margin-block: 0 var(--s3); }
+.file-content > :last-child { margin-bottom: 0; }
+.file-content table { border-collapse: collapse; }
+.file-content th, .file-content td { padding: var(--s1) var(--s2); border: 1px solid var(--edge); }
+.file-content blockquote { padding-left: var(--s3); border-left: 2px solid var(--edge); }
+.file-content a { color: var(--link); }
+@media (pointer: coarse) { .file-row { min-height: 44px; } }
 .session-catalog { flex: 1; min-width: 0; padding: 4px 12px; color: var(--fg); font-size: 13px; text-align: left; }
 .roster-body { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .roster-body > :not(.roster) { flex: none; }

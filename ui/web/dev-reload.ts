@@ -1,3 +1,5 @@
+import {validFileTab, workspaceTabKey, type FileTab, type FilePosition} from '../shared/api.ts';
+export type DevFileCheckpoint = {tab:FileTab;position:FilePosition;digest:string;focused:boolean};
 export type DevBuild = {
   revision: number; generation: string; previous: string | null;
   change: 'css' | 'reload'; status: 'ready' | 'building' | 'failed' | 'held' | 'restart-required';
@@ -14,7 +16,7 @@ export type DevCheckpointEntry = {
 };
 export type DevReloadView = {
   workspaceId: string; focusedPane: string; targets: DevCheckpointEntry[]; messageRecipient?: string;
-  focusedControl?: {targetKey: string; kind: 'composer' | 'message'};
+  focusedControl?: {targetKey: string; kind: 'composer' | 'message'}; files?:DevFileCheckpoint[];
 };
 export type DevReloadCheckpoint = DevReloadView & {
   version: 1; generation: string; oldClient: string; capturedAt: number; interactionRevision: number;
@@ -66,6 +68,10 @@ function record(value: unknown, required: string[], optional: string[] = []): va
   return required.every(key => Object.hasOwn(descriptors, key)) && Reflect.ownKeys(value).every(key =>
     typeof key === 'string' && (required.includes(key) || optional.includes(key)) && Object.hasOwn(descriptors[key] ?? {}, 'value'));
 }
+function filePosition(value:unknown):boolean {
+  if (!record(value,['scrollTop','scrollLeft'])) return false;
+  return ['scrollTop','scrollLeft'].every(key=>typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] >= 0 && value[key] <= 1e9);
+}
 function target(value: unknown): value is DevCheckpointTarget {
   if (record(value, ['kind', 'key', 'epoch']) && value.kind === 'primary') return id(value.key) && integer(value.epoch) && value.epoch > 0;
   return record(value, ['kind', 'identity', 'connectionEpoch']) && value.kind === 'agent' && id(value.identity) && integer(value.connectionEpoch) && value.connectionEpoch > 0;
@@ -78,6 +84,16 @@ function entry(value: unknown): value is DevCheckpointEntry {
   const s = value.selection;
   return record(s, ['start', 'end', 'direction']) && integer(s.start) && integer(s.end) && s.start <= s.end && s.end <= 262144 && typeof s.direction === 'string' && ['forward', 'backward', 'none'].includes(s.direction);
 }
+function fileList(value:unknown):value is DevFileCheckpoint[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 16) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(value).length !== value.length + 1) return false;
+  return Array.from({length:value.length},(_,index)=>descriptors[String(index)]).every(descriptor=> {
+    if (!descriptor || !Object.hasOwn(descriptor,'value')) return false;
+    const file:unknown = descriptor.value;
+    return record(file,['tab','position','digest','focused']) && record(file.tab,['kind','rootId','path']) && validFileTab(file.tab) && filePosition(file.position) && typeof file.digest === 'string' && GENERATION.test(file.digest) && typeof file.focused === 'boolean';
+  });
+}
 function targetList(value: unknown): value is DevCheckpointEntry[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > 16) return false;
   const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -88,9 +104,15 @@ function control(value: unknown, keys: Set<string>, recipient: unknown): boolean
   return value === undefined || record(value, ['targetKey', 'kind']) && id(value.targetKey) && keys.has(value.targetKey) &&
     (value.kind === 'composer' || value.kind === 'message' && value.targetKey === recipient);
 }
+function fileCheckpointState(files:unknown,focusedControl:unknown):boolean {
+  if (files === undefined) return true;
+  if (!fileList(files)) return false;
+  if (new Set(files.map(file=>workspaceTabKey(file.tab))).size !== files.length || files.filter(file=>file.focused).length > 1) return false;
+  return !files.some(file=>file.focused) || focusedControl === undefined;
+}
 /** Structural validation does not replace the host's checks against freshly hydrated state. */
 export function validateDevReloadCheckpoint(value: unknown, generation: string, now: number): DevReloadCheckpoint | null {
-  if (!record(value, ['version', 'generation', 'oldClient', 'capturedAt', 'interactionRevision', 'workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient'])) return null;
+  if (!record(value, ['version', 'generation', 'oldClient', 'capturedAt', 'interactionRevision', 'workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files'])) return null;
   if (value.version !== 1 || value.generation !== generation || !GENERATION.test(generation) || typeof value.oldClient !== 'string' || !CLIENT.test(value.oldClient)) return null;
   if (!integer(now) || !integer(value.capturedAt) || value.capturedAt > now || now - value.capturedAt > TTL || !integer(value.interactionRevision)) return null;
   if (!id(value.workspaceId) || value.workspaceId.length > 128 || !id(value.focusedPane) || value.focusedPane.length > 128 || !targetList(value.targets)) return null;
@@ -98,6 +120,7 @@ export function validateDevReloadCheckpoint(value: unknown, generation: string, 
   const identities = new Set(value.targets.map(item => item.target.kind === 'primary' ? `primary:${item.target.key}` : `agent:${item.target.identity}`));
   if (keys.size !== value.targets.length || identities.size !== value.targets.length) return null;
   if (value.messageRecipient !== undefined && (!id(value.messageRecipient) || !keys.has(value.messageRecipient))) return null;
+  if (!fileCheckpointState(value.files,value.focusedControl)) return null;
   if (!control(value.focusedControl, keys, value.messageRecipient) || new TextEncoder().encode(JSON.stringify(value)).length > 16384) return null;
   return JSON.parse(JSON.stringify(value)) as DevReloadCheckpoint;
 }

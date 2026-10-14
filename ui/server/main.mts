@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Registry, type RegistryOptions } from './registry.mts';
 import { LocalHttp, assetMap, type Asset } from './http.mts';
+import {Files} from './files.mts';
 import { ApiError } from './errors.mts';
 import { DevelopmentBuild } from './development-build.mts';
 import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
@@ -67,9 +68,11 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     catch {process.stderr.write('Local diagnostics are unavailable.\n');}
   }
   let startupHttp:LocalHttp|undefined;
+  let files:Files|undefined;
   try {
+    files = await Files.open(stateDir);
     await registry.validatePath(options.cwd,true);
-    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics,identity});startupHttp=http;
+    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics,identity,files});startupHttp=http;
     const launchUrl=await http.listen(options.port);
     development?.generations.observe(status=>{diagnostics?.emit({event:'reload',code:status.status==='failed'?'failed':status.status==='ready'?'applied':'deferred'},'build');});
     development?.build.start();diagnostics?.emit({event:'connection',code:'applied'});
@@ -78,12 +81,13 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     let closedServices:Promise<PromiseSettledResult<void>[]>|undefined;
     const close=()=>closing??=(async()=> {
       http.stopAdmission();registry.journal.close();
-      closedServices??=Promise.allSettled([http.close(),development?.build.close(),diagnostics?.close()]);
-      const [primaries,services]=await Promise.all([Promise.allSettled([registry.close()]),closedServices]);
+      closedServices??=Promise.allSettled([http.close(),files?.close(),development?.build.close(),diagnostics?.close()]);
+      const services = await closedServices;
+      const primaries = await Promise.allSettled([registry.close()]);
       const failed=[...primaries,...services].find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
     })().catch(error=> {closing=undefined;throw error;});
     return {registry,http,launchUrl,identity,close};
-  } catch(error) {await Promise.allSettled([registry.close(),startupHttp?.close(),development?.build.close(),diagnostics?.close()]);throw error;}
+  } catch(error) {await Promise.allSettled([files?.close(),startupHttp?.close(),development?.build.close(),diagnostics?.close()]);await Promise.allSettled([registry.close()]);throw error;}
 }
 export async function main(args=process.argv.slice(2), opener: (url: string) => Promise<void> = openInBrowser, injection: Parameters<typeof startBackend>[1] = {}) {
   const options=parseArgs(args);

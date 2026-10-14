@@ -237,7 +237,7 @@ export class Registry {
     const identities: string[] = [];
     const visit = (node: NonNullable<Snapshot['workspace']['conversationLayout']>['root']) => {
       if(node.kind === 'split') {visit(node.first);visit(node.second);return;}
-      const target = node.tabs.find(tab => (tab.kind === 'primary' ? 'primary' : `agent:${tab.identity}`) === node.active);
+      const target = node.tabs.find(tab => tab.kind === 'agent' && `agent:${tab.identity}` === node.active);
       if(target?.kind === 'agent') identities.push(target.identity);
     };
     if(workspace.conversationLayout) visit(workspace.conversationLayout.root);

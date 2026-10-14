@@ -126,7 +126,7 @@ export function paneMenuItems(target: PaneMenuTarget, hooks: PaneMenuHooks): Con
   items.push(...moveChoices(layout, pane.id, key, hooks, guard));
   items.push({label: 'Close tab', enabled: !!key, run: guard(() => {if (key) hooks.closeTab(key);})},
     {label: 'Close pane', enabled: leaves.length > 1, run: guard(() => hooks.change(closePane(layout, pane.id)))});
-  items.push({label: 'Conversation actions…', enabled: !!key, separatorBefore: true, run: guard(() => {if (key) hooks.conversation(pane.id, key);})});
+  if (pane.tabs.find(tab=>tabKey(tab) === key)?.kind !== 'file') items.push({label: 'Conversation actions…', enabled: !!key, separatorBefore: true, run: guard(() => {if (key) hooks.conversation(pane.id, key);})});
   if (hooks.overflow) items.push(...tabChoices(layout, hooks, guard));
   return items;
 }

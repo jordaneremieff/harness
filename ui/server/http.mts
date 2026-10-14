@@ -9,12 +9,14 @@ import { ApiError, errorView } from './errors.mts';
 import { IMAGE_BYTES, ImageResponse } from './images.mts';
 import { isImageRoute } from './image-request.mts';
 import type { Journal } from './journal.mts';
+import {FileResponse, type Files} from './files.mts';
+import {dispatchFiles, isFileRoute} from './routes-files.mts';
 import { SessionStore, validateSessionProject } from './sessions.mts';
 import type { AssetGenerations } from './asset-generations.mts';
 import type { DiagnosticSink } from './diagnostics.mts';
 import type { UiIdentity } from '../shared/version.ts';
 import { identityDocument } from './version.mts';
-export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity};
+export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; session: string; signal?: AbortSignal};
@@ -122,6 +124,9 @@ async function readBody(request: IncomingMessage, limit: number = LIMITS.request
     return value as Record<string, unknown>;
   } catch { throw new ApiError('invalid_request', 'The request body is not a JSON object.'); }
 }
+function requestBody(request:IncomingMessage,method:string):Promise<Record<string,unknown>> {
+  return method === 'GET' || method === 'DELETE' ? Promise.resolve({}) : readBody(request);
+}
 function respond(response: ServerResponse, data: unknown, status = 200) {
   const json = JSON.stringify({ok: true, data});
   if (Buffer.byteLength(json) > LIMITS.displayBytes) throw new ApiError('payload_too_large', 'The response exceeds the display bound.', 413);
@@ -198,9 +203,9 @@ export class LocalHttp {
     if(await this.developmentRoute(request,response,url,method)) return;
     const asset = this.assets.get(url.pathname);
     if (asset) return this.staticAsset(method, url.pathname === '/' ? this.versionDocument(asset) : asset, response);
-    matchRoute(method, parts);
+    if (!isFileRoute(parts)) matchRoute(method, parts);
     if (this.savedImageRoute(method, parts, 'POST', 6)) return this.uploadImage(request, response, url, parts, this.auth.session(request));
-    const body = method === 'GET' || method === 'DELETE' ? {} : await readBody(request);
+    const body = await requestBody(request,method);
     if (url.pathname === '/api/auth/launch') return this.launch(body, response);
     const session = this.auth.session(request);
     if (url.pathname === '/api/auth/logout') return this.logout(session, response);
@@ -218,7 +223,14 @@ export class LocalHttp {
     const controller=new AbortController();
     const cancel=()=>{if(!response.writableEnded) controller.abort();};
     request.once('aborted',cancel);response.once('close',cancel);
-    try {const data=await this.backend.dispatch({...context,signal:controller.signal});if(!controller.signal.aborted) respond(response,data,method==='POST'&&url.pathname==='/api/primaries'?202:200);}
+    try {
+      const captured = {...context,signal:controller.signal};
+      const data = isFileRoute(parts) ? this.development.files ? await dispatchFiles(this.development.files,this.backend,captured) : (()=> {throw new ApiError('file_unavailable','File access is unavailable.',503,'read');})() : await this.backend.dispatch(captured);
+      if (!controller.signal.aborted) {
+        if (data instanceof FileResponse) {response.writeHead(data.status,{'Content-Type':'application/json; charset=utf-8'});response.end(data.json);}
+        else respond(response,data,method==='POST'&&url.pathname==='/api/primaries'?202:200);
+      }
+    }
     finally {request.off('aborted',cancel);response.off('close',cancel);}
   }
   private imageUploads = 0;

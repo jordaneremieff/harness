@@ -303,7 +303,13 @@ function fixtureTarget(path: string): TargetState {
   assert.equal(decodeURIComponent(path.split('/')[3] ?? ''), fixture.workspace.id);
   const saved = fixture.targets?.find(item => item.targetKey === decodeURIComponent(path.split('/')[5] ?? '')); assert.ok(saved); return saved;
 }
-function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
+const fileRoots = new Map<string,import('../shared/files.ts').FileRootSelection>();
+function fixtureFileRoot(path:string,body?:Record<string,unknown>):unknown {
+  const workspace = decodeURIComponent(path.split('/')[3] ?? '');const current = fileRoots.get(workspace) ?? {revision:0,root:null};
+  if (!body) return current;
+  const folder = String(body.path);const selected = {revision:current.revision+1,root:{id:folder,path:folder,name:folder.split('/').at(-1) ?? folder}};fileRoots.set(workspace,selected);return selected;
+}
+function fixtureCatalogRead(path:string):unknown {
   if (path === '/api/bootstrap') return {...snapshotOf(fixture, ++cursorSequence), limits: {}};
   if (path === '/api/snapshot') return snapshotOf(fixture, ++cursorSequence);
   if (/^\/api\/primaries\/[^/]+\/history(?!.*output)/.test(path)) { const primary = fixture.primaries.find(item => item.key === decodeURIComponent(path.split('/')[3] ?? '')); assert.ok(primary); return {target: {kind: 'primary', key: primary.key, epoch: primary.epoch}, items: fixture.history ?? [], nextCursor: null, coverage}; }
@@ -312,6 +318,11 @@ function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
   if (path === '/api/agents/refresh') return {};
   if (path === '/api/agents') return snapshotOf(fixture, cursorSequence).roster;
   if (path.includes('/resources/')) return {items: [], nextCursor: null, revision: 'r'};
+}
+function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
+  if (path.endsWith('/files/root')) return fixtureFileRoot(path,body);
+  if (path.endsWith('/directory')) return {rootId:decodeURIComponent(path.split('/')[4] ?? ''),path:'',entries:[],nextCursor:null,revision:'r',coverage:{complete:true,visited:0}};
+  const catalog = fixtureCatalogRead(path);if (catalog !== undefined) return catalog;
   if (path.endsWith('/draft')) return fixtureDraft(path, body);
   if (/\/(reading|presentation)$/.test(path)) return fixtureView(path, body ?? {});
   if (path.includes('/targets/')) return fixtureTarget(path);
@@ -336,11 +347,20 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (/^\/api\/workspaces\/[^/]+\/targets$/.test(path)) return Response.json({ok: true, data: fixturePreparation(body?.target)});
   return Response.json({ok: true, data: fixtureRead(path, body)});
 };
+class HostResizeObserver {
+  static instances: HostResizeObserver[] = [];
+  readonly observed = new Set<unknown>();
+  readonly callback: () => void;
+  constructor(callback: () => void) {this.callback = callback; HostResizeObserver.instances.push(this);}
+  observe(node: unknown): void {this.observed.add(node);}
+  unobserve(node: unknown): void {this.observed.delete(node);}
+  disconnect(): void {this.observed.clear();}
+}
 Object.assign(globalThis, {
   document: hostDocument, HTMLElement: HostNode, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
   history: {replaceState() {}}, sessionStorage: hostSessionStorage, matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900, addEventListener() {}, removeEventListener() {}}),
   getComputedStyle: view.getComputedStyle, requestAnimationFrame: hostRequestAnimationFrame, cancelAnimationFrame: hostCancelAnimationFrame,
-  ResizeObserver: class {observe(): void {} unobserve(): void {} disconnect(): void {}},
+  ResizeObserver: HostResizeObserver,
   MutationObserver: class {observe(): void {} disconnect(): void {}},
   EventSource: FixtureEventSource,
   innerWidth: 1200, innerHeight: 800,
@@ -442,6 +462,20 @@ test('initial hidden startup and its retired ready wait initialize once after fr
   ack.resolve(devResponse()); await settle(); assert.equal(developmentSources.length, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 1); assert.equal(hostSessionStorage.getItem('ui:dev-checkpoint'), null);
   pageHidden(true); pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();
   assert.equal(developmentSources.length, 1); assert.equal(acknowledgments, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 1);
+});
+
+test('pane resize notifications defer navigation writes and coalesce into one next frame', async () => {
+  await arrive({workspace: {id: 'resize-workspace', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
+  const observer = HostResizeObserver.instances.find(item => item.observed.has(byId('conversation-panes')));
+  const label = tabsNode().children[0]?.querySelector('.tab-label'); assert.ok(observer); assert.ok(label);
+  const before = label.writes; app.renderNavigation(); const renderWrites = label.writes - before; assert.ok(renderWrites > 0); flushFrames();
+  const writes = label.writes, pending = frames.length;
+  observer.callback(); observer.callback();
+  assert.equal(label.writes, writes, 'ResizeObserver delivery must not write pane geometry.');
+  assert.equal(frames.length, pending + 1, 'Repeated notifications share one next-frame render.');
+  flushFrames(); assert.equal(label.writes, writes + renderWrites);
+  observer.callback(); assert.equal(label.writes, writes + renderWrites); flushFrames(); assert.equal(label.writes, writes + 2 * renderWrites);
+  app.renderNavigation(); assert.equal(label.writes, writes + 3 * renderWrites, 'Explicit navigation remains synchronous.');
 });
 
 async function devHookFixture(workspace: string, epoch: number, images: import('../shared/api.ts').DraftImage[] = []): Promise<{primary: TargetState; agent: TargetState}> {
@@ -1276,7 +1310,7 @@ test('project identity names both direct controls with a launch-directory fallba
 test('working-folder context disambiguates loaded primaries and late recent projects in both headers', async () => {
   const first = primaryFixture({cwd: '/work/one/checkout', sessionName: 'Release notes'});
   const second = primaryFixture({key: 'p2', cwd: '/work/two/checkout', sessionName: 'Other title'});
-  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [first, second], roster: []});
+  await arrive({workspace: {id: 'project-context', revision: 1, primaryKey: 'p'}, primaries: [first, second], roster: []});
   for (const prefix of ['', 'compact-']) {
     assert.equal(byId(`${prefix}project-name`).textContent, 'one/checkout');
     assert.equal(byId(`${prefix}project-name`).title, first.cwd);
@@ -1311,7 +1345,7 @@ test('sidebar controls are visible and their icons have consistent decorative st
   for(const id of ['agent-refresh','agent-new','sidebar-close']){const node=byId(id); assert.equal(node.hidden,false); assert.ok(node.getAttribute('aria-label')); const icon=node.querySelector('svg'); assert.ok(icon); assert.equal(icon.getAttribute('width'),'16'); assert.equal(icon.getAttribute('height'),'16'); assert.equal(icon.getAttribute('focusable'),'false'); assert.equal(icon.getAttribute('stroke'),'currentColor'); assert.equal(icon.getAttribute('stroke-width'),'1.5'); assert.equal(icon.getAttribute('aria-hidden'),'true');} assert.match(html,/id="agent-search"[^>]*placeholder="Filter agents"/);
 });
 test('pane controls separate creation from conversation actions without title rows', async () => {
-  await arrive({workspace:{id:'w',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:708})],roster:[]}); assert.equal(tabsNode().getAttribute('role'),'tablist'); assert.equal(tabsNode().getAttribute('aria-label'),'Conversations');
+  await arrive({workspace:{id:'w',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:708})],roster:[]}); assert.equal(tabsNode().getAttribute('role'),'tablist'); assert.equal(tabsNode().getAttribute('aria-label'),'Tabs');
   const pane=paneNode('pane-1'); assert.equal(pane.querySelectorAll('.pane-actions').length,1); assert.equal(pane.querySelector('.pane-actions')?.getAttribute('aria-label'),'New tab'); assert.equal(pane.querySelector('.pane-actions svg')?.getAttribute('class'),'card-icon card-icon-plus'); assert.equal(primaryControl('transcript').getAttribute('aria-label'),'Conversation messages'); assert.equal(primaryControl('send').textContent,'Send'); assert.doesNotMatch(html,/pane-heading|id="tab-split"|id="session-title"/);
 });
 
@@ -1319,7 +1353,7 @@ test('pane strips expose local navigation, a direct new-tab chooser and a separa
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'strip-a'}, {kind: 'agent', identity: 'strip-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 8405})], roster: [agentFixture('strip-a', {name: 'First full tab name'}), agentFixture('strip-b', {name: 'Second full tab name'})]});
   const pane = paneNode('pane-1'); const bar = pane.querySelector('.tab-bar'); assert.ok(bar);
-  assert.deepEqual(bar.children.filter(node => node.classList.contains('pane-tab-nav') || node.classList.contains('conversation-tabs') || node.classList.contains('pane-actions') || node.classList.contains('pane-menu')).map(node => node.getAttribute('aria-label')), ['Previous tab', 'Next tab', 'Conversations', 'New tab', 'Tabs in this pane']);
+  assert.deepEqual(bar.children.filter(node => node.classList.contains('pane-tab-nav') || node.classList.contains('conversation-tabs') || node.classList.contains('pane-actions') || node.classList.contains('pane-menu')).map(node => node.getAttribute('aria-label')), ['Previous tab', 'Next tab', 'Tabs', 'New tab', 'Tabs in this pane']);
   const [previous, next] = pane.querySelectorAll('.pane-tab-nav'); assert.ok(previous); assert.ok(next);
   assert.equal(previous.disabled, true); assert.equal(next.disabled, false); next.click(); await settle();
   assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'strip-a'}); assert.equal(previous.disabled, false);
@@ -1392,7 +1426,7 @@ test('Primary metadata exposes scoped text while project identity remains separa
   assert.ok(usage.includes("element('span', 'usage-fact', fact.text)")); assert.ok(usage.includes('node.dataset.key = fact.key'));
   assert.ok(usage.includes("element('p', 'usage-detail', fact.detail)")); assert.ok(usage.includes('if (!fact.summary) continue'));
   assert.doesNotMatch(usage, /element\('meter'|usage-separator|launchCwd/);
-  assert.match(source, /projectIdentity\(view, launchCwd, picker\.projectPaths\(\)\)/); assert.ok(html.includes('id="primary-context"'));
+  assert.match(source, /projectIdentity\(\{cwd:projectPath\(\)\}, launchCwd, picker\.projectPaths\(\)\)/); assert.ok(html.includes('id="primary-context"'));
 });
 
 test('queued primary input renders labeled text, preserves full titles and clears when empty', () => {
@@ -1707,7 +1741,7 @@ test('project navigation remains an anchored project-first menu beside direct ut
   const project = byId('project-button'); project.click(); await settle(); const projects = menuNode();
   assert.equal(projects.getAttribute('aria-label'), 'Working folder'); assert.equal(project.getAttribute('aria-expanded'), 'true');
   assert.equal(byId('modal').open, false); assert.doesNotMatch(projects.textContent, /Release notes|In this window|List details|Cancel/);
-  const choice = projects.children.find(node => node.textContent === 'project'); assert.ok(choice); assert.match(choice.getAttribute('aria-description') ?? '', /Release notes/);
+  const choice = projects.children.find(node => node.textContent === 'project'); assert.ok(choice); assert.equal(choice.getAttribute('aria-description'),'/fixture/project');
   assert.equal(projects.style.left, `${Math.max(4, project.getBoundingClientRect().left)}px`);
   projects.dispatch('keydown', {key: 'Escape', preventDefault() {}, stopPropagation() {}});
   assert.equal(project.getAttribute('aria-expanded'), 'false'); assert.equal(hostDocument.activeElement, project);

@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {mkdtemp,mkdir,writeFile,readdir,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {LocalHttp} from './http.mts';
+import {Files} from './files.mts';
+import {Journal} from './journal.mts';
+import {ApiError} from './errors.mts';
+import type {FileRootSelection,FileText} from '../shared/files.ts';
+const workspace = '00000000-0000-4000-8000-000000000001';
+test('authenticated file routes return exact worker-encoded text and reject writer/search/query escapes',async context=> {
+  const path = await mkdtemp(join(tmpdir(),'ui-files-http-'));await mkdir(join(path,'state'));await mkdir(join(path,'project'));
+  const source = '\ufefftext\r\nlast\r';await writeFile(join(path,'project','text.md'),source);
+  await writeFile(join(path,'project','escaped.txt'),'\t'.repeat(1024*1024));
+  const files = await Files.open(join(path,'state'));let dispatched = 0;
+  const http = new LocalHttp({journal:new Journal(),workspace:async id=> {if (id !== workspace) throw new ApiError('invalid_request','Unknown workspace.');return workspace;},observe:async()=>{},detached:()=>{},dispatch:async()=> {dispatched++;return {}; }},new Map(),undefined,{files});
+  const launch = new URL(await http.listen(0)), origin = launch.origin;
+  context.after(async()=> {await http.close();await files.close();await rm(path,{recursive:true,force:true});});
+  let cookie = '';
+  const call = (route:string,method = 'GET',body?:unknown,extra:Record<string,string> = {})=>fetch(new URL(route,origin),{method,headers:{Origin:origin,...(cookie ? {Cookie:cookie} : {}),...(body === undefined ? {} : {'Content-Type':'application/json'}),...extra},...(body === undefined ? {} : {body:JSON.stringify(body)})});
+  assert.equal((await call(`/api/workspaces/${workspace}/files/root`)).status,401);
+  const login = await call('/api/auth/launch','POST',{capability:new URLSearchParams(launch.hash.slice(1)).get('launch')});assert.equal(login.status,200);cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';assert.ok(cookie);
+  const rootPath = `/api/workspaces/${workspace}/files/root`, rootRoute = `${rootPath}?workspace=${workspace}`;
+  const initial = await call(rootRoute);assert.equal(initial.status,200);assert.deepEqual((await initial.json() as {data:FileRootSelection}).data,{revision:0,root:null});
+  const selected = await call(rootRoute,'PUT',{path:join(path,'project'),expectedRevision:0});assert.equal(selected.status,200);
+  const selection = (await selected.json() as {data:FileRootSelection}).data;assert.ok(selection.root);
+  assert.deepEqual((await (await call(rootRoute)).json() as {data:FileRootSelection}).data,selection);
+  for (const query of ['workspace=','workspace=another',`workspace=${workspace}&workspace=${workspace}`,`workspace=${workspace}&unknown=1`]) {
+    const route = `${rootPath}?${query}`;
+    assert.equal((await call(route)).status,400,route);
+    assert.equal((await call(route,'PUT',{path:join(path,'project'),expectedRevision:selection.revision})).status,400,route);
+  }
+  assert.deepEqual((await (await call(rootRoute)).json() as {data:FileRootSelection}).data,selection);
+  const base = `/api/files/roots/${selection.root.id}`;
+  const text = await call(`${base}/text?workspace=${workspace}&path=text.md`);assert.equal(text.status,200);const value = (await text.json() as {data:FileText}).data;assert.equal(value.text,source);assert.equal('writable' in value,false);
+  const escaped = await call(`${base}/text?workspace=${workspace}&path=escaped.txt`);assert.equal(escaped.status,200);assert.ok((await escaped.text()).length > 1024*1024);
+  assert.equal((await call(`${base}/directory?workspace=${workspace}&path=&limit=1`)).status,200);
+  assert.equal((await call(`${base}/text?workspace=${workspace}&path=missing`)).status,404);
+  for (const route of [`${base}/text?workspace=${workspace}&path=../secret`,`${base}/text?workspace=${workspace}&path=text.md&path=text.md`,`${base}/text?workspace=${workspace}&path=text.md&unknown=1`,`${base}/directory?workspace=${workspace}&path=&limit=201`,`${base}/search?workspace=${workspace}&path=`]) assert.ok((await call(route)).status >= 400,route);
+  assert.equal((await call(`${base}/text?workspace=${workspace}&path=text.md`,'PUT',{text:'changed'})).status,405);
+  assert.equal((await call(`${base}/text?workspace=${workspace}&path=text.md`,'GET',undefined,{Origin:'http://foreign.test'})).status,403);
+  assert.equal(dispatched,0);assert.deepEqual((await readdir(join(path,'project'))).sort(),['escaped.txt','text.md']);
+});

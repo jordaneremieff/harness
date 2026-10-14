@@ -14,9 +14,13 @@
 <div id="app" class="app">
 <div id="connection" class="connection-banner" role="status" aria-live="polite" hidden></div>
 <div class="workbench">
-<nav id="sidebar" class="sidebar" aria-label="Conversations">
+<nav id="sidebar" class="sidebar" aria-label="Navigation">
 <div class="nav-top"><span id="project-name" class="project-context">Working folder</span><button id="project-button" class="icon-button project-button" type="button" data-control-icon="folder" title="Choose working folder" aria-label="Choose working folder" aria-haspopup="menu" aria-expanded="false"><span class="sr-only">Choose working folder</span></button><button id="sidebar-close" class="icon-button sidebar-close" type="button" data-control-icon="close" aria-label="Hide navigation" title="Hide navigation"><span class="sr-only">Hide navigation</span></button></div>
 <section id="sidebar-conversations" class="nav-section sidebar-conversations" aria-label="Conversations"></section>
+<section id="files-section" class="nav-section files-section" aria-labelledby="files-heading">
+<div class="nav-heading-row"><h2 class="nav-heading"><button id="files-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="files-section-body">Files</button></h2><div class="nav-heading-actions"><button id="files-refresh" class="icon-button" type="button" data-control-icon="restart" aria-label="Refresh files" title="Refresh files"><span class="sr-only">Refresh files</span></button></div></div>
+<div id="files-section-body" class="section-body"><div id="files-tree"></div></div>
+</section>
 <section id="primary-section" class="nav-section primary-section" aria-label="Saved sessions">
 <div class="nav-heading-row"><button id="session-open" class="session-catalog" type="button" aria-label="Find saved session" title="Find saved session">Saved sessions</button><div class="nav-heading-actions session-entry-actions"><button id="session-new" type="button" data-control-icon="plus" aria-label="New session" title="New session"><span class="sr-only">New session</span></button></div></div>
 <div id="primary-section-body" class="section-body"><button id="primary-row" class="nav-row primary-row" type="button"><span id="primary-row-state" class="state-glyph" aria-hidden="true"></span><span id="primary-row-title" class="row-title">no session</span><span id="primary-row-meta" class="row-meta"></span></button>

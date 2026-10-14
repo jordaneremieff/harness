@@ -65,7 +65,7 @@ async function unconfirmed(registry:Registry,workspace:string,context:RequestCon
   return registry.store.restoreRetainedInput(workspace,id,v.integer(body.expectedDraftRevision,'draft revision'));
 }
 async function selection(registry:Registry,workspace:string,body:Record<string,unknown>) {
-  v.fields(body,['expectedRevision','primaryKey','selectedTarget','panelVisible','sidebarVisible','sidebarWidth','appearance','enterSendsMessages','conversationLayout'],['expectedRevision']);
+  v.fields(body,['expectedRevision','primaryKey','selectedTarget','panelVisible','sidebarVisible','sidebarWidth','appearance','enterSendsMessages','conversationLayout','filePositions'],['expectedRevision']);
   const selectedTarget=body.selectedTarget===undefined?undefined:body.selectedTarget===null?null:v.target(body.selectedTarget);
   const primaryKey=body.primaryKey===undefined?undefined:v.string(body.primaryKey,'primary key');
   if(primaryKey && !registry.saved.has(primaryKey)) throw new ApiError('invalid_request','The primary does not exist.',404);
@@ -90,6 +90,7 @@ function selectionFields(body:Record<string,unknown>,primaryKey:string|undefined
     ...(sidebarWidth!==undefined?{sidebarWidth}:{}),
     ...(body.enterSendsMessages!==undefined?{enterSendsMessages:v.boolean(body.enterSendsMessages,'Enter preference')}:{}),
     ...(conversationLayout!==undefined?{conversationLayout:structuredClone(conversationLayout)}:{}),
+    ...(body.filePositions!==undefined?{filePositions:structuredClone(body.filePositions) as import('../shared/api.ts').Workspace['filePositions']}:{}),
     ...(body.appearance!==undefined?{appearance:v.choice(body.appearance,['dark','light','system','latte','frappe','macchiato','mocha'],'appearance')}: {})};
 }
 async function operations(registry:Registry,context:RequestContext) {

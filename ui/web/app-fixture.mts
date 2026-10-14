@@ -294,7 +294,12 @@ function fixtureTarget(path: string): TargetState {
   assert.equal(decodeURIComponent(path.split('/')[3] ?? ''), fixture.workspace.id);
   const saved = fixture.targets?.find(item => item.targetKey === decodeURIComponent(path.split('/')[5] ?? '')); assert.ok(saved); return saved;
 }
-function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
+const fileRoots = new Map<string,import('../shared/files.ts').FileRootSelection>();
+function fixtureFileRoot(path:string,body?:Record<string,unknown>):unknown {
+  const workspace = decodeURIComponent(path.split('/')[3] ?? ''),current = fileRoots.get(workspace) ?? {revision:0,root:null};if (!body) return current;
+  const folder = String(body.path),selected = {revision:current.revision+1,root:{id:folder,path:folder,name:folder.split('/').at(-1) ?? folder}};fileRoots.set(workspace,selected);return selected;
+}
+function fixtureCatalogRead(path:string):unknown {
   if (path === '/api/bootstrap') return {...snapshotOf(fixture, ++cursorSequence), limits: {}};
   if (path === '/api/snapshot') return snapshotOf(fixture, ++cursorSequence);
   if (/^\/api\/primaries\/[^/]+\/history(?!.*output)/.test(path)) { const primary = fixture.primaries.find(item => item.key === decodeURIComponent(path.split('/')[3] ?? '')); assert.ok(primary); return {target: {kind: 'primary', key: primary.key, epoch: primary.epoch}, items: fixture.history ?? [], nextCursor: null, coverage}; }
@@ -303,6 +308,11 @@ function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
   if (path === '/api/agents/refresh') return {};
   if (path === '/api/agents') return snapshotOf(fixture, cursorSequence).roster;
   if (path.includes('/resources/')) return {items: [], nextCursor: null, revision: 'r'};
+}
+function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
+  if (path.endsWith('/files/root')) return fixtureFileRoot(path,body);
+  if (path.endsWith('/directory')) return {rootId:decodeURIComponent(path.split('/')[4] ?? ''),path:'',entries:[],nextCursor:null,revision:'r',coverage:{complete:true,visited:0}};
+  const catalog = fixtureCatalogRead(path);if (catalog !== undefined) return catalog;
   if (path.endsWith('/draft')) return fixtureDraft(path, body);
   if (/\/(reading|presentation)$/.test(path)) return fixtureView(path, body ?? {});
   if (path.includes('/targets/')) return fixtureTarget(path);

@@ -60,41 +60,52 @@ export class MessageTarget {
 export type SelectionHooks = {current: () => Workspace | undefined; save: (workspace: Workspace, change: SelectionChange) => Promise<Workspace>; reload: () => Promise<void>; paint: (workspace: Workspace, pending: boolean) => void};
 /** Cached selection appears immediately; backend revisions advance in one ordered lane. */
 export class SelectionQueue {
-  private committed?: Workspace;
-  private pending = new Map<number, SelectionChange>();
+  private lanes = new Map<string,{committed:Workspace; pending:Map<number,SelectionChange>}>();
   private serial = 0;
   private tail = Promise.resolve();
   private hooks: SelectionHooks;
-  get unsettled(): boolean {return this.pending.size > 0;}
+  get unsettled(): boolean {return [...this.lanes.values()].some(lane=>lane.pending.size > 0);}
   async drain(): Promise<void> {let tail: Promise<void>; do {tail = this.tail; await tail;} while (tail !== this.tail);}
   constructor(hooks: SelectionHooks) {this.hooks = hooks;}
-  private overlay(): Workspace | undefined {
-    let workspace = this.committed;
-    if (!workspace) return undefined;
-    for (const change of this.pending.values()) workspace = {...workspace, ...change, selectedTarget: change.selectedTarget === null ? undefined : change.selectedTarget ?? workspace.selectedTarget};
+  private lane(workspace:Workspace) {
+    let lane = this.lanes.get(workspace.id);
+    if (!lane) {lane = {committed:workspace,pending:new Map()};this.lanes.set(workspace.id,lane);}
+    else if (workspace.revision > lane.committed.revision) lane.committed = workspace;
+    return lane;
+  }
+  private overlay(lane:{committed:Workspace;pending:Map<number,SelectionChange>}):Workspace {
+    let workspace = lane.committed;
+    for (const change of lane.pending.values()) workspace = {...workspace,...change,selectedTarget:change.selectedTarget === null ? undefined : change.selectedTarget ?? workspace.selectedTarget,filePositions:{...workspace.filePositions,...change.filePositions}};
     return workspace;
   }
-  private paint(): void {const workspace = this.overlay(); if (workspace) this.hooks.paint(workspace, this.pending.size > 0);}
-  observe(workspace: Workspace): Workspace {
-    if (!this.committed || workspace.revision >= this.committed.revision) this.committed = workspace;
-    return this.overlay() ?? workspace;
+  private paint(workspaceId:string):void {
+    const lane = this.lanes.get(workspaceId);
+    if (lane && this.hooks.current()?.id === workspaceId) this.hooks.paint(this.overlay(lane),lane.pending.size > 0);
   }
-  select(change: SelectionChange): Promise<void> {
-    this.committed ??= this.hooks.current(); if (!this.committed) return Promise.resolve();
-    const id = ++this.serial; this.pending.set(id, change); this.paint();
-    const task = this.tail.then(async () => {
-      try {this.observe(await this.hooks.save(this.committed as Workspace, change));}
-      catch (error) {
-        this.pending.delete(id); this.paint();
-        if (!this.pending.size) await this.hooks.reload();
-        throw error;
-      }
-      this.pending.delete(id); this.paint();
-      if (!this.pending.size) {
+  observe(workspace:Workspace):Workspace {return this.overlay(this.lane(workspace));}
+  private async failed(workspaceId:string,id:number,error:unknown):Promise<void> {
+    const lane = this.lanes.get(workspaceId);if (!lane) return;
+    lane.pending.delete(id);this.paint(workspaceId);
+    if (this.hooks.current()?.id !== workspaceId) return;
+    if (!lane.pending.size) await this.hooks.reload();
+    if (this.hooks.current()?.id === workspaceId) throw error;
+  }
+  select(input:SelectionChange):Promise<void> {
+    const current = this.hooks.current(); if (!current) return Promise.resolve();
+    const workspaceId = current.id, lane = this.lane(current), id = ++this.serial, change = structuredClone(input);
+    lane.pending.set(id,change);this.paint(workspaceId);
+    const task = this.tail.then(async()=> {
+      try {
+        const result = await this.hooks.save(lane.committed,change);
+        if (result.id !== workspaceId) throw new Error('The saved workspace identity changed.');
+        this.observe(result);
+      } catch (error) {await this.failed(workspaceId,id,error);return;}
+      lane.pending.delete(id);this.paint(workspaceId);
+      if (!lane.pending.size && this.hooks.current()?.id === workspaceId) {
         await this.hooks.reload();
-        const current = this.hooks.current(); if (current) this.observe(current); this.paint();
+        const current = this.hooks.current(); if (current?.id === workspaceId) {this.observe(current);this.paint(workspaceId);}
       }
     });
-    this.tail = task.catch(() => undefined); return task;
+    this.tail = task.catch(()=>undefined);return task;
   }
 }

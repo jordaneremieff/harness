@@ -16,6 +16,9 @@ export const LIMITS = {
   imageLeaseMs: 10 * 60 * 1000, stagedImages: 128, stagedImagesPerTarget: 16,
   blobEntries: 1024, agentPendingBytes: 16 * 1024 * 1024, imagePreparations: 1,
   preparedInputBytes: 12 * 1024 * 1024, textFileBytes: 32 * 1024,
+  fileTextBytes: 1024 * 1024, fileResponseBytes: 6 * 1024 * 1024 + 64 * 1024,
+  fileDirectoryEntries: 4096, fileScanBytes: 1024 * 1024, filePageItems: 200,
+  fileRoots: 128, filePending: 16, fileReadMs: 15_000,
 } as const;
 /** Exact target captured before dispatch. Epochs never transfer drafts. */
 export type Target = {kind: 'primary'; key: string; epoch: number} | {kind: 'agent'; identity: string};
@@ -24,7 +27,8 @@ export type Retry = 'none' | 'read' | 'same-operation' | 'manual';
 export type ErrorCode = 'unauthorized' | 'origin_rejected' | 'invalid_request' | 'payload_too_large' |
   'stale_revision' | 'stale_epoch' | 'unknown_operation' | 'operation_conflict' | 'capacity' |
   'not_ready' | 'unsupported' | 'host_unavailable' | 'contract_mismatch' | 'protocol_error' |
-  'delivery_uncertain' | 'internal' | 'history_limit';
+  'delivery_uncertain' | 'internal' | 'history_limit' | 'file_missing' | 'file_root_missing' |
+  'file_unsafe' | 'file_denied' | 'file_unavailable' | 'file_changed' | 'file_binary';
 /** Bounded public error. Never includes stacks or raw upstream objects. */
 export type ErrorView = {code: string; message: string; retry: Retry; operationId?: string; target?: Target; details?: JsonDisplay};
 export type Success<T> = {ok: true; data: T};
@@ -94,13 +98,26 @@ export type PrimaryView = {key: string; epoch: number; cwd: string;
 export type Appearance = 'dark' | 'light' | 'system' | 'latte' | 'frappe' | 'macchiato' | 'mocha';
 /** Primary tabs follow the workspace primary; closing a tab never stops its conversation. */
 export type ConversationTab = {kind: 'primary'} | {kind: 'agent'; identity: string};
-export type PaneNode = {kind: 'pane'; id: string; tabs: ConversationTab[]; active: string | null} |
+export type FileTab = {kind: 'file'; rootId: string; path: string};
+export type WorkspaceTab = ConversationTab | FileTab;
+export function validFileTab(value: unknown): value is FileTab {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const tab = value as FileTab;
+  if (Object.keys(tab).length !== 3 || tab.kind !== 'file' || typeof tab.rootId !== 'string' || !tab.rootId || tab.rootId.length > LIMITS.idChars || typeof tab.path !== 'string' || !tab.path || tab.path.length > LIMITS.pathChars || /[\\\\\u0000-\u001f\u007f]|%2f|%5c|%2e/i.test(tab.path) || /[\ud800-\udfff]/u.test(tab.path.replace(/[\ud800-\udbff][\udc00-\udfff]/g,''))) return false;
+  const parts = tab.path.split('/');
+  return parts.length <= 128 && parts.every(part=>!!part && part !== '.' && part !== '..' && !['.git','.hg','.svn','.bzr'].includes(part));
+}
+export function workspaceTabKey(tab: WorkspaceTab): string {
+  return tab.kind === 'file' ? `file:${JSON.stringify([tab.rootId, tab.path])}` : tab.kind === 'primary' ? 'primary' : `agent:${tab.identity}`;
+}
+export type FilePosition = {scrollTop: number; scrollLeft: number};
+export type PaneNode = {kind: 'pane'; id: string; tabs: WorkspaceTab[]; active: string | null} |
   {kind: 'split'; id: string; axis: 'x' | 'y'; ratio: number; first: PaneNode; second: PaneNode};
 export type ConversationLayout = {root: PaneNode; focusedPane: string};
 /** Shared tabs use compare-and-set revisions for view state. */
 export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
   panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean;
-  conversationLayout?: ConversationLayout};
+  conversationLayout?: ConversationLayout; filePositions?: Record<string, FilePosition>};
 export type DraftImage = {digest: string; mimeType: 'image/png' | 'image/jpeg'; bytes: number; width: number; height: number; name: string};
 export type DraftTuple = {text: string; mode: string; images: DraftImage[]};
 export type QueueRecovery = {clearOperationId: string; mode: 'steer' | 'followUp'; index: number};

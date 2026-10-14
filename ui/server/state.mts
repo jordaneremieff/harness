@@ -3,7 +3,7 @@ import { chmod, lstat, mkdir, open, opendir, rename, unlink } from 'node:fs/prom
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { LIMITS, sameDraftTuple, draftHasContent } from '../shared/api.ts';
+import { LIMITS, sameDraftTuple, draftHasContent, validFileTab, workspaceTabKey, type FilePosition } from '../shared/api.ts';
 import type {DraftImage, DraftPut, StoredDraft, RecoveryInput, RetainedInput, RetainedAdmission, InputCopy, RecoveryOrigin, RecoverySendGuard, QueueRecovery, ImageUploadView} from '../shared/api.ts';
 import {normalizeDraftImages, imageName} from './validate.mts';
 import {DraftImages, sameImageContent} from './draft-images.mts';
@@ -53,6 +53,7 @@ function conversationTabKey(value: unknown): string {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StateError('invalid_request', 'Invalid conversation tab');
   const tab = value as Record<string, unknown>;
   if (tab.kind === 'primary') { layoutObject(tab, ['kind'], 'primary tab'); return 'primary'; }
+  if (tab.kind === 'file') {if (!validFileTab(tab)) throw new StateError('invalid_request','Invalid file tab'); return workspaceTabKey(tab);}
   if (tab.kind !== 'agent') throw new StateError('invalid_request', 'Invalid conversation tab kind');
   layoutObject(tab, ['kind', 'identity'], 'agent tab');
   validateTarget({kind: 'agent', identity: tab.identity as string});
@@ -121,7 +122,17 @@ async function syncDirectory(path: string): Promise<void> {
   const dir = await open(path, constants.O_RDONLY); try { await dir.sync(); } finally { await dir.close(); }
 }
 
-type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; conversationLayout?: ConversationLayout};
+type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; conversationLayout?: ConversationLayout; filePositions?: Record<string,FilePosition>};
+function fileKeys(layout?:ConversationLayout):Set<string> {
+  const keys = new Set<string>();
+  const visit = (node:ConversationLayout['root']):void => {if (node.kind === 'split') {visit(node.first);visit(node.second);} else for (const tab of node.tabs) if (tab.kind === 'file') keys.add(workspaceTabKey(tab));};
+  if (layout) visit(layout.root); return keys;
+}
+export function validateFilePositions(value:unknown, layout?:ConversationLayout):asserts value is Record<string,FilePosition> {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > LIMITS.conversationTabs) throw new StateError('invalid_request','Invalid file positions');
+  const keys = fileKeys(layout);
+  for (const [key,position] of Object.entries(value)) if (!keys.has(key) || !position || typeof position !== 'object' || Object.keys(position).length !== 2 || !Number.isFinite(position.scrollTop) || !Number.isFinite(position.scrollLeft) || position.scrollTop < 0 || position.scrollLeft < 0 || position.scrollTop > 1e9 || position.scrollLeft > 1e9) throw new StateError('invalid_request','Invalid file reading position');
+}
 function validateEnterPreference(value: unknown): void {
   if (value !== undefined && typeof value !== 'boolean') throw new StateError('invalid_request', 'Invalid Enter preference');
 }
@@ -134,7 +145,7 @@ function validateSelection(input: SelectionInput): void {
       if (input.appearance !== undefined && !['dark', 'light', 'system', 'latte', 'frappe', 'macchiato', 'mocha'].includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
       validateEnterPreference(input.enterSendsMessages);
       if (input.conversationLayout !== undefined) validateConversationLayout(input.conversationLayout);
-      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'enterSendsMessages', 'conversationLayout'];
+      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'enterSendsMessages', 'conversationLayout', 'filePositions'];
       if (Object.keys(input).some(key => !allowed.includes(key))) throw new StateError('invalid_request', 'Unknown workspace field');
 }
 function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace {
@@ -148,6 +159,10 @@ function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace
       if (input.conversationLayout !== undefined) value.conversationLayout = structuredClone(input.conversationLayout);
       if (input.selectedTarget === null) delete value.selectedTarget;
       else if (input.selectedTarget !== undefined) value.selectedTarget = structuredClone(input.selectedTarget);
+      if (input.filePositions !== undefined) validateFilePositions(input.filePositions,value.conversationLayout);
+      const keys = fileKeys(value.conversationLayout);
+      value.filePositions = Object.fromEntries(Object.entries({...current.filePositions,...structuredClone(input.filePositions ?? {})}).filter(([key])=>keys.has(key)));
+      validateFilePositions(value.filePositions,value.conversationLayout);
   return value;
 }
 
@@ -234,11 +249,12 @@ export class StateStore {
         }
   }
   private async loadSavedRecords(): Promise<void> {
-      await this.load('workspaces', LIMITS.workspaces, 8192, value => {
+      await this.load('workspaces', LIMITS.workspaces, LIMITS.requestBytes, value => {
         const record = value as Workspace;
         if (!UUID.test(record.id) || !Number.isSafeInteger(record.revision)) throw new StateError('not_ready', 'Invalid saved workspace', 503);
         if (record.enterSendsMessages !== undefined && typeof record.enterSendsMessages !== 'boolean') throw new StateError('not_ready', 'Invalid saved Enter preference', 503);
         if (record.conversationLayout !== undefined) validateConversationLayout(record.conversationLayout);
+        if (record.filePositions !== undefined) validateFilePositions(record.filePositions,record.conversationLayout);
         this.workspaces.set(record.id, record);
       });
       await this.load('targets', LIMITS.targets, 96 * 1024, value => {
@@ -365,7 +381,7 @@ export class StateStore {
       const current = this.requireWorkspace(id); revision(current.revision, input.expectedRevision, current);
       validateSelection(input);
       const value = selectedWorkspace(current, input);
-      await this.atomic(`workspaces/${id}.json`, value, 8192); this.workspaces.set(id, value);
+      await this.atomic(`workspaces/${id}.json`, value, LIMITS.requestBytes); this.workspaces.set(id, value);
       this.changed('workspace.changed', value, id); return structuredClone(value);
     });
   }

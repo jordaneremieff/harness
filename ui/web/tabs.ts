@@ -1,8 +1,8 @@
-import { LIMITS, type ConversationLayout, type ConversationTab, type Target, type Workspace } from '../shared/api.ts';
+import { LIMITS, workspaceTabKey, type ConversationLayout, type WorkspaceTab as ConversationTab, type Target, type Workspace } from '../shared/api.ts';
 import { activatePaneTab, closePaneTab, createPaneLayout, openPaneTab, paneById, paneForTab } from './pane-layout.ts';
 
 export const MAX_TABS = LIMITS.conversationTabs;
-export function tabKey(tab: ConversationTab): string { return tab.kind === 'primary' ? 'primary' : `agent:${tab.identity}`; }
+export const tabKey = workspaceTabKey;
 export function activeTab(layout: ConversationLayout): ConversationTab | undefined {
   const pane = paneById(layout, layout.focusedPane); return pane?.tabs.find(tab => tabKey(tab) === pane.active);
 }
@@ -13,7 +13,7 @@ export function workspaceLayout(workspace?: Workspace): ConversationLayout {
   let layout = workspace?.conversationLayout ?? createPaneLayout(workspace?.primaryKey ? [{kind: 'primary'}] : []);
   if (!workspace?.primaryKey) layout = closePaneTab(layout, 'primary');
   const target = workspace?.selectedTarget;
-  if (!target || target.kind === 'primary' && !workspace?.primaryKey) return layout;
+  if (!target || activeTab(layout)?.kind === 'file' || target.kind === 'primary' && !workspace?.primaryKey) return layout;
   const tab = tabForTarget(target); const key = tabKey(tab); const owner = paneForTab(layout, key);
   return owner ? activatePaneTab(layout, owner.id, key) : openTab(layout, tab);
 }
@@ -25,7 +25,7 @@ export function switchTab(layout: ConversationLayout, direction: number): Conver
 }
 export function layoutTarget(layout: ConversationLayout, primary?: Target): Target | null {
   const tab = activeTab(layout);
-  return !tab ? null : tab.kind === 'primary' ? primary ?? null : {kind: 'agent', identity: tab.identity};
+  return !tab || tab.kind === 'file' ? null : tab.kind === 'primary' ? primary ?? null : {kind: 'agent', identity: tab.identity};
 }
 
 function agentTail(identity: string, counts: Map<string, number>[], conversations: Map<string, number>): string {

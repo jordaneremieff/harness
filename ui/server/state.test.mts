@@ -7,6 +7,7 @@ import { StateError, StateStore, validateConversationLayout } from './state.mts'
 import { Operations } from './operations.mts';
 import { Journal } from './journal.mts';
 import type { Appearance, ConversationLayout, Workspace } from '../shared/api.ts';
+import {LIMITS,workspaceTabKey} from '../shared/api.ts';
 
 test('conversation layout accepts one bounded target-object tree and rejects flat records', () => {
   const layout: ConversationLayout = {root: {kind: 'split', id: 'split-1', axis: 'x', ratio: 50,
@@ -46,6 +47,14 @@ async function setup(t: test.TestContext, hook?: Parameters<typeof StateStore.op
   return {root, store, workspace, target};
 }
 
+test('file positions stay inside their layout and closed file tabs lose their positions',async t=> {
+  const {store,workspace} = await setup(t),file = {kind:'file' as const,rootId:'root',path:'note.md'},key = workspaceTabKey(file);
+  const layout:ConversationLayout = {root:{kind:'pane',id:'pane-1',tabs:[file],active:key},focusedPane:'pane-1'};
+  const saved = await store.updateSelection(workspace.id,{expectedRevision:0,conversationLayout:layout,filePositions:{[key]:{scrollTop:120,scrollLeft:8}}});assert.deepEqual(saved.filePositions?.[key],{scrollTop:120,scrollLeft:8});
+  for (const position of [{scrollTop:-1,scrollLeft:0},{scrollTop:Infinity,scrollLeft:0},{scrollTop:1,scrollLeft:0,extra:1}]) await assert.rejects(store.updateSelection(workspace.id,{expectedRevision:1,filePositions:{[key]:position}}),{code:'invalid_request'});
+  await assert.rejects(store.updateSelection(workspace.id,{expectedRevision:1,filePositions:{other:{scrollTop:0,scrollLeft:0}}}),{code:'invalid_request'});
+  const closed = await store.updateSelection(workspace.id,{expectedRevision:1,conversationLayout:{...layout,root:{kind:'pane',id:'pane-1',tabs:[],active:null}}});assert.deepEqual(closed.filePositions,{});
+});
 test('private state survives restart, retains distinct epochs, and publishes only saved revisions', async t => {
   const events: string[] = [];
   const {root, store, workspace, target} = await setup(t, {onChange: name => { events.push(name); }});
@@ -232,7 +241,7 @@ test('conversation tab and ratio boundaries retain the workspace file bound', as
   const {root, store, workspace} = await setup(t);
   const leaf = (id: string, offset: number): Extract<import('../shared/api.ts').PaneNode, {kind: 'pane'}> => ({kind: 'pane', id, tabs: Array.from({length: 8}, (_, index) => ({kind: 'agent', identity: `agent-${index + offset}`})), active: `agent:${id}`});
   const layout: ConversationLayout = {root: {kind: 'split', id: 'split', axis: 'x', ratio: 20, first: {...leaf('left', 0), active: 'agent:agent-7'}, second: {...leaf('right', 8), active: 'agent:agent-15'}}, focusedPane: 'right'};
-  const first = await store.updateSelection(workspace.id, {expectedRevision: 0, conversationLayout: layout});
+  let first = await store.updateSelection(workspace.id, {expectedRevision: 0, conversationLayout: layout});
   assert.deepEqual(first.conversationLayout, layout);
   const huge = structuredClone(layout); assert.ok(huge.root.kind === 'split');
   for (const [index, pane] of [huge.root.first, huge.root.second].entries()) {
@@ -240,15 +249,21 @@ test('conversation tab and ratio boundaries retain the workspace file bound', as
     pane.tabs = pane.tabs.map((_tab, offset) => ({kind: 'agent', identity: `${'\\'.repeat(254)}${index * 8 + offset}`}));
     const active = pane.tabs[0]; assert.ok(active?.kind === 'agent'); pane.active = `agent:${active.identity}`;
   }
-  assert.ok(Buffer.byteLength(JSON.stringify({...first, conversationLayout: huge})) > 8192);
-  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 1, conversationLayout: huge}), error => error instanceof StateError && error.code === 'payload_too_large');
+  first = await store.updateSelection(workspace.id,{expectedRevision:1,conversationLayout:huge});
+  const oversized = structuredClone(layout);assert.ok(oversized.root.kind === 'split');
+  for (const [index,pane] of [oversized.root.first,oversized.root.second].entries()) {
+    assert.ok(pane.kind === 'pane');pane.tabs = pane.tabs.map((_tab,offset)=>({kind:'file',rootId:'root',path:`${'"'.repeat(4090)}${index*8+offset}`}));
+    if (pane.tabs[0]) pane.active = workspaceTabKey(pane.tabs[0]);
+  }
+  assert.ok(Buffer.byteLength(JSON.stringify({...first,conversationLayout:oversized})) > LIMITS.requestBytes);
+  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: first.revision, conversationLayout: oversized}), error => error instanceof StateError && error.code === 'payload_too_large');
   assert.deepEqual(await store.workspace(workspace.id), first);
   await rename(join(root, 'workspaces'), join(root, 'workspaces-away'));
   const replacement = structuredClone(layout); assert.ok(replacement.root.kind === 'split'); replacement.root.ratio = 80; replacement.focusedPane = 'left';
-  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 1, conversationLayout: replacement}));
+  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: first.revision, conversationLayout: replacement}));
   assert.deepEqual(await store.workspace(workspace.id), first);
   await rename(join(root, 'workspaces-away'), join(root, 'workspaces'));
-  const last = await store.updateSelection(workspace.id, {expectedRevision: 1, conversationLayout: replacement});
+  const last = await store.updateSelection(workspace.id, {expectedRevision: first.revision, conversationLayout: replacement});
   assert.equal(last.conversationLayout?.root.kind === 'split' && last.conversationLayout.root.ratio, 80); assert.equal(last.conversationLayout?.focusedPane, 'left');
 });
 

@@ -1,6 +1,6 @@
 import {byId, setText} from './dom.ts';
 
-type Pane = 'primary' | 'agent';
+type Pane = 'primary' | 'agent' | 'file';
 /** Focus changes only status text and visibility, never editor or control ownership. */
 export class WorkbenchStatus {
   readonly node: HTMLElement;

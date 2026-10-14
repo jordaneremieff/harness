@@ -213,6 +213,12 @@ test('checkpoint validation is closed, bounded and rejects duplicate or missing 
   const original = checkpoint(); const validated = validateDevReloadCheckpoint(original, B, NOW); const agent = original.targets[1]; assert.ok(agent); agent.draftRevision++;
   assert.equal(validated?.targets[1]?.draftRevision, 7);
 });
+test('file checkpoints contain only bounded identities, source digests, position and focus',()=> {
+  const file = {tab:{kind:'file' as const,rootId:'r',path:'note.md'},position:{scrollTop:120,scrollLeft:8},digest:A,focused:false};
+  const value = {...checkpoint(),files:[file]};assert.deepEqual(validateDevReloadCheckpoint(value,B,NOW),value);
+  for (const files of [[file,file],[{...file,text:'source'}],[{...file,focused:true}],[{...file,position:{scrollTop:-1,scrollLeft:0}}],[{...file,digest:'wrong'}],[{...file,tab:{...file.tab,path:'../escape'}}]]) assert.equal(validateDevReloadCheckpoint({...value,files},B,NOW),null);
+  let reads = 0;const entries = [file];Object.defineProperty(entries,'0',{get:()=> {reads++;return file;}});assert.equal(validateDevReloadCheckpoint({...value,files:entries},B,NOW),null);assert.equal(reads,0);
+});
 test('checkpoint validation does not invoke accessors on objects or array entries', () => {
   let reads = 0; const accessor = checkpoint(); Object.defineProperty(accessor, 'workspaceId', {get: () => {reads++; return 'w';}});
   assert.equal(validateDevReloadCheckpoint(accessor, B, NOW), null);

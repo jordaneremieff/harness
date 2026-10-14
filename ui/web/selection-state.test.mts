@@ -12,6 +12,17 @@ test('navigation separates the selected conversation, sidebar preference and nar
   assert.deepEqual(navigationState({...workspace, selectedTarget: undefined}, false), {sidebarVisible: true, agentSelected: false, editor: 'primary-editor'});
   assert.equal(workspace.sidebarVisible, undefined);
 });
+test('workspace changes keep saved selections and late errors in their captured lane',async()=> {
+  let current:Workspace = {id:'a',revision:0};const calls:{workspace:Workspace;resolve:(value:Workspace)=>void;reject:(error:Error)=>void}[] = [],paints:string[] = [];let reloads = 0;
+  const queue = new SelectionQueue({current:()=>current,paint:value=> {current = value;paints.push(value.id);},reload:async()=> {reloads++;},save:workspace=>new Promise((resolve,reject)=>calls.push({workspace,resolve,reject}))});
+  const a = queue.select({sidebarWidth:250});await Promise.resolve();current = {id:'b',revision:0};const b = queue.select({sidebarWidth:300});calls[0]?.reject(new Error('old failure'));await a;await Promise.resolve();assert.equal(calls[1]?.workspace.id,'b');assert.equal(current.sidebarWidth,300);assert.equal(reloads,0);
+  calls[1]?.resolve({id:'b',revision:1,sidebarWidth:300});await b;assert.equal(current.id,'b');assert.equal(reloads,1);assert.deepEqual(paints,['a','b','b','b']);
+});
+test('queued optimistic fields never become the confirmed rollback baseline',async()=> {
+  let current:Workspace = {id:'w',revision:0,sidebarWidth:272};const pending:{reject:(error:Error)=>void}[] = [];
+  const queue = new SelectionQueue({current:()=>current,paint:value=> {current=value;},reload:async()=>{},save:()=>new Promise((_resolve,reject)=>pending.push({reject}))});
+  const first = queue.select({sidebarWidth:300}).catch(()=>{}),second = queue.select({sidebarWidth:320}).catch(()=>{});await Promise.resolve();pending[0]?.reject(new Error('first'));await first;await Promise.resolve();pending[1]?.reject(new Error('second'));await second;assert.equal(current.sidebarWidth,272);
+});
 function setup() {
   let current: Workspace = {id: 'workspace', revision: 0, primaryKey: 'p'};
   const calls: {workspace: Workspace; change: SelectionChange; resolve: (value: Workspace) => void; reject: (error: Error) => void}[] = [];

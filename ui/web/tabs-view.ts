@@ -1,6 +1,6 @@
 import {cardIcon} from './card-icons.ts';
 import {statusGlyph} from './dom.ts';
-import type { ConversationTab } from '../shared/api.ts';
+import type { WorkspaceTab as ConversationTab } from '../shared/api.ts';
 import { duplicateIdentityTails, tabKey } from './tabs.ts';
 import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout.ts';
 
@@ -27,8 +27,8 @@ export class TabStrip {
   private regions: TabRegions;
   constructor(hooks: TabHooks, regions: TabRegions) {
     this.hooks = hooks; this.regions = regions;
-    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'Open conversations';
-    regions.conversations.setAttribute('aria-label', 'Open conversations'); regions.conversations.append(this.heading);
+    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'Tabs';
+    regions.conversations.setAttribute('aria-label', 'Tabs'); regions.conversations.append(this.heading);
     this.observer = new ResizeObserver(() => {
       if (this.destroyed) return;
       this.fitStatuses();
@@ -63,7 +63,7 @@ export class TabStrip {
     const doc = this.regions.conversations.ownerDocument; const focused = doc.activeElement as HTMLElement | null;
     const hadFocus = [...this.hosts.keys(), this.regions.conversations].some(host => host.contains(focused));
     this.syncHosts(regions);
-    this.tails = duplicateIdentityTails(tabs.map(tab => ({name: this.hooks.label(tab), identity: tab.kind === 'agent' ? tab.identity : 'primary'})));
+    this.tails = duplicateIdentityTails(tabs.map(tab => ({name: this.hooks.label(tab), identity: tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary'})));
     this.pruneNodes(new Set(tabs.map(tabKey)), new Set(panes.map(pane => pane.id)));
     panes.forEach((pane, paneIndex) => {
       const region = regions.find(region => region.id === pane.id); if (!region) throw new Error(`Missing tab region for pane ${pane.id}.`);
@@ -92,7 +92,7 @@ export class TabStrip {
   private syncHosts(regions: TabRegion[]): void {
     for (const [host, cleanup] of this.hosts) if (!regions.some(region => region.tabs === host)) {cleanup(); this.observer.unobserve(host); this.hosts.delete(host); this.widths.delete(host);}
     for (const region of regions) if (!this.hosts.has(region.tabs)) {
-      const host = region.tabs; host.setAttribute('role', 'tablist'); host.setAttribute('aria-label', 'Conversations');
+      const host = region.tabs; host.setAttribute('role', 'tablist'); host.setAttribute('aria-label', 'Tabs');
       const over = (event: DragEvent) => {if (this.dragging && this.owner(this.dragging)) {event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';}};
       const drop = (event: DragEvent) => {if (!this.dragging || !this.owner(this.dragging)) return; event.preventDefault(); this.hooks.move(this.dragging, region.id, paneById(this.hooks.layout(), region.id)?.tabs.length ?? 0); this.clearDrag();};
       host.addEventListener('dragover', over); host.addEventListener('drop', drop);
@@ -112,8 +112,8 @@ export class TabStrip {
     node.style.setProperty('--tab-identity-width', `${tail}px`);
   }
   private paintTab(node: HTMLElement, tab: ConversationTab, selected: boolean): void {
-    const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'agent' ? tab.identity : 'primary'); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
-    node.title = [label, tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · ');
+    const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary'); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
+    node.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · ');
     node.setAttribute('aria-label', `${accessible}${status.label ? `, ${status.label}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
     const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = label;
     this.paintDot(node, status.glyph, status.label);
@@ -122,7 +122,7 @@ export class TabStrip {
   }
   private paintDot(node: HTMLElement, glyph: string, label: string): void {
     const dot = node.querySelector<HTMLElement>('.tab-dot'); if (!dot) return;
-    statusGlyph(dot, glyph); dot.dataset.state = glyph === '●' ? 'working' : glyph === '!' ? 'failed' : 'idle'; dot.title = label;
+    dot.hidden = !glyph;statusGlyph(dot, glyph); dot.dataset.state = glyph === '●' ? 'working' : glyph === '!' ? 'failed' : 'idle'; dot.title = label;
   }
   private navigate(key: string, event: KeyboardEvent): void {
     const pane = paneForTab(this.hooks.layout(), key); if (!pane) return;
@@ -162,8 +162,8 @@ export class TabStrip {
     if (!row) {const doc = this.regions.conversations.ownerDocument; row = doc.createElement('button'); row.type = 'button'; row.className = 'conversation-row'; row.dataset.tabKey = key;
       for (const name of ['state', 'name', 'identity']) {const span = doc.createElement('span'); span.className = `conversation-${name}`; row.append(span);}
       row.addEventListener('click', () => this.activate(key)); this.rows.set(key, row);}
-    const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'agent' ? tab.identity : 'primary');
-    row.title = [label, tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · '); row.setAttribute('aria-label', [label, tail, status.label].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
+    const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary');
+    row.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · '); row.setAttribute('aria-label', [label, tail, status.label].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
     const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {statusGlyph(state, status.glyph); state.title = status.label; state.setAttribute('aria-hidden', 'true');}
     const caption = row.querySelector<HTMLElement>('.conversation-name'); if (caption) caption.textContent = label;
     const identity = row.querySelector<HTMLElement>('.conversation-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail; identity.title = tab.kind === 'agent' ? `Agent ID: ${tab.identity}` : '';}
