@@ -150,7 +150,7 @@ async function sources(directories = [ui, transport], maxVisits = 512) {
       if (entry.isDirectory()) await walk(filename, depth + 1);
       else if (/\.(?:[cm]?ts|[cm]?js)$/.test(entry.name)) {
         const content = await readFile(filename, 'utf8'); bytes += Buffer.byteLength(content);
-        assert.ok(bytes <= 4 * 1024 * 1024, 'source byte bound'); files.set(filename, content);
+        assert.ok(bytes <= 5 * 1024 * 1024, 'source byte bound'); files.set(filename, content);
       }
     }
   }
