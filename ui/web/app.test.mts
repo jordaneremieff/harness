@@ -121,6 +121,7 @@ class HostNode {
   focus(): void { if (hostDocument.activeElement !== this) { hostDocument.activeElement?.dispatch('blur'); hostDocument.activeElement = this; this.dispatch('focus'); this.dispatch('focusin'); } }
   blur(): void { if (hostDocument.activeElement === this) hostDocument.activeElement = null; }
   showModal(): void { this.open = true; }
+  show(): void { this.open = true; }
   close(): void { this.open = false; this.dispatch('close'); }
   scrollIntoView(): void {}
   select(): void {}
@@ -840,11 +841,55 @@ test('Commands find and thinking actions work on the agent-only focused transcri
   assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
   byId('commands-button').click(); choice('Find text').click();
   const query = byId('modal-body').querySelector('input'); assert.ok(query); query.value = 'Find this retained agent text'; query.dispatch('keydown', {key: 'Enter'}); await settle();
-  const found = agentControl('transcript').querySelector('[data-entry-id="agent-command-entry"]'); assert.ok(found); assert.equal(found.tabIndex, -1);
+  const found = agentControl('transcript').querySelector('[data-entry-id="agent-command-entry"]'); assert.ok(found); assert.equal(found.classList.contains('find-current'), true); assert.equal(hostDocument.activeElement, query);
   assert.ok(agentControl('transcript').scrollTop > 0);
   assert.equal(app.state.primaries.size, 0); assert.deepEqual(app.state.workspace?.selectedTarget, target);
+  byId('modal-close').click(); assert.equal(found.classList.contains('find-current'), false);
 });
 
+test('local Find captures the exact pane across query edits, focus changes and target replacement', async () => {
+  const identity = 'find-capture-agent', target = {kind: 'primary' as const, key: 'p', epoch: 9870};
+  const agentRows = [entryFixture('agent-hit-one', [messageFixture('agent-hit-message-one', [textPart('needle alpha')])]), entryFixture('agent-hit-two', [messageFixture('agent-hit-message-two', [textPart('needle beta')])])];
+  const primaryRows = [entryFixture('primary-hit', [messageFixture('primary-hit-message', [textPart('needle beta')])])];
+  const primarySaved = targetFixture('find-primary', target, {draft: {revision: 1, text: 'Primary draft', images: [attachedImage()], mode: 'prompt', persisted: true}});
+  const agentSaved = targetFixture('find-agent', {kind: 'agent', identity}, {draft: {revision: 1, text: 'Agent draft', images: [attachedImage()], mode: 'prompt', persisted: true}});
+  await arrive({workspace: {id: 'find-capture', revision: 1, primaryKey: 'p', selectedTarget: agentSaved.target, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: target.epoch})], roster: [agentFixture(identity)], targets: [primarySaved, agentSaved], observations: [observation(identity, {revision: 1, observedAt: 'now', entries: agentRows, live: [], nextBefore: null, status: {busy: false}, coverage}, 10)], history: primaryRows});
+  const capturedAgent = app.agentComposer(), capturedControls = controls(capturedAgent), agentEditor = capturedControls('editor');
+  app.focusPane('primary-pane'); await settle(); const primaryEditor = primaryControl('editor'); primaryEditor.setSelectionRange(2, 5, 'backward');
+  const start = transportLog.length;
+  app.openConversationActions('agent-pane'); menuNode().children.find(node => node.textContent === 'Find text')?.click();
+  const query = byId('modal-body').querySelector('input'); assert.ok(query); assert.equal(byId('modal').dataset.variant, 'find');
+  const status = byId('modal-body').querySelector('.find-status'); assert.ok(status);
+  query.value = 'needle'; query.dispatch('keydown', {key: 'Enter', shiftKey: false}); await settle();
+  assert.equal(capturedControls('transcript').querySelector('.find-current')?.dataset.entryId, 'agent-hit-one'); assert.equal(primaryControl('transcript').querySelector('.find-current'), null);
+  app.focusPane('primary-pane'); query.focus(); query.dispatch('keydown', {key: 'Enter'}); await settle(); assert.equal(status.textContent, 'Match 2 of 2 in loaded messages.');
+  query.value = 'alpha'; query.dispatch('input'); assert.equal(capturedControls('transcript').querySelector('.find-current'), null); query.dispatch('keydown', {key: 'Enter'}); await settle();
+  assert.equal(capturedControls('transcript').querySelector('.find-current')?.dataset.entryId, 'agent-hit-one');
+  assert.equal(primaryEditor.value, 'Primary draft'); assert.equal(agentEditor.value, 'Agent draft'); assert.deepEqual([primaryEditor.selectionStart, primaryEditor.selectionEnd, primaryEditor.selectionDirection], [2, 5, 'backward']);
+  assert.deepEqual(app.primaryComposer().state?.draft.images, [attachedImage()]); assert.deepEqual(capturedAgent.state?.draft.images, [attachedImage()]);
+  assert.equal(transportLog.slice(start).some(call => call.path.includes('/inputs') || call.path.endsWith('/start')), false);
+  await arrive({workspace: {id: 'find-replacement', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: 9871})], roster: [], history: primaryRows});
+  const replacement = primaryControl('transcript'), scroll = replacement.scrollTop; query.value = 'needle'; query.dispatch('input'); query.dispatch('keydown', {key: 'Enter'}); await settle();
+  assert.equal(status.textContent, 'Captured conversation is unavailable.'); assert.equal(replacement.scrollTop, scroll); assert.equal(replacement.querySelector('.find-current'), null);
+  byId('modal-close').click();
+});
+test('Earlier changes Find coverage while the native Find dialog stays open', async t => {
+  const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: 9872}; const row = (id: string) => entryFixture(id, [messageFixture(`m-${id}`, [textPart('needle')])]);
+  t.after(() => {globalThis.fetch = original; byId('modal-close').click();});
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://ui.test');
+    if (url.pathname !== '/api/primaries/p/history') return original(input, init);
+    const earlier = !!url.searchParams.get('cursor'); return Response.json({ok: true, data: {target, items: [row(earlier ? 'older' : 'recent')], nextCursor: earlier ? null : 'older-page', coverage}});
+  };
+  await arrive({workspace: {id: 'find-earlier', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: []});
+  byId('commands-button').click(); byId('modal-body').querySelectorAll('.palette-row').find(row => row.querySelector('.palette-name')?.textContent === 'Find text')?.click();
+  const query = byId('modal-body').querySelector('input'), status = byId('modal-body').querySelector('.find-status'); assert.ok(query); assert.ok(status);
+  query.value = 'needle'; query.dispatch('keydown', {key: 'Enter'}); await settle(); assert.equal(status.textContent, 'Match 1 of 1 in loaded messages.');
+  primaryControl('earlier').click(); await settle(); assert.equal(byId('modal').open, true);
+  query.dispatch('keydown', {key: 'Enter', shiftKey: true}); await settle(); assert.equal(status.textContent, 'Match 1 of 2 in loaded messages.'); assert.equal(primaryControl('transcript').querySelector('.find-current')?.dataset.entryId, 'older');
+  query.dispatch('keydown', {key: 'Enter'}); await settle(); assert.equal(status.textContent, 'Match 2 of 2 in loaded messages.');
+  query.dispatch('keydown', {key: 'Enter'}); assert.match(status.textContent, /Last loaded match/);
+});
 test('earlier-history loads expose pending and result states without restoring an old saved anchor', async t => {
   const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: 699};
   const pending = Array.from({length: 3}, () => Promise.withResolvers<Response>()), cursors: (string | null)[] = [];

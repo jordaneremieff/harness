@@ -86,7 +86,8 @@ test('stored and live conversation names use primary text while metadata stays q
 });
 test('small radius, one floating shadow and no gradients or motion', () => {
   for (const value of declarations('border-radius')) for (const length of value.match(/[\d.]+px/g) ?? []) assert.ok(Number.parseFloat(length) <= 4, `radius ${value}`);
-  assert.deepEqual([...new Set(declarations('box-shadow'))], ['var(--shadow)']);
+  assert.deepEqual([...new Set(declarations('box-shadow'))], ['var(--shadow)', 'none']);
+  assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
   assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.command-menu', '.context-menu', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
   assert.doesNotMatch(css, /animation:|transition:|scroll-behavior:\s*smooth|backdrop-filter|filter:|text-shadow|gradient/);

@@ -101,6 +101,14 @@ function focusedTranscript(): Transcript | undefined {
   const target = layoutTarget(currentLayout(), primaryTarget());
   return target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target))?.transcript : undefined;
 }
+function captureFind(controller?: ConversationController): ReturnType<Transcript['find']> | undefined {
+  const target = layoutTarget(currentLayout(), primaryTarget());
+  const captured = controller ?? (target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined);
+  if (!captured) return;
+  return captured.transcript.find(() => !captured.abort.signal.aborted && captured.workspaceId === state.workspace?.id &&
+    controllers.get(controllerKey(captured.workspaceId, captured.target)) === captured &&
+    (captured.target.kind !== 'primary' || state.primaries.get(captured.target.key)?.epoch === captured.target.epoch));
+}
 let workspaceViews: StableViews | undefined;
 export function stableViews(): StableViews {
   if (!workspaceViews) {const parent = byId('workspace').parentElement; if (!parent) throw new Error('Workspace layout is unavailable.'); workspaceViews = new StableViews(parent);}
@@ -196,7 +204,7 @@ let footerController: ConversationController | undefined;
 const workbenchStatus = new WorkbenchStatus();
 const messageTarget = new MessageTarget({workspace: () => state.workspace, prepare: prepareMessageTarget, paint: renderMessagePanel});
 const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); });
-const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: query => focusedTranscript()?.find(query), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
+const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
@@ -723,7 +731,10 @@ function renderController(controller: ConversationController, deferred = false, 
     const conversation = state.conversations.get(targetIdentity(controller.target)); const entries = conversation ? conversationBlocks(conversation) : [];
     controller.transcript.set(entries, conversation?.tools); const hasEntries = entries.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry));
     controller.hasEntries = hasEntries; renderControllerEmpty(controller);
-    if (controller.target.kind === 'agent') {controller.before = conversation?.frame?.nextBefore ?? controller.before; controller.transcript.historyAvailable(controller.before !== null);}
+    if (controller.target.kind === 'agent') {
+      if (!controller.historyBoundaryLoaded && conversation?.frame) controller.before = conversation.frame.nextBefore;
+      controller.transcript.historyAvailable(controller.before !== null);
+    }
   };
   if (deferred) controller.transcript.defer(paint, receivedAt); else paint();
 }
@@ -1024,17 +1035,22 @@ function historyPath(controller: ConversationController, earlier: boolean): stri
 function historyCurrent(controller: ConversationController, abort: AbortController): boolean {
   const target = controller.target; return !abort.signal.aborted && !controller.abort.signal.aborted && controller.workspaceId === state.workspace?.id && (target.kind !== 'primary' || state.primaries.get(target.key)?.epoch === target.epoch);
 }
+function claimHistoryBoundary(controller: ConversationController, earlier: boolean, entries: number, next: string | number | null): boolean {
+  if (!earlier && controller.historyBoundaryLoaded) return false;
+  controller.historyBoundaryLoaded = earlier || entries > 0 || next !== null;
+  return true;
+}
 function mergeControllerHistory(controller: ConversationController, page: HistoryPage | AgentHistoryPage, earlier: boolean): void {
   const target = controller.target;
   if (target.kind === 'primary' && 'items' in page) {
     // Empty startup history confirms readiness but does not own the resumed pagination boundary.
-    if (earlier || !controller.historyBoundaryLoaded) {
-      controller.cursor = page.nextCursor;
-      controller.historyBoundaryLoaded = earlier || page.items.length > 0 || page.nextCursor !== null;
-    }
+    if (claimHistoryBoundary(controller, earlier, page.items.length, page.nextCursor)) controller.cursor = page.nextCursor;
     state = mergePrimaryPage(state, target, page.items, {nextCursor: controller.cursor, earlier});
   }
-  else if (target.kind === 'agent' && 'entries' in page) {state = mergeAgentPage(state, target.identity, page.entries); controller.before = page.nextBefore;}
+  else if (target.kind === 'agent' && 'entries' in page) {
+    state = mergeAgentPage(state, target.identity, page.entries);
+    if (claimHistoryBoundary(controller, earlier, page.entries.length, page.nextBefore)) controller.before = page.nextBefore;
+  }
   else throw new Error('History response does not match its target.');
   controller.historyReady = true; controller.historyComplete = page.coverage.complete && !page.coverage.truncated && page.coverage.omitted === 0; controller.historyError = undefined; controller.transcript.historyAvailable(target.kind === 'primary' ? controller.cursor !== null : controller.before !== null); renderController(controller);
   if (target.kind === 'primary' && sameTarget(target, primaryTarget())) renderPrimaryUsage(primary());
@@ -1261,7 +1277,7 @@ function conversationMenuItems(target: Target): ContextItem[] {
     'Expand loaded tools': () => controller.transcript.expandLoaded(true, true),
     'Collapse loaded tools': () => controller.transcript.expandLoaded(true, false),
     'Show thinking': () => controller.transcript.expandLoaded(false, !shown),
-    'Find text': () => actions.find(query => !controller.abort.signal.aborted && controller.workspaceId === state.workspace?.id && controller.transcript.find(query)),
+    'Find text': () => actions.find(() => captureFind(controller)),
   };
   return actions.sessionMenuEntries(target.kind === 'agent').filter(item => !['Sessions', 'Appearance', 'Help', 'Hide thinking', 'Model', 'Thinking'].includes(item.name))
     .map(item => ({label: item.name, enabled: local[item.name] ? true : item.enabled, run: local[item.name] ?? item.run,

@@ -112,6 +112,7 @@ class FakeNode extends EventTarget {
     return this.children.filter(node => node.tagName === 'button' && (!selector.includes(':disabled') || !node.disabled) && (!selector.includes('[hidden]') || !node.hidden));
   }
   showModal(): void {this.open = true;}
+  show(): void {this.open = true;}
   close(): void {this.open = false; this.dispatchEvent(new Event('close'));}
   setAttribute(name: string, value: string): void {this.attributes.set(name, value);}
   removeAttribute(name: string): void {this.attributes.delete(name);}
@@ -125,6 +126,33 @@ class FakeView extends EventTarget {
 }
 function fakeDocument() {return {createElementNS: (_ns: string, tagName: string) => {const node = new FakeNode(); node.tagName = tagName; return node;}, defaultView: new FakeView(), get activeElement() {return focused;}, createElement: (tagName: string) => {const node = new FakeNode(); node.tagName = tagName; return node;}, getElementById: () => new FakeNode()};}
 function textOf(node: FakeNode): string {return node.textContent + node.children.map(textOf).join('');}
+test('Find keeps one captured session across query edits and native keys, and closes it on replacement', () => {
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document'), oldElement = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
+  const nodes = new Map(['modal', 'modal-body', 'modal-close', 'modal-title', 'modal-error'].map(id => [id, new FakeNode()]));
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {...fakeDocument(), getElementById: (id: string) => nodes.get(id)}});
+  Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: FakeNode});
+  try {
+    let captures = 0, closed = 0, resets = 0; const steps: [string, string][] = [];
+    const modal = new Modal(), ctx = context({modal, find: () => {captures++; return {
+      next: query => {steps.push(['next', query]); return {total: query === 'none' ? 0 : 2, position: 1, moved: true, end: query === 'none' ? 'none' : null};},
+      previous: query => {steps.push(['previous', query]); return {total: 2, position: 1, moved: false, end: 'first'};}, reset: () => {resets++;}, close: () => {closed++;}};}});
+    Object.defineProperty(ctx, 'composer', {get: () => {throw Error('Find must not acquire the editor');}});
+    const actions = new Actions(ctx); actions.find(); const body = nodes.get('modal-body'); assert.ok(body);
+    const query = body.children[1], status = body.children[2], row = body.children[4]; assert.ok(query); assert.ok(status); assert.ok(row);
+    assert.equal(nodes.get('modal')?.dataset.variant, 'find'); assert.equal(body.children[3]?.textContent, 'Searches loaded messages only.');
+    query.value = 'needle'; query.dispatchEvent(Object.assign(new Event('keydown', {cancelable: true}), {key: 'Enter', shiftKey: false, isComposing: false}));
+    assert.equal(status.textContent, 'Match 1 of 2 in loaded messages.'); assert.equal(modal.openNow, true); assert.equal(focused, query);
+    query.dispatchEvent(Object.assign(new Event('keydown'), {key: 'Enter', shiftKey: true, isComposing: false})); assert.match(status.textContent, /First loaded match/);
+    query.dispatchEvent(Object.assign(new Event('keydown'), {key: 'Enter', isComposing: true})); assert.equal(steps.length, 2);
+    query.value = 'none'; query.dispatchEvent(new Event('input')); assert.equal(resets, 1); row.children[1]?.dispatchEvent(new Event('click'));
+    assert.equal(status.textContent, 'No loaded matches.'); assert.equal(captures, 1);
+    modal.open('Appearance'); assert.equal(closed, 1); query.dispatchEvent(Object.assign(new Event('keydown'), {key: 'Enter'})); assert.equal(steps.length, 3);
+    modal.close(); assert.equal(closed, 1);
+  } finally {
+    if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');
+    if (oldElement) Object.defineProperty(globalThis, 'HTMLElement', oldElement); else Reflect.deleteProperty(globalThis, 'HTMLElement');
+  }
+});
 test('journal and HTTP copies of one handoff completion open its result once', () => {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   Object.defineProperty(globalThis, 'document', {configurable: true, value: fakeDocument()});

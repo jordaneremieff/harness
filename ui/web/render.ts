@@ -167,6 +167,8 @@ type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: 
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
 type ToolNode = {card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
+export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
+export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
 export class Transcript {
   private entries: EntryView[] = [];
   private displayed: EntryView[] = [];
@@ -196,6 +198,9 @@ export class Transcript {
   private receivedAt?: number;
   private deferred?: () => void;
   private pins = new Set<string>();
+  private findRevision = 0;
+  private findId?: string;
+  private findNode?: HTMLElement;
   private heights = new Map<string, number>();
   private gaps = new Map<string, HTMLElement>();
   private layout: VirtualLayout = layoutItems([], new Map(), 140);
@@ -382,6 +387,7 @@ export class Transcript {
     if (this.geometryTimer !== undefined) clearTimeout(this.geometryTimer);
     this.geometryTimer = undefined; this.geometryDirty.clear(); this.outputNodes.clear();
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
+    this.clearFind(); this.findRevision++;
     this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.showThinking = false; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0);
@@ -632,11 +638,21 @@ export class Transcript {
   loadedReference(query: ReferenceQuery, owner?: string): string | undefined {
     return loadedReference(this.entries, query, typeof query === 'string' ? this.groups.reference(query) : undefined, owner);
   }
-  revealEntry(entryId: string): void {
+  revealEntry(entryId: string, focus = true): void {
     if (!this.index.entries.has(entryId)) return;
-    const id = this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(id);
-    this.restoring = {revision: this.readingRevision, anchorId: id, offsetPx: 0, followTail: false}; this.paint();
-    const node = this.cache.get(id)?.node; if (node) { node.tabIndex = -1; node.focus({preventScroll: true}); }
+    const id = this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);
+    const group = this.index.sessions.get(id);
+    if (group) this.expanded.add(`events:${id}`);
+    this.restoring = {revision: this.readingRevision, anchorId: entryId, offsetPx: 0, followTail: false}; this.paint();
+    const session = this.cache.get(id)?.session;
+    if (session && group) {
+      session.events.page = Math.floor(group.entries.findIndex(member => member.id === entryId) / 32);
+      this.renderEventPage(session.events, group.entries, 32); this.hooks.presentation([...this.expanded], this.showThinking);
+      const member = session.events.cache.get(entryId)?.node ?? session.notices.cache.get(entryId)?.node;
+      if (member) this.scrollTo(member.offsetTop - this.node.offsetTop);
+    }
+    this.refreshFind();
+    const node = this.cache.get(id)?.node; if (focus && node) { node.tabIndex = -1; node.focus({preventScroll: true}); }
   }
   private retireNode(node?: HTMLElement): void { if (node) { this.releaseFrames(node); node.remove(); } }
   private releaseFrames(root: HTMLElement): void {
@@ -682,6 +698,7 @@ export class Transcript {
     this.refreshMountedTools();
     this.refreshMountedCommunications();
     this.finishScroll(anchor);
+    this.refreshFind();
     this.elapsed.sync();
     // Measurements and restored scroll positions can expose rows outside the window chosen above.
     const next = visibleWindow(this.layout, this.prepareScroll(), this.node.clientHeight, {pins}).items;
@@ -1551,21 +1568,42 @@ export class Transcript {
     if (!tools) ids.push(...[...this.expanded].filter(id => id.endsWith(':group') && this.index.disclosures.has(id.slice(0, -6))));
     return ids;
   }
-  find(query: string): void {
-    if (!query.trim()) return;
-    const entry = this.entries.find(item => rawText(item).toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-    if (!entry) return;
-    const id = this.displayId(entry.id);
-    this.follow = false; this.pins.clear(); this.pins.add(id);
-    const group = this.index.sessions.get(id);
-    if (group) this.expanded.add(`events:${id}`);
-    this.restoring = {revision: this.readingRevision, anchorId: id, offsetPx: 0, followTail: false}; this.paint();
-    const session = this.cache.get(id)?.session;
-    if (session && group) {
-      session.events.page = Math.floor(group.entries.findIndex(member => member.id === entry.id) / 32);
-      this.renderEventPage(session.events, group.entries, 32); this.hooks.presentation([...this.expanded], this.showThinking);
-    }
-    const node = this.cache.get(id)?.node;
-    if (node) { node.tabIndex = -1; node.focus({preventScroll: true}); }
+  private clearFind(): void {
+    this.findNode?.classList.remove('find-current'); this.findNode = undefined;
+    if (this.findId) this.pins.delete(this.findId);
+    this.findId = undefined;
+  }
+  private refreshFind(): void {
+    const cached = this.findId ? this.cache.get(this.displayId(this.findId)) : undefined;
+    const node = cached?.session ? cached.session.events.cache.get(this.findId ?? '')?.node ?? cached.session.notices.cache.get(this.findId ?? '')?.node : cached?.node;
+    if (this.findNode !== node) this.findNode?.classList.remove('find-current');
+    this.findNode = node; node?.classList.add('find-current');
+  }
+  private findMatches(query: string): string[] {
+    if (!query.trim()) return [];
+    const needle = query.toLocaleLowerCase();
+    return [...new Set(this.entries.filter(entry => rawText(entry).toLocaleLowerCase().includes(needle)).map(entry => entry.id))];
+  }
+  find(active: () => boolean = () => true): FindSession {
+    this.clearFind(); const revision = ++this.findRevision, generation = this.generation;
+    let closed = false, query = '', current = '';
+    const close = () => {closed = true; if (revision === this.findRevision) this.clearFind();};
+    const reset = () => {query = ''; current = ''; if (revision === this.findRevision) this.clearFind();};
+    const valid = () => !closed && revision === this.findRevision && generation === this.generation && !this.destroyed && active();
+    const initial = (direction: number, changed: boolean, total: number) => changed || direction > 0 ? 0 : total - 1;
+    const step = (text: string, direction: number): FindStatus => {
+      if (!valid()) {close(); return {total: 0, position: 0, moved: false, end: 'unavailable'};}
+      if (this.hidden()) return {total: 0, position: 0, moved: false, end: 'unavailable'};
+      const changed = text !== query; if (changed) reset(); query = text;
+      const matches = this.findMatches(query);
+      if (!matches.length) {reset(); return {total: 0, position: 0, moved: false, end: 'none'};}
+      const index = matches.indexOf(current);
+      const next = index < 0 ? initial(direction, changed, matches.length) : index + direction;
+      const destination = matches[next];
+      if (!destination) return {total: matches.length, position: index + 1, moved: false, end: direction < 0 ? 'first' : 'last'};
+      current = destination; this.findId = current; this.revealEntry(current, false);
+      return {total: matches.length, position: next + 1, moved: true, end: null};
+    };
+    return {next: query => step(query, 1), previous: query => step(query, -1), reset, close};
   }
 }

@@ -380,7 +380,7 @@ test('joined result-only wrappers disappear while unmatched results, prose and e
   const joined = {id: 'joined-result', kind: 'message', messages: [resultMessage]};
   view.set([call, joined]); flush(); const container = node('primary-transcript'); const card = container.querySelector('.tool-card');
   assert.equal(container.querySelectorAll('.message-actions').length, 1); assert.equal(container.children.length, 1);
-  assert.doesNotMatch(container.textContent, /toolResult/); view.find('needle result'); assert.equal(fakeDocument.activeElement, container.children[0]);
+  assert.doesNotMatch(container.textContent, /toolResult/); view.find().next('needle result'); assert.equal(fakeDocument.activeElement, null); assert.equal(container.children[0]?.classList.contains('find-current'), true);
   const unmatched = {id: 'unmatched', kind: 'message', messages: [{...resultMessage, id: 'unmatched-message', parts: [{...result, callId: 'unmatched'}]}]};
   const mixed = {id: 'mixed', kind: 'message', messages: [{...resultMessage, id: 'mixed-message', parts: [result, {type: 'text' as const, text: 'Preserved prose'}]}]};
   const error = {id: 'error', kind: 'message', messages: [{...resultMessage, id: 'error-message', error: 'Preserved cause'}]};
@@ -433,13 +433,60 @@ test('restoration clamps a saved offset after the anchored entry shrinks', () =>
   view.restore({revision: 0, anchorId: 'two', offsetPx: 120, followTail: false}); flush();
   assert.equal(node('primary-transcript').scrollTop, target.offsetTop + 49);
 });
-test('find mounts a loaded virtual match before focus and restore works outside the current window', () => {
+test('find mounts a loaded virtual match without focus and restore works outside the current window', () => {
   setup(); const view = transcript(); view.set(Array.from({length: 220}, (_, i) => entry(`e${i}`, `text ${i}`))); flush();
-  view.find('text 7'); const found = node('primary-transcript').children.find(child => child.dataset.entryId === 'e7'); assert.ok(found);
-  assert.equal(fakeDocument.activeElement, found); assert.equal(node('primary-transcript').scrollTop, found.offsetTop);
+  view.find().next('text 7'); const found = node('primary-transcript').children.find(child => child.dataset.entryId === 'e7'); assert.ok(found);
+  assert.equal(fakeDocument.activeElement, null); assert.equal(found.classList.contains('find-current'), true); assert.equal(node('primary-transcript').scrollTop, found.offsetTop);
   view.restore({revision: 1, anchorId: 'e180', offsetPx: 33, followTail: false}); flush();
   const target = node('primary-transcript').children.find(child => child.dataset.entryId === 'e180'); assert.ok(target);
   assert.equal(node('primary-transcript').scrollTop, target.offsetTop + 33);
+});
+test('loaded Find visits distinct entries in both directions and does not wrap or focus an editor', () => {
+  setup(); const view = transcript(); const root = node('primary-transcript'); const editor = node('primary-editor'); editor.value = 'Keep draft'; editor.focus();
+  view.set(Array.from({length: 220}, (_, i) => entry(`e${i}`, i === 7 || i === 100 || i === 210 ? 'Needle needle' : 'other'))); flush();
+  const find = view.find();
+  assert.deepEqual(find.next('needle'), {total: 3, position: 1, moved: true, end: null});
+  assert.equal(root.querySelector('.find-current')?.dataset.entryId, 'e7');
+  assert.equal(find.next('needle').position, 2); assert.equal(root.querySelector('.find-current')?.dataset.entryId, 'e100');
+  assert.equal(find.next('needle').position, 3); assert.equal(root.querySelector('.find-current')?.dataset.entryId, 'e210');
+  assert.deepEqual(find.next('needle'), {total: 3, position: 3, moved: false, end: 'last'});
+  assert.equal(find.previous('needle').position, 2); assert.equal(find.previous('needle').position, 1);
+  assert.deepEqual(find.previous('needle'), {total: 3, position: 1, moved: false, end: 'first'});
+  assert.equal(fakeDocument.activeElement, editor); assert.equal(editor.value, 'Keep draft'); assert.equal(view.captureGeometry().followTail, false);
+  find.close(); assert.equal(root.querySelector('.find-current'), null); assert.equal(view.captureGeometry().followTail, false);
+  assert.equal(find.next('needle').end, 'unavailable');
+});
+test('Find recomputes loaded coverage and keeps the current identity across Earlier, append, grouping and geometry', () => {
+  setup(); const view = transcript(); const rows = [entry('one', 'match'), entry('two', 'match'), entry('tail', 'other')];
+  view.set(rows); flush(); const find = view.find(); assert.equal(find.next('match').position, 1);
+  view.set([entry('earlier', 'match'), ...rows, entry('new', 'match')]); flush();
+  assert.deepEqual(find.next('match'), {total: 4, position: 3, moved: true, end: null});
+  const saved = view.captureGeometry(); view.setView('grouped'); view.applyGeometry(saved); flush();
+  assert.equal(node('primary-transcript').querySelector('.find-current')?.dataset.entryId, 'two');
+  assert.deepEqual(find.previous('match'), {total: 4, position: 2, moved: true, end: null});
+  view.setView('chronological'); flush(); assert.equal(find.previous('match').position, 1);
+  assert.equal(find.next('other').total, 1); assert.equal(node('primary-transcript').querySelector('.find-current')?.dataset.entryId, 'tail');
+  find.reset(); assert.equal(node('primary-transcript').querySelector('.find-current'), null);
+  assert.equal(find.next('match').position, 1);
+});
+test('Find no-match leaves reading and focus unchanged and stale target/reset sessions never search replacements', () => {
+  setup(); const view = transcript(); view.set([entry('same', 'original')]); flush();
+  const geometry = view.captureGeometry(), root = node('primary-transcript'), children = [...root.children];
+  const find = view.find(); assert.deepEqual(find.next('absent'), {total: 0, position: 0, moved: false, end: 'none'});
+  assert.deepEqual(view.captureGeometry(), geometry); assert.deepEqual(root.children, children); assert.equal(fakeDocument.activeElement, null);
+  view.reset(); view.set([entry('same', 'replacement')]); flush(); const replacement = view.captureGeometry();
+  assert.equal(find.next('replacement').end, 'unavailable'); assert.deepEqual(view.captureGeometry(), replacement); assert.equal(root.querySelector('.find-current'), null);
+  let active = true; const guarded = view.find(() => active); guarded.next('replacement'); active = false;
+  assert.equal(guarded.next('replacement').end, 'unavailable'); assert.equal(root.querySelector('.find-current'), null);
+  const fresh = view.find(); fresh.next('replacement'); guarded.close(); assert.ok(root.querySelector('.find-current'));
+  view.destroy(); assert.equal(fresh.next('replacement').end, 'unavailable');
+});
+test('Find distinguishes session members that share a virtual representative', () => {
+  setup(); const view = transcript(); view.set(Array.from({length: 75}, (_, i) => sessionEntry(`s${i}`, `needle event ${i}`))); flush();
+  const find = view.find(); find.next('needle');
+  for (let index = 1; index < 40; index++) assert.equal(find.next('needle').position, index + 1);
+  const root = node('primary-transcript'); assert.equal(root.querySelector('.find-current')?.dataset.sessionEventId, 's39');
+  assert.equal(find.previous('needle').position, 39); assert.equal(root.querySelector('.find-current')?.dataset.sessionEventId, 's38');
 });
 test('roster preserves order, visible duplicate identities, keyed rows and data-arrival ages', () => {
   setup(); const now = Date.now; let clock = 600000; Date.now = () => clock;
@@ -1354,10 +1401,10 @@ test('session find mounts the matching member page and saved member anchors map 
   setup(); const readings: ReadingView[] = []; const view = new Transcript('primary', {presentation: () => {}, reading: value => readings.push(value)});
   const entries = Array.from({length: 75}, (_, i) => sessionEntry(`s${i}`, `event ${i}`));
   view.configure(undefined, {revision: 4, anchorId: 's39', offsetPx: 0, followTail: false}); view.set(entries); flush();
-  view.find('event 39'); const root = node('primary-transcript'); const group = root.querySelector('.session-events'); assert.ok(group);
+  view.find().next('event 39'); const root = node('primary-transcript'); const group = root.querySelector('.session-events'); assert.ok(group);
   assert.equal(group.open, true); assert.match(group.textContent, /event 39/); assert.doesNotMatch(group.textContent, /event 0custom/);
   assert.equal(group.querySelectorAll('.custom-entry').length, 32);
-  assert.equal(root.children[0]?.dataset.entryId, 's0'); assert.equal(fakeDocument.activeElement, root.children[0]);
+  assert.equal(root.children[0]?.dataset.entryId, 's0'); assert.equal(fakeDocument.activeElement, null); assert.equal(group.querySelectorAll('.find-current')[0]?.dataset.sessionEventId, 's39');
   root.dispatch('scrollend'); assert.equal(readings.at(-1)?.anchorId, 's0'); assert.equal(readings.at(-1)?.followTail, false);
   const buttons = group.querySelectorAll('button'); const next = buttons.at(-1); assert.ok(next); next.dispatch('click');
   assert.equal(group.querySelectorAll('.custom-entry').length, 11); assert.match(group.textContent, /event 74/);

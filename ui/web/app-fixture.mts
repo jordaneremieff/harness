@@ -118,6 +118,7 @@ class HostNode {
   focus(): void { if (hostDocument.activeElement !== this) { hostDocument.activeElement?.dispatch('blur'); hostDocument.activeElement = this; this.dispatch('focus'); this.dispatch('focusin'); } }
   blur(): void { if (hostDocument.activeElement === this) hostDocument.activeElement = null; }
   showModal(): void { this.open = true; }
+  show(): void { this.open = true; }
   close(): void { this.open = false; this.dispatch('close'); }
   scrollIntoView(): void {}
   select(): void {}

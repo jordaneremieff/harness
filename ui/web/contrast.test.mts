@@ -48,6 +48,7 @@ const decorativeHairlines = new Set([
 	".modes|border",
 	".command-menu|border",
 	"dialog|border",
+  "dialog[open][data-variant=find]|border-top",
 	".notification|border-bottom",
 	".palette-input-row|border-bottom",
 ]);

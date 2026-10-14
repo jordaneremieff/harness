@@ -17,6 +17,9 @@ export class Modal {
     byId('modal-close').addEventListener('click', () => this.cancel());
     this.node.addEventListener('cancel', event => { event.preventDefault(); this.cancel(); });
     this.node.addEventListener('close', () => this.finishClose());
+    this.node.addEventListener('keydown', event => {
+      if (this.node.dataset.variant === 'find' && event.key === 'Escape' && !event.isComposing) {event.preventDefault(); this.cancel();}
+    });
     this.node.addEventListener('click', event => {
       if (!['menu', 'palette'].includes(this.node.dataset.variant ?? '') || event.target !== this.node) return;
       const box = this.node.getBoundingClientRect();
@@ -30,14 +33,17 @@ export class Modal {
     this.node.style.setProperty('--menu-top', `${Math.round(box.bottom + 4)}px`);
     this.node.style.setProperty('--menu-right', `${Math.max(8, Math.round(innerWidth - box.right))}px`);
   }
-  open(title: string, cancel?: () => void, closed?: () => void): HTMLElement {
+  open(title: string, cancel?: () => void, closed?: () => void, variant?: 'find'): HTMLElement {
+    const previousClose = this.closeAction; this.closeAction = undefined; previousClose?.();
+    if (this.node.open && (this.node.dataset.variant === 'find' || variant === 'find')) this.close(false);
     this.revision++; this.presented = true; this.restoreOnClose = true;
     if (!this.node.open) this.restore = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     this.body.replaceChildren();
     setText(byId('modal-title'), title); byId('modal-error').replaceChildren();
     delete this.node.dataset.variant;
     this.cancelAction = cancel; this.closeAction = closed;
-    if (!this.node.open) this.node.showModal();
+    if (variant) this.node.dataset.variant = variant;
+    if (!this.node.open) {if (variant === 'find') this.node.show(); else this.node.showModal();}
     return this.body;
   }
   get openNow(): boolean { return this.node.open; }

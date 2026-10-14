@@ -4,6 +4,7 @@ import { renderFacts, type ReportedFact } from './facts.ts';
 import type { AgentRow, Appearance, CommandView, ConversationLayout, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
 import { button, copy, details, element, input, rawText } from './dom.ts';
 import type { Modal } from './modal.ts';
+import type { FindSession, FindStatus } from './render.ts';
 import { ApiError, operation, request, reserve } from './transport.ts';
 import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
@@ -78,9 +79,16 @@ export function rankPalette(entries: PaletteEntry[], query: string): CommandMatc
   }
   return [...matches.values()].sort((a, b) => a.rank - b.rank || a.item.name.localeCompare(b.item.name));
 }
+function findStatusText(result: FindStatus | undefined, query: string): string {
+  if (!result || result.end === 'unavailable') return 'Captured conversation is unavailable.';
+  if (!query.trim()) return 'Enter text to find.';
+  if (!result.total) return 'No loaded matches.';
+  const boundary = result.end === 'first' ? ' First loaded match.' : result.end === 'last' ? ' Last loaded match.' : '';
+  return `Match ${result.position} of ${result.total} in loaded messages.${boundary}`;
+}
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modal: Modal;
-  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: (query: string) => void; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
+  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
@@ -514,11 +522,20 @@ export class Actions {
     }
     rows.addEventListener('keydown', event => navigateOptions(event, rows)); modal.body.append(rows); selected?.focus();
   }
-  find(findTarget: (query: string) => void = this.ctx.find): void {
-    const modal = this.ctx.modal; modal.open('Find text'); const query = input('Text'); modal.body.append(query.label, query.field);
-    const find = () => { findTarget(query.field.value); modal.close(); };
-    query.field.addEventListener('keydown', raw => {const event = raw as KeyboardEvent; if (event.key === 'Enter' && !event.isComposing) {event.preventDefault(); find();}});
-    modal.actions(cardAction('search', 'Find text', find)); query.field.focus();
+  find(findTarget: () => FindSession | undefined = this.ctx.find): void {
+    const session = findTarget(); const modal = this.ctx.modal;
+    modal.open('Find text', undefined, () => session?.close(), 'find'); const token = modal.token;
+    const query = input('Text'); query.label.className = 'sr-only'; query.field.setAttribute('aria-label', 'Text'); query.field.setAttribute('type', 'search');
+    const status = element('p', 'find-status', 'Enter text to find.'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+    const step = (previous = false) => {
+      if (!modal.owns(token)) return;
+      const result = previous ? session?.previous(query.field.value) : session?.next(query.field.value);
+      status.textContent = findStatusText(result, query.field.value);
+    };
+    query.field.addEventListener('input', () => {if (modal.owns(token)) {session?.reset(); status.textContent = 'Find the first loaded match.';}});
+    query.field.addEventListener('keydown', raw => {const event = raw as KeyboardEvent; if (event.key === 'Enter' && !event.isComposing) {event.preventDefault(); step(event.shiftKey);}});
+    modal.body.append(query.label, query.field, status, element('p', 'find-coverage secondary', 'Searches loaded messages only.'));
+    modal.actions(cardAction('previous', 'Previous', () => step(true)), cardAction('next', 'Next', () => step())); query.field.focus();
   }
   help(): void {
     const modal = this.ctx.modal; modal.open('Help');

@@ -800,6 +800,18 @@ pre.tool-document { font-family: var(--mono); }
 /* Dialogs: one quiet shadow on floating surfaces */
 dialog { width: min(640px, calc(100vw - 32px)); max-height: 85dvh; padding: 0 20px 20px; overflow: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); box-shadow: var(--shadow); scrollbar-width: thin; }
 dialog::backdrop { background: var(--backdrop); }
+/* Find occupies its own row, so the dialog never covers the captured transcript. */
+body:has(> dialog[open][data-variant=find]) { display: flex; flex-direction: column; }
+body:has(> dialog[open][data-variant=find]) > .app { flex: 1; height: auto; }
+dialog[open][data-variant=find] { position: static; flex: none; width: 100%; max-width: none; max-height: 30dvh; margin: 0; padding: 8px 16px; border: 0; border-top: 1px solid var(--rule); border-radius: 0; box-shadow: none; }
+dialog[data-variant=find] .modal-heading { padding: 0 0 4px; }
+dialog[data-variant=find] #modal-body { display: grid; grid-template-columns: minmax(120px,1fr) auto; align-items: center; gap: 4px 16px; }
+dialog[data-variant=find] #modal-body > * { margin: 0; }
+dialog[data-variant=find] #modal-body > input { grid-column: 1; grid-row: 1; }
+dialog[data-variant=find] .dialog-actions { grid-column: 2; grid-row: 1; }
+dialog[data-variant=find] .find-status { grid-column: 1; grid-row: 2; font-size: 13px; }
+dialog[data-variant=find] .find-coverage { grid-column: 2; grid-row: 2; font-size: 12px; }
+.find-current { outline: 1px solid var(--accent); outline-offset: -1px; }
 .modal-heading { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 16px 0 12px; background: var(--raised); }
 .modal-heading h2 { flex: 1; font-size: 15px; }
 #modal-close { width: 24px; height: 24px; color: var(--muted); }

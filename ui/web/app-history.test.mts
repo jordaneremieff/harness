@@ -1,12 +1,49 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type {HistoryPage, Target} from '../shared/api.ts';
-import {app, arrive, settle, event, primaryControl, primaryFixture, targetFixture, entryFixture, messageFixture, textPart, coverage} from './app-fixture.mts';
+import type {AgentHistoryPage, HistoryPage, ProjectedFrame, Target} from '../shared/api.ts';
+import {app, arrive, settle, event, primaryControl, agentControl, primaryFixture, agentFixture, observation, targetFixture, entryFixture, messageFixture, textPart, coverage} from './app-fixture.mts';
 import {targetIdentity} from './state.ts';
 
 const row = (id: string) => entryFixture(id, [messageFixture(`message-${id}`, [textPart(id)])]);
 const response = (target: Target, items: HistoryPage['items'], nextCursor: string | null) => Response.json({ok: true, data: {target, items, nextCursor, coverage: {...coverage, complete: nextCursor === null, truncated: nextCursor !== null, omitted: nextCursor ? 50 : 0}}});
 
+test('agent Earlier advances through history boundaries despite unchanged and newer tail frames', async t => {
+  const original = globalThis.fetch, identity = 'history-agent-pages', target = {kind: 'agent' as const, identity};
+  const rows = (first: number, last: number) => Array.from({length: last - first + 1}, (_, i) => row(String(first + i)));
+  const tail = rows(61, 110), frame: ProjectedFrame = {revision: 1, observedAt: 'now', entries: tail, live: [], nextBefore: 61, status: {busy: false}, coverage};
+  const boundaries: (number | null)[] = []; const page = (entries: AgentHistoryPage['entries'], nextBefore: number | null) => Response.json({ok: true, data: {target, entries, nextBefore, coverage, revision: 'history'}});
+  t.after(() => {globalThis.fetch = original;});
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://ui.test'); if (url.pathname !== `/api/agents/${identity}/history`) return original(input, init);
+    const before = url.searchParams.has('before') ? Number(url.searchParams.get('before')) : null; boundaries.push(before);
+    if (before === 61) return page(rows(11, 60), 11);
+    if (before === 11) return page(rows(1, 10), null);
+    return page(tail, 61);
+  };
+  const baseline = {workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(identity)], targets: [targetFixture(identity, target)], observations: [observation(identity, frame, 10)]};
+  await arrive(baseline); const earlier = agentControl('earlier'), editor = agentControl('editor');
+  assert.equal(earlier.hidden, false); earlier.click(); await settle();
+  event('agent.frame', {identity, connectionEpoch: 10, frame: {...frame, revision: 2}}); await settle();
+  earlier.click(); await settle();
+  assert.deepEqual(boundaries, [null, 61, 11]);
+  assert.equal(app.state.conversations.get(targetIdentity(target))?.entries.has('5'), true); assert.equal(earlier.hidden, true);
+  event('agent.frame', {identity, connectionEpoch: 10, frame: {...frame, revision: 3, entries: [...tail, row('111')], nextBefore: 62}}); await settle();
+  assert.equal(earlier.hidden, true);
+  await arrive({...baseline, observations: [observation(identity, {...frame, revision: 4}, 10)]});
+  assert.equal(agentControl('editor'), editor); assert.equal(earlier.hidden, true); earlier.click(); await settle();
+  assert.deepEqual(boundaries, [null, 61, 11, null]);
+});
+test('agent empty startup permits a populated frame and page to supply the first history boundary', async t => {
+  const original = globalThis.fetch, identity = 'history-agent-resume', target = {kind: 'agent' as const, identity}; let resumed = false;
+  t.after(() => {globalThis.fetch = original;});
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === `/api/agents/${identity}/history`
+    ? Response.json({ok: true, data: {target, entries: resumed ? [row('tail')] : [], nextBefore: resumed ? 61 : null, coverage, revision: 'history'}}) : original(input, init);
+  const frame: ProjectedFrame = {revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: false}, coverage};
+  const baseline = {workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(identity)], targets: [targetFixture(identity, target)], observations: [observation(identity, frame, 10)]};
+  await arrive(baseline); const earlier = agentControl('earlier'); assert.equal(earlier.hidden, true); resumed = true;
+  event('agent.frame', {identity, connectionEpoch: 10, frame: {...frame, revision: 2, entries: [row('tail')], nextBefore: 61}}); await settle(); assert.equal(earlier.hidden, false);
+  await arrive({...baseline, observations: [observation(identity, {...frame, revision: 3, entries: [row('tail')], nextBefore: 61}, 10)]}); assert.equal(earlier.hidden, false);
+});
 test('empty startup yields the resumed boundary once, while tail refreshes preserve earlier progress and exhaustion', async t => {
   const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: 11001};
   const saved = targetFixture('history-resume', target);

@@ -17,6 +17,7 @@ class FakeNode extends EventTarget {
   setAttribute(name: string, value: string): void {this.properties.set(name, value); if (name === 'class') this.className = value;}
   querySelector(selector: string): FakeNode | undefined {return this.children.find(node => node.className.split(' ').includes(selector.slice(1)));}
   showModal(): void {this.open = true;}
+  show(): void {this.open = true;}
   close(): void {this.open = false; this.dispatchEvent(new Event('close'));}
   focus(): void {this.focused = true;}
 }
@@ -146,6 +147,19 @@ test('a menu anchors under its trigger, closes on an outside click, and reverts 
     if (width) Object.defineProperty(globalThis, 'innerWidth', width); else Reflect.deleteProperty(globalThis, 'innerWidth');
     fake.restore();
   }
+});
+test('Find uses a nonmodal dialog and replacement or Escape closes its session once', () => {
+  const fake = setup();
+  try {
+    const modal = new Modal(); let closed = 0;
+    modal.open('Find text', undefined, () => {closed++;}, 'find');
+    assert.equal(fake.nodes.get('modal')?.dataset.variant, 'find');
+    modal.open('Appearance'); assert.equal(closed, 1); assert.equal(fake.nodes.get('modal')?.dataset.variant, undefined);
+    modal.close(); assert.equal(closed, 1);
+    modal.open('Find text', undefined, () => {closed++;}, 'find');
+    const key = Object.assign(new Event('keydown', {cancelable: true}), {key: 'Escape', isComposing: false}); fake.nodes.get('modal')?.dispatchEvent(key);
+    assert.equal(key.defaultPrevented, true); assert.equal(modal.openNow, false); assert.equal(closed, 2);
+  } finally {fake.restore();}
 });
 test('modal failures disclose the exact cause and preserve caller summaries and confirmation actions', () => {
   const fake = setup();
