@@ -10,7 +10,7 @@ import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
 import { DECORATION_BYTES, DECORATION_LINES, DECORATION_SPANS } from './composer-syntax.ts';
 import { duplicateIdentityTails } from './tabs.ts';
-import { relativeTime } from './format.ts';
+import { compactAge } from './format.ts';
 import { navigateOptions } from './list-navigation.ts';
 import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
 export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
@@ -51,12 +51,6 @@ function rosterIncomplete(snapshot?: Snapshot): boolean {
 function paletteEmpty(query: string, incomplete: boolean): HTMLElement {
   const message = element('p', 'secondary', `No results${query.trim() ? ` for “${query.trim()}”` : ''}.${incomplete ? ' The list is incomplete.' : ''}`);
   message.setAttribute('role', 'status'); return message;
-}
-function compactAge(value: number, now: number): string {
-  const full = relativeTime(value, now); if (!full) return '';
-  const seconds = (now - value) / 1000;
-  if (seconds < -60 || seconds >= 30 * 86400) return new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric'}).format(new Date(value));
-  return full.replace(/hr ago$/, 'h').replace(/ ago$/, '');
 }
 function agentName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
 function revealPaletteRow(container: HTMLElement, row: HTMLElement): void {

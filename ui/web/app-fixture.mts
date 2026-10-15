@@ -5,12 +5,16 @@ import type { AgentRow, ConversationLayout, ConversationTab, EntryView, MessageV
 import type { Composer } from './composer.ts';
 import { createPaneLayout, validPaneLayout } from './pane-layout.ts';
 import { tabKey } from './tabs.ts';
+import { targetIdentity } from './state.ts';
 
+export type Fixture = {workspace: Workspace; primaries: PrimaryView[]; roster: AgentRow[]; targets?: TargetState[]; confirmed?: boolean;
+  selectedPage?: Snapshot['selectedPage']; observations?: Snapshot['observations']; history?: EntryView[]; pendingOperations?: OperationView[]};
+
+let application = false;
+let app: typeof import('./app.ts');
 const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-
-// In-process browser host: the app module runs against a fake document, storage, event stream, and HTTP backend.
 type Handler = (event: Record<string, unknown>) => void;
-class HostNode {
+export class HostNode {
   tagName: string;
   id = '';
   className = '';
@@ -99,9 +103,13 @@ class HostNode {
     const value = {target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { stopped = true; }, stopImmediatePropagation() { stopped = true; }, ...event};
     for (let node: HostNode | null = this; node; node = ['click', 'contextmenu', 'focusin', 'focusout', 'pointerdown'].includes(name) && !stopped ? node.parentNode : null) {
       for (const handler of node.handlers.get(name) ?? []) handler(value);
-      const property = Reflect.get(node, `on${name}`); if (typeof property === 'function') property.call(node, value);
+      node.dispatchProperty(name, value);
     }
     if (!stopped && ['click', 'contextmenu', 'focusin', 'focusout', 'pointerdown'].includes(name)) for (const handler of documentHandlers.get(name) ?? []) handler(value);
+  }
+  private dispatchProperty(name: string, value: Record<string, unknown>): void {
+    if (application) return;
+    const property = Reflect.get(this, `on${name}`); if (typeof property === 'function') property.call(this, value);
   }
   closest(selector: string): HostNode | null { return matchesHost(this, selector) ? this : this.parentNode?.closest(selector) ?? null; }
   querySelector(selector: string): HostNode | null { return this.querySelectorAll(selector)[0] ?? null; }
@@ -148,8 +156,9 @@ function matchesHost(node: HostNode, selector: string): boolean {
 const hostRoots: HostNode[] = [];
 const hostIds = new Map<string, HostNode>();
 const documentHandlers = new Map<string, Handler[]>();
+const documentDispatches: string[] = [];
 const windowHandlers = new Map<string, Handler[]>();
-function beforeUnload():boolean {let prevented = false;for (const handler of windowHandlers.get('beforeunload') ?? []) handler({preventDefault:()=> {prevented = true;}});return prevented;}
+function beforeUnload(): boolean {let prevented = false; for (const handler of windowHandlers.get('beforeunload') ?? []) handler({preventDefault: () => {prevented = true;}}); return prevented;}
 const hostDocument = {
   activeElement: null as HostNode | null,
   title: '',
@@ -167,7 +176,7 @@ const hostDocument = {
   addEventListener: (name: string, handler: Handler) => { documentHandlers.set(name, [...documentHandlers.get(name) ?? [], handler]); },
   get defaultView() { return view; },
   removeEventListener: (name: string, handler: Handler) => { documentHandlers.set(name, (documentHandlers.get(name) ?? []).filter(item => item !== handler)); },
-  dispatchEvent: () => true,
+  dispatchEvent: (event: Event) => {if (!application) return true; documentDispatches.push(event.type); for (const handler of documentHandlers.get(event.type) ?? []) handler({target: hostDocument}); return true;},
 };
 hostRoots.push(hostDocument.documentElement);
 const htmlStack: HostNode[] = [];
@@ -185,8 +194,8 @@ const view = {
     getPropertyValue: (key: string) => key === '--palette-row-size' ? '24px' : ''}),
   requestAnimationFrame: (callback: FrameRequestCallback) => hostRequestAnimationFrame(callback),
   cancelAnimationFrame: (id: number) => hostCancelAnimationFrame(id),
-  addEventListener: (name:string,handler:Handler) => {windowHandlers.set(name,[...windowHandlers.get(name) ?? [],handler]);},
-  removeEventListener: (name:string,handler:Handler) => {windowHandlers.set(name,(windowHandlers.get(name) ?? []).filter(item=>item !== handler));},
+  addEventListener: (name: string, handler: Handler) => {if (!application) windowHandlers.set(name, [...windowHandlers.get(name) ?? [], handler]);},
+  removeEventListener: (name: string, handler: Handler) => {if (!application) windowHandlers.set(name, (windowHandlers.get(name) ?? []).filter(item => item !== handler));},
   setTimeout: (callback: () => void, ms = 0): ReturnType<typeof setTimeout> | number => setTimeout(callback, ms),
   clearTimeout: (handle: ReturnType<typeof setTimeout> | number) => clearTimeout(handle),
   innerWidth: 1200, innerHeight: 800,
@@ -212,11 +221,12 @@ const hostSessionStorage = {getItem: (key: string) => storageValues.get(key) ?? 
   setItem: (key: string, value: string) => { storageValues.set(key, value); }, removeItem: (key: string) => { storageValues.delete(key); }};
 const streams: string[] = [];
 const streamSources: FixtureEventSource[] = [];
+const developmentSources: FixtureEventSource[] = [];
 class FixtureEventSource {
   closed = false;
   onerror: (() => void) | undefined;
   private listeners = new Map<string, ((event: {data: string; lastEventId: string}) => void)[]>();
-  constructor(url: string) { streams.push(url); streamSources.push(this); }
+  constructor(url: string) {if (application && url.startsWith('/api/dev/events')) developmentSources.push(this); else {streams.push(url); streamSources.push(this);}}
   addEventListener(name: string, handler: (event: {data: string; lastEventId: string}) => void): void {
     this.listeners.set(name, [...this.listeners.get(name) ?? [], handler]);
   }
@@ -226,15 +236,13 @@ class FixtureEventSource {
     for (const listener of this.listeners.get(name) ?? []) listener(message);
   }
 }
-type Fixture = {workspace: Workspace; primaries: PrimaryView[]; roster: AgentRow[]; targets?: TargetState[];
-  selectedPage?: Snapshot['selectedPage']; observations?: Snapshot['observations']; history?: EntryView[]; pendingOperations?: OperationView[]};
 function singlePane(tabs: ConversationTab[] = [{kind: 'primary'}], active = tabs[0] ? tabKey(tabs[0]) : null): ConversationLayout { return createPaneLayout(tabs, active); }
 function twoPanes(identity: string, focusedPane = 'agent-pane', extra: ConversationTab[] = []): ConversationLayout {
   return {root: {kind: 'split', id: 'split-fixture', axis: 'x', ratio: 50,
     first: {kind: 'pane', id: 'primary-pane', tabs: [{kind: 'primary'}], active: 'primary'},
     second: {kind: 'pane', id: 'agent-pane', tabs: [{kind: 'agent', identity}, ...extra], active: `agent:${identity}`}}, focusedPane};
 }
-function observation(identity: string, frame?: ProjectedFrame, connectionEpoch = 1): NonNullable<Snapshot['observations']>[number] { return {identity, connectionEpoch, ...(frame ? {frame} : {})}; }
+function observation(identity: string, frame?: ProjectedFrame, connectionEpoch = application ? (app.state.agentEpochs.get(identity) ?? 0) + 1 : 1): NonNullable<Snapshot['observations']>[number] { return {identity, connectionEpoch, ...(frame ? {frame} : {})}; }
 const coverage = {complete: true, truncated: false, omitted: 0};
 function primaryFixture(overrides: Partial<PrimaryView> = {}): PrimaryView {
   return {key: 'p', epoch: 1, cwd: '/fixture/project', lifecycle: 'ready', activity: 'running', pendingOperationIds: [],
@@ -255,6 +263,9 @@ function messageFixture(id: string, parts: PartView[], state: MessageView['state
   return {id, role: 'assistant', parts, state, coverage};
 }
 function textPart(text: string): PartView { return {type: 'text', text}; }
+function imagePart(entryId: string): PartView {
+  return {type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), bytes: 2048, width: 8, height: 8, alt: 'fixture image', source: {entryId, message: 0, part: 0}};
+}
 let fixture: Fixture = {workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: singlePane()}, primaries: [primaryFixture()], roster: []};
 let cursorSequence = 1;
 let eventSequence = 1;
@@ -282,7 +293,7 @@ function fixturePreparation(value: unknown): unknown {
   return {targetState: saved, availability: row?.availability ?? 'stored', capabilities: row?.capabilities ?? {input: false, history: false, observe: false, configure: false, abort: false}};
 }
 function fixtureDraft(path: string, body?: Record<string, unknown>): unknown {
-  const key = decodeURIComponent(path.split('/')[5] ?? ''); const saved = fixture.targets?.find(item => item.targetKey === key);
+  const key = decodeURIComponent(path.split('/')[5] ?? ''); const saved = !application || decodeURIComponent(path.split('/')[3] ?? '') === fixture.workspace.id ? fixture.targets?.find(item => item.targetKey === key) : undefined;
   const draft = {revision: Number(body?.expectedRevision ?? 0) + 1, text: String(body?.text ?? ''), mode: String(body?.mode ?? 'prompt'), images: (body?.images ?? []) as import('../shared/api.ts').DraftImage[], persisted: true as const};
   if (saved) { fixture = {...fixture, targets: fixture.targets?.map(item => item === saved ? {...saved, draft} : item)}; queueMicrotask(() => event('draft.changed', {targetKey: key, target: saved.target, draft})); }
   return draft;
@@ -299,8 +310,9 @@ function fixtureTarget(path: string): TargetState {
 }
 const fileRoots = new Map<string,import('../shared/files.ts').FileRootSelection>();
 function fixtureFileRoot(path:string,body?:Record<string,unknown>):unknown {
-  const workspace = decodeURIComponent(path.split('/')[3] ?? ''),current = fileRoots.get(workspace) ?? {revision:0,root:null};if (!body) return current;
-  const folder = String(body.path),selected = {revision:current.revision+1,root:{id:folder,path:folder,name:folder.split('/').at(-1) ?? folder}};fileRoots.set(workspace,selected);return selected;
+  const workspace = decodeURIComponent(path.split('/')[3] ?? '');const current = fileRoots.get(workspace) ?? {revision:0,root:null};
+  if (!body) return current;
+  const folder = String(body.path);const selected = {revision:current.revision+1,root:{id:folder,path:folder,name:folder.split('/').at(-1) ?? folder}};fileRoots.set(workspace,selected);return selected;
 }
 function fixtureCatalogRead(path:string):unknown {
   if (path === '/api/bootstrap') return {...snapshotOf(fixture, ++cursorSequence), limits: {}};
@@ -313,7 +325,7 @@ function fixtureCatalogRead(path:string):unknown {
   if (path.includes('/resources/')) return {items: [], nextCursor: null, revision: 'r'};
 }
 function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
-  if (path.endsWith('/files/watch')) return {roots:((body?.roots ?? []) as {rootId:string}[]).map(root=>({rootId:root.rootId,watch:'live'}))};
+  if (!application && path.endsWith('/files/watch')) return {roots: ((body?.roots ?? []) as {rootId: string}[]).map(root => ({rootId: root.rootId, watch: 'live'}))};
   if (path.endsWith('/files/root')) return fixtureFileRoot(path,body);
   if (path.endsWith('/directory')) return {rootId:decodeURIComponent(path.split('/')[4] ?? ''),path:'',entries:[],nextCursor:null,revision:'r',coverage:{complete:true,visited:0}};
   const catalog = fixtureCatalogRead(path);if (catalog !== undefined) return catalog;
@@ -341,27 +353,40 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (/^\/api\/workspaces\/[^/]+\/targets$/.test(path)) return Response.json({ok: true, data: fixturePreparation(body?.target)});
   return Response.json({ok: true, data: fixtureRead(path, body)});
 };
-Object.assign(globalThis, {
-  document: hostDocument, HTMLElement: HostNode, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
-  history: {replaceState() {}}, sessionStorage: hostSessionStorage, matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900, addEventListener() {}, removeEventListener() {}}),
-  getComputedStyle: view.getComputedStyle, requestAnimationFrame: hostRequestAnimationFrame, cancelAnimationFrame: hostCancelAnimationFrame,
-  ResizeObserver: class {observe(): void {} unobserve(): void {} disconnect(): void {}},
-  MutationObserver: class {observe(): void {} disconnect(): void {}},
-  EventSource: FixtureEventSource,
-  innerWidth: 1200, innerHeight: 800,
-});
-try { globalThis.navigator = {};} catch { /* Node exposes a read-only navigator; nothing under test reads it. */ }
+class HostResizeObserver {
+  static instances: HostResizeObserver[] = [];
+  readonly observed = new Set<unknown>();
+  readonly callback: () => void;
+  constructor(callback: () => void) {this.callback = callback; HostResizeObserver.instances.push(this);}
+  observe(node: unknown): void {this.observed.add(node);}
+  unobserve(node: unknown): void {this.observed.delete(node);}
+  disconnect(): void {this.observed.clear();}
+}
+function installHost(): void {
+  Object.assign(globalThis, {
+    document: hostDocument, HTMLElement: HostNode, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
+    history: {replaceState() {}}, sessionStorage: hostSessionStorage, matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900, addEventListener() {}, removeEventListener() {}}),
+    getComputedStyle: view.getComputedStyle, requestAnimationFrame: hostRequestAnimationFrame, cancelAnimationFrame: hostCancelAnimationFrame,
+    ResizeObserver: application ? HostResizeObserver : class {observe(): void {} unobserve(): void {} disconnect(): void {}},
+    MutationObserver: class {observe(): void {} disconnect(): void {}},
+    EventSource: FixtureEventSource,
+    innerWidth: 1200, innerHeight: 800,
+  });
+  try { globalThis.navigator = {};} catch { /* Node exposes a read-only navigator; nothing under test reads it. */ }
+}
 const nativeSetTimeout = globalThis.setTimeout;
 const nativeSetInterval = globalThis.setInterval;
 const intervals = new Set<ReturnType<typeof setInterval>>();
 const timers = new Set<ReturnType<typeof setTimeout>>();
-Object.assign(globalThis, {setTimeout: (callback: () => void, delay = 0) => {
-  const timer = nativeSetTimeout(() => {timers.delete(timer); callback();}, delay); timers.add(timer); return timer;
-}, setInterval: (callback: () => void, delay = 0) => {
-  const timer = nativeSetInterval(callback, delay); intervals.add(timer); return timer;
-}});
-after(() => {for (const timer of timers) clearTimeout(timer); for (const timer of intervals) clearInterval(timer); timers.clear(); intervals.clear(); frames = [];});
-const app = await import('./app.ts');
+let hostClosed = false;
+function installTimers(): void {
+  Object.assign(globalThis, {setTimeout: (callback: () => void, delay = 0) => {
+    const timer = nativeSetTimeout(() => {timers.delete(timer); callback();}, delay); timers.add(timer); return timer;
+  }, setInterval: (callback: () => void, delay = 0) => {
+    const timer = nativeSetInterval(callback, delay); intervals.add(timer); return timer;
+  }});
+}
+const startupMetadata: HostNode[] = [];
 const byId = (id: string): HostNode => {
   const node = hostDocument.getElementById(id);
   assert.ok(node, id);
@@ -393,14 +418,43 @@ async function arrive(next: Fixture, preserveMissingLayout = false): Promise<voi
   fixture = {...next, workspace: {...next.workspace, ...(preserveMissingLayout ? {} : {conversationLayout}), revision: Math.max(next.workspace.revision, (app.state.workspace?.revision ?? 0) + 1)}};
   await app.reload();
   await settle();
+  if (application) await confirmFixtureAvailability();
+}
+async function confirmFixtureAvailability(): Promise<void> {
+  if (fixture.confirmed !== false) {
+    const identity = fixture.workspace.selectedTarget?.kind === 'agent' ? fixture.workspace.selectedTarget.identity : undefined, row = fixture.roster.find(item => item.identity === identity);
+    if (row?.availability === 'live' && row.capabilities) {
+      const conversation = app.state.conversations.get(targetIdentity({kind: 'agent', identity: row.identity}));
+      event('agent.availability', {identity: row.identity, connectionEpoch: conversation?.connectionEpoch ?? (app.state.agentEpochs.get(row.identity) ?? 0) + 1, state: 'live', capabilities: row.capabilities}); await settle();
+    }
+  }
 }
 function event(name: string, data: unknown, target?: Target): void {
   cursorSequence = Math.max(cursorSequence + 1, ++eventSequence + 1000);
   app.receive({name: name as never, id: `boot:${cursorSequence}`, envelope: {at: '', ...(target ? {target} : {}), data} as never, bytes: 64});
 }
-
-await settle(); event('ready', {bootId: 'boot'}); await settle();
-
-
-export {app, host, hostDocument, HostNode, beforeUnload, arrive, settle, event, byId, primaryControl, agentControl, controls, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, singlePane, observation, coverage, transportLog, selectionSaves};
-export function failSelection(value: typeof selectionFailure): void {selectionFailure = value;}
+/** Each test process starts one browser host and retains its startup profile. */
+export async function createAppFixture(profile: 'application' | 'workspace' = 'workspace') {
+  application = profile === 'application';
+  if (application) fixture.targets = [targetFixture('startup-primary', {kind: 'primary', key: 'p', epoch: 1}, {draft: {revision: 1, text: 'Initial private draft', mode: 'steer', images: [], persisted: true}})];
+  installHost(); installTimers();
+  after(() => {hostClosed = true; for (const timer of timers) clearTimeout(timer); for (const timer of intervals) clearInterval(timer); timers.clear(); intervals.clear(); frames = [];});
+  hostDocument.hidden = application;
+  startupMetadata.push(... (application ? ['ui-generation', 'ui-client'] : []).map((name, index) => {
+    const meta = new HostNode('meta'), content = (index ? 'c' : 'a').repeat(index ? 24 : 64);
+    meta.setAttribute('name', name); meta.setAttribute('content', content); Reflect.set(meta, 'content', content); hostDocument.documentElement.append(meta); return meta;
+  }));
+  app = await import('./app.ts');
+  if (!application) {await settle(); event('ready', {bootId: 'boot'}); await settle();}
+  return {app, host, hostDocument, HostNode, HostResizeObserver, beforeUnload, arrive, settle, event, byId, primaryControl, agentControl, controls, paneNode,
+    primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, imagePart, twoPanes, singlePane, observation,
+    coverage, transportLog, selectionSaves, hostSessionStorage, startupMetadata, developmentSources, streamSources, documentDispatches,
+    flushFrames, documentHandlers, view, snapshotOf, fixturePreparation,
+    failSelection: (value: typeof selectionFailure): void => {selectionFailure = value;},
+    get fixture() {return fixture;}, set fixture(value: Fixture) {fixture = value;},
+    get startPreparation() {return startPreparation;}, set startPreparation(value: typeof startPreparation) {startPreparation = value;},
+    get preferenceSave() {return preferenceSave;}, set preferenceSave(value: typeof preferenceSave) {preferenceSave = value;},
+    get selectionFailure() {return selectionFailure;}, set selectionFailure(value: typeof selectionFailure) {selectionFailure = value;},
+    get frames() {return frames;}, get frameCount() {return frameCount;}, get cursorSequence() {return cursorSequence;}, get hostClosed() {return hostClosed;},
+  };
+}

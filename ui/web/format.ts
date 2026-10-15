@@ -13,6 +13,12 @@ export function relativeTime(value: Timestamp, now: number): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}hr ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
+export function compactAge(value: number, now: number): string {
+  const full = relativeTime(value, now); if (!full) return '';
+  const seconds = (now - value) / 1000;
+  if (seconds < -60 || seconds >= 30 * 86400) return new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric'}).format(new Date(value));
+  return full.replace(/hr ago$/, 'h').replace(/ ago$/, '');
+}
 export function absoluteTime(value: Timestamp, options: { locale?: string; timeZone?: string } = {}): string {
   const date = timestampDate(value);
   if (!Number.isFinite(date.getTime())) return '';

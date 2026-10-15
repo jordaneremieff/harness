@@ -195,7 +195,12 @@ test('invalid projects and unreadable directories fail explicitly; missing sessi
 test('manual session association uses bounded headers and canonical project paths', async t => {
   const {root, project, dir, save} = await setup(t);
   const valid = await save('valid', user('valid'));
-  await validateSessionProject(join(project, '..', 'project'), valid);
+  assert.equal(await validateSessionProject(join(project, '..', 'project'), valid),'valid');
+  await writeFile(valid,sessionHeader(project,'replacement-id'));
+  assert.equal(await validateSessionProject(project,valid),'replacement-id');
+  await writeFile(valid,sessionHeader(project,''));
+  await assert.rejects(validateSessionProject(project,valid),code('invalid_session'));
+  await writeFile(valid,sessionHeader(project,'valid'));
   const other = join(root, 'other'); await mkdir(other);
   await assert.rejects(validateSessionProject(other, valid), code('invalid_session'));
   await assert.rejects(validateSessionProject(project, 'relative.jsonl'), code('invalid_session'));

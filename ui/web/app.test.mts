@@ -1,441 +1,26 @@
 import assert from 'node:assert/strict';
 import {draftImageFingerprint} from '../shared/api.ts';
 import { readFile } from 'node:fs/promises';
-import test, {after} from 'node:test';
+import test from 'node:test';
 import { contextMenu } from './context-menu.ts';
-import type { AgentRow, ConversationLayout, ConversationTab, EntryView, MessageView, OperationView, PartView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
-import type { Composer } from './composer.ts';
-import { createPaneLayout, paneLeaves, movePaneTab, splitPane, validPaneLayout, activatePaneTab } from './pane-layout.ts';
+import type { ConversationLayout, PrimaryView, ProjectedFrame, Target, TargetState, Workspace } from '../shared/api.ts';
+import { paneLeaves, movePaneTab, splitPane, activatePaneTab } from './pane-layout.ts';
 import { tabKey } from './tabs.ts';
-import { targetIdentity } from './state.ts';
 
+import {createAppFixture, type Fixture} from './app-fixture.mts';
 const source = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
 const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-
-// In-process browser host: the app module runs against a fake document, storage, event stream, and HTTP backend.
-type Handler = (event: Record<string, unknown>) => void;
-class HostNode {
-  tagName: string;
-  id = '';
-  className = '';
-  hidden = false;
-  inert = false;
-  disabled = false;
-  value = '';
-  title = '';
-  tabIndex = 0;
-  scrollTop = 0; scrollLeft = 0;
-  open = false;
-  text = '';
-  writes = 0;
-  moves = 0;
-  dataset: Record<string, string> = {};
-  children: HostNode[] = [];
-  parentNode: HostNode | null = null;
-  attributes = new Map<string, string>();
-  properties = new Map<string, string>();
-  classes = new Set<string>();
-  private handlers = new Map<string, Handler[]>();
-  style = {setProperty: (key: string, value: string) => { this.properties.set(key, value); },
-    removeProperty: (key: string) => { const value = this.properties.get(key) ?? ''; this.properties.delete(key); return value; },
-    getPropertyValue: (key: string) => this.properties.get(key) ?? ''};
-  classList = {add: (name: string) => { this.classes.add(name); },
-    remove: (name: string) => { this.classes.delete(name); },
-    contains: (name: string) => this.classes.has(name) || this.className.split(' ').includes(name),
-    toggle: (name: string, value: boolean) => { if (value) this.classes.add(name); else this.classes.delete(name); }};
-  constructor(tag: string) { this.tagName = tag; }
-  get classText(): string { return [...this.classes].join(' '); }
-  get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
-  set textContent(value: string) { this.writes++; this.replaceChildren(); this.text = value; }
-  set innerHTML(_value: string) { throw new Error('HTML must never be assigned'); }
-  get ownerDocument() { return hostDocument; }
-  get nodeType(): number { return this.tagName === '#text' ? 3 : this.tagName === '#fragment' ? 11 : 1; }
-  get parentElement(): HostNode | null { return this.parentNode; }
-  get clientHeight(): number { return 300; }
-  get clientWidth(): number { return 600; }
-  get offsetLeft(): number { return 0; }
-  get offsetWidth(): number { return this.clientWidth; }
-  get offsetHeight(): number { if (this.hidden) return 0; if (this.classList.contains('spacer')) return Number.parseFloat((this.style as {height?: string}).height ?? '0') || 0; return this.classList.contains('entry') ? Number.parseFloat((this.style as {height?: string}).height ?? '140') : 20; }
-  get offsetTop(): number { const peers = this.parentNode?.children ?? []; return (this.parentNode?.offsetTop ?? 0) + peers.slice(0, peers.indexOf(this)).reduce((sum, node) => sum + node.offsetHeight, 0); }
-  get scrollHeight(): number { return this.children.reduce((sum, child) => sum + child.offsetHeight, 0); }
-  get firstChild(): HostNode | null { return this.children[0] ?? null; }
-  get lastElementChild(): HostNode | null { return this.children.at(-1) ?? null; }
-  get isConnected(): boolean { return hostRoots.includes(this) || !!this.parentNode?.isConnected; }
-  contains(node: HostNode | null): boolean { return !!node && (node === this || this.children.some(child => child.contains(node))); }
-  get childNodes(): HostNode[] { return this.children; }
-  get scrollWidth(): number { return this.clientWidth; }
-  get nextSibling(): HostNode | null { const peers = this.parentNode?.children ?? []; return peers[peers.indexOf(this) + 1] ?? null; }
-  get nextElementSibling(): HostNode | null { return this.nextSibling; }
-  append(...nodes: HostNode[]): void { for (const node of nodes) this.insert(node, this.children.length); }
-  prepend(...nodes: HostNode[]): void { nodes.slice().reverse().forEach(node => { this.insert(node, 0); }); }
-  after(node: HostNode): void { this.parentNode?.insert(node, this.parentNode.children.indexOf(this) + 1); }
-  insertBefore(node: HostNode, anchor: HostNode | null): HostNode { this.insert(node, anchor ? this.children.indexOf(anchor) : this.children.length); return node; }
-  private insert(node: HostNode, index: number): void {
-    if (node.tagName === '#fragment') { for (const child of [...node.children]) this.insert(child, index++); return; }
-    if (node.parentNode === this && this.children.indexOf(node) < index) index--;
-    node.remove(); node.parentNode = this; this.children.splice(index, 0, node); node.moves++;
-  }
-  remove(): void { if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1); this.parentNode = null; }
-  replaceChildren(...nodes: HostNode[]): void { this.writes++; for (const child of [...this.children]) child.remove(); this.text = ''; this.append(...nodes); }
-  setAttribute(key: string, value: string): void {
-    this.attributes.set(key, value);
-    if (key === 'id') this.id = value;
-    else if (key === 'class') this.className = value;
-    else if (key === 'hidden') this.hidden = true;
-    else if (key === 'disabled') this.disabled = true;
-    else if (key === 'tabindex') this.tabIndex = Number(value);
-    else if (key.startsWith('data-')) this.dataset[key.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase())] = value;
-  }
-  removeAttribute(key: string): void { this.attributes.delete(key); if (key === 'hidden') this.hidden = false; if (key === 'disabled') this.disabled = false; }
-  hasAttribute(key: string): boolean { return this.getAttribute(key) !== null; }
-  getAttribute(key: string): string | null {
-    if (key === 'id') return this.id || null;
-    if (key === 'class') return [this.className, this.classText].join(' ').trim() || null;
-    if (key === 'hidden') return this.hidden ? '' : null;
-    if (key === 'disabled') return this.disabled ? '' : null;
-    if (key.startsWith('data-')) return this.dataset[key.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase())] ?? null;
-    return this.attributes.get(key) ?? null;
-  }
-  addEventListener(name: string, handler: Handler): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]); }
-  removeEventListener(name: string, handler?: Handler): void { if (!handler) { this.handlers.delete(name); return; } const next = (this.handlers.get(name) ?? []).filter(item => item !== handler); if (next.length) this.handlers.set(name, next); else this.handlers.delete(name); }
-  dispatch(name: string, event: Record<string, unknown> = {}): void {
-    let stopped = false;
-    const value = {target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { stopped = true; }, stopImmediatePropagation() { stopped = true; }, ...event};
-    for (let node: HostNode | null = this; node; node = ['click', 'contextmenu', 'focusin', 'focusout', 'pointerdown'].includes(name) && !stopped ? node.parentNode : null) {
-      for (const handler of node.handlers.get(name) ?? []) handler(value);
-    }
-    if (!stopped && ['click', 'contextmenu', 'focusin', 'focusout', 'pointerdown'].includes(name)) for (const handler of documentHandlers.get(name) ?? []) handler(value);
-  }
-  closest(selector: string): HostNode | null { return matchesHost(this, selector) ? this : this.parentNode?.closest(selector) ?? null; }
-  querySelector(selector: string): HostNode | null { return this.querySelectorAll(selector)[0] ?? null; }
-  querySelectorAll(selector: string): HostNode[] {
-    const found: HostNode[] = [];
-    for (const node of this.children) { if (matchesHost(node, selector)) found.push(node); found.push(...node.querySelectorAll(selector)); }
-    return found;
-  }
-  getBoundingClientRect(): {top: number; bottom: number; left: number; right: number; width: number; height: number} {
-    const width = rectWidth(this); const top = this.offsetTop;
-    const height = this.id === 'conversation-panes' || this.classList.contains('pane-leaf') || this.classList.contains('pane-split') ? 640 : this.offsetHeight;
-    return {top, bottom: top + height, left: 0, right: width, width, height};
-  }
-  focus(): void { if (hostDocument.activeElement !== this) { hostDocument.activeElement?.dispatch('blur'); hostDocument.activeElement = this; this.dispatch('focus'); this.dispatch('focusin'); } }
-  blur(): void { if (hostDocument.activeElement === this) hostDocument.activeElement = null; }
-  showModal(): void { this.open = true; }
-  show(): void { this.open = true; }
-  close(): void { this.open = false; this.dispatch('close'); }
-  scrollIntoView(): void {}
-  select(): void {}
-  selectionStart = 0; selectionEnd = 0; selectionDirection = 'none';
-  setSelectionRange(start: number, end: number, direction = 'none'): void { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; }
-  onclick: (() => void) | null = null;
-  click(): void { if (this.disabled) return; this.dispatch('click'); this.onclick?.(); }
-}
-function matchesHost(node: HostNode, selector: string): boolean {
-  if (selector.includes(',')) return selector.split(',').some(part => matchesHost(node, part.trim()));
-  let base = selector.trim();
-  const enabled = base.endsWith(':not(:disabled)'); if (enabled) base = base.slice(0, -':not(:disabled)'.length);
-  const pieces = base.split(/\s+(?![^[]*\])/); const last = pieces.pop(); if (!last) return false;
-  const tokens = last.match(/\[[^\]]+\]|[.#][\w-]+|^[\w-]+|\*/g) ?? [];
-  const matched = tokens.length > 0 && tokens.every(token => {
-    if (token === '*') return true;
-    if (token.startsWith('.')) return node.classList.contains(token.slice(1));
-    if (token.startsWith('#')) return node.id === token.slice(1);
-    if (token.startsWith('[')) { const attribute = token.slice(1, -1).match(/^([^=]+)(?:=["']?([^"']*)["']?)?$/); return !!attribute && (attribute[2] === undefined ? node.hasAttribute(attribute[1] ?? '') : node.getAttribute(attribute[1] ?? '') === attribute[2]); }
-    return node.tagName === token;
-  });
-  if (!matched || enabled && node.disabled) return false;
-  if (!pieces.length) return true;
-  for (let ancestor = node.parentNode; ancestor; ancestor = ancestor.parentNode) if (matchesHost(ancestor, pieces.join(' '))) return true;
-  return false;
-}
-const hostRoots: HostNode[] = [];
-const hostIds = new Map<string, HostNode>();
-const documentHandlers = new Map<string, Handler[]>();
-const documentDispatches: string[] = [];
-const hostDocument = {
-  activeElement: null as HostNode | null,
-  title: '',
-  hidden: false,
-  documentElement: new HostNode('html'),
-  body: new HostNode('body'),
-  createElement: (tag: string) => new HostNode(tag),
-  createElementNS: (_namespace: string, tag: string) => new HostNode(tag),
-  createDocumentFragment: () => new HostNode('#fragment'),
-  createTextNode: (value: string) => { const node = new HostNode('#text'); node.textContent = value; return node; },
-  getElementById: (id: string): HostNode | undefined => hostDocument.documentElement.querySelector(`#${id}`) ?? undefined,
-  querySelector: (selector: string): HostNode | null => hostDocument.documentElement.querySelector(selector),
-  querySelectorAll: (selector: string): HostNode[] => hostDocument.documentElement.querySelectorAll(selector),
-  getSelection: () => ({isCollapsed: true, anchorNode: null, focusNode: null}),
-  addEventListener: (name: string, handler: Handler) => { documentHandlers.set(name, [...documentHandlers.get(name) ?? [], handler]); },
-  get defaultView() { return view; },
-  removeEventListener: (name: string, handler: Handler) => { documentHandlers.set(name, (documentHandlers.get(name) ?? []).filter(item => item !== handler)); },
-  dispatchEvent: (event: Event) => {documentDispatches.push(event.type); for (const handler of documentHandlers.get(event.type) ?? []) handler({target: hostDocument}); return true;},
-};
-hostRoots.push(hostDocument.documentElement);
-const htmlStack: HostNode[] = [];
-for (const token of html.matchAll(/<\/?([a-z][\w-]*)\b([^>]*)>/gi)) {
-  const tag = token[1] ?? ''; if (token[0].startsWith('</')) { while (htmlStack.length && htmlStack.pop()?.tagName !== tag) {} continue; }
-  const node = tag === 'html' ? hostDocument.documentElement : tag === 'body' ? hostDocument.body : new HostNode(tag);
-  for (const attribute of (token[2] ?? '').matchAll(/([\w-]+)(?:="([^"]*)")?/g)) node.setAttribute(attribute[1] ?? '', attribute[2] ?? '');
-  if (node.id) hostIds.set(node.id, node);
-  if (htmlStack.at(-1) && node !== hostDocument.documentElement) htmlStack.at(-1)?.append(node);
-  if (!['meta', 'link', 'input', 'img', 'br', 'hr'].includes(tag)) htmlStack.push(node);
-}
-const view = {
-  getComputedStyle: (node: HostNode) => ({paddingLeft: '0px', paddingRight: '0px', borderLeftWidth: '0px', borderRightWidth: '0px',
-    width: `${node.id === 'conversation-splitter' ? host.splitter : 5}px`, maxHeight: '480px',
-    getPropertyValue: (key: string) => key === '--palette-row-size' ? '24px' : ''}),
-  requestAnimationFrame: (callback: FrameRequestCallback) => hostRequestAnimationFrame(callback),
-  cancelAnimationFrame: (id: number) => hostCancelAnimationFrame(id),
-  addEventListener: () => {}, removeEventListener: () => {},
-  setTimeout: (callback: () => void, ms = 0): ReturnType<typeof setTimeout> | number => setTimeout(callback, ms),
-  clearTimeout: (handle: ReturnType<typeof setTimeout> | number) => clearTimeout(handle),
-  innerWidth: 1200, innerHeight: 800,
-};
-const host = {viewport: 1200, splitter: 5};
-hostDocument.documentElement.classList.add('conversation');
-function rectWidth(node: HostNode): number {
-  if (node.id === 'conversation-panes') return host.viewport - (host.viewport >= 900 && !hostIds.get('sidebar')?.hidden ? 272 : 0);
-  if (node.classList.contains('pane-leaf') || node.classList.contains('pane-split')) {
-    const parent = node.parentNode;
-    if (parent?.id === 'conversation-panes') return rectWidth(parent);
-    if (parent?.classList.contains('pane-split')) return parent.dataset.axis === 'x' ? (rectWidth(parent) - 4) / 2 : rectWidth(parent);
-  }
-  return 600;
-}
-let frames: {id: number; callback: FrameRequestCallback}[] = [];
-let frameCount = 0;
-function hostRequestAnimationFrame(callback: FrameRequestCallback): number { const id = ++frameCount; frames.push({id, callback}); return id; }
-function hostCancelAnimationFrame(id: number): void { frames = frames.filter(frame => frame.id !== id); }
-function flushFrames(): void { for (let round = 0; round < 20 && frames.length; round++) { const pending = frames; frames = []; for (const frame of pending) frame.callback(0); } }
-const storageValues = new Map<string, string>();
-const hostSessionStorage = {getItem: (key: string) => storageValues.get(key) ?? null,
-  setItem: (key: string, value: string) => { storageValues.set(key, value); }, removeItem: (key: string) => { storageValues.delete(key); }};
-const streams: string[] = [];
-const streamSources: FixtureEventSource[] = [];
-const developmentSources: FixtureEventSource[] = [];
-class FixtureEventSource {
-  closed = false;
-  onerror: (() => void) | undefined;
-  private listeners = new Map<string, ((event: {data: string; lastEventId: string}) => void)[]>();
-  constructor(url: string) {if (url.startsWith('/api/dev/events')) developmentSources.push(this); else {streams.push(url); streamSources.push(this);}}
-  addEventListener(name: string, handler: (event: {data: string; lastEventId: string}) => void): void {
-    this.listeners.set(name, [...this.listeners.get(name) ?? [], handler]);
-  }
-  close(): void { this.closed = true; }
-  emit(name: string, data: unknown): void {
-    const message = {data: JSON.stringify({at: '', data}), lastEventId: `boot:${++cursorSequence}`};
-    for (const listener of this.listeners.get(name) ?? []) listener(message);
-  }
-}
-type Fixture = {workspace: Workspace; primaries: PrimaryView[]; roster: AgentRow[]; targets?: TargetState[]; confirmed?: boolean;
-  selectedPage?: Snapshot['selectedPage']; observations?: Snapshot['observations']; history?: EntryView[]; pendingOperations?: OperationView[]};
-function singlePane(tabs: ConversationTab[] = [{kind: 'primary'}], active = tabs[0] ? tabKey(tabs[0]) : null): ConversationLayout { return createPaneLayout(tabs, active); }
-function twoPanes(identity: string, focusedPane = 'agent-pane', extra: ConversationTab[] = []): ConversationLayout {
-  return {root: {kind: 'split', id: 'split-fixture', axis: 'x', ratio: 50,
-    first: {kind: 'pane', id: 'primary-pane', tabs: [{kind: 'primary'}], active: 'primary'},
-    second: {kind: 'pane', id: 'agent-pane', tabs: [{kind: 'agent', identity}, ...extra], active: `agent:${identity}`}}, focusedPane};
-}
-function observation(identity: string, frame?: ProjectedFrame, connectionEpoch = (app.state.agentEpochs.get(identity) ?? 0) + 1): NonNullable<Snapshot['observations']>[number] { return {identity, connectionEpoch, ...(frame ? {frame} : {})}; }
-const coverage = {complete: true, truncated: false, omitted: 0};
-function primaryFixture(overrides: Partial<PrimaryView> = {}): PrimaryView {
-  return {key: 'p', epoch: 1, cwd: '/fixture/project', lifecycle: 'ready', activity: 'running', pendingOperationIds: [],
-    pendingDialogs: [], capabilities: {}, ...overrides};
-}
-function agentFixture(identity: string, overrides: Partial<AgentRow> = {}): AgentRow {
-  return {identity, storageId: `storage:${identity}`, cwd: '/fixture/project', modifiedAt: 0, state: 'idle', owner: 'here',
-    availability: 'live', partial: false, capabilities: {history: true, observe: true, input: true, abort: true, configure: true}, ...overrides};
-}
-function targetFixture(targetKey: string, target: TargetState['target'], overrides: Partial<TargetState> = {}): TargetState {
-  const draft = {revision: 1, text: '', mode: 'prompt', persisted: true as const, ...overrides.draft, images: overrides.draft?.images ?? []};
-  return {targetKey, target, reading: {revision: 1, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: [], retainedInputs: [], imageAvailability: [], ...overrides, draft};
-}
-function entryFixture(id: string, messages: MessageView[]): EntryView {
-  return {id, kind: 'message', messages};
-}
-function messageFixture(id: string, parts: PartView[], state: MessageView['state'] = 'final'): MessageView {
-  return {id, role: 'assistant', parts, state, coverage};
-}
-function textPart(text: string): PartView { return {type: 'text', text}; }
-function imagePart(entryId: string): PartView {
-  return {type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), bytes: 2048, width: 8, height: 8, alt: 'fixture image', source: {entryId, message: 0, part: 0}};
-}
-let fixture: Fixture = {workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: singlePane()}, primaries: [primaryFixture()], roster: [],
-  targets: [targetFixture('startup-primary', {kind: 'primary', key: 'p', epoch: 1}, {draft: {revision: 1, text: 'Initial private draft', mode: 'steer', persisted: true}})]};
-let cursorSequence = 1;
-let eventSequence = 1;
-let operationSerial = 0;
-const selectionSaves: {body: Record<string, unknown>}[] = [];
-let selectionFailure: {code: string; message: string; retry: 'capacity'} | undefined;
-function snapshotOf(current: Fixture, sequence: number): Snapshot {
-  return {bootId: 'boot', cursor: `boot:${sequence}`, workspace: current.workspace, primaries: current.primaries,
-    roster: {rows: current.roster, nextCursor: null, scan: {state: 'ready', complete: true, visited: current.roster.length, skipped: 0, omitted: 0}, stale: false},
-    dialogs: [], pendingOperations: current.pendingOperations ?? [], targetIndex: [], targets: current.targets,
-    selectedPage: current.selectedPage, observations: current.observations ?? [], notices: [], omitted: []};
-}
-const transportLog: {method: string; path: string; body?: unknown; key?: string; workspace?: string | null}[] = [];
-let startPreparation: ((identity: string) => Promise<Response>) | undefined;
-let preferenceSave: ((path: string, body: Record<string, unknown>) => Promise<Response>) | undefined;
-function applySelection(workspace: Workspace, body: Record<string, unknown>): Workspace {
-  const {expectedRevision: _revision, selectedTarget, ...rest} = body;
-  return {...workspace, ...rest, ...(selectedTarget === null ? {} : selectedTarget === undefined ? {} : {selectedTarget: selectedTarget as Workspace['selectedTarget']}),
-    ...(selectedTarget === null ? {selectedTarget: undefined} : {}), revision: workspace.revision + 1} as Workspace;
-}
-function fixturePreparation(value: unknown): unknown {
-  const target = value as Target; const row = target.kind === 'agent' ? fixture.roster.find(item => item.identity === target.identity) : undefined;
-  let saved = fixture.targets?.find(item => JSON.stringify(item.target) === JSON.stringify(target));
-  if (!saved) { saved = targetFixture(`prepared-${target.kind === 'agent' ? target.identity : `${target.key}-${target.epoch}`}`, target); fixture = {...fixture, targets: [...fixture.targets ?? [], saved]}; }
-  return {targetState: saved, availability: row?.availability ?? 'stored', capabilities: row?.capabilities ?? {input: false, history: false, observe: false, configure: false, abort: false}};
-}
-function fixtureDraft(path: string, body?: Record<string, unknown>): unknown {
-  const key = decodeURIComponent(path.split('/')[5] ?? ''); const saved = decodeURIComponent(path.split('/')[3] ?? '') === fixture.workspace.id ? fixture.targets?.find(item => item.targetKey === key) : undefined;
-  const draft = {revision: Number(body?.expectedRevision ?? 0) + 1, text: String(body?.text ?? ''), mode: String(body?.mode ?? 'prompt'), images: (body?.images ?? []) as import('../shared/api.ts').DraftImage[], persisted: true as const};
-  if (saved) { fixture = {...fixture, targets: fixture.targets?.map(item => item === saved ? {...saved, draft} : item)}; queueMicrotask(() => event('draft.changed', {targetKey: key, target: saved.target, draft})); }
-  return draft;
-}
-function fixtureView(path: string, body: Record<string, unknown>): unknown {
-  const revision = Number(body.expectedRevision ?? 0) + 1, kind = path.endsWith('/reading') ? 'reading' : 'presentation';
-  const value = kind === 'reading' ? {revision, anchorId: body.anchorId ?? null, offsetPx: body.offsetPx ?? 0, followTail: body.followTail ?? true} : {revision, expanded: body.expanded ?? [], showThinking: body.showThinking ?? false, transcriptView: body.transcriptView ?? 'chronological'};
-  if (decodeURIComponent(path.split('/')[3] ?? '') === fixture.workspace.id) fixture = {...fixture, targets: fixture.targets?.map(saved => saved.targetKey === decodeURIComponent(path.split('/')[5] ?? '') ? {...saved, [kind]: value} : saved)};
-  return value;
-}
-function fixtureTarget(path: string): TargetState {
-  assert.equal(decodeURIComponent(path.split('/')[3] ?? ''), fixture.workspace.id);
-  const saved = fixture.targets?.find(item => item.targetKey === decodeURIComponent(path.split('/')[5] ?? '')); assert.ok(saved); return saved;
-}
-const fileRoots = new Map<string,import('../shared/files.ts').FileRootSelection>();
-function fixtureFileRoot(path:string,body?:Record<string,unknown>):unknown {
-  const workspace = decodeURIComponent(path.split('/')[3] ?? '');const current = fileRoots.get(workspace) ?? {revision:0,root:null};
-  if (!body) return current;
-  const folder = String(body.path);const selected = {revision:current.revision+1,root:{id:folder,path:folder,name:folder.split('/').at(-1) ?? folder}};fileRoots.set(workspace,selected);return selected;
-}
-function fixtureCatalogRead(path:string):unknown {
-  if (path === '/api/bootstrap') return {...snapshotOf(fixture, ++cursorSequence), limits: {}};
-  if (path === '/api/snapshot') return snapshotOf(fixture, ++cursorSequence);
-  if (/^\/api\/primaries\/[^/]+\/history(?!.*output)/.test(path)) { const primary = fixture.primaries.find(item => item.key === decodeURIComponent(path.split('/')[3] ?? '')); assert.ok(primary); return {target: {kind: 'primary', key: primary.key, epoch: primary.epoch}, items: fixture.history ?? [], nextCursor: null, coverage}; }
-  if (/^\/api\/agents\/[^/]+\/history$/.test(path)) return {target: {kind: 'agent', identity: path.split('/')[3] ?? ''}, entries: [], nextBefore: null, coverage, revision: 'r'};
-  if (path === '/api/operations') return {operationId: `op-${++operationSerial}`};
-  if (path === '/api/agents/refresh') return {};
-  if (path === '/api/agents') return snapshotOf(fixture, cursorSequence).roster;
-  if (path.includes('/resources/')) return {items: [], nextCursor: null, revision: 'r'};
-}
-function fixtureRead(path: string, body?: Record<string, unknown>): unknown {
-  if (path.endsWith('/files/root')) return fixtureFileRoot(path,body);
-  if (path.endsWith('/directory')) return {rootId:decodeURIComponent(path.split('/')[4] ?? ''),path:'',entries:[],nextCursor:null,revision:'r',coverage:{complete:true,visited:0}};
-  const catalog = fixtureCatalogRead(path);if (catalog !== undefined) return catalog;
-  if (path.endsWith('/draft')) return fixtureDraft(path, body);
-  if (/\/(reading|presentation)$/.test(path)) return fixtureView(path, body ?? {});
-  if (path.includes('/targets/')) return fixtureTarget(path);
-  throw new Error(`No fixture for ${path}`);
-}
-function fixtureSelectionResponse(path: string, body: Record<string, unknown> | undefined): Response {
-  assert.equal(path, `/api/workspaces/${fixture.workspace.id}/selection`);
-  if (selectionFailure) return Response.json({ok: false, error: selectionFailure});
-  selectionSaves.push({body: body ?? {}});
-  fixture = {...fixture, workspace: applySelection(fixture.workspace, body ?? {})};
-  return Response.json({ok: true, data: fixture.workspace});
-}
-globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = new URL(String(input), 'http://ui.test/app'); const path = url.pathname;
-  const method = (init?.method ?? 'GET').toUpperCase();
-  const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as Record<string, unknown>;
-  const starting = /^\/api\/agents\/[^/]+\/start$/.test(path);
-  transportLog.push({method, path, body, ...(starting ? {key: new Headers(init?.headers).get('Idempotency-Key') ?? '', workspace: url.searchParams.get('workspace')} : {})});
-  if (starting && startPreparation) return startPreparation(decodeURIComponent(path.split('/')[3] ?? ''));
-  if (method === 'PUT' && path.endsWith('/presentation') && preferenceSave) return preferenceSave(path, body ?? {});
-  if (method === 'PUT' && path.endsWith('/selection')) return fixtureSelectionResponse(path, body);
-  if (/^\/api\/workspaces\/[^/]+\/targets$/.test(path)) return Response.json({ok: true, data: fixturePreparation(body?.target)});
-  return Response.json({ok: true, data: fixtureRead(path, body)});
-};
-class HostResizeObserver {
-  static instances: HostResizeObserver[] = [];
-  readonly observed = new Set<unknown>();
-  readonly callback: () => void;
-  constructor(callback: () => void) {this.callback = callback; HostResizeObserver.instances.push(this);}
-  observe(node: unknown): void {this.observed.add(node);}
-  unobserve(node: unknown): void {this.observed.delete(node);}
-  disconnect(): void {this.observed.clear();}
-}
-Object.assign(globalThis, {
-  document: hostDocument, HTMLElement: HostNode, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
-  history: {replaceState() {}}, sessionStorage: hostSessionStorage, matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900, addEventListener() {}, removeEventListener() {}}),
-  getComputedStyle: view.getComputedStyle, requestAnimationFrame: hostRequestAnimationFrame, cancelAnimationFrame: hostCancelAnimationFrame,
-  ResizeObserver: HostResizeObserver,
-  MutationObserver: class {observe(): void {} disconnect(): void {}},
-  EventSource: FixtureEventSource,
-  innerWidth: 1200, innerHeight: 800,
-});
-try { globalThis.navigator = {};} catch { /* Node exposes a read-only navigator; nothing under test reads it. */ }
-const nativeSetTimeout = globalThis.setTimeout;
-const nativeSetInterval = globalThis.setInterval;
-const intervals = new Set<ReturnType<typeof setInterval>>();
-const timers = new Set<ReturnType<typeof setTimeout>>();
-let hostClosed = false;
-Object.assign(globalThis, {setTimeout: (callback: () => void, delay = 0) => {
-  const timer = nativeSetTimeout(() => {timers.delete(timer); callback();}, delay); timers.add(timer); return timer;
-}, setInterval: (callback: () => void, delay = 0) => {
-  const timer = nativeSetInterval(callback, delay); intervals.add(timer); return timer;
-}});
-after(() => {hostClosed = true; for (const timer of timers) clearTimeout(timer); for (const timer of intervals) clearInterval(timer); timers.clear(); intervals.clear(); frames = [];});
-hostDocument.hidden = true;
-const startupMetadata = ['ui-generation', 'ui-client'].map((name, index) => {
-  const meta = new HostNode('meta'), content = (index ? 'c' : 'a').repeat(index ? 24 : 64);
-  meta.setAttribute('name', name); meta.setAttribute('content', content); Reflect.set(meta, 'content', content); hostDocument.documentElement.append(meta); return meta;
-});
-const app = await import('./app.ts');
-const byId = (id: string): HostNode => {
-  const node = hostDocument.getElementById(id);
-  assert.ok(node, id);
-  return node as HostNode;
-};
-async function settle(): Promise<void> { for (let round = 0; round < 4; round++) { flushFrames(); await new Promise(resolve => setImmediate(resolve)); } flushFrames(); }
-function controls(composer: Composer): (key: string) => HostNode {
-  const editor = composer.editor as unknown as HostNode, form = editor.closest('form'); assert.ok(form);
-  const root = form.closest('.conversation');
-  const selectors: Record<string, string> = {queued: '.queued-list'};
-  return key => {
-    if (key === 'editor') return editor;
-    if (key === 'composer') return form;
-    if (key === 'root') { assert.ok(root); return root; }
-    const selector = selectors[key];
-    const node = form.querySelector(`#${form.id}-${key}`) ?? root?.querySelector(`[id="${root.id}-${key}"]`) ?? hostDocument.getElementById(`${form.id}-${key}`) ?? (selector ? root?.querySelector(selector) : null);
-    assert.ok(node, `Missing scoped ${key} for ${form.id}`); return node;
-  };
-}
-const primaryControl = (key: string) => controls(app.primaryComposer())(key);
-const agentControl = (key: string) => controls(app.agentComposer())(key);
+const browser = await createAppFixture('application');
+const {HostNode, hostDocument, startupMetadata, developmentSources, settle, streamSources, documentDispatches, primaryControl, app, hostSessionStorage, arrive, primaryFixture, HostResizeObserver, byId, flushFrames, targetFixture, twoPanes, agentFixture, observation, entryFixture, messageFixture, textPart, event, singlePane, agentControl, controls, transportLog, host, selectionSaves, documentHandlers, view, snapshotOf, paneNode, imagePart, fixturePreparation, coverage} = browser;
+type HostNode = InstanceType<typeof HostNode>;
 function messageControl(key: string): HostNode {
   const form = hostDocument.body.querySelector('.composer[data-message-panel="true"]'); assert.ok(form);
   const node = key === 'composer' ? form : form.querySelector(`#${form.id}-${key}`); assert.ok(node, `Missing Message ${key}`); return node;
 }
-function paneNode(id: string): HostNode { const node = byId('conversation-panes').querySelector(`[data-pane-id="${id}"]`); assert.ok(node); return node; }
 function tabsNode(pane = app.focusedPane): HostNode { const node = paneNode(pane).querySelector('.conversation-tabs'); assert.ok(node); return node; }
 function menuNode(): HostNode { const node = hostDocument.body.querySelector('.context-menu'); assert.ok(node); return node; }
 function pressContext(target: HostNode): void { target.dispatch('contextmenu', {clientX: 10, clientY: 50}); }
-async function arrive(next: Fixture): Promise<void> {
-  if (next.workspace.conversationLayout) assert.ok(validPaneLayout(next.workspace.conversationLayout));
-  assert.ok((next.observations?.length ?? 0) <= 4);
-  const selected = next.workspace.selectedTarget;
-  const tabs: ConversationTab[] = [...(next.workspace.primaryKey ? [{kind: 'primary' as const}] : []), ...(selected?.kind === 'agent' ? [{kind: 'agent' as const, identity: selected.identity}] : [])];
-  const conversationLayout = next.workspace.conversationLayout ?? singlePane(tabs, selected?.kind === 'agent' ? `agent:${selected.identity}` : tabs[0] ? tabKey(tabs[0]) : null);
-  fixture = {...next, workspace: {...next.workspace, conversationLayout, revision: Math.max(next.workspace.revision, (app.state.workspace?.revision ?? 0) + 1)}};
-  await app.reload();
-  await settle();
-  await confirmFixtureAvailability();
-}
-async function confirmFixtureAvailability(): Promise<void> {
-  if (fixture.confirmed !== false) {
-    const identity = fixture.workspace.selectedTarget?.kind === 'agent' ? fixture.workspace.selectedTarget.identity : undefined, row = fixture.roster.find(item => item.identity === identity);
-    if (row?.availability === 'live' && row.capabilities) {
-      const conversation = app.state.conversations.get(targetIdentity({kind: 'agent', identity: row.identity}));
-      event('agent.availability', {identity: row.identity, connectionEpoch: conversation?.connectionEpoch ?? (app.state.agentEpochs.get(row.identity) ?? 0) + 1, state: 'live', capabilities: row.capabilities}); await settle();
-    }
-  }
-}
-function event(name: string, data: unknown, target?: {kind: 'primary'; key: string; epoch: number}): void {
-  cursorSequence = Math.max(cursorSequence + 1, ++eventSequence + 1000);
-  app.receive({name: name as never, id: `boot:${cursorSequence}`, envelope: {at: '', ...(target ? {target} : {}), data} as never, bytes: 64});
-}
+
 function descendants(node: HostNode): HostNode[] { return [...node.children, ...node.children.flatMap(descendants)]; }
 
 test('initial hidden startup and its retired ready wait initialize once after fresh ready and restored checkpoint', async t => {
@@ -469,10 +54,10 @@ test('pane resize notifications defer navigation writes and coalesce into one ne
   const observer = HostResizeObserver.instances.find(item => item.observed.has(byId('conversation-panes')));
   const label = tabsNode().children[0]?.querySelector('.tab-label'); assert.ok(observer); assert.ok(label);
   const before = label.writes; app.renderNavigation(); const renderWrites = label.writes - before; assert.ok(renderWrites > 0); flushFrames();
-  const writes = label.writes, pending = frames.length;
+  const writes = label.writes, pending = browser.frames.length;
   observer.callback(); observer.callback();
   assert.equal(label.writes, writes, 'ResizeObserver delivery must not write pane geometry.');
-  assert.equal(frames.length, pending + 1, 'Repeated notifications share one next-frame render.');
+  assert.equal(browser.frames.length, pending + 1, 'Repeated notifications share one next-frame render.');
   flushFrames(); assert.equal(label.writes, writes + renderWrites);
   observer.callback(); assert.equal(label.writes, writes + renderWrites); flushFrames(); assert.equal(label.writes, writes + 2 * renderWrites);
   app.renderNavigation(); assert.equal(label.writes, writes + 3 * renderWrites, 'Explicit navigation remains synchronous.');
@@ -490,13 +75,13 @@ function devCheckpoint(): import('./dev-reload.ts').DevReloadCheckpoint {
 
 const attachedImage = (name = 'one.png', digit = 'a'): import('../shared/api.ts').DraftImage => ({name, digest: digit.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1});
 test('development checkpoint rejects changed image order at the same text and revision', async t => {
-  assert.equal(hostClosed, false, 'The browser host must remain active after startup.');
+  assert.equal(browser.hostClosed, false, 'The browser host must remain active after startup.');
   await new Promise<void>(resolve => setTimeout(resolve, 0));
-  assert.equal(hostClosed, false, 'The browser host must retain its scheduled work until tests finish.');
+  assert.equal(browser.hostClosed, false, 'The browser host must retain its scheduled work until tests finish.');
   const images = [attachedImage(), attachedImage('two.png', 'b')], saved = await devHookFixture('image-order', 9770, images), checkpoint = devCheckpoint(), original = globalThis.fetch;
   t.after(() => {globalThis.fetch = original;});
   assert.equal(checkpoint.targets.find(item => item.targetKey === saved.agent.targetKey)?.imageFingerprint, draftImageFingerprint(images));
-  globalThis.fetch = async (input, init) => (init?.method ?? 'GET') === 'GET' && new URL(String(input), 'http://ui.test').pathname.endsWith('/targets/' + saved.agent.targetKey)
+  globalThis.fetch = async (input, init) => (init?.method ?? 'GET') === 'GET' && new URL(String(input), 'http://ui.test').pathname.endsWith(`/targets/${saved.agent.targetKey}`)
     ? Response.json({ok: true, data: {...saved.agent, draft: {...saved.agent.draft, images: [...images].reverse()}}}) : original(input, init);
   assert.equal(await app.restoreDevCheckpoint(checkpoint, new AbortController().signal), false); assert.deepEqual(app.agentComposer().state?.draft.images, images);
 });
@@ -530,7 +115,7 @@ test('development checkpoint captures exact owners and rejects workspace, recipi
   for (const mismatch of ['draft', 'reading', 'presentation', 'identity', 'unconfirmed'] as const) {
     globalThis.fetch = async (input, init) => {
       if ((init?.method ?? 'GET') === 'GET' && new URL(String(input), 'http://ui.test').pathname.endsWith(`/targets/${saved.agent.targetKey}`)) {
-        const value = fixture.targets?.find(item => item.targetKey === saved.agent.targetKey); assert.ok(value); assert.ok(value.presentation);
+        const value = browser.fixture.targets?.find(item => item.targetKey === saved.agent.targetKey); assert.ok(value); assert.ok(value.presentation);
         const changed = mismatch === 'identity' ? {...value, target: {kind: 'agent', identity: 'wrong-recipient'}} : mismatch === 'unconfirmed' ? {...value, unconfirmed: [{operationId: 'held'}]} : {...value, [mismatch]: {...value[mismatch], revision: value[mismatch].revision + 1}};
         return Response.json({ok: true, data: changed});
       }
@@ -545,15 +130,15 @@ test('development checkpoint captures exact owners and rejects workspace, recipi
 test('development restoration accepts a fresh Agent epoch but refuses later epochs and newer buffers during target reads', async t => {
   const saved = await devHookFixture('dev-race', 9661); assert.equal(saved.agent.target.kind, 'agent'); const identity = (saved.agent.target as {identity: string}).identity;
   const checkpoint = devCheckpoint(), original = globalThis.fetch; t.after(async () => {globalThis.fetch = original; await app.drainDev(new AbortController().signal);});
-  fixture = {...fixture, observations: [observation(identity, {revision: 2, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: false}, coverage}, 11)]}; await app.reload(); await settle();
+  browser.fixture = {...browser.fixture, observations: [observation(identity, {revision: 2, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: false}, coverage}, 11)]}; await app.reload(); await settle();
   assert.equal(app.state.conversations.get(JSON.stringify(['agent', identity]))?.connectionEpoch, 11); assert.equal(await app.restoreDevCheckpoint(checkpoint, new AbortController().signal), true);
   for (const race of ['epoch', 'draft', 'buffer'] as const) {
     const activeCheckpoint = devCheckpoint();
-    const response = Promise.withResolvers<Response>(); const value = fixture.targets?.find(item => item.targetKey === saved.agent.targetKey); assert.ok(value);
+    const response = Promise.withResolvers<Response>(); const value = browser.fixture.targets?.find(item => item.targetKey === saved.agent.targetKey); assert.ok(value);
     globalThis.fetch = async (input, init) => (init?.method ?? 'GET') === 'GET' && new URL(String(input), 'http://ui.test').pathname.endsWith(`/targets/${saved.agent.targetKey}`) ? response.promise : original(input, init);
     const restore = app.restoreDevCheckpoint(activeCheckpoint, new AbortController().signal); await settle(); const editor = agentControl('editor');
-    if (race === 'epoch') {fixture = {...fixture, observations: [observation(identity, {revision: 3, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: false}, coverage}, 12)]}; await app.reload(); await settle();}
-    else if (race === 'draft') {const draft = {...value.draft, revision: value.draft.revision + 1, text: 'Newer server draft'}; fixture = {...fixture, targets: fixture.targets?.map(item => item.targetKey === saved.agent.targetKey ? {...item, draft} : item)}; event('draft.changed', {targetKey: saved.agent.targetKey, target: saved.agent.target, draft});}
+    if (race === 'epoch') {browser.fixture = {...browser.fixture, observations: [observation(identity, {revision: 3, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: false}, coverage}, 12)]}; await app.reload(); await settle();}
+    else if (race === 'draft') {const draft = {...value.draft, revision: value.draft.revision + 1, text: 'Newer server draft'}; browser.fixture = {...browser.fixture, targets: browser.fixture.targets?.map(item => item.targetKey === saved.agent.targetKey ? {...item, draft} : item)}; event('draft.changed', {targetKey: saved.agent.targetKey, target: saved.agent.target, draft});}
     else {editor.value = 'Newer local draft'; editor.dispatch('input');}
     const current = app.state.targets.get(saved.agent.targetKey); response.resolve(Response.json({ok: true, data: value})); assert.equal(await restore, false); await settle(); if (race === 'buffer') assert.ok((app.state.targets.get(saved.agent.targetKey)?.draft.revision ?? 0) >= value.draft.revision); else assert.equal(app.state.targets.get(saved.agent.targetKey), current);
     if (race === 'epoch') assert.equal(app.state.conversations.get(JSON.stringify(['agent', identity]))?.connectionEpoch, 12);
@@ -725,39 +310,39 @@ async function interruptPreparation(mode: string): Promise<void> {
 }
 async function latePreparationFixture(surface: string, mode: string, t: {after: (fn: () => Promise<void>) => void}) {
   const original = globalThis.fetch, pending = Promise.withResolvers<Response>(); let held = true, requests = 0;
-  const prefix = 'late-' + surface + '-' + mode, a = agentFixture(prefix + '-a'), b = agentFixture(prefix + '-b');
+  const prefix = `late-${surface}-${mode}`, a = agentFixture(`${prefix}-a`), b = agentFixture(`${prefix}-b`);
   const targetA = {kind: 'agent' as const, identity: a.identity}, targetB = {kind: 'agent' as const, identity: b.identity};
-  const savedA = targetFixture(prefix + '-a', targetA, {draft: {revision: 4, text: 'Keep A draft', mode: 'prompt', persisted: true}}), savedB = targetFixture(prefix + '-b', targetB, {draft: {revision: 4, text: 'Keep B draft', mode: 'followUp', persisted: true}});
+  const savedA = targetFixture(`${prefix}-a`, targetA, {draft: {revision: 4, text: 'Keep A draft', mode: 'prompt', persisted: true}}), savedB = targetFixture(`${prefix}-b`, targetB, {draft: {revision: 4, text: 'Keep B draft', mode: 'followUp', persisted: true}});
   const response = () => Response.json({ok: true, data: {targetState: savedB, availability: 'live', capabilities: b.capabilities}});
   t.after(async () => {held = false; pending.resolve(response()); globalThis.fetch = original; byId('agent-message-close').click(); await restorePreparationConnection();});
-  const selected = surface === 'Message' ? targetA : targetB, layout = singlePane([{kind: 'agent', identity: a.identity}, {kind: 'agent', identity: b.identity}], 'agent:' + b.identity);
+  const selected = surface === 'Message' ? targetA : targetB, layout = singlePane([{kind: 'agent', identity: a.identity}, {kind: 'agent', identity: b.identity}], `agent:${b.identity}`);
   await arrive({workspace: {id: prefix, revision: 1, selectedTarget: targetB, conversationLayout: layout}, primaries: [], roster: [a, b], targets: [savedA, savedB], confirmed: false});
-  if (surface === 'Message') {app.applyLayout(activatePaneTab(layout, 'pane-1', 'agent:' + a.identity)); await app.selectionQueue.drain(); await settle();}
+  if (surface === 'Message') {app.applyLayout(activatePaneTab(layout, 'pane-1', `agent:${a.identity}`)); await app.selectionQueue.drain(); await settle();}
   const mainEditor = agentControl('editor'); mainEditor.setSelectionRange(1, 5, 'backward');
   const before = transportLog.length;
   globalThis.fetch = async (input, init) => {
     const path = new URL(String(input), 'http://ui.test').pathname;
     if (path.endsWith('/targets') && init?.method === 'POST' && JSON.parse(String(init.body)).target?.identity === b.identity) {
-      requests++; fixture = {...fixture, targets: [savedA, savedB]}; if (held) return pending.promise;
+      requests++; browser.fixture = {...browser.fixture, targets: [savedA, savedB]}; if (held) return pending.promise;
       if (surface === 'main') event('agent.availability', {identity: b.identity, connectionEpoch: (app.state.agentEpochs.get(b.identity) ?? 0) + 1, state: 'live', capabilities: b.capabilities});
       return response();
     }
     return original(input, init);
   };
   if (surface === 'Message') {
-    const message = byId('roster').querySelector('[data-identity="' + b.identity + '"]')?.querySelector('.row-message'); assert.ok(message); message.click();
-  } else {fixture = {...fixture, targets: [savedA]}; app.state.targets.delete(savedB.targetKey); app.focusPane(app.focusedPane); await app.selectionQueue.drain();}
+    const message = byId('roster').querySelector(`[data-identity="${b.identity}"]`)?.querySelector('.row-message'); assert.ok(message); message.click();
+  } else {browser.fixture = {...browser.fixture, targets: [savedA]}; app.state.targets.delete(savedB.targetKey); app.focusPane(app.focusedPane); await app.selectionQueue.drain();}
   await settle(); const control = surface === 'Message' ? messageControl : agentControl, editor = control('editor'); editor.setSelectionRange(2, 6, 'backward');
   return {prefix, b, selected, savedA, savedB, mainEditor, control, editor, before, requests: () => requests, resolve: () => pending.resolve(response()), reject: () => pending.resolve(Response.json({ok: false, error: {code: 'host_unavailable', message: 'Obsolete connection failure', retry: 'manual'}})), fresh: async () => {
     held = false; if (surface === 'Message') byId('agent-message-retry').click(); else await app.checkAgentConnection(prefix, b.identity); await settle();
   }};
 }
-for (const surface of ['Message', 'main']) for (const mode of ['disconnect', 'reconnect', 'suspend']) test('pending ' + surface + ' preparation cannot restore connection after ' + mode, async t => {
+for (const surface of ['Message', 'main']) for (const mode of ['disconnect', 'reconnect', 'suspend']) test(`pending ${surface} preparation cannot restore connection after ${mode}`, async t => {
   const f = await latePreparationFixture(surface, mode, t); assert.equal(f.requests(), 1);
   await interruptPreparation(mode); assert.equal(f.control('send').disabled, true);
   if (surface === 'Message' && mode === 'reconnect') assert.equal(f.requests(), 1);
   f.resolve(); await settle();
-  const unchecked = () => {assert.doesNotMatch(tabsNode().querySelector('[data-tab-key="agent:' + f.b.identity + '"]')?.title ?? '', /Connected|Ready|Working/); assert.equal(f.control('send').disabled, true);};
+  const unchecked = () => {assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${f.b.identity}"]`)?.title ?? '', /Connected|Ready|Working/); assert.equal(f.control('send').disabled, true);};
   unchecked(); if (mode !== 'reconnect') await restorePreparationConnection(); unchecked(); assert.equal(f.requests(), 1);
   await f.fresh(); assert.equal(f.requests(), 2); assert.equal(f.control('send').disabled, false);
   assert.equal(f.control('editor'), f.editor); assert.equal(f.editor.value, f.savedB.draft.text); assert.deepEqual([f.editor.selectionStart, f.editor.selectionEnd, f.editor.selectionDirection], [2, 6, 'backward']);
@@ -777,7 +362,7 @@ test('fresh Message preparation supersedes a pending failure from the retired st
   const f = await latePreparationFixture('Message', 'rejected', t);
   await interruptPreparation('reconnect'); await f.fresh(); assert.equal(f.requests(), 2); assert.equal(f.control('send').disabled, false);
   f.reject(); await settle(); assert.equal(f.control('send').disabled, false); assert.equal(byId('agent-message-status').textContent, '');
-  assert.match(tabsNode().querySelector('[data-tab-key="agent:' + f.b.identity + '"]')?.title ?? '', /Connected|Ready/);
+  assert.match(tabsNode().querySelector(`[data-tab-key="agent:${f.b.identity}"]`)?.title ?? '', /Connected|Ready/);
   assert.equal(f.control('editor'), f.editor); assert.equal(f.editor.value, f.savedB.draft.text); assert.deepEqual([f.editor.selectionStart, f.editor.selectionEnd, f.editor.selectionDirection], [2, 6, 'backward']);
 });
 
@@ -797,12 +382,12 @@ test('Primary preparation errors clear after fresh preparation or snapshot resto
   for (const recovery of ['prepare', 'snapshot']) {
     const saved = targetFixture('prepare-primary-error', target, {draft: {revision: 4, text: 'Retained Primary draft', mode: 'prompt', persisted: true}});
     await arrive({workspace: {id: `prepare-primary-error-${recovery}`, revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [], targets: [saved]});
-    const editor = primaryControl('editor'); fixture = {...fixture, targets: []};
+    const editor = primaryControl('editor'); browser.fixture = {...browser.fixture, targets: []};
     globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' ? Response.json({ok: false, error: {code: 'host_unavailable', message: diagnostic, retry: 'manual'}}) : original(input, init);
     app.state.targets.clear(); app.focusPane(app.focusedPane); await app.selectionQueue.drain(); await settle();
     const notice = primaryControl('view-notice'), caption = notice.querySelector('.preparation-error'); assert.ok(caption);
     assert.equal(notice.textContent, 'Conversation could not be prepared.'); assert.equal(caption.title, diagnostic); assert.equal(notice.title, ''); assert.doesNotMatch(notice.textContent, /ENOENT|endpoint/);
-    globalThis.fetch = original; fixture = {...fixture, targets: [saved]}; const beforeRetry = transportLog.length;
+    globalThis.fetch = original; browser.fixture = {...browser.fixture, targets: [saved]}; const beforeRetry = transportLog.length;
     if (recovery === 'snapshot') await app.reload(); else app.focusPane(app.focusedPane);
     await app.selectionQueue.drain(); await settle();
     const retries = transportLog.slice(beforeRetry).filter(call => call.method === 'POST' && call.path.endsWith('/targets'));
@@ -818,10 +403,10 @@ test('a late Primary preparation failure does not restore an obsolete caption af
   t.after(() => {globalThis.fetch = original; complete(Response.json({ok: false, error: {code: 'host_unavailable', message: 'Late preparation failure', retry: 'manual'}}));});
   const target = {kind: 'primary' as const, key: 'p', epoch: 9806}, saved = targetFixture('late-primary-preparation', target, {draft: {revision: 3, text: 'Retained recovered draft', mode: 'prompt', persisted: true}});
   await arrive({workspace: {id: 'late-primary-preparation', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [], targets: [saved]});
-  const editor = primaryControl('editor'); fixture = {...fixture, targets: []};
-  globalThis.fetch = async (input, init) => {if (new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST') {preparations++; fixture = {...fixture, targets: [saved]}; return pending;} return original(input, init);};
+  const editor = primaryControl('editor'); browser.fixture = {...browser.fixture, targets: []};
+  globalThis.fetch = async (input, init) => {if (new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST') {preparations++; browser.fixture = {...browser.fixture, targets: [saved]}; return pending;} return original(input, init);};
   app.state.targets.clear(); app.focusPane(app.focusedPane); await app.selectionQueue.drain(); await settle(); assert.equal(preparations, 1);
-  fixture = {...fixture, targets: [saved]}; await app.reload(); await settle();
+  browser.fixture = {...browser.fixture, targets: [saved]}; await app.reload(); await settle();
   complete(Response.json({ok: false, error: {code: 'host_unavailable', message: 'Late preparation failure', retry: 'manual'}})); await settle();
   const notice = primaryControl('view-notice'); assert.equal(notice.textContent, ''); assert.equal(notice.title, ''); assert.equal(notice.querySelector('.preparation-error'), null);
   assert.equal(primaryControl('editor'), editor); assert.equal(editor.value, saved.draft.text); assert.equal(editor.disabled, false); assert.equal(preparations, 1);
@@ -1017,9 +602,9 @@ test('a non-split agent round trip keeps the loaded primary anchor and earlier p
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: singlePane()}, primaries: [current], roster: [agent], targets: [saved], history: [earlier, leaf], selectedPage: {target, items: [leaf], nextCursor: 'earlier', coverage}});
   const root = primaryControl('transcript'); const anchor = root.querySelector('[data-entry-id="retained-earlier"]'); assert.ok(anchor); const offset = root.scrollTop - (anchor.offsetTop - root.offsetTop); assert.match(root.textContent, /Earlier code stays available/);
   assert.equal(primaryControl('earlier').hidden, true);
-  fixture = {...fixture, selectedPage: {target: {kind: 'agent', identity: agent.identity}, entries: [], nextBefore: null, coverage, revision: 'r'}};
+  browser.fixture = {...browser.fixture, selectedPage: {target: {kind: 'agent', identity: agent.identity}, entries: [], nextBefore: null, coverage, revision: 'r'}};
   await app.selectAgent(agent); await settle(); assert.equal(primaryControl('root').hidden, true);
-  fixture = {...fixture, history: [leaf], selectedPage: {target, items: [leaf], nextCursor: 'earlier', coverage}};
+  browser.fixture = {...browser.fixture, history: [leaf], selectedPage: {target, items: [leaf], nextCursor: 'earlier', coverage}};
   byId('primary-row').click(); await settle();
   assert.equal(primaryControl('root').hidden, false); assert.match(root.textContent, /Earlier code stays available/); assert.equal(root.querySelector('[data-entry-id="retained-earlier"]'), anchor); assert.equal(root.scrollTop - (anchor.offsetTop - root.offsetTop), offset);
   assert.equal(app.state.conversations.get(JSON.stringify(['primary', 'p', epoch]))?.entries.has(earlier.id), true);
@@ -1045,7 +630,7 @@ test('tab reveal and width changes retain target-owned transcript geometry witho
   });
   await app.selectAgent(agent); await settle(); assert.equal(primaryControl('root').hidden, true); assert.equal(detached, 0);
   const agentNotice = agentControl('view-notice'); assert.doesNotMatch(agentNotice.textContent, /Saved position|saved place/);
-  fixture = {...fixture, selectedPage: {target, items: rows, nextCursor: null, coverage}};
+  browser.fixture = {...browser.fixture, selectedPage: {target, items: rows, nextCursor: null, coverage}};
   byId('primary-row').click(); await settle();
   assert.equal(primaryControl('root').hidden, false); assert.equal(scroller.querySelector('[data-entry-id="geometry-8"]'), anchor);
   assert.equal(scroller.scrollTop - (anchor.offsetTop - scroller.offsetTop), offset);
@@ -1062,7 +647,7 @@ test('selection admission gate stays separate from transport connectivity', asyn
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:704})],roster:[]}); const editor=primaryControl('editor'); editor.value='Gate draft'; editor.dispatch('input');
   const original=globalThis.fetch,response=Promise.withResolvers<Response>(); globalThis.fetch=async(input,init)=>new URL(String(input),'http://ui.test').pathname.endsWith('/selection')?response.promise:original(input,init);
   try {const pending=app.selectionQueue.select({sidebarWidth:260}); assert.equal(primaryControl('send').disabled,true); assert.equal(editor.disabled,false); assert.equal(byId('connection').hidden,true);
-    response.resolve(Response.json({ok:true,data:{...fixture.workspace,revision:fixture.workspace.revision+1,sidebarWidth:260}})); await pending; await settle(); assert.equal(primaryControl('send').disabled,false);
+    response.resolve(Response.json({ok:true,data:{...browser.fixture.workspace,revision:browser.fixture.workspace.revision+1,sidebarWidth:260}})); await pending; await settle(); assert.equal(primaryControl('send').disabled,false);
   }finally{globalThis.fetch=original;}
 });
 test('snapshot refresh does not await history and history still has a deadline', async () => {
@@ -1151,7 +736,7 @@ test('hide before recovery ready retires the wait and reveal admits exactly one 
 });
 test('hide during recovery reload aborts that owner and ignores its late snapshot after reveal', async t => {
   await devHookFixture('hide-reload', 9665); const fetch = globalThis.fetch, response = Promise.withResolvers<Response>(); let calls = 0; let oldSignal: AbortSignal | null | undefined;
-  const stale = snapshotOf(fixture, cursorSequence); const before = streamSources.length;
+  const stale = snapshotOf(browser.fixture, browser.cursorSequence); const before = streamSources.length;
   globalThis.fetch = async (input, init) => {
     if (new URL(String(input), 'http://ui.test').pathname === '/api/snapshot' && ++calls === 1) {oldSignal = init?.signal; return response.promise;}
     return fetch(input, init);
@@ -1181,18 +766,18 @@ test('message panel moves the existing form outside the roster without changing 
   byId('agent-message-close').click(); await settle(); assert.equal(form.parentNode,root);
 });
 test('preference completions keep their captured request and leave a newer target notice unchanged', async context => {
-  context.after(() => { preferenceSave = undefined; });
+  context.after(() => { browser.preferenceSave = undefined; });
   for (const fail of [false, true]) {
     const epoch = fail ? 8202 : 8201; const key = `preference-a-${epoch}`;
     const target = {kind: 'primary' as const, key: 'p', epoch};
     await arrive({workspace: {id:'w',revision:1,primaryKey:'p',selectedTarget:target}, primaries:[primaryFixture({epoch})],roster:[],targets:[targetFixture(key,target)]});
     let finish: (response: Response) => void = () => { throw new Error('No pending preference'); };
-    preferenceSave = () => new Promise(resolve => { finish = resolve; });
+    browser.preferenceSave = () => new Promise(resolve => { finish = resolve; });
     const before = transportLog.length; app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
     const call = transportLog.slice(before).find(item => item.path.endsWith('/presentation')); assert.ok(call);
     assert.equal(call.path, `/api/workspaces/w/targets/${key}/presentation`);
     assert.equal((call.body as Record<string,unknown>).transcriptView, 'grouped');
-    const next = {kind:'primary' as const,key:'p',epoch:epoch+10}; preferenceSave = undefined;
+    const next = {kind:'primary' as const,key:'p',epoch:epoch+10}; browser.preferenceSave = undefined;
     await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:next},primaries:[primaryFixture({epoch:next.epoch})],roster:[],targets:[targetFixture(`preference-b-${epoch}`,next)]});
     const notice = primaryControl('view-notice'); notice.dataset.kind = 'presentation'; notice.textContent = 'New target recovery';
     finish(Response.json(fail ? {ok:false,error:{code:'capacity',message:'Preference refused',retry:'manual'}} : {ok:true,data:{revision:2,expanded:[],showThinking:false,transcriptView:'grouped'}})); await settle();
@@ -1200,7 +785,7 @@ test('preference completions keep their captured request and leave a newer targe
   }
   const target = {kind:'primary' as const,key:'p',epoch:8300};
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:target.epoch})],roster:[],targets:[targetFixture('preference-current',target)]});
-  preferenceSave = async () => Response.json({ok:false,error:{code:'capacity',message:'Current preference refused',retry:'manual'}});
+  browser.preferenceSave = async () => Response.json({ok:false,error:{code:'capacity',message:'Current preference refused',retry:'manual'}});
   app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
   assert.match(primaryControl('view-notice').textContent, /View preferences not saved/);
   assert.match(primaryControl('view-notice').textContent, /Restore saved view/);
@@ -1220,9 +805,9 @@ function thinkingDisclosure(): HostNode {
 }
 test('thinking menu follows local changes while preference writes are pending and acknowledgments lag', async context => {
   const pending: Array<{body: Record<string, unknown>; resolve: (response: Response) => void}> = [];
-  context.after(() => {preferenceSave = undefined; contextMenu.close(); for (const item of pending) item.resolve(Response.json({ok: false, error: {code: 'capacity', message: 'Closed pending write', retry: 'manual'}}));});
+  context.after(() => {browser.preferenceSave = undefined; contextMenu.close(); for (const item of pending) item.resolve(Response.json({ok: false, error: {code: 'capacity', message: 'Closed pending write', retry: 'manual'}}));});
   const saved = await thinkingFixture(8401);
-  preferenceSave = (_path, body) => new Promise(resolve => pending.push({body, resolve}));
+  browser.preferenceSave = (_path, body) => new Promise(resolve => pending.push({body, resolve}));
   assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false'); thinkingChoice().click(); await settle();
   assert.equal(thinkingDisclosure().open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
   assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, false); assert.equal(pending.length, 1);
@@ -1236,10 +821,10 @@ test('thinking menu follows local changes while preference writes are pending an
   assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, false);
 });
 test('failed thinking saves retain local checked state and Restore saved view explicitly restores it', async context => {
-  context.after(() => {preferenceSave = undefined; contextMenu.close();});
+  context.after(() => {browser.preferenceSave = undefined; contextMenu.close();});
   const saved = await thinkingFixture(8402, true);
   assert.equal(thinkingDisclosure().open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
-  preferenceSave = async () => Response.json({ok: false, error: {code: 'capacity', message: 'Thinking preference refused', retry: 'manual'}});
+  browser.preferenceSave = async () => Response.json({ok: false, error: {code: 'capacity', message: 'Thinking preference refused', retry: 'manual'}});
   thinkingChoice().click(); await settle();
   assert.equal(thinkingDisclosure().open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
   assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
@@ -1251,9 +836,9 @@ test('failed thinking saves retain local checked state and Restore saved view ex
   assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
 });
 test('individual thinking collapse clears the local all-thinking check before a failed save', async context => {
-  context.after(() => {preferenceSave = undefined; contextMenu.close();});
+  context.after(() => {browser.preferenceSave = undefined; contextMenu.close();});
   const saved = await thinkingFixture(8404, true);
-  preferenceSave = async () => Response.json({ok: false, error: {code: 'capacity', message: 'Collapsed preference refused', retry: 'manual'}});
+  browser.preferenceSave = async () => Response.json({ok: false, error: {code: 'capacity', message: 'Collapsed preference refused', retry: 'manual'}});
   const disclosure = thinkingDisclosure(); disclosure.open = false; disclosure.dispatch('toggle'); await settle();
   assert.equal(disclosure.open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
   assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
@@ -1508,9 +1093,9 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
   app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
-  byId('sidebar').hidden = true; const before = frameCount; app.focusAgentSearch(); await settle();
+  byId('sidebar').hidden = true; const before = browser.frameCount; app.focusAgentSearch(); await settle();
   assert.equal(byId('sidebar').hidden, false); assert.equal(byId('agents-section-body').hidden, false);
-  assert.equal(hostDocument.activeElement, byId('agent-search')); assert.ok(frameCount > before);
+  assert.equal(hostDocument.activeElement, byId('agent-search')); assert.ok(browser.frameCount > before);
   const denied = () => {throw new Error('denied');};
   Reflect.set(globalThis, 'sessionStorage', {getItem: denied, setItem: denied, removeItem: denied});
   assert.doesNotThrow(() => app.setSidebarSection('agents', true)); app.renderSidebarSections();
@@ -1611,7 +1196,7 @@ test('loaded assistant usage refreshes on completed messages and history, not st
   assert.doesNotMatch(byId('primary-usage-summary').textContent, /●/);
   assert.ok(descendants(primaryControl('transcript')).some(node => node.textContent.includes('streaming')));
   const final = {...messageFixture('history-usage', [textPart('Earlier usage')]), usage: {input: 9, cacheRead: 3, cacheWrite: 0}};
-  fixture = {...fixture, history: [entryFixture('history-usage-entry', [final])]}; await app.reload(); await settle();
+  browser.fixture = {...browser.fixture, history: [entryFixture('history-usage-entry', [final])]}; await app.reload(); await settle();
   assert.match(usageNode.textContent, /input 13, cache read 7, cache write 0/);
 });
 test('image URLs bind each transcript pane rather than the movable composer or active pane', async () => {
@@ -1868,8 +1453,8 @@ async function storedLaunchFixture(identity: string): Promise<void> {
 }
 function confirmLaunch(identity: string): Response {
   const row = agentFixture(identity);
-  fixture = {...fixture, roster: fixture.roster.map(item => item.identity === identity ? row : item), observations: [observation(identity, {revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:false},coverage}, (app.state.agentEpochs.get(identity) ?? 0) + 1)]};
-  event('agent.availability', {identity, connectionEpoch: fixture.observations?.[0]?.connectionEpoch, state: 'live', capabilities: row.capabilities});
+  browser.fixture = {...browser.fixture, roster: browser.fixture.roster.map(item => item.identity === identity ? row : item), observations: [observation(identity, {revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:false},coverage}, (app.state.agentEpochs.get(identity) ?? 0) + 1)]};
+  event('agent.availability', {identity, connectionEpoch: browser.fixture.observations?.[0]?.connectionEpoch, state: 'live', capabilities: row.capabilities});
   return Response.json({ok: true, data: fixturePreparation({kind: 'agent', identity})});
 }
 
@@ -1887,19 +1472,19 @@ test('Check connection cannot select or accept a result from a retired stream', 
 
 test('a stored Start response across stream replacement retains uncertainty without another Start', async t => {
   const pending = Promise.withResolvers<Response>(), identity = 'late-stored-start';
-  t.after(async () => {pending.resolve(Response.json({ok: false, error: {code: 'not_ready', message: 'Retired start', retry: 'manual'}})); startPreparation = undefined; await restorePreparationConnection();});
+  t.after(async () => {pending.resolve(Response.json({ok: false, error: {code: 'not_ready', message: 'Retired start', retry: 'manual'}})); browser.startPreparation = undefined; await restorePreparationConnection();});
   await storedLaunchFixture(identity); const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward'); const before = transportLog.length;
-  startPreparation = async () => pending.promise; const starting = app.startStoredAgent('w', identity); await settle(); await interruptPreparation('reconnect');
+  browser.startPreparation = async () => pending.promise; const starting = app.startStoredAgent('w', identity); await settle(); await interruptPreparation('reconnect');
   pending.resolve(Response.json({ok: true, data: {...fixturePreparation({kind: 'agent', identity}), availability: 'live', capabilities: agentFixture(identity).capabilities}})); await starting; await settle();
   assert.equal(agentControl('send').disabled, true); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed/); assert.match(agentControl('agent-state-line').title, /browser connection changed/); assert.equal(agentControl('start').hidden, true);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, 'Agent launch keep'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
 });
 
-for (const action of ['Check', 'Start']) test(action + ' does not restore preparation after disconnect during snapshot confirmation', async t => {
+for (const action of ['Check', 'Start']) test(`${action} does not restore preparation after disconnect during snapshot confirmation`, async t => {
   const original = globalThis.fetch, entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let hold = true;
-  const identity = 'post-response-' + action;
-  t.after(async () => {release.resolve(); globalThis.fetch = original; startPreparation = undefined; await restorePreparationConnection();});
+  const identity = `post-response-${action}`;
+  t.after(async () => {release.resolve(); globalThis.fetch = original; browser.startPreparation = undefined; await restorePreparationConnection();});
   await storedLaunchFixture(identity); const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward');
   globalThis.fetch = async (input, init) => {
     const path = new URL(String(input), 'http://ui.test').pathname;
@@ -1907,21 +1492,21 @@ for (const action of ['Check', 'Start']) test(action + ' does not restore prepar
     if (path.endsWith('/targets') && init?.method === 'POST') return confirmLaunch(identity);
     return original(input, init);
   };
-  startPreparation = async () => confirmLaunch(identity);
+  browser.startPreparation = async () => confirmLaunch(identity);
   const confirming = action === 'Check' ? app.checkAgentConnection('w', identity) : app.startStoredAgent('w', identity); await entered.promise;
   streamSources.at(-1)?.onerror?.(); release.resolve(); await confirming; await settle();
-  assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector('[data-tab-key="agent:' + identity + '"]')?.title ?? '', /Connected|Ready/);
+  assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${identity}"]`)?.title ?? '', /Connected|Ready/);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, 'Agent launch keep'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
   if (action === 'Start') {assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed/); assert.match(agentControl('agent-state-line').title, /browser connection changed/);}
 });
 
 test('stored Start is explicit, uses fresh keys and retains both drafts, caret, focus and ready input', async t => {
-  t.after(() => { startPreparation = undefined; }); const identity = 'explicit-start';
+  t.after(() => { browser.startPreparation = undefined; }); const identity = 'explicit-start';
   const before = transportLog.length; await storedLaunchFixture(identity);
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 0);
   const primaryEditor = primaryControl('editor'); const agentEditor = agentControl('editor');
   primaryEditor.setSelectionRange(2, 7); primaryEditor.dispatch('select'); agentEditor.setSelectionRange(3, 8); agentEditor.dispatch('select'); app.focusPane('agent-pane');
-  startPreparation = async captured => confirmLaunch(captured);
+  browser.startPreparation = async captured => confirmLaunch(captured);
   await app.startStoredAgent('w', identity); await settle();
   const first = transportLog.slice(before).find(call => call.path.endsWith('/start')); assert.ok(first);
   assert.equal(first.path, '/api/agents/explicit-start/start'); assert.equal(first.workspace, 'w'); assert.deepEqual(first.body, {});
@@ -1930,7 +1515,7 @@ test('stored Start is explicit, uses fresh keys and retains both drafts, caret, 
   assert.equal(primaryControl('editor'), primaryEditor); assert.equal(agentControl('editor'), agentEditor);
   assert.deepEqual([primaryEditor.selectionStart, primaryEditor.selectionEnd], [2, 7]); assert.deepEqual([agentEditor.selectionStart, agentEditor.selectionEnd], [3, 8]);
   assert.equal(hostDocument.activeElement, agentEditor); assert.equal(app.focusedPane, 'agent-pane'); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity});
-  fixture = {...fixture, roster: [agentFixture(identity, {availability: 'stored', capabilities: {input: false}})], observations: []};
+  browser.fixture = {...browser.fixture, roster: [agentFixture(identity, {availability: 'stored', capabilities: {input: false}})], observations: []};
   event('agent.availability', {identity, connectionEpoch: 2, state: 'stored', capabilities: {input: false}}); await settle();
   await app.startStoredAgent('w', identity); await settle();
   const starts = transportLog.slice(before).filter(call => call.path.endsWith('/start')); assert.equal(starts.length, 2); assert.notEqual(starts[1]?.key, first.key);
@@ -1938,9 +1523,9 @@ test('stored Start is explicit, uses fresh keys and retains both drafts, caret, 
 });
 
 test('uncertain stored Start remains attach-only across navigation and keeps the editable draft', async t => {
-  t.after(() => { startPreparation = undefined; }); const identity = 'uncertain-start'; await storedLaunchFixture(identity);
+  t.after(() => { browser.startPreparation = undefined; }); const identity = 'uncertain-start'; await storedLaunchFixture(identity);
   const editor = agentControl('editor'); editor.focus(); editor.setSelectionRange(2, 7); const before = transportLog.length;
-  startPreparation = async () => Response.json({ok: false, error: {code: 'not_ready', message: 'Readiness was not confirmed.', retry: 'manual'}});
+  browser.startPreparation = async () => Response.json({ok: false, error: {code: 'not_ready', message: 'Readiness was not confirmed.', retry: 'manual'}});
   await app.startStoredAgent('w', identity); await settle();
   assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed\./); assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('start-in-pi').hidden, true);
   assert.equal(agentControl('history-retry').disabled, false); assert.equal(editor.value, 'Agent launch keep'); assert.equal(editor.disabled, false);
@@ -1961,8 +1546,8 @@ test('uncertain stored Start remains attach-only across navigation and keeps the
 });
 
 test('connection checks retain uncertainty until the selected observation confirms usable input', async t => {
-  t.after(() => { startPreparation = undefined; }); const identity = 'unobserved-check'; await storedLaunchFixture(identity);
-  startPreparation = async () => Response.json({ok: false, error: {code: 'not_ready', message: 'No readiness.', retry: 'manual'}});
+  t.after(() => { browser.startPreparation = undefined; }); const identity = 'unobserved-check'; await storedLaunchFixture(identity);
+  browser.startPreparation = async () => Response.json({ok: false, error: {code: 'not_ready', message: 'No readiness.', retry: 'manual'}});
   await app.startStoredAgent('w', identity); const editor = agentControl('editor'); editor.focus(); editor.setSelectionRange(2, 7);
   const original = globalThis.fetch;
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -1981,9 +1566,9 @@ test('connection checks retain uncertainty until the selected observation confir
 });
 
 test('pending stored Start deduplicates clicks and a stale completion never changes the new recipient or focus', async t => {
-  t.after(() => { startPreparation = undefined; }); const identity = 'pending-start'; await storedLaunchFixture(identity);
+  t.after(() => { browser.startPreparation = undefined; }); const identity = 'pending-start'; await storedLaunchFixture(identity);
   let complete: ((response: Response) => void) | undefined;
-  startPreparation = () => new Promise(resolve => { complete = resolve; }); const before = transportLog.length;
+  browser.startPreparation = () => new Promise(resolve => { complete = resolve; }); const before = transportLog.length;
   const pending = app.startStoredAgent('w', identity); await app.startStoredAgent('w', identity);
   assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('history-retry').disabled, true);
   await storedLaunchFixture('new-recipient'); const editor = agentControl('editor'); editor.focus(); editor.setSelectionRange(1, 6);
@@ -1995,10 +1580,10 @@ test('pending stored Start deduplicates clicks and a stale completion never chan
 });
 
 test('stored Start refuses a wrong prepared recipient or missing input and stale controls do not launch', async t => {
-  t.after(() => { startPreparation = undefined; });
+  t.after(() => { browser.startPreparation = undefined; });
   for (const invalid of ['wrong-recipient', 'no-input']) {
     const identity = `invalid-start-${invalid}`; await storedLaunchFixture(identity); const before = transportLog.length;
-    startPreparation = async () => Response.json({ok: true, data: {targetState: targetFixture('invalid-preparation', {kind: 'agent', identity: invalid === 'wrong-recipient' ? 'different' : identity}), availability: 'live', capabilities: {input: invalid !== 'no-input'}}});
+    browser.startPreparation = async () => Response.json({ok: true, data: {targetState: targetFixture('invalid-preparation', {kind: 'agent', identity: invalid === 'wrong-recipient' ? 'different' : identity}), availability: 'live', capabilities: {input: invalid !== 'no-input'}}});
     await app.startStoredAgent('w', identity); await settle(); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed\./);
     assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('start').hidden, true);
     await app.startStoredAgent('wrong-workspace', identity); await app.startStoredAgent('w', 'different');
@@ -2091,7 +1676,7 @@ test('three exact owners isolate drafts, carets, roots and accepted frames throu
   await settle();
   const moved = movePaneTab(app.state.workspace?.conversationLayout ?? layout, tabKey(b), 'pane-a'); app.applyLayout(moved); await settle();
   assert.equal(bc('root'), roots[2]); assert.equal(bc('editor'), editors[2]); assert.equal(roots[2]?.parentNode, app.stableViews().host); assert.equal(app.stableViews().slot(roots[2] as unknown as HTMLElement)?.id, 'pane-content-pane-a');
-  fixture = {...fixture, observations: [observation(a.identity, frame(a.identity, 1), 11), observation(b.identity, frame(b.identity, 1), 20)]};
+  browser.fixture = {...browser.fixture, observations: [observation(a.identity, frame(a.identity, 1), 11), observation(b.identity, frame(b.identity, 1), 20)]};
   const restored = splitPane(app.state.workspace?.conversationLayout ?? moved, 'pane-a', 'y', {width: 760, height: 640, divider: 4}, tabKey(b)); app.applyLayout(restored); await settle();
   app.applyLayout(activatePaneTab(app.state.workspace?.conversationLayout ?? restored, 'pane-a', tabKey(a))); await settle();
   const bPane = paneLeaves((app.state.workspace?.conversationLayout ?? restored).root).find(pane => pane.active === tabKey(b)); assert.ok(bPane); app.openConversationActions(bPane.id); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
@@ -2203,7 +1788,7 @@ test('queued view writes keep the old workspace acknowledgment despite a same-ke
 });
 
 test('generic action failures keep exact details for the focused owner or an ownerless view', async t => {
-  t.after(() => {selectionFailure = undefined; byId('modal-close').click();});
+  t.after(() => {browser.selectionFailure = undefined; byId('modal-close').click();});
   const diagnostic = 'connect ENOENT /fixture/selection-endpoint.sock', target = {kind: 'primary' as const, key: 'p', epoch: 9805};
   const cases: Fixture[] = [
     {workspace: {id: 'generic-error-owned', revision: 1, sidebarVisible: true, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [], targets: [targetFixture('generic-error', target)]},
@@ -2217,8 +1802,8 @@ test('generic action failures keep exact details for the focused owner or an own
       receipt.replaceChildren = (...nodes) => {captions.push(...nodes); replace(...nodes);};
       restoreReceipt = () => {Reflect.deleteProperty(receipt, 'replaceChildren');};
     }
-    selectionFailure = {code: 'capacity', message: diagnostic, retry: 'capacity'};
-    const before = transportLog.length; app.toggleSidebar(false); await app.selectionQueue.drain(); await settle(); selectionFailure = undefined;
+    browser.selectionFailure = {code: 'capacity', message: diagnostic, retry: 'capacity'};
+    const before = transportLog.length; app.toggleSidebar(false); await app.selectionQueue.drain(); await settle(); browser.selectionFailure = undefined;
     restoreReceipt(); assert.ok(transportLog.slice(before).some(call => call.path.endsWith('/selection')));
     if (receipt) {
       const caption = captions.find(node => node.title === diagnostic); assert.ok(caption);

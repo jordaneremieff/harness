@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {HostNode,byId,hostDocument,settle} from './app-fixture.mts';
+import {createAppFixture} from './app-fixture.mts';
+const {HostNode, byId, hostDocument, settle} = await createAppFixture();
+type HostNode = InstanceType<typeof HostNode>;
 import {FilesTree,type FileTreeAction} from './files-tree.ts';
 import {contextMenu} from './context-menu.ts';
 import type {FileDirectoryPage,FileEntry} from '../shared/files.ts';

@@ -6,7 +6,7 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 import { setImmediate as yieldLoop } from 'node:timers/promises';
 import type { RecentProject, RecentProjectPage, SavedSession, SavedSessionPage } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
-import { scanSessionTitle, titleExcerpt, type SessionTitle } from './sessions-title.mts';
+import { scanSessionTitle, sessionRecord, titleExcerpt, type SessionTitle } from './sessions-title.mts';
 
 const READ_BYTES = 64 * 1024;
 const PAGE_ITEMS = 20;
@@ -44,16 +44,9 @@ async function validateProject(project: string): Promise<string> {
   }
   return path;
 }
-function record(line: string): Record<string, unknown> | null {
-  if (!line.trim()) return null;
-  try {
-    const value: unknown = JSON.parse(line);
-    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  } catch { return null; }
-}
 function header(text: string): Header | null {
   const first = text.slice(0, text.indexOf('\n') < 0 ? text.length : text.indexOf('\n'));
-  const value = first ? record(first) : null;
+  const value = first ? sessionRecord(first) : null;
   if (value?.type !== 'session' || typeof value.id !== 'string' || !value.id || value.id.length > 512 ||
       typeof value.cwd !== 'string' || !isAbsolute(value.cwd) || value.cwd.length > 4096 || /[\u0000-\u001f\u007f]/.test(value.cwd)) return null;
   return {id: value.id, cwd: resolve(value.cwd)};
@@ -68,7 +61,7 @@ async function readHead(path: string, size: number): Promise<string> {
   } finally { await file.close(); }
 }
 /** Manual paths and picker paths share the same bounded, canonical cwd check. */
-export async function validateSessionProject(project: string, path: string): Promise<void> {
+export async function validateSessionProject(project: string, path: string): Promise<string> {
   const cwd = await validateProject(project);
   if (typeof path !== 'string' || !isAbsolute(path) || path.length > 4096 || /[\u0000-\u001f\u007f]/.test(path)) {
     throw new ApiError('invalid_session', 'The saved session path must be absolute.');
@@ -78,6 +71,7 @@ export async function validateSessionProject(project: string, path: string): Pro
     if (!info.isFile()) throw new Error('file');
     const saved = header(await readHead(path, info.size));
     if (!saved || await realpath(saved.cwd) !== await realpath(cwd)) throw new Error('association');
+    return saved.id;
   } catch {
     throw new ApiError('invalid_session', 'The saved session does not belong to the selected project.');
   }

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {FilesViews} from './files-views.ts';
-import {app,HostNode,byId,settle} from './app-fixture.mts';
+import {createAppFixture} from './app-fixture.mts';
+const {app, HostNode, byId, settle} = await createAppFixture();
+type HostNode = InstanceType<typeof HostNode>;
 import {createPaneLayout} from './pane-layout.ts';
 import {movedWorkspaceFiles} from './file-identity.ts';
 import {workspaceTabKey,type FileTab,type Workspace} from '../shared/api.ts';

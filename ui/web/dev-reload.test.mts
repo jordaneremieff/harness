@@ -41,7 +41,7 @@ class Stylesheet implements DevStylesheet {
   apply(): void {assert.equal(this.discarded, false); this.applied = true; this.trace.push('apply');}
   discard(): void {if (!this.applied) this.discarded = true;}
 }
-const view = (): DevReloadView => ({workspaceId: 'w', focusedPane: 'pane-a', messageRecipient: 'agent:a', focusedControl: {targetKey: 'agent:a', kind: 'message'}, targets: [
+const view = (): DevReloadView => ({workspaceId: 'w', focusedPane: 'pane-a', files: [], messageRecipient: 'agent:a', focusedControl: {targetKey: 'agent:a', kind: 'message'}, targets: [
   {targetKey: 'primary:p', target: {kind: 'primary', key: 'p', epoch: 2}, draftRevision: 4, imageFingerprint: '[]', readingRevision: 5, presentationRevision: 6},
   {targetKey: 'agent:a', target: {kind: 'agent', identity: 'agent-a', connectionEpoch: 3}, draftRevision: 7, imageFingerprint: '[]', readingRevision: 8, presentationRevision: 9, selection: {start: 2, end: 5, direction: 'backward'}},
 ]});
@@ -157,6 +157,30 @@ test('reload drains before the checkpoint and navigates in the same origin with 
   drain.resolve(); await flush(); assert.deepEqual(f.trace.slice(-5), ['drain', 'capture', 'write', 'navigate', 'close']);
   assert.equal(f.navigations[0], `https://ui.invalid/?generation=${B}&workspace=w`); assert.deepEqual(f.stored, checkpoint());
   assert.equal(f.releases().length, 0); dev.destroy(); assert.equal(f.releases().length, 0);
+});
+test('reload persists and restores the app capture with empty or populated file checkpoints', async () => {
+  const file = {tab: {kind: 'file' as const, rootId: 'r', path: 'source.ts'}, position: {scrollTop: 240, scrollLeft: 32}, digest: A, focused: false};
+  for (const files of [[], [file], [{...file, focused: true}]]) {
+    const f = new Fixture(); const captured = {...view(), files};
+    if (files.some(item => item.focused)) delete captured.focusedControl;
+    f.hooks.captureCheckpoint = () => captured;
+    await f.dev().ready; f.emit(build(1, B, 'reload')); await flush();
+    const expected = {...captured, version: 1, generation: B, oldClient: OLD, capturedAt: NOW, interactionRevision: 1};
+    assert.deepEqual(f.stored, expected); assert.deepEqual(f.trace.slice(-4), ['drain', 'write', 'navigate', 'close']);
+    assert.equal(f.navigations[0], `https://ui.invalid/?generation=${B}&workspace=w`);
+    const next = new Fixture(); next.generation = B; next.client = NEW; next.stored = f.stored;
+    next.restore = async value => {assert.deepEqual(value.files, files); assert.deepEqual(value.targets, captured.targets); return true;};
+    await next.dev().ready;
+    assert.equal(next.restoreCount, 1); assert.equal(next.stored, null); assert.deepEqual(next.releases()[0]?.body, {client: OLD});
+  }
+});
+test('reload refuses malformed file checkpoints before persistence and navigation', async () => {
+  for (const files of [null, [{tab: {kind: 'file', rootId: 'r', path: 'source.ts'}, position: {scrollTop: 0, scrollLeft: 0}, digest: 'invalid', focused: false}]]) {
+    const f = new Fixture(); const captured = view(); Object.defineProperty(captured, 'files', {value: files});
+    f.hooks.captureCheckpoint = () => captured;
+    await f.dev().ready; f.emit(build(1, B, 'reload')); await flush();
+    assert.equal(f.stored, null); assert.equal(f.navigations.length, 0); assert.equal(f.notices.at(-1)?.code, 'checkpoint');
+  }
 });
 test('each unsafe interaction reason refuses reload before queue drainage', async () => {
   for (const reason of ['input', 'ime', 'selection', 'resize', 'modal', 'offline', 'auth', 'conflict', 'uncertain'] as const) {

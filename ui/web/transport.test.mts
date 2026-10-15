@@ -27,7 +27,7 @@ test('raw image upload retains its captured path, bytes and cancellation across 
   await uploadDraftImage('old workspace', 'old target', {kind: 'primary', key: 'p', epoch: 7}, {name: 'one.png', mimeType: 'image/png'}, bytes, controller.signal);
   assert.equal(seen?.body, bytes); assert.deepEqual(seen?.headers, {'Content-Type': 'image/png'}); assert.equal(seen?.credentials, 'same-origin');
   controller.abort(); assert.equal(seen?.signal?.aborted, true);
-  assert.equal(draftImageUrl('w', 't', 'a'.repeat(64)), '/api/workspaces/w/targets/t/images/' + 'a'.repeat(64)); assert.throws(() => draftImageUrl('w', 't', '../file'));
+  assert.equal(draftImageUrl('w', 't', 'a'.repeat(64)), `/api/workspaces/w/targets/t/images/${'a'.repeat(64)}`); assert.throws(() => draftImageUrl('w', 't', '../file'));
 });
 test('image authentication failure reports access once without an automatic retry', async () => {
   let calls = 0, notices = 0; setUnauthorizedHandler(() => {notices++;});

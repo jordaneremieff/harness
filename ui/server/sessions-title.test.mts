@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldLoop } from 'node:timers/promises';
 import test from 'node:test';
-import { scanSessionTitle } from './sessions-title.mts';
+import { scanSessionTitle, sessionRecord } from './sessions-title.mts';
 
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 const message = (role: string, content: unknown) => line({type: 'message', message: {role, content}});
@@ -15,6 +15,12 @@ async function fixture(t: test.TestContext, body: string) {
   const path = join(root, 'session.jsonl'); await writeFile(path, body);
   return {path, size: Buffer.byteLength(body)};
 }
+
+test('session records accept only complete JSON objects', () => {
+  for (const value of ['', '  \t', '{', 'not json', 'null', '[]', '[{}]', '42', 'true', '"text"', '{}\n{}']) assert.equal(sessionRecord(value), null);
+  assert.deepEqual(sessionRecord(' {"type":"session","id":"saved"} \n'), {type: 'session', id: 'saved'});
+  assert.deepEqual(sessionRecord('{}'), {});
+});
 
 test('title scans skip giant system lines and return the first user excerpt up to 200 characters', async t => {
   const body = line({type: 'session', id: 'id', cwd: '/project'}) + message('system', 's'.repeat(600 * 1024)) + message('user', 'u'.repeat(300)) + message('user', 'later user');

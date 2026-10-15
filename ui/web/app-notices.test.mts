@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {Target} from '../shared/api.ts';
 import {contextMenu} from './context-menu.ts';
-import {app, arrive, settle, event, byId, primaryControl, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, transportLog} from './app-fixture.mts';
+import {createAppFixture} from './app-fixture.mts';
+const {app, arrive, settle, event, byId, primaryControl, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, transportLog} = await createAppFixture();
 
 const forbidden = (start: number) => transportLog.slice(start).filter(call => call.method === 'POST' && (call.path.endsWith('/targets') || call.path.endsWith('/start') || call.path.includes('/inputs') || call.path === '/api/operations'));
 function notice(target: Target, code = 'observation_unavailable'): void {

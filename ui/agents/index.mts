@@ -60,7 +60,13 @@ const MAX_ROWS = 2048,
 
 /** Native decoding and host ownership stay in the worker; roster reads use this bounded cache. */
 export class AgentService {
-	readonly #worker: WorkerPort;
+	#worker: WorkerPort;
+	readonly #factory: WorkerFactory;
+	#workerReady = false;
+	#restarting?: Promise<void>;
+	#attempts = 0;
+	#startup?: {resolve: () => void; reject: (error: Error) => void};
+	get available(): boolean {return this.#workerReady && !this.#closed && !this.#failed && !this.#exited && !this.#restarting;}
 	readonly #options: AgentServiceOptions;
 	readonly #pending = new Map<number, Pending>();
 	readonly #inputs = new Map<string, InputReceipt>();
@@ -95,17 +101,29 @@ export class AgentService {
 		if (typeof options.stateDir !== "string" || !isAbsolute(options.stateDir))
 			throw new AgentError("invalid_request", "An absolute image state directory is required.");
 		this.#options = options;
-		this.#worker = factory(new URL("./service-worker.mts", import.meta.url), {
+		this.#factory = factory;
+		this.#worker = this.#createWorker();
+		this.#bind(this.#worker);
+	}
+	#createWorker(): WorkerPort {
+		const options = this.#options;
+		const worker = this.#factory(new URL("./service-worker.mts", import.meta.url), {
 			workerData: { store: options.store, stateDir: options.stateDir, installationId: options.installationId, agentDir: options.agentDir },
 		});
-		this.#worker.on("message", (message: Response) => this.#message(message));
-		this.#worker.on("error", () => this.#failure("Agent worker failed."));
-		this.#worker.on("exit", () => {
+		if (worker === this.#worker) throw new AgentError("not_ready", "Agent replacement requires a new worker.");
+		return worker;
+	}
+	#bind(worker: WorkerPort): void {
+		worker.on("message", (message: Response) => {if (this.#worker === worker && (!this.#failed || this.#closed && message.id !== undefined)) this.#message(message);});
+		worker.on("error", () => {if (this.#worker === worker) this.#failure("Agent worker failed.");});
+		worker.on("exit", () => {
+			if (this.#worker !== worker) return;
 			this.#exited = true;
 			this.#failure("Agent worker exited.");
 		});
 	}
 	#message(message: Response): void {
+		if (message.event === "ready") {this.#workerReady = true;this.#startup?.resolve();return;}
 		if (message.id !== undefined) {
 			const request = this.#pending.get(message.id);
 			this.#pending.delete(message.id);
@@ -200,7 +218,10 @@ export class AgentService {
 	#failure(message: string): void {
 		const first = !this.#failed;
 		this.#failed = true;
+		this.#workerReady = false;
+		this.#startup?.reject(new AgentError("host_unavailable", message));
 		this.#imageInputs.clear();
+		this.#retainSelections();
 		for (const request of this.#pending.values()) {
 			request.cleanup?.();
 			request.reject(new AgentError("host_unavailable", message, request.mutation));
@@ -218,10 +239,60 @@ export class AgentService {
 			};
 			this.#options.onRoster?.({ ...structuredClone(this.#page), changed: [], removed: [] });
 		}
-		this.#selections.clear();
+		if (first) this.#scheduleRecovery();
+	}
+	#scheduleRecovery(): void {
+		if (this.#closed || this.#restarting || this.#attempts >= 3) return;
+		this.#restarting = Promise.resolve().then(() => this.#recover()).catch(() => {
+			this.#attempts = 3;this.#failure("Agent worker recovery failed.");
+		}).finally(() => {
+			this.#restarting = undefined;if (this.#failed) this.#scheduleRecovery();
+		});
+	}
+	#retainSelections(): void {
+		for (const [workspace, targets] of this.#selections) {
+			for (const [identity, selected] of targets) {
+				if (!selected.confirmed) targets.delete(identity);
+				else selected.promise = undefined;
+			}
+			if (!targets.size) this.#selections.delete(workspace);
+		}
+	}
+	async #recover(): Promise<void> {
+		while (!this.#closed && this.#attempts < 3) {
+			await this.#worker.terminate();
+			if (this.#closed) return;
+			this.#attempts++;
+			try {await this.#restoreWorker();return;}
+			catch {this.#failure("Agent worker recovery failed.");}
+		}
+		if (!this.#closed) await this.#worker.terminate();
+	}
+	async #restoreWorker(): Promise<void> {
+		this.#worker = this.#createWorker();this.#failed = false;this.#exited = false;this.#workerReady = false;
+		const ready = new Promise<void>((resolve, reject) => {this.#startup = {resolve, reject};});
+		this.#bind(this.#worker);
+		const timer = setTimeout(() => this.#failure("Agent worker recovery timed out."), 5000);timer.unref();
+		try {
+			await ready;this.#startup = undefined;
+			await this.#restoreRoster();await this.#restoreSelections();
+			if (this.#closed || this.#failed) throw new AgentError("not_ready", "Agent recovery ended.");
+		} finally {clearTimeout(timer);this.#startup = undefined;}
+	}
+	async #restoreRoster(): Promise<void> {
+		const previous = [...this.#rows.keys()];this.#rows.clear();this.#orderedRows = [];this.#bytes = 0;this.#cacheOmitted = 0;
+		await this.#request("refresh", []);
+		this.#rosterUpdate({...this.#page, changed: [], removed: previous.filter(id => !this.#rows.has(id))});
+	}
+	async #restoreSelections(): Promise<void> {
+		for (const [workspace, targets] of this.#selections) for (const identity of targets.keys()) {
+			if (this.#closed || this.#failed) throw new AgentError("not_ready", "Agent recovery ended.");
+			await this.#selectTarget("select", workspace, identity, true).catch(() => {});
+			if (!this.#closed && !this.#failed && !this.#selections.get(workspace)?.has(identity)) await this.#request("hide", [workspace, identity]);
+		}
 	}
 	#ready(): void {
-		if (this.#closed || this.#failed || this.#exited) throw new AgentError("not_ready", "Agent service is closed.");
+		if (this.#closed || this.#failed || this.#exited || this.#restarting) throw new AgentError("not_ready", "Agent service is closed.");
 	}
 	#request<T>(member: string, args: unknown[], signal?: AbortSignal): Promise<T> {
 		if (this.#pending.size >= 64)
@@ -299,17 +370,17 @@ export class AgentService {
 		if (prior) return prior.promise ?? Promise.resolve();
 		return this.#selectTarget("select", workspaceId, identity);
 	}
-	#selectTarget(member: string, workspaceId: string, identity: string): Promise<void> {
+	#selectTarget(member: string, workspaceId: string, identity: string, restoring = false): Promise<void> {
 		const targets = this.#selections.get(workspaceId) ?? new Map<string, Selection>();
 		const prior = targets.get(identity);
 		const count = [...this.#selections.values()].reduce((total, values) => total + values.size, 0);
 		if ((!prior && (targets.size >= 4 || count >= 16)) || this.#pending.size >= 64 || this.#epoch >= Number.MAX_SAFE_INTEGER)
 			return Promise.reject(new AgentError("capacity", "Agent selection capacity reached."));
-		const selected: Selection = {identity, epoch: ++this.#epoch, confirmed: false};
+		const selected: Selection = {identity, epoch: ++this.#epoch, confirmed: restoring};
 		targets.set(identity, selected); this.#selections.set(workspaceId, targets);
-		selected.promise = this.#request<void>(member, [workspaceId, identity, selected.epoch]).catch(error => {
-			if (this.#selections.get(workspaceId)?.get(identity) === selected && !selected.confirmed) {
-				if (member === "reconnect") {
+		selected.promise = this.#request<void>(member, [workspaceId, identity, selected.epoch]).then(() => {selected.confirmed = true;}).catch(error => {
+			if (this.#selections.get(workspaceId)?.get(identity) === selected && (!selected.confirmed || restoring)) {
+				if (member === "reconnect" || restoring) {
 					selected.confirmed = true;
 					this.#options.onAvailability?.(workspaceId,identity,selected.epoch,"unavailable",error instanceof Error ? error.message : "Agent reconnection failed.",{});
 				} else targets.delete(identity);
@@ -320,12 +391,12 @@ export class AgentService {
 		return selected.promise;
 	}
 	#releaseWorkspace(member: string, workspaceId: string, identity?: string): Promise<void> {
-		if (this.#closed || this.#failed || this.#exited) return Promise.resolve();
-		if (this.#pending.size >= 64)
-			return Promise.reject(new AgentError("capacity", "Agent worker request capacity reached."));
+		const unavailable = this.#closed || this.#failed || this.#exited || this.#restarting;
+		if (!unavailable && this.#pending.size >= 64) return Promise.reject(new AgentError("capacity", "Agent worker request capacity reached."));
 		const targets = this.#selections.get(workspaceId);
-		if (identity === undefined) this.#selections.delete(workspaceId);
+		if (identity === undefined) {targets?.clear();this.#selections.delete(workspaceId);}
 		else { targets?.delete(identity); if (!targets?.size) this.#selections.delete(workspaceId); }
+		if (unavailable) return Promise.resolve();
 		return this.#request(member, identity === undefined ? [workspaceId] : [workspaceId, identity]);
 	}
 	hide(workspaceId: string, identity?: string): Promise<void> {
@@ -406,11 +477,12 @@ export class AgentService {
 		this.#failure("Agent service closed before a response.");
 		this.#closing = (async () => {
 			try {
-				if (!this.#exited) await this.#request("close", []);
+				if (this.#restarting) await this.#restarting;
+				else if (!this.#exited) await this.#request("close", []);
 			} finally {
 				await this.#worker.terminate();
 				this.#exited = true;
-				this.#failure("Agent service is closed.");
+				this.#failure("Agent service is closed.");this.#selections.clear();
 			}
 		})();
 		return this.#closing;

@@ -80,7 +80,7 @@ class MemoryResponse extends EventEmitter {
   write(data:string|Buffer) {this.text+=data.toString();return true;}
   end(data?:string|Buffer) {if(data) this.write(data);this.destroyed=true;this.emit('close');}
 }
-function inProcessHttp(context:TestContext, identity?: UiIdentity) {
+async function inProcessHttp(context:TestContext, identity?: UiIdentity) {
   const assets=new Map<string,Asset>([
     ['/',{type:'text/html',data:Buffer.from('<html><head><link href="/style.css" rel="stylesheet"><link href="/favicon.svg" rel="icon"></head><body><script src="/web/app.js"></script></body></html>')}],
     ['/style.css',{type:'text/css',data:Buffer.from('body {color:black;}')}],['/favicon.svg',{type:'image/svg+xml',data:Buffer.from('<svg/>')}],
@@ -92,8 +92,8 @@ function inProcessHttp(context:TestContext, identity?: UiIdentity) {
   const counts={dispatch:0,observe:0,detached:0};const journal=new Journal();
   const backend:HttpBackend={journal,dispatch:async()=>{counts.dispatch++;return {};},workspace:async()=> 'fake',observe:async()=>{counts.observe++;},detached:()=>{counts.detached++;}};
   const http=new LocalHttp(backend,new Map(),undefined,{generations,diagnostics,identity});http.auth.setPort(12345);
-  context.after(async()=>{await diagnostics.close();http.auth.close();http.server.removeAllListeners();});
-  const authenticated=new MemoryResponse();http.auth.launch(http.auth.capability,authenticated as unknown as ServerResponse);
+  context.after(async()=>{await diagnostics.close();await http.auth.close();http.server.removeAllListeners();});
+  const authenticated=new MemoryResponse();await http.auth.launch(http.auth.capability,authenticated as unknown as ServerResponse);
   const cookie=(authenticated.headers['Set-Cookie']??'').split(';')[0]??'';
   const invoke=async(path:string,method='GET',body?:unknown,headers:Record<string,string>={})=> {
     const raw=body===undefined?'':JSON.stringify(body);const request=Readable.from(raw?[Buffer.from(raw)]:[]) as unknown as IncomingMessage;
@@ -107,7 +107,7 @@ function inProcessHttp(context:TestContext, identity?: UiIdentity) {
 test('leased documents carry their retained generation identity and matching HEAD lengths', async context => {
   const identity: UiIdentity = {iteration: UI_ITERATION, git: {commit: 'a'.repeat(40), shortCommit: 'aaaaaaa', branch: 'feature/ui', modified: false, committedAt: '2026-10-12T00:00:00.000Z'},
     assets: {digest: 'b'.repeat(64)}, startedAt: '2026-10-12T02:00:00.000Z', pi: '1.1.0', durable: '1.1.0'};
-  const fixture = inProcessHttp(context, identity);
+  const fixture = await inProcessHttp(context, identity);
   const get = await fixture.invoke('/'); const head = await fixture.invoke('/', 'HEAD');
   assert.equal(get.statusCode, 200); assert.equal(head.statusCode, 200);
   const encoded = /name="ui-identity" content="([^"]*)"/.exec(get.text)?.[1]; assert.ok(encoded);
@@ -119,19 +119,20 @@ test('leased documents carry their retained generation identity and matching HEA
 });
 
 test('pure development HTTP startup closes its admitted listener when watcher setup throws',async context=> {
-  const fixture=inProcessHttp(context);const failure=new Error('watcher setup failed');const events:string[]=[];const closed:string[]=[];
+  const stateDir=await mkdtemp(join(tmpdir(),'ui-http-startup-'));await chmod(stateDir,0o700);context.after(()=>rm(stateDir,{recursive:true,force:true}));
+  const fixture=await inProcessHttp(context);const failure=new Error('watcher setup failed');const events:string[]=[];const closed:string[]=[];
   const registry={journal:fixture.backend.journal,validatePath:async()=>{},close:async()=>{closed.push('registry');},agents:{refresh:async()=>{throw new Error('unexpected refresh');}}};
   context.mock.method(Registry,'open',async()=>registry as unknown as Registry);
   context.mock.method(DevelopmentBuild,'open',async()=>({generations:fixture.generations,build:{start:()=>{events.push('watch');throw failure;},close:async()=>{closed.push('build');}}}) as unknown as Awaited<ReturnType<typeof DevelopmentBuild.open>>);
   context.mock.method(DiagnosticDisk,'open',async()=>({append:async()=>{},close:async()=>{closed.push('diagnostics');}}) as unknown as DiagnosticDisk);
   context.mock.method(LocalHttp.prototype,'listen',async()=>{events.push('listen');return 'http://127.0.0.1:12345/';});
-  context.mock.method(LocalHttp.prototype,'close',async function(this:LocalHttp) {closed.push('http');this.auth.close();this.server.removeAllListeners();});
-  await assert.rejects(startBackend({cwd:'/synthetic/project',stateDir:'/synthetic/state',pi:'unrun',port:0,devReload:true,devDiagnostics:true}),error=>error===failure);
+  context.mock.method(LocalHttp.prototype,'close',async function(this:LocalHttp) {closed.push('http');await this.auth.close();this.server.removeAllListeners();});
+  await assert.rejects(startBackend({cwd:'/synthetic/project',stateDir,pi:'unrun',port:0,devReload:true,devDiagnostics:true}),error=>error===failure);
   assert.deepEqual(events,['listen','watch']);assert.deepEqual(closed.sort(),['build','diagnostics','http','registry']);assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
 });
 
 test('pure development HTTP enforces Host Origin session and bounded closed metadata ingestion',async context=> {
-  const fixture=inProcessHttp(context);const body={records:[{event:'measure',metric:'editor-echo',durationMs:2}],dropped:0};
+  const fixture=await inProcessHttp(context);const body={records:[{event:'measure',metric:'editor-echo',durationMs:2}],dropped:0};
   assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{host:'wrong.invalid'})).statusCode,403);
   assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{origin:'http://wrong.invalid'})).statusCode,403);
   assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{cookie:''})).statusCode,401);assert.equal(fixture.diagnostics.state().accepted,0);
@@ -143,17 +144,17 @@ test('pure development HTTP enforces Host Origin session and bounded closed meta
 });
 
 test('pure development HTTP refuses generation-prefixed HTML through parsed and direct routes without an unleased page',async context=> {
-  const fixture=inProcessHttp(context);const id=fixture.generations.status().generation;
+  const fixture=await inProcessHttp(context);const id=fixture.generations.status().generation;
   for(const path of [`/_ui/${id}/`,`/_ui/${id}/index.html`]) {
     for(const method of ['GET','HEAD']) {const response=await fixture.invoke(path,method);assert.equal(response.statusCode,404);assert.doesNotMatch(response.text,/<html|ui-client/);assert.equal(fixture.generations.counts().clients,0);}
-    const router=fixture.http as unknown as {developmentRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string):Promise<boolean>};
-    await assert.rejects(router.developmentRoute({} as IncomingMessage,new MemoryResponse() as unknown as ServerResponse,new URL(path,fixture.http.auth.origin),'GET'),error=>error instanceof ApiError&&error.status===404);
+    const router=fixture.http as unknown as {staticRoute(response:ServerResponse,url:URL,method:string):boolean};
+    assert.throws(() => router.staticRoute(new MemoryResponse() as unknown as ServerResponse,new URL(path,fixture.http.auth.origin),'GET'),error=>error instanceof ApiError&&error.status===404);
   }
   const page=await fixture.invoke('/');assert.equal(page.statusCode,200);assert.match(page.text,/ui-client/);assert.equal(fixture.generations.counts().clients,1);assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
 });
 
 test('pure development HTTP pins every asset and uses a distinct bounded notification stream without work replay',async context=> {
-  const fixture=inProcessHttp(context);const cursor=fixture.backend.journal.cursor;
+  const fixture=await inProcessHttp(context);const cursor=fixture.backend.journal.cursor;
   const page=await fixture.invoke('/');assert.equal(page.statusCode,200);const id=fixture.generations.status().generation;
   const head=await fixture.invoke('/','HEAD');assert.equal(head.statusCode,200);assert.equal(head.headers['Content-Length'],page.headers['Content-Length']);assert.equal(fixture.generations.counts().clients,1);
   assert.match(page.text,new RegExp(`/_ui/${id}/style.css`));const client=/name="ui-client" content="([a-f0-9]+)"/.exec(page.text)?.[1];assert.ok(client);
@@ -245,6 +246,53 @@ async function input(app: Awaited<ReturnType<typeof fixture>>, target: Target & 
   }
   assert.equal(data<OperationView>(reply).state, 'accepted'); return {id, body, receipt: data<OperationView>(reply)};
 }
+
+test('saved-file HTTP resume after restart preserves exact identity and state without a no-op selection write', {timeout:20000}, async context => {
+  const app=await fixture(context); await app.login(); const boot=data<Bootstrap>(await app.call('/api/bootstrap')); app.useWorkspace(boot.workspace.id);
+  const file=join(app.cwd,'retained.jsonl'); await writeFile(file,`${JSON.stringify({type:'session',version:3,id:'retained-http',cwd:app.cwd})}\n`);
+  const events=await stream(context,app,boot); const opened=await openPrimary(app,events,{cwd:app.cwd,sessionFile:file});
+  const state=await app.registry.store.target(boot.workspace.id,opened.target);
+  await app.registry.store.putDraft(boot.workspace.id,state.targetKey,{expectedRevision:0,text:'acknowledged HTTP draft',mode:'prompt'});
+  await app.registry.store.putReading(boot.workspace.id,state.targetKey,{expectedRevision:0,anchorId:'assistant-36',offsetPx:525,followTail:false});
+  await app.registry.store.putPresentation(boot.workspace.id,state.targetKey,{expectedRevision:0,expanded:['tool-1'],showThinking:true,transcriptView:'grouped'});
+  const current=await app.registry.store.workspace(boot.workspace.id);
+  await app.registry.store.updateSelection(current.id,{expectedRevision:current.revision,conversationLayout:{root:{kind:'pane',id:'pane',tabs:[{kind:'primary'},{kind:'file',rootId:'root',path:'source.ts'}],active:'primary'},focusedPane:'pane'},filePositions:{'file:["root","source.ts"]':{scrollTop:240,scrollLeft:32}},panelVisible:true,sidebarWidth:300});
+  const before=await app.registry.snapshot(current.id); events.close(); await app.close();
+  const restarted=await startBackend({cwd:app.cwd,port:0,pi:executable,stateDir:app.registry.options.stateDir},{agents:()=>agents().adapter,assets:new Map([['/',{data:Buffer.from('<!doctype html><title>Fixture</title>'),type:'text/html; charset=utf-8'}]])});
+  let nextEvents: Stream | undefined;
+  try {
+    assert.equal(restarted.registry.sessions.size,0);
+    const launch=new URL(restarted.launchUrl); const origin=launch.origin;
+    const login=await send(origin,'/api/auth/launch','POST',{capability:new URLSearchParams(launch.hash.slice(1)).get('launch')},{Origin:origin});
+    const cookie=login.headers['set-cookie']?.[0]?.split(';')[0]; assert.ok(cookie);
+    const call=(path: string,method='GET',body?: unknown,headers: Record<string,string>={})=>send(origin,`${path}?workspace=${current.id}`,method,body,{Origin:origin,Cookie:cookie,...headers});
+    const stopped=data<Bootstrap>(await call('/api/snapshot')); assert.equal(stopped.primaries[0]?.lifecycle,'stopped');
+    assert.deepEqual(stopped.workspace,before.workspace); assert.deepEqual(stopped.targets,before.targets);
+    const updates=context.mock.method(restarted.registry.store,'updateSelection',restarted.registry.store.updateSelection.bind(restarted.registry.store));
+    const publications=context.mock.method(restarted.registry.journal,'publish',restarted.registry.journal.publish.bind(restarted.registry.journal));
+    nextEvents=new Stream(origin,cookie,`/api/events?workspace=${current.id}&after=${stopped.cursor}`); await nextEvents.ready; await nextEvents.wait('ready');
+    const reserve=async()=>data<{operationId:string}>(await call('/api/operations','POST',{kind:'primary.open'})).operationId;
+    const body={cwd:app.cwd,sessionFile:file}; const id=await reserve();
+    const resumed=await call('/api/primaries','POST',body,{'Idempotency-Key':id}); assert.equal(resumed.status,202);
+    assert.equal(data<{primaryKey:string}>(resumed).primaryKey,opened.target.key);
+    await nextEvents.wait('primary.state',view=>view.key===opened.target.key && view.lifecycle==='ready');
+    assert.equal(updates.mock.callCount(),0);
+    assert.equal(publications.mock.calls.filter(call=>call.arguments[0]==='workspace.changed').length,0);
+    const after=data<Bootstrap>(await call('/api/snapshot'));
+    assert.deepEqual(after.workspace,before.workspace); assert.deepEqual(after.targets,before.targets);
+    assert.equal(after.primaries[0]?.epoch,opened.target.epoch); assert.equal(after.primaries[0]?.sessionId,'retained-http'); assert.equal(restarted.registry.sessions.size,1);
+    await call('/api/primaries','POST',body,{'Idempotency-Key':id}); assert.equal(updates.mock.callCount(),0); assert.equal(restarted.registry.sessions.size,1);
+    await restarted.registry.primary(opened.target.key).close();
+    const selected=await restarted.registry.store.workspace(current.id);
+    await restarted.registry.store.updateSelection(current.id,{expectedRevision:selected.revision,selectedTarget:{kind:'agent',identity:'not-visible'}});
+    const writes=updates.mock.callCount(); const changes=publications.mock.calls.filter(call=>call.arguments[0]==='workspace.changed').length;
+    const changed=await call('/api/primaries','POST',body,{'Idempotency-Key':await reserve()}); assert.equal(changed.status,202); assert.equal(data<{primaryKey:string}>(changed).primaryKey,opened.target.key);
+    assert.equal(updates.mock.callCount(),writes+1); assert.equal(publications.mock.calls.filter(call=>call.arguments[0]==='workspace.changed').length,changes+1);
+    const restored=await restarted.registry.store.workspace(current.id);
+    assert.deepEqual(restored.selectedTarget,opened.target); assert.deepEqual(restored.conversationLayout,before.workspace.conversationLayout); assert.deepEqual(restored.filePositions,before.workspace.filePositions);
+    assert.deepEqual(await restarted.registry.store.getTarget(current.id,state.targetKey),before.targets?.[0]);
+  } finally {nextEvents?.close(); await restarted.close();}
+});
 
 test('HTTP and SSE drive the executable through deltas, tool output, a dialog, and settlement', {timeout: 15000}, async context => {
   const app = await fixture(context); await app.login(); const initial = data<Bootstrap>(await app.call('/api/bootstrap'));
@@ -349,12 +397,13 @@ test('Last-Event-ID overrides the URL cursor and replay precedes ready metadata'
 test('request rate accounting rejects the next request at a deterministic fixed clock', {timeout: 15000}, async context => {
   context.mock.method(performance, 'now', () => 1);
   const app = await fixture(context);
-  for (let i = 0; i < 240; i++) assert.equal((await app.call('/')).status, 200, String(i));
-  const rejected = await app.call('/'); assert.equal(rejected.status, 429); assert.equal(rejected.json?.ok, false);
+  for (let i = 0; i < 240; i++) assert.equal((await app.call('/api/bootstrap')).status, 401, String(i));
+  const rejected = await app.call('/api/bootstrap'); assert.equal(rejected.status, 429); assert.equal(rejected.json?.ok, false);
+  for (let i = 0; i < 400; i++) assert.equal((await app.call('/')).status, 200, String(i));
   assert.equal(app.fake.counts.refresh, 1); assert.equal(app.registry.sessions.size, 0);
 });
 
-const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js', 'dist/shared/files.js'];
+const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js', 'dist/shared/files.js', 'dist/shared/health.js'];
 async function browserBuild(context: TestContext, emptyFiles = false) {
   const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));
   const apps: Awaited<ReturnType<typeof startBackend>>[] = [];
@@ -406,7 +455,7 @@ test('startup browser bytes survive overwrites and deletion; a fresh backend rea
   const {root, start} = await browserBuild(context); const extra = 'dist/web/extra-module.js';
   await writeFile(join(root, extra), Buffer.from([0, 255, 1, 127, 128]));
   const original = await assetMap(root);
-  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/files.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
+  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/files.js', '/shared/health.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
   const app = await start(); const headers = await verifyBrowserBytes(app.origin, original);
   for (const path of [...requiredAssets, extra]) await writeFile(join(root, path), `Rebuilt ${path}`);
   assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
@@ -481,7 +530,7 @@ test('browser traversal ignores non-matching names and does not recurse', async 
   for (const name of ['bad.name.js', '.hidden.js', 'space name.js', 'note.txt', 'app.js.map', '雪.js']) await writeFile(join(root, 'dist/web', name), 'ignored');
   await mkdir(join(root, 'dist/web/nested')); await writeFile(join(root, 'dist/web/nested/valid.js'), 'ignored');
   await writeFile(join(root, 'dist/web/Valid_0-module.js'), 'routed');
-  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/files.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
+  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/files.js', '/shared/health.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
 });
 
 test('browser startup rejects special build files without waiting on them', async context => {
@@ -544,7 +593,7 @@ test('raw image intake authenticates before bytes, saves a target-local lease an
   assert.equal((await app.registry.store.getTarget(boot.workspace.id, saved.targetKey)).draft.images.length, 0);
 });
 test('raw body deadline cancels a stalled producer without an unhandled rejection', async context => {
-  const f = inProcessHttp(context); context.mock.timers.enable({apis: ['setTimeout']}); let reached!: () => void; let cancelled = false;
+  const f = await inProcessHttp(context); context.mock.timers.enable({apis: ['setTimeout']}); let reached!: () => void; let cancelled = false;
   const entered = new Promise<void>(resolve => {reached = resolve;});
   f.backend.uploadImage = async (ctx, _headers, body) => {reached(); try {for await (const _chunk of body) ctx.authorize();} finally {cancelled = ctx.signal.aborted;} return {};};
   const request = new Readable({read() {}}) as unknown as IncomingMessage; request.url = '/api/workspaces/w/targets/t/images?name=x.png&epoch=1'; request.method = 'POST';

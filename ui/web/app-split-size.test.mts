@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {activeTab} from './tabs.ts';
 import { createPaneLayout, splitPane } from './pane-layout.ts';
-import {app, arrive, settle, host, byId, paneNode, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, twoPanes, selectionSaves, failSelection, hostDocument} from './app-fixture.mts';
+import {createAppFixture} from './app-fixture.mts';
+const {app, arrive, settle, host, byId, paneNode, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, twoPanes, selectionSaves, failSelection, hostDocument} = await createAppFixture();
 async function fixture(width = 1200, ratio = 50, sidebar = true) {
   host.viewport = width; failSelection(undefined); const layout = twoPanes('a'); assert.equal(layout.root.kind, 'split'); if (layout.root.kind === 'split') layout.root.ratio = ratio;
   const primary = targetFixture('size-primary', {kind: 'primary', key: 'p', epoch: 1}), agent = targetFixture('size-agent', {kind: 'agent', identity: 'a'});

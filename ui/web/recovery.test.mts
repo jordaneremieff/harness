@@ -61,7 +61,7 @@ test('recovery discovers all indexed copies and reads full tuples before disposi
   const calls: {path: string; method: string; body: unknown}[] = [];
   globalThis.fetch = async (url, init) => {
     const path = String(url), method = init?.method ?? 'GET'; calls.push({path, method, body: init?.body ? JSON.parse(String(init.body)) : undefined});
-    const value = path.endsWith('/targets/owner-key') ? saved : path.endsWith('/restore') ? {...saved.draft, revision: 5, text: copies[1].text, images} : copies.find(item => path.endsWith('/' + item.operationId));
+    const value = path.endsWith('/targets/owner-key') ? saved : path.endsWith('/restore') ? {...saved.draft, revision: 5, text: copies[1].text, images} : copies.find(item => path.endsWith(`/${item.operationId}`));
     return Response.json({ok: true, data: value ?? {}});
   };
   new Recovery({snapshot: () => snapshot, reload: async () => {}, modal: modal as unknown as import('./modal.ts').Modal}).open(); await drain();

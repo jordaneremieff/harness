@@ -10,6 +10,10 @@ import { DevelopmentBuild } from './development-build.mts';
 import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
 import { collectIdentity } from './version.mts';
 import { identityLabel, type UiIdentity } from '../shared/version.ts';
+import type {BackendHealthFacts} from '../shared/health.ts';
+import {Auth} from './auth.mts';
+import {LifecycleLog} from './lifecycle-log.mts';
+import {supervise} from './supervisor.mts';
 
 export type Options = {cwd: string; port: number; pi: string; stateDir?: string; open?: boolean; devReload?:boolean; devDiagnostics?:boolean};
 /** CLI flags select process boundaries, never environment or arbitrary commands. */
@@ -52,58 +56,104 @@ export function statePaths(environment:NodeJS.ProcessEnv=process.env) {
   const agentStore=environment.PI_AGENT_SESSIONS_DIR?expand(environment.PI_AGENT_SESSIONS_DIR):join(agentDir,'agent-sessions');
   return {agentDir,agentStore,stateDir:join(agentDir,'ui')};
 }
+function rpcHealth(registry:Registry):'ready'|'unavailable'|'stopped' {
+  const sessions=[...registry.sessions.values()];
+  if(sessions.some(session=>session.view.lifecycle==='failed'))return 'unavailable';
+  if(sessions.some(session=>session.view.lifecycle==='ready'||session.view.lifecycle==='starting'))return 'ready';
+  return 'stopped';
+}
+function serviceHealth(registry:Registry,files:Files|undefined,stopping:boolean):BackendHealthFacts['services'] {
+  if(stopping)return [{name:'files',state:'stopped'},{name:'agents',state:'stopped'},{name:'rpc',state:'stopped'}];
+  return [{name:'files',state:files?.available?'ready':'unavailable'},
+    {name:'agents',state:registry.agents.available===false?'unavailable':'ready'},
+    {name:'rpc',state:rpcHealth(registry)}];
+}
 /** Test injection changes adapters, not the public HTTP route or authentication surface. */
-export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'>> & {assets?:Map<string,Asset>; assetRoot?:string; identity?:UiIdentity}={}) {
-  const startedAt = new Date().toISOString();
-  const paths=statePaths();
+export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'>> & {assets?:Map<string,Asset>; assetRoot?:string; identity?:UiIdentity; supervisorRestarts?:number; onRestart?:()=>void}={}) {
+  const startedAt=new Date().toISOString(),paths=statePaths(),stateDir=options.stateDir??paths.stateDir;
   if(!isAbsolute(options.cwd)) throw new ApiError('invalid_request','The project directory must be absolute.');
-  const development=options.devReload?await DevelopmentBuild.open(injection.assetRoot):undefined;
-  const assets=injection.assets??(development?new Map<string,Asset>():await assetMap(injection.assetRoot));
-  const identity = injection.identity ?? await collectIdentity(assets, {root: injection.assetRoot ? resolve(injection.assetRoot, '..') : undefined, assetRoot: injection.assetRoot, startedAt, build: development?.generations.identity()});
-  const stateDir=options.stateDir??paths.stateDir;
-  const registry=await Registry.open({stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,agents:injection.agents,primary:injection.primary,measure:injection.measure});
-  let diagnostics:DiagnosticSink|undefined;
-  if(options.devDiagnostics) {
-    try {diagnostics=new DiagnosticSink(await DiagnosticDisk.open(stateDir),undefined,undefined,()=>development?.generations.status().generation);}
-    catch {process.stderr.write('Local diagnostics are unavailable.\n');}
-  }
-  let startupHttp:LocalHttp|undefined;
-  let files:Files|undefined;
+  let development:Awaited<ReturnType<typeof DevelopmentBuild.open>>|undefined;
+  let diagnostics:DiagnosticSink|undefined,log:LifecycleLog|undefined,auth:Auth|undefined;
+  let startupRegistry:Registry|undefined,startupHttp:LocalHttp|undefined,files:Files|undefined;
   try {
-    files = await Files.open(stateDir,()=>registry.fileIdentityFailed());
+    development=options.devReload?await DevelopmentBuild.open(injection.assetRoot):undefined;
+    const assets=injection.assets??(development?new Map<string,Asset>():await assetMap(injection.assetRoot));
+    const identity=injection.identity??await collectIdentity(assets,{root:injection.assetRoot?resolve(injection.assetRoot,'..'):undefined,assetRoot:injection.assetRoot,startedAt,build:development?.generations.identity()});
+    const registry=await Registry.open({stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,agents:injection.agents,primary:injection.primary,measure:injection.measure});startupRegistry=registry;
+    auth=await Auth.open(stateDir);
+    try {log=await LifecycleLog.open(stateDir);log.record('restart',`Supervisor replacements: ${injection.supervisorRestarts??0}.`);} catch {process.stderr.write('Local lifecycle logging is unavailable.\n');}
+    if(options.devDiagnostics) {
+      try {diagnostics=new DiagnosticSink(await DiagnosticDisk.open(stateDir),undefined,undefined,()=>development?.generations.status().generation);}
+      catch {process.stderr.write('Local diagnostics are unavailable.\n');}
+    }
+    files=await Files.open(stateDir,()=>registry.fileIdentityFailed());
     files.observe((change,workspace)=>registry.journal.publish('files.changed',undefined,change,workspace));
     await registry.validatePath(options.cwd,true);
-    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics,identity,files});startupHttp=http;
+    let stopping=false,closing:Promise<void>|undefined,closedServices:Promise<PromiseSettledResult<void>[]>|undefined;
+    const health=():BackendHealthFacts=>({startedAt,supervisorRestarts:injection.supervisorRestarts??0,
+      services:serviceHealth(registry,files,stopping),
+      build:{state:development?.generations.status().status??'static'}});
+    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics,identity,files,health},auth);startupHttp=http;
     const launchUrl=await http.listen(options.port);
-    development?.generations.observe(status=>{diagnostics?.emit({event:'reload',code:status.status==='failed'?'failed':status.status==='ready'?'applied':'deferred'},'build');});
+    development?.generations.observe(status=> {
+      diagnostics?.emit({event:'reload',code:status.status==='failed'?'failed':status.status==='ready'?'applied':'deferred'},'build');
+      if(status.status==='restart-required') injection.onRestart?.();
+    });
     development?.build.start();diagnostics?.emit({event:'connection',code:'applied'});
     void registry.agents.refresh().catch(()=>registry.journal.publish('notice',undefined,{level:'warning',message:'The retained agent catalog is unavailable.',code:'catalog_unavailable'}));
-    let closing:Promise<void>|undefined;
-    let closedServices:Promise<PromiseSettledResult<void>[]>|undefined;
     const close=()=>closing??=(async()=> {
-      http.stopAdmission();registry.journal.close();
-      closedServices??=Promise.allSettled([http.close(),files?.close(),development?.build.close(),diagnostics?.close()]);
-      const services = await closedServices;
-      const primaries = await Promise.allSettled([registry.close()]);
+      stopping=true;http.stopAdmission();registry.journal.close();log?.record('shutdown','Admission stopped; owned resources will close.');
+      closedServices??=Promise.allSettled([http.close(),files?.close(),development?.build.close(),diagnostics?.close(),log?.close()]);
+      const services=await closedServices,primaries=await Promise.allSettled([registry.close()]);
       const failed=[...primaries,...services].find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
-    })().catch(error=> {closing=undefined;throw error;});
-    return {registry,http,launchUrl,identity,close};
-  } catch(error) {await Promise.allSettled([files?.close(),startupHttp?.close(),development?.build.close(),diagnostics?.close()]);await Promise.allSettled([registry.close()]);throw error;}
+    })().catch(error=>{closing=undefined;throw error;});
+    return {registry,http,launchUrl,identity,close,log};
+  } catch(error) {
+    await Promise.allSettled([files?.close(),startupHttp?.close(),auth?.close(),development?.build.close(),diagnostics?.close(),log?.close()]);
+    await Promise.allSettled([startupRegistry?.close()]);throw error;
+  }
 }
-export async function main(args=process.argv.slice(2), opener: (url: string) => Promise<void> = openInBrowser, injection: Parameters<typeof startBackend>[1] = {}) {
-  const options=parseArgs(args);
-  const app=await startBackend(options, injection);
-  process.stdout.write(`${app.launchUrl}\n${identityLabel(app.identity)}\n`);
+export async function main(args=process.argv.slice(2), opener:(url:string)=>Promise<void>=openInBrowser,injection:Parameters<typeof startBackend>[1]&{announce?:(text:string)=>void}={}) {
+  const options=parseArgs(args),app=await startBackend(options,injection);
+  if(process.send) process.send({kind:'ready',launchUrl:app.launchUrl,identity:app.identity});
+  else injection.announce?.(`${app.launchUrl}\n${identityLabel(app.identity)}\n`);
   if(options.open) await opener(app.launchUrl).catch(()=>process.stderr.write('The browser did not open; use the printed launch URL.\n'));
-  let closing=false;
-  const shutdown=()=> {
-    if(closing) return;closing=true;
-    void app.close().then(()=> {process.off('SIGINT',shutdown);process.off('SIGTERM',shutdown);})
-      .catch(()=> {closing=false;process.stderr.write('The backend did not confirm an orderly primary exit.\n');process.exitCode=1;});
+  let shutdownWork:Promise<void>|undefined;
+  const detach=()=>{process.off('SIGINT',shutdown);process.off('SIGTERM',shutdown);process.off('unhandledRejection',rejection);process.off('uncaughtException',exception);};
+  const close=async()=>{await app.close();detach();};
+  const shutdown=()=>{shutdownWork??=close().then(()=>{if(process.connected) process.disconnect?.();}).catch(()=>{shutdownWork=undefined;process.stderr.write('The backend did not confirm an orderly primary exit.\n');process.exitCode=1;});};
+  const fatal=(kind:string)=> {
+    app.http.stopAdmission();app.log?.record('fatal',kind);
+    const deadline=setTimeout(()=>process.exit(1),5000);deadline.unref();
+    shutdownWork??=close();void shutdownWork.catch(()=>{}).finally(()=>{clearTimeout(deadline);process.exit(1);});
   };
-  process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
-  return app;
+  const rejection=()=>fatal('Unhandled rejection.'),exception=()=>fatal('Uncaught exception.');
+  process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);process.on('unhandledRejection',rejection);process.on('uncaughtException',exception);
+  return {...app,close};
 }
-if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) void main().catch(error=> {
-  process.stderr.write(error instanceof ApiError?`${error.message}\n`:'The backend failed to start.\n');process.exitCode=1;
-});
+async function cli() {
+  if(process.send) {
+    process.once('message',(message:{kind?:string;options?:Options;restarts?:number})=> {
+      if(message.kind!=='start'||!message.options) {process.exitCode=1;return;}
+      const options=message.options;
+      const args=['--cwd',options.cwd,'--port',String(options.port),'--pi',options.pi];
+      if(options.stateDir) args.push('--state-dir',options.stateDir);
+      if(options.devReload) args.push('--dev-reload');if(options.devDiagnostics) args.push('--dev-diagnostics');
+      let app:Awaited<ReturnType<typeof main>>|undefined,restartRequested=false;
+      const finishRestart=()=>{if(app)void app.close().then(()=>process.exit(0),()=>process.exit(1));};
+      void main(args,openInBrowser,{supervisorRestarts:message.restarts??0,onRestart:()=> {
+        if(restartRequested)return;restartRequested=true;process.send?.({kind:'restart'});finishRestart();
+      }}).then(value=>{app=value;if(restartRequested)finishRestart();},()=>{process.stderr.write('The backend failed to start.\n');process.exitCode=1;process.disconnect?.();});
+    });return;
+  }
+  const options=parseArgs(process.argv.slice(2));let announced=false;
+  const parent=supervise(options,{output:line=>process.stderr.write(`${line}\n`),ready:message=> {
+    if(announced) return;announced=true;process.stdout.write(`${message.launchUrl}\n${identityLabel(message.identity)}\n`);
+    if(options.open) void openInBrowser(message.launchUrl).catch(()=>process.stderr.write('The browser did not open; use the printed launch URL.\n'));
+  }});
+  const stop=()=>parent.stop(),fatal=()=>{process.exitCode=1;parent.stop();};
+  process.on('SIGINT',stop);process.on('SIGTERM',stop);process.on('unhandledRejection',fatal);process.on('uncaughtException',fatal);
+  const code=await parent.closed;process.exitCode=process.exitCode||code;
+  process.off('SIGINT',stop);process.off('SIGTERM',stop);process.off('unhandledRejection',fatal);process.off('uncaughtException',fatal);
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href) void cli().catch(()=>{process.stderr.write('The backend failed to start.\n');process.exitCode=1;});

@@ -24,6 +24,7 @@ async function project(context: TestContext) {
   context.after(async () => { for (const app of apps) await app.close(); await rm(root, {recursive: true, force: true}); });
   return {root, cwd, keep: <T extends {close(): Promise<void>}>(app: T) => { apps.push(app); return app; }};
 }
+const quiet={agents:()=>adapter,assets,announce:()=>{}};
 const flags = (cwd: string, root: string, name: string) => ['--cwd', cwd, '--port', '0', '--pi', executable, '--state-dir', join(root, name)];
 
 test('parseArgs reads flag values and the standalone --open flag in any position', () => {
@@ -45,11 +46,11 @@ test('parseArgs refuses a value-taking flag without a value and unknown flags', 
 test('main passes the launch URL to the opener only with --open', {timeout: 15000}, async context => {
   const {root, cwd, keep} = await project(context);
   const opened: string[] = [];
-  const app = keep(await main([...flags(cwd, root, 'state-open'), '--open'], async url => { opened.push(url); }, {agents: () => adapter, assets}));
+  const app = keep(await main([...flags(cwd, root, 'state-open'), '--open'], async url => { opened.push(url); }, quiet));
   assert.deepEqual(opened, [app.launchUrl]);
   assert.match(app.launchUrl, /^http:\/\/127\.0\.0\.1:\d+\/#launch=/);
   let silent = 0;
-  keep(await main(flags(cwd, root, 'state-plain'), async () => { silent += 1; }, {agents: () => adapter, assets}));
+  keep(await main(flags(cwd, root, 'state-plain'), async () => { silent += 1; }, quiet));
   assert.equal(silent, 0);
 });
 
@@ -62,7 +63,7 @@ test('main forwards qualified native result selectors without admission and retu
     if (options.submissionId === 99) throw new ApiError('invalid_request', 'Result selectors conflict.');
     return {view: 'result', sessionId: identity, conversationId: 7, requestId: options.requestId ?? '', status: 'unavailable', reason: 'Not retained', usage: {models: {}, tools: {}}};
   }};
-  const app = keep(await main(flags(cwd, root, 'state-inspect'), async () => { throw new Error('No browser'); }, {agents: () => injected, assets}));
+  const app = keep(await main(flags(cwd, root, 'state-inspect'), async () => { throw new Error('No browser'); }, {agents: () => injected, assets,announce:()=>{}}));
   const launch = new URL(app.launchUrl);
   const login = await fetch(`${launch.origin}/api/auth/launch`, {method: 'POST', headers: {Origin: launch.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: new URLSearchParams(launch.hash.slice(1)).get('launch')})});
   assert.equal(login.status, 200); const cookie = login.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
@@ -80,7 +81,7 @@ test('main forwards qualified native result selectors without admission and retu
 
 test('main keeps the backend running when the opener fails', {timeout: 15000}, async context => {
   const {root, cwd, keep} = await project(context);
-  const app = keep(await main([...flags(cwd, root, 'state-fail'), '--open'], async () => { throw new Error('no browser'); }, {agents: () => adapter, assets}));
+  const app = keep(await main([...flags(cwd, root, 'state-fail'), '--open'], async () => { throw new Error('no browser'); }, quiet));
   assert.match(app.launchUrl, /^http:\/\/127\.0\.0\.1:\d+\//);
 });
 
@@ -89,9 +90,7 @@ test('startup prints the served page identity directly after the launch URL', {t
   const identity: UiIdentity = {iteration: UI_ITERATION, git: {commit: 'a'.repeat(40), shortCommit: 'aaaaaaa', branch: 'feature/ui', modified: true, committedAt: '2026-10-12T00:00:00.000Z'},
     assets: {digest: 'b'.repeat(64), builtAt: '2026-10-12T01:00:00.000Z'}, startedAt: '2026-10-12T02:00:00.000Z', pi: '1.1.0', durable: '1.1.0'};
   const output: string[] = [];
-  context.mock.method(process.stdout, 'write', (value: string | Uint8Array) => {output.push(String(value)); return true;});
-  const app = keep(await main(flags(cwd, root, 'state-identity'), async () => {throw new Error('No browser');}, {agents: () => adapter, assets, identity}));
-  context.mock.restoreAll();
+  const app = keep(await main(flags(cwd, root, 'state-identity'), async () => {throw new Error('No browser');}, {agents: () => adapter, assets, identity,announce:text=>{output.push(text);}}));
   assert.deepEqual(output.join('').trimEnd().split('\n'), [app.launchUrl, identityLabel(identity)]);
   const html = await (await fetch(new URL('/', app.launchUrl))).text();
   const encoded = /name="ui-identity" content="([^"]*)"/.exec(html)?.[1]; assert.ok(encoded);

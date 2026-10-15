@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import {fork} from 'node:child_process';
+import {once} from 'node:events';
 import { StateError, StateStore, validateConversationLayout } from './state.mts';
 import { Operations } from './operations.mts';
 import { Journal } from './journal.mts';
@@ -361,13 +363,120 @@ test('draft writes serialize compare-and-set, errors retain the acknowledged dra
 
 test('only explicit recovery removes a proven-dead same-host state lock', async t => {
   const root = await mkdtemp(join(tmpdir(), 'ui-lock-test-')); t.after(() => rm(root, {recursive: true, force: true}));
-  await writeFile(join(root, 'lock.json'), JSON.stringify({pid: 2147483647, hostname: hostname(), owner: 'dead'}), {mode: 0o600});
+  await writeFile(join(root, 'lock.json'), JSON.stringify({format: 'ui-state/1', pid: 2147483647, hostname: hostname(), owner: 'dead'}), {mode: 0o600});
   await assert.rejects(StateStore.open(root), /already has an owner/);
   const store = await StateStore.open(root, {recoverDeadLock: true}); await store.close();
-  await writeFile(join(root, 'lock.json'), JSON.stringify({pid: process.pid, hostname: hostname(), owner: 'live'}));
+  await writeFile(join(root, 'lock.json'), JSON.stringify({format: 'ui-state/1', pid: process.pid, hostname: hostname(), owner: 'live'}));
   await assert.rejects(StateStore.open(root, {recoverDeadLock: true}), /live or unknown/);
-  await writeFile(join(root, 'lock.json'), JSON.stringify({pid: 2147483647, hostname: 'another-host', owner: 'foreign'}));
+  await writeFile(join(root, 'lock.json'), JSON.stringify({format: 'ui-state/1', pid: 2147483647, hostname: 'another-host', owner: 'foreign'}));
   await assert.rejects(StateStore.open(root, {recoverDeadLock: true}), /unknown/);
+});
+
+async function lockProcess(root:string,phase:'owner'|'recovery'|'publication'|'published'|'contender'|'displaced') {
+  const module=join(root,`${phase}.mjs`),stateModule=new URL('./state.mts',import.meta.url).href;
+  await writeFile(module,`import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';import {StateStore} from ${JSON.stringify(stateModule)};
+    const root=${JSON.stringify(root)},phase=${JSON.stringify(phase)},lock=root+'/lock.json';
+    const pause=async(kind,source)=>{const resume=phase==='contender'?new Promise(resolve=>process.once('message',resolve)):new Promise(()=>{process.on('message',()=>{});});process.send({kind,source});await resume;};
+    const unlink=fs.promises.unlink,link=fs.promises.link,open=fs.promises.open;
+    if(phase==='displaced')fs.promises.open=async(path,...args)=>{const file=await open(path,...args);if(path===root+'/lock-recovery.json'){await fs.promises.rename(path,path+'.displaced');await fs.promises.writeFile(path,'',{mode:0o600});}return file;};
+    if(phase==='contender')fs.promises.link=async(source,path)=>{if(path===lock)await pause('guard-held');return link(source,path);};
+    if(phase==='recovery')fs.promises.unlink=async path=>{if(path===lock)await pause('guard-held');return unlink(path);};
+    if(phase==='publication'||phase==='published')fs.promises.link=async(source,path)=>{if(path===lock&&phase==='publication')await pause('before-publication',source);await link(source,path);if(path===lock&&phase==='published')await pause('after-publication',source);};
+    syncBuiltinESMExports();
+    try {const store=await StateStore.open(root,{recoverDeadLock:phase==='recovery'||phase==='contender'});process.send({kind:'opened'});
+      process.once('message',async()=>{await store.close();process.disconnect();});}
+    catch(error){process.send({kind:'refused',code:error.code},()=>process.disconnect());}`);
+  const child=fork(module,[],{stdio:['ignore','ignore','ignore','ipc']});
+  const done=once(child,'exit');
+  const message=new Promise<{kind:string;source?:string;code?:string}>((resolve,reject)=>{child.once('message',value=>resolve(value as {kind:string;source?:string;code?:string}));child.once('error',reject);child.once('exit',()=>reject(Error('Lock child exited before the barrier.')));});
+  const stop=async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await done;};
+  return {child,done,message,stop};
+}
+
+test('a killed recovery releases the persistent guard without changing its inode', {timeout:15000},async t=> {
+  const root=await mkdtemp(join(tmpdir(),'ui-lock-kill-'));const children:Awaited<ReturnType<typeof lockProcess>>[]=[];
+  t.after(async()=>{for(const child of children)await child.stop();await rm(root,{recursive:true,force:true});});
+  const owner=await lockProcess(root,'owner');children.push(owner);assert.equal((await owner.message).kind,'opened');await owner.stop();assert.equal((await owner.done)[1],'SIGKILL');
+  const before=await readFile(join(root,'lock.json'));
+  const recovery=await lockProcess(root,'recovery');children.push(recovery);assert.equal((await recovery.message).kind,'guard-held');
+  const guard=await stat(join(root,'lock-recovery.json'));
+  await assert.rejects(StateStore.open(root,{recoverDeadLock:true}).then(async store=>{await store.close();return store;}),error=>error instanceof StateError&&error.code==='not_ready');
+  await recovery.stop();assert.equal((await recovery.done)[1],'SIGKILL');assert.deepEqual(await readFile(join(root,'lock.json')),before);
+  const store=await StateStore.open(root,{recoverDeadLock:true});await store.close();
+  assert.equal((await stat(join(root,'lock-recovery.json'))).ino,guard.ino);
+  await assert.rejects(stat(join(root,'lock.json')),{code:'ENOENT'});
+});
+
+test('owner publication is complete and exclusive across process death', {timeout:15000},async()=> {
+  for(const phase of ['publication','published'] as const) {
+    const root=await mkdtemp(join(tmpdir(),'ui-lock-publish-'));let child:Awaited<ReturnType<typeof lockProcess>>|undefined;
+    try {
+      child=await lockProcess(root,phase);const message=await child.message;
+      assert.equal(message.kind,phase==='publication'?'before-publication':'after-publication');assert.ok(message.source);
+      const record=JSON.parse(await readFile(message.source,'utf8'));assert.equal(record.pid,child.child.pid);assert.ok(record.owner);
+      if(phase==='publication')await assert.rejects(stat(join(root,'lock.json')),{code:'ENOENT'});
+      else assert.deepEqual(JSON.parse(await readFile(join(root,'lock.json'),'utf8')),record);
+      await assert.rejects(StateStore.open(root,{recoverDeadLock:true}).then(async store=>{await store.close();return store;}),error=>error instanceof StateError&&error.code==='not_ready');
+      await child.stop();assert.equal((await child.done)[1],'SIGKILL');const store=await StateStore.open(root,{recoverDeadLock:phase==='published'});await store.close();
+    } finally {await child?.stop();await rm(root,{recursive:true,force:true});}
+  }
+});
+
+test('concurrent recovery elects one owner and release checks its token',async t=> {
+  const root=await mkdtemp(join(tmpdir(),'ui-lock-race-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  await writeFile(join(root,'lock.json'),JSON.stringify({format:'ui-state/1',pid:2147483647,hostname:hostname(),owner:'dead'}),{mode:0o600});
+  const results=await Promise.allSettled([StateStore.open(root,{recoverDeadLock:true}),StateStore.open(root,{recoverDeadLock:true})]);
+  const winner=results.filter(result=>result.status==='fulfilled'),loser=results.filter(result=>result.status==='rejected');
+  assert.equal(winner.length,1);assert.equal(loser.length,1);assert.ok(loser[0]?.status==='rejected'&&loser[0].reason instanceof StateError&&loser[0].reason.code==='not_ready');
+  const store=winner[0]?.status==='fulfilled'?winner[0].value:undefined;assert.ok(store);
+  const path=join(root,'lock.json'),original=await readFile(path),changed={...JSON.parse(original.toString()),owner:'different-owner'};
+  await writeFile(path,JSON.stringify(changed));await assert.rejects(store.close(),/ownership changed/);
+  assert.deepEqual(JSON.parse(await readFile(path,'utf8')),changed);
+});
+
+test('a normal contender does not prevent owner close or strand its live lock', {timeout:15000},async t=> {
+  const root=await mkdtemp(join(tmpdir(),'ui-lock-close-')),store=await StateStore.open(root);
+  let child:Awaited<ReturnType<typeof lockProcess>>|undefined;
+  t.after(async()=>{await child?.stop();await store.close().catch(()=>{});await rm(root,{recursive:true,force:true});});
+  child=await lockProcess(root,'contender');const message=await child.message;
+  const closing=store.close().then(()=>true,error=>({error:String(error)}));
+  if(message.kind==='guard-held') {const reply=once(child.child,'message');child.child.send('resume');assert.equal((await reply)[0].kind,'refused');}
+  else {assert.equal(message.kind,'refused');assert.equal(message.code,'not_ready');}
+  await child.done;assert.equal(await closing,true);await store.close();
+  await assert.rejects(stat(join(root,'lock.json')),{code:'ENOENT'});
+  const reopened=await StateStore.open(root);await reopened.close();
+});
+
+test('failed initialization releases both its published owner and its guard descriptor',async t=> {
+  const root=await mkdtemp(join(tmpdir(),'ui-lock-init-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  await writeFile(join(root,'instance.json'),'{',{mode:0o600});await assert.rejects(StateStore.open(root));
+  await assert.rejects(stat(join(root,'lock.json')),{code:'ENOENT'});await unlink(join(root,'instance.json'));
+  const store=await StateStore.open(root);await store.close();
+});
+
+test('unsafe or displaced guard files refuse without publishing an owner', {timeout:15000},async()=> {
+  for(const kind of ['directory','permissions','hardlink','displaced']) {
+    const root=await mkdtemp(join(tmpdir(),'ui-lock-guard-'));let child:Awaited<ReturnType<typeof lockProcess>>|undefined;
+    try {
+      const path=join(root,'lock-recovery.json');
+      if(kind==='directory')await mkdir(path);
+      if(kind==='permissions'){await writeFile(path,'',{mode:0o600});await chmod(path,0o644);}
+      if(kind==='hardlink'){await writeFile(join(root,'other'),'',{mode:0o600});await link(join(root,'other'),path);}
+      if(kind==='displaced'){child=await lockProcess(root,'displaced');const message=await child.message;assert.equal(message.kind,'refused');assert.equal(message.code,'not_ready');await child.done;}
+      else await assert.rejects(StateStore.open(root),error=>error instanceof StateError&&error.code==='not_ready');
+      await assert.rejects(stat(join(root,'lock.json')),{code:'ENOENT'});
+    } finally {await child?.stop();await rm(root,{recursive:true,force:true});}
+  }
+});
+
+test('corrupt or unknown state owners refuse explicitly and preserve their bytes',async t=> {
+  const root=await mkdtemp(join(tmpdir(),'ui-lock-unknown-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const valid={format:'ui-state/1',pid:2147483647,hostname:hostname(),owner:'dead'};
+  for(const bytes of ['', '{', 'null', '[]', JSON.stringify({...valid,owner:''}), JSON.stringify({...valid,pid:0}),JSON.stringify({...valid,format:'unknown'}),JSON.stringify({...valid,hostname:`changed-${hostname()}`})]) {
+    await writeFile(join(root,'lock.json'),bytes,{mode:0o600});
+    await assert.rejects(StateStore.open(root,{recoverDeadLock:true}),error=>error instanceof StateError&&error.code==='not_ready'&&error.status===503);
+    assert.equal(await readFile(join(root,'lock.json'),'utf8'),bytes);
+  }
 });
 
 test('workspace and target capacities never evict drafts; values are copies and inputs are bounded', async t => {

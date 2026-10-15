@@ -316,7 +316,7 @@ export class DevReload {
     try {await this.bounded(this.hooks.drain(signal), signal);} catch {if (this.current(serial, signal)) this.notice('failed', 'drain'); return;}
     if (!this.current(serial, signal) || !this.interaction(revision)) return;
     const view = this.hooks.captureCheckpoint();
-    if (!record(view, ['workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient'])) {this.notice('failed', 'checkpoint'); return;}
+    if (!record(view, ['workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files'])) {this.notice('failed', 'checkpoint'); return;}
     const checkpoint = validateDevReloadCheckpoint({...view, version: 1, generation: build.generation, oldClient: this.client, capturedAt: this.env.clock.now(), interactionRevision: revision}, build.generation, this.env.clock.now());
     const workspace = new URL(this.env.href()).searchParams.get('workspace');
     if (!checkpoint || checkpoint.workspaceId !== workspace) {this.notice('failed', 'checkpoint'); return;}

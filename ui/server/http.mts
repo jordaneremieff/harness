@@ -14,9 +14,10 @@ import {dispatchFiles, isFileRoute,fileWatchClientId} from './routes-files.mts';
 import { SessionStore, validateSessionProject } from './sessions.mts';
 import type { AssetGenerations } from './asset-generations.mts';
 import type { DiagnosticSink } from './diagnostics.mts';
-import type { UiIdentity } from '../shared/version.ts';
+import { UI_ITERATION, type UiIdentity } from '../shared/version.ts';
+import { readHealthSnapshot, type BackendHealthFacts, type HealthSnapshot } from '../shared/health.ts';
 import { identityDocument } from './version.mts';
-export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files};
+export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; session: string; signal?: AbortSignal};
@@ -31,6 +32,7 @@ export type Asset = {type: string; data: Buffer};
 export const ASSET_FILE_BYTES = 2 * 1024 * 1024;
 export const ASSET_TOTAL_BYTES = 16 * 1024 * 1024;
 export const ASSET_ENTRY_LIMIT = 256;
+export const HTTP_CLOSE_GRACE_MS = 2000;
 const MIME = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml'};
 function missingAsset(path: string) {
   return new ApiError('not_ready', `Browser assets are missing: ${path}. Run npm run ui:build before starting.`, 503);
@@ -87,11 +89,12 @@ export async function assetMap(root = fileURLToPath(new URL('../', import.meta.u
   await add('/shared/api.js', 'dist/shared/api.js', MIME['.js']);
   await add('/shared/version.js', 'dist/shared/version.js', MIME['.js']);
   await add('/shared/files.js', 'dist/shared/files.js', MIME['.js']);
+  await add('/shared/health.js', 'dist/shared/health.js', MIME['.js']);
   return assets;
 }
 function matchRoute(method: string, parts: string[]) {
   let pathKnown = false;
-  for (const route of [...ROUTES, 'GET /api/sessions', 'GET /api/projects', 'POST /api/agents/:identity/start']) {
+  for (const route of [...ROUTES, 'GET /api/health', 'GET /api/sessions', 'GET /api/projects', 'POST /api/agents/:identity/start']) {
     const [verb, path] = route.split(' '); const expected = path?.split('/').filter(Boolean) ?? [];
     if (expected.length !== parts.length || !expected.every((part, index) => part.startsWith(':') || part === parts[index])) continue;
     pathKnown = true; if (method === verb) return;
@@ -137,6 +140,12 @@ function respond(response: ServerResponse, data: unknown, status = 200) {
   if (Buffer.byteLength(json) > LIMITS.displayBytes) throw new ApiError('payload_too_large', 'The response exceeds the display bound.', 413);
   response.writeHead(status, {'Content-Type': 'application/json; charset=utf-8'}); response.end(json);
 }
+function rejectRequest(response: ServerResponse, error: unknown): void {
+  if (response.headersSent) { response.end(); return; }
+  const status = error instanceof ApiError ? error.status : error && typeof error==='object' && 'status' in error && typeof error.status==='number' ? error.status : 500;
+  response.writeHead(status, {'Content-Type': 'application/json; charset=utf-8'});
+  response.end(JSON.stringify({ok: false, error: errorView(error)}));
+}
 function requireMethod(method:string,expected:string) {if(method!==expected) throw new ApiError('invalid_request','The route does not accept this method.',405);}
 function operationKey(request: IncomingMessage) {
   const header = request.headers['idempotency-key'];
@@ -146,7 +155,7 @@ function operationKey(request: IncomingMessage) {
 /** Bounded request admission uses elapsed-time token accounting, never a refill timer. */
 export class LocalHttp {
   readonly server: Server;
-  readonly auth = new Auth();
+  readonly auth: Auth;
   private stopped = false;
   private active = 0;
   private imageReads = 0;
@@ -156,8 +165,9 @@ export class LocalHttp {
   private sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'>;
   private development:DevelopmentHttp;
   private buildStreams=new Map<ServerResponse,string>();
-  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}) {
-    this.backend = backend; this.assets = assets; this.sessions = sessions;this.development=development;
+  private closeWork?: Promise<void>;
+  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}, auth: Auth = new Auth()) {
+    this.backend = backend; this.assets = assets; this.sessions = sessions;this.development=development; this.auth = auth;
     this.server = createServer((request, response) => { void this.handle(request, response); });
     this.server.requestTimeout = 30_000;
     this.server.headersTimeout = 10_000;
@@ -170,10 +180,17 @@ export class LocalHttp {
     this.auth.setPort(address.port); return `${this.auth.origin}/#launch=${this.auth.capability}`;
   }
   stopAdmission() { this.stopped = true; }
-  async close() {
-    this.stopAdmission(); this.backend.journal.close(); this.auth.close();
+  close(): Promise<void> {if (!this.closeWork) this.closeWork = this.finishClose(); return this.closeWork;}
+  private async finishClose(): Promise<void> {
+    this.stopAdmission(); this.backend.journal.close();
     for(const response of this.buildStreams.keys()) response.end();
-    await new Promise<void>((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => this.server.closeAllConnections(), HTTP_CLOSE_GRACE_MS); timer.unref();
+        this.server.close(error => {clearTimeout(timer); if (error) reject(error); else resolve();});
+        this.server.closeIdleConnections();
+      });
+    } finally {await this.auth.close();}
   }
   private rate(key: string) {
     const now = performance.now(); const bucket = this.buckets.get(key) ?? {tokens: 240, at: now};
@@ -185,16 +202,16 @@ export class LocalHttp {
     securityHeaders(response);const started=performance.now();
     try {
       if (this.stopped) throw new ApiError('not_ready', 'The backend no longer accepts requests.', 503);
-      this.auth.validate(request); this.rate('loopback');
+      this.auth.validate(request);
+      const rawPath = (request.url ?? '/').split('?')[0] ?? '/'; pathParts(rawPath);
+      const url = new URL(request.url ?? '/', this.auth.origin);
+      if (this.staticRoute(response, url, request.method ?? 'GET')) return;
+      this.rate('loopback');
       if (this.active >= 64) throw new ApiError('capacity', 'Too many requests are active.', 429, 'read');
       this.active++;
       try { await this.route(request, response); } finally { this.active--; }
-    } catch (error) {
-      if (response.headersSent) { response.end(); return; }
-      const status = error instanceof ApiError ? error.status : error && typeof error==='object' && 'status' in error && typeof error.status==='number' ? error.status : 500;
-      response.writeHead(status, {'Content-Type': 'application/json; charset=utf-8'});
-      response.end(JSON.stringify({ok: false, error: errorView(error)}));
-    } finally {this.recordRequest(request,started);}
+    } catch (error) {rejectRequest(response, error);}
+    finally {this.recordRequest(request,started);}
   }
   private recordRequest(request:IncomingMessage,started:number) {
     if(!this.development.diagnostics) return;
@@ -206,8 +223,6 @@ export class LocalHttp {
     const url = new URL(request.url ?? '/', this.auth.origin);
     const method = request.method ?? 'GET'; const parts = pathParts(url.pathname);
     if(await this.developmentRoute(request,response,url,method)) return;
-    const asset = this.assets.get(url.pathname);
-    if (asset) return this.staticAsset(method, url.pathname === '/' ? this.versionDocument(asset) : asset, response);
     if (!isFileRoute(parts)) matchRoute(method, parts);
     if (this.savedImageRoute(method, parts, 'POST', 6)) return this.uploadImage(request, response, url, parts, this.auth.session(request));
     if (fileMutationRoute(method,parts)) this.auth.session(request);
@@ -215,10 +230,21 @@ export class LocalHttp {
     if (url.pathname === '/api/auth/launch') return this.launch(body, response);
     const session = this.auth.session(request);
     if (url.pathname === '/api/auth/logout') return this.logout(session, response);
+    if (url.pathname === '/api/health') return respond(response, this.health());
     if (url.pathname === '/api/events') return this.events(request, response, url, session);
     if (await this.savedMetadata(url, response)) return;
     await this.validateResume(method, url, body);
     return this.dispatchRequest(request,response,url,method,parts,body,session);
+  }
+  private health(): HealthSnapshot {
+    try {
+      if (!this.development.health) throw new Error('unavailable');
+      const identity = this.development.identity;
+      return readHealthSnapshot({...this.development.health(),
+        process: {pid: process.pid, uptimeMs: Math.floor(process.uptime() * 1000), rssBytes: process.memoryUsage.rss()},
+        requests: {active: this.active, limit: 64},
+        identity: {iteration: identity?.iteration ?? UI_ITERATION, commit: identity?.git?.commit, assetDigest: identity?.assets?.digest}});
+    } catch {throw new ApiError('not_ready', 'Backend health details are unavailable.', 503, 'read');}
   }
   private savedImageRoute(method: string, parts: string[], expectedMethod: string, length: number): boolean {
     return method === expectedMethod && parts.length === length && parts[1] === 'workspaces' && parts[3] === 'targets' && parts[5] === 'images';
@@ -285,7 +311,6 @@ export class LocalHttp {
   }
   private async developmentRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string):Promise<boolean> {
     const generations=this.development.generations;
-    if(generations&&(url.pathname==='/'||url.pathname.startsWith('/_ui/'))) {this.generationAsset(generations,response,url,method);return true;}
     if(!url.pathname.startsWith('/api/dev/')||(!generations&&!this.development.diagnostics)) return false;
     const session=this.auth.session(request);
     if(url.pathname==='/api/dev/diagnostics'&&this.development.diagnostics) {
@@ -296,6 +321,13 @@ export class LocalHttp {
     if(url.pathname==='/api/dev/events') {requireMethod(method,'GET');this.developmentEvents(generations,response,url,session);return true;}
     if(url.pathname==='/api/dev/ack'||url.pathname==='/api/dev/release') {requireMethod(method,'POST');await this.developmentAck(generations,request,response,url,session);return true;}
     return false;
+  }
+  private staticRoute(response:ServerResponse,url:URL,method:string):boolean {
+    const generations = this.development.generations;
+    if (generations && (url.pathname === '/' || url.pathname.startsWith('/_ui/'))) {this.generationAsset(generations,response,url,method); return true;}
+    const asset = this.assets.get(url.pathname);
+    if (!asset) return false;
+    this.staticAsset(method,url.pathname === '/' ? this.versionDocument(asset) : asset,response); return true;
   }
   private generationAsset(generations:AssetGenerations,response:ServerResponse,url:URL,method:string) {
     if(method!=='GET'&&method!=='HEAD') throw new ApiError('invalid_request','The asset does not accept this method.',405);
@@ -357,12 +389,12 @@ export class LocalHttp {
     if (method !== 'POST' || url.pathname !== '/api/primaries') return;
     if (typeof body.sessionFile === 'string' && typeof body.cwd === 'string') await validateSessionProject(body.cwd, body.sessionFile);
   }
-  private launch(body: Record<string, unknown>, response: ServerResponse) {
+  private async launch(body: Record<string, unknown>, response: ServerResponse) {
     if (typeof body.capability !== 'string' || body.capability.length > 256 || Object.keys(body).length !== 1) throw new ApiError('invalid_request', 'The launch request is invalid.');
-    this.auth.launch(body.capability, response); respond(response, {authenticated: true});
+    await this.auth.launch(body.capability, response); respond(response, {authenticated: true});
   }
-  private logout(session: string, response: ServerResponse) {
-    this.auth.logout(session, response); this.backend.journal.revoke(session);this.development.diagnostics?.revoke(session);
+  private async logout(session: string, response: ServerResponse) {
+    await this.auth.logout(session, response); this.backend.journal.revoke(session);this.development.diagnostics?.revoke(session);
     for(const [stream,owner] of this.buildStreams) if(owner===session) stream.end();
     respond(response, {authenticated: false});
   }

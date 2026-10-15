@@ -12,7 +12,7 @@ type ScanState = {name: string; firstUser: string; seenUser: boolean};
 export function titleExcerpt(text: string): string {
   return safeText(text.slice(0, TITLE_CHARS * 2), TITLE_CHARS * 4).replace(/\s+/g, ' ').trim().slice(0, TITLE_CHARS);
 }
-function record(line: string): Record<string, unknown> | null {
+export function sessionRecord(line: string): Record<string, unknown> | null {
   if (!line.trim()) return null;
   try {
     const value: unknown = JSON.parse(line);
@@ -32,7 +32,7 @@ function userText(value: unknown): string {
   return titleExcerpt(text);
 }
 function consume(line: string, state: ScanState, allowUser: boolean) {
-  const entry = record(line); if (!entry) return;
+  const entry = sessionRecord(line); if (!entry) return;
   // Pi 1.1.0 dist/core/session-manager.js buildSessionInfo: latest name, including clears.
   if (entry.type === 'session_info' && (entry.name == null || typeof entry.name === 'string')) state.name = titleExcerpt(entry.name ?? '');
   if (!allowUser || state.seenUser || entry.type !== 'message') return;

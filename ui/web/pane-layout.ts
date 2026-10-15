@@ -5,7 +5,6 @@ export type { PaneNode } from '../shared/api.ts';
 export type PaneLayout = ConversationLayout;
 export type PaneLeaf = Extract<PaneNode, {kind: 'pane'}>;
 export type PaneAxis = 'x' | 'y';
-export type PaneView = 'chronological' | 'grouped';
 export type PaneSpace = {width: number; height: number; divider: number};
 export type PaneSize = {width: number; height: number};
 export const MAX_PANES = 4;

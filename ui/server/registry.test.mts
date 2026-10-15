@@ -16,6 +16,7 @@ import { assertOperation, decodeDescriptor, supportedOperations, type OperationN
 import { activity, descriptor, frame, CHILD, STORAGE } from '../agents/fake-host.mts';
 import { deriveEndpoint, type CatalogRecord } from '../agents/catalog-record.mts';
 
+const sessionHeader = (cwd: string, id = 'fixture-session') => `${JSON.stringify({type:'session',version:3,id,cwd})}\n`;
 const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
 function fakeAgents() {
   const forbidden = async (): Promise<never> => { throw new Error('No native work in a registry fixture'); };
@@ -29,7 +30,7 @@ class Primary extends PrimarySession {
   constructor(privateOptions: PrimarySessionOptions, counts: {started: number; closed: number}) {
     super(privateOptions); this.counts = counts; this.view.sessionFile = privateOptions.sessionFile;
   }
-  override async start() { this.counts.started++; this.view.lifecycle = 'ready'; this.view.activity = 'idle'; }
+  override async start() { this.counts.started++; this.view.lifecycle = 'ready'; this.view.activity = 'idle'; this.view.sessionId = 'fixture-session'; }
   override async close() { this.counts.closed++; this.view.lifecycle = 'stopped'; }
 }
 function deferred() {
@@ -91,7 +92,7 @@ test('registry restart restores stopped records, drafts, and workspace without s
 });
 
 test('canonical session aliases reject a second backend writer and release after shutdown', {timeout: 10000}, async context => {
-  const setup = await fixture(context); const registry = await setup.open(); const file = join(setup.cwd, 'session.jsonl'); await writeFile(file, '{}\n');
+  const setup = await fixture(context); const registry = await setup.open(); const file = join(setup.cwd, 'session.jsonl'); await writeFile(file, sessionHeader(setup.cwd));
   const canonical = await registry.validatePath(file, false);
   const alias = await registry.validatePath(`${setup.cwd}/nested/../session.jsonl`, false); assert.equal(alias, canonical);
   const key = await registry.openPrimary(setup.cwd, canonical); assert.equal(setup.counts.started, 1);
@@ -103,7 +104,7 @@ test('canonical session aliases reject a second backend writer and release after
 
 test('an auto-new primary excludes a saved open through its raw child-reported canonical alias', {timeout: 10000}, async context => {
   const setup = await fixture(context); const registry = await setup.open();
-  const file = join(setup.cwd, 'saved.jsonl'); await writeFile(file, '{}\n');
+  const file = join(setup.cwd, 'saved.jsonl'); await writeFile(file, sessionHeader(setup.cwd));
   const key = await registry.openPrimary(setup.cwd);
   const primary = registry.primary(key); assert.equal(primary.view.sessionFile, undefined);
   primary.view.sessionFile = `${setup.cwd}/nested/../saved.jsonl`;
@@ -118,7 +119,7 @@ test('an auto-new primary excludes a saved open through its raw child-reported c
 test('concurrent saved opens recheck capacity after canonical writer claims', {timeout: 10000}, async context => {
   const setup = await fixture(context); const registry = await setup.open();
   const paths = await Promise.all(Array.from({length: LIMITS.primaries + 1}, async (_, index) => {
-    const file = join(setup.cwd, `session-${index}.jsonl`); await writeFile(file, '{}\n');
+    const file = join(setup.cwd, `session-${index}.jsonl`); await writeFile(file, sessionHeader(setup.cwd));
     return registry.validatePath(file, false);
   }));
   const arrived = deferred(); const release = deferred(); context.after(() => release.resolve());
@@ -146,7 +147,7 @@ test('concurrent saved opens recheck capacity after canonical writer claims', {t
 test('failed lifecycle retains canonical writer exclusion and capacity until actual exit', {timeout: 10000}, async context => {
   const setup = await fixture(context); const writers: WriterPrimary[] = [];
   setup.options.primary = supplied => { const writer = new WriterPrimary(supplied, setup.counts); writers.push(writer); return writer; };
-  const registry = await setup.open(); const file = join(setup.cwd, 'owned.jsonl'); await writeFile(file, '{}\n');
+  const registry = await setup.open(); const file = join(setup.cwd, 'owned.jsonl'); await writeFile(file, sessionHeader(setup.cwd));
   const firstKey = await registry.openPrimary(setup.cwd); const first = writers[0]; assert.ok(first);
   first.view.sessionFile = `${setup.cwd}/nested/../owned.jsonl`;
   const canonical = await registry.validatePath(file, false);
@@ -181,7 +182,7 @@ test('shutdown retains the StateStore lock after close rejection until the actua
 
 test('shutdown awaits a pending saved open before releasing the StateStore lock and never starts it', {timeout: 10000}, async context => {
   const setup = await fixture(context); const registry = await setup.open();
-  const file = join(setup.cwd, 'pending.jsonl'); await writeFile(file, '{}\n');
+  const file = join(setup.cwd, 'pending.jsonl'); await writeFile(file, sessionHeader(setup.cwd));
   const canonical = await registry.validatePath(file, false); const entered = deferred(); const release = deferred();
   context.after(() => release.resolve()); const savePrimaries = registry.store.savePrimaries.bind(registry.store);
   context.mock.method(registry.store, 'savePrimaries', async (views: PrimaryView[]) => {
@@ -200,6 +201,119 @@ test('shutdown awaits a pending saved open before releasing the StateStore lock 
   assert.equal(registry.sessions.size, 0); assert.equal(registry.saved.size, 0);
   const next = await StateStore.open(setup.options.stateDir);
   try { assert.deepEqual(await next.readPrimaries(), []); } finally { await next.close(); }
+});
+
+async function retainedFixture(context: TestContext, beforeClose?: (registry: Registry, key: string) => Promise<void>) {
+  const setup = await fixture(context); const registry = await setup.open(); const workspace = await registry.store.workspace();
+  const file = join(setup.cwd,'retained.jsonl'); await writeFile(file,sessionHeader(setup.cwd));
+  const key = await registry.openPrimary(setup.cwd,file,workspace.id); const primary = registry.primary(key); primary.view.epoch = 7;
+  const layout: ConversationLayout = {root:{kind:'pane',id:'pane',tabs:[{kind:'primary'},{kind:'file',rootId:'root',path:'source.ts'}],active:'primary'},focusedPane:'pane'};
+  await registry.store.updateSelection(workspace.id,{expectedRevision:workspace.revision,primaryKey:key,selectedTarget:primary.target,conversationLayout:layout,filePositions:{'file:["root","source.ts"]':{scrollTop:240,scrollLeft:32}}});
+  const target = await registry.store.target(workspace.id,primary.target);
+  await registry.store.putDraft(workspace.id,target.targetKey,{expectedRevision:0,text:'acknowledged draft',mode:'prompt'});
+  await registry.store.putReading(workspace.id,target.targetKey,{expectedRevision:0,anchorId:'assistant-36',offsetPx:525,followTail:false});
+  await registry.store.putPresentation(workspace.id,target.targetKey,{expectedRevision:0,expanded:['tool-1'],showThinking:true,transcriptView:'grouped'});
+  await beforeClose?.(registry,key); await registry.store.savePrimaries(registry.views()); await registry.close();
+  const restarted = await setup.open(); const before = await restarted.store.getTarget(workspace.id,target.targetKey);
+  return {...setup,registry:restarted,key,file,workspace:await restarted.store.workspace(workspace.id),before};
+}
+
+test('explicit saved resume preserves key, epoch and each workspace draft and view without startup execution', {timeout:10000}, async context => {
+  let otherId = ''; let otherState!: TargetState;
+  const f = await retainedFixture(context,async (registry,key) => {
+    const other = await registry.store.createWorkspace(); otherId = other.id; const target = registry.primary(key).target;
+    await registry.store.updateSelection(other.id,{expectedRevision:other.revision,primaryKey:key,selectedTarget:target});
+    const state = await registry.store.target(other.id,target);
+    await registry.store.putDraft(other.id,state.targetKey,{expectedRevision:0,text:'other workspace draft',mode:'prompt'});
+    await registry.store.putReading(other.id,state.targetKey,{expectedRevision:0,anchorId:'other-entry',offsetPx:91,followTail:false});
+    otherState = await registry.store.getTarget(other.id,state.targetKey);
+  });
+  assert.equal(f.counts.started,1); assert.equal(f.registry.sessions.size,0);
+  const key = await f.registry.openPrimary(f.cwd,`${f.cwd}/nested/../retained.jsonl`,f.workspace.id);
+  assert.equal(key,f.key); assert.equal(f.registry.primary(key).view.epoch,7); assert.equal(f.counts.started,2);
+  assert.deepEqual(await f.registry.store.target(f.workspace.id,f.registry.primary(key).target),f.before);
+  assert.deepEqual(await f.registry.store.target(otherId,f.registry.primary(key).target),otherState);
+  assert.deepEqual(await f.registry.store.workspace(f.workspace.id),f.workspace);
+});
+
+test('concurrent retained opens reserve one identity before writer claims and persistence await', {timeout:10000}, async context => {
+  const f = await retainedFixture(context); const entered = deferred(); const release = deferred(); context.after(()=>release.resolve());
+  const claim = f.registry.claimPath.bind(f.registry);
+  const claims = context.mock.method(f.registry,'claimPath',async (path: string,key: string)=>{await claim(path,key); entered.resolve(); await release.promise;});
+  const first = f.registry.openPrimary(f.cwd,f.file,f.workspace.id); await entered.promise;
+  try {await assert.rejects(f.registry.openPrimary(f.cwd,f.file,f.workspace.id),{code:'operation_conflict'}); assert.equal(f.counts.started,1);}
+  finally {release.resolve();}
+  assert.equal(await first,f.key); assert.equal(claims.mock.callCount(),1); assert.equal(f.counts.started,2); assert.equal(f.registry.sessions.size,1);
+  await assert.rejects(f.registry.openPrimary(f.cwd,f.file,f.workspace.id),{code:'operation_conflict'});
+  assert.deepEqual(await f.registry.store.getTarget(f.workspace.id,f.before.targetKey),f.before);
+});
+
+test('retained recovery rolls back setup and persistence failures without replacing saved state', {timeout:10000}, async context => {
+  const f = await retainedFixture(context); const previous = structuredClone(f.registry.saved.get(f.key));
+  const factory = f.options.primary; f.options.primary = ()=>{throw new Error('construction failed');};
+  await assert.rejects(f.registry.openPrimary(f.cwd,f.file,f.workspace.id),/construction failed/);
+  assert.deepEqual(f.registry.saved.get(f.key),previous); assert.equal(f.registry.sessions.size,0);
+  f.options.primary = factory;
+  const save = f.registry.store.savePrimaries.bind(f.registry.store); let fail = true;
+  context.mock.method(f.registry.store,'savePrimaries',async (views: PrimaryView[])=>{if(fail) {fail=false;throw new Error('save failed');} await save(views);});
+  await assert.rejects(f.registry.openPrimary(f.cwd,f.file,f.workspace.id),/save failed/);
+  assert.deepEqual(f.registry.saved.get(f.key),previous); assert.deepEqual(await f.registry.store.readPrimaries(),[previous]);
+  assert.equal(f.counts.started,1); assert.equal(f.registry.sessions.size,0);
+  assert.equal(await f.registry.openPrimary(f.cwd,f.file,f.workspace.id),f.key); assert.equal(f.counts.started,2);
+  assert.deepEqual(await f.registry.store.getTarget(f.workspace.id,f.before.targetKey),f.before);
+});
+
+test('failed retained initialization keeps its writer until actual exit before explicit retry', {timeout:10000}, async context => {
+  const f = await retainedFixture(context); const writers: WriterPrimary[] = [];
+  f.options.primary = supplied=>{const writer=new WriterPrimary(supplied,f.counts);writers.push(writer);return writer;};
+  assert.equal(await f.registry.openPrimary(f.cwd,f.file,f.workspace.id),f.key); const writer = writers[0]; assert.ok(writer);
+  assert.equal(writer.view.lifecycle,'failed'); assert.equal(writer.client.exited,false);
+  await assert.rejects(f.registry.openPrimary(f.cwd,`${f.cwd}/nested/../retained.jsonl`,f.workspace.id),{code:'operation_conflict'});
+  assert.equal(f.counts.started,2); assert.equal(f.registry.sessions.get(f.key),writer);
+  writer.actualExit(); assert.equal(await f.registry.openPrimary(f.cwd,f.file,f.workspace.id),f.key); assert.equal(f.counts.started,3);
+  assert.deepEqual(await f.registry.store.getTarget(f.workspace.id,f.before.targetKey),f.before);
+});
+
+test('retained identity requires a valid matching header and project while new files stay new', {timeout:10000}, async context => {
+  const f = await retainedFixture(context); const previous = structuredClone(f.registry.saved.get(f.key));
+  for(const body of [sessionHeader(f.cwd,'different-session'),sessionHeader(f.cwd,''),sessionHeader(join(f.cwd,'nested')),'{broken\n',`${JSON.stringify({type:'session',cwd:f.cwd})}\n`]) {
+    await writeFile(f.file,body);
+    await assert.rejects(f.registry.openPrimary(f.cwd,f.file,f.workspace.id),error=>error instanceof ApiError && ['operation_conflict','invalid_session'].includes(error.code));
+    assert.equal(f.counts.started,1); assert.deepEqual(f.registry.saved.get(f.key),previous);
+  }
+  await writeFile(f.file,sessionHeader(f.cwd)); const retained = f.registry.saved.get(f.key); assert.ok(retained);
+  delete retained.sessionId;
+  await assert.rejects(f.registry.openPrimary(f.cwd,f.file,f.workspace.id),{code:'operation_conflict'});
+  f.registry.saved.set(f.key,previous as PrimaryView);
+  const other = join(f.cwd,'different.jsonl'); await writeFile(other,sessionHeader(f.cwd,'another-session'));
+  const key = await f.registry.openPrimary(f.cwd,other,f.workspace.id); assert.notEqual(key,f.key); assert.equal(f.registry.primary(key).view.epoch,1);
+  assert.equal((await f.registry.store.target(f.workspace.id,f.registry.primary(key).target)).draft.text,'');
+  assert.deepEqual(await f.registry.store.getTarget(f.workspace.id,f.before.targetKey),f.before);
+});
+
+test('ambiguous retained identities refuse without workspace preference and pure reuse consumes no saved slot', {timeout:10000}, async context => {
+  const f = await retainedFixture(context); const original = f.registry.saved.get(f.key); assert.ok(original);
+  for(let index=1;index<128;index++) f.registry.saved.set(`retained-${index}`,{...structuredClone(original),key:`retained-${index}`});
+  await assert.rejects(f.registry.openPrimary(f.cwd,f.file),{code:'operation_conflict'}); assert.equal(f.counts.started,1);
+  assert.equal(await f.registry.openPrimary(f.cwd,f.file,f.workspace.id),f.key); assert.equal(f.registry.saved.size,128); assert.equal(f.counts.started,2);
+  await assert.rejects(f.registry.openPrimary(f.cwd),{code:'capacity'});
+});
+
+test('explicit retained resume never dispatches uncertain input or retained queue copies', {timeout:10000}, async context => {
+  let operationId = '';
+  const f = await retainedFixture(context,async (registry,key)=>{
+    const target=registry.primary(key).target; const workspace=await registry.store.workspace(); const state=await registry.store.target(workspace.id,target);
+    operationId=(await registry.operations.reserve(workspace.id,'primary.input',target)).id;
+    await registry.operations.execute(operationId,{workspaceId:workspace.id,kind:'primary.input',target,body:{message:state.draft.text},input:{targetKey:state.targetKey,text:state.draft.text,mode:'prompt',draftRevision:state.draft.revision}},async()=>{throw new Error('unknown input outcome');});
+    const clear=await registry.operations.beginQueueClear(workspace.id,target,1); await registry.operations.retainQueue(clear,{steering:[],followUp:['retained queue text']});
+  });
+  const before=f.registry.store.records(); const replay=context.mock.method(Primary.prototype,'input',async()=>{throw new Error('Resume must not replay input');});
+  assert.equal((await f.registry.operations.get(operationId)).state,'uncertain');
+  const route=async(id: string)=>f.registry.dispatch({method:'POST',parts:['api','primaries'],url:new URL('http://localhost/api/primaries'),body:{cwd:f.cwd,sessionFile:f.file},workspace:f.workspace.id,session:'fixture',operationId:id});
+  const id=(await f.registry.operations.reserve(f.workspace.id,'primary.open')).id; await route(id); await route(id);
+  assert.equal(f.counts.started,2); assert.equal(replay.mock.callCount(),0);
+  assert.deepEqual(f.registry.store.records().filter(record=>record.view.id!==id),before);
+  assert.deepEqual(await f.registry.store.getTarget(f.workspace.id,f.before.targetKey),f.before);
 });
 
 function agentLayout(identities: string[]): ConversationLayout {

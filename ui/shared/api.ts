@@ -27,11 +27,6 @@ export const LIMITS = {
 export type Target = {kind: 'primary'; key: string; epoch: number} | {kind: 'agent'; identity: string};
 export type JsonDisplay = {value: unknown; truncated: boolean; omittedBytes?: number};
 export type Retry = 'none' | 'read' | 'same-operation' | 'manual';
-export type ErrorCode = 'unauthorized' | 'origin_rejected' | 'invalid_request' | 'payload_too_large' |
-  'stale_revision' | 'stale_epoch' | 'unknown_operation' | 'operation_conflict' | 'capacity' |
-  'not_ready' | 'unsupported' | 'host_unavailable' | 'contract_mismatch' | 'protocol_error' |
-  'delivery_uncertain' | 'internal' | 'history_limit' | 'file_missing' | 'file_root_missing' |
-  'file_unsafe' | 'file_denied' | 'file_unavailable' | 'file_changed' | 'file_binary';
 /** Bounded public error. Never includes stacks or raw upstream objects. */
 export type ErrorView = {code: string; message: string; retry: Retry; operationId?: string; target?: Target; details?: JsonDisplay};
 export type Success<T> = {ok: true; data: T};
@@ -130,7 +125,6 @@ export type StoredDraft = {revision: number; text: string; mode: string; persist
 export type DraftView = Omit<StoredDraft, 'images'> & {images: DraftImage[]; recoverySendGuard?: RecoverySendGuard};
 export type DraftPut = {expectedRevision: number; text: string; mode: string; images?: DraftImage[]; recoverySource?: string};
 export type ImageUploadView = {targetKey: string; target: Target; image: DraftImage; leaseExpiresAt: string};
-export type UnknownDraftImages = {targetKey: string; missingIndexes: number[]};
 export type DraftImageAvailability = {digest: string; state: 'ready' | 'unavailable'; reason?: string};
 export function draftImageFingerprint(images: readonly DraftImage[]): string {
   return JSON.stringify(images.map(image => [image.digest, image.mimeType, image.bytes, image.width, image.height, image.name]));
@@ -176,8 +170,6 @@ export type OperationView = {id: string; kind: OperationKind; target?: Target; a
   state: 'reserved' | 'dispatched' | 'accepted' | 'rejected' | 'uncertain' | 'completed';
   createdAt: string; updatedAt: string; retainedInput?: RetainedAdmission; receipt?: {kind: 'rpc'; disposition?: 'started' | 'queued' | 'handled'; result?: JsonDisplay} |
   {kind: 'durable'; identity: string; submissionId: number; requestId: string; deduped: boolean}; error?: ErrorView};
-export type PrimaryInput = {epoch: number; message: string; mode: 'prompt' | 'steer' | 'followUp'; draftRevision: number; literal?: boolean; images?: DraftImage[]; differentMessage?: true};
-export type AgentInput = {message: string; mode: 'steer' | 'followUp'; draftRevision: number; images?: DraftImage[]};
 export type PrimaryControl = {epoch: number} & ({action: 'model'; provider: string; modelId: string} |
   {action: 'thinking'; level: string} | {action: 'compact'; customInstructions?: string} |
   {action: 'autoCompaction' | 'autoRetry'; enabled: boolean} | {action: 'abortRetry'} |

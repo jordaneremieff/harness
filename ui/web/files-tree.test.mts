@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {HostNode,byId,hostDocument,settle} from './app-fixture.mts';
+import {createAppFixture} from './app-fixture.mts';
+const {HostNode, byId, hostDocument, settle} = await createAppFixture();
+type HostNode = InstanceType<typeof HostNode>;
 import {FilesTree} from './files-tree.ts';
 import type {FileDirectoryPage,FileEntry} from '../shared/files.ts';
 const root = {id:'r',path:'/project',name:'project'};

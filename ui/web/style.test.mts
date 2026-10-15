@@ -230,7 +230,7 @@ test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and 
   assert.match(rule('.nav-row, .row-select'), /height: 26px;[^}]*white-space: nowrap/);
   assert.match(rule('.row-age, .row-message'), /position: absolute; top: 1px; right: 8px/);
   assert.match(rule('.row-message'), /opacity: 1; pointer-events: auto; color: var\(--muted\)/);
-  assert.doesNotMatch(css, /\.agent-row(?:\:hover|\:focus-within)[^{]+> \.row-message/);
+  assert.doesNotMatch(css, /\.agent-row(?::hover|:focus-within)[^{]+> \.row-message/);
   assert.match(rule('.agent-row:is([data-action=message],[data-action=resume]) > .row-age'), /right: 40px; max-width: 64px/);
   assert.match(rule('.agent-row:is([data-action=message],[data-action=resume]) > .row-select'), /padding-right: 104px/);
   assert.doesNotMatch(css, /\.conversation-title-line|\.conversation-title\s*\{/);

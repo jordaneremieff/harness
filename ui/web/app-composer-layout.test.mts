@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {DraftImage} from '../shared/api.ts';
-import {app, arrive, settle, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, host, type HostNode} from './app-fixture.mts';
+import {createAppFixture, type HostNode} from './app-fixture.mts';
+const {app, arrive, settle, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, host} = await createAppFixture();
 
 function ancestors(node: HostNode): HostNode[] {
   const result: HostNode[] = [];

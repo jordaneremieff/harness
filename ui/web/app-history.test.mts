@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, {type TestContext} from 'node:test';
 import type {AgentHistoryPage, HistoryPage, ProjectedFrame, Target} from '../shared/api.ts';
-import {app, arrive, settle, event, primaryControl, agentControl, primaryFixture, agentFixture, observation, targetFixture, entryFixture, messageFixture, textPart, coverage} from './app-fixture.mts';
+import {createAppFixture} from './app-fixture.mts';
+const fixtureHost = await createAppFixture();
+const {app, arrive, settle, event, primaryControl, agentControl, primaryFixture, agentFixture, observation, targetFixture, entryFixture, messageFixture, textPart, coverage} = fixtureHost;
 import {targetIdentity} from './state.ts';
 
 const row = (id: string) => entryFixture(id, [messageFixture(`message-${id}`, [textPart(id)])]);
@@ -122,7 +124,8 @@ for (const change of ['epoch', 'workspace', 'hidden'] as const) {
       return response({...target, epoch: change === 'epoch' ? target.epoch + 1 : target.epoch}, [row('current-tail')], 'current-older');
     };
     const workspace = `history-stale-${change}`;
-    const baseline = {workspace: {id: workspace, revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: []};
+    const baseline = {workspace: {id: workspace, revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [],
+      targets: [targetFixture(workspace, target, {reading: {revision: 9, anchorId: 'late-tail', offsetPx: 25, followTail: false}})]};
     await arrive(baseline);
     const oldRoot = primaryControl('root'), oldEarlier = primaryControl('earlier');
     if (change === 'hidden') {
@@ -141,3 +144,112 @@ for (const change of ['epoch', 'workspace', 'hidden'] as const) {
     }
   });
 }
+
+let readingSerial = 12000;
+async function pendingResume(t: TestContext) {
+  const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: ++readingSerial}, workspace = `reading-${target.epoch}`;
+  const reading = {revision: 9, anchorId: 'saved-anchor', offsetPx: 25, followTail: false};
+  const saved = targetFixture(workspace, target, {reading}), ready = primaryFixture({epoch: target.epoch});
+  const items = [row('before-anchor'), row('saved-anchor'), ...Array.from({length: 12}, (_, i) => row(`after-${i}`))];
+  const pending = Promise.withResolvers<Response>(), entered = Promise.withResolvers<void>(); let phase = 'loaded', held = false;
+  t.after(() => {globalThis.fetch = original; pending.resolve(response(target, items, null));});
+  globalThis.fetch = async (input, init) => {
+    if (new URL(String(input), 'http://ui.test').pathname !== '/api/primaries/p/history') return original(input, init);
+    if (phase === 'resume' && !held) {held = true; entered.resolve(); return pending.promise;}
+    return response(target, phase === 'stopped' ? [] : items, null);
+  };
+  const baseline = {workspace: {id: workspace, revision: 1, primaryKey: 'p'}, primaries: [ready], roster: [], targets: [saved]};
+  await arrive(baseline); const root = primaryControl('root'), transcript = primaryControl('transcript');
+  // The shared host fixes its event boot ID; relabel the prior boot before the real snapshot replacement.
+  app.state.bootId = 'prior-boot'; app.state.cursor = `prior-boot:${app.state.sequence}`;
+  phase = 'stopped'; await arrive({...baseline, primaries: [{...ready, lifecycle: 'stopped', capabilities: {}}]});
+  transcript.scrollTop = 0; transcript.dispatch('scroll');
+  assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading, reading);
+  phase = 'resume'; event('primary.state', ready, target); await entered.promise; await settle();
+  return {target, workspace, saved, reading, items, root, transcript, baseline,
+    finish: async () => {pending.resolve(response(target, items, null)); await settle();},
+    fail: async () => {pending.reject(new Error('History read unavailable')); await settle();},
+    notifyScroll: () => {transcript.scrollTop = 0; transcript.dispatch('scroll'); transcript.dispatch('scroll'); transcript.dispatch('scrollend');}};
+}
+
+test('owned resume history restores the surviving controller and never persists an interim tail', async t => {
+  const h = await pendingResume(t);
+  h.notifyScroll(); await settle();
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+  await h.finish();
+  assert.equal(primaryControl('root'), h.root);
+  const anchor = h.transcript.querySelector('[data-entry-id="saved-anchor"]'); assert.ok(anchor);
+  assert.equal(h.transcript.scrollTop, anchor.offsetTop - h.transcript.offsetTop + h.reading.offsetPx);
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+  h.transcript.dispatch('scrollend'); await settle();
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+});
+test('the final reading intent returns to A after an in-flight B write completes', async t => {
+  const h = await pendingResume(t); await h.finish();
+  const forward = globalThis.fetch, entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const puts: {expectedRevision: number; anchorId: string | null; offsetPx: number; followTail: boolean}[] = [];
+  t.after(async () => {release.resolve(); await app.drainDev(AbortSignal.timeout(2000));});
+  globalThis.fetch = async (input, init) => {
+    if (init?.method === 'PUT' && new URL(String(input), 'http://ui.test').pathname === `/api/workspaces/${h.workspace}/targets/${encodeURIComponent(h.saved.targetKey)}/reading`) {
+      puts.push(JSON.parse(String(init.body)));
+      if (puts.length === 1) {entered.resolve(); await release.promise;}
+    }
+    return forward(input, init);
+  };
+  const durableReading = () => fixtureHost.fixture.targets?.find(saved => saved.targetKey === h.saved.targetKey)?.reading;
+  const positionA = h.transcript.scrollTop, valueA = {anchorId: h.reading.anchorId, offsetPx: h.reading.offsetPx, followTail: false};
+  assert.deepEqual(durableReading(), h.reading);
+  h.transcript.scrollTop = positionA + 30; h.transcript.dispatch('scroll'); h.transcript.dispatch('scrollend');
+  await entered.promise;
+  assert.deepEqual(puts, [{expectedRevision: h.reading.revision, ...valueA, offsetPx: valueA.offsetPx + 30}]);
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+  assert.deepEqual(durableReading(), h.reading);
+  h.transcript.scrollTop = positionA; h.transcript.dispatch('scroll'); h.transcript.dispatch('scrollend'); await settle();
+  assert.equal(h.transcript.scrollTop, positionA);
+  assert.equal(puts.length, 1, 'The final A must wait behind the in-flight B');
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+  release.resolve(); await app.drainDev(AbortSignal.timeout(2000)); await settle();
+  const finalA = {...h.reading, revision: h.reading.revision + 2};
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, finalA);
+  assert.deepEqual(durableReading(), finalA);
+  assert.deepEqual(puts, [{expectedRevision: h.reading.revision, ...valueA, offsetPx: valueA.offsetPx + 30}, {expectedRevision: h.reading.revision + 1, ...valueA}]);
+  assert.equal(app.captureDevCheckpoint().targets.find(saved => saved.targetKey === h.saved.targetKey)?.readingRevision, finalA.revision);
+});
+test('a failed resume read releases reading persistence without applying the saved position', async t => {
+  const h = await pendingResume(t);
+  h.notifyScroll(); await settle();
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+  await h.fail();
+  assert(primaryControl('view-notice').textContent.includes('History could not be loaded'));
+  assert.equal(h.transcript.scrollTop, 0);
+  h.transcript.dispatch('scrollend'); await settle();
+  assert.notDeepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+});
+for (const type of ['pointerdown', 'keydown', 'beforeinput', 'input', 'change', 'compositionstart', 'compositionend', 'wheel']) {
+  test(`trusted ${type} cancels a pending resume reading before late history returns`, async t => {
+    const h = await pendingResume(t);
+    h.root.dispatch(type, {isTrusted: true});
+    await h.finish();
+    assert.equal(primaryControl('root'), h.root);
+    assert.equal(app.state.conversations.get(targetIdentity(h.target))?.entries.has('saved-anchor'), true);
+    assert.equal(h.transcript.scrollTop, 0, 'Late history restored a position after actual input');
+    h.transcript.scrollTop = 13; h.transcript.dispatch('scroll'); h.transcript.dispatch('scrollend'); await settle();
+    assert.notDeepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading, 'Canceled ownership still blocks later reading persistence');
+  });
+}
+test('untrusted input notifications do not cancel the owned resume reading', async t => {
+  const h = await pendingResume(t);
+  h.root.dispatch('input', {isTrusted: false}); h.notifyScroll(); await settle();
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+  await h.finish();
+  const anchor = h.transcript.querySelector('[data-entry-id="saved-anchor"]'); assert.ok(anchor);
+  assert.equal(h.transcript.scrollTop, anchor.offsetTop - h.transcript.offsetTop + h.reading.offsetPx);
+});
+test('hiding a surviving controller cancels resume ownership and rejects its late history', async t => {
+  const h = await pendingResume(t);
+  await arrive({...h.baseline, workspace: {...h.baseline.workspace, selectedTarget: {kind: 'agent', identity: 'other-reading-owner'}}});
+  assert.equal(h.root.hidden, true);
+  await h.finish();
+  assert.notEqual(app.state.conversations.get(targetIdentity(h.target))?.entries.has('saved-anchor'), true);
+  assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
+});

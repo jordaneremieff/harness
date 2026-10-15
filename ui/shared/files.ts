@@ -13,7 +13,6 @@ export type FileSave = {source: FileText; draft: FileDraft};
 export type FileWatchScope = {rootId:string; directories:string[]; files:string[]};
 export type FileWatchRootState = {rootId:string; watch:'live'|'unavailable'; reason?:string};
 export type FileWatchState = {roots:FileWatchRootState[]};
-export type FileWatchRequest = {clientId:string;roots:FileWatchScope[]};
 export type FileMove = {from:string; to:string; kind:'file'|'directory'};
 export type FileChanges = {rootId:string; directories:string[]; files:string[]; rescan:boolean; watch:'live'|'unavailable'; reason?:string; move?:FileMove};
 export type FileMutation = {rootId:string; operation:'create'|'move'|'trash'; path:string; kind:'file'|'directory'; previousPath?:string};

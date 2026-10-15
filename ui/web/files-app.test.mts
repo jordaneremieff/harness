@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {app,arrive,settle,byId,hostDocument,beforeUnload,primaryFixture,primaryControl,agentFixture,targetFixture,transportLog,paneNode} from './app-fixture.mts';
+import {createAppFixture} from './app-fixture.mts';
+const {app, arrive, settle, byId, hostDocument, beforeUnload, primaryFixture, primaryControl, agentFixture, targetFixture, transportLog, paneNode} = await createAppFixture();
 import {activeTab,tabKey} from './tabs.ts';
 import {splitPane,paneLeaves} from './pane-layout.ts';
 import {contextMenu} from './context-menu.ts';

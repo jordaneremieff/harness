@@ -4,8 +4,10 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { captureInputs, compileBrowser, confirmedBuild, sameInputs, needsRestart, type InputSnapshot } from './development-build.mts';
+import { captureInputs, compileBrowser, confirmedBuild, sameInputs, needsRestart, checkCss, DevelopmentBuild, type BuildProducer, type InputSnapshot } from './development-build.mts';
 import { parseArgs } from './main.mts';
+import {AssetGenerations} from './asset-generations.mts';
+import {createHook} from 'node:async_hooks';
 
 const snapshot=(app="import '../shared/api.ts'; export const value=1;"):InputSnapshot=>new Map([
   ['web/tsconfig.json',Buffer.from(JSON.stringify({compilerOptions:{target:'ES2023',module:'ES2022',moduleResolution:'Bundler',lib:['ES2023','DOM'],types:[],strict:true,skipLibCheck:true,rootDir:'..',outDir:'../dist',rewriteRelativeImportExtensions:true},include:['./*.ts','../shared/api.ts']}))],
@@ -86,6 +88,28 @@ test('input reconciliation ignores documentation and tests and stops at a direct
   const before=await captureInputs(directory);assert.equal(before.size,1);await writeFile(join(directory,'web/readme.md'),'two');assert.equal(sameInputs(before,await captureInputs(directory)),true);
   for(let index=0;index<254;index++) await writeFile(join(directory,`web/ignored-${index}.md`),'');
   await assert.rejects(()=>captureInputs(directory),/capacity/);
+});
+
+test('CSS parsing accepts unformatted current input, refuses malformed input, and never writes the stylesheet',async()=> {
+  const path=join(root,'web/style.css'),before=await readFile(path);
+  await checkCss(root,before);await checkCss(root,Buffer.from('body{color:black}'));
+  await assert.rejects(()=>checkCss(root,Buffer.from('body{color:')),/invalid-assets/);
+  assert.deepEqual(await readFile(path),before);
+});
+
+test('watch installation reconciles an earlier edit without a periodic idle timer', {timeout:10000},async context=> {
+  const directory=await mkdtemp(join(tmpdir(),'build-watch-'));context.after(()=>rm(directory,{recursive:true,force:true}));
+  for(const name of ['web','shared','server','rpc','agents']) await mkdir(join(directory,name));
+  const inputs=snapshot();for(const [path,data] of inputs) await writeFile(join(directory,path),data);
+  const generation=await compileBrowser(root,inputs,async()=>{}),generations=new AssetGenerations(generation);
+  let captures=0;const producer:BuildProducer={capture:async()=>{captures++;return captureInputs(directory);},compile:async()=>generation};
+  const Constructor=DevelopmentBuild as unknown as new(root:string,generations:AssetGenerations,inputs:InputSnapshot,producer:BuildProducer)=>DevelopmentBuild;
+  const build=new Constructor(directory,generations,inputs,producer);context.after(()=>build.close());
+  await writeFile(join(directory,'web/app.ts'),'export const value=2;');
+  let ready:()=>void;const complete=new Promise<void>(resolve=>{ready=resolve;});generations.observe(status=>{if(status.revision>0&&status.status==='ready')ready();});
+  const intervals:number[]=[];const hook=createHook({init(_id,type,_trigger,value){const timer=value as {_repeat?:number};if(type==='Timeout'&&timer._repeat)intervals.push(timer._repeat);}});
+  hook.enable();try {build.start();build.start();await complete;await build.close();} finally {hook.disable();}
+  assert.ok(captures>=2);assert.deepEqual(intervals,[]);
 });
 
 test('development modes are explicit reversible options and normal startup flags remain unchanged',()=> {

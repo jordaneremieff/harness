@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ProjectedFrame } from '../shared/api.ts';
-import {app, arrive, settle, event, hostDocument, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} from './app-fixture.mts';
+import {createAppFixture} from './app-fixture.mts';
+const {app, arrive, settle, event, hostDocument, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} = await createAppFixture();
 
 test('initial focused draft hydration restores focus, while rerenders preserve another control focus', async () => {
   const target = {kind: 'agent', identity: 'caret-agent'} as const;

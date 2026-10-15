@@ -49,64 +49,64 @@ test('fetch metadata permits only same-origin, none, or absent', () => {
   }
 });
 
-test('launch tokens are random 256-bit values, unrelated to the single-use cookie', () => {
+test('launch tokens are random 256-bit values, unrelated to the single-use cookie', async () => {
   const value = auth(); const output = response();
   assert.equal(Buffer.from(value.capability, 'base64url').length, 32);
   assert.notEqual(value.capability, auth().capability);
   for (const wrong of ['', 'wrong', `${value.capability}x`, value.capability.slice(1)]) {
-    assert.throws(() => value.launch(wrong, output.http), rejected('unauthorized', 401));
+    await assert.rejects(value.launch(wrong, output.http), rejected('unauthorized', 401));
     assert.equal(output.headers.size, 0);
   }
-  const session = value.launch(value.capability, output.http);
+  const session = await value.launch(value.capability, output.http);
   assert.notEqual(session, value.capability);
   assert.equal(Buffer.from(session, 'base64url').length, 32);
   assert.equal(output.headers.get('Set-Cookie'), `pi_ui_session=${session}; HttpOnly; SameSite=Strict; Path=/`);
-  assert.throws(() => value.launch(value.capability, output.http), rejected('unauthorized', 401));
+  await assert.rejects(value.launch(value.capability, output.http), rejected('unauthorized', 401));
   assert.equal(value.session(request('GET', {cookie: `other=x; pi_ui_session=${session}; extra=y`})), session);
 });
 
-test('unused launch capability expires at exactly five minutes without a timer', () => {
+test('unused launch capability expires at exactly five minutes without a timer', async () => {
   let now = 1000;
   const valid = auth(() => now); const expired = auth(() => now);
-  now += 299999; valid.launch(valid.capability, response().http);
+  now += 299999; await valid.launch(valid.capability, response().http);
   now += 1;
-  assert.throws(() => expired.launch(expired.capability, response().http), rejected('unauthorized', 401));
+  await assert.rejects(expired.launch(expired.capability, response().http), rejected('unauthorized', 401));
 });
 
-test('cookies require one exact issued value and reject duplicates or launch tokens', () => {
-  const value = auth(); const session = value.launch(value.capability, response().http);
+test('cookies require one exact issued value and reject duplicates or launch tokens', async () => {
+  const value = auth(); const session = await value.launch(value.capability, response().http);
   for (const cookie of [undefined, '', 'pi_ui_session=', `pi_ui_session=${value.capability}`, `pi_ui_session=${session}x`, `pi_ui_session=${session}; pi_ui_session=${session}`, `pi_ui_session=${session}; pi_ui_session=wrong`, `pi_ui_session_extra=${session}`]) {
     assert.throws(() => value.session(request('GET', {cookie})), rejected('unauthorized', 401));
   }
 });
 
-test('logout, shutdown, and a backend restart revoke cookies', () => {
-  const value = auth(); const output = response(); const session = value.launch(value.capability, output.http);
+test('logout revokes cookies and memory-only instances do not share sessions', async () => {
+  const value = auth(); const output = response(); const session = await value.launch(value.capability, output.http);
   const incoming = request('GET', {cookie: `pi_ui_session=${session}`});
   assert.throws(() => auth().session(incoming), rejected('unauthorized', 401));
-  value.logout(session, output.http);
+  await value.logout(session, output.http);
   assert.equal(output.headers.get('Set-Cookie'), 'pi_ui_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
   assert.throws(() => value.session(incoming), rejected('unauthorized', 401));
-  const second = auth(); const token = second.launch(second.capability, response().http); second.close();
+  const second = auth(); const token = await second.launch(second.capability, response().http); await second.close();
   assert.throws(() => second.session(request('GET', {cookie: `pi_ui_session=${token}`})), rejected('unauthorized', 401));
 });
 
-test('invalid, consumed, and expired launch links report their own authentication boundary', () => {
+test('invalid, consumed, and expired launch links report their own authentication boundary', async () => {
   let now = 0;
   const value = auth(() => now); const output = response();
   const rejectedLaunch = (error: unknown) => {
     assert.ok(error instanceof Error); assert.equal(error.message, 'This launch link is no longer valid.');
     return rejected('unauthorized', 401)(error);
   };
-  assert.throws(() => value.launch('invalid', output.http), rejectedLaunch);
+  await assert.rejects(value.launch('invalid', output.http), rejectedLaunch);
   assert.equal(output.headers.size, 0);
-  value.launch(value.capability, output.http);
-  assert.throws(() => value.launch(value.capability, output.http), rejectedLaunch);
+  await value.launch(value.capability, output.http);
+  await assert.rejects(value.launch(value.capability, output.http), rejectedLaunch);
   const expired = auth(() => now); now = 300000;
-  assert.throws(() => expired.launch(expired.capability, response().http), rejectedLaunch);
+  await assert.rejects(expired.launch(expired.capability, response().http), rejectedLaunch);
 });
-test('missing, invalid, and revoked session cookies report browser authentication', () => {
-  const value = auth(); const output = response(); const session = value.launch(value.capability, output.http);
+test('missing, invalid, and revoked session cookies report browser authentication', async () => {
+  const value = auth(); const output = response(); const session = await value.launch(value.capability, output.http);
   const rejectedSession = (error: unknown) => {
     assert.ok(error instanceof Error); assert.equal(error.message, 'This browser is not authenticated.');
     return rejected('unauthorized', 401)(error);
@@ -114,7 +114,7 @@ test('missing, invalid, and revoked session cookies report browser authenticatio
   for (const cookie of [undefined, '', 'pi_ui_session=invalid', `pi_ui_session=${session}; pi_ui_session=${session}`]) {
     assert.throws(() => value.session(request('GET', {cookie})), rejectedSession);
   }
-  value.logout(session, output.http);
+  await value.logout(session, output.http);
   assert.throws(() => value.session(request('GET', {cookie: `pi_ui_session=${session}`})), rejectedSession);
 });
 test('security headers prohibit inline/eval content, framing, caching, and referrer leakage', () => {

@@ -53,7 +53,9 @@ async function open(registry: Registry, context: RequestContext, workspace: stri
     const primaryKey = await registry.openPrimary(cwd,sessionFile,workspace);
     const current = await registry.store.workspace(workspace);
     const view = registry.primary(primaryKey).view;
-    await registry.store.updateSelection(workspace,{expectedRevision:current.revision,primaryKey,selectedTarget:{kind:'primary',key:primaryKey,epoch:view.epoch}});
+    if(current.primaryKey !== primaryKey || current.selectedTarget?.kind !== 'primary' || current.selectedTarget.key !== primaryKey || current.selectedTarget.epoch !== view.epoch) {
+      await registry.store.updateSelection(workspace,{expectedRevision:current.revision,primaryKey,selectedTarget:{kind:'primary',key:primaryKey,epoch:view.epoch}});
+    }
     await registry.store.target(workspace,{kind:'primary',key:primaryKey,epoch:view.epoch});
     return {state:'completed',receipt:{kind:'rpc',result:{value:{primaryKey},truncated:false}}};
   });

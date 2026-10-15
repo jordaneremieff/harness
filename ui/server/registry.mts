@@ -17,8 +17,9 @@ import { dispatchPrimary } from './routes-primary.mts';
 import { dispatchAgent } from './routes-agent.mts';
 import { dispatchView } from './routes-view.mts';
 import { StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
+import { validateSessionProject } from './sessions.mts';
 
-export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'>;
+export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean};
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
   agents?: (options: AgentServiceOptions) => AgentAdapter; primary?: (options: PrimarySessionOptions) => PrimarySession; measure?: Measure;
   agentStart?: Pick<StartOptions,'spawn'|'timeoutMs'|'agentDir'>};
@@ -26,6 +27,9 @@ const live = (view: PrimaryView) => !['stopped','failed'].includes(view.lifecycl
 const ownsWriter = (session: PrimarySession) => !!session.client.child && !session.client.exited;
 const needsStorage = (session: PrimarySession) => ownsWriter(session) || session.queueRecoveryPending;
 const owned = (session: PrimarySession) => live(session.view) || ownsWriter(session);
+async function canonicalMatch(path: string, expected: string): Promise<boolean> {
+  try {return await realpath(path) === expected;} catch {return false;}
+}
 function preparationAvailability(code: string): TargetPreparation['availability'] {
   if(code === 'stored') return 'stored';
   return ['contract_mismatch','protocol_error','unsupported'].includes(code) ? 'incompatible' : 'unavailable';
@@ -54,6 +58,7 @@ export class Registry {
   private pendingMetadata?: PrimaryView[];
   private metadataDigest = '';
   private pathClaims = new Map<string, string>();
+  private openingKeys = new Set<string>();
   readonly queueWorkspaces = new Map<string,string>();
   readonly store:StateStore; readonly options:RegistryOptions;
   private constructor(store: StateStore, options: RegistryOptions, journal: Journal) {
@@ -86,7 +91,7 @@ export class Registry {
   }
   static async open(options: RegistryOptions) {
     const journal = new Journal(undefined, options.measure);
-    const store = await StateStore.open(options.stateDir, {onChange: (name,data,workspace,target) => journal.publish(name,target,data,workspace)});
+    const store = await StateStore.open(options.stateDir, {recoverDeadLock:true,onChange: (name,data,workspace,target) => journal.publish(name,target,data,workspace)});
     try {
       const registry = new Registry(store, options, journal);
       for (const previous of await store.readPrimaries()) {
@@ -183,9 +188,28 @@ export class Registry {
       if(existing === path) throw new ApiError('operation_conflict','This saved session already has a backend writer.',409,'manual');
     }
   }
-  private admitPrimary() {
+  private admitPrimary(reuse: boolean) {
     if (this.closing) throw new ApiError('not_ready','The backend no longer accepts primaries.',503);
-    if ([...this.sessions.values()].filter(owned).length >= LIMITS.primaries || this.saved.size >= 128) throw new ApiError('capacity','The primary capacity is full.',429);
+    if ([...this.sessions.values()].filter(owned).length >= LIMITS.primaries || !reuse && this.saved.size >= 128) throw new ApiError('capacity','The primary capacity is full.',429);
+  }
+  private async retainedPrimary(cwd: string, path: string, workspaceId?: string): Promise<PrimaryView | undefined> {
+    const matches: PrimaryView[] = [];
+    for(const view of this.saved.values()) {
+      if(view.sessionFile && await canonicalMatch(view.sessionFile,path)) matches.push(view);
+    }
+    if(!matches.length) return;
+    const id = await validateSessionProject(cwd,path); const project = await realpath(cwd);
+    const identities: PrimaryView[] = [];
+    for(const view of matches) {
+      if(view.sessionId === id && await canonicalMatch(view.cwd,project)) identities.push(view);
+    }
+    if(!identities.length) throw new ApiError('operation_conflict','The saved file no longer matches its retained conversation identity.',409,'manual');
+    const workspace = workspaceId ? await this.store.workspace(workspaceId) : undefined;
+    const preferred = identities.find(view => view.key === workspace?.primaryKey) ??
+      identities.find(view => workspace?.selectedTarget?.kind === 'primary' && view.key === workspace.selectedTarget.key && view.epoch === workspace.selectedTarget.epoch);
+    if(preferred) return preferred;
+    if(identities.length !== 1) throw new ApiError('operation_conflict','More than one retained primary matches this saved conversation. Select its workspace first.',409,'manual');
+    return identities[0];
   }
   releasePath(path: string, key: string) { if(this.pathClaims.get(path) === key) this.pathClaims.delete(path); }
   openPrimary(cwd: string, sessionFile?: string, workspaceId?: string) {
@@ -193,24 +217,45 @@ export class Registry {
     void run.finally(()=>this.opens.delete(run)).catch(()=>{}); return run;
   }
   private async openOnce(cwd: string, sessionFile?: string, workspaceId?: string) {
-    this.admitPrimary();
-    const key = randomUUID(); let session: PrimarySession;
+    this.admitPrimary(true);
+    if(sessionFile) sessionFile = await this.validatePath(sessionFile,false);
+    const previous = sessionFile ? await this.retainedPrimary(cwd,sessionFile,workspaceId) : undefined;
+    const key = previous?.key ?? randomUUID();
+    const priorSession = this.sessions.get(key); const priorWorkspace = this.queueWorkspaces.get(key);
+    if(this.openingKeys.has(key) || priorSession && (owned(priorSession) || needsStorage(priorSession))) throw new ApiError('operation_conflict','This primary already has a backend writer or an open in progress.',409,'manual');
+    this.openingKeys.add(key);
+    let session: PrimarySession; let claimed = false;
     try {
-      if(sessionFile) await this.claimPath(sessionFile,key);
-      this.admitPrimary();
-      session = (this.options.primary ?? (options=>new PrimarySession(options)))({key,cwd,sessionFile,executable:this.options.executable,
-        measure:this.options.measure ? (stage,id,at,bytes)=>this.options.measure?.(stage,`${key}:${id}`,at,bytes) : undefined,
-        publish: (name,target,data) => this.publish(name,target,data), onChange:()=>this.metadataChanged(),
-        onBeforeClearQueue: async (target, pendingCount) => this.operations.beginQueueClear(this.queueWorkspaces.get(key) ?? await this.workspace(), target, pendingCount),
-        onRecoveredQueue: (clearOperationId, queue) => this.operations.retainQueue(clearOperationId, queue),
-        onQueueClearFailed: (clearOperationId, uncertain) => this.operations.settleQueueClearFailure(clearOperationId, uncertain)});
+      if(sessionFile) {await this.claimPath(sessionFile,key); claimed = true;}
+      this.admitPrimary(previous !== undefined);
+      session = this.createPrimary(key,cwd,sessionFile,previous);
       this.sessions.set(key,session); this.saved.set(key,session.view);
       if(workspaceId) this.queueWorkspaces.set(key,workspaceId);
       await this.store.savePrimaries(this.views());
       if(this.closing) throw new ApiError('not_ready','The backend no longer accepts primaries.',503);
-    } catch (error) { if(sessionFile) this.releasePath(sessionFile,key); this.sessions.delete(key); this.saved.delete(key); throw error; }
+    } catch (error) {
+      if(claimed && sessionFile) this.releasePath(sessionFile,key);
+      await this.rollbackPrimary(key,previous,priorSession,priorWorkspace);
+      throw error;
+    } finally {this.openingKeys.delete(key);}
     void session.start().catch(()=>{}).finally(()=>this.metadataChanged());
     return key;
+  }
+  private createPrimary(key: string, cwd: string, sessionFile?: string, previous?: PrimaryView) {
+    const session = (this.options.primary ?? (options=>new PrimarySession(options)))({key,cwd,sessionFile,...(previous ? {epoch:previous.epoch} : {}),executable:this.options.executable,
+      measure:this.options.measure ? (stage,id,at,bytes)=>this.options.measure?.(stage,`${key}:${id}`,at,bytes) : undefined,
+      publish: (name,target,data) => this.publish(name,target,data), onChange:()=>this.metadataChanged(),
+      onBeforeClearQueue: async (target, pendingCount) => this.operations.beginQueueClear(this.queueWorkspaces.get(key) ?? await this.workspace(), target, pendingCount),
+      onRecoveredQueue: (clearOperationId, queue) => this.operations.retainQueue(clearOperationId, queue),
+      onQueueClearFailed: (clearOperationId, uncertain) => this.operations.settleQueueClearFailure(clearOperationId, uncertain)});
+    if(previous) {session.view.sessionId = previous.sessionId; session.view.sessionFile = sessionFile;}
+    return session;
+  }
+  private async rollbackPrimary(key: string, previous: PrimaryView | undefined, priorSession: PrimarySession | undefined, priorWorkspace: string | undefined) {
+    if(priorSession) this.sessions.set(key,priorSession); else this.sessions.delete(key);
+    if(previous) this.saved.set(key,previous); else this.saved.delete(key);
+    if(priorWorkspace) this.queueWorkspaces.set(key,priorWorkspace); else this.queueWorkspaces.delete(key);
+    try {await this.store.savePrimaries(this.views());} catch {this.journal.publish('notice',undefined,{level:'error',code:'state_write_failed',message:'Primary metadata rollback was not saved.'});}
   }
   publish(name: EventName, target: Target | undefined, data: EventData[EventName]) {
     this.journal.publish(name,target,data);

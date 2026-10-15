@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {app,arrive,event,settle,byId,hostDocument,type HostNode,transportLog} from './app-fixture.mts';
+import {createAppFixture, type HostNode} from './app-fixture.mts';
+const {app, arrive, event, settle, byId, hostDocument, transportLog} = await createAppFixture();
 import {createPaneLayout} from './pane-layout.ts';
 import {movedWorkspaceFiles} from './file-identity.ts';
 import type {FileTab} from '../shared/api.ts';

@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, opendir, rename, unlink } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, open, opendir, rename, unlink, type FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -16,6 +16,9 @@ import {movedFilePath, type FileMutation} from '../shared/files.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FORMAT = 'ui-state/1';
+// Node omits Darwin O_EXLOCK. Keep the guard inode so every contender locks the same kernel object.
+const DARWIN_EXCLUSIVE_LOCK = 0x20;
+type LockOwner = {format: string; pid: number; hostname: string; owner: string};
 export type ChangeHook = (name: EventName, data: EventData[EventName], workspaceId?: string, target?: Target) => void;
 export type QueueClearRecord = {recoveryWorkspaceId: string; phase: 'prepared' | 'retaining' | 'retained' | 'uncertain' | 'refused'; imageCopies: {workspaceId: string; operationId: string}[]; rowBudget: number; returned?: {steering: number; followUp: number}};
 export type OperationMetadata = {view: Pick<OperationView, 'id' | 'kind' | 'target' | 'state' | 'createdAt' | 'updatedAt'>; workspaceId: string; input?: true; inputResolved?: boolean; retainedInput?: RetainedAdmission; protected?: boolean};
@@ -202,6 +205,8 @@ export class StateStore {
   readonly root: string;
   instanceId = '';
   private readonly owner = randomUUID();
+  private lockHeld = false;
+  private lockGuard?: FileHandle;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
   private closePromise?: Promise<void>;
@@ -237,9 +242,10 @@ export class StateStore {
       const stat = await lstat(dir); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StateError('not_ready', 'State subdirectory is not a directory', 503);
       await chmod(dir, 0o700);
     }
-    await store.acquireLock(options.recoverDeadLock === true);
-    try { await store.initialize(); store.images = new DraftImages(store.root); await store.refreshImageIndex(); await store.cleanupImagesForMutation(); return store; }
-    catch (error) { await store.images?.close(); await store.releaseLock(); throw error; }
+    try {
+      await store.acquireLock(options.recoverDeadLock === true);
+      await store.initialize(); store.images = new DraftImages(store.root); await store.refreshImageIndex(); await store.cleanupImagesForMutation(); return store;
+    } catch (error) { await store.images?.close(); await store.releaseLock(); throw error; }
   }
   private async initialize(): Promise<void> {
       try {
@@ -303,32 +309,60 @@ export class StateStore {
       });
       if (this.operationBytes + this.refusedOperationBytes > 32 * 1024 * 1024) throw new StateError('capacity', 'Saved operation store exceeds its limit', 429);
   }
-  private async acquireLock(recover: boolean): Promise<void> {
-    const path = join(this.root, 'lock.json');
-    const create = async () => {
-      const file = await open(path, 'wx', 0o600);
-      try { await file.writeFile(JSON.stringify({format: FORMAT, pid: process.pid, hostname: hostname(), owner: this.owner})); await file.sync(); }
-      finally { await file.close(); }
-      await syncDirectory(this.root);
-    };
-    try { await create(); return; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-    if (!recover) throw new StateError('not_ready', 'State root already has an owner', 503);
-    const guardPath = join(this.root, 'lock-recovery.json');
-    const guard = await open(guardPath, 'wx', 0o600).catch(() => { throw new StateError('not_ready', 'State lock recovery already has an owner', 503); });
+  private async acquireGuard(recover: boolean): Promise<void> {
+    if (process.platform !== 'darwin') throw new StateError('not_ready', 'State lock coordination requires macOS', 503);
+    const flags = constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK | DARWIN_EXCLUSIVE_LOCK;
+    this.lockGuard = await open(join(this.root, 'lock-recovery.json'), flags, 0o600).catch(error => {
+      let message = 'State lock guard is unavailable';
+      if ((error as NodeJS.ErrnoException).code === 'EAGAIN') message = recover ? 'State lock owner is live or unknown' : 'State root already has an owner';
+      throw new StateError('not_ready', message, 503);
+    });
+    await this.checkGuard();
+  }
+  private async checkGuard(): Promise<void> {
+    if (!this.lockGuard) throw new StateError('not_ready', 'State lock guard is unavailable', 503);
+    const [info,named] = await Promise.all([this.lockGuard.stat(),lstat(join(this.root, 'lock-recovery.json'))]).catch(() => { throw new StateError('not_ready', 'State lock guard is unavailable', 503); });
+    if (!info.isFile() || !named.isFile() || info.dev !== named.dev || info.ino !== named.ino || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) throw new StateError('not_ready', 'State lock guard is not private or its identity changed', 503);
+  }
+  private async readLock(): Promise<LockOwner> {
+    let value: LockOwner;
+    try { value = await readJson(join(this.root, 'lock.json'), 4096) as LockOwner; }
+    catch { throw new StateError('not_ready', 'State lock owner is unknown', 503); }
+    if (!value || value.format !== FORMAT || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.hostname !== 'string' || !value.hostname || typeof value.owner !== 'string' || !value.owner || value.owner.length > 128) throw new StateError('not_ready', 'State lock owner is unknown', 503);
+    return value;
+  }
+  private async publishLock(localHostname: string): Promise<boolean> {
+    const temp = join(this.root, `.lock-${this.owner}.tmp`),file = await open(temp, 'wx', 0o600);
     try {
-      const lock = await readJson(path, 4096) as {pid: number; hostname: string};
-      if (lock.hostname !== hostname() || !Number.isSafeInteger(lock.pid) || lock.pid <= 0) throw new StateError('not_ready', 'State lock owner is unknown', 503);
-      let dead = false;
-      try { process.kill(lock.pid, 0); } catch (error) { dead = (error as NodeJS.ErrnoException).code === 'ESRCH'; }
-      if (!dead) throw new StateError('not_ready', 'State lock owner is live or unknown', 503);
-      await unlink(path); await create();
-    } finally { await guard.close(); await unlink(guardPath); }
+      try { await file.writeFile(JSON.stringify({format: FORMAT, pid: process.pid, hostname: localHostname, owner: this.owner})); await file.sync(); }
+      finally { await file.close(); }
+      try { await link(temp, join(this.root, 'lock.json')); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false; throw error; }
+      this.lockHeld = true; await syncDirectory(this.root); return true;
+    } finally { await unlink(temp); }
+  }
+  private async acquireLock(recover: boolean): Promise<void> {
+    await this.acquireGuard(recover);
+    const localHostname = hostname();
+    if (!localHostname) throw new StateError('not_ready', 'Local hostname is unavailable', 503);
+    if (await this.publishLock(localHostname)) return;
+    if (!recover) throw new StateError('not_ready', 'State root already has an owner', 503);
+    const lock = await this.readLock();
+    if (lock.hostname !== localHostname) throw new StateError('not_ready', 'State lock owner is unknown', 503);
+    let dead = false;
+    try { process.kill(lock.pid, 0); } catch (error) { dead = (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+    if (!dead) throw new StateError('not_ready', 'State lock owner is live or unknown', 503);
+    await unlink(join(this.root, 'lock.json'));
+    if (!await this.publishLock(localHostname)) throw new StateError('not_ready', 'State lock ownership changed', 503);
   }
   private async releaseLock(): Promise<void> {
-    const path = join(this.root, 'lock.json');
-    const lock = await readJson(path, 4096) as {owner: string};
-    if (lock.owner !== this.owner) throw new StateError('not_ready', 'State lock ownership changed', 503);
-    await unlink(path); await syncDirectory(this.root);
+    try {
+      if (!this.lockHeld) return;
+      await this.checkGuard();
+      const lock = await this.readLock();
+      if (lock.owner !== this.owner) throw new StateError('not_ready', 'State lock ownership changed', 503);
+      await unlink(join(this.root, 'lock.json')); this.lockHeld = false; await syncDirectory(this.root);
+    } finally { const guard = this.lockGuard; this.lockGuard = undefined; await guard?.close(); }
   }
   private async load(directory: string, count: number, bound: number, accept: (value: unknown) => void): Promise<void> {
     const dir = await opendir(join(this.root, directory)); let visited = 0;

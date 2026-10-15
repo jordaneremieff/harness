@@ -122,7 +122,7 @@ function moduleImports(text:string) {
 }
 export function checkCss(root:string,css:Buffer):Promise<void> {
   return new Promise((resolve,reject)=> {
-    const child=spawn(process.execPath,[join(root,'../node_modules/@biomejs/biome/bin/biome'),'check','--formatter-enabled=false','--linter-enabled=false','--stdin-file-path=style.css'],{cwd:join(root,'..'),stdio:['pipe','ignore','ignore'],timeout:10000});
+    const child=spawn(process.execPath,[join(root,'../node_modules/@biomejs/biome/bin/biome'),'format','--stdin-file-path=style.css'],{cwd:join(root,'..'),stdio:['pipe','ignore','ignore'],timeout:10000});
     child.once('error',()=>reject(new Error('invalid-assets')));child.once('exit',code=>code===0?resolve():reject(new Error('invalid-assets')));
     child.stdin.on('error',()=>reject(new Error('invalid-assets')));child.stdin.end(css);
   });
@@ -142,11 +142,10 @@ if(!isMainThread&&workerData?.kind==='browser-build') {
   const inputs=new Map<string,Buffer>([...workerData.inputs].map(([path,data]:[string,Uint8Array])=>[path,Buffer.from(data)]));
   void emitBrowser(workerData.root,inputs).then(bundle=>parentPort?.postMessage(bundle),error=>parentPort?.postMessage({error:error instanceof Error&&['compile','capacity'].includes(error.message)?error.message:'invalid-assets'})).finally(()=>parentPort?.close());
 }
-/** One watcher set and one periodic reconciliation; no request/render path reads inputs. */
+/** Watch installation is followed by a bounded inventory; idle time never schedules work. */
 export class DevelopmentBuild {
   private builder:LatestBuild;
   private watchers:FSWatcher[]=[];
-  private timer?:ReturnType<typeof setInterval>;
   private debounce?:ReturnType<typeof setTimeout>;
   private scan?:Promise<void>;
   private again=false;
@@ -168,7 +167,7 @@ export class DevelopmentBuild {
       const watcher=watch(join(this.root,directory),{persistent:false},(_event,name)=>{if(name && (String(name).endsWith('.test.mts')||String(name).endsWith('.md'))) return;this.hint();});
       watcher.on('error',()=>{this.generations.failure(this.generations.status().revision,'io');void this.reconcile();});this.watchers.push(watcher);
     }
-    this.timer=setInterval(()=>{void this.reconcile();},30000);this.timer.unref();void this.reconcile();
+    void this.reconcile();
   }
   private hint() {if(this.debounce||this.stopped) return;this.debounce=setTimeout(()=>{this.debounce=undefined;void this.reconcile();},100);this.debounce.unref();}
   reconcile() {
@@ -182,5 +181,5 @@ export class DevelopmentBuild {
       } while(this.again&&!this.stopped);
     })().catch(()=>this.generations.failure(this.generations.status().revision,'io')).finally(()=>{this.scan=undefined;});return this.scan;
   }
-  async close() {this.stopped=true;this.builder.stop();for(const watcher of this.watchers) watcher.close();if(this.timer) clearInterval(this.timer);if(this.debounce) clearTimeout(this.debounce);await this.scan;await this.builder.drain();}
+  async close() {this.stopped=true;this.builder.stop();for(const watcher of this.watchers) watcher.close();if(this.debounce) clearTimeout(this.debounce);await this.scan;await this.builder.drain();}
 }

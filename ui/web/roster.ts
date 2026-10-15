@@ -3,7 +3,7 @@ import {cardAction, cardActionLabel} from './card-icons.ts';
 import { byId, button, details, element, setText, statusGlyph } from './dom.ts';
 import { captureAnchor, layoutItems, restoreAnchor, visibleWindow } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
-import { absoluteTime, isValidTimestamp, previewText, relativeTime, timestampDetails } from './format.ts';
+import { absoluteTime, compactAge, isValidTimestamp, previewText, relativeTime, timestampDetails } from './format.ts';
 import { reconcileChildren } from './render.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
@@ -12,12 +12,6 @@ const ROW_HEIGHT = 20;
 const RECENT_AGE = 24 * 60 * 60 * 1000;
 type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean};
 function rowName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
-function compactAge(value: number, now: number): string {
-  const full = relativeTime(value, now); if (!full) return '';
-  const seconds = (now - value) / 1000;
-  if (seconds < -60 || seconds >= 30 * 86400) return new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric'}).format(new Date(value));
-  return full.replace(/hr ago$/, 'h').replace(/ ago$/, '');
-}
 function identitySuffix(identity: string, tails: Map<string, number>[]): string {
   const colon = identity.lastIndexOf(':');
   if (colon >= 0 && colon < identity.length - 1) return identity.slice(colon + 1);

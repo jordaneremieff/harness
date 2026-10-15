@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { absoluteTime, isValidTimestamp, previewText, relativeTime, stripControls, timestampDetails } from './format.ts';
+import { absoluteTime, compactAge, isValidTimestamp, previewText, relativeTime, stripControls, timestampDetails } from './format.ts';
 
 test('relative ages use supplied time and fixed units', () => {
   const now = Date.UTC(2026, 9, 8, 12);
@@ -11,6 +11,17 @@ test('relative ages use supplied time and fixed units', () => {
   assert.equal(relativeTime('invalid', now), '');
   assert.equal(relativeTime(now, Number.NaN), '');
   assert.equal(relativeTime(new Date(now - 180000), now), '3m ago');
+});
+test('compact ages share relative units and local month-day cutoffs', () => {
+  const now = new Date(2026, 9, 8, 12).getTime();
+  for (const [seconds, label] of [[0, 'now'], [60, 'now'], [61, '1m'], [3599, '59m'], [3600, '1h'], [86399, '23h'], [86400, '1d'], [30 * 86400 - 1, '29d']] as const) {
+    assert.equal(compactAge(now - seconds * 1000, now), label);
+  }
+  const date = (value: number) => new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric'}).format(value);
+  assert.equal(compactAge(now + 60000, now), 'now');
+  for (const value of [0, now + 60001, now - 30 * 86400000]) assert.equal(compactAge(value, now), date(value));
+  for (const value of [Number.NaN, Infinity, -Infinity, 8.64e15 + 1]) assert.equal(compactAge(value, now), '');
+  assert.equal(compactAge(now, Number.NaN), '');
 });
 test('old and future dates use compact local dates with the year', () => {
   const now = new Date(2026, 9, 8, 12).getTime();

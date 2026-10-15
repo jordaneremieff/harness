@@ -18,6 +18,7 @@ import type { SelectionChange } from './actions.ts';
 import { Composer, createComposerElements } from './composer.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
+import { HealthStatus } from './health-status.ts';
 import { ConnectionRecovery, accessViewVisible, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
 import { announce, byId, button, copy, details, element, empty, placeRetained, rawText, setText } from './dom.ts';
 import {StableViews} from './stable-views.ts';
@@ -85,14 +86,16 @@ const modal = new Modal(focusEditor);
 const preferences = new PreferenceQueue();
 const diagnostics = new BrowserDiagnostics();
 new VersionStatus(() => modal.open('Copy UI version identity'));
+new HealthStatus(modal);
 let diagnosticsActive = false;
 let devReload: DevReload | undefined;
 let devInteractionRevision = 0;
+let devRestoreOwner: object | undefined;
 let devNavigating = false;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>;
-  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'>; resizer?: Resizer};
+  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'>; resizer?: Resizer};
 const controllers = new Map<string, ConversationController>();
 let controllerSerial = 0;
 function controllerKey(workspace: string, target: Target): string { return JSON.stringify([workspace, targetIdentity(target)]); }
@@ -155,12 +158,21 @@ function conversationController(target: Target): ConversationController {
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
     image: part => imageUrl(part, controller.target, controller.workspaceId)});
+  bindControllerReadingIntent(controller);
   earlier.addEventListener('click', () => { void loadControllerHistory(controller, true); });
   stop.addEventListener('click', () => { void stopController(controller); });
   const focusPane = (event: Event): void => {const pane = viewPane(event.target as HTMLElement); if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId);};
   root.addEventListener('pointerdown', focusPane); root.addEventListener('focusin', focusPane);
   elements.editor.addEventListener('focus', () => { footerController = controller; renderWorkbenchStatus(); });
   controllers.set(key, controller); return controller;
+}
+function bindControllerReadingIntent(controller: ConversationController): void {
+  const interrupt = (event: Event) => {
+    if (!event.isTrusted) return;
+    const reading = controller.historyReading ?? controller.saved?.reading;
+    controller.historyReading = undefined; controller.transcript.abandonRestore(reading);
+  };
+  for (const name of ['pointerdown', 'keydown', 'beforeinput', 'input', 'change', 'compositionstart', 'compositionend', 'wheel']) controller.root.addEventListener(name, interrupt, {capture: true, passive: true, signal: controller.abort.signal});
 }
 function refreshComposerImages(workspace: string, saved: TargetState): void {
   if (workspace !== state.workspace?.id) return;
@@ -1182,16 +1194,40 @@ function loadControllerHistory(controller: ConversationController, earlier = fal
 async function runControllerHistory(controller: ConversationController, earlier = false, restoring = false): Promise<void> {
   if (controller.loading || controller.abort.signal.aborted || controller.workspaceId !== state.workspace?.id) return;
   if (controller.historyAbort.signal.aborted) controller.historyAbort = new AbortController();
-  const abort = controller.historyAbort, reading = controller.saved?.reading ?? targetState(controller.target)?.reading;
+  const abort = controller.historyAbort, reading = earlier || restoring ? undefined : controller.saved?.reading ?? targetState(controller.target)?.reading;
   const more = controller.target.kind === 'primary' ? controller.cursor !== null : controller.before !== null;
   if (earlier && !more) return;
+  const release = ownControllerReading(controller, reading); let loaded = false;
+  try {loaded = await requestControllerHistory(controller, abort, earlier, restoring, reading);}
+  finally {release(loaded);}
+}
+function ownControllerReading(controller: ConversationController, reading?: TargetState['reading']): (loaded: boolean) => void {
+  if (!reading || reading.followTail || controller.root.hidden) return () => {};
+  const abort = controller.historyAbort;
+  // Empty or partial history can emit layout scrolls before the acknowledged anchor returns.
+  controller.historyReading = reading; controller.transcript.restore(reading);
+  const cancel = () => {
+    if (controller.historyReading !== reading) return;
+    controller.historyReading = undefined; controller.transcript.abandonRestore(reading);
+  };
+  abort.signal.addEventListener('abort', cancel, {once: true}); controller.abort.signal.addEventListener('abort', cancel, {once: true});
+  return loaded => {
+    abort.signal.removeEventListener('abort', cancel); controller.abort.signal.removeEventListener('abort', cancel);
+    if (!loaded || !historyCurrent(controller, abort) || controller.root.hidden) cancel();
+    else if (controller.historyReading === reading) controller.historyReading = undefined;
+  };
+}
+async function requestControllerHistory(controller: ConversationController, abort: AbortController, earlier: boolean, restoring: boolean, reading?: TargetState['reading']): Promise<boolean> {
   startControllerHistory(controller); const control = controllerNode(controller, 'earlier') as HTMLButtonElement; historyLoadingFeedback(control, earlier); let loaded = false;
   try {
     const page = await request<HistoryPage | AgentHistoryPage>(historyPath(controller, earlier), 'GET', undefined, undefined, AbortSignal.any([abort.signal, controller.abort.signal, AbortSignal.timeout(15_000)]));
-    if (!historyCurrent(controller, abort)) return; mergeControllerHistory(controller, page, earlier); loaded = true; historyLoadedFeedback(earlier, restoring);
+    if (!historyCurrent(controller, abort)) return false;
+    if (controller.historyReading) controller.transcript.restore(controller.historyReading);
+    mergeControllerHistory(controller, page, earlier); loaded = true; historyLoadedFeedback(earlier, restoring);
   } catch (error) {controllerHistoryFailed(controller, abort, error);}
   finally {if (controller.historyAbort === abort) {controller.loading = false; renderControllerEmpty(controller); control.disabled = false; control.setAttribute('aria-label', 'Earlier messages'); control.title = 'Earlier messages'; control.removeAttribute('aria-busy');}}
-  if (loaded && !earlier && !restoring && reading && !reading.followTail) await restoreControllerHistory(controller, reading);
+  if (loaded && reading && controller.historyReading === reading) await restoreControllerHistory(controller, reading);
+  return loaded;
 }
 function startControllerHistory(controller: ConversationController): void {
   controller.loading = true; if (controller.historyError) controllerNode(controller, 'view-notice').replaceChildren(); controller.historyError = undefined; renderControllerEmpty(controller);
@@ -1214,7 +1250,7 @@ function historyLoadedFeedback(earlier: boolean, restoring: boolean): void {if (
 async function restoreControllerHistory(controller: ConversationController, reading: TargetState['reading']): Promise<void> {
   const result = await pageToReadingAnchor(reading, {hasEntry: id => state.conversations.get(targetIdentity(controller.target))?.entries.has(id) ?? false,
     nextCursor: () => controller.target.kind === 'primary' ? controller.cursor : controller.before === null ? null : String(controller.before),
-    loadEarlier: () => loadControllerHistory(controller, true, true), current: () => !controller.abort.signal.aborted && !controller.historyAbort.signal.aborted && controller.workspaceId === state.workspace?.id && !controller.root.hidden && controller.transcript.restorationCurrent(reading)});
+    loadEarlier: () => loadControllerHistory(controller, true, true), current: () => !controller.abort.signal.aborted && !controller.historyAbort.signal.aborted && controller.workspaceId === state.workspace?.id && !controller.root.hidden && (controller.historyReading === reading || controller.transcript.restorationCurrent(reading))});
   if (result !== 'exhausted' && result !== 'unavailable') return;
   controller.transcript.abandonRestore(reading); setText(controllerNode(controller, 'view-notice'), result === 'exhausted' ? 'Saved position is not in the available history. Showing the start.' : 'Your saved place is unavailable. Select Earlier to try again.');
 }
@@ -1239,6 +1275,7 @@ async function stopController(controller: ConversationController): Promise<void>
   catch (error) {showStatusError(controller.elements.receipt, 'Stop could not be confirmed.', error);}
 }
 function saveReading(captured: TranscriptTarget | undefined, reading: TargetState['reading']): Promise<void> {
+  if (!captured || captured.controller.historyReading) return Promise.resolve();
   return saveView(captured, 'reading', {anchorId: reading.anchorId, offsetPx: reading.offsetPx, followTail: reading.followTail});
 }
 function savePresentation(captured: TranscriptTarget | undefined, expanded: string[], showThinking: boolean, transcriptView: import('../shared/api.ts').TranscriptView = 'chronological'): Promise<void> {
@@ -1254,6 +1291,8 @@ async function saveView(captured: TranscriptTarget | undefined, kind: 'reading' 
   const notice = controllerNode(controller, 'view-notice');
   try { await preferences.save(`${workspaceId}/${saved.targetKey}/${kind}`, async () => {
     const latest = savedControllerView(captured);
+    const reading = kind === 'reading' ? values as Omit<TargetState['reading'], 'revision'> : undefined;
+    if (reading && latest.reading.anchorId === reading.anchorId && latest.reading.offsetPx === reading.offsetPx && latest.reading.followTail === reading.followTail) return;
     const result = await request<TargetState['reading'] | NonNullable<TargetState['presentation']>>(`/api/workspaces/${encodeURIComponent(workspaceId)}/targets/${encodeURIComponent(saved.targetKey)}/${kind}`, 'PUT', {expectedRevision: latest[kind]?.revision ?? 0, ...values});
     const current = savedControllerView(captured);
     if (result.revision >= (current[kind]?.revision ?? 0)) {
@@ -1519,7 +1558,11 @@ function bind(): void {
   }
   byId('files-heading').addEventListener('click',()=>setSidebarSection('files',!sidebarSections.files));
   byId('files-refresh').addEventListener('click',()=>filesTree.refresh());
-  for (const name of ['input', 'change', 'keydown', 'pointerdown', 'select', 'scroll', 'compositionstart', 'compositionend'] as const) document.addEventListener(name, event => {if (event.isTrusted) devInteractionRevision++;}, {capture: true, passive: true});
+  // Programmatic restoration also emits trusted scroll/select events; input intent must still change the revision.
+  for (const name of ['input', 'change', 'keydown', 'pointerdown', 'wheel', 'select', 'scroll', 'compositionstart', 'compositionend'] as const) document.addEventListener(name, event => {
+    if (!event.isTrusted || devRestoreOwner && (name === 'select' || name === 'scroll')) return;
+    devInteractionRevision++;
+  }, {capture: true, passive: true});
   window.addEventListener('pagehide', event => {if (!event.persisted && !devNavigating) devReload?.destroy();});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
   diagnostics.setHidden(document.hidden); if (document.hidden) connectionRecovery.suspend();
@@ -1649,6 +1692,14 @@ function restoreDevControls(checkpoint: DevReloadCheckpoint, owned: Conversation
   focused?.composer.editor.focus({preventScroll: true}); return true;
 }
 export async function restoreDevCheckpoint(checkpoint: DevReloadCheckpoint, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted || devRestoreOwner) return false;
+  const owner = {}; devRestoreOwner = owner;
+  const release = () => {if (devRestoreOwner === owner) devRestoreOwner = undefined;};
+  signal.addEventListener('abort', release, {once: true});
+  try {return await restoreDevState(checkpoint, signal);}
+  finally {signal.removeEventListener('abort', release); release();}
+}
+async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSignal): Promise<boolean> {
   const revision = devInteractionRevision;
   const epochs = new Map(checkpoint.targets.flatMap(entry => entry.target.kind === 'agent' ? [[entry.target.identity, state.conversations.get(targetIdentity({kind: 'agent', identity: entry.target.identity}))?.connectionEpoch] as const] : []));
   const current = () => !signal.aborted && revision === devInteractionRevision && checkpoint.workspaceId === state.workspace?.id && !devHold() && [...epochs].every(([identity, epoch]) => !!epoch && state.conversations.get(targetIdentity({kind: 'agent', identity}))?.connectionEpoch === epoch);
