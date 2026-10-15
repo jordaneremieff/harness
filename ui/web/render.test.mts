@@ -2201,8 +2201,11 @@ test('communication header keeps healthy and unknown completeness inside Source'
   const source = communicationEntry(); const message = source.messages?.[0]; assert.ok(message); if (message.communication?.state === 'ready') message.communication.value.body.complete = true;
   view.set([source]); flush(); assert.equal(header.querySelector('.communication-trust'), null); assert.doesNotMatch(header.textContent, /Complete|Completeness/); assert.match(inspection.textContent, /Message coverageComplete/); view.reset();
 });
-test('whole-workbench status retains controls and selects only the focused fact group', () => {
-  setup(); const root = new FakeNode('div'); const nodes = new Map<string, FakeNode>();
+test('whole-workbench status retains controls and selects only the focused fact group', t => {
+  setup(); const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {configurable: true, value: new EventTarget()});
+  t.after(() => {documentHandlers.clear(); if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow); else Reflect.deleteProperty(globalThis, 'window');});
+  const root = new FakeNode('div'); const nodes = new Map<string, FakeNode>();
   const get = (id: string): FakeNode => { let value = nodes.get(id); if (!value) {value = new FakeNode('div'); nodes.set(id, value);} return value; };
   const model = get('model-button');
   const footerNode = get('workbench-status'); footerNode.className = 'workbench-status'; root.append(footerNode); const scope = get('workbench-scope'); scope.className = 'workbench-scope'; footerNode.append(scope, get('workbench-activity'));
