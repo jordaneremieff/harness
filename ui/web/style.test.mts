@@ -492,6 +492,11 @@ test('one workbench footer owns wrapped facts without composer-local settings', 
   assert.doesNotMatch(settings, /overflow: hidden|text-overflow: ellipsis|line-clamp/);
   assert.match(rule('.workbench-status'), /display: flex;[^}]*flex-wrap: wrap/);
   assert.match(rule('.workbench-status-facts'), /flex-wrap: wrap/);
+  assert.match(rule('.workbench-model button'), /min-width: 0;/);
+  const coarseModel = [...media('@media (pointer:coarse)').matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(match => match[1].split(',').some(selector => selector.trim() === '.workbench-model button'));
+  assert.ok(coarseModel, 'Coarse model controls require the same selector specificity as their desktop minimum.');
+  assert.match(coarseModel[2], /^\s*min-height: 44px; min-width: 44px;\s*$/);
+  assert.ok(css.indexOf('@media (pointer:coarse)') > css.indexOf('.workbench-model button {'), 'Equal-specificity coarse minima must follow the desktop rule.');
   assert.equal([...html.matchAll(/<footer id="workbench-status"/g)].length, 1);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
   assert.ok(html.indexOf('<footer id="workbench-status"') > html.indexOf('</main>'));

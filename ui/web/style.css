@@ -996,7 +996,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
 @media (pointer:coarse) {
   .conversation-tab { --tab-chrome: 90px; }
   .sidebar-footer > .icon-button > .card-icon { margin-inline: 10px; }
-  button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .icon-button { min-height: 44px; min-width: 44px; }
+  button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .workbench-model button, .icon-button { min-height: 44px; min-width: 44px; }
   .source-disclosure > summary.source-header { min-height: 49px; }
   .card-action, .section-toggle, .modes select, .attachment-row > button, .source-header button.card-action, .source-disclosure > .source-wrap.card-action { min-height: 44px; min-width: 44px; }
   .message-menu, .communication-unverified, .message-source-close, .pane-actions, .context-menu > .context-menu-item { min-height: 44px; min-width: 44px; }
