@@ -469,6 +469,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 #workbench-scope { flex: 0 1 auto; min-width: 8ch; max-width: 100%; color: var(--fg); overflow-wrap: anywhere; }
 .workbench-version { flex: 0 1 auto; margin-left: auto; min-width: 0; max-width: 100%; padding: 2px 6px; border: 0; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
 .workbench-health { flex: none; padding: 2px 6px; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+:where(.file-save, .workbench-health, .workbench-version) { min-height: 24px; }
 .health-facts { display: grid; grid-template-columns: minmax(8ch, 1fr) minmax(0, 2fr); gap: 4px 12px; }
 .health-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .workbench-status-facts { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 2px 12px; min-width: 0; max-width: 100%; }

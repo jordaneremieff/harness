@@ -1,5 +1,5 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
-import { draftImageFingerprint, LIMITS } from '../shared/api.ts';
+import { draftHasContent, draftImageFingerprint, LIMITS } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
 import type {FileDirectoryPage, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave, FileMutation, FileWatchState, FileWatchScope, FileChanges} from '../shared/files.ts';
@@ -107,7 +107,7 @@ let devRestoreOwner: object | undefined;
 let devNavigating = false;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
-  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>;
+  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
   abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'>; resizer?: Resizer};
 const controllers = new Map<string, ConversationController>();
 let controllerSerial = 0;
@@ -231,7 +231,8 @@ function collectControllers(): void {
   const message = messageTarget.current; if (message) open.add(controllerKey(message.workspaceId, {kind: 'agent', identity: message.identity}));
   for (const [key, controller] of controllers) {
     const awaitingDraft = controller.workspaceId === state.workspace?.id && (controller.composer.serverDraftRevision ?? 0) > (targetState(controller.target)?.draft.revision ?? 0);
-    if (open.has(key) || !controller.composer.canDispose || preferences.pending || awaitingDraft) continue;
+    const retainedMessage = controller.workspaceId === state.workspace?.id && !!controller.messageRetention;
+    if (open.has(key) || retainedMessage || !controller.composer.canDispose || preferences.pending || awaitingDraft) continue;
     controller.abort.abort(); controller.historyAbort.abort(); controller.resizer?.destroy(); controller.transcript.destroy(); controller.composer.destroy(); stableViews().forget(controller.root); controller.root.remove(); controller.elements.root.remove(); controllers.delete(key);
   }
 }
@@ -346,6 +347,7 @@ const roster = new Roster(row => { void selectAgent(row).catch(showError); }, ac
 }, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, tool: view.tool}; });
 function openAgentMessage(identity: string): void {
   let controller: ConversationController; try {controller = conversationController({kind: 'agent', identity});} catch (error) {showError(error); return;}
+  controller.messageRetention = {};
   const preparing = messageTarget.open(identity), captured = messageTarget.current;
   if (captured?.prepared) controller.composer.editor.focus(); else byId('agent-message-close').focus();
   void preparing.then(() => { if (captured && messageTarget.valid(captured) && captured.prepared && document.activeElement === byId('agent-message-close')) controller.composer.editor.focus(); }).catch(showError);
@@ -526,10 +528,21 @@ export function splitActive(): boolean { return paneLeaves(currentLayout().root)
 function hasConversation(): boolean { return !!primary() || paneLeaves(currentLayout().root).some(pane => !!pane.active); }
 export function applyLayout(layout: ConversationLayout): void {
   const old = currentLayout();if (paneLeaves(old.root).length !== paneLeaves(layout.root).length) fileBrowse.hold();
+  const workspace = state.workspace?.id, remaining = new Set(paneLeaves(layout.root).flatMap(pane => pane.tabs.map(tabKey)));
+  // A close acknowledgment must not release a newer Message intent or a reopened tab.
+  const closed = paneLeaves(old.root).flatMap(pane => pane.tabs).flatMap(tab => {
+    const key = tabKey(tab), target = controllerTarget(tab), controller = workspace && target ? controllers.get(controllerKey(workspace, target)) : undefined;
+    return controller?.messageRetention && !remaining.has(key) ? [{key, controller, retention: controller.messageRetention}] : [];
+  });
   for (const pane of paneLeaves(old.root)) for (const tab of pane.tabs) if (tab.kind === 'file' && !paneById(layout,pane.id)?.tabs.some(current=>tabKey(current) === tabKey(tab))) fileBrowse.keep(tabKey(tab));
   devInteractionRevision++; drawerOpen = false; tabStrip.requestReveal();
   const target = layoutTarget(layout, primaryTarget());
-  void selection({conversationLayout: layout,...(activeTab(layout)?.kind === 'file' ? {} : {selectedTarget:target,panelVisible:target?.kind === 'agent'}),...(state.workspace ? {filePositions:Object.fromEntries(Object.entries(filesViews.positions(state.workspace)).filter(([key])=>paneLeaves(layout.root).some(pane=>pane.tabs.some(tab=>tabKey(tab) === key))))} : {})}).catch(showError);
+  void selection({conversationLayout: layout,...(activeTab(layout)?.kind === 'file' ? {} : {selectedTarget:target,panelVisible:target?.kind === 'agent'}),...(state.workspace ? {filePositions:Object.fromEntries(Object.entries(filesViews.positions(state.workspace)).filter(([key])=>paneLeaves(layout.root).some(pane=>pane.tabs.some(tab=>tabKey(tab) === key))))} : {})}).then(() => {
+    if (!closed.length || state.workspace?.id !== workspace) return;
+    const open = new Set(paneLeaves(currentLayout().root).flatMap(pane => pane.tabs.map(tabKey)));
+    for (const {key, controller, retention} of closed) if (!open.has(key) && controller.messageRetention === retention) delete controller.messageRetention;
+    collectControllers(); renderRoster();
+  }).catch(showError);
 }
 function activateConversationTab(pane: string, key: string): void {
   const layout = activatePaneTab(currentLayout(), pane, key); if (paneById(layout, pane)?.active !== key) return;
@@ -1121,20 +1134,30 @@ function renderRoster(): void {
 function renderMessageResume(identity: string): void {
   const target = {kind: 'agent' as const, identity}; const workspace = state.workspace?.id ?? '';
   const index = [...state.targetIndex.values()].find(item => sameTarget(item.target, target)); const controller = controllers.get(controllerKey(workspace, target));
-  roster.resume(identity, controller?.composer.retained(workspace, target, index) ?? (!!index?.hasDraft || !!index?.unconfirmedOperationIds.length));
+  const saved = targetState(target), stored = !!saved && (draftHasContent(saved.draft) || !!saved.unconfirmed.length || !!saved.retainedInputs.length);
+  roster.resume(identity, !!controller?.messageRetention || (controller?.composer.retained(workspace, target, index) ?? (stored || !!index?.hasDraft || !!index?.unconfirmedOperationIds.length || !!index?.retainedInputOperationIds.length)));
 }
 function placeMessageRoot(controller: ConversationController, panel: HTMLElement): void {
   const pane = viewPane(controller.root);
   if (!pane || pane.closest('[hidden],[inert]')) {stableViews().place(controller.root, panel); controller.root.dataset.messageOnly = 'true';}
 }
+function clearMessageProjections(keep?: ConversationController): void {
+  for (const controller of controllers.values()) if (controller !== keep && controller.elements.root.dataset.messagePanel) {
+    delete controller.elements.root.dataset.messagePanel; stableViews().project(controller.elements.root);
+    const pane = viewPane(controller.root); if (!pane || pane.closest('[hidden],[inert]')) hideController(controller);
+    controller.composer.placement(false);
+  }
+}
 function placeMessageEditor(controller: ConversationController, panel: HTMLElement): void {
+  clearMessageProjections(controller);
   let slot = panel.querySelector<HTMLElement>('.message-editor-slot'); if (!slot) {slot = element('div', 'message-editor-slot'); slot.id = 'agent-message-editor-slot'; panel.append(slot);}
   placeMessageRoot(controller, panel);
   controller.elements.root.dataset.messagePanel = 'true'; stableViews().project(controller.elements.root, slot); stableViews().sync(); controller.composer.placement(true);
 }
 function renderMessagePanel(): void {
-  const captured = messageTarget.current, panel = byId('agent-message-panel'); panel.hidden = !captured; if (!captured) return;
-  if (!messageTarget.valid(captured)) {messageTarget.close(); panel.hidden = true; return;}
+  const captured = messageTarget.current, panel = byId('agent-message-panel'); panel.hidden = !captured;
+  if (!captured) {clearMessageProjections(); workspaceViews?.sync(); return;}
+  if (!messageTarget.valid(captured)) {closeMessagePanel(false); return;}
   const target = {kind: 'agent' as const, identity: captured.identity}, controller = conversationController(target), row = agentRow(captured.identity);
   setText(byId('agent-message-name'), row?.name ?? row?.handle ?? 'Agent'); setText(byId('agent-message-identity'), captured.identity); byId('agent-message-identity').title = captured.identity;
   renderMessageStatus(captured); renderMessageRecovery(captured.preparing === true);
@@ -1170,7 +1193,7 @@ function renderMessageRecovery(preparing: boolean): void {
 }
 function closeMessagePanel(focus = true): void {
   const identity = messageTarget.current?.identity; messageTarget.close(); byId('agent-message-panel').hidden = true;
-  for (const controller of controllers.values()) if (controller.elements.root.dataset.messagePanel) {delete controller.elements.root.dataset.messagePanel; stableViews().project(controller.elements.root);}
+  clearMessageProjections();
   renderNavigation(); renderRoster(); collectControllers(); stableViews().sync();
   if (focus && (!identity || byId('sidebar').hidden || !roster.focusMessage(identity))) focusEditor();
 }

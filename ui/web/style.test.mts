@@ -31,6 +31,13 @@ test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headin
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '500', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== '13px/1.5 var(--mono)' && value !== 'inherit'), []);
 });
+test('Save, Health and Version retain quiet desktop hit heights without weakening coarse targets', () => {
+  assert.equal(rule(':where(.file-save, .workbench-health, .workbench-version)').trim(), 'min-height: 24px;');
+  assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
+  for (const selector of ['.file-save', '.workbench-health', '.workbench-version']) {
+    assert.doesNotMatch(rule(selector), /(?:^|;)\s*(?:height|min-height|max-height):/);
+  }
+});
 test('attachment metadata uses the fixed scale and preview inherits the dialog hairline', () => {
   assert.match(rule('.attachment-digest'), /font-size: 12px; color: var\(--muted\)/);
   assert.match(rule('dialog'), /border: 1px solid var\(--rule\)/);
