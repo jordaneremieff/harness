@@ -239,6 +239,21 @@ test('Latest keeps its newer intent after pane focus refreshes history from a st
   assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading,{revision:reading.revision+1,anchorId:null,offsetPx:0,followTail:true});
   assert.deepEqual(fixtureHost.fixture.targets?.find(value=>value.targetKey === saved.targetKey)?.reading,app.state.targets.get(saved.targetKey)?.reading);assert.equal(latest.hidden,true);assert.equal(writes.length,1);
 });
+test('a same-session stopped snapshot retains the native reader and editor as Last observed across a backend boot', async t => {
+  const original=globalThis.fetch,target={kind:'primary' as const,key:'p',epoch:++readingSerial},workspace=`stopped-history-${target.epoch}`;
+  const current=primaryFixture({epoch:target.epoch,sessionId:'retained',sessionFile:'/fixture/project/retained.jsonl'}),reading={revision:9,anchorId:'retained-anchor',offsetPx:25,followTail:false},saved=targetFixture(workspace,target,{reading});
+  const items=[row('before'),row('retained-anchor'),row('after')];
+  t.after(()=>{globalThis.fetch=original;});
+  await arrive({workspace:{id:workspace,revision:1,primaryKey:'p'},primaries:[current],roster:[],targets:[saved],history:items});
+  const editor=primaryControl('editor'),transcript=primaryControl('transcript'),anchor=transcript.querySelector('[data-entry-id="retained-anchor"]');assert.ok(anchor);editor.focus();editor.setSelectionRange(0,0,'none');editor.scrollTop=16;
+  const before=transcript.scrollTop;
+  fixtureHost.fixture={...fixtureHost.fixture,primaries:[{...current,lifecycle:'stopped',activity:'unknown',pid:undefined}],history:[],selectedPage:{target,items:[],nextCursor:null,coverage}};
+  globalThis.fetch=async(input,init)=>new URL(String(input),'http://ui.test').pathname==='/api/snapshot'?Response.json({ok:true,data:{...fixtureHost.snapshotOf(fixtureHost.fixture,0),bootId:'restarted',cursor:'restarted:0'}}):original(input,init);
+  await app.reload();await settle();await app.drainDev(AbortSignal.timeout(2000));await settle();
+  assert.equal(primaryControl('editor'),editor);assert.equal(primaryControl('transcript'),transcript);assert.equal(transcript.querySelector('[data-entry-id="retained-anchor"]'),anchor);assert.equal(transcript.scrollTop,before);assert.equal(editor.scrollTop,16);assert.equal(fixtureHost.hostDocument.activeElement,editor);
+  assert.equal(app.state.bootId,'restarted');assert.equal(app.state.primaries.get('p')?.lifecycle,'stopped');assert.deepEqual(app.state.conversations.get(targetIdentity(target))?.retainedSession,{id:'retained',file:'/fixture/project/retained.jsonl'});
+  assert.equal(primaryControl('observed').hidden,false);assert.equal(primaryControl('observed').textContent,'Last observed');assert.equal(primaryControl('earlier').hidden,true);assert.equal(editor.disabled,false);assert.equal(primaryControl('send').disabled,true);assert.equal(app.state.primaries.get('p')?.lifecycle,'stopped');assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading,reading);
+});
 test('a failed resume read releases reading persistence without applying the saved position', async t => {
   const h = await pendingResume(t);
   h.notifyScroll(); await settle();

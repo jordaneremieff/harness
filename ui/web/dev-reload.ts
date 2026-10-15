@@ -1,4 +1,4 @@
-import {LIMITS, validFileTab, workspaceTabKey, type FileTab, type FilePosition} from '../shared/api.ts';
+import {LIMITS, validFileTab, workspaceTabKey, type FileTab, type FilePosition, type DevLeaseIdentity} from '../shared/api.ts';
 export type DevFileCheckpoint = {tab:FileTab;position:FilePosition;digest:string;focused:boolean;selection?:NonNullable<DevCheckpointEntry['selection']>};
 export type DevBuild = {
   revision: number; generation: string; previous: string | null;
@@ -45,7 +45,8 @@ export interface DevReloadHooks {
 }
 export type DevStylesheet = {apply(): void; discard(): void};
 export interface DevReloadEnvironment {
-  meta(name: 'ui-generation' | 'ui-client'): string | null;
+  meta(name: 'ui-generation' | 'ui-client' | 'ui-module-family'): string | null;
+  replaceClient(client: string): void;
   href(): string;
   navigate(url: string): void;
   events(url: string, build: (data: string) => void, lost: () => void): {close(): void};
@@ -136,11 +137,12 @@ function parseBuild(data: string): DevBuild | null {
     return v as DevBuild;
   } catch {return null;}
 }
-function parseLeaseResult(value: unknown): {lease: 'present' | 'missing'; build: DevBuild} | null {
-  if (!record(value, ['ok', 'data']) || value.ok !== true || !record(value.data, ['lease', 'build'])) return null;
-  if (value.data.lease !== 'present' && value.data.lease !== 'missing') return null;
-  const build = parseBuild(JSON.stringify(value.data.build));
-  return build ? {lease: value.data.lease, build} : null;
+function parseLeaseResult(value: unknown): {lease: 'present' | 'missing'; build: DevBuild} | {lease: 'replaced'; client: string; build: DevBuild} | null {
+  if (!record(value, ['ok', 'data']) || value.ok !== true || !record(value.data, ['lease', 'build'], ['client'])) return null;
+  const data = value.data, build = parseBuild(JSON.stringify(data.build));
+  if (!build) return null;
+  if (data.lease === 'replaced') return typeof data.client === 'string' && CLIENT.test(data.client) ? {lease: 'replaced', client: data.client, build} : null;
+  return (data.lease === 'present' || data.lease === 'missing') && !Object.hasOwn(data, 'client') ? {lease: data.lease, build} : null;
 }
 function validPostResult(value: unknown, release: boolean): boolean {
   if (!record(value, ['ok', 'data']) || value.ok !== true) return false;
@@ -162,6 +164,7 @@ export class DevReload {
   private generation: string;
   private client: string;
   private cssGeneration: string;
+  private family: string;
   private source?: {close(): void};
   private sourceToken = 0;
   private linkController?: AbortController;
@@ -182,8 +185,8 @@ export class DevReload {
   constructor(hooks: DevReloadHooks, env: DevReloadEnvironment = browserDevReloadEnvironment()) {
     this.hooks = hooks; this.env = env;
     this.generation = env.meta('ui-generation') ?? ''; this.client = env.meta('ui-client') ?? '';
-    this.cssGeneration = this.generation;
-    this.active = GENERATION.test(this.generation) && CLIENT.test(this.client);
+    this.cssGeneration = this.generation; this.family = env.meta('ui-module-family') ?? '';
+    this.active = GENERATION.test(this.generation) && CLIENT.test(this.client) && GENERATION.test(this.family);
     this.ready = this.active ? this.run(signal => this.initialize(signal)) : Promise.resolve();
   }
   private notice(state: DevReloadNotice['state'], code: DevReloadNotice['code'] = 'none'): void {
@@ -277,7 +280,10 @@ export class DevReload {
     try {
       const result = await this.readCurrentLease(token, controller);
       if (!result || token !== this.sourceToken || this.stopped) return;
-      if (result.lease === 'present') {this.openSource(token); return;}
+      if (result.lease !== 'missing') {
+        if (result.lease === 'replaced') {this.latest = undefined; this.serial++;}
+        this.openSource(token); return;
+      }
       this.leaseMissing = true; this.pendingAck = false; this.ackBlocked = false;
       this.latest = result.build; this.serial++; if (!this.acknowledging) this.controller?.abort();
       this.notice(result.build.status, result.build.code);
@@ -292,7 +298,14 @@ export class DevReload {
     let result: ReturnType<typeof parseLeaseResult> | undefined;
     let failure: {error: unknown} | undefined;
     await this.run(async signal => {
-      try {await this.retryPendingAck(signal); result = await this.readLease(controller);}
+      try {
+        await this.retryPendingAck(signal); result = await this.readLease(controller);
+        if (result.lease === 'replaced' && token === this.sourceToken && !this.stopped && !signal.aborted) {
+          if (result.client === this.client) throw new ReloadFailure('invalid-assets');
+          this.env.replaceClient(result.client); this.client = result.client; this.pendingAck = true;
+          await this.ack(signal); this.notice('applied');
+        }
+      }
       catch (error) {failure = {error};}
     });
     if (failure) throw failure.error;
@@ -308,7 +321,8 @@ export class DevReload {
   }
   private async readLease(controller: AbortController): Promise<NonNullable<ReturnType<typeof parseLeaseResult>>> {
     const {signal} = controller;
-    const response = await this.bounded(this.env.fetch('/api/dev/lease', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({client: this.client, generation: this.generation, cssGeneration: this.cssGeneration}), signal}), signal, controller);
+    const identity: DevLeaseIdentity = {client: this.client, generation: this.generation, cssGeneration: this.cssGeneration, family: this.family};
+    const response = await this.bounded(this.env.fetch('/api/dev/lease', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(identity), signal}), signal, controller);
     if (!response.ok) throw new ReloadFailure(response.status === 401 ? 'auth' : response.status === 429 ? 'capacity' : response.status >= 500 ? 'offline' : 'invalid-assets');
     const result = parseLeaseResult(await this.bounded(response.json(), signal, controller));
     if (!result) throw new ReloadFailure('invalid-assets');
@@ -365,7 +379,7 @@ export class DevReload {
   }
   private upToDate(build: DevBuild): boolean {
     if (this.leaseMissing) return false;
-    return build.change === 'css' ? build.generation === this.cssGeneration : build.generation === this.generation;
+    return build.generation === this.cssGeneration;
   }
   private async css(build: DevBuild, revision: number, serial: number, signal: AbortSignal): Promise<void> {
     const loading = this.env.prepareStylesheet(`/_ui/${build.generation}/style.css`, signal).then(candidate => {
@@ -426,6 +440,11 @@ export class DevReload {
 export function browserDevReloadEnvironment(): DevReloadEnvironment {
   return {
     meta: name => typeof document === 'undefined' ? null : document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content ?? null,
+    replaceClient: client => {
+      const meta = document.querySelector<HTMLMetaElement>('meta[name="ui-client"]');
+      if (!meta) throw new ReloadFailure('host');
+      meta.content = client;
+    },
     href: () => location.href, navigate: url => location.assign(url),
     events: (url, build, lost) => {
       const source = new EventSource(url);

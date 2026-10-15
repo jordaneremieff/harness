@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test, {type TestContext} from 'node:test';
+import {AssetGeneration, AssetGenerations} from '../server/asset-generations.mts';
 import {DevReload, browserDevReloadEnvironment, validateDevReloadCheckpoint, type DevBuild, type DevInteraction, type DevReloadCheckpoint, type DevReloadEnvironment, type DevReloadHooks, type DevReloadNotice, type DevReloadView, type DevStylesheet} from './dev-reload.ts';
 
 const A = 'a'.repeat(64), B = 'b'.repeat(64), C = 'c'.repeat(64);
@@ -52,7 +53,7 @@ class Fixture {
   posts: {path: string; init: RequestInit; body: Record<string, unknown>}[] = [];
   styles: {path: string; signal: AbortSignal; result: ReturnType<typeof deferred<DevStylesheet>>; candidate: Stylesheet}[] = [];
   navigations: string[] = []; notices: DevReloadNotice[] = [];
-  generation: string | null = A; client: string | null = OLD;
+  generation: string | null = A; client: string | null = OLD; family: string | null = A;
   href = `https://ui.invalid/path?workspace=w&secret=synthetic#launch=synthetic`;
   state: DevInteraction = {revision: 1, safe: true}; stored: unknown = null;
   restoreCount = 0; drains = 0;
@@ -72,7 +73,8 @@ class Fixture {
     status: value => {this.notices.push(value);},
   };
   env: DevReloadEnvironment = {
-    meta: name => name === 'ui-generation' ? this.generation : this.client,
+    meta: name => name === 'ui-generation' ? this.generation : name === 'ui-client' ? this.client : this.family,
+    replaceClient: client => {this.trace.push('replace-client'); this.client = client;},
     href: () => this.href,
     navigate: url => {this.trace.push('navigate'); this.navigations.push(url);},
     events: (url, receive, lost) => {
@@ -373,14 +375,81 @@ test('pending CSS refusal recovers only a separately proven missing lease and ne
   f.emit(); await flush(); f.loaded(); await flush(); f.fetch = () => response(409);
   dev.reconnect(); await flush(); assert.equal(f.notices.at(-1)?.code, 'invalid-assets'); assert.equal(f.notices.at(-1)?.retryable, false); assert.equal(f.navigations.length, 0);
 });
-test('a missing restart lease forces a same-generation fresh document through the bounded checkpoint', async () => {
+test('a compatible restart rotates only its identity and stream without a checkpoint or presentation hooks', async () => {
+  const f=new Fixture(),dev=f.dev();await dev.ready;f.emit(build(20,A,'reload','restart-required'));await flush();
+  f.state={revision:2,safe:false,reason:'ime'};
+  f.fetch=path=>path==='/api/dev/lease'?response(200,{ok:true,data:{lease:'replaced',client:NEW,build:build(0,A,'css')}}):response();
+  const start=f.trace.length;dev.reconnect();await flush();f.emit(build(0,A,'css'));await flush();
+  assert.deepEqual(f.trace.slice(start),['close','/api/dev/lease','replace-client','/api/dev/ack','events']);
+  assert.equal(f.client,NEW);assert.deepEqual(f.acks().at(-1)?.body,{client:NEW,generation:A,cssGeneration:A});
+  assert.equal(f.sources.length,2);assert.equal(f.sources[0]?.closed,1);assert.equal(f.drains,0);assert.equal(f.stored,null);assert.equal(f.navigations.length,0);assert.equal(f.styles.length,0);assert.equal(f.releases().length,0);
+  assert.deepEqual(f.posts.find(post=>post.path==='/api/dev/lease')?.body,{client:OLD,generation:A,cssGeneration:A,family:A});dev.destroy();assert.deepEqual(f.releases()[0]?.body,{client:NEW});
+});
+test('CSS-history replacement reconciles the old refusal then acknowledges the installed bytes under the fresh identity', async () => {
+  const f=new Fixture(),dev=f.dev();await dev.ready;f.fetch=()=>Promise.reject(new Error('ack lost'));f.emit();await flush();f.loaded();await flush();
+  f.fetch=(path,init)=>path==='/api/dev/lease'?response(200,{ok:true,data:{lease:'replaced',client:NEW,build:build(0,B,'css')}}):JSON.parse(String(init.body)).client===OLD?response(409):response();
+  const start=f.posts.length;dev.reconnect();await flush();f.emit(build(0,B,'css'));await flush();
+  assert.deepEqual(f.posts.slice(start).map(post=>post.path),['/api/dev/ack','/api/dev/lease','/api/dev/ack']);
+  assert.deepEqual(f.acks().at(-1)?.body,{client:NEW,generation:A,cssGeneration:B});assert.equal(f.styles.length,1);assert.equal(f.styles[0]?.candidate.applied,true);assert.equal(f.navigations.length,0);assert.equal(f.drains,0);assert.equal(f.stored,null);assert.equal(f.sources.length,2);
+});
+test('identity rotation keeps actual module updates behind the existing interaction and drain boundaries', async () => {
+  const f=new Fixture(),dev=f.dev();await dev.ready;f.fetch=path=>path==='/api/dev/lease'?response(200,{ok:true,data:{lease:'replaced',client:NEW,build:build(0,A,'css')}}):response();
+  dev.reconnect();await flush();f.state={revision:2,safe:false,reason:'selection'};f.emit(build(1,B,'reload'));await flush();assert.equal(f.drains,0);assert.equal(f.navigations.length,0);
+  f.state={revision:3,safe:true};await dev.resume();assert.equal(f.drains,1);assert.equal(f.navigations.length,1);assert.equal((f.stored as DevReloadCheckpoint).oldClient,NEW);assert.equal(f.styles.length,0);
+});
+test('a failed replacement acknowledgment retains the fresh identity and retries its acknowledgment before lease comparison', async () => {
+  const f=new Fixture(),dev=f.dev();await dev.ready;
+  f.fetch=path=>path==='/api/dev/lease'?response(200,{ok:true,data:{lease:'replaced',client:NEW,build:build(0,A,'css')}}):Promise.reject(new Error('new ack lost'));
+  dev.reconnect();await flush();assert.equal(f.client,NEW);assert.equal(f.sources.length,1);assert.equal(f.navigations.length,0);
+  f.fetch=path=>path==='/api/dev/lease'?response(200,{ok:true,data:{lease:'present',build:build(0,A,'css')}}):response();const start=f.posts.length;f.clock.advance(250);await flush();
+  assert.deepEqual(f.posts.slice(start).map(post=>post.path),['/api/dev/ack','/api/dev/lease']);assert.equal(f.posts.at(-1)?.body.client,NEW);assert.equal(f.sources.length,2);assert.equal(f.drains,0);
+});
+test('invalid or stale replacement responses never adopt an old identity or mutate a stopped page', async () => {
+  for(const client of [OLD,'bad',undefined]) {const f=new Fixture(),dev=f.dev();await dev.ready;f.fetch=()=>response(200,{ok:true,data:{lease:'replaced',client,build:build(0,A,'css')}});dev.reconnect();await flush();assert.equal(f.client,OLD);assert.equal(f.acks().length,1);assert.equal(f.notices.at(-1)?.code,'invalid-assets');assert.equal(f.navigations.length,0);}
+  for(const cancel of [false,true]) {const f=new Fixture(),dev=f.dev();await dev.ready;const pending=deferred<Awaited<ReturnType<DevReloadEnvironment['fetch']>>>();f.fetch=()=>pending.promise;dev.reconnect();await flush();if(cancel) dev.destroy();else f.clock.advance(10_000);await flush();pending.resolve(await response(200,{ok:true,data:{lease:'replaced',client:NEW,build:build(0,A,'css')}}));await flush();assert.equal(f.client,OLD);assert.equal(f.acks().length,1);assert.equal(f.navigations.length,0);dev.destroy();}
+  for(const family of [null,'bad']) {const f=new Fixture();f.family=family;const dev=f.dev();await dev.ready;assert.equal(dev.active,false);assert.deepEqual(f.trace,[]);}
+});
+test('closing after a lost rotation response or canceled adoption releases the server reservation', async () => {
+  const generation=(css:string)=>new AssetGeneration(new Map([
+    ['/',{type:'text/html',data:Buffer.from('<html><head><link rel="stylesheet" href="/style.css"><link rel="icon" href="/favicon.svg"></head><body><script type="module" src="/web/app.js"></script></body></html>')}],
+    ['/style.css',{type:'text/css',data:Buffer.from(css)}],['/favicon.svg',{type:'image/svg+xml',data:Buffer.from('<svg/>')}],
+    ['/web/app.js',{type:'text/javascript',data:Buffer.from("import '../shared/api.js';")}],['/shared/api.js',{type:'text/javascript',data:Buffer.from('export {};')}],
+  ]),new Map([['/web/app.js',['../shared/api.js']],['/shared/api.js',[]]]));
+  for(const failure of ['lost-response','cancel-adoption']) {
+    const initial=generation('body{color:black}'),f=new Fixture();let generations=new AssetGenerations(initial);
+    const page=generations.document();f.generation=initial.id;f.family=initial.family.id;f.client=page.client;
+    const pending=deferred<Awaited<ReturnType<DevReloadEnvironment['fetch']>>>();let replacement:unknown;
+    function acknowledge(body:Record<string,string>) {
+      generations.acknowledge(body.client??'','owner',body.generation??'',body.cssGeneration??'');return response(200,{ok:true,data:generations.status()});
+    }
+    function checkLease(body:Record<string,string>) {
+      replacement=generations.checkLease(body.client??'','owner',body.generation??'',body.cssGeneration??'',body.family??'');return failure==='lost-response'?Promise.reject(new Error('Lost rotation response')):pending.promise;
+    }
+    function releaseReservation(body:Record<string,string>) {
+      const release=generations.release(body.client??'','owner');return response(200,{ok:true,data:{release,build:generations.status()}});
+    }
+    f.fetch=(path,init)=>{
+      const body=JSON.parse(String(init.body)) as Record<string,string>;
+      if(path==='/api/dev/ack')return acknowledge(body);
+      if(path==='/api/dev/lease')return checkLease(body);
+      assert.equal(path,'/api/dev/release');return releaseReservation(body);
+    };
+    const dev=f.dev();await dev.ready;generations=new AssetGenerations(initial);dev.reconnect();await flush();
+    assert.equal(generations.counts().clients,1);assert.equal(f.client,page.client);
+    assert.equal(generations.offer(generation('body{color:red}'),1),true);assert.equal(generations.offer(generation('body{color:blue}'),2),false);assert.equal(generations.status().status,'held');
+    dev.destroy();await flush();assert.equal(generations.counts().clients,0);assert.equal(generations.status().status,'ready');assert.equal(generations.counts().jsPins,0);
+    assert.deepEqual(f.releases().map(post=>post.body),[{client:page.client}]);assert.equal(f.clock.timers.size,0);
+    pending.resolve(await response(200,{ok:true,data:replacement}));await flush();assert.equal(f.client,page.client);assert.equal(f.acks().length,1);assert.equal(f.sources.length,1);assert.equal(generations.counts().clients,0);assert.equal(f.navigations.length,0);
+  }
+});
+test('an unavailable restart lease retains the bounded checkpoint path rather than inventing a compatible identity', async () => {
   const f = new Fixture(); const dev = f.dev(); await dev.ready;
   f.emit(build(20, A, 'reload', 'restart-required')); await flush();
   f.fetch = () => response(200, {ok: true, data: {lease: 'missing', build: build(0, A, 'css')}});
   f.sources[0]?.lost(); f.clock.advance(250); await flush();
   assert.equal(f.drains, 1); assert.equal(f.navigations.length, 1); assert.equal(f.sources.length, 1);
   const navigation = f.navigations[0]; assert.ok(navigation); assert.equal(new URL(navigation).searchParams.get('generation'), A);
-  assert.deepEqual(f.posts.find(post => post.path === '/api/dev/lease')?.body, {client: OLD, generation: A, cssGeneration: A});
+  assert.deepEqual(f.posts.find(post => post.path === '/api/dev/lease')?.body, {client: OLD, generation: A, cssGeneration: A, family: A});
   assert.equal((f.stored as DevReloadCheckpoint).generation, A); assert.equal(f.acks().length, 1); assert.equal(f.releases().length, 0);
   const next = new Fixture(); next.clock.time = f.clock.time; next.generation = A; next.client = NEW; next.stored = f.stored;
   next.fetch = path => response(200, {ok: true, data: path.endsWith('/release') ? {release: 'absent', build: build(0, A, 'reload')} : build(0, A, 'reload')});

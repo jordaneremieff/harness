@@ -398,9 +398,9 @@ export class LocalHttp {
     this.buildStreams.set(response,session);response.once('close',()=>{unsubscribe?.();this.buildStreams.delete(response);});
   }
   private async developmentLease(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse,session:string) {
-    const body=await readBody(request,1024);const allowed=['client','generation','cssGeneration'];
-    if(Object.keys(body).length!==allowed.length||!allowed.every(key=>typeof body[key]==='string')||!/^[a-f0-9]{24}$/.test(body.client as string)||!['generation','cssGeneration'].every(key=>/^[a-f0-9]{64}$/.test(body[key] as string))) throw new ApiError('invalid_request','The page lease identity is invalid.');
-    try {respond(response,generations.checkLease(body.client as string,session,body.generation as string,body.cssGeneration as string));}
+    const body=await readBody(request,1024);const allowed=['client','generation','cssGeneration','family'];
+    if(Object.keys(body).length!==allowed.length||!allowed.every(key=>typeof body[key]==='string')||!/^[a-f0-9]{24}$/.test(body.client as string)||!['generation','cssGeneration','family'].every(key=>/^[a-f0-9]{64}$/.test(body[key] as string))) throw new ApiError('invalid_request','The page lease identity is invalid.');
+    try {respond(response,generations.checkLease(body.client as string,session,body.generation as string,body.cssGeneration as string,body.family as string));}
     catch(error) {
       if(error instanceof Error&&error.message==='capacity') throw new ApiError('capacity','The page lease capacity is unavailable.',429);
       throw new ApiError('invalid_request','The page lease identity does not match.',409);

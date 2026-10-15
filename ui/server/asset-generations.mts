@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Parser } from 'htmlparser2';
 import type { Asset } from './http.mts';
+import type { DevLeaseIdentity } from '../shared/api.ts';
 
 export const GENERATION_FILE_BYTES = 2 * 1024 * 1024;
 export const GENERATION_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -9,8 +10,8 @@ export type BuildStatus = {revision:number; generation:string; previous:string|n
 const digest = (data: string|Buffer) => createHash('sha256').update(data).digest('hex');
 const validId = (id:string) => /^[a-f0-9]{64}$/.test(id);
 const prefix = (id:string) => `/_ui/${id}`;
-const documentMetadata=(id:string,client:string)=>`<meta name="ui-generation" content="${id}"><meta name="ui-client" content="${client}">`;
-const documentMetadataBytes=Buffer.byteLength(documentMetadata('0'.repeat(64),'0'.repeat(24)));
+const documentMetadata=(id:string,client:string,family:string)=>`<meta name="ui-generation" content="${id}"><meta name="ui-client" content="${client}"><meta name="ui-module-family" content="${family}">`;
+const documentMetadataBytes=Buffer.byteLength(documentMetadata('0'.repeat(64),'0'.repeat(24),'0'.repeat(64)));
 
 /** CSS variants share exact immutable module and favicon bytes, never HTML or CSS. */
 class ModuleFamily {
@@ -81,7 +82,7 @@ function validateDocument(data:Buffer) {
 }
 function bootstrapAsset(generation:AssetGeneration,id:string,client:string) {
   const asset=generation.asset('/');if(!asset) throw new Error('invalid-assets');
-  return {...asset,data:Buffer.from(asset.data.toString('utf8').replace(/<head\b[^>]*>/i,head=>head+documentMetadata(id,client)))};
+  return {...asset,data:Buffer.from(asset.data.toString('utf8').replace(/<head\b[^>]*>/i,head=>head+documentMetadata(id,client,generation.family.id)))};
 }
 function pinHtml(html:string,id:string,assets:ReadonlyMap<string,Asset>) {
   const edits:{start:number;end:number;text:string}[]=[];
@@ -99,7 +100,8 @@ function pinHtml(html:string,id:string,assets:ReadonlyMap<string,Asset>) {
   return html;
 }
 
-type Lease={generation:string;cssGeneration:string;session?:string};
+type Lease={generation:string;cssGeneration:string;session?:string;predecessor?:DevLeaseIdentity&{adopted?:boolean}};
+type LeaseResult={lease:'present'|'missing';build:BuildStatus}|{lease:'replaced';client:string;build:BuildStatus};
 /** Two full snapshots and one candidate; live JS aliases share their immutable families. */
 export class AssetGenerations {
   private active:AssetGeneration;
@@ -113,6 +115,10 @@ export class AssetGenerations {
   private observer?: (status:BuildStatus)=>void;
   constructor(initial:AssetGeneration) {this.active=initial;this.state={revision:0,generation:initial.id,previous:null,change:'reload',status:'ready',code:'none'};}
   status():BuildStatus {return {...this.state};}
+  private pageStatus(client:string):BuildStatus {
+    const lease=this.leases.get(client);
+    return {...this.state,change:lease&&this.jsFamily(lease.generation)?.id===this.active.family.id?'css':'reload'};
+  }
   identity(id = this.active.id) {const generation = this.find(id); return generation ? {digest: generation.id, builtAt: generation.builtAt} : undefined;}
   observe(observer:(status:BuildStatus)=>void) {this.observer=observer;observer(this.status());}
   counts() {
@@ -138,29 +144,62 @@ export class AssetGenerations {
   }
   subscribe(client:string,session:string,notify:(status:BuildStatus)=>void) {
     this.bind(client,session);if(this.subscribers.has(client)) throw new Error('capacity');
-    this.subscribers.set(client,{session,notify});try {notify(this.status());} catch(error) {this.subscribers.delete(client);throw error;}
+    this.adopt(client);this.subscribers.set(client,{session,notify});try {notify(this.pageStatus(client));} catch(error) {this.subscribers.delete(client);throw error;}
     return ()=>this.subscribers.delete(client);
   }
   acknowledge(client:string,session:string,generation:string,cssGeneration:string) {
     this.bind(client,session);const js=this.jsFamily(generation);const css=this.find(cssGeneration);
     if(!js||!css||js.id!==css.family.id) throw new Error('invalid-assets');
-    this.leases.set(client,{session,generation,cssGeneration});this.publish();
+    this.leases.set(client,{...this.leases.get(client),session,generation,cssGeneration});this.adopt(client);this.publish();
   }
-  /** Absence permits a fresh document, never recreation of an old page identity. */
-  checkLease(client:string,session:string,generation:string,cssGeneration:string) {
-    if(!/^[a-f0-9]{24}$/.test(client)||!validId(generation)||!validId(cssGeneration)) throw new Error('invalid-assets');
+  /** Only an absent identity can rotate. Known identities never bypass owner or byte checks. */
+  checkLease(client:string,session:string,generation:string,cssGeneration:string,family:string):LeaseResult {
+    if(!/^[a-f0-9]{24}$/.test(client)||!validId(generation)||!validId(cssGeneration)||!validId(family)) throw new Error('invalid-assets');
     const lease=this.leases.get(client);
     if(lease) {
-      if((lease.session&&lease.session!==session)||lease.generation!==generation||lease.cssGeneration!==cssGeneration) throw new Error('invalid-assets');
-      this.bind(client,session);
-      return {lease:'present' as const,build:this.status()};
+      if((lease.session&&lease.session!==session)||lease.generation!==generation||lease.cssGeneration!==cssGeneration||this.jsFamily(generation)?.id!==family) throw new Error('invalid-assets');
+      this.bind(client,session);this.adopt(client);
+      return {lease:'present' as const,build:this.pageStatus(client)};
     }
-    if(this.leases.size>=64||[...this.leases.values()].filter(item=>item.session===session).length>=8) throw new Error('capacity');
-    return {lease:'missing' as const,build:this.status()};
+    const identity={client,generation,cssGeneration,family};
+    return this.replacementFor(identity,session)??this.rotateLease(identity,session);
   }
+  private replacementFor({client,generation,cssGeneration,family}:DevLeaseIdentity,session:string):LeaseResult|undefined {
+    // The reservation owns retry identity and capacity until its normal page release.
+    for(const [replacement,reserved] of this.leases) if(reserved.predecessor?.client===client) {
+      const prior=reserved.predecessor;
+      if(reserved.session!==session||prior.generation!==generation||prior.cssGeneration!==cssGeneration||prior.family!==family) throw new Error('invalid-assets');
+      return {lease:'replaced',client:replacement,build:this.pageStatus(replacement)};
+    }
+    return undefined;
+  }
+  private rotateLease({client,generation,cssGeneration,family}:DevLeaseIdentity,session:string):LeaseResult {
+    if(this.leases.size>=64||[...this.leases.values()].filter(item=>item.session===session).length>=8) throw new Error('capacity');
+    const js=this.jsFamily(generation),css=this.find(cssGeneration);
+    if(js&&js.id!==family||css&&css.family.id!==family) throw new Error('invalid-assets');
+    if(!css) return {lease:'missing' as const,build:this.status()};
+    const replacement=this.replacementIdentity(client);
+    // A bootstrap family digest verifies exact module bytes across CSS-only generations.
+    if(!js) this.jsPins.set(generation,css.family);
+    this.leases.set(replacement,{session,generation,cssGeneration,predecessor:{client,generation,cssGeneration,family}});
+    return {lease:'replaced' as const,client:replacement,build:this.pageStatus(replacement)};
+  }
+  private replacementIdentity(predecessor:string):string {
+    for(let attempt=0;attempt<4;attempt++) {const fresh=randomBytes(12).toString('hex');if(fresh!==predecessor&&!this.leases.has(fresh)) return fresh;}
+    throw new Error('capacity');
+  }
+  /** A valid request under the replacement identity proves adoption; predecessor retries do not. */
+  private adopt(client:string) {const predecessor=this.leases.get(client)?.predecessor;if(predecessor) predecessor.adopted=true;}
   release(client:string,session:string):'released'|'absent' {
     if(!/^[a-f0-9]{24}$/.test(client)) throw new Error('invalid-assets');
-    if(!this.leases.has(client)) return 'absent';
+    if(!this.leases.has(client)) {
+      for(const [replacement,reserved] of this.leases) if(reserved.predecessor?.client===client) {
+        if(reserved.session!==session) throw new Error('invalid-assets');
+        if(!reserved.predecessor.adopted) {this.leases.delete(replacement);this.publish();}
+        break;
+      }
+      return 'absent';
+    }
     this.bind(client,session);this.leases.delete(client);this.subscribers.delete(client);this.publish();return 'released';
   }
   offer(generation:AssetGeneration,revision:number) {
@@ -186,7 +225,7 @@ export class AssetGenerations {
   }
   private update(status:BuildStatus['status'],code:BuildStatus['code']) {
     this.state={...this.state,status,code};try {this.observer?.(this.status());} catch { /* Diagnostics never own publication. */ }
-    for(const subscription of this.subscribers.values()) {try {subscription.notify(this.status());} catch { /* An observer never owns publication. */ }}
+    for(const [client,subscription] of this.subscribers) {try {subscription.notify(this.pageStatus(client));} catch { /* An observer never owns publication. */ }}
   }
 }
 

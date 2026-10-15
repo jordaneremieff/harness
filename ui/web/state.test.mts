@@ -360,6 +360,70 @@ test('initial refreshes preserve a partial earlier boundary and only earlier pag
   state = mergePrimaryPage(state, target, [entry('start')], {nextCursor: null, earlier: true});
   assert.equal(state.conversations.get(targetIdentity(target))?.historyCursor, null);
 });
+test('a stopped exact Primary retains observed blocks across backend boots without execution or cursor authority', () => {
+  const current={...primary(),sessionId:'retained-session',sessionFile:'/project/retained.jsonl'};
+  const first:Snapshot={...snapshot(),primaries:[current],selectedPage:{target,items:[entry('leaf')],nextCursor:'old-cursor',coverage}};
+  let state=mergePrimaryPage(replaceSnapshot(createState(),first),target,[entry('earlier')],{nextCursor:'old-cursor',earlier:true});
+  state=reduceEvent(state,event(1,'primary.delta',{messageId:'interrupted',index:0,kind:'text',delta:'Last observed partial text'},{target}));
+  const before=primaryBlocks(state,'p'),stopped={...current,lifecycle:'stopped' as const,activity:'unknown' as const,pid:undefined};
+  const nextSnapshot:Snapshot={...first,bootId:'replacement',cursor:'replacement:0',primaries:[stopped],selectedPage:{target,items:[],nextCursor:null,coverage}};
+  const next=replaceSnapshot(state,nextSnapshot),conversation=next.conversations.get(targetIdentity(target));assert.ok(conversation);
+  assert.deepEqual(primaryBlocks(next,'p'),before);assert.equal(primaryBlocks(next,'p')[0],before[0]);assert.deepEqual(conversation.retainedSession,{id:current.sessionId,file:current.sessionFile});
+  assert.equal(conversation.historyCursor,undefined);assert.equal(conversation.tools.size,0);assert.equal(conversation.queue,undefined);assert.equal(conversation.recovery,undefined);assert.equal(conversation.frame,undefined);assert.deepEqual(conversation.live,[]);assert.equal(next.primaries.get('p')?.lifecycle,'stopped');
+  assert.deepEqual(primaryBlocks(mergePrimaryPage(next,target,[],{nextCursor:null,earlier:false}),'p'),before);
+  assert.deepEqual(primaryBlocks(replaceSnapshot(next,{...nextSnapshot,cursor:'replacement:1'}),'p'),before);
+  for(const change of [{...stopped,epoch:2},{...stopped,sessionId:'different'},{...stopped,sessionFile:'/project/different.jsonl'}]) {
+    const changed=reduceEvent(next,{id:'replacement:1',name:'primary.state',data:change,target});assert.equal(primaryBlocks(changed,'p').length,0);assert.equal(changed.conversations.has(targetIdentity(target)),false);
+  }
+  for(const primaries of [[],[{...stopped,epoch:2}],[{...stopped,key:'other'}],[{...stopped,sessionId:'different'}],[{...stopped,sessionId:undefined}],[{...stopped,sessionFile:'/project/different.jsonl'}],[{...stopped,sessionFile:undefined}]]) {
+    const changed=replaceSnapshot(next,{...nextSnapshot,cursor:'replacement:1',primaries,selectedPage:undefined});assert.equal(primaryBlocks(changed,'p').length,0);assert.equal(changed.conversations.has(targetIdentity(target)),false);
+  }
+  assert.deepEqual(primaryBlocks(replaceSnapshot(next,{...nextSnapshot,cursor:'replacement:1',selectedPage:undefined}),'p'),before);
+});
+for(const saved of [false,true]) test(`resumed output and execution state survive an unsaved observed partial${saved?' with new committed entries':''}`, () => {
+  const current={...primary(),sessionId:'retained-session',sessionFile:'/project/retained.jsonl'};
+  const first:Snapshot={...snapshot(),primaries:[current],selectedPage:{target,items:[entry('leaf')],nextCursor:null,coverage}};
+  let state=replaceSnapshot(createState(),first);
+  state=reduceEvent(state,event(1,'primary.delta',{messageId:'interrupted',index:0,kind:'text',delta:'Unsaved interrupted partial'},{target}));
+  const stopped={...current,lifecycle:'stopped' as const,activity:'unknown' as const,pid:undefined};
+  state=replaceSnapshot(state,{...first,bootId:'replacement',cursor:'replacement:0',primaries:[stopped],selectedPage:{target,items:[],nextCursor:null,coverage}});
+  assert(primaryBlocks(state,'p').some(block=>block.id==='message:interrupted'));
+  const updates:UiEvent[]=[
+    {id:'replacement:1',name:'primary.state',data:current,target},
+    {id:'replacement:2',name:'primary.delta',data:{messageId:'fresh',index:0,kind:'text',delta:'New live output'},target},
+    {id:'replacement:3',name:'primary.message',data:{message:{...message('fresh-message','New message','partial'),parts:[{type:'toolCall',callId:'fresh-tool',name:'read',arguments:{value:{path:'fresh.txt'},truncated:false}}]}},target},
+    {id:'replacement:4',name:'primary.tool',data:{callId:'fresh-tool',name:'read',phase:'update',parts:[{type:'text',text:'Fresh tool output'}]},target},
+    {id:'replacement:5',name:'primary.queue',data:{pending:1,followUp:['New queued input']},target},
+    {id:'replacement:6',name:'primary.recovery',data:{kind:'retry',phase:'scheduled',attempt:1,delayMs:250},target},
+  ];
+  for(const update of updates) state=reduceEvent(state,update);
+    let resumed=state;
+    if(saved) for(const [index,value] of [entry('newly-saved'),{...entry('leaf'),messages:[message('new-leaf','Updated current content')]}].entries()) resumed=reduceEvent(resumed,{id:`replacement:${7+index}`,name:'primary.entry',data:{entry:value},target});
+    const before=resumed.conversations.get(targetIdentity(target));assert.ok(before);
+    for(const items of [[entry('leaf')],[],[entry('branch'),{id:'summary',kind:'branch_summary'}] as EntryView[]]) {
+      const next=mergePrimaryPage(resumed,target,items,{nextCursor:'fresh-cursor',earlier:false}),after=next.conversations.get(targetIdentity(target));assert.ok(after);
+      assert.deepEqual(after.live,before.live);assert.equal(after.live[0],before.live[0]);
+      for(const key of ['messages','messageOrder','messageBlocks','tools','queue','recovery'] as const) assert.equal(after[key],before[key],key);
+      assert(!primaryBlocks(next,'p').some(block=>block.id==='message:interrupted'));assert(primaryBlocks(next,'p').some(block=>block.id==='message:fresh'));
+      assert.equal(after.retainedSession,undefined);assert.equal(after.retainedEntries,undefined);assert.equal(after.historyCursor,items.length?'fresh-cursor':undefined);
+      if(saved) {assert.equal(after.entries.get('newly-saved'),before.entries.get('newly-saved'));if(!items.some(item=>item.id==='leaf'))assert.equal(after.entries.get('leaf'),before.entries.get('leaf'));}
+    }
+    for(const changed of [{...current,sessionId:'other'},{...current,sessionFile:'/project/other.jsonl'},{...current,epoch:2}]) {
+      const reset=reduceEvent(resumed,{id:'replacement:9',name:'primary.state',data:changed,target});assert.equal(primaryBlocks(reset,'p').length,0);
+    }
+});
+test('stopped history retention refuses changed identity workspace or authoritative reset and releases its observed marker on validated history', () => {
+  const current={...primary(),sessionId:'retained-session',sessionFile:'/project/retained.jsonl'},first:Snapshot={...snapshot(),primaries:[current],selectedPage:{target,items:[entry('leaf')],nextCursor:null,coverage}};
+  const state=mergePrimaryPage(replaceSnapshot(createState(),first),target,[entry('earlier')]);
+  const stopped={...current,lifecycle:'stopped' as const,activity:'unknown' as const},base:Snapshot={...first,bootId:'replacement',cursor:'replacement:0',primaries:[stopped],selectedPage:{target,items:[],nextCursor:null,coverage}};
+  const cases:Snapshot[]=[{...base,workspace:{...base.workspace,id:'different'}},...[
+    {...stopped,epoch:2},{...stopped,key:'other'},{...stopped,sessionId:'different'},{...stopped,sessionId:undefined},{...stopped,sessionFile:'/project/other.jsonl'},{...stopped,sessionFile:undefined},{...stopped,lifecycle:'ready' as const},{...stopped,lifecycle:'failed' as const}
+  ].map(value=>({...base,primaries:[value]})),{...base,selectedPage:{target,items:[entry('rewound')],nextCursor:null,coverage}},{...base,selectedPage:{target,items:[entry('leaf'),{id:'branch',kind:'branch_summary'}],nextCursor:null,coverage}}];
+  for(const snap of cases) {const next=replaceSnapshot(state,snap);assert(!primaryBlocks(next,'p').some(value=>value.id==='earlier'));assert.equal([...next.conversations.values()].some(value=>!!value.retainedSession),false);}
+  const retained=replaceSnapshot(state,base),ready={...retained,primaries:new Map([['p',current]])};
+  const validated=mergePrimaryPage(ready,target,[entry('leaf')],{nextCursor:'fresh-cursor',earlier:false});assert.deepEqual(validated.conversations.get(targetIdentity(target))?.entryOrder,['earlier','leaf']);assert.equal(validated.conversations.get(targetIdentity(target))?.retainedSession,undefined);assert.equal(validated.conversations.get(targetIdentity(target))?.historyCursor,'fresh-cursor');
+  const reset=mergePrimaryPage(ready,target,[],{nextCursor:null,earlier:false});assert.equal(primaryBlocks(reset,'p').length,0);assert.equal(reset.conversations.get(targetIdentity(target))?.retainedSession,undefined);
+});
 test('primary snapshots discard cached pages across changed or unproven histories', () => {
   const current = {...primary(), sessionId: 'session', sessionFile: '/project/session.jsonl'};
   const first: Snapshot = {...snapshot(), primaries: [current], selectedPage: {target, items: [entry('leaf')], nextCursor: 'earlier', coverage}};

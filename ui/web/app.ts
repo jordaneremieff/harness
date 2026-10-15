@@ -510,7 +510,10 @@ function renderIdentity(): void {
     control.setAttribute('aria-description', project.path ?? 'No working folder selected');
   }
   document.title = accessRequired ? 'Pi · Browser access required' : view.activity ? `Pi · ${view.name} · ${view.activity}` : `Pi · ${project.name}`;
-  for (const controller of controllers.values()) controllerNode(controller, 'observed').hidden = connected || !presentation(controller.target).activity;
+  for (const controller of controllers.values()) renderObserved(controller, connected || !presentation(controller.target).activity);
+}
+function renderObserved(controller:ConversationController, hide:boolean):void {
+  controllerNode(controller,'observed').hidden=!state.conversations.get(targetIdentity(controller.target))?.retainedSession&&hide;
 }
 function selectedAgent(): string | undefined { return state.workspace?.selectedTarget?.kind === 'agent' ? state.workspace.selectedTarget.identity : undefined; }
 function targetState(target?: Target): TargetState | undefined {
@@ -790,7 +793,9 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
     const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateVisible(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined));
     const current = await (signal ? waitForSignal(pending, signal) : pending); signal?.throwIfAborted();
     if (buffered.overflow) throw new Error('Current view changed too quickly during restore. Reconnect to request a fresh baseline.');
-    updateDiagnostics(true); snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)}; renderAll();
+    updateDiagnostics(true); snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
+    if(before.bootId!==current.bootId) for(const controller of controllers.values()) if(state.conversations.get(targetIdentity(controller.target))?.retainedSession) {controller.cursor=null;controller.historyBoundaryLoaded=false;controller.transcript.historyAvailable(false);}
+    renderAll();
   } finally { snapshotBuffers.delete(buffered); }
 }
 function stream(signal?: AbortSignal): Promise<void> {
@@ -1007,7 +1012,7 @@ function renderController(controller: ConversationController, deferred = false, 
   const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + view.name, controllerGuidance(controller, view));
   controller.composer.availability(connected, !!saved && view.input, view.busy, selecting);
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
-  controller.elements.root.hidden = !saved; controllerNode(controller, 'observed').hidden = controller.target.kind === 'agent' || connected || !view.activity;
+  controller.elements.root.hidden = !saved; renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
   if (controller.root.hidden) return;
   const paint = () => {

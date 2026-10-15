@@ -18,6 +18,7 @@ export interface Conversation {
   messages: ReadonlyMap<string, MessageView>; messageOrder: string[];
   tools: ReadonlyMap<string, ToolState>; live: EntryView[]; messageBlocks: ReadonlyMap<string, EntryView>;
   queue?: EventData['primary.queue']; recovery?: EventData['primary.recovery']; frame?: ProjectedFrame; connectionEpoch?: number;
+  retainedSession?: {id:string;file:string}; retainedEntries?: ReadonlyMap<string,EntryView>;
 }
 export interface UiState {
   bootId?: string; cursor?: string; sequence: number; needsResync: boolean; resyncReason?: string;
@@ -126,8 +127,9 @@ function primaryCurrent(state: UiState, target: Target): boolean {
 export function mergePrimaryPage(state: UiState, target: Target, entries: EntryView[], page?: {nextCursor: string | null; earlier: boolean}): UiState {
   if (!primaryCurrent(state, target)) return state;
   return updateConversation(state, target, value => {
-    const merged = mergeEntries(value, entries, true);
-    return page && (page.earlier || entries.length > 0 && value.historyCursor === undefined) ? {...merged, historyCursor: page.nextCursor} : merged;
+    const retained = reconcileRetainedPage(value, state.primaries.get(target.kind === 'primary' ? target.key : ''), entries);
+    const merged = mergeEntries(retained, entries, true);
+    return page && (page.earlier || entries.length > 0 && retained.historyCursor === undefined) ? {...merged, historyCursor: page.nextCursor} : merged;
   });
 }
 export function mergeAgentPage(state: UiState, identity: string, entries: EntryView[]): UiState {
@@ -310,15 +312,50 @@ function snapshotRoster(state: UiState, snapshot: Snapshot, buffered: UiEvent[],
   return { roster: merged.roster, rosterOrder: merged.rosterOrder, rosterRevision: merged.rosterRevision,
     rosterMeta: retain && omitted ? cached.rosterMeta : merged.rosterMeta };
 }
+function historyContinues(old:Conversation,items:EntryView[]):boolean {
+  const entries=old.retainedEntries??old.entries,leaf=old.retainedEntries?[...entries.keys()].at(-1):old.entryOrder.at(-1);
+  return !!leaf&&items.some(item=>item.id===leaf)&&!items.some(item=>['compaction','branch_summary'].includes(item.kind)&&JSON.stringify(entries.get(item.id))!==JSON.stringify(item));
+}
+function reconcileRetainedPage(old:Conversation,primary:PrimaryView|undefined,items:EntryView[]):Conversation {
+  const retained=old.retainedSession;if(!retained) return old;
+  if(primary?.sessionId!==retained.id||primary.sessionFile!==retained.file) return emptyConversation(old.target);
+  if(primary.lifecycle==='stopped'&&!items.length) return old;
+  const current={...old,retainedSession:undefined,retainedEntries:undefined};
+  if(historyContinues(old,items)) return current;
+  const entries=new Map([...old.entries].filter(([id,value])=>old.retainedEntries&&old.retainedEntries.get(id)!==value));
+  return {...current,entries,entryOrder:old.entryOrder.filter(id=>entries.has(id)),historyCursor:undefined};
+}
+function currentRetainedConversations(conversations:ReadonlyMap<string,Conversation>,primaries:ReadonlyMap<string,PrimaryView>):ReadonlyMap<string,Conversation> {
+  let changed:Map<string,Conversation>|undefined;
+  for(const [key,value] of conversations) {
+    const retained=value.retainedSession;if(!retained) continue;
+    const target=value.target,current=target.kind==='primary'?primaries.get(target.key):undefined;
+    if(target.kind==='primary'&&current?.epoch===target.epoch&&current.sessionId===retained.id&&current.sessionFile===retained.file) continue;
+    changed??=new Map(conversations);changed.delete(key);
+  }
+  return changed??conversations;
+}
+/** A stopped exact session keeps observed blocks, never old execution, cursors or transport authority. */
+function stoppedPrimaryConversations(state:UiState,snapshot:Snapshot):ReadonlyMap<string,Conversation> {
+  const retained=new Map<string,Conversation>();if(state.workspace?.id!==snapshot.workspace.id) return retained;
+  for(const current of snapshot.primaries) {
+    const previous=state.primaries.get(current.key);
+    if(current.lifecycle!=='stopped'||!previous?.sessionId||!previous.sessionFile||previous.epoch!==current.epoch||previous.sessionId!==current.sessionId||previous.sessionFile!==current.sessionFile) continue;
+    const target:Target={kind:'primary',key:current.key,epoch:current.epoch},blocks=primaryBlocks(state,current.key);
+    if(!blocks.length) continue;
+    const entries=new Map(blocks.map(entry=>[entry.id,entry]));
+    retained.set(targetIdentity(target),{...emptyConversation(target),entries,entryOrder:blocks.map(entry=>entry.id),retainedSession:{id:previous.sessionId,file:previous.sessionFile},retainedEntries:entries});
+  }
+  return retained;
+}
 /** Keep cached primary pages only when the current history still contains their known leaf. */
 function retainedPrimaryHistory(state: UiState, snapshot: Snapshot, target: Target, old: Conversation, items: EntryView[]): Conversation {
   const empty = emptyConversation(target);
-  if (target.kind !== 'primary' || state.bootId !== snapshot.bootId) return empty;
+  if (target.kind !== 'primary') return empty;
   const previous = state.primaries.get(target.key); const current = snapshot.primaries.find(item => item.key === target.key);
   if (!previous?.sessionId || !previous.sessionFile || previous.epoch !== target.epoch || current?.epoch !== target.epoch || previous.sessionId !== current.sessionId || previous.sessionFile !== current.sessionFile) return empty;
-  const leaf = old.entryOrder.at(-1);
-  if (!leaf || !items.some(item => item.id === leaf)) return empty;
-  if (items.some(item => ['compaction', 'branch_summary'].includes(item.kind) && JSON.stringify(old.entries.get(item.id)) !== JSON.stringify(item))) return empty;
+  if(old.retainedSession&&current.lifecycle==='stopped'&&!items.length) return old;
+  if(state.bootId!==snapshot.bootId||!historyContinues(old,items)) return empty;
   return {...empty, entries: old.entries, entryOrder: old.entryOrder, historyCursor: old.historyCursor};
 }
 type ToolResult = Extract<PartView, {type: 'toolResult'}>;
@@ -379,7 +416,7 @@ export function replaceSnapshot(state: UiState, snapshot: Snapshot, buffered: Ui
     operations: snapshotOperations(state, snapshot),
     targetIndex: new Map(snapshot.targetIndex?.map(target => [target.targetKey, target]) ?? []),
     agentEpochs: sameWorkspace ? state.agentEpochs : new Map(), agentAvailability: sameWorkspace ? state.agentAvailability : new Map(),
-    conversations: sameWorkspace ? state.conversations : new Map(), targets: sameWorkspace ? state.targets : new Map() };
+    conversations: sameWorkspace ? currentRetainedConversations(state.conversations,primaries) : stoppedPrimaryConversations(state,snapshot), targets: sameWorkspace ? state.targets : new Map() };
   next = releaseInvisibleAgents(next);
   next = restoreSnapshotNotices(next, state, snapshot);
   next = { ...next, targets: snapshotTargets(next, snapshot) };
@@ -470,6 +507,12 @@ function applyWorkspace(state: UiState, workspace: Workspace): UiState {
   if (state.workspace && (workspace.id !== state.workspace.id || workspace.revision <= state.workspace.revision)) return state;
   return releaseInvisibleAgents({...state, workspace});
 }
+function releaseChangedRetainedSession(state:UiState,previous:PrimaryView|undefined,current:PrimaryView):UiState {
+  if(!previous) return state;
+  const key=targetIdentity({kind:'primary',key:previous.key,epoch:previous.epoch}),retained=state.conversations.get(key)?.retainedSession;
+  if(!retained||previous.epoch===current.epoch&&retained.id===current.sessionId&&retained.file===current.sessionFile) return state;
+  const conversations=new Map(state.conversations);conversations.delete(key);return {...state,conversations};
+}
 function applyPrimaryEvent(state: UiState, event: UiEvent): UiState {
   if (event.name === 'primary.state') {
     const current = state.primaries.get(event.data.key);
@@ -477,7 +520,7 @@ function applyPrimaryEvent(state: UiState, event: UiEvent): UiState {
     const primaries = new Map(state.primaries); primaries.set(event.data.key, event.data);
     const target = { kind: 'primary' as const, key: event.data.key, epoch: event.data.epoch };
     const dialogs = reconcileDialogs(expirePrimaryDialogs(state.dialogs, target.key, target.epoch), target, event.data.pendingDialogs);
-    return { ...state, primaries, dialogs };
+    return releaseChangedRetainedSession({ ...state, primaries, dialogs }, current, event.data);
   }
   if (!event.target || !primaryCurrent(state, event.target)) return state;
   const target = event.target;

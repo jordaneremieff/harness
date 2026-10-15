@@ -440,8 +440,8 @@ export async function createAppFixture(profile: 'application' | 'workspace' = 'w
   installHost(); installTimers();
   after(() => {hostClosed = true; for (const timer of timers) clearTimeout(timer); for (const timer of intervals) clearInterval(timer); timers.clear(); intervals.clear(); frames = [];});
   hostDocument.hidden = application;
-  startupMetadata.push(... (application ? ['ui-generation', 'ui-client'] : []).map((name, index) => {
-    const meta = new HostNode('meta'), content = (index ? 'c' : 'a').repeat(index ? 24 : 64);
+  startupMetadata.push(... (application ? ['ui-generation', 'ui-client', 'ui-module-family'] : []).map((name, index) => {
+    const meta = new HostNode('meta'), content = (index === 1 ? 'c' : 'a').repeat(index === 1 ? 24 : 64);
     meta.setAttribute('name', name); meta.setAttribute('content', content); Reflect.set(meta, 'content', content); hostDocument.documentElement.append(meta); return meta;
   }));
   app = await import('./app.ts');

@@ -1,4 +1,6 @@
 import type {FileChanges} from './files.ts';
+/** The bootstrap module family identifies exact immutable module, document and favicon bytes, excluding CSS. */
+export type DevLeaseIdentity = {client:string;generation:string;cssGeneration:string;family:string};
 /** Browser/backend contract. This module has no runtime or platform imports. */
 export const LIMITS = {
   requestBytes: 128 * 1024, textBytes: 64 * 1024, displayBytes: 256 * 1024,
