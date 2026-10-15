@@ -517,7 +517,7 @@ test('current host identities enable input and activity inspection but never con
 });
 
 
-async function startFixture(t:TestContext) {
+async function startFixture(t:TestContext,timeoutMs=30000) {
   const root=await realpath(await mkdtemp(join(tmpdir(),'ui-registry-start-')));let retained:Registry|undefined;t.after(async()=>{await retained?.close();await rm(root,{recursive:true,force:true});});const cwd=join(root,'project');const agentDir=join(root,'agent');const store=join(root,'catalog');const durable=join(store,'durable');
   const owner=join(root,'owner');const slice=join(owner,'extensions','agent');const packageDir=join(root,'installation');const executable=join(packageDir,'dist','bundle','cli.js');
   await Promise.all([mkdir(cwd),mkdir(agentDir),mkdir(durable,{recursive:true}),mkdir(slice,{recursive:true}),mkdir(dirname(executable),{recursive:true})]);
@@ -535,7 +535,7 @@ async function startFixture(t:TestContext) {
     t.mock.method(child,'kill',()=>{counts.signals++;throw new Error('Start must not signal the host');});
     queueMicrotask(()=>{void(async()=>{if(control.claim){await mkdir(dirname(endpoint.claimPath),{recursive:true});await writeFile(endpoint.claimPath,JSON.stringify({sessionId:STORAGE,cwd,host:hostname(),createdAt:new Date().toISOString(),pid:process.pid}));}admitted.resolve();if(control.announce)announce();})().catch(error=>child.emit('error',error));});return child;
   };
-  const registry=await Registry.open({stateDir:join(root,'ui'),cwd,executable,agentStore:store,agents:()=>adapter,agentStart:{agentDir,spawn:fakeSpawn,timeoutMs:100}});
+  const registry=await Registry.open({stateDir:join(root,'ui'),cwd,executable,agentStore:store,agents:()=>adapter,agentStart:{agentDir,spawn:fakeSpawn,timeoutMs}});
   retained=registry;const workspace=await registry.store.workspace();
   return {registry,workspace,control,counts,prepares,selects,children,admitted,refreshEntered,announce};
 }
@@ -578,9 +578,30 @@ for(const stage of ['readiness','refresh'] as const)test(`backend shutdown durin
 });
 
 test('selection changes before readiness do not observe the old recipient',{timeout:10000},async t=>{
-  const f=await startFixture(t);f.control.announce=false;await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:0,selectedTarget:{kind:'agent',identity:STORAGE}});
-  const first=f.registry.startAgent(f.workspace.id,STORAGE,'changed-selection');await f.admitted.promise;
-  const other={kind:'primary' as const,key:'another-primary',epoch:1};await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:1,selectedTarget:other});f.announce();await first;assert.deepEqual(f.selects,[]);assert.deepEqual((await f.registry.store.workspace(f.workspace.id)).selectedTarget,other);assert.equal(f.counts.input,0);assert.equal(f.counts.signals,0);
+  for(const replaceSelection of [false,true]) {
+    const f=await startFixture(t);f.control.announce=false;
+    const target={kind:'agent' as const,identity:STORAGE},initialLayout=agentLayout([STORAGE]);
+    t.mock.method(f.registry.journal,'workspaceClients',(id:string)=>id===f.workspace.id?1:0);
+    await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,selectedTarget:target,conversationLayout:initialLayout});
+    const initial=await f.registry.snapshot(f.workspace.id);
+    assert.equal(f.registry.journal.workspaceClients(f.workspace.id),1);assert.ok(initial.observations);
+    assert.deepEqual(initial.observations.map(observation=>observation.identity),[STORAGE]);
+    const first=f.registry.startAgent(f.workspace.id,STORAGE,'changed-selection');await f.admitted.promise;
+    assert.deepEqual(f.selects,[]);
+    const other={kind:'primary' as const,key:'another-primary',epoch:1},replacementLayout=agentLayout([]);
+    if(replaceSelection) await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:initial.workspace.revision,selectedTarget:other,conversationLayout:replacementLayout});
+    f.announce();const result=await first;assert.equal(result.availability,'live');
+    assert.equal(f.counts.launches,1);assert.deepEqual(f.prepares,[STORAGE]);
+    const current=await f.registry.store.workspace(f.workspace.id);
+    if(replaceSelection) {
+      assert.deepEqual(f.selects,[]);
+      assert.deepEqual(current.selectedTarget,other);assert.deepEqual(current.conversationLayout,replacementLayout);
+    } else {
+      assert.deepEqual(f.selects,[{workspace:f.workspace.id,identity:STORAGE}]);
+      assert.deepEqual(current.selectedTarget,target);assert.deepEqual(current.conversationLayout,initialLayout);
+    }
+    assert.equal(f.counts.input,0);assert.equal(f.counts.signals,0);
+  }
 });
 
 for(const state of ['hidden','stored'] as const)test(state==='hidden'?'a hidden selected agent returns live capabilities without observation':'a stored result disables input and never selects observation',{timeout:10000},async t=>{
@@ -589,7 +610,7 @@ for(const state of ['hidden','stored'] as const)test(state==='hidden'?'a hidden 
 });
 
 test('receipt capacity refuses new work without evicting an uncertain outcome',{timeout:30000},async t=>{
-  const f=await startFixture(t);f.control.announce=false;f.control.claim=false;const first=f.registry.startAgent(f.workspace.id,STORAGE,'uncertain-0');await assert.rejects(first,{code:'not_ready'});
+  const f=await startFixture(t,100);f.control.announce=false;f.control.claim=false;const first=f.registry.startAgent(f.workspace.id,STORAGE,'uncertain-0');await assert.rejects(first,{code:'not_ready'});
   for(let i=1;i<2048;i++)await assert.rejects(f.registry.startAgent(f.workspace.id,STORAGE,`uncertain-${i}`),{code:'not_ready'});
   assert.throws(()=>f.registry.startAgent(f.workspace.id,STORAGE,'overflow'),{code:'capacity'});assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'uncertain-0'),first);await assert.rejects(first,{code:'not_ready'});assert.equal(f.counts.launches,1);assert.equal(f.counts.refresh,0);assert.deepEqual(f.prepares,[]);assert.equal(f.counts.signals,0);assert.equal(f.counts.input,0);
 });
