@@ -58,7 +58,7 @@ class Fixture {
   restoreCount = 0; drains = 0;
   drain = async (_signal: AbortSignal): Promise<void> => {};
   restore = async (_checkpoint: DevReloadCheckpoint, _signal: AbortSignal): Promise<boolean> => true;
-  fetch = (_path: string, _init: RequestInit): ReturnType<DevReloadEnvironment['fetch']> => response();
+  fetch = (path: string, _init: RequestInit): ReturnType<DevReloadEnvironment['fetch']> => response(200, {ok: true, data: path === '/api/dev/lease' ? {lease: 'present', build: build(0, A, 'reload')} : path === '/api/dev/release' ? {release: 'released', build: build(0, A, 'reload')} : build(0, A, 'reload')});
   hooks: DevReloadHooks = {
     interaction: () => ({...this.state}),
     drain: signal => {this.drains++; this.trace.push('drain'); return this.drain(signal);},
@@ -313,18 +313,124 @@ test('held, failed and restart-required only report status and cancel an older c
 });
 test('reconnect closes before replacement, refuses closed-source events and never releases for SSE loss', async () => {
   const f = new Fixture(); const dev = f.dev(); await dev.ready; const old = f.sources[0]; assert.ok(old); old.lost();
-  assert.equal(old.closed, 1); assert.equal(f.sources.length, 1); assert.equal(f.releases().length, 0); f.clock.advance(250); assert.equal(f.sources.length, 2);
+  assert.equal(old.closed, 1); assert.equal(f.sources.length, 1); assert.equal(f.releases().length, 0); f.clock.advance(250); await flush(); assert.equal(f.sources.length, 2);
   old.emit(build(99, C)); old.lost(); await flush(); assert.equal(f.styles.length, 0); assert.equal(f.clock.timers.size, 0);
-  dev.reconnect(); assert.equal(f.sources[1]?.closed, 1); assert.equal(f.sources.length, 3); assert.equal(f.releases().length, 0);
+  dev.reconnect(); await flush(); assert.equal(f.sources[1]?.closed, 1); assert.equal(f.sources.length, 3); assert.equal(f.releases().length, 0);
 });
 test('four reconnect delays end offline with no native retry or extra timer until explicit reconnect', async () => {
   const f = new Fixture(); const dev = f.dev(); await dev.ready;
   for (const delay of [250, 1000, 3000, 6000]) {
     f.sources.at(-1)?.lost(); assert.equal(f.clock.timers.size, 1); const before = f.sources.length;
-    f.clock.advance(delay - 1); assert.equal(f.sources.length, before); f.clock.advance(1); assert.equal(f.sources.length, before + 1);
+    f.clock.advance(delay - 1); assert.equal(f.sources.length, before); f.clock.advance(1); await flush(); assert.equal(f.sources.length, before + 1);
   }
   f.sources.at(-1)?.lost(); assert.equal(f.notices.at(-1)?.state, 'offline'); assert.equal(f.clock.timers.size, 0); assert.equal(f.sources.length, 5);
-  dev.reconnect(); assert.equal(f.sources.length, 6); assert.equal(f.releases().length, 0);
+  dev.reconnect(); await flush(); assert.equal(f.sources.length, 6); assert.equal(f.releases().length, 0);
+});
+test('reconnect reconciles retained CSS acknowledgment before strict lease comparison, with or without a lost server effect', async () => {
+  for (const applied of [false, true]) {
+    const f = new Fixture(); const dev = f.dev(); await dev.ready; let serverCss = A, acks = 0;
+    f.fetch = (path, init) => {
+      const body = JSON.parse(String(init.body)) as {cssGeneration: string};
+      if (path.endsWith('/ack')) {
+        acks++; if (acks === 1) {if (applied) serverCss = B; return Promise.reject(new Error('lost acknowledgment'));}
+        serverCss = body.cssGeneration; return response();
+      }
+      assert.equal(path, '/api/dev/lease'); assert.equal(body.cssGeneration, serverCss);
+      return response(200, {ok: true, data: {lease: 'present', build: build(1, B)}});
+    };
+    f.emit(); await flush(); f.loaded(); await flush(); assert.equal(f.notices.at(-1)?.code, 'ack');
+    const start = f.posts.length; dev.reconnect(); const resumed = dev.resume(); await flush(); await resumed;
+    assert.deepEqual(f.posts.slice(start).map(post => post.path), ['/api/dev/ack', '/api/dev/lease']);
+    assert.equal(serverCss, B); assert.equal(f.sources.length, 2); assert.equal(f.notices.at(-1)?.state, 'applied');
+    assert.equal(f.navigations.length, 0); assert.equal(f.clock.timers.size, 0);
+  }
+});
+test('reconnect waits for in-flight CSS acknowledgment before its lease check without concurrent acknowledgments', async () => {
+  const f = new Fixture(); const dev = f.dev(); await dev.ready; const pending = deferred<Awaited<ReturnType<DevReloadEnvironment['fetch']>>>(); let acknowledged = false;
+  f.fetch = path => {
+    if (path.endsWith('/ack')) return pending.promise;
+    assert.equal(acknowledged, true); return response(200, {ok: true, data: {lease: 'present', build: build(1, B)}});
+  };
+  f.emit(); await flush(); f.loaded(); await flush(); dev.reconnect(); const resumed = dev.resume(); await flush();
+  assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, 0); assert.equal(f.acks().length, 2);
+  acknowledged = true; pending.resolve(await response()); await resumed; await flush();
+  assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, 1); assert.equal(f.acks().length, 2); assert.equal(f.sources.length, 2);
+});
+test('pending CSS refusal recovers only a separately proven missing lease and never treats auth capacity or network failure as absence', async () => {
+  for (const status of [401, 409, 429, 0]) {
+    const f = new Fixture(); const dev = f.dev(); await dev.ready;
+    f.fetch = () => Promise.reject(new Error('initial ack lost'));
+    f.emit(); await flush(); f.loaded(); await flush();
+    f.fetch = path => path.endsWith('/ack') ? status ? response(status) : Promise.reject(new Error('offline')) : response(200, {ok: true, data: {lease: 'missing', build: build(0, A, 'reload')}});
+    dev.reconnect(); await flush();
+    assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, status === 409 ? 1 : 0);
+    assert.equal(f.navigations.length, status === 409 ? 1 : 0);
+    if (status === 401) assert.equal(f.notices.at(-1)?.code, 'auth');
+    if (status === 429) assert.equal(f.notices.at(-1)?.code, 'capacity');
+    dev.destroy();
+  }
+  const f = new Fixture(); const dev = f.dev(); await dev.ready; f.fetch = () => Promise.reject(new Error('lost'));
+  f.emit(); await flush(); f.loaded(); await flush(); f.fetch = () => response(409);
+  dev.reconnect(); await flush(); assert.equal(f.notices.at(-1)?.code, 'invalid-assets'); assert.equal(f.notices.at(-1)?.retryable, false); assert.equal(f.navigations.length, 0);
+});
+test('a missing restart lease forces a same-generation fresh document through the bounded checkpoint', async () => {
+  const f = new Fixture(); const dev = f.dev(); await dev.ready;
+  f.emit(build(20, A, 'reload', 'restart-required')); await flush();
+  f.fetch = () => response(200, {ok: true, data: {lease: 'missing', build: build(0, A, 'css')}});
+  f.sources[0]?.lost(); f.clock.advance(250); await flush();
+  assert.equal(f.drains, 1); assert.equal(f.navigations.length, 1); assert.equal(f.sources.length, 1);
+  const navigation = f.navigations[0]; assert.ok(navigation); assert.equal(new URL(navigation).searchParams.get('generation'), A);
+  assert.deepEqual(f.posts.find(post => post.path === '/api/dev/lease')?.body, {client: OLD, generation: A, cssGeneration: A});
+  assert.equal((f.stored as DevReloadCheckpoint).generation, A); assert.equal(f.acks().length, 1); assert.equal(f.releases().length, 0);
+  const next = new Fixture(); next.clock.time = f.clock.time; next.generation = A; next.client = NEW; next.stored = f.stored;
+  next.fetch = path => response(200, {ok: true, data: path.endsWith('/release') ? {release: 'absent', build: build(0, A, 'reload')} : build(0, A, 'reload')});
+  await next.dev().ready; assert.equal(next.restoreCount, 1); assert.equal(next.stored, null); assert.equal(next.sources.length, 1);
+});
+test('a missing lease respects unsafe work and changed interaction during drainage', async () => {
+  for (const hold of [true, false]) {
+    const f = new Fixture(); const dev = f.dev(); await dev.ready;
+    const drain = deferred<void>(); f.drain = () => drain.promise;
+    f.state = {revision: 1, safe: !hold, reason: hold ? 'offline' : undefined};
+    f.fetch = () => response(200, {ok: true, data: {lease: 'missing', build: build(0, A, 'reload')}});
+    dev.reconnect(); await flush(); assert.equal(f.navigations.length, 0);
+    if (hold) {assert.equal(f.drains, 0); f.state = {revision: 2, safe: true}; void dev.resume(); await flush();}
+    else f.state.revision++;
+    drain.resolve(); await flush();
+    assert.equal(f.navigations.length, hold ? 1 : 0); if (!hold) assert.equal(f.stored, null);
+  }
+});
+test('lease identity refusals and authentication loss never become missing-lease recovery', async () => {
+  for (const status of [400, 401, 409]) {
+    const f = new Fixture(); const dev = f.dev(); await dev.ready; f.fetch = () => response(status);
+    dev.reconnect(); await flush(); assert.equal(f.navigations.length, 0); assert.equal(f.drains, 0); assert.equal(f.clock.timers.size, 0);
+    assert.equal(f.notices.at(-1)?.code, status === 401 ? 'auth' : 'invalid-assets');
+    assert.equal(f.notices.at(-1)?.retryable, status === 401);
+  }
+  for (const data of [{lease: 'missing', build: {...build(), generation: 'bad'}}, {lease: 'absent', build: build()}, {lease: 'missing', build: build(), client: NEW}]) {
+    const f = new Fixture(); const dev = f.dev(); await dev.ready; f.fetch = () => response(200, {ok: true, data});
+    dev.reconnect(); await flush(); assert.equal(f.notices.at(-1)?.code, 'invalid-assets'); assert.equal(f.navigations.length, 0);
+  }
+});
+test('capacity and network failures exhaust only four lease checks without navigation or identity recreation', async () => {
+  for (const capacity of [true, false]) {
+    const f = new Fixture(); const dev = f.dev(); await dev.ready;
+    f.fetch = () => capacity ? response(429) : Promise.reject(new Error('offline'));
+    f.sources[0]?.lost();
+    for (const delay of [250, 1000, 3000, 6000]) {f.clock.advance(delay); await flush();}
+    assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, 4);
+    assert.equal(f.notices.at(-1)?.state, 'offline'); assert.equal(f.notices.at(-1)?.code, capacity ? 'capacity' : 'offline');
+    assert.equal(f.clock.timers.size, 0); assert.equal(f.drains, 0); assert.equal(f.navigations.length, 0);
+  }
+});
+test('cancelled and timed-out lease checks cannot navigate from late responses', async () => {
+  for (const cancel of [true, false]) {
+    const f = new Fixture(); const dev = f.dev(); await dev.ready; const pending = deferred<Awaited<ReturnType<DevReloadEnvironment['fetch']>>>(); f.fetch = () => pending.promise;
+    dev.reconnect(); await flush(); const signal = f.posts.at(-1)?.init.signal;
+    if (cancel) dev.destroy(); else f.clock.advance(10_000);
+    await flush(); assert.equal(signal?.aborted, true);
+    pending.resolve(await response(200, {ok: true, data: {lease: 'missing', build: build(0, A, 'reload')}})); await flush();
+    assert.equal(f.navigations.length, 0); assert.equal(f.drains, 0); if (cancel) assert.equal(f.clock.timers.size, 0); else dev.destroy();
+  }
 });
 test('invalid build payload closes the stream and performs no update', async () => {
   for (const payload of ['bad-json', JSON.stringify({...build(), text: 'synthetic-body'}), JSON.stringify({...build(), revision: -1}), 'x'.repeat(4097)]) {
@@ -435,6 +541,6 @@ test('browser EventSource adapter uses the build event without a cursor and clos
   globalValue(context, 'EventSource', FakeEventSource);
   const f = new Fixture(); f.env.events = browserDevReloadEnvironment().events; const dev = f.dev(); await dev.ready;
   assert.equal(ports[0]?.url, `/api/dev/events?client=${OLD}`); ports[0]?.onerror?.(); assert.equal(ports[0]?.closed, 1);
-  f.clock.advance(250); assert.equal(ports.length, 2); ports[0]?.receive?.({data: JSON.stringify(build(99, C))}); await flush(); assert.equal(f.styles.length, 0);
+  f.clock.advance(250); await flush(); assert.equal(ports.length, 2); ports[0]?.receive?.({data: JSON.stringify(build(99, C))}); await flush(); assert.equal(f.styles.length, 0);
   dev.destroy(); assert.equal(ports[1]?.closed, 1);
 });

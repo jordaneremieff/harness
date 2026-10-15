@@ -13,8 +13,8 @@ function agentHistoryStatus(source: AgentViewState): string {
   if (source.loading) return source.hasEntries ? 'Updating messages…' : 'Loading messages…';
   if (source.hasEntries) return '';
   if (!source.connected) return 'History unavailable: the browser is disconnected.';
-  if (!source.ready) return 'Loading messages…';
-  return source.complete ? 'No messages yet.' : 'History unavailable: saved messages could not be confirmed.';
+  if (!source.ready) return 'Messages not loaded.';
+  return source.ready && source.complete ? 'No messages yet.' : 'History unavailable: saved messages could not be confirmed.';
 }
 function agentConnectionStatus(source: AgentViewState): string {
   if (source.startAttempt) return source.startAttempt.pending ? 'Starting agent…' : 'Start not confirmed. Retry only reads saved messages.';

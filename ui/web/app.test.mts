@@ -26,11 +26,13 @@ function descendants(node: HostNode): HostNode[] { return [...node.children, ...
 test('initial hidden startup and its retired ready wait initialize once after fresh ready and restored checkpoint', async t => {
   const fetch = globalThis.fetch, restore = Promise.withResolvers<Response>(), ack = Promise.withResolvers<Response>();
   const devResponse = () => Response.json({ok: true, data: {revision: 1, generation: 'a'.repeat(64), previous: null, change: 'reload', status: 'ready', code: 'none'}});
-  let armed = false, restoreReads = 0, acknowledgments = 0; let restoredResponse: Response | undefined;
+  let armed = false, restoreReads = 0, acknowledgments = 0, leaseReads = 0; let restoredResponse: Response | undefined;
   globalThis.fetch = async (input, init) => {
     const path = new URL(String(input), 'http://ui.test').pathname;
-    if (path === '/api/dev/diagnostics' || path === '/api/dev/release') return devResponse();
+    if (path === '/api/dev/diagnostics') return devResponse();
+    if (path === '/api/dev/release') return Response.json({ok:true,data:{release:'released',build:(await devResponse().json()).data}});
     if (path === '/api/dev/ack') {acknowledgments++; return ack.promise;}
+    if (path === '/api/dev/lease') {leaseReads++;return Response.json({ok:true,data:{lease:'present',build:(await devResponse().json()).data}});}
     if (armed && (init?.method ?? 'GET') === 'GET' && path.includes('/targets/')) {armed = false; restoreReads++; restoredResponse = await fetch(input, init); return restore.promise;}
     return fetch(input, init);
   };
@@ -45,8 +47,11 @@ test('initial hidden startup and its retired ready wait initialize once after fr
   assert.equal(restoreReads, 1); assert.equal(acknowledgments, 0); assert.equal(developmentSources.length, 0); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 0); assert.ok(restoredResponse);
   restore.resolve(restoredResponse); await settle(); assert.equal(acknowledgments, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 0);
   ack.resolve(devResponse()); await settle(); assert.equal(developmentSources.length, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 1); assert.equal(hostSessionStorage.getItem('ui:dev-checkpoint'), null);
-  pageHidden(true); pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();
-  assert.equal(developmentSources.length, 1); assert.equal(acknowledgments, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 1);
+  pageHidden(true); pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'});pageHidden(true);await settle();
+  assert.equal(leaseReads,0,'A retired main recovery must not restart the development link.');
+  pageHidden(false);await settle();streamSources.at(-1)?.emit('ready',{bootId:'boot'});await settle();
+  assert.equal(leaseReads,1);assert.equal(developmentSources[0]?.closed,true);assert.equal(developmentSources.length,2);assert.equal(developmentSources[1]?.closed,false);
+  assert.equal(acknowledgments, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 1);
 });
 
 test('pane resize notifications defer navigation writes and coalesce into one next frame', async () => {

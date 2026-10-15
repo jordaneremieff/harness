@@ -356,6 +356,7 @@ export class LocalHttp {
     }
     if(!generations) return false;
     if(url.pathname==='/api/dev/events') {requireMethod(method,'GET');this.developmentEvents(generations,response,url,session);return true;}
+    if(url.pathname==='/api/dev/lease') {requireMethod(method,'POST');await this.developmentLease(generations,request,response,session);return true;}
     if(url.pathname==='/api/dev/ack'||url.pathname==='/api/dev/release') {requireMethod(method,'POST');await this.developmentAck(generations,request,response,url,session);return true;}
     return false;
   }
@@ -396,12 +397,26 @@ export class LocalHttp {
     });} catch {throw new ApiError('capacity','The page already has an update stream.',429);}
     this.buildStreams.set(response,session);response.once('close',()=>{unsubscribe?.();this.buildStreams.delete(response);});
   }
+  private async developmentLease(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse,session:string) {
+    const body=await readBody(request,1024);const allowed=['client','generation','cssGeneration'];
+    if(Object.keys(body).length!==allowed.length||!allowed.every(key=>typeof body[key]==='string')||!/^[a-f0-9]{24}$/.test(body.client as string)||!['generation','cssGeneration'].every(key=>/^[a-f0-9]{64}$/.test(body[key] as string))) throw new ApiError('invalid_request','The page lease identity is invalid.');
+    try {respond(response,generations.checkLease(body.client as string,session,body.generation as string,body.cssGeneration as string));}
+    catch(error) {
+      if(error instanceof Error&&error.message==='capacity') throw new ApiError('capacity','The page lease capacity is unavailable.',429);
+      throw new ApiError('invalid_request','The page lease identity does not match.',409);
+    }
+  }
   private async developmentAck(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse,url:URL,session:string) {
     const body=await readBody(request,1024);const allowed=url.pathname.endsWith('/ack')?['client','generation','cssGeneration']:['client'];
     if(Object.keys(body).length!==allowed.length||!allowed.every(key=>typeof body[key]==='string')) throw new ApiError('invalid_request','The generation acknowledgment is invalid.');
-    try {if(url.pathname.endsWith('/ack')) generations.acknowledge(body.client as string,session,body.generation as string,body.cssGeneration as string);else generations.release(body.client as string,session);}
-    catch {throw new ApiError('invalid_request','The page generation is unavailable.',409);}
-    respond(response,generations.status());
+    let release:'released'|'absent'|undefined;
+    if(!/^[a-f0-9]{24}$/.test(body.client as string)) throw new ApiError('invalid_request','The page lease identity is invalid.');
+    try {if(url.pathname.endsWith('/ack')) generations.acknowledge(body.client as string,session,body.generation as string,body.cssGeneration as string);else release=generations.release(body.client as string,session);}
+    catch(error) {
+      if(error instanceof Error&&error.message==='capacity') throw new ApiError('capacity','The page lease capacity is unavailable.',429);
+      throw new ApiError('invalid_request','The page generation is unavailable.',409);
+    }
+    respond(response,release?{release,build:generations.status()}:generations.status());
   }
   private async image(context: RequestContext, response: ServerResponse): Promise<void> {
     if (this.imageReads >= 2) throw new ApiError('capacity', 'Two image reads are already active; retry this image.', 429, 'read');

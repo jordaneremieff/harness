@@ -1,5 +1,5 @@
 /** The iteration owner advances this value with each shipped UI iteration. */
-export const UI_ITERATION = '1.0';
+export const UI_ITERATION = '1.1';
 
 export type UiIdentity = Readonly<{
   iteration: string;

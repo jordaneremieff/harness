@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createAppFixture} from './app-fixture.mts';
-const {app, arrive, settle, byId, hostDocument, beforeUnload, primaryFixture, primaryControl, agentFixture, targetFixture, transportLog, paneNode} = await createAppFixture();
+const {app, arrive, settle, byId, hostDocument, beforeUnload, primaryFixture, primaryControl, agentFixture, targetFixture, transportLog, paneNode, documentHandlers, event} = await createAppFixture();
 import {activeTab,tabKey} from './tabs.ts';
 import {splitPane,paneLeaves} from './pane-layout.ts';
 import {contextMenu} from './context-menu.ts';
@@ -36,6 +36,46 @@ test('file selection retains native conversation ancestors, caret, draft, source
   const layout = app.state.workspace?.conversationLayout;assert.ok(layout);app.applyLayout(splitPane(layout,layout.focusedPane,'x',{width:1000,height:700,divider:4}));await settle();assert.equal(view.owner,owner);assert.equal(owner.source,source);assert.equal(form.parentNode,parent);assert.equal(paneLeaves(currentLayout().root).length,2);
   app.openTabsList();const menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);const choice = menu.children.find(item=>item.textContent === 'note.md');assert.ok(choice);assert.equal(choice.getAttribute('aria-description'),'note.md');assert.ok(menu.children.some(item=>item.textContent === 'Re-read file'));assert.equal(menu.children.some(item=>item.textContent === 'Conversation actions'),false);
   assert.equal(transportLog.slice(before).filter(call=>call.path.endsWith('/start') || call.path === '/api/operations' || call.path.includes('/inputs')).length,0);
+});
+test('stable file pointer and native focus select their pane without moving views or controls',async context=> {
+  fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:909},tab:FileTab = {kind:'file',rootId:'root',path:'split.md'};
+  const layout:ConversationLayout = {focusedPane:'primary-pane',root:{kind:'split',id:'file-focus-split',axis:'x',ratio:50,first:{kind:'pane',id:'primary-pane',tabs:[{kind:'primary'}],active:'primary'},second:{kind:'pane',id:'file-pane',tabs:[tab],active:tabKey(tab)}}};
+  await arrive({workspace:{id:'stable-file-focus',revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:layout},primaries:[primaryFixture({epoch:909})],roster:[],targets:[targetFixture('stable-file-primary',target)]});await settle();
+  const workspace = app.state.workspace;assert.ok(workspace);const view = app.filesViews.view(workspace,tab);await view.owner.load();await settle();const editor = view.editor as unknown as HostNode,root = view.root as unknown as HostNode,save = root.querySelector('.file-save');assert.ok(save);
+  const parent = editor.parentNode,host = root.parentNode,moves = root.moves,controls = [...root.children];primaryControl('editor').focus();assert.equal(app.focusedPane,'primary-pane');
+  save.dispatch('pointerdown',{pointerId:7});assert.equal(app.focusedPane,'file-pane');save.focus();assert.equal(byId('workbench-status').dataset.pane,'file',JSON.stringify({focused:app.focusedPane,tab:activeTab(currentLayout()),active:hostDocument.activeElement?.getAttribute('aria-label'),root:root.className,parent:root.parentNode?.className}));assert.equal(root.querySelector('.file-save'),save);assert.deepEqual(root.children,controls);
+  app.applyLayout({...app.state.workspace?.conversationLayout as ConversationLayout,focusedPane:'primary-pane'});primaryControl('editor').focus();editor.focus();await app.selectionQueue.drain();
+  assert.equal(app.focusedPane,'file-pane');assert.equal(byId('workbench-status').dataset.pane,'file');assert.equal(hostDocument.activeElement,editor);assert.equal(editor.parentNode,parent);assert.equal(root.parentNode,host);assert.equal(root.moves,moves);assert.deepEqual(app.state.workspace?.selectedTarget,target);
+});
+test('explicit session completion selects its exact Primary while ordinary refresh retains the file',async context=> {
+  fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:910},other = {kind:'primary' as const,key:'returned',epoch:911},tab:FileTab = {kind:'file',rootId:'root',path:'retained.md'};
+  await arrive({workspace:{id:'resume-file',revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:{focusedPane:'file-pane',root:{kind:'pane',id:'file-pane',tabs:[tab],active:tabKey(tab)}}},primaries:[primaryFixture({epoch:910}),primaryFixture({key:'returned',epoch:911})],roster:[],targets:[targetFixture('original-primary',target),targetFixture('returned-primary',other)]});await settle();
+  await app.reload();assert.deepEqual(activeTab(currentLayout()),tab);
+  byId('modal').showModal();const completed = app.capturePrimarySelection();
+  for (const name of ['scroll','select']) for (const handler of documentHandlers.get(name) ?? []) handler({isTrusted:true,target:primaryControl('editor')});
+  await completed('returned');assert.equal(app.state.workspace?.primaryKey,'returned');assert.equal(activeTab(currentLayout())?.kind,'primary');byId('modal').close();
+  assert.equal(hostDocument.activeElement?.getAttribute('aria-label'),'Message Primary');
+});
+for (const change of ['selection','workspace','cancel','input'] as const) test(`session completion preserves a later ${change}`,async context=> {
+  fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:912},tab:FileTab = {kind:'file',rootId:'root',path:'retained.md'};
+  await arrive({workspace:{id:`resume-${change}`,revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:{focusedPane:'file-pane',root:{kind:'pane',id:'file-pane',tabs:[tab],active:tabKey(tab)}}},primaries:[primaryFixture({epoch:912})],roster:[],targets:[targetFixture(`resume-${change}`,target)]});await settle();
+  byId('modal').showModal();const completed = app.capturePrimarySelection();
+  if (change === 'selection') app.chooseFile('root','later.md');
+  else if (change === 'workspace') await arrive({workspace:{id:'later-resume-workspace',revision:1,conversationLayout:{focusedPane:'file-pane',root:{kind:'pane',id:'file-pane',tabs:[tab],active:tabKey(tab)}}},primaries:[],roster:[],targets:[]});
+  else if (change === 'input') for (const handler of documentHandlers.get('keydown') ?? []) handler({isTrusted:true,key:'ArrowRight',target:byId('modal')});
+  else byId('modal').close();
+  const before = structuredClone(currentLayout()),focus = hostDocument.activeElement;await completed('p');
+  if (change === 'input') {assert.equal(activeTab(currentLayout())?.kind,'primary');assert.ok(paneLeaves(currentLayout().root).some(pane=>pane.tabs.some(item=>tabKey(item) === tabKey(tab))));}
+  else assert.deepEqual(currentLayout(),before);
+  assert.equal(hostDocument.activeElement,focus);byId('modal').close();
+});
+for (const interrupted of [false,true]) test(`warming Resume focus retains its exact input intent: ${interrupted}`,async context=> {
+  fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:913},tab:FileTab = {kind:'file',rootId:'root',path:'retained.md'},warming = primaryFixture({epoch:913,lifecycle:'starting',activity:'idle',capabilities:{input:true}});
+  await arrive({workspace:{id:`warming-resume-${interrupted}`,revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:{focusedPane:'file-pane',root:{kind:'pane',id:'file-pane',tabs:[tab],active:tabKey(tab)}}},primaries:[warming],roster:[],targets:[targetFixture(`warming-${interrupted}`,target)]});await settle();
+  byId('modal').showModal();await app.capturePrimarySelection()('p');byId('modal').close();const chosen = byId('workbench-version');chosen.focus();
+  if (interrupted) for (const handler of documentHandlers.get('pointerdown') ?? []) handler({isTrusted:true,target:chosen});
+  event('primary.state',{...warming,lifecycle:'ready'},target);await settle();
+  assert.equal(activeTab(currentLayout())?.kind,'primary');assert.equal(hostDocument.activeElement,interrupted ? chosen : primaryControl('editor'));
 });
 test('focused explicit Message owns the footer while a file remains the active pane',async context=> {
   fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:901},recipient = agentFixture('file-message');

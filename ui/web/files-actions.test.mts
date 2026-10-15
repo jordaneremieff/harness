@@ -8,7 +8,7 @@ import {contextMenu} from './context-menu.ts';
 import type {FileDirectoryPage,FileEntry} from '../shared/files.ts';
 const root = {id:'r',path:'/project',name:'project'};
 function page(path:string,entries:FileEntry[]):FileDirectoryPage {return {rootId:'r',path,entries,revision:'v',nextCursor:null,coverage:{complete:true,visited:entries.length}};}
-function fixture(context:test.TestContext,operation:(action:FileTreeAction,path:string,value?:string)=>Promise<void>) {
+function fixture(context:test.TestContext,operation:(action:FileTreeAction,path:string,value?:string)=>Promise<undefined|(()=>void)>) {
   const node = new HostNode('div');byId('workspace').append(node);context.after(()=> {node.remove();contextMenu.close();});
   const statuses:string[] = [];let entries:FileEntry[] = [{name:'folder',path:'folder',kind:'directory'},{name:'note.md',path:'note.md',kind:'file'}];
   const tree = new FilesTree(node as unknown as HTMLElement,{page:async(_root,path)=>page(path,path ? [] : entries),select:()=>{},escape:()=>{},operation:async(_root,action,path,value)=>operation(action,path,value),status:message=>statuses.push(message)});tree.setRoot(root);
@@ -38,6 +38,15 @@ test('tree menu and keyboard Trash each capture the exact entry without a routin
   const calls:unknown[] = [];const {node} = fixture(context,async(...args)=> {calls.push(args);});await settle();const file = row(node,'note.md');
   node.dispatch('keydown',{target:file,key:'F10',shiftKey:true});const menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);menu.children.find(item=>item.textContent === 'Move to Trash')?.click();await settle();assert.deepEqual(calls,[['trash','note.md',undefined]]);
   node.dispatch('keydown',{target:file,key:'Delete'});await settle();assert.deepEqual(calls.at(-1),['trash','note.md',undefined]);
+});
+for (const change of ['none','focus','scope'] as const) test(`file completion follows naming removal only for the same focused scope: ${change}`,async context=> {
+  let release!:(completed:()=>void)=>void,calls = 0;
+  const pending = new Promise<()=>void>(resolve=> {release = resolve;}),{node,tree} = fixture(context,async()=>pending);await settle();
+  node.dispatch('keydown',{target:node,key:'n',ctrlKey:true});const input = field(node);input.value = 'created.txt';input.dispatch('keydown',{key:'Enter'});
+  if (change === 'focus') byId('workbench-version').focus();
+  if (change === 'scope') tree.setRoot(root,'different-workspace');
+  release(()=> {calls++;assert.equal(node.querySelector('.file-name-input'),null);});await settle();
+  assert.equal(calls,change === 'none' ? 1 : 0);
 });
 test('directory bursts coalesce an in-flight listing and retain disclosed branches',async context=> {
   let finish!:(value:FileDirectoryPage)=>void,reads = 0;const delayed = new Promise<FileDirectoryPage>(resolve=> {finish = resolve;});const node = new HostNode('div');byId('workspace').append(node);context.after(()=>node.remove());

@@ -146,7 +146,23 @@ export class AssetGenerations {
     if(!js||!css||js.id!==css.family.id) throw new Error('invalid-assets');
     this.leases.set(client,{session,generation,cssGeneration});this.publish();
   }
-  release(client:string,session:string) {this.bind(client,session);this.leases.delete(client);this.subscribers.delete(client);this.publish();}
+  /** Absence permits a fresh document, never recreation of an old page identity. */
+  checkLease(client:string,session:string,generation:string,cssGeneration:string) {
+    if(!/^[a-f0-9]{24}$/.test(client)||!validId(generation)||!validId(cssGeneration)) throw new Error('invalid-assets');
+    const lease=this.leases.get(client);
+    if(lease) {
+      if((lease.session&&lease.session!==session)||lease.generation!==generation||lease.cssGeneration!==cssGeneration) throw new Error('invalid-assets');
+      this.bind(client,session);
+      return {lease:'present' as const,build:this.status()};
+    }
+    if(this.leases.size>=64||[...this.leases.values()].filter(item=>item.session===session).length>=8) throw new Error('capacity');
+    return {lease:'missing' as const,build:this.status()};
+  }
+  release(client:string,session:string):'released'|'absent' {
+    if(!/^[a-f0-9]{24}$/.test(client)) throw new Error('invalid-assets');
+    if(!this.leases.has(client)) return 'absent';
+    this.bind(client,session);this.leases.delete(client);this.subscribers.delete(client);this.publish();return 'released';
+  }
   offer(generation:AssetGeneration,revision:number) {
     if(this.blocked||revision<this.state.revision) return false;
     this.state={...this.state,revision};

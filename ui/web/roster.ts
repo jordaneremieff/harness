@@ -320,11 +320,11 @@ export class Roster {
       cached.ageButton.setAttribute('aria-description', description); return;
     }
     const label = cached.absolute ? absoluteTime(row.modifiedAt) : relativeTime(row.modifiedAt, now);
-    const valid = isValidTimestamp(row.modifiedAt) && !!label;
+    const valid = row.modifiedAt > 0 && isValidTimestamp(row.modifiedAt) && !!label;
     cached.ageButton.dataset.absolute = String(cached.absolute);
     cached.ageButton.hidden = !valid; cached.ageButton.disabled = !valid; cached.ageButton.tabIndex = valid ? 0 : -1;
-    setText(cached.age, cached.absolute ? label : compactAge(row.modifiedAt, now));
-    const details = timestampDetails(row.modifiedAt); cached.age.dateTime = details.exact;
+    setText(cached.age, valid ? cached.absolute ? label : compactAge(row.modifiedAt, now) : '');
+    const details = valid ? timestampDetails(row.modifiedAt) : {exact: '', display: ''}; cached.age.dateTime = details.exact;
     cached.ageButton.title = valid ? `${details.exact} · ${details.display}` : '';
     cached.ageButton.setAttribute('aria-label', valid ? `Timestamp for ${rowName(row)} · ${label}` : '');
     cached.ageButton.setAttribute('aria-description', details.display);

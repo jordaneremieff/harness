@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {createAppFixture, type HostNode} from './app-fixture.mts';
+import {createAppFixture, HostNode} from './app-fixture.mts';
 const {app, arrive, event, settle, byId, hostDocument, transportLog} = await createAppFixture();
-import {createPaneLayout} from './pane-layout.ts';
+import {createPaneLayout,splitPane} from './pane-layout.ts';
 import {movedWorkspaceFiles} from './file-identity.ts';
 import type {FileTab} from '../shared/api.ts';
 import type {FileDraft} from '../shared/files.ts';
@@ -53,11 +53,38 @@ test('first draft HTTP refusal shows existing conflict controls without a disk e
   const controls = byId('focused-composer-status').querySelectorAll('button');assert.ok(controls.find(button=>button.textContent === 'Keep editing'));const reread = controls.find(button=>button.textContent === 'Re-read file');assert.ok(reread);reread.click();await settle();assert.equal(view.owner.conflict,false);assert.equal(view.owner.canDispose,true);assert.equal(editor.value,'# Base');
 });
 test('new file shows directly for typing and Trash uses one worded confirmation while drafts stay',async context=> {
+  const focus = HostNode.prototype.focus;
+  context.mock.method(HostNode.prototype,'focus',function(this:HostNode) {if (this.closest('[hidden],[inert]')) return;focus.call(this);});
   const fixture = files(context);await arrive({workspace:{id:'create-files',revision:1,conversationLayout:createPaneLayout([])},primaries:[],roster:[],targets:[]});await settle();
   const tree = byId('files-tree');tree.dispatch('keydown',{target:tree,key:'n',ctrlKey:true});const input = tree.querySelector('.file-name-input');assert.ok(input);input.value = 'new.md';input.dispatch('keydown',{key:'Enter'});await settle();await settle();
   assert.equal(fixture.disk.get('new.md'),'');const workspace = app.state.workspace;assert.ok(workspace);const tab:FileTab = {kind:'file',rootId:'root',path:'new.md'},view = app.filesViews.view(workspace,tab),editor = view.editor;assert.ok(editor);assert.equal(editor.hidden,false);assert.equal(editor.readOnly,false);assert.equal(hostDocument.activeElement,editor);
   editor.value = 'recoverable';(editor as unknown as HostNode).dispatch('input');await view.owner.drain();const row = tree.querySelector('[data-path="new.md"]');assert.ok(row);tree.dispatch('keydown',{target:row,key:'Delete'});assert.equal(byId('modal').open,true);assert.equal(byId('modal-title').textContent,'Move to Trash?');assert.match(byId('modal-body').textContent,/Unsaved drafts stay available/);byId('modal-body').querySelectorAll('button').find(button=>button.textContent === 'Move to Trash')?.click();await settle();await settle();
   assert.equal(byId('modal').open,false);assert.equal(fixture.disk.has('new.md'),false);assert.equal(view.owner.text,'recoverable');assert.equal(view.owner.missing,true);assert.equal(app.filesViews.view(app.state.workspace as typeof workspace,tab),view);
+});
+for (const phase of ['mutation','source'] as const) test(`new file completion preserves deliberate focus during ${phase}`,async context=> {
+  const fixture = files(context),workspaceId = `create-focus-${phase}`;
+  await arrive({workspace:{id:workspaceId,revision:1,conversationLayout:createPaneLayout([])},primaries:[],roster:[],targets:[]});await settle();
+  const previous = globalThis.fetch;let release!:()=>void,started!:()=>void;
+  const gate = new Promise<void>(resolve=> {release = resolve;}),pending = new Promise<void>(resolve=> {started = resolve;});
+  globalThis.fetch = async(input,init)=> {const url = new URL(String(input),'http://ui.test');if (phase === 'mutation' ? url.pathname.endsWith('/entries') : url.pathname.endsWith('/text') && url.searchParams.get('path') === 'delayed.md') {started();await gate;}return previous(input,init);};
+  const tree = byId('files-tree');tree.dispatch('keydown',{target:tree,key:'n',ctrlKey:true});const input = tree.querySelector('.file-name-input');assert.ok(input);input.value = 'delayed.md';input.dispatch('keydown',{key:'Enter'});await pending;
+  const chosen = byId('workbench-version');chosen.focus();release();await settle();await settle();
+  assert.equal(fixture.disk.get('delayed.md'),'');assert.equal(hostDocument.activeElement,chosen);assert.equal(tree.querySelector('.file-name-input'),null);
+  if (phase === 'mutation') assert.equal(app.state.workspace?.conversationLayout?.root.kind === 'pane' ? app.state.workspace.conversationLayout.root.tabs.length : -1,0);
+});
+for (const change of ['pane','workspace'] as const) test(`file completion does not cross a changed ${change}`,async context=> {
+  files(context);const workspaceId = `creation-${change}`;
+  await arrive({workspace:{id:workspaceId,revision:1,conversationLayout:createPaneLayout([])},primaries:[],roster:[],targets:[]});await settle();
+  const previous = globalThis.fetch;let release!:()=>void,started!:()=>void;
+  const gate = new Promise<void>(resolve=> {release = resolve;}),pending = new Promise<void>(resolve=> {started = resolve;});
+  globalThis.fetch = async(input,init)=> {const url = new URL(String(input),'http://ui.test');if (url.pathname.endsWith('/text') && url.searchParams.get('path') === 'pending.md') {started();await gate;}return previous(input,init);};
+  const tree = byId('files-tree');tree.dispatch('keydown',{target:tree,key:'n',ctrlKey:true});const input = tree.querySelector('.file-name-input');assert.ok(input);input.value = 'pending.md';input.dispatch('keydown',{key:'Enter'});await pending;
+  if (change === 'pane') {const layout = app.state.workspace?.conversationLayout;assert.ok(layout);app.applyLayout(splitPane(layout,layout.focusedPane,'x',{width:1600,height:900,divider:4}));}
+  else await arrive({workspace:{id:'another-creation-workspace',revision:1,conversationLayout:createPaneLayout([])},primaries:[],roster:[],targets:[]});
+  const chosenLayout = structuredClone(app.state.workspace?.conversationLayout);release();await settle();await settle();
+  assert.deepEqual(app.state.workspace?.conversationLayout,chosenLayout);
+  assert.notEqual(hostDocument.activeElement?.getAttribute('aria-label'),'pending.md');
+  if (change === 'workspace') assert.equal(app.state.workspace?.id,'another-creation-workspace');
 });
 test('a closed destination collision exposes distinct retained text through the bottom line after authoritative repaint',async context=> {
   const fixture = files(context),source:FileTab = {kind:'file',rootId:'root',path:'note.md'},destination:FileTab = {...source,path:'missing.md'};fixture.disk.set(destination.path,'# Previous destination');fixture.failDraft('# Unacknowledged destination');

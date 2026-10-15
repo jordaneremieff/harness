@@ -136,9 +136,21 @@ function parseBuild(data: string): DevBuild | null {
     return v as DevBuild;
   } catch {return null;}
 }
+function parseLeaseResult(value: unknown): {lease: 'present' | 'missing'; build: DevBuild} | null {
+  if (!record(value, ['ok', 'data']) || value.ok !== true || !record(value.data, ['lease', 'build'])) return null;
+  if (value.data.lease !== 'present' && value.data.lease !== 'missing') return null;
+  const build = parseBuild(JSON.stringify(value.data.build));
+  return build ? {lease: value.data.lease, build} : null;
+}
+function validPostResult(value: unknown, release: boolean): boolean {
+  if (!record(value, ['ok', 'data']) || value.ok !== true) return false;
+  if (!release) return !!parseBuild(JSON.stringify(value.data));
+  return record(value.data, ['release', 'build']) && ['released', 'absent'].includes(String(value.data.release)) && !!parseBuild(JSON.stringify(value.data.build));
+}
 class ReloadFailure extends Error {
   code: DevReloadNotice['code'];
-  constructor(code: DevReloadNotice['code']) {super(code); this.code = code;}
+  status?: number;
+  constructor(code: DevReloadNotice['code'], status?: number) {super(code); this.code = code; this.status = status;}
 }
 
 /** One dev page, one stream and one newest update. Construct only after app hydration. */
@@ -152,6 +164,8 @@ export class DevReload {
   private cssGeneration: string;
   private source?: {close(): void};
   private sourceToken = 0;
+  private linkController?: AbortController;
+  private leaseMissing = false;
   private retry?: number;
   private attempts = 0;
   private stopped = false;
@@ -176,13 +190,13 @@ export class DevReload {
     if (!this.stopped) {try {this.hooks.status({state, code, retryable: !this.fatal && !this.stopped, ...(this.latest ? {build: {...this.latest}} : {})});} catch {this.fatal = true;}}
   }
   private current(serial: number, signal: AbortSignal): boolean {return !this.stopped && !signal.aborted && serial === this.serial;}
-  private async bounded<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  private async bounded<T>(promise: Promise<T>, signal: AbortSignal, controller = this.controller): Promise<T> {
     let timer: number | undefined;
     let abort: (() => void) | undefined;
     const limit = new Promise<never>((_resolve, reject) => {
       abort = () => {if (timer !== undefined) this.env.clock.clear(timer); reject(new ReloadFailure('timeout'));};
       signal.addEventListener('abort', abort, {once: true});
-      timer = this.env.clock.set(() => {this.notice('failed', 'timeout'); reject(new ReloadFailure('timeout')); this.controller?.abort();}, DEADLINE);
+      timer = this.env.clock.set(() => {this.notice('failed', 'timeout'); reject(new ReloadFailure('timeout')); controller?.abort();}, DEADLINE);
       if (signal.aborted) abort();
     });
     try {return await Promise.race([promise, limit]);}
@@ -205,10 +219,10 @@ export class DevReload {
     const code = path === '/api/dev/ack' ? 'ack' : 'release';
     try {
     const response = await this.bounded(this.env.fetch(path, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal}), signal);
-    if (!response.ok) throw new ReloadFailure(response.status === 401 ? 'auth' : code);
+    if (!response.ok) throw new ReloadFailure(response.status === 401 ? 'auth' : response.status === 429 ? 'capacity' : code, response.status);
     if (this.stopped || signal.aborted) return;
     const result: unknown = await this.bounded(response.json(), signal);
-    if (!record(result, ['ok', 'data']) || result.ok !== true || !parseBuild(JSON.stringify(result.data))) throw new ReloadFailure(code);
+    if (!validPostResult(result, path === '/api/dev/release')) throw new ReloadFailure(code);
     } catch (error) {throw error instanceof ReloadFailure ? error : new ReloadFailure(code);}
   }
   private async ack(signal: AbortSignal): Promise<void> {
@@ -250,11 +264,64 @@ export class DevReload {
       if (this.stopped || signal.aborted) return false;
       this.hooks.clearCheckpoint(); this.fatal = false; return true;
   }
-  private closeSource(): void {this.sourceToken++; this.source?.close(); this.source = undefined;}
+  private closeSource(): void {this.sourceToken++; this.source?.close(); this.source = undefined; this.linkController?.abort(); this.linkController = undefined;}
   private clearRetry(): void {if (this.retry !== undefined) this.env.clock.clear(this.retry); this.retry = undefined;}
-  private connect(): void {
+  private connect(checkLease = false): void {
     if (this.stopped || !this.initialized || this.fatal) return;
     this.clearRetry(); this.closeSource(); const token = this.sourceToken;
+    if (checkLease) {void this.checkLink(token); return;}
+    this.openSource(token);
+  }
+  private async checkLink(token: number): Promise<void> {
+    const controller = new AbortController(); this.linkController = controller;
+    try {
+      const result = await this.readCurrentLease(token, controller);
+      if (!result || token !== this.sourceToken || this.stopped) return;
+      if (result.lease === 'present') {this.openSource(token); return;}
+      this.leaseMissing = true; this.pendingAck = false; this.ackBlocked = false;
+      this.latest = result.build; this.serial++; if (!this.acknowledging) this.controller?.abort();
+      this.notice(result.build.status, result.build.code);
+      if (this.work) this.queued = true; else await this.applyLatest();
+    } catch (error) {
+      if (token === this.sourceToken && !this.stopped) this.linkFailed(error);
+    } finally {if (this.linkController === controller) this.linkController = undefined;}
+  }
+  private async readCurrentLease(token: number, controller: AbortController): Promise<ReturnType<typeof parseLeaseResult> | undefined> {
+    while (this.work) {await this.work; if (token !== this.sourceToken || this.stopped) return;}
+    if (token !== this.sourceToken || this.stopped) return;
+    let result: ReturnType<typeof parseLeaseResult> | undefined;
+    let failure: {error: unknown} | undefined;
+    await this.run(async signal => {
+      try {await this.retryPendingAck(signal); result = await this.readLease(controller);}
+      catch (error) {failure = {error};}
+    });
+    if (failure) throw failure.error;
+    return result;
+  }
+  private async retryPendingAck(signal: AbortSignal): Promise<void> {
+    if (!this.pendingAck) return;
+    try {await this.ack(signal); if (!this.stopped && !signal.aborted) this.notice('applied');}
+    catch (error) {
+      // Only a refused acknowledgment proceeds to a separate proof of lease absence.
+      if (!(error instanceof ReloadFailure && error.status === 409)) throw error;
+    }
+  }
+  private async readLease(controller: AbortController): Promise<NonNullable<ReturnType<typeof parseLeaseResult>>> {
+    const {signal} = controller;
+    const response = await this.bounded(this.env.fetch('/api/dev/lease', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({client: this.client, generation: this.generation, cssGeneration: this.cssGeneration}), signal}), signal, controller);
+    if (!response.ok) throw new ReloadFailure(response.status === 401 ? 'auth' : response.status === 429 ? 'capacity' : response.status >= 500 ? 'offline' : 'invalid-assets');
+    const result = parseLeaseResult(await this.bounded(response.json(), signal, controller));
+    if (!result) throw new ReloadFailure('invalid-assets');
+    return result;
+  }
+  private linkFailed(error: unknown): void {
+    const code = error instanceof ReloadFailure ? error.code : 'offline';
+    if (code === 'auth') {this.notice('auth', 'auth'); return;}
+    if (code === 'invalid-assets') {this.fatal = true; this.notice('failed', code); return;}
+    this.lost(code);
+  }
+  private openSource(token: number): void {
+    if (token !== this.sourceToken || this.stopped || this.fatal) return;
     try {
       this.source = this.env.events(`/api/dev/events?client=${this.client}`, data => {
         if (token !== this.sourceToken || this.stopped) return;
@@ -262,12 +329,12 @@ export class DevReload {
       }, () => {if (token === this.sourceToken && !this.stopped) this.lost();});
     } catch {this.lost();}
   }
-  private lost(): void {
+  private lost(code: DevReloadNotice['code'] = 'offline'): void {
     this.closeSource(); this.clearRetry();
     const delay = RETRIES[this.attempts++];
-    if (delay === undefined) {this.notice('offline', 'offline'); return;}
-    this.notice('reconnecting');
-    this.retry = this.env.clock.set(() => {this.retry = undefined; this.connect();}, delay);
+    if (delay === undefined) {this.notice('offline', code); return;}
+    this.notice('reconnecting', code === 'capacity' ? code : 'none');
+    this.retry = this.env.clock.set(() => {this.retry = undefined; this.connect(true);}, delay);
   }
   private receive(data: string): void {
     const build = parseBuild(data);
@@ -285,16 +352,20 @@ export class DevReload {
   private applyLatest(): Promise<void> {
     if (!this.active || this.stopped || this.fatal || !this.initialized || this.work || this.ackBlocked) return this.work ?? Promise.resolve();
     const build = this.latest;
-    if (build?.status !== 'ready') return Promise.resolve();
+    if (!build || build.status !== 'ready' && !this.leaseMissing) return Promise.resolve();
     const serial = this.serial;
     return this.run(async signal => {
       if (this.pendingAck) await this.ack(signal);
       if (!this.current(serial, signal)) return;
-      if (build.generation === this.cssGeneration && build.change === 'css' || build.generation === this.generation && build.change === 'reload') return;
+      if (this.upToDate(build)) return;
       const state = this.interaction(); if (!state) return;
-      if (build.change === 'css') await this.css(build, state.revision, serial, signal);
+      if (build.change === 'css' && !this.leaseMissing) await this.css(build, state.revision, serial, signal);
       else await this.reload(build, state.revision, serial, signal);
     });
+  }
+  private upToDate(build: DevBuild): boolean {
+    if (this.leaseMissing) return false;
+    return build.change === 'css' ? build.generation === this.cssGeneration : build.generation === this.generation;
   }
   private async css(build: DevBuild, revision: number, serial: number, signal: AbortSignal): Promise<void> {
     const loading = this.env.prepareStylesheet(`/_ui/${build.generation}/style.css`, signal).then(candidate => {
@@ -338,7 +409,7 @@ export class DevReload {
     if (this.pendingAck) await this.run(signal => this.ack(signal));
     await this.applyLatest();
   }
-  reconnect(): void {if (!this.active || this.stopped || this.fatal) return; this.attempts = 0; this.connect();}
+  reconnect(): void {if (!this.active || this.stopped || this.fatal) return; this.attempts = 0; this.connect(true);}
   private stop(): void {this.stopped = true; this.serial++; this.closeSource(); this.clearRetry(); this.controller?.abort();}
   /** The host calls this only for a known abandoned page, not transient stream loss or reload navigation. */
   destroy(): void {

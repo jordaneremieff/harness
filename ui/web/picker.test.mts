@@ -56,7 +56,7 @@ for (const [name, page, status] of [
     const label = nodes.find(node => node.tag === 'label' && node.htmlFor === search.id); assert.ok(label);
     assert.equal(label.className, 'sr-only'); assert.equal(label.textContent, 'Search sessions');
     const heading = body.children.findIndex(node => node.className === 'secondary picker-safety');
-    assert.equal(body.children[heading]?.textContent, 'If a session is open in a terminal, close it there before opening it here.');
+    assert.equal(body.children[heading]?.textContent, 'Stop the terminal session before Resume. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.');
     const searchRow = body.children[heading - 1]; assert.ok(searchRow); assert.equal(searchRow.className, 'picker-search-row');
     const line = searchRow.children[0]; assert.ok(line); assert.equal(line.className, 'picker-input-row'); assert.equal(search.className, 'picker-input');
     assert.equal(line.children.length, 2); assert.equal(search.id, label.htmlFor);
@@ -80,7 +80,7 @@ for (const [name, page, status] of [
     if (oldElement) Object.defineProperty(globalThis, 'HTMLElement', oldElement); else Reflect.deleteProperty(globalThis, 'HTMLElement');
   }
 });
-function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPage = saved) {
+function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPage = saved, selectOpened?:()=>((key:string)=>Promise<void>)) {
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   const previousElement = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
   const previousFetch = globalThis.fetch; const body = new Node('div'); const origin = new Node('button');
@@ -124,13 +124,25 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
     else if (path.includes('/api/projects')) data = {items: [], total: 0, omitted: 0, nextCursor: null, observedAt: saved.observedAt};
     return new Response(JSON.stringify({ok: true, data}), {status: 200, headers: {'content-type': 'application/json'}});
   };
-  const picker = new ProjectPicker({modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,
+  const picker = new ProjectPicker({modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,
     selection: async change => { steps.push('selection'); selections.push(change); }, reload: async () => { steps.push('reload'); reloads++; }});
   const click = (label: string) => { const node = descendants(body).find(node => node.tag === 'button' && node.textContent === label); assert.ok(node, label); node.click(); };
   return {picker, modal, body, calls, state, selections, steps, click, fail: () => { failure = true; }, failList: () => { listFailure = true; }, get reloads() { return reloads; }, get closed() { return closed; }, get error() { return error || descendants(body).find(node => node.id === 'picker-file-error')?.textContent || descendants(body).find(node => node.className === 'picker-error')?.textContent || ''; }};
 }
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 const active = {key: 'current', cwd: '/project', epoch: 1, lifecycle: 'ready'} as PrimaryView;
+for (const owner of ['new','current'] as const) test(`successful Resume selects the exact ${owner} Primary after refresh`,async t=> {
+  const completed:string[] = [];let admissions = 0;
+  const setup = directPicker(t,owner === 'current' ? {...active,sessionFile:saved.items[0]?.path} : undefined,saved,()=> {admissions++;return async key=> {completed.push(key);assert.equal(setup.reloads,1);};});
+  setup.picker.open();await settle();setup.picker.resume('/project','/project/s.jsonl');await settle();
+  assert.equal(admissions,1);assert.deepEqual(completed,[owner === 'new' ? 'opened' : 'current']);assert.equal(setup.selections.length,0);
+});
+for (const changed of ['closed','replaced'] as const) test(`late Resume completion does not select after the picker is ${changed}`,async t=> {
+  const completed:string[] = [];const setup = directPicker(t,undefined,saved,()=>async key=> {completed.push(key);});setup.picker.open();await settle();
+  const previous = globalThis.fetch;let release!:()=>void,started!:()=>void;const gate = new Promise<void>(resolve=> {release = resolve;}),pending = new Promise<void>(resolve=> {started = resolve;});
+  globalThis.fetch = async(input,init)=> {if (String(input) === '/api/primaries') {started();await gate;}return previous(input,init);};
+  setup.picker.resume('/project','/project/s.jsonl');await pending;if (changed === 'closed') setup.modal.close();else setup.picker.open();release();await settle();await settle();assert.deepEqual(completed,[]);
+});
 test('first-use folder selection retains the inline session chooser after the root save',async t=> {
   const setup=directPicker(t);const root=new Node('main');let folder:string|undefined;
   const picker=new ProjectPicker({modal:setup.modal as unknown as Modal,snapshot:()=>setup.state,primary:()=>undefined,project:()=>folder,selection:async()=>{},reload:async()=>{},workingFolder:async path=> {folder=path;}});
@@ -146,7 +158,7 @@ test('current project opens its session list and a saved row directly admits one
   const setup = directPicker(t, active); setup.picker.open(); await settle();
   assert.equal(setup.calls.some(call => call.path.includes('/api/projects')), false);
   assert.equal(descendants(setup.body).some(node => node.textContent === 'Open project'), false);
-  assert.ok(descendants(setup.body).find(node => node.textContent === 'If a session is open in a terminal, close it there before opening it here.'));
+  assert.ok(descendants(setup.body).find(node => node.textContent === 'Stop the terminal session before Resume. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.'));
   const row = descendants(setup.body).find(node => node.className === 'picker-select'); assert.ok(row);
   row.click(); row.click(); await settle();
   assert.deepEqual(setup.calls.filter(call => call.path === '/api/primaries').map(call => call.body), [{cwd: '/project', sessionFile: '/project/s.jsonl'}]);
@@ -398,7 +410,7 @@ test('chooser controls stay with their title, search and list disclosure while r
   const row = nodes.find(node => node.className === 'picker-session'); assert.ok(row);
   assert.equal(row.children[0]?.className, 'picker-select'); assert.equal(row.children[1]?.className, 'picker-age quiet');
   const facts = row.children[2]; assert.ok(facts); assert.equal(facts.tag, 'details'); assert.equal(facts.children[0]?.attributes['aria-label'], 'Details for Saved title');
-  assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['Saved title', '/project', 's', '/project/s.jsonl', '10 B', 'If this session is active in a terminal, close it there first.']);
+  assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['Saved title', '/project', 's', '/project/s.jsonl', '10 B', 'Stop the terminal session before Resume. Active processes keep independent branches.']);
   file.open = true; file.dispatch('toggle');
   assert.ok(descendants(root).find(node => node.id === 'picker-session-path')); assert.equal(setup.modal.token, 0);
 });

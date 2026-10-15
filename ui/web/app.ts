@@ -101,6 +101,8 @@ new HealthStatus(modal);
 let diagnosticsActive = false;
 let devReload: DevReload | undefined;
 let devInteractionRevision = 0;
+let selectionIntentRevision = 0;
+let paneSelectionRevision = 0;
 let devRestoreOwner: object | undefined;
 let devNavigating = false;
 const devCheckpointKey = 'ui:dev-checkpoint';
@@ -132,10 +134,14 @@ function captureFind(controller?: ConversationController): ReturnType<Transcript
 }
 let workspaceViews: StableViews | undefined;
 export function stableViews(): StableViews {
-  if (!workspaceViews) {const parent = byId('workspace').parentElement; if (!parent) throw new Error('Workspace layout is unavailable.'); workspaceViews = new StableViews(parent);}
+  if (!workspaceViews) {const parent = byId('workspace').parentElement; if (!parent) throw new Error('Workspace layout is unavailable.'); workspaceViews = new StableViews(parent);
+    const focusFile = (event:Event)=> {if ((event.target as HTMLElement).closest('.file-view')) {focusViewPane(event);renderWorkbenchStatus();}};
+    workspaceViews.host.addEventListener('pointerdown',focusFile);workspaceViews.host.addEventListener('focusin',focusFile);
+  }
   return workspaceViews;
 }
 function viewPane(node: HTMLElement): HTMLElement | null {return stableViews().slot(node)?.closest<HTMLElement>('.pane-leaf') ?? null;}
+function focusViewPane(event:Event):void {const pane = viewPane(event.target as HTMLElement);if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId,event);}
 function conversationController(target: Target): ConversationController {
   const workspaceId = state.workspace?.id; if (!workspaceId) throw new Error('No workspace is selected.');
   const key = controllerKey(workspaceId, target); const existing = controllers.get(key); if (existing) return existing;
@@ -172,8 +178,7 @@ function conversationController(target: Target): ConversationController {
   bindControllerReadingIntent(controller);
   earlier.addEventListener('click', () => { void loadControllerHistory(controller, true); });
   stop.addEventListener('click', () => { void stopController(controller); });
-  const focusPane = (event: Event): void => {const pane = viewPane(event.target as HTMLElement); if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId, event);};
-  root.addEventListener('pointerdown', focusPane); root.addEventListener('focusin', focusPane);
+  root.addEventListener('pointerdown', focusViewPane); root.addEventListener('focusin', focusViewPane);
   elements.editor.addEventListener('focus', () => { footerController = controller; renderWorkbenchStatus(); });
   bindControllerInput(controller);
   controllers.set(key, controller); return controller;
@@ -270,9 +275,9 @@ export const filesTree = new FilesTree(byId('files-tree'),{
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
   select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),escape:focusEditor,scope:()=>watchFiles(),status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
 export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();});
-export function chooseFile(rootId:string,path:string):void {
+export function chooseFile(rootId:string,path:string,focus = true):void {
   if (!state.workspace) return;
-  try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));focusEditor();} catch (error) {showError(error);}
+  try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));if (focus) focusEditor();} catch (error) {showError(error);}
 }
 function renderFiles():void {
   const workspace = state.workspace;if (!workspace) return;
@@ -291,13 +296,13 @@ function fileChanges(change:FileChanges,workspaceId?:string):void {
   fileWatch.change(change);filesTree.invalidate(change.rootId,change.directories,change.rescan);
   void filesViews.refresh(workspace.id,change.rootId,change.files,change.rescan);if (change.move) renderAll();
 }
-async function mutateFile(workspace:string,rootId:string,action:FileTreeAction,path:string,value?:string):Promise<void> {
+async function mutateFile(workspace:string,rootId:string,action:FileTreeAction,path:string,value?:string,current?:()=>boolean):Promise<undefined|(()=>void)> {
   let release:(()=>void)|undefined;fileActionStatus = action === 'trash' ? 'Moving to Trash…' : 'Updating files…';renderWorkbenchStatus();
   try {
     if (action === 'rename' || action === 'move') {await filesViews.drain();await selectionQueue.drain();release = await filesViews.prepareMove(workspace,{rootId,from:path,to:value ?? ''});}
     const result = await requestFileMutation(workspace,rootId,action,path,value);
     if (result.rootId !== rootId) throw new Error('The file action response identity changed.');
-    await applyFileMutation(workspace,result);
+    return await applyFileMutation(workspace,result,current);
   } catch(error) {fileActionStatus = `File action not confirmed. ${errorMessage(error)}`;throw error;}
   finally {release?.();renderWorkbenchStatus();void watchFiles();}
 }
@@ -307,24 +312,32 @@ function requestFileMutation(workspace:string,rootId:string,action:FileTreeActio
   if (action === 'trash') return request<FileMutation>(`${route}/entry?${query}&path=${encodeURIComponent(path)}`,'DELETE');
   const target = action === 'rename' ? [...path.split('/').slice(0,-1),value ?? ''].join('/') : value;return request<FileMutation>(`${route}/move?${query}`,'POST',{from:path,to:target});
 }
-async function showCreatedFile(workspace:string,result:FileMutation):Promise<void> {
-  chooseFile(result.rootId,result.path);await filesViews.owner(workspace,{kind:'file',rootId:result.rootId,path:result.path})?.load();
-  const tab = activeTab(currentLayout());if (tab?.kind === 'file' && tab.rootId === result.rootId && tab.path === result.path) focusEditor();
+async function showCreatedFile(workspace:string,result:FileMutation,current?:()=>boolean):Promise<undefined|(()=>void)> {
+  if (!current?.()) return;
+  const pane = currentLayout().focusedPane;
+  chooseFile(result.rootId,result.path,false);await filesViews.owner(workspace,{kind:'file',rootId:result.rootId,path:result.path})?.load();
+  return ()=> {
+    const layout = currentLayout(),tab = activeTab(layout);
+    if (state.workspace?.id !== workspace || layout.focusedPane !== pane || tab?.kind !== 'file' || tab.rootId !== result.rootId || tab.path !== result.path || tab.view === 'preview') return;
+    const view = filesViews.view(state.workspace,tab);if (!view.editor || view.editor.hidden || view.editor.readOnly) return;
+    stableViews().sync();view.focus();
+  };
 }
-async function applyFileMutation(workspace:string,result:FileMutation):Promise<void> {
+async function applyFileMutation(workspace:string,result:FileMutation,current?:()=>boolean):Promise<undefined|(()=>void)> {
   if (result.operation === 'move' && result.previousPath) remapFileViews(workspace,{rootId:result.rootId,from:result.previousPath,to:result.path});
   if (state.workspace?.id !== workspace) return;
   const parent = result.path.split('/').slice(0,-1).join('/');filesTree.reveal(result.rootId,parent,result.operation === 'create' && result.kind === 'directory' ? result.path : undefined);
-  if (result.operation === 'create' && result.kind === 'file') await showCreatedFile(workspace,result);
+  const completed = result.operation === 'create' && result.kind === 'file' ? await showCreatedFile(workspace,result,current) : undefined;
   if (result.operation === 'trash') void filesViews.refresh(workspace,result.rootId,[result.path],true);
-  fileActionStatus = '';await reload();
+  fileActionStatus = '';await reload();return completed;
 }
-function fileTreeOperation(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<void> {
+function fileTreeOperation(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<undefined|(()=>void)> {
   const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));
-  if (action === 'trash') {modal.confirm('Move to Trash?',`Move “${path}” to the Trash? Unsaved drafts stay available.`,()=>mutateFile(workspace,rootId,action,path),'Move to Trash');return Promise.resolve();}
-  return mutateFile(workspace,rootId,action,path,value);
+  if (action === 'trash') {modal.confirm('Move to Trash?',`Move “${path}” to the Trash? Unsaved drafts stay available.`,async()=> {await mutateFile(workspace,rootId,action,path);},'Move to Trash');return Promise.resolve(undefined);}
+  const pane = currentLayout().focusedPane,input = document.activeElement;
+  return mutateFile(workspace,rootId,action,path,value,()=>state.workspace?.id === workspace && currentLayout().focusedPane === pane && document.activeElement === input);
 }
-const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload: reloadSelection, project: projectPath, projectsChanged: renderIdentity,workingFolder:path=>fileRoot.choose(path)});
+const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload, selectOpened:capturePrimarySelection, project: projectPath, projectsChanged: renderIdentity,workingFolder:path=>fileRoot.choose(path)});
 actions.projectPicker = () => picker.open(projectPath());
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
@@ -638,6 +651,7 @@ function refreshPaneSplit(node: import('../shared/api.ts').PaneNode): void {
   refreshPaneSplit(node.first); refreshPaneSplit(node.second);
 }
 function selection(change: SelectionChange): Promise<void> {
+  if (change.primaryKey !== undefined || change.selectedTarget !== undefined || change.conversationLayout !== undefined) paneSelectionRevision++;
   if (change.selectedTarget && !change.conversationLayout) {
     try { change = {...change, conversationLayout: openTab(currentLayout(), tabForTarget(change.selectedTarget))}; }
     catch (error) { return Promise.reject(error); }
@@ -736,15 +750,33 @@ async function applyControl(command:ControlRequest):Promise<number> {
   for(const pane of paneLeaves(next.root))verifyControlPane(pane,state.workspace);
   verifyNative();return revision;
 }
+export function capturePrimarySelection():(key:string)=>Promise<void> {
+  const workspace = state.workspace?.id,layout = JSON.stringify(state.workspace?.conversationLayout),chosen = paneSelectionRevision;
+  const previousKey = state.workspace?.primaryKey,previousTarget = JSON.stringify(state.workspace?.selectedTarget);
+  const revision = selectionIntentRevision,token = modal.token,dialog = modal.openNow;
+  const current = (target:Extract<Target,{kind:'primary'}>)=>state.workspace?.id === workspace && paneSelectionRevision === chosen && JSON.stringify(state.workspace?.conversationLayout) === layout &&
+    (state.workspace?.primaryKey === previousKey || state.workspace?.primaryKey === target.key) &&
+    (JSON.stringify(state.workspace?.selectedTarget) === previousTarget || sameTarget(state.workspace?.selectedTarget,target)) && (dialog ? modal.owns(token) : !modal.openNow);
+  return async key=> {
+    const item = state.primaries.get(key);if (!item) return;
+    const target = {kind:'primary' as const,key,epoch:item.epoch};if (!current(target)) return;
+    const applied = selection({primaryKey:key,selectedTarget:target}),selectedLayout = JSON.stringify(currentLayout()),selected = paneSelectionRevision;
+    await applied;
+    if (state.workspace?.id !== workspace || paneSelectionRevision !== selected || selectionIntentRevision !== revision || JSON.stringify(currentLayout()) !== selectedLayout || !sameTarget(primaryTarget(),target) || activeTab(currentLayout())?.kind !== 'primary' || (dialog ? !modal.owns(token) : modal.openNow)) return;
+    focusPrimaryKey = key;focusPrimaryCurrent = ()=>state.workspace?.id === workspace && paneSelectionRevision === selected && selectionIntentRevision === revision && JSON.stringify(currentLayout()) === selectedLayout && sameTarget(primaryTarget(),target) && modal.token === token;
+    focusSelectedPrimary();
+  };
+}
 let focusPrimaryKey: string | undefined;
+let focusPrimaryCurrent:(()=>boolean)|undefined;
 export async function reloadSelection(): Promise<void> {
-  await reload(); focusPrimaryKey = state.workspace?.primaryKey;
+  await reload(); focusPrimaryKey = state.workspace?.primaryKey;focusPrimaryCurrent = undefined;
   focusSelectedPrimary();
 }
 function focusSelectedPrimary(): void {
-  if (selectedAgent()) { focusPrimaryKey = undefined; return; }
+  if (selectedAgent() || focusPrimaryCurrent && !focusPrimaryCurrent()) { focusPrimaryKey = undefined;focusPrimaryCurrent = undefined; return; }
   if (!focusPrimaryKey || focusPrimaryKey !== primary()?.key || primary()?.lifecycle !== 'ready' || primaryComposer().editor.disabled) return;
-  focusPrimaryKey = undefined; modal.restoreFocus(primaryComposer().editor);
+  focusPrimaryKey = undefined;focusPrimaryCurrent = undefined;stableViews().sync();modal.restoreFocus(primaryComposer().editor);
 }
 export function reload(signal?: AbortSignal): Promise<void> {
   const task = reloadTail.then(() => {signal?.throwIfAborted(); return refreshVisible(() => refreshSnapshot(signal), loadVisibleHistory, showError);}); reloadTail = task.catch(() => undefined); return task;
@@ -1691,7 +1723,7 @@ function bind(): void {
   // Programmatic restoration also emits trusted scroll/select events; input intent must still change the revision.
   for (const name of ['input', 'change', 'keydown', 'pointerdown', 'wheel', 'select', 'scroll', 'compositionstart', 'compositionend'] as const) document.addEventListener(name, event => {
     if (!event.isTrusted || devRestoreOwner && (name === 'select' || name === 'scroll')) return;
-    devInteractionRevision++;
+    devInteractionRevision++;if (name !== 'select' && name !== 'scroll') selectionIntentRevision++;
   }, {capture: true, passive: true});
   window.addEventListener('pagehide', event => {if (!event.persisted && !devNavigating) devReload?.destroy();});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
@@ -1857,12 +1889,14 @@ export function applyDevCssState(captured: unknown): void {
 }
 let uiReady = false;
 async function finishStartup(): Promise<void> {
-  await initializeDevReload();
-  if (uiReady || !connected || document.hidden) return;
+  const connection = source,current = ()=>!!connection && connection === source && connected && !document.hidden;
+  if (!current()) return;
+  await initializeDevReload(current);
+  if (uiReady || !current()) return;
   uiReady = true; document.dispatchEvent(new Event('ui-ready')); renderNavigation();
 }
-async function initializeDevReload(): Promise<void> {
-  if (devReload) {await devReload.ready; return;}
+async function initializeDevReload(current:()=>boolean): Promise<void> {
+  if (devReload) {await devReload.ready; if (!current()) return; devReload.reconnect(); await devReload.resume(); return;}
   const notice = element('span', 'secondary'); notice.setAttribute('role', 'status');
   devReload = new DevReload({interaction: () => {const reason = devHold(); return {revision: devInteractionRevision, safe: !reason, ...(reason ? {reason} : {})};}, drain: drainDev,
     captureCheckpoint: captureDevCheckpoint, writeCheckpoint: checkpoint => sessionStorage.setItem(devCheckpointKey, JSON.stringify(checkpoint)),

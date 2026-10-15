@@ -154,10 +154,11 @@ test('working roster rows replace the age with the current tool and keep the arg
   roster.set([row('one', {state: 'working'})]); f.flush(); assert.notEqual(age.textContent, 'bash');
 });
 test('roster has sibling native actions and preserves retained, idle and working glyphs', t => {
-  t.mock.method(Date, 'now', () => 600000);
+  const modifiedAt = Date.UTC(2026, 9, 8, 12);
+  t.mock.method(Date, 'now', () => modifiedAt + 600000);
   const fixture = setup(); const selected: string[] = [];
   const roster = new Roster(value => selected.push(value.identity), () => {});
-  roster.set([row('stored', {availability: 'stored'}), row('idle', {state: 'idle'}), row('working')], undefined, 'idle'); fixture.flush();
+  roster.set([row('stored', {availability: 'stored', modifiedAt}), row('idle', {state: 'idle'}), row('working')], undefined, 'idle'); fixture.flush();
   const [stored, idle, working] = fixture.node.children; assert.ok(stored); assert.ok(idle); assert.ok(working);
   assert.equal(stored.query('row-state').dataset.glyph, '○');
   assert.equal(idle.query('row-state').dataset.glyph, '○'); assert.equal(working.query('row-state').dataset.glyph, '●');
@@ -179,8 +180,8 @@ test('roster has sibling native actions and preserves retained, idle and working
   assert.equal(idle.query('row-select').title, 'idle'); assert.equal(working.query('row-select').title, 'working');
   assert.equal(select.title, 'stored'); assert.equal(select.attributes['aria-description'], select.title);
   assert.equal(age.tabIndex, 0); assert.equal(age.query('timestamp').textContent, '10m');
-  assert.equal(age.query('timestamp').dateTime, '1970-01-01T00:00:00.000Z');
-  assert.match(age.attributes['aria-description'] ?? '', /1969|1970/); assert.match(age.title, /1970-01-01T00:00:00.000Z/);
+  assert.equal(age.query('timestamp').dateTime, new Date(modifiedAt).toISOString());
+  assert.equal(age.attributes['aria-description'], timestampDetails(modifiedAt).display); assert.match(age.title, /2026-10-08T12:00:00.000Z/);
   assert.equal(age.dataset.absolute, 'false');
   age.click(); assert.deepEqual(selected, []); assert.doesNotMatch(age.textContent, /ago/); assert.equal(age.dataset.absolute, 'true');
   age.click(); assert.equal(age.textContent, '10m'); assert.deepEqual(selected, []); assert.equal(age.dataset.absolute, 'false');
@@ -306,11 +307,12 @@ test('empty roster discovery failure keeps the reason in the list and retry in t
   retry.click(); assert.deepEqual(actions, ['refresh']);
 });
 test('keyed wrappers, actions, order and focused timestamps survive roster updates', t => {
-  let clock = 600000; t.mock.method(Date, 'now', () => clock);
+  const modifiedAt = Date.UTC(2026, 9, 8, 12);
+  let clock = modifiedAt + 600000; t.mock.method(Date, 'now', () => clock);
   const fixture = setup(); const selected: AgentRow[] = []; const roster = new Roster(value => selected.push(value), () => {});
-  const one = row('one'); const two = row('two'); roster.set([one, two]); fixture.flush();
+  const one = row('one', {modifiedAt}); const two = row('two'); roster.set([one, two]); fixture.flush();
   const wrapper = required(fixture.node.children[0]); const select = wrapper.query('row-select'); const age = wrapper.query('row-age'); const moves = wrapper.moves;
-  fixture.document.activeElement = age; clock = 900000;
+  fixture.document.activeElement = age; clock = modifiedAt + 900000;
   roster.set([two, one], undefined, 'two'); fixture.flush();
   assert.equal(fixture.node.children[0], wrapper); assert.equal(wrapper.moves, moves);
   assert.equal(wrapper.query('row-select'), select); assert.equal(wrapper.query('row-age'), age);
@@ -321,25 +323,26 @@ test('keyed wrappers, actions, order and focused timestamps survive roster updat
   roster.set([changed, {...two, latestReply: 'Another answer'}]); fixture.flush(); assert.equal(age.textContent, absolute);
   age.click(); assert.equal(age.textContent, '15m');
 });
-test('invalid timestamps stay hidden and unfocusable and recover without node replacement', t => {
+test('absent and invalid activity times clear metadata and recover without node replacement', t => {
   const now = new Date(2026, 9, 8, 12).getTime(); t.mock.method(Date, 'now', () => now);
   const fixture = setup(); const roster = new Roster(() => {}, () => {});
-  roster.set([row('one', {modifiedAt: Number.NaN})]); fixture.flush();
+  const modifiedAt = now - 600000;
+  roster.set([row('one', {modifiedAt})]); fixture.flush();
   const wrapper = required(fixture.node.children[0]); const age = wrapper.query('row-age');
-  for (const value of [Number.NaN, Infinity, 8.64e15 + 1]) {
+  assert.equal(age.hidden, false); assert.equal(age.textContent, '10m');
+  for (const value of [0, Number.NaN, Infinity, 8.64e15 + 1]) {
     roster.set([row('one', {modifiedAt: value})]); fixture.flush();
     assert.equal(age.hidden, true); assert.equal(age.disabled, true); assert.equal(age.tabIndex, -1); assert.equal(age.textContent, '');
     assert.equal(age.query('timestamp').dateTime, ''); assert.equal(age.title, ''); assert.equal(age.attributes['aria-description'], '');
-    assert.equal(wrapper.query('row-select').disabled, false);
+    assert.equal(age.attributes['aria-label'], ''); assert.equal(wrapper.query('row-select').disabled, false);
   }
-  roster.set([row('one', {modifiedAt: 0})]); fixture.flush();
+  roster.set([row('one', {modifiedAt})]); fixture.flush();
   assert.equal(fixture.node.children[0], wrapper); assert.equal(wrapper.query('row-age'), age);
   assert.equal(age.hidden, false); assert.equal(age.disabled, false); assert.equal(age.tabIndex, 0);
-  const shortDate = new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric'}).format(new Date(0));
-  assert.equal(age.textContent, shortDate); assert.doesNotMatch(age.textContent, /1969|1970/);
-  assert.equal(age.attributes['aria-label'], `Timestamp for Agent · ${relativeTime(0, now)}`);
-  age.click(); assert.equal(age.textContent, absoluteTime(0));
-  age.click(); assert.equal(age.textContent, shortDate);
+  assert.equal(age.textContent, '10m'); assert.equal(age.query('timestamp').dateTime, new Date(modifiedAt).toISOString());
+  assert.equal(age.attributes['aria-label'], `Timestamp for Agent · ${relativeTime(modifiedAt, now)}`);
+  age.click(); assert.equal(age.textContent, absoluteTime(modifiedAt));
+  age.click(); assert.equal(age.textContent, '10m');
 });
 function page(rows: AgentRow[], nextCursor: string | null = null): CachedRoster {
   return {rows, nextCursor, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
@@ -402,7 +405,7 @@ test('loaded matches do not fetch cached pages and expose manual continuation', 
 test('focused timestamp pins its wrapper outside the virtual roster window', t => {
   t.mock.method(Date, 'now', () => 600000);
   const fixture = setup(); const roster = new Roster(() => {}, () => {});
-  const rows = Array.from({length: 220}, (_, index) => row(`r${index}`)); roster.set(rows); fixture.flush();
+  const rows = Array.from({length: 220}, (_, index) => row(`r${index}`, {modifiedAt: 1})); roster.set(rows); fixture.flush();
   const wrapper = required(fixture.node.children.find(child => child.dataset.identity === 'r0'));
   const age = wrapper.query('row-age'); fixture.document.activeElement = age;
   fixture.node.scrollTop = 18000; fixture.node.dispatch('scroll'); fixture.flush();

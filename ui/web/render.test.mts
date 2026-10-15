@@ -489,9 +489,10 @@ test('Find distinguishes session members that share a virtual representative', (
   assert.equal(find.previous('needle').position, 39); assert.equal(root.querySelector('.find-current')?.dataset.sessionEventId, 's38');
 });
 test('roster preserves order, visible duplicate identities, keyed rows and data-arrival ages', () => {
-  setup(); const now = Date.now; let clock = 600000; Date.now = () => clock;
+  const modifiedAt = Date.UTC(2026, 9, 8, 12);
+  setup(); const now = Date.now; let clock = modifiedAt + 600000; Date.now = () => clock;
   try {
-    const selected: string[] = []; const view = new Roster(row => selected.push(row.identity), () => {}, undefined, undefined, rosterStatus); const one = row('one', 'same'); const two = row('two', 'same');
+    const selected: string[] = []; const view = new Roster(row => selected.push(row.identity), () => {}, undefined, undefined, rosterStatus); const one = {...row('one', 'same'), modifiedAt}; const two = row('two', 'same');
     view.set([one, two]); flush(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m'); assert.match(first.querySelector('.row-select')?.attributes['aria-label'] ?? '', /one/);
     assert.equal(first.querySelector('.row-identity')?.textContent, 'one');
     assert.equal(first.querySelector('.row-word'), null); assert.equal(first.querySelector('.row-detail'), null); assert.equal(first.dataset.live, 'true');
@@ -499,7 +500,7 @@ test('roster preserves order, visible duplicate identities, keyed rows and data-
     assert.equal(first.querySelector('.row-select')?.title, 'Connection not checked');
     assert.equal(first.querySelector('.row-select')?.attributes['aria-description'], 'Connection not checked');
     assert.equal(node('roster').children[1]?.querySelector('.row-identity')?.textContent, 'two');
-    clock = 900000; view.set([two, one], undefined, 'two'); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '10m');
+    clock = modifiedAt + 900000; view.set([two, one], undefined, 'two'); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '10m');
     first.querySelector('.row-select')?.dispatch('click'); assert.deepEqual(selected, ['one']);
     view.set([{...one, latestReply: 'new'}, two]); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '15m');
     assert.equal(first.querySelector('.row-select')?.title, 'Connection not checked · new');

@@ -30,7 +30,7 @@ function projectPage(previous: RecentProjectPage | undefined, page: RecentProjec
 }
 
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
-  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; project?(): string | undefined; projectsChanged?(): void; workingFolder?(path:string):Promise<void>};
+  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; workingFolder?(path:string):Promise<void>};
 
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
 export class ProjectPicker {
@@ -227,7 +227,7 @@ export class ProjectPicker {
     projectDetails.append(folderSummary, element('p', 'identity', project));
     body.append(projectDetails);
     this.sessionActions(project);
-    const safety = element('p', 'secondary picker-safety', 'If a session is open in a terminal, close it there before opening it here.');
+    const safety = element('p', 'secondary picker-safety', 'Stop the terminal session before Resume. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.');
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow, safety);
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
@@ -341,7 +341,7 @@ export class ProjectPicker {
     const metadata = element('span', 'picker-session-meta');
     metadata.append(element('span', 'picker-session-folder', this.projectName(item.project)));
     if (opened) metadata.append(element('span', 'info', 'In this window'));
-    else select.setAttribute('aria-description', 'If this session is active in a terminal, close it there first.');
+    else select.setAttribute('aria-description', 'Stop the terminal session before Resume. Active processes keep independent branches.');
     select.append(heading, metadata);
     let absolute = false;
     const formatted = absoluteTime(item.modifiedAt);
@@ -350,7 +350,7 @@ export class ProjectPicker {
     age.title = formatted; describeTime();
     const details = element('details', 'picker-session-details'); const summary = element('summary'); controlIcon(summary, 'info', `Details for ${item.title}`);
     details.append(summary, element('p', 'picker-session-full-title', item.title), element('p', 'identity', item.project), element('p', 'identity', item.id), element('p', 'identity', item.path), element('p', 'secondary', sessionSize(item.size)));
-    if (!opened) details.append(element('p', 'secondary', 'If this session is active in a terminal, close it there first.'));
+    if (!opened) details.append(element('p', 'secondary', 'Stop the terminal session before Resume. Active processes keep independent branches.'));
     row.append(select, age, details); return row;
   }
   private navigate(event: KeyboardEvent, list: HTMLElement): void {
@@ -388,14 +388,19 @@ export class ProjectPicker {
     }, failed);
   }
   private async select(change: SelectionChange): Promise<void> {
-    await this.ctx.selection(change);
+    const selected = this.ctx.selectOpened?.(),revision = this.revision,inline = !!this.inline;
+    if (!selected) await this.ctx.selection(change);
     await this.ctx.reload();
+    if (change.primaryKey && (inline || this.owns(revision))) await selected?.(change.primaryKey);
   }
   private async start(project: string, path?: string): Promise<void> {
+    const selected = this.ctx.selectOpened?.(),revision = this.revision,inline = !!this.inline;
     const result = await operation('primary.open', '/api/primaries', {cwd: project, ...(path !== undefined ? {sessionFile: path} : {})});
     const opened = result as unknown as {primaryKey?: string; operation?: OperationView};
     if (opened.operation?.error) throw new Error(opened.operation.error.message);
     if (!opened.primaryKey) throw new Error('Pi did not open the primary. Your project choice stays unchanged.');
     await this.ctx.reload();
+    // Refresh removes the first-use chooser when its returned session arrives.
+    if (inline || this.owns(revision)) await selected?.(opened.primaryKey);
   }
 }

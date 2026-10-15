@@ -172,6 +172,30 @@ test('pure development HTTP pins every asset and uses a distinct bounded notific
   assert.equal((await fixture.invoke('/api/dev/release','POST',{client})).statusCode,200);assert.equal(fixture.generations.counts().clients,0);
 });
 
+test('development lease recovery preserves auth identity capacity and explicit missing-release results',async context=> {
+  const fixture=await inProcessHttp(context);const id=fixture.generations.status().generation;
+  const missing='0'.repeat(24),body={client:missing,generation:id,cssGeneration:id};
+  assert.equal((await fixture.invoke('/api/dev/lease','GET')).statusCode,405);
+  for(const headers of [{host:'wrong.invalid'},{origin:'http://wrong.invalid'}] as Record<string,string>[]) assert.equal((await fixture.invoke('/api/dev/lease','POST',body,headers)).statusCode,403);
+  assert.equal((await fixture.invoke('/api/dev/lease','POST',body,{cookie:''})).statusCode,401);
+  for(const invalid of [{...body,client:'bad'},{...body,generation:'bad'},{...body,cssGeneration:'bad'},{...body,extra:true}]) assert.equal((await fixture.invoke('/api/dev/lease','POST',invalid)).statusCode,400);
+  assert.equal(JSON.parse((await fixture.invoke('/api/dev/lease','POST',body)).text).data.lease,'missing');assert.equal(fixture.generations.counts().clients,0);
+  const page=await fixture.invoke('/');const client=/name="ui-client" content="([a-f0-9]+)"/.exec(page.text)?.[1];assert.ok(client);
+  const known={...body,client};assert.equal(JSON.parse((await fixture.invoke('/api/dev/lease','POST',known)).text).data.lease,'present');
+  assert.equal((await fixture.invoke('/api/dev/lease','POST',{...known,generation:'f'.repeat(64)})).statusCode,409);
+  const foreign=fixture.generations.document();fixture.generations.bind(foreign.client,'other-session');
+  assert.equal((await fixture.invoke('/api/dev/lease','POST',{...body,client:foreign.client})).statusCode,409);
+  assert.equal((await fixture.invoke('/api/dev/release','POST',{client:foreign.client})).statusCode,409);
+  assert.equal((await fixture.invoke('/api/dev/release','POST',{client:'bad'})).statusCode,400);
+  assert.equal(JSON.parse((await fixture.invoke('/api/dev/release','POST',{client:missing})).text).data.release,'absent');
+  assert.equal(JSON.parse((await fixture.invoke('/api/dev/release','POST',{client})).text).data.release,'released');
+  for(let index=0;index<8;index++) {const own=fixture.generations.document();assert.equal((await fixture.invoke('/api/dev/lease','POST',{...body,client:own.client})).statusCode,200);}
+  const excess=fixture.generations.document();const fullAck=await fixture.invoke('/api/dev/ack','POST',{...body,client:excess.client});assert.equal(fullAck.statusCode,429);assert.equal(JSON.parse(fullAck.text).error.code,'capacity');
+  for(let index=fixture.generations.counts().clients;index<64;index++) fixture.generations.document();
+  const capacity=await fixture.invoke('/api/dev/lease','POST',body);assert.equal(capacity.statusCode,429);assert.equal(JSON.parse(capacity.text).error.code,'capacity');
+  assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
+});
+
 test('agent start has one authenticated POST route with a separate request ID', {timeout:10000}, async context => {
   const app = await fixture(context); const calls: {workspace:string;identity:string;requestId:string}[] = [];
   context.mock.method(app.registry,'startAgent',async (workspace:string,identity:string,requestId:string)=> {

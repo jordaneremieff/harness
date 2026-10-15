@@ -15,7 +15,7 @@ export function visibleFileRows(directories: ReadonlyMap<string, Directory>, pat
   const directory = directories.get(path); if (!directory?.expanded) return [];
   return directory.entries.flatMap(entry => [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
 }
-export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<void>};
+export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<undefined|(()=>void)>};
 /** Disclosed directories retain their rows while bounded disk changes refresh their pages. */
 export class FilesTree {
   readonly node: HTMLElement;
@@ -221,11 +221,12 @@ export class FilesTree {
     const value = naming.input.value;
     if (!value || (naming.action !== 'move' && /[/\\]/.test(value))) {this.hooks.status?.('Enter a file or folder name without a separator.');return;}
     const generation = this.generation;naming.busy = true;naming.input.readOnly = true;
-    try {await this.hooks.operation(root.id,naming.action,createAction(naming.action) ? naming.parent : naming.path,value);if (generation === this.generation && this.naming === naming) this.finishNaming(naming,value);}
+    try {const completed = await this.hooks.operation(root.id,naming.action,createAction(naming.action) ? naming.parent : naming.path,value);if (generation === this.generation && this.naming === naming) this.finishNaming(naming,value,completed);}
     catch(error) {if (generation === this.generation && this.naming === naming) {this.hooks.status?.(error instanceof Error ? error.message : 'The file action failed.');naming.busy = false;naming.input.readOnly = false;naming.input.focus();}}
   }
-  private finishNaming(naming:Naming,value:string):void {
-    const focus = document.activeElement === naming.input;this.naming = undefined;this.paint();if (!focus || naming.action === 'file') return;
+  private finishNaming(naming:Naming,value:string,completed:undefined|(()=>void)):void {
+    const focus = document.activeElement === naming.input;this.naming = undefined;this.paint();if (!focus) return;
+    if (naming.action === 'file') {completed?.();return;}
     this.pendingFocus = naming.action === 'move' ? value : [naming.parent,value].filter(Boolean).join('/');this.node.focus({preventScroll:true});this.restoreFocus();
   }
   private trash(entry:FileEntry):void {if (this.root && this.hooks.operation) void this.hooks.operation(this.root.id,'trash',entry.path).catch(error=>this.hooks.status?.(error instanceof Error ? error.message : 'The file action failed.'));}

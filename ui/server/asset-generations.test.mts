@@ -136,6 +136,25 @@ test('syntax failure leaves the last good generation and a corrected producer re
   fails=false;builder.request();await builder.drain();assert.equal(generations.status().generation,build('fixed').id);assert.equal(calls,2);
 });
 
+test('restart lease checks distinguish proven absence from malformed identity and known session or generation mismatch',()=> {
+  const initial=build();const generations=new AssetGenerations(initial);const page=generations.document();generations.bind(page.client,'owner');
+  assert.equal(generations.checkLease(page.client,'owner',page.generation,page.generation).lease,'present');
+  for(const [client,session,generation,css] of [[page.client,'other',page.generation,page.generation],[page.client,'owner','f'.repeat(64),page.generation],[page.client,'owner',page.generation,'f'.repeat(64)],['bad','owner',page.generation,page.generation],['0'.repeat(24),'owner','bad',page.generation]] as const) assert.throws(()=>generations.checkLease(client,session,generation,css),/invalid-assets/);
+  const restarted=new AssetGenerations(initial);assert.equal(restarted.checkLease(page.client,'owner',page.generation,page.generation).lease,'missing');assert.equal(restarted.counts().clients,0);
+  assert.throws(()=>restarted.acknowledge(page.client,'owner',page.generation,page.generation));
+  assert.equal(restarted.release(page.client,'owner'),'absent');assert.throws(()=>restarted.release('bad','owner'));
+  assert.throws(()=>generations.release(page.client,'other'));assert.equal(generations.counts().clients,1);
+  assert.equal(generations.release(page.client,'owner'),'released');assert.equal(generations.release(page.client,'owner'),'absent');
+});
+test('missing lease checks respect global and per-session fresh-page capacity without admission',()=> {
+  for(const global of [true,false]) {
+    const generations=new AssetGenerations(build());const pages=Array.from({length:global?64:8},()=>generations.document());
+    if(!global) for(const page of pages) generations.bind(page.client,'owner');
+    const first=pages[0];assert.ok(first);
+    assert.throws(()=>generations.checkLease('0'.repeat(24),'owner',first.generation,first.generation),/capacity/);
+    assert.equal(generations.counts().clients,pages.length);
+  }
+});
 test('page admission is bounded and never silently removes a prior page lease',()=> {
   const generations=new AssetGenerations(build());const pages=Array.from({length:64},()=>generations.document());
   assert.throws(()=>generations.document(),/capacity/);assert.equal(generations.counts().clients,64);

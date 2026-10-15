@@ -12,7 +12,7 @@ assert.ok(row.capabilities);
 const negotiated = {identity: row.identity, availability: 'live' as const, capabilities: row.capabilities};
 test('one status combines read truth with independent connection and admission state', () => {
   const source = {hasEntries: false, connected: true, loading: false, ready: false};
-  assert.equal(agentViewStatus(source).text, 'Loading messages…');
+  assert.equal(agentViewStatus(source).text, 'Messages not loaded.');
   const message = 'Required Durable 1.1.0; reader Durable 1.0.3.';
   const failed = agentViewStatus({...source, availability: 'incompatible', error: {code: 'contract_mismatch', message}});
   assert.equal(failed.text, 'History unavailable: saved messages use an unsupported format. · This agent cannot connect; messages remain read-only.'); assert.equal(failed.detail, message); assert.equal(failed.start, false);
@@ -28,6 +28,17 @@ test('one status combines read truth with independent connection and admission s
   assert.equal(agentViewStatus({...source, loading: true, hasEntries: true}).text, 'Updating messages…');
   const uncertain = agentViewStatus({...source, hasEntries: true, availability: 'stored', startAttempt: {pending: false, reason: 'Readiness timed out.'}});
   assert.equal(uncertain.start, false); assert.match(uncertain.text, /^Start not confirmed/); assert.equal(uncertain.detail, 'Readiness timed out.');
+});
+test('only an active history read reports loading for a cold retained agent', () => {
+  const source = {hasEntries: false, connected: true, loading: false, ready: false, availability: 'stored' as const};
+  const cold = agentViewStatus(source);
+  assert.equal(cold.text, 'Messages not loaded. · Agent is not connected.');
+  assert.equal(cold.start, true);
+  assert.equal(agentViewStatus({...source, complete: true}).text, cold.text);
+  assert.equal(agentViewStatus({...source, loading: true}).text, 'Loading messages… · Agent is not connected.');
+  assert.equal(agentViewStatus({...source, loading: true, hasEntries: true}).text, 'Updating messages… · Agent is not connected.');
+  assert.equal(agentViewStatus({...source, hasEntries: true}).text, 'Agent is not connected.');
+  assert.equal(agentViewStatus({...source, ready: true, complete: true}).text, 'No messages yet. · Agent is not connected.');
 });
 test('unreadable saved messages use plain text and retain the exact diagnostic', () => {
   const message = 'The retained source is unreadable.';

@@ -218,6 +218,7 @@ export type EventEnvelope<N extends EventName = EventName> = {at: string; worksp
 /** Closed HTTP route vocabulary. Dynamic segments are encoded single path segments. */
 export const ROUTES = [
   'GET /api/control/layout', 'POST /api/control/requests', 'GET /api/control/requests/:id', 'POST /api/control/ack',
+  'POST /api/dev/lease',
   'GET /', 'POST /api/auth/launch', 'POST /api/auth/logout', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
   'POST /api/workspaces', 'POST /api/operations', 'GET /api/operations/:id', 'POST /api/operations/:id/reconcile', 'DELETE /api/operations/:id',
   'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/history/output', 'GET /api/primaries/:key/history/image', 'GET /api/primaries/:key/resources/:kind',
