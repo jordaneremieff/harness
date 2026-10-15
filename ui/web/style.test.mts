@@ -491,6 +491,7 @@ test('one workbench footer owns wrapped facts without composer-local settings', 
   const settings = rule('.agent-settings'); assert.match(settings, /min-width: 0/); assert.match(settings, /max-width: 100%/); assert.match(settings, /white-space: normal/); assert.match(settings, /overflow-wrap: anywhere/);
   assert.doesNotMatch(settings, /overflow: hidden|text-overflow: ellipsis|line-clamp/);
   assert.match(rule('.workbench-status'), /display: flex;[^}]*flex-wrap: wrap/);
+  assert.match(rule('.workbench-status'), /font-size: 12px; line-height: 1\.5;/);
   assert.match(rule('.workbench-status-facts'), /flex-wrap: wrap/);
   assert.match(rule('.workbench-model button'), /min-width: 0;/);
   const coarseModel = [...media('@media (pointer:coarse)').matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(match => match[1].split(',').some(selector => selector.trim() === '.workbench-model button'));
